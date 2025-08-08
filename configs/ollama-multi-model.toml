@@ -1,0 +1,81 @@
+# Ollama Multi-Model Configuration
+# Routing between different models from the same Ollama provider
+
+[server]
+host = "127.0.0.1"
+port = 3000
+timeout = "30s"
+max_body_size = 10485760
+cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }
+
+# Ollama Provider with multiple models
+[providers.ollama-llama]
+name = "ollama-llama"
+api_key = ""
+base_url = "http://localhost:11434"
+timeout = 30000
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = { "llama3.2:3b-instruct-q8_0" = "llama3.2:3b-instruct-q8_0" }
+headers = {}
+
+[providers.ollama-qwen]
+name = "ollama-qwen"
+api_key = ""
+base_url = "http://localhost:11434"
+timeout = 30000
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = { "qwen3:8b" = "qwen3:8b" }
+headers = {}
+
+[providers.ollama-gemma]
+name = "ollama-gemma"
+api_key = ""
+base_url = "http://localhost:11434"
+timeout = 30000
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = { "gemma3:4b" = "gemma3:4b" }
+headers = {}
+
+# Load balancing routing strategy for multiple models
+[routing]
+strategy = { LoadBalance = { weights = [1.0, 1.0, 1.0] } }
+health_check_interval = "30s"
+failover_threshold = 0.8
+
+# Authentication
+[auth]
+enabled = true
+api_keys = [
+    { key = "sk-ollama-multi-key", name = "ollama-multi-user", enabled = true, rate_limit = { requests_per_minute = 200, requests_per_hour = 2000, tokens_per_minute = 20000 }, metadata = { "provider" = "ollama-multi" } }
+]
+rate_limiting = { requests_per_minute = 2000, requests_per_hour = 20000, tokens_per_minute = 200000 }
+
+# Caching
+[cache]
+enabled = true
+backend = "Memory"
+ttl = "1h"
+max_size = 1000
+
+# Logging
+[logging]
+level = "info"
+format = "Pretty"
+output = "Stdout"
+
+# Plugins
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true }
+
+[[plugins]]
+name = "logging"
+enabled = true
+config = { "log_requests" = true, "log_errors" = true } 

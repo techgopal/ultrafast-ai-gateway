@@ -1,0 +1,67 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+CHANGELOG.md
+*.md
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Rust build artifacts (but keep Cargo.lock)
+target/
+**/*.rs.bk
+
+# Test and coverage files
+test_reports/
+coverage/
+*.profraw
+
+# Logs
+*.log
+logs/
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Docker files (except the one we're using)
+deployment/Dockerfile
+deployment/docker-compose.yml
+
+# CI/CD files
+.github/
+.cursorrules
+.claude/
+
+# Development files
+CLAUDE.md
+notes
+
+# Build scripts
+build.sh
+*.sh

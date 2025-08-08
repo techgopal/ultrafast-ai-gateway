@@ -1,0 +1,61 @@
+# Development Configuration - Anthropic Only
+# Perfect for local development and testing with Anthropic
+
+[server]
+host = "127.0.0.1"
+port = 3000
+timeout = "30s"
+max_body_size = 10485760  # 10MB
+cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }
+
+# Anthropic Provider
+[providers.anthropic]
+name = "anthropic"
+api_key = "YOUR_ANTHROPIC_API_KEY_HERE"
+base_url = "https://api.anthropic.com"
+timeout = 30000
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Simple routing strategy for development
+[routing]
+strategy = { Single = {} }  # Use single provider
+health_check_interval = "30s"
+failover_threshold = 0.8
+
+# Authentication (enabled for testing)
+[auth]
+enabled = true
+api_keys = [
+    { key = "sk-ultrafast-gateway-key", name = "default", enabled = true, rate_limit = { requests_per_minute = 100, requests_per_hour = 1000, tokens_per_minute = 10000 }, metadata = {} }
+]
+rate_limiting = { requests_per_minute = 1000, requests_per_hour = 10000, tokens_per_minute = 100000 }
+
+# Caching for development
+[cache]
+enabled = true
+backend = "Memory"
+ttl = "1h"
+max_size = 1000
+
+# Logging for development
+[logging]
+level = "info"
+format = "Pretty"
+output = "Stdout"
+
+# Metrics configuration
+[metrics]
+enabled = true
+max_requests = 10000
+retention_duration = "1h"
+cleanup_interval = "5m"
+
+# Cost tracking plugin for development
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true } 

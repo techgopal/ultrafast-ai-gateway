@@ -1,0 +1,95 @@
+# High Performance Configuration
+# Optimized for maximum throughput
+
+[server]
+host = "0.0.0.0"
+port = 3000
+timeout = "120s"  # Longer timeout for high throughput
+max_body_size = 52428800  # 50MB for large requests
+cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }
+
+# Multiple fast providers
+[providers.groq]
+name = "groq"
+api_key = "your-groq-api-key"
+base_url = "https://api.groq.com/openai/v1"
+timeout = 60000  # 60 seconds
+max_retries = 5  # More retries
+retry_delay = 500  # Faster retries
+enabled = true
+model_mapping = {}
+headers = {}
+
+[providers.openai]
+name = "openai"
+api_key = "sk-your-openai-key"
+base_url = "https://api.openai.com/v1"
+timeout = 60000
+max_retries = 5
+retry_delay = 500
+enabled = true
+model_mapping = {}
+headers = {}
+
+[providers.anthropic]
+name = "anthropic"
+api_key = "sk-ant-your-anthropic-key"
+base_url = "https://api.anthropic.com"
+timeout = 60000
+max_retries = 5
+retry_delay = 500
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Round-robin routing for high throughput
+[routing]
+strategy = { RoundRobin = {} }
+health_check_interval = "10s"  # More frequent health checks
+failover_threshold = 0.7  # Lower threshold for faster failover
+
+# High rate limits
+[auth]
+enabled = true
+api_keys = [
+    { 
+        key = "sk-high-performance-key", 
+        name = "high-performance", 
+        enabled = true, 
+        rate_limit = { 
+            requests_per_minute = 5000, 
+            requests_per_hour = 50000, 
+            tokens_per_minute = 500000 
+        }, 
+        metadata = { "performance" = "high" } 
+    }
+]
+rate_limiting = { 
+    requests_per_minute = 50000, 
+    requests_per_hour = 500000, 
+    tokens_per_minute = 5000000 
+}
+
+# Redis caching for high performance
+[cache]
+enabled = true
+backend = "Redis"
+ttl = "6h"  # 6 hours
+max_size = 10000
+
+# Performance logging
+[logging]
+level = "warn"  # Less verbose for performance
+format = "Json"
+output = "File"
+
+# Performance plugins
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true }
+
+[[plugins]]
+name = "logging"
+enabled = true
+config = { "log_requests" = false, "log_errors" = true }  # Minimal logging 

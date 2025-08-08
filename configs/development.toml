@@ -1,0 +1,89 @@
+# Development Configuration - Multiple Local Providers
+# Perfect for development with local and cloud providers
+
+[server]
+host = "127.0.0.1"
+port = 3000
+timeout = "30s"
+max_body_size = 10485760  # 10MB
+cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }
+
+# Ollama Provider (Local)
+[providers.ollama]
+name = "ollama"
+api_key = ""  # No API key needed for local Ollama
+base_url = "http://localhost:11434"
+timeout = "30s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = true
+model_mapping = {}
+headers = {}
+# Circuit breaker configuration
+circuit_breaker = { failure_threshold = 3, recovery_timeout = "30s", request_timeout = "10s" }
+
+# OpenAI Provider (Cloud - requires API key)
+[providers.openai]
+name = "openai"
+api_key = "sk-your-openai-key"  # Replace with your OpenAI API key
+base_url = "https://api.openai.com/v1"
+timeout = "30s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = false  # Disabled by default, enable when you have API key
+model_mapping = {}
+headers = {}
+# Circuit breaker configuration
+circuit_breaker = { failure_threshold = 5, recovery_timeout = "60s", request_timeout = "30s" }
+
+# Anthropic Provider (Cloud - requires API key)
+[providers.anthropic]
+name = "anthropic"
+api_key = "sk-ant-your-anthropic-key"  # Replace with your Anthropic API key
+base_url = "https://api.anthropic.com"
+timeout = "30s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = false  # Disabled by default, enable when you have API key
+model_mapping = {}
+headers = {}
+# Circuit breaker configuration
+circuit_breaker = { failure_threshold = 5, recovery_timeout = "60s", request_timeout = "30s" }
+
+# Load balancing routing strategy
+[routing]
+strategy = { LoadBalance = { weights = [1.0, 1.0, 1.0] } }  # Equal weights for all providers
+health_check_interval = "30s"
+failover_threshold = 0.8
+
+# Authentication (enabled for testing)
+[auth]
+enabled = true
+api_keys = [
+    { key = "sk-ultrafast-gateway-key", name = "default", enabled = true, rate_limit = { requests_per_minute = 100, requests_per_hour = 1000, tokens_per_minute = 10000 }, metadata = {} }
+]
+rate_limiting = { requests_per_minute = 1000, requests_per_hour = 10000, tokens_per_minute = 100000 }
+
+# Caching for development
+[cache]
+enabled = true
+backend = "Memory"
+ttl = "1h"
+max_size = 1000
+
+# Logging for development
+[logging]
+level = "info"
+format = "Pretty"
+output = "Stdout"
+
+# Development plugins
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true }
+
+[[plugins]]
+name = "logging"
+enabled = true
+config = { "log_requests" = true, "log_responses" = false } 

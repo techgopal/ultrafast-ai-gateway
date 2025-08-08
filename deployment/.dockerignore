@@ -1,0 +1,49 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Git files
+.git/
+.gitignore
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test reports
+test_reports/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Development files
+.claude/
+.cursorrules
+
+# Temporary files
+*.tmp
+*.temp
+
+# Docker files
+Dockerfile*
+.dockerignore
+
+# CI/CD files
+.github/
+
+# Environment files
+.env
+.env.local
+.env.*.local

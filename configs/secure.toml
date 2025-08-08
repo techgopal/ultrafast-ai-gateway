@@ -1,0 +1,103 @@
+# Secure Configuration
+# Enhanced security features
+
+[server]
+host = "127.0.0.1"  # Bind to localhost only
+port = 3000
+timeout = "30s"
+max_body_size = 10485760  # 10MB
+cors = { 
+    enabled = true, 
+    allowed_origins = ["https://yourdomain.com"],  # Restrict origins
+    allowed_methods = ["GET", "POST"],  # Restrict methods
+    allowed_headers = ["Authorization", "Content-Type"]  # Restrict headers
+}
+
+# Single trusted provider
+[providers.openai]
+name = "openai"
+api_key = "sk-your-openai-key"
+base_url = "https://api.openai.com/v1"
+timeout = 30000
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Single provider routing
+[routing]
+strategy = { Single = {} }
+health_check_interval = "30s"
+failover_threshold = 0.8
+
+# Strict authentication
+[auth]
+enabled = true
+api_keys = [
+    { 
+        key = "sk-secure-key-1", 
+        name = "secure-user-1", 
+        enabled = true, 
+        rate_limit = { 
+            requests_per_minute = 50, 
+            requests_per_hour = 500, 
+            tokens_per_minute = 5000 
+        }, 
+        metadata = { "security_level" = "high" } 
+    },
+    { 
+        key = "sk-secure-key-2", 
+        name = "secure-user-2", 
+        enabled = true, 
+        rate_limit = { 
+            requests_per_minute = 25, 
+            requests_per_hour = 250, 
+            tokens_per_minute = 2500 
+        }, 
+        metadata = { "security_level" = "restricted" } 
+    }
+]
+rate_limiting = { 
+    requests_per_minute = 100, 
+    requests_per_hour = 1000, 
+    tokens_per_minute = 10000 
+}
+
+# Memory caching (no external dependencies)
+[cache]
+enabled = true
+backend = "Memory"
+ttl = "30m"  # Shorter TTL for security
+max_size = 500
+
+# Security-focused logging
+[logging]
+level = "info"
+format = "Json"  # JSON for security analysis
+output = "File"
+
+# Security plugins
+[[plugins]]
+name = "content_filtering"
+enabled = true
+config = { 
+    "blocked_words" = ["spam", "inappropriate", "malicious", "attack"], 
+    "max_input_length" = 4000,
+    "block_patterns" = ["script", "javascript", "eval"]
+}
+
+[[plugins]]
+name = "logging"
+enabled = true
+config = { 
+    "log_requests" = true, 
+    "log_responses" = false, 
+    "log_errors" = true,
+    "log_security_events" = true
+}
+
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true, "alert_on_high_usage" = true } 

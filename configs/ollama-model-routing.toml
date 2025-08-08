@@ -1,0 +1,66 @@
+# Ollama Model-Specific Routing Configuration
+# Custom routing based on model names
+
+[server]
+host = "127.0.0.1"
+port = 3000
+timeout = "30s"
+max_body_size = 10485760
+cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }
+
+# Single Ollama Provider
+[providers.ollama]
+name = "ollama"
+api_key = ""
+base_url = "http://localhost:11434"
+timeout = 30000
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Custom routing strategy for model-specific routing
+[routing]
+strategy = { Conditional = { 
+    rules = [
+        { condition = "model_contains", value = "llama", provider = "ollama" },
+        { condition = "model_contains", value = "qwen", provider = "ollama" },
+        { condition = "model_contains", value = "gemma", provider = "ollama" },
+        { condition = "default", provider = "ollama" }
+    ]
+} }
+health_check_interval = "30s"
+failover_threshold = 0.8
+
+# Authentication
+[auth]
+enabled = true
+api_keys = [
+    { key = "sk-model-routing-key", name = "model-routing-user", enabled = true, rate_limit = { requests_per_minute = 200, requests_per_hour = 2000, tokens_per_minute = 20000 }, metadata = { "routing" = "model-specific" } }
+]
+rate_limiting = { requests_per_minute = 2000, requests_per_hour = 20000, tokens_per_minute = 200000 }
+
+# Caching
+[cache]
+enabled = true
+backend = "Memory"
+ttl = "1h"
+max_size = 1000
+
+# Logging
+[logging]
+level = "info"
+format = "Pretty"
+output = "Stdout"
+
+# Plugins
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true, "model_tracking" = true }
+
+[[plugins]]
+name = "logging"
+enabled = true
+config = { "log_requests" = true, "log_errors" = true, "log_model_routing" = true } 

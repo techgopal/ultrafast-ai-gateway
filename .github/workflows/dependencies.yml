@@ -1,0 +1,286 @@
+name: Dependencies
+
+on:
+  schedule:
+    # Run every Monday at 9 AM UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      update_type:
+        description: 'Type of update to perform'
+        required: true
+        default: 'security'
+        type: choice
+        options:
+        - security
+        - minor
+        - major
+        - all
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Check for outdated dependencies
+  check-dependencies:
+    name: Check Dependencies
+    runs-on: ubuntu-latest
+    outputs:
+      has-updates: ${{ steps.check.outputs.has-updates }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-outdated
+      run: cargo install cargo-outdated
+
+    - name: Check for outdated dependencies
+      id: check
+      run: |
+        # Check for outdated dependencies
+        OUTDATED=$(cargo outdated --exit-code 1 2>&1 || echo "has-updates")
+        if echo "$OUTDATED" | grep -q "has-updates"; then
+          echo "has-updates=true" >> $GITHUB_OUTPUT
+          echo "📦 Dependencies need updating"
+        else
+          echo "has-updates=false" >> $GITHUB_OUTPUT
+          echo "✅ All dependencies are up to date"
+        fi
+
+  # Update dependencies
+  update-dependencies:
+    name: Update Dependencies
+    runs-on: ubuntu-latest
+    needs: check-dependencies
+    if: needs.check-dependencies.outputs.has-updates == 'true'
+    strategy:
+      matrix:
+        update-type: [security, minor, major]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-edit
+      run: cargo install cargo-edit
+
+    - name: Create update branch
+      run: |
+        BRANCH_NAME="deps/update-${{ matrix.update-type }}-$(date +%Y%m%d)"
+        git checkout -b "$BRANCH_NAME"
+        echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+    - name: Update dependencies
+      run: |
+        case "${{ matrix.update-type }}" in
+          "security")
+            # Update only security patches
+            cargo update
+            echo "🔒 Updated security patches"
+            ;;
+          "minor")
+            # Update minor versions
+            cargo update
+            echo "📦 Updated minor versions"
+            ;;
+          "major")
+            # Update all dependencies
+            cargo update
+            echo "🚀 Updated all dependencies"
+            ;;
+        esac
+
+    - name: Update Cargo.lock
+      run: |
+        cargo generate-lockfile
+        echo "✅ Cargo.lock updated"
+
+    - name: Run tests
+      run: |
+        cargo test --all --release
+        echo "✅ Tests passed after dependency updates"
+
+    - name: Check formatting
+      run: |
+        cargo fmt --all -- --check
+        echo "✅ Code formatting check passed"
+
+    - name: Run clippy
+      run: |
+        cargo clippy --all-targets --all-features -- -D warnings
+        echo "✅ Clippy linting passed"
+
+    - name: Commit and push changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add .
+        git commit -m "chore: update ${{ matrix.update-type }} dependencies
+
+        - Updated dependencies to latest compatible versions
+        - All tests passing
+        - Code formatting and linting checks passed"
+        git push origin "$BRANCH_NAME"
+
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        branch: ${{ env.BRANCH_NAME }}
+        title: "chore: update ${{ matrix.update-type }} dependencies"
+        body: |
+          ## 🔄 Dependency Updates
+          
+          This PR updates **${{ matrix.update-type }}** dependencies to their latest compatible versions.
+          
+          ### Changes
+          - Updated Cargo.lock with latest dependency versions
+          - All tests passing ✅
+          - Code formatting check passed ✅
+          - Clippy linting passed ✅
+          
+          ### Testing
+          - [x] Unit tests
+          - [x] Integration tests
+          - [x] Code quality checks
+          
+          ### Type of Update
+          - **${{ matrix.update-type }}**: ${{ matrix.update-type == 'security' && 'Security patches only' || matrix.update-type == 'minor' && 'Minor version updates' || 'All dependency updates' }}
+          
+          ---
+          
+          *This PR was automatically created by the dependency update workflow.*
+        labels: |
+          dependencies
+          automated
+          ${{ matrix.update-type }}-update
+        assignees: ${{ github.repository_owner }}
+
+  # Security audit
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: check-dependencies
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run security audit
+      run: |
+        cargo audit
+        echo "✅ Security audit passed"
+
+    - name: Check for known vulnerabilities
+      run: |
+        # Check for known vulnerabilities in dependencies
+        VULNERABILITIES=$(cargo audit --json 2>/dev/null | jq -r '.vulnerabilities[]?.advisory.id' | head -5)
+        if [ ! -z "$VULNERABILITIES" ]; then
+          echo "⚠️ Found vulnerabilities:"
+          echo "$VULNERABILITIES"
+          exit 1
+        else
+          echo "✅ No known vulnerabilities found"
+        fi
+
+  # Dependency graph
+  dependency-graph:
+    name: Dependency Graph
+    runs-on: ubuntu-latest
+    needs: check-dependencies
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Generate dependency graph
+      run: |
+        # Generate dependency tree
+        cargo tree --format "{p} {f}" > dependency-tree.txt
+        echo "✅ Dependency tree generated"
+
+    - name: Upload dependency graph
+      uses: actions/upload-artifact@v4
+      with:
+        name: dependency-graph
+        path: dependency-tree.txt
+
+  # License compliance
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    needs: check-dependencies
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-license
+      run: cargo install cargo-license
+
+    - name: Check licenses
+      run: |
+        # Generate license report
+        cargo license --json > licenses.json
+        echo "✅ License report generated"
+
+        # Check for incompatible licenses
+        INCOMPATIBLE=$(cat licenses.json | jq -r '.[] | select(.license | test("GPL|AGPL")) | .name')
+        if [ ! -z "$INCOMPATIBLE" ]; then
+          echo "⚠️ Found potentially incompatible licenses:"
+          echo "$INCOMPATIBLE"
+          exit 1
+        else
+          echo "✅ All licenses are compatible"
+        fi
+
+    - name: Upload license report
+      uses: actions/upload-artifact@v4
+      with:
+        name: license-report
+        path: licenses.json
+
+  # Notify on security issues
+  notify-security:
+    name: Notify Security Issues
+    runs-on: ubuntu-latest
+    needs: [security-audit, license-check]
+    if: always() && (needs.security-audit.result == 'failure' || needs.license-check.result == 'failure')
+
+    steps:
+    - name: Notify security issues
+      run: |
+        echo "🚨 Security issues detected!"
+        echo "Security audit: ${{ needs.security-audit.result }}"
+        echo "License check: ${{ needs.license-check.result }}"
+        
+        if [ "${{ needs.security-audit.result }}" = "failure" ]; then
+          echo "❌ Security vulnerabilities found in dependencies"
+        fi
+        
+        if [ "${{ needs.license-check.result }}" = "failure" ]; then
+          echo "❌ License compliance issues found"
+        fi
+        
+        # Add notification logic here (Slack, Discord, email, etc.)

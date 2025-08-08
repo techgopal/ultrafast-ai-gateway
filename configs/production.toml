@@ -1,0 +1,185 @@
+# Production Configuration - All Providers
+# Full production setup with all major LLM providers
+
+[server]
+host = "0.0.0.0"  # Bind to all interfaces
+port = 3000
+timeout = "60s"  # Longer timeout for production
+max_body_size = 20971520  # 20MB for production
+cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }
+
+# OpenAI Provider
+[providers.openai]
+name = "openai"
+api_key = "sk-your-openai-key"  # Replace with your OpenAI API key
+base_url = "https://api.openai.com/v1"
+timeout = "60s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Anthropic Provider
+[providers.anthropic]
+name = "anthropic"
+api_key = "sk-ant-your-anthropic-key"  # Replace with your Anthropic API key
+base_url = "https://api.anthropic.com"
+timeout = "60s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Azure OpenAI Provider
+[providers.azure-openai]
+name = "azure-openai"
+api_key = "your-azure-api-key"  # Replace with your Azure API key
+base_url = "https://your-resource.openai.azure.com"
+timeout = "60s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = true
+model_mapping = {}
+headers = { "api-version" = "2024-02-15-preview" }
+
+# Google Vertex AI Provider
+[providers.google-vertex-ai]
+name = "google-vertex-ai"
+api_key = "your-google-api-key"  # Replace with your Google API key
+base_url = "https://us-central1-aiplatform.googleapis.com"
+timeout = "60s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = true
+model_mapping = {}
+headers = { "project-id" = "your-project-id", "location" = "us-central1" }
+
+# Cohere Provider
+[providers.cohere]
+name = "cohere"
+api_key = "your-cohere-api-key"  # Replace with your Cohere API key
+base_url = "https://api.cohere.ai/v1"
+timeout = "60s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Groq Provider
+[providers.groq]
+name = "groq"
+api_key = "your-groq-api-key"  # Replace with your Groq API key
+base_url = "https://api.groq.com/openai/v1"
+timeout = "60s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Mistral Provider
+[providers.mistral]
+name = "mistral"
+api_key = "your-mistral-api-key"  # Replace with your Mistral API key
+base_url = "https://api.mistral.ai/v1"
+timeout = "60s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Perplexity Provider
+[providers.perplexity]
+name = "perplexity"
+api_key = "your-perplexity-api-key"  # Replace with your Perplexity API key
+base_url = "https://api.perplexity.ai"
+timeout = "60s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Ollama Provider (if available)
+[providers.ollama]
+name = "ollama"
+api_key = ""
+base_url = "http://localhost:11434"
+timeout = "60s"  # Duration string format (preferred)
+max_retries = 3
+retry_delay = "1s"  # Duration string format (preferred)
+enabled = false  # Disabled by default in production
+model_mapping = {}
+headers = {}
+
+# Load balancing routing strategy
+[routing]
+strategy = { LoadBalance = { weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0] } }
+health_check_interval = "30s"
+failover_threshold = 0.8
+
+# Authentication (enabled for production)
+[auth]
+enabled = true
+api_keys = [
+    { 
+        key = "sk-production-key-1", 
+        name = "production-1", 
+        enabled = true, 
+        rate_limit = { 
+            requests_per_minute = 1000, 
+            requests_per_hour = 10000, 
+            tokens_per_minute = 100000 
+        }, 
+        metadata = { "team" = "production" } 
+    },
+    { 
+        key = "sk-production-key-2", 
+        name = "production-2", 
+        enabled = true, 
+        rate_limit = { 
+            requests_per_minute = 500, 
+            requests_per_hour = 5000, 
+            tokens_per_minute = 50000 
+        }, 
+        metadata = { "team" = "staging" } 
+    }
+]
+rate_limiting = { 
+    requests_per_minute = 10000, 
+    requests_per_hour = 100000, 
+    tokens_per_minute = 1000000 
+}
+
+# Redis caching for production
+[cache]
+enabled = true
+backend = "Redis"
+ttl = "24h"  # 24 hours
+max_size = 10000
+
+# Production logging
+[logging]
+level = "info"
+format = "Json"  # JSON format for production
+output = "File"  # File output for production
+
+# Production plugins
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true, "detailed_tracking" = true }
+
+[[plugins]]
+name = "logging"
+enabled = true
+config = { "log_requests" = true, "log_responses" = false, "log_errors" = true }
+
+[[plugins]]
+name = "content_filtering"
+enabled = true
+config = { "blocked_words" = ["spam", "inappropriate"], "max_input_length" = 10000 } 

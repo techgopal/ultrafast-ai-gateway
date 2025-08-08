@@ -1,0 +1,85 @@
+# Production Configuration - Minimal
+# Essential providers only for production
+
+[server]
+host = "0.0.0.0"  # Bind to all interfaces
+port = 3000
+timeout = "60s"  # Longer timeout for production
+max_body_size = 20971520  # 20MB for production
+cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }
+
+# OpenAI Provider (Primary)
+[providers.openai]
+name = "openai"
+api_key = "sk-your-openai-key"  # Replace with your OpenAI API key
+base_url = "https://api.openai.com/v1"
+timeout = 60000  # 60 seconds
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Anthropic Provider (Backup)
+[providers.anthropic]
+name = "anthropic"
+api_key = "sk-ant-your-anthropic-key"  # Replace with your Anthropic API key
+base_url = "https://api.anthropic.com"
+timeout = 60000  # 60 seconds
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Fallback routing strategy
+[routing]
+strategy = { Fallback = {} }  # Try OpenAI first, then Anthropic
+health_check_interval = "30s"
+failover_threshold = 0.8
+
+# Authentication (enabled for production)
+[auth]
+enabled = true
+api_keys = [
+    { 
+        key = "sk-production-key", 
+        name = "production", 
+        enabled = true, 
+        rate_limit = { 
+            requests_per_minute = 1000, 
+            requests_per_hour = 10000, 
+            tokens_per_minute = 100000 
+        }, 
+        metadata = { "environment" = "production" } 
+    }
+]
+rate_limiting = { 
+    requests_per_minute = 10000, 
+    requests_per_hour = 100000, 
+    tokens_per_minute = 1000000 
+}
+
+# Memory caching for minimal production
+[cache]
+enabled = true
+backend = "Memory"
+ttl = "12h"  # 12 hours
+max_size = 5000
+
+# Production logging
+[logging]
+level = "info"
+format = "Json"  # JSON format for production
+output = "File"  # File output for production
+
+# Essential plugins only
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true }
+
+[[plugins]]
+name = "logging"
+enabled = true
+config = { "log_requests" = true, "log_errors" = true } 

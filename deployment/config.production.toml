@@ -1,0 +1,153 @@
+[server]
+host = "0.0.0.0"
+port = 3000
+timeout = "30s"
+max_body_size = 10485760  # 10MB
+cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }
+
+# Production mode - set to false for development
+development_mode = false
+
+# Provider configurations - API keys are loaded from environment variables
+# Set the following environment variables:
+# OPENAI_API_KEY, ANTHROPIC_API_KEY, AZURE_OPENAI_API_KEY, etc.
+
+[providers.openai]
+name = "openai"
+api_key = ""  # Will be loaded from OPENAI_API_KEY environment variable
+base_url = "https://api.openai.com/v1"
+timeout = "30s"
+max_retries = 3
+retry_delay = "1s"
+enabled = true
+model_mapping = {}
+headers = {}
+
+[providers.anthropic]
+name = "anthropic"
+api_key = ""  # Will be loaded from ANTHROPIC_API_KEY environment variable
+base_url = "https://api.anthropic.com"
+timeout = "30s"
+max_retries = 3
+retry_delay = "1s"
+enabled = true
+model_mapping = {}
+headers = {}
+
+[providers.azure-openai]
+name = "azure-openai"
+api_key = ""  # Will be loaded from AZURE_OPENAI_API_KEY environment variable
+base_url = "https://your-resource.openai.azure.com"
+timeout = "30s"
+max_retries = 3
+retry_delay = "1s"
+enabled = true
+model_mapping = {}
+headers = { "api-version" = "2024-02-15-preview" }
+
+[providers.google-vertex-ai]
+name = "google-vertex-ai"
+api_key = ""  # Will be loaded from GOOGLE_VERTEX_AI_API_KEY environment variable
+base_url = "https://us-central1-aiplatform.googleapis.com"
+timeout = "30s"
+max_retries = 3
+retry_delay = "1s"
+enabled = true
+model_mapping = {}
+headers = { "project-id" = "your-project-id", "location" = "us-central1" }
+
+[providers.cohere]
+name = "cohere"
+api_key = ""  # Will be loaded from COHERE_API_KEY environment variable
+base_url = "https://api.cohere.ai/v1"
+timeout = "30s"
+max_retries = 3
+retry_delay = "1s"
+enabled = true
+model_mapping = {}
+headers = {}
+
+[providers.groq]
+name = "groq"
+api_key = ""  # Will be loaded from GROQ_API_KEY environment variable
+base_url = "https://api.groq.com/openai/v1"
+timeout = "30s"
+max_retries = 3
+retry_delay = "1s"
+enabled = true
+model_mapping = {}
+headers = {}
+
+[providers.mistral]
+name = "mistral"
+api_key = ""  # Will be loaded from MISTRAL_API_KEY environment variable
+base_url = "https://api.mistral.ai/v1"
+timeout = "30s"
+max_retries = 3
+retry_delay = "1s"
+enabled = true
+model_mapping = {}
+headers = {}
+
+[providers.perplexity]
+name = "perplexity"
+api_key = ""  # Will be loaded from PERPLEXITY_API_KEY environment variable
+base_url = "https://api.perplexity.ai"
+timeout = "30s"
+max_retries = 3
+retry_delay = "1s"
+enabled = true
+model_mapping = {}
+headers = {}
+
+[providers.ollama]
+name = "ollama"
+api_key = ""
+base_url = "http://localhost:11434"
+timeout = "30s"
+max_retries = 3
+retry_delay = "1s"
+enabled = false  # Disabled for production
+model_mapping = {}
+headers = {}
+
+[routing]
+strategy = { LoadBalance = { weights = [1.0, 1.0, 1.0, 1.0] } }
+health_check_interval = "30s"
+failover_threshold = 0.8
+
+[auth]
+enabled = true  # Enabled for production
+# Gateway API keys will be loaded from GATEWAY_API_KEYS environment variable (JSON array)
+# Example: GATEWAY_API_KEYS='[{"key":"sk-ultrafast-gateway-key","name":"default","enabled":true,"rate_limit":{"requests_per_minute":100,"requests_per_hour":1000,"tokens_per_minute":10000},"metadata":{}}]'
+api_keys = []
+rate_limiting = { requests_per_minute = 1000, requests_per_hour = 10000, tokens_per_minute = 100000 }
+
+[cache]
+enabled = true
+backend = "Redis"
+ttl = "1h"
+max_size = 1000
+
+[logging]
+level = "info"
+format = "Json"
+output = "Stdout"
+
+[metrics]
+enabled = true
+port = 9090
+path = "/metrics"
+max_requests = 1000
+retention_duration = "24h"
+cleanup_interval = "1h"
+
+[[plugins]]
+name = "rate_limiting"
+enabled = true
+config = { "requests_per_minute" = 100 }
+
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true }

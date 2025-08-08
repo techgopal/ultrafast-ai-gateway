@@ -1,0 +1,72 @@
+[package]
+name = "ultrafast-models-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Rust SDK for calling 100+ LLM providers with dual mode operation (standalone/gateway)"
+
+[dependencies]
+# Core async and utilities
+tokio = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true, features = ["multipart"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Time and UUID
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Caching for standalone mode
+dashmap = { workspace = true }
+lru = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Async traits
+async-trait = { workspace = true }
+
+# Additional utilities
+rand = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+wiremock = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[features]
+default = ["openai", "anthropic"]
+# Provider features
+openai = []
+anthropic = []
+azure = []
+bedrock = []
+vertex = []
+cohere = []
+groq = []
+mistral = []
+perplexity = []
+together = []
+ollama = []
+# Mode features
+standalone = []
+gateway = []

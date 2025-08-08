@@ -1,0 +1,91 @@
+# Multi-Provider Configuration
+# Load balancing across multiple providers
+
+[server]
+host = "127.0.0.1"
+port = 3000
+timeout = "30s"
+max_body_size = 10485760
+cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }
+
+# Anthropic Provider
+[providers.anthropic]
+name = "anthropic"
+api_key = "YOUR_ANTHROPIC_API_KEY_HERE"
+base_url = "https://api.anthropic.com"
+timeout = 30000
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = { "claude-3-5-haiku-20241022" = "claude-3-5-haiku-20241022", "claude-3-5-sonnet-20241022" = "claude-3-5-sonnet-20241022", "claude-3-7-sonnet-20250219" = "claude-3-7-sonnet-20250219", "claude-sonnet-4-20250514" = "claude-sonnet-4-20250514", "claude-opus-4-20250514" = "claude-opus-4-20250514" }
+headers = {}
+
+# Ollama Provider (Local)
+[providers.ollama]
+name = "ollama"
+api_key = ""
+base_url = "http://localhost:11434"
+timeout = 30000
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = { "llama3.2:3b-instruct-q8_0" = "llama3.2:3b-instruct-q8_0", "qwen3:8b" = "qwen3:8b", "gemma3:4b" = "gemma3:4b" }
+headers = {}
+
+# Conditional routing strategy for model-specific routing
+[routing]
+strategy = { Conditional = { rules = [
+    { condition = { ModelName = "claude-3-5-haiku-20241022" }, provider = "anthropic", weight = 1.0 },
+    { condition = { ModelName = "claude-3-5-sonnet-20241022" }, provider = "anthropic", weight = 1.0 },
+    { condition = { ModelName = "claude-3-7-sonnet-20250219" }, provider = "anthropic", weight = 1.0 },
+    { condition = { ModelName = "claude-sonnet-4-20250514" }, provider = "anthropic", weight = 1.0 },
+    { condition = { ModelName = "claude-opus-4-20250514" }, provider = "anthropic", weight = 1.0 },
+    { condition = { ModelName = "llama3.2:3b-instruct-q8_0" }, provider = "ollama", weight = 1.0 },
+    { condition = { ModelName = "qwen3:8b" }, provider = "ollama", weight = 1.0 },
+    { condition = { ModelName = "gemma3:4b" }, provider = "ollama", weight = 1.0 },
+    { condition = { ModelPrefix = "claude" }, provider = "anthropic", weight = 1.0 },
+    { condition = { ModelPrefix = "llama" }, provider = "ollama", weight = 1.0 },
+    { condition = { ModelPrefix = "qwen" }, provider = "ollama", weight = 1.0 },
+    { condition = { ModelPrefix = "gemma" }, provider = "ollama", weight = 1.0 }
+] } }
+health_check_interval = "30s"
+failover_threshold = 0.8
+
+# Authentication
+[auth]
+enabled = true
+api_keys = [
+    { key = "sk-multi-provider-key", name = "multi-user", enabled = true, rate_limit = { requests_per_minute = 200, requests_per_hour = 2000, tokens_per_minute = 20000 }, metadata = { "providers" = "multi" } }
+]
+rate_limiting = { requests_per_minute = 2000, requests_per_hour = 20000, tokens_per_minute = 200000 }
+
+# Caching
+[cache]
+enabled = true
+backend = "Memory"
+ttl = "1h"
+max_size = 2000
+
+# Logging
+[logging]
+level = "info"
+format = "Pretty"
+output = "Stdout"
+
+# Plugins
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true }
+
+[[plugins]]
+name = "logging"
+enabled = true
+config = { "log_requests" = true, "log_errors" = true }
+
+# Metrics configuration
+[metrics]
+enabled = true
+max_requests = 10000
+retention_duration = "1h"
+cleanup_interval = "5m" 

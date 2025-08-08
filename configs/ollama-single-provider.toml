@@ -1,0 +1,59 @@
+# Ollama Single Provider with Model Routing
+# Single Ollama provider with model-specific routing
+
+[server]
+host = "127.0.0.1"
+port = 3000
+timeout = "30s"
+max_body_size = 10485760
+cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }
+
+# Single Ollama Provider
+[providers.ollama]
+name = "ollama"
+api_key = ""
+base_url = "http://localhost:11434"
+timeout = 30000
+max_retries = 3
+retry_delay = 1000
+enabled = true
+model_mapping = {}
+headers = {}
+
+# Single provider routing
+[routing]
+strategy = { Single = {} }
+health_check_interval = "30s"
+failover_threshold = 0.8
+
+# Authentication
+[auth]
+enabled = true
+api_keys = [
+    { key = "sk-ollama-single-key", name = "ollama-single-user", enabled = true, rate_limit = { requests_per_minute = 200, requests_per_hour = 2000, tokens_per_minute = 20000 }, metadata = { "provider" = "ollama-single" } }
+]
+rate_limiting = { requests_per_minute = 2000, requests_per_hour = 20000, tokens_per_minute = 200000 }
+
+# Caching
+[cache]
+enabled = true
+backend = "Memory"
+ttl = "1h"
+max_size = 1000
+
+# Logging
+[logging]
+level = "info"
+format = "Pretty"
+output = "Stdout"
+
+# Plugins
+[[plugins]]
+name = "cost_tracking"
+enabled = true
+config = { "track_costs" = true }
+
+[[plugins]]
+name = "logging"
+enabled = true
+config = { "log_requests" = true, "log_errors" = true } 
