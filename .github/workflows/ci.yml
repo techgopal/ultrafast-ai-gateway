@@ -2,6 +2,29 @@ name: CI
 
 on:
   push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --all --all-features --no-fail-fast
+
+name: CI
+
+on:
+  push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
