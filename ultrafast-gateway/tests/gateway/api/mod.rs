@@ -6,6 +6,7 @@ pub mod audio;
 pub mod models;
 pub mod admin;
 
+use ultrafast_gateway as crate;
 use crate::tests::helpers;
 use axum::http::StatusCode;
 use serde_json::Value;

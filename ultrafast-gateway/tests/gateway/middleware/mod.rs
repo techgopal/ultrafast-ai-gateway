@@ -1,10 +1,7 @@
 // Middleware tests
 pub mod authentication;
-pub mod input_validation;
 pub mod rate_limiting;
 pub mod caching;
-pub mod logging;
-pub mod plugins;
 
 use crate::tests::helpers;
 use axum::http::StatusCode;

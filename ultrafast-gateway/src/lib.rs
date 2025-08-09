@@ -137,7 +137,6 @@ pub mod middleware;
 pub mod plugins;
 pub mod request_context;
 pub mod server;
-pub mod test_server;
 
 pub use server::create_server;
 

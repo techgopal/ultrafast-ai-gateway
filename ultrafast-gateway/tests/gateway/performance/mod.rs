@@ -4,6 +4,7 @@ pub mod stress_testing;
 pub mod memory_testing;
 pub mod concurrent_testing;
 
+use ultrafast_gateway as crate;
 use crate::tests::helpers;
 use axum::http::StatusCode;
 use serde_json::Value;

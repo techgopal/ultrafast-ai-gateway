@@ -1,4 +1,5 @@
 // Data protection security tests
+use ultrafast_gateway as crate;
 use crate::tests::helpers;
 use axum::http::StatusCode;
 use serde_json::Value;

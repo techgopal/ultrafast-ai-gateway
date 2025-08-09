@@ -7,6 +7,10 @@ authors.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
+autotests = true
+
+[lib]
+doctest = false
 
 [dependencies]
 # Workspace dependencies

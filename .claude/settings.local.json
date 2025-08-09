@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo:*)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:github.com)",
+      "Bash(timeout 5s cargo run --bin ultrafast-gateway)",
+      "Bash(rm:*)",
+      "Bash(gtimeout 5s cargo run --bin ultrafast-gateway)",
+      "Bash(timeout 10s cargo run --bin ultrafast-gateway)",
+      "Bash(gtimeout 10s cargo run --bin ultrafast-gateway)",
+      "Bash(touch:*)",
+      "Bash(rg:*)"
+    ],
+    "deny": []
+  }
+}

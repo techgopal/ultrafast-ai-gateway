@@ -4,6 +4,7 @@ pub mod rate_limiting;
 pub mod data_protection;
 pub mod injection_prevention;
 
+use ultrafast_gateway as crate;
 use crate::tests::helpers;
 use axum::http::StatusCode;
 use serde_json::Value;

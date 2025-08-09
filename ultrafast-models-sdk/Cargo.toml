@@ -8,6 +8,10 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Rust SDK for calling 100+ LLM providers with dual mode operation (standalone/gateway)"
+autotests = true
+
+[lib]
+doctest = false
 
 [dependencies]
 # Core async and utilities

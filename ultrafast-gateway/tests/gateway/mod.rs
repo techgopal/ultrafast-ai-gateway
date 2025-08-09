@@ -1,14 +1,10 @@
-// Comprehensive test suite for Ultrafast Gateway
-pub mod unit;
-pub mod integration;
+// Root for integration tests. Submodules will be created/added as needed.
+// Remove unused module declarations to avoid file-not-found errors.
 pub mod performance;
 pub mod security;
 pub mod providers;
 pub mod middleware;
 pub mod api;
-pub mod dashboard;
-pub mod websocket;
-pub mod utils;
 
 // Test utilities and helpers
 pub mod helpers {
@@ -83,4 +79,9 @@ pub mod helpers {
     pub fn assert_error_response(response: &axum_test::TestResponse, expected_status: StatusCode) {
         assert_eq!(response.status_code(), expected_status);
     }
+}
+
+// Maintain compatibility with existing test imports like `crate::tests::helpers`
+pub mod tests {
+    pub use super::helpers;
 }

@@ -83,4 +83,6 @@ config.toml
 # claude & cursor
 CLAUDE.md
 .cursorrules
-.claude
+.claude# Ignored generated files
+ultrafast-gateway/gateway.log
+/test_reports/
