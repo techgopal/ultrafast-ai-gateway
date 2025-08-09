@@ -16,21 +16,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY ultrafast-gateway/Cargo.toml ultrafast-gateway/
 COPY ultrafast-models-sdk/Cargo.toml ultrafast-models-sdk/
 
-# Create dummy source files to build dependencies
-RUN mkdir -p ultrafast-gateway/src ultrafast-models-sdk/src ultrafast-models-sdk/benches && \
-    echo "fn main() {}" > ultrafast-gateway/src/main.rs && \
-    echo "pub fn dummy() {}" > ultrafast-models-sdk/src/lib.rs && \
-    echo "fn main() {}" > ultrafast-models-sdk/benches/benchmarks.rs
-
-# Build dependencies (this layer will be cached if dependencies don't change)
-RUN cargo build --release -p ultrafast-models-sdk
-
-# Remove dummy files and copy actual source code
-RUN rm -rf ultrafast-gateway/src ultrafast-models-sdk/src
-
-# Copy source code
-COPY ultrafast-gateway/src ultrafast-gateway/src
-COPY ultrafast-models-sdk/src ultrafast-models-sdk/src
+# Copy full source code (no dummy files)
+COPY ultrafast-gateway/ ultrafast-gateway/
+COPY ultrafast-models-sdk/ ultrafast-models-sdk/
 
 # Build the application
 RUN cargo build --release -p ultrafast-models-sdk && cargo build --release -p ultrafast-gateway
