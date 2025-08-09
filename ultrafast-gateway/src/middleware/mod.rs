@@ -155,11 +155,9 @@ use std::time::Instant;
 use tower_http::cors::{Any, CorsLayer};
 // Unused imports removed - using dedicated modules now
 
-pub mod input_validation;
 pub mod plugin_middleware;
 
-// Re-export the input validation middleware
-pub use input_validation::input_validation_middleware;
+// Input validation now handled via plugin
 
 /// Logging middleware for request/response tracking.
 ///

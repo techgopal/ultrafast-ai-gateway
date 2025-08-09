@@ -627,12 +627,6 @@ cargo clippy
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 
-## 🙏 Acknowledgments
-
-- Inspired by [LiteLLM](https://github.com/BerriAI/litellm) and [Portkey Gateway](https://github.com/Portkey-AI/gateway)
-- Built with [Axum](https://github.com/tokio-rs/axum) and [Tokio](https://tokio.rs)
-- Powered by the Rust ecosystem
-
 ---
 
 **Made with ❤️ by the Ultrafast AI Team** 

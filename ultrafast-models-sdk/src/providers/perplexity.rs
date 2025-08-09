@@ -7,57 +7,28 @@ use crate::providers::{HealthStatus, Provider, ProviderConfig, ProviderHealth, S
 use async_stream::stream;
 use serde_json::json;
 
-use reqwest::Client;
+use super::http_client::{map_error_response, AuthStrategy, HttpProviderClient};
 
 use std::collections::HashMap;
 use std::time::Instant;
 
 pub struct PerplexityProvider {
-    client: Client,
+    http: HttpProviderClient,
     config: ProviderConfig,
-    base_url: String,
 }
 
 impl PerplexityProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, ProviderError> {
-        let client = Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(|e| ProviderError::Configuration {
-                message: format!("Failed to create HTTP client: {e}"),
-            })?;
-
-        let base_url = config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.perplexity.ai".to_string());
-
-        Ok(Self {
-            client,
-            config,
-            base_url,
-        })
-    }
-
-    fn build_headers(&self) -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
-
-        headers.insert(
-            "Authorization",
-            format!("Bearer {}", self.config.api_key).parse().unwrap(),
-        );
-
-        headers.insert("Content-Type", "application/json".parse().unwrap());
-
-        for (key, value) in &self.config.headers {
-            if let (Ok(header_name), Ok(header_value)) =
-                (key.parse::<reqwest::header::HeaderName>(), value.parse())
-            {
-                headers.insert(header_name, header_value);
-            }
-        }
-
-        headers
+        let http = HttpProviderClient::new(
+            config.timeout,
+            config.base_url.clone(),
+            "https://api.perplexity.ai",
+            &config.headers,
+            AuthStrategy::Bearer {
+                token: config.api_key.clone(),
+            },
+        )?;
+        Ok(Self { http, config })
     }
 
     fn map_model(&self, model: &str) -> String {
@@ -68,6 +39,7 @@ impl PerplexityProvider {
             .unwrap_or_else(|| model.to_string())
     }
 
+    #[allow(dead_code)]
     async fn handle_error_response(&self, response: reqwest::Response) -> ProviderError {
         let status = response.status();
 
@@ -158,22 +130,10 @@ impl Provider for PerplexityProvider {
             "stream": false,
         });
 
-        let url = format!("{}/chat/completions", self.base_url);
-        let headers = self.build_headers();
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&perplexity_request)
-            .send()
+        let perplexity_response: serde_json::Value = self
+            .http
+            .post_json("/chat/completions", &perplexity_request)
             .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let perplexity_response: serde_json::Value = response.json().await?;
 
         // Convert Perplexity response to OpenAI format
         let chat_response = ChatResponse {
@@ -237,19 +197,12 @@ impl Provider for PerplexityProvider {
             "stream": true,
         });
 
-        let url = format!("{}/chat/completions", self.base_url);
-        let headers = self.build_headers();
-
         let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&perplexity_request)
-            .send()
+            .http
+            .post_json_raw("/chat/completions", &perplexity_request)
             .await?;
-
         if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
+            return Err(map_error_response(response).await);
         }
 
         let stream = Box::pin(stream! {
@@ -348,42 +301,24 @@ impl Provider for PerplexityProvider {
     async fn health_check(&self) -> Result<ProviderHealth, ProviderError> {
         let start = Instant::now();
 
-        let url = format!("{}/models", self.base_url);
-        let headers = self.build_headers();
-
-        let response = self.client.get(&url).headers(headers).send().await;
+        let response = self.http.get_json::<serde_json::Value>("/models").await;
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
         match response {
-            Ok(resp) if resp.status().is_success() => Ok(ProviderHealth {
+            Ok(_) => Ok(ProviderHealth {
                 status: HealthStatus::Healthy,
                 latency_ms: Some(latency_ms),
                 error_rate: 0.0,
                 last_check: chrono::Utc::now(),
                 details: HashMap::new(),
             }),
-            Ok(resp) => {
-                let mut details = HashMap::new();
-                details.insert(
-                    "status_code".to_string(),
-                    resp.status().as_u16().to_string(),
-                );
-
-                Ok(ProviderHealth {
-                    status: HealthStatus::Degraded,
-                    latency_ms: Some(latency_ms),
-                    error_rate: 1.0,
-                    last_check: chrono::Utc::now(),
-                    details,
-                })
-            }
             Err(e) => {
                 let mut details = HashMap::new();
                 details.insert("error".to_string(), e.to_string());
 
                 Ok(ProviderHealth {
-                    status: HealthStatus::Unhealthy,
+                    status: HealthStatus::Degraded,
                     latency_ms: Some(latency_ms),
                     error_rate: 1.0,
                     last_check: chrono::Utc::now(),

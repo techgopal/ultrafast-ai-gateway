@@ -1,3 +1,4 @@
+use super::http_client::{map_error_response, AuthStrategy, HttpProviderClient};
 use crate::error::ProviderError;
 use crate::models::{
     AudioRequest, AudioResponse, ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse,
@@ -5,12 +6,11 @@ use crate::models::{
 };
 use crate::providers::{HealthStatus, Provider, ProviderConfig, ProviderHealth, StreamResult};
 use async_stream::stream;
-use reqwest::Client;
 use std::collections::HashMap;
 use std::time::Instant;
 
 pub struct AzureOpenAIProvider {
-    client: Client,
+    http: HttpProviderClient,
     config: ProviderConfig,
     base_url: String,
     api_version: String,
@@ -18,13 +18,6 @@ pub struct AzureOpenAIProvider {
 
 impl AzureOpenAIProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, ProviderError> {
-        let client = Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(|e| ProviderError::Configuration {
-                message: format!("Failed to create HTTP client: {e}"),
-            })?;
-
         let base_url = config
             .base_url
             .clone()
@@ -36,8 +29,18 @@ impl AzureOpenAIProvider {
             .cloned()
             .unwrap_or_else(|| "2024-02-15-preview".to_string());
 
+        let http = HttpProviderClient::new(
+            config.timeout,
+            Some(base_url.clone()),
+            &base_url,
+            &config.headers,
+            AuthStrategy::Bearer {
+                token: config.api_key.clone(),
+            },
+        )?;
+
         Ok(Self {
-            client,
+            http,
             config,
             base_url,
             api_version,
@@ -52,27 +55,6 @@ impl AzureOpenAIProvider {
         )
     }
 
-    fn build_headers(&self) -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
-
-        headers.insert(
-            "Authorization",
-            format!("Bearer {}", self.config.api_key).parse().unwrap(),
-        );
-
-        headers.insert("Content-Type", "application/json".parse().unwrap());
-
-        for (key, value) in &self.config.headers {
-            if let (Ok(header_name), Ok(header_value)) =
-                (key.parse::<reqwest::header::HeaderName>(), value.parse())
-            {
-                headers.insert(header_name, header_value);
-            }
-        }
-
-        headers
-    }
-
     fn map_model(&self, model: &str) -> String {
         self.config
             .model_mapping
@@ -81,6 +63,7 @@ impl AzureOpenAIProvider {
             .unwrap_or_else(|| model.to_string())
     }
 
+    #[allow(dead_code)]
     async fn handle_error_response(&self, response: reqwest::Response) -> ProviderError {
         let status = response.status();
 
@@ -158,21 +141,8 @@ impl Provider for AzureOpenAIProvider {
     ) -> Result<ChatResponse, ProviderError> {
         request.model = self.map_model(&request.model);
         let url = self.build_url("chat/completions", Some(&request.model));
-        let headers = self.build_headers();
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let chat_response: ChatResponse = response.json().await?;
+        let chat_response: ChatResponse = self.http.post_json(&url, &request).await?;
         Ok(chat_response)
     }
 
@@ -184,18 +154,10 @@ impl Provider for AzureOpenAIProvider {
         request.stream = Some(true);
 
         let url = self.build_url("chat/completions", Some(&request.model));
-        let headers = self.build_headers();
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
-            .await?;
-
+        let response = self.http.post_json_raw(&url, &request).await?;
         if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
+            return Err(map_error_response(response).await);
         }
 
         let stream = Box::pin(stream! {
@@ -238,21 +200,8 @@ impl Provider for AzureOpenAIProvider {
     ) -> Result<EmbeddingResponse, ProviderError> {
         request.model = self.map_model(&request.model);
         let url = self.build_url("embeddings", Some(&request.model));
-        let headers = self.build_headers();
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let embedding_response: EmbeddingResponse = response.json().await?;
+        let embedding_response: EmbeddingResponse = self.http.post_json(&url, &request).await?;
         Ok(embedding_response)
     }
 
@@ -266,21 +215,8 @@ impl Provider for AzureOpenAIProvider {
 
         let model = request.model.as_deref().unwrap_or("dall-e-3");
         let url = self.build_url("images/generations", Some(model));
-        let headers = self.build_headers();
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let image_response: ImageResponse = response.json().await?;
+        let image_response: ImageResponse = self.http.post_json(&url, &request).await?;
         Ok(image_response)
     }
 
@@ -290,7 +226,6 @@ impl Provider for AzureOpenAIProvider {
     ) -> Result<AudioResponse, ProviderError> {
         request.model = self.map_model(&request.model);
         let url = self.build_url("audio/transcriptions", Some(&request.model));
-        let headers = self.build_headers();
 
         let form = reqwest::multipart::Form::new()
             .part(
@@ -313,18 +248,10 @@ impl Provider for AzureOpenAIProvider {
             form
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .multipart(form)
-            .send()
-            .await?;
-
+        let response = self.http.post_multipart(&url, form).await?;
         if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
+            return Err(map_error_response(response).await);
         }
-
         let audio_response: AudioResponse = response.json().await?;
         Ok(audio_response)
     }
@@ -335,18 +262,10 @@ impl Provider for AzureOpenAIProvider {
     ) -> Result<SpeechResponse, ProviderError> {
         request.model = self.map_model(&request.model);
         let url = self.build_url("audio/speech", Some(&request.model));
-        let headers = self.build_headers();
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
-            .await?;
-
+        let response = self.http.post_json_raw(&url, &request).await?;
         if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
+            return Err(map_error_response(response).await);
         }
 
         let content_type = response
@@ -372,41 +291,25 @@ impl Provider for AzureOpenAIProvider {
             "{}/openai/models?api-version={}",
             self.base_url, self.api_version
         );
-        let headers = self.build_headers();
 
-        let response = self.client.get(&url).headers(headers).send().await;
+        let response = self.http.get_json::<serde_json::Value>(&url).await;
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
         match response {
-            Ok(resp) if resp.status().is_success() => Ok(ProviderHealth {
+            Ok(_) => Ok(ProviderHealth {
                 status: HealthStatus::Healthy,
                 latency_ms: Some(latency_ms),
                 error_rate: 0.0,
                 last_check: chrono::Utc::now(),
                 details: HashMap::new(),
             }),
-            Ok(resp) => {
-                let mut details = HashMap::new();
-                details.insert(
-                    "status_code".to_string(),
-                    resp.status().as_u16().to_string(),
-                );
-
-                Ok(ProviderHealth {
-                    status: HealthStatus::Degraded,
-                    latency_ms: Some(latency_ms),
-                    error_rate: 1.0,
-                    last_check: chrono::Utc::now(),
-                    details,
-                })
-            }
             Err(e) => {
                 let mut details = HashMap::new();
                 details.insert("error".to_string(), e.to_string());
 
                 Ok(ProviderHealth {
-                    status: HealthStatus::Unhealthy,
+                    status: HealthStatus::Degraded,
                     latency_ms: Some(latency_ms),
                     error_rate: 1.0,
                     last_check: chrono::Utc::now(),

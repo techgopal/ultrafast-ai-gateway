@@ -96,8 +96,7 @@ use crate::dashboard::websocket::WebSocketManager;
 use crate::gateway_caching::CacheManager;
 use crate::handlers;
 use crate::middleware::{
-    auth_middleware, cors_middleware, input_validation_middleware, logging_middleware,
-    metrics_middleware, plugin_middleware,
+    auth_middleware, cors_middleware, logging_middleware, metrics_middleware, plugin_middleware,
 };
 use crate::plugins::{create_plugin, PluginManager};
 use axum::{
@@ -306,31 +305,27 @@ pub async fn create_server(config: Config) -> anyhow::Result<Router> {
         .route("/dashboard.js", get(handlers::dashboard_js))
         .route("/dashboard.css", get(handlers::dashboard_css))
         .route("/ws/dashboard", get(handlers::dashboard_websocket))
-        // Middleware stack (corrected order with input validation)
+        // Middleware stack (plugins now handle input validation)
         .layer(
             ServiceBuilder::new()
                 .layer(cors_middleware(&config.server.cors)) // 1. CORS (first)
                 .layer(axum::middleware::from_fn_with_state(
                     state.clone(),
-                    input_validation_middleware,
-                )) // 2. Input validation (before auth)
-                .layer(axum::middleware::from_fn_with_state(
-                    state.clone(),
                     auth_middleware,
-                )) // 3. Authentication (includes rate limiting)
+                )) // 2. Authentication (includes rate limiting)
                 .layer(axum::middleware::from_fn_with_state(
                     state.clone(),
                     plugin_middleware::plugin_middleware,
-                )) // 4. Plugins (after auth)
+                )) // 3. Plugins (after auth)
                 .layer(axum::middleware::from_fn_with_state(
                     state.clone(),
                     logging_middleware,
-                )) // 5. Logging (only authenticated requests)
+                )) // 4. Logging (only authenticated requests)
                 .layer(axum::middleware::from_fn_with_state(
                     state.clone(),
                     metrics_middleware,
-                )) // 6. Metrics (only authenticated requests)
-                .layer(TimeoutLayer::new(config.server.timeout)), // 7. Timeout (last)
+                )) // 5. Metrics (only authenticated requests)
+                .layer(TimeoutLayer::new(config.server.timeout)), // 6. Timeout (last)
         )
         .with_state(state);
 

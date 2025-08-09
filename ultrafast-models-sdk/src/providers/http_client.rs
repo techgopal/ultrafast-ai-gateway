@@ -40,10 +40,9 @@ impl HttpProviderClient {
                 default_headers.insert("Authorization", format!("Bearer {token}").parse().unwrap());
             }
             AuthStrategy::Header { name, value } => {
-            if let (Ok(name), Ok(value)) = (
-                name.parse::<reqwest::header::HeaderName>(),
-                value.parse(),
-            ) {
+                if let (Ok(name), Ok(value)) =
+                    (name.parse::<reqwest::header::HeaderName>(), value.parse())
+                {
                     default_headers.insert(name, value);
                 }
             }
@@ -51,10 +50,7 @@ impl HttpProviderClient {
         }
 
         for (k, v) in headers {
-            if let (Ok(name), Ok(value)) = (
-                k.parse::<reqwest::header::HeaderName>(),
-                v.parse(),
-            ) {
+            if let (Ok(name), Ok(value)) = (k.parse::<reqwest::header::HeaderName>(), v.parse()) {
                 default_headers.insert(name, value);
             }
         }

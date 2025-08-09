@@ -904,7 +904,12 @@ impl Config {
     }
 
     fn validate_plugins(&self) -> anyhow::Result<()> {
-        let valid_plugins = ["cost_tracking", "content_filtering", "logging"];
+        let valid_plugins = [
+            "cost_tracking",
+            "content_filtering",
+            "logging",
+            "input_validation",
+        ];
         let mut seen_plugins = std::collections::HashSet::new();
 
         for plugin_config in &self.plugins {

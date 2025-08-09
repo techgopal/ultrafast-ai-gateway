@@ -8,14 +8,13 @@ use crate::providers::{HealthStatus, Provider, ProviderConfig, ProviderHealth, S
 use async_stream::stream;
 use serde::{Deserialize, Serialize};
 
-use reqwest::Client;
+use super::http_client::{map_error_response, AuthStrategy, HttpProviderClient};
 use std::collections::HashMap;
 use std::time::Instant;
 
 pub struct AnthropicProvider {
-    client: Client,
+    http: HttpProviderClient,
     config: ProviderConfig,
-    base_url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -65,43 +64,20 @@ struct AnthropicUsage {
 
 impl AnthropicProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, ProviderError> {
-        let client = Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(|e| ProviderError::Configuration {
-                message: format!("Failed to create HTTP client: {e}"),
-            })?;
+        let mut headers = config.headers.clone();
+        headers.insert("anthropic-version".to_string(), "2023-06-01".to_string());
+        let http = HttpProviderClient::new(
+            config.timeout,
+            config.base_url.clone(),
+            "https://api.anthropic.com",
+            &headers,
+            AuthStrategy::Header {
+                name: "x-api-key".to_string(),
+                value: config.api_key.clone(),
+            },
+        )?;
 
-        let base_url = config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.anthropic.com".to_string());
-
-        Ok(Self {
-            client,
-            config,
-            base_url,
-        })
-    }
-
-    fn build_headers(&self) -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
-
-        headers.insert("x-api-key", self.config.api_key.parse().unwrap());
-
-        headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
-
-        headers.insert("Content-Type", "application/json".parse().unwrap());
-
-        for (key, value) in &self.config.headers {
-            if let (Ok(header_name), Ok(header_value)) =
-                (key.parse::<reqwest::header::HeaderName>(), value.parse())
-            {
-                headers.insert(header_name, header_value);
-            }
-        }
-
-        headers
+        Ok(Self { http, config })
     }
 
     fn map_model(&self, model: &str) -> String {
@@ -211,43 +187,7 @@ impl AnthropicProvider {
         }
     }
 
-    async fn handle_error_response(&self, response: reqwest::Response) -> ProviderError {
-        let status = response.status();
-
-        match response.text().await {
-            Ok(body) => {
-                if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body) {
-                    let message = error_json
-                        .get("error")
-                        .and_then(|e| e.get("message"))
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("Unknown API error")
-                        .to_string();
-
-                    match status.as_u16() {
-                        401 => ProviderError::InvalidApiKey,
-                        404 => ProviderError::ModelNotFound {
-                            model: "unknown".to_string(),
-                        },
-                        429 => ProviderError::RateLimit,
-                        _ => ProviderError::Api {
-                            code: status.as_u16(),
-                            message,
-                        },
-                    }
-                } else {
-                    ProviderError::Api {
-                        code: status.as_u16(),
-                        message: body,
-                    }
-                }
-            }
-            Err(_) => ProviderError::Api {
-                code: status.as_u16(),
-                message: "Failed to read error response".to_string(),
-            },
-        }
-    }
+    // Use shared map_error_response
 }
 
 #[async_trait::async_trait]
@@ -290,22 +230,10 @@ impl Provider for AnthropicProvider {
             stream: Some(false),
         };
 
-        let url = format!("{}/v1/messages", self.base_url);
-        let headers = self.build_headers();
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&anthropic_request)
-            .send()
+        let anthropic_response: AnthropicResponse = self
+            .http
+            .post_json("/v1/messages", &anthropic_request)
             .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let anthropic_response: AnthropicResponse = response.json().await?;
         Ok(self.convert_response(anthropic_response))
     }
 
@@ -324,19 +252,12 @@ impl Provider for AnthropicProvider {
             stream: Some(true),
         };
 
-        let url = format!("{}/v1/messages", self.base_url);
-        let headers = self.build_headers();
-
         let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&anthropic_request)
-            .send()
+            .http
+            .post_json_raw("/v1/messages", &anthropic_request)
             .await?;
-
         if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
+            return Err(map_error_response(response).await);
         }
 
         let stream = Box::pin(stream! {
@@ -454,48 +375,27 @@ impl Provider for AnthropicProvider {
             stream: Some(false),
         };
 
-        let url = format!("{}/v1/messages", self.base_url);
-        let headers = self.build_headers();
-
         let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&health_request)
-            .send()
+            .http
+            .post_json::<AnthropicRequest, serde_json::Value>("/v1/messages", &health_request)
             .await;
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
         match response {
-            Ok(resp) if resp.status().is_success() => Ok(ProviderHealth {
+            Ok(_) => Ok(ProviderHealth {
                 status: HealthStatus::Healthy,
                 latency_ms: Some(latency_ms),
                 error_rate: 0.0,
                 last_check: chrono::Utc::now(),
                 details: HashMap::new(),
             }),
-            Ok(resp) => {
-                let mut details = HashMap::new();
-                details.insert(
-                    "status_code".to_string(),
-                    resp.status().as_u16().to_string(),
-                );
-
-                Ok(ProviderHealth {
-                    status: HealthStatus::Degraded,
-                    latency_ms: Some(latency_ms),
-                    error_rate: 1.0,
-                    last_check: chrono::Utc::now(),
-                    details,
-                })
-            }
             Err(e) => {
                 let mut details = HashMap::new();
                 details.insert("error".to_string(), e.to_string());
 
                 Ok(ProviderHealth {
-                    status: HealthStatus::Unhealthy,
+                    status: HealthStatus::Degraded,
                     latency_ms: Some(latency_ms),
                     error_rate: 1.0,
                     last_check: chrono::Utc::now(),

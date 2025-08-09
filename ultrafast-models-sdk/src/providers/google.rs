@@ -1,3 +1,4 @@
+use super::http_client::{map_error_response, AuthStrategy, HttpProviderClient};
 use crate::error::ProviderError;
 use crate::models::{
     AudioRequest, AudioResponse, ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse,
@@ -5,13 +6,12 @@ use crate::models::{
 };
 use crate::providers::{HealthStatus, Provider, ProviderConfig, ProviderHealth, StreamResult};
 use async_stream::stream;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
 
 pub struct GoogleVertexAIProvider {
-    client: Client,
+    http: HttpProviderClient,
     config: ProviderConfig,
     base_url: String,
     #[allow(dead_code)]
@@ -21,13 +21,6 @@ pub struct GoogleVertexAIProvider {
 
 impl GoogleVertexAIProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, ProviderError> {
-        let client = Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(|e| ProviderError::Configuration {
-                message: format!("Failed to create HTTP client: {e}"),
-            })?;
-
         let project_id = config.headers.get("project-id").cloned().ok_or_else(|| {
             ProviderError::Configuration {
                 message: "project-id is required for Google Vertex AI".to_string(),
@@ -44,8 +37,18 @@ impl GoogleVertexAIProvider {
             format!("https://{location}-aiplatform.googleapis.com/v1/projects/{project_id}")
         });
 
+        let http = HttpProviderClient::new(
+            config.timeout,
+            Some(base_url.clone()),
+            &base_url,
+            &config.headers,
+            AuthStrategy::Bearer {
+                token: config.api_key.clone(),
+            },
+        )?;
+
         Ok(Self {
-            client,
+            http,
             config,
             base_url,
             project_id,
@@ -60,6 +63,7 @@ impl GoogleVertexAIProvider {
         )
     }
 
+    #[allow(dead_code)]
     fn build_headers(&self) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
 
@@ -96,6 +100,7 @@ impl GoogleVertexAIProvider {
             })
     }
 
+    #[allow(dead_code)]
     async fn handle_error_response(&self, response: reqwest::Response) -> ProviderError {
         let status = response.status();
 
@@ -165,24 +170,10 @@ impl Provider for GoogleVertexAIProvider {
     async fn chat_completion(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let model = self.map_model(&request.model);
         let url = self.build_url(&model);
-        let headers = self.build_headers();
-
         // Convert OpenAI format to Vertex AI format
         let vertex_request = self.convert_to_vertex_format(request);
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&vertex_request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let vertex_response: VertexAIResponse = response.json().await?;
+        let vertex_response: VertexAIResponse = self.http.post_json(&url, &vertex_request).await?;
         let chat_response = self.convert_from_vertex_format(vertex_response);
         Ok(chat_response)
     }
@@ -196,21 +187,12 @@ impl Provider for GoogleVertexAIProvider {
             "{}/locations/{}/publishers/google/models/{}:streamGenerateContent",
             self.base_url, self.location, model
         );
-        let headers = self.build_headers();
-
         // Convert to Vertex AI streaming format
         let vertex_request = self.convert_to_vertex_streaming_format(request);
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&vertex_request)
-            .send()
-            .await?;
-
+        let response = self.http.post_json_raw(&url, &vertex_request).await?;
         if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
+            return Err(map_error_response(response).await);
         }
 
         let stream = Box::pin(stream! {
@@ -280,8 +262,6 @@ impl Provider for GoogleVertexAIProvider {
     ) -> Result<EmbeddingResponse, ProviderError> {
         let model = self.map_model(&request.model);
         let url = self.build_url(&model);
-        let headers = self.build_headers();
-
         // Convert to Vertex AI embedding format
         let vertex_embedding_request = VertexAIEmbeddingRequest {
             instances: vec![VertexAIEmbeddingInstance {
@@ -298,19 +278,8 @@ impl Provider for GoogleVertexAIProvider {
             }],
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&vertex_embedding_request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let vertex_response: VertexAIEmbeddingResponse = response.json().await?;
+        let vertex_response: VertexAIEmbeddingResponse =
+            self.http.post_json(&url, &vertex_embedding_request).await?;
 
         // Convert back to OpenAI format
         let embedding_response = EmbeddingResponse {
@@ -371,41 +340,24 @@ impl Provider for GoogleVertexAIProvider {
             "{}/locations/{}/publishers/google/models",
             self.base_url, self.location
         );
-        let headers = self.build_headers();
-
-        let response = self.client.get(&url).headers(headers).send().await;
+        let response = self.http.get_json::<serde_json::Value>(&url).await;
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
         match response {
-            Ok(resp) if resp.status().is_success() => Ok(ProviderHealth {
+            Ok(_) => Ok(ProviderHealth {
                 status: HealthStatus::Healthy,
                 latency_ms: Some(latency_ms),
                 error_rate: 0.0,
                 last_check: chrono::Utc::now(),
                 details: HashMap::new(),
             }),
-            Ok(resp) => {
-                let mut details = HashMap::new();
-                details.insert(
-                    "status_code".to_string(),
-                    resp.status().as_u16().to_string(),
-                );
-
-                Ok(ProviderHealth {
-                    status: HealthStatus::Degraded,
-                    latency_ms: Some(latency_ms),
-                    error_rate: 1.0,
-                    last_check: chrono::Utc::now(),
-                    details,
-                })
-            }
             Err(e) => {
                 let mut details = HashMap::new();
                 details.insert("error".to_string(), e.to_string());
 
                 Ok(ProviderHealth {
-                    status: HealthStatus::Unhealthy,
+                    status: HealthStatus::Degraded,
                     latency_ms: Some(latency_ms),
                     error_rate: 1.0,
                     last_check: chrono::Utc::now(),

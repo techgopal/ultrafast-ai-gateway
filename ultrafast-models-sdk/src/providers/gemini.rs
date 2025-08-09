@@ -1,3 +1,4 @@
+use super::http_client::{map_error_response, AuthStrategy, HttpProviderClient};
 use crate::error::ProviderError;
 use crate::models::{
     AudioRequest, AudioResponse, ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse,
@@ -5,55 +6,30 @@ use crate::models::{
 };
 use crate::providers::{HealthStatus, Provider, ProviderConfig, ProviderHealth, StreamResult};
 use async_stream::stream;
-use reqwest::Client;
 use std::collections::HashMap;
 use std::time::Instant;
 // use futures::StreamExt;
 
 pub struct GeminiProvider {
-    client: Client,
+    http: HttpProviderClient,
     config: ProviderConfig,
-    base_url: String,
 }
 
 impl GeminiProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, ProviderError> {
-        let client = Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(|e| ProviderError::Configuration {
-                message: format!("Failed to create HTTP client: {e}"),
-            })?;
+        // Gemini uses API key in header x-goog-api-key; use Header auth
+        let http = HttpProviderClient::new(
+            config.timeout,
+            config.base_url.clone(),
+            "https://generativelanguage.googleapis.com/v1beta",
+            &config.headers,
+            AuthStrategy::Header {
+                name: "x-goog-api-key".to_string(),
+                value: config.api_key.clone(),
+            },
+        )?;
 
-        let base_url = config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string());
-
-        Ok(Self {
-            client,
-            config,
-            base_url,
-        })
-    }
-
-    fn build_headers(&self) -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
-
-        headers.insert("Content-Type", "application/json".parse().unwrap());
-
-        // Add API key if provided
-        headers.insert("x-goog-api-key", self.config.api_key.parse().unwrap());
-
-        for (key, value) in &self.config.headers {
-            if let (Ok(header_name), Ok(header_value)) =
-                (key.parse::<reqwest::header::HeaderName>(), value.parse())
-            {
-                headers.insert(header_name, header_value);
-            }
-        }
-
-        headers
+        Ok(Self { http, config })
     }
 
     fn map_model(&self, model: &str) -> String {
@@ -64,42 +40,7 @@ impl GeminiProvider {
             .unwrap_or_else(|| model.to_string())
     }
 
-    async fn handle_error_response(&self, response: reqwest::Response) -> ProviderError {
-        let status = response.status();
-
-        match response.text().await {
-            Ok(body) => {
-                if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body) {
-                    let message = error_json
-                        .get("error")
-                        .and_then(|e| e.get("message"))
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("Unknown API error")
-                        .to_string();
-
-                    match status.as_u16() {
-                        404 => ProviderError::ModelNotFound {
-                            model: "unknown".to_string(),
-                        },
-                        500 => ProviderError::ServiceUnavailable,
-                        _ => ProviderError::Api {
-                            code: status.as_u16(),
-                            message,
-                        },
-                    }
-                } else {
-                    ProviderError::Api {
-                        code: status.as_u16(),
-                        message: body,
-                    }
-                }
-            }
-            Err(_) => ProviderError::Api {
-                code: status.as_u16(),
-                message: "Failed to read error response".to_string(),
-            },
-        }
-    }
+    // Use shared map_error_response
 }
 
 #[async_trait::async_trait]
@@ -129,25 +70,11 @@ impl Provider for GeminiProvider {
 
     async fn chat_completion(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
         let model = self.map_model(&request.model);
-        let url = format!("{}/models/{}:generateContent", self.base_url, model);
-        let headers = self.build_headers();
+        let path = format!("/models/{model}:generateContent");
 
         // Convert OpenAI format to Gemini format
         let gemini_request = self.convert_to_gemini_format(request);
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&gemini_request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let gemini_response: GeminiResponse = response.json().await?;
+        let gemini_response: GeminiResponse = self.http.post_json(&path, &gemini_request).await?;
         let chat_response = self.convert_from_gemini_format(gemini_response);
         Ok(chat_response)
     }
@@ -157,22 +84,13 @@ impl Provider for GeminiProvider {
         request: ChatRequest,
     ) -> Result<StreamResult, ProviderError> {
         let model = self.map_model(&request.model);
-        let url = format!("{}/models/{}:streamGenerateContent", self.base_url, model);
-        let headers = self.build_headers();
+        let path = format!("/models/{model}:streamGenerateContent");
 
         // Convert to Gemini streaming format
         let gemini_request = self.convert_to_gemini_format(request);
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&gemini_request)
-            .send()
-            .await?;
-
+        let response = self.http.post_json_raw(&path, &gemini_request).await?;
         if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
+            return Err(map_error_response(response).await);
         }
 
         let stream = Box::pin(stream! {
@@ -247,25 +165,12 @@ impl Provider for GeminiProvider {
         request: EmbeddingRequest,
     ) -> Result<EmbeddingResponse, ProviderError> {
         let model = self.map_model(&request.model);
-        let url = format!("{}/models/{}:embedContent", self.base_url, model);
-        let headers = self.build_headers();
+        let path = format!("/models/{model}:embedContent");
 
         // Convert to Gemini embedding format
         let gemini_request = self.convert_to_gemini_embedding_format(request);
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&gemini_request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let gemini_response: GeminiEmbeddingResponse = response.json().await?;
+        let gemini_response: GeminiEmbeddingResponse =
+            self.http.post_json(&path, &gemini_request).await?;
         let embedding_response = self.convert_from_gemini_embedding_format(gemini_response);
         Ok(embedding_response)
     }
@@ -301,28 +206,28 @@ impl Provider for GeminiProvider {
         let start = Instant::now();
 
         // Try to list models as a health check
-        let url = format!("{}/models", self.base_url);
-        let headers = self.build_headers();
-
-        let response = self.client.get(&url).headers(headers).send().await?;
-
+        let result = self.http.get_json::<serde_json::Value>("/models").await;
         let latency = start.elapsed();
-        let is_healthy = response.status().is_success();
-
-        let mut details = HashMap::new();
-        details.insert("status".to_string(), response.status().to_string());
-
-        Ok(ProviderHealth {
-            status: if is_healthy {
-                HealthStatus::Healthy
-            } else {
-                HealthStatus::Unhealthy
-            },
-            latency_ms: Some(latency.as_millis() as u64),
-            error_rate: if is_healthy { 0.0 } else { 1.0 },
-            last_check: chrono::Utc::now(),
-            details,
-        })
+        match result {
+            Ok(_) => Ok(ProviderHealth {
+                status: HealthStatus::Healthy,
+                latency_ms: Some(latency.as_millis() as u64),
+                error_rate: 0.0,
+                last_check: chrono::Utc::now(),
+                details: HashMap::new(),
+            }),
+            Err(e) => {
+                let mut details = HashMap::new();
+                details.insert("error".to_string(), e.to_string());
+                Ok(ProviderHealth {
+                    status: HealthStatus::Degraded,
+                    latency_ms: Some(latency.as_millis() as u64),
+                    error_rate: 1.0,
+                    last_check: chrono::Utc::now(),
+                    details,
+                })
+            }
+        }
     }
 }
 

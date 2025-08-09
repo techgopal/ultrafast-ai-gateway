@@ -127,6 +127,7 @@ use uuid::Uuid;
 // pub mod rate_limiting; // DEPRECATED: Use auth middleware rate limiting instead
 pub mod content_filtering;
 pub mod cost_tracking;
+pub mod input_validation;
 pub mod logging;
 
 /// Plugin lifecycle states.
@@ -257,6 +258,8 @@ pub enum Plugin {
     ContentFiltering(content_filtering::ContentFilteringPlugin),
     /// Enhanced logging plugin for custom logging functionality
     Logging(logging::LoggingPlugin),
+    /// Lightweight input validation plugin
+    InputValidation(input_validation::InputValidationPlugin),
 }
 
 impl Plugin {
@@ -292,6 +295,16 @@ impl Plugin {
                 priority: 20, // Lower priority
                 last_error: None,
             },
+            Plugin::InputValidation(_) => PluginMetadata {
+                id: Uuid::new_v4().to_string(),
+                name: "input_validation".to_string(),
+                version: "1.0.0".to_string(),
+                enabled: true,
+                state: PluginState::Inactive,
+                dependencies: vec![],
+                priority: 4, // before content filtering
+                last_error: None,
+            },
         }
     }
 
@@ -300,6 +313,7 @@ impl Plugin {
             Plugin::CostTracking(_) => "cost_tracking",
             Plugin::ContentFiltering(_) => "content_filtering",
             Plugin::Logging(_) => "logging",
+            Plugin::InputValidation(_) => "input_validation",
         }
     }
 
@@ -308,6 +322,7 @@ impl Plugin {
             Plugin::CostTracking(p) => p.enabled(),
             Plugin::ContentFiltering(p) => p.enabled(),
             Plugin::Logging(p) => p.enabled(),
+            Plugin::InputValidation(p) => p.enabled(),
         }
     }
 
@@ -322,6 +337,7 @@ impl Plugin {
             Plugin::CostTracking(p) => p.before_request(request).await,
             Plugin::ContentFiltering(p) => p.before_request(request).await,
             Plugin::Logging(p) => p.before_request(request).await,
+            Plugin::InputValidation(p) => p.before_request(request).await,
         }
     }
 
@@ -330,6 +346,7 @@ impl Plugin {
             Plugin::CostTracking(p) => p.after_response(response).await,
             Plugin::ContentFiltering(p) => p.after_response(response).await,
             Plugin::Logging(p) => p.after_response(response).await,
+            Plugin::InputValidation(p) => p.after_response(response).await,
         }
     }
 
@@ -338,6 +355,7 @@ impl Plugin {
             Plugin::CostTracking(p) => p.on_error(error).await,
             Plugin::ContentFiltering(p) => p.on_error(error).await,
             Plugin::Logging(p) => p.on_error(error).await,
+            Plugin::InputValidation(p) => p.on_error(error).await,
         }
     }
 }
@@ -439,6 +457,7 @@ impl PluginManager {
             order.sort_by_key(|name| {
                 // Get priority from plugins map (this is a simplified approach)
                 match name.as_str() {
+                    "input_validation" => 4,
                     "content_filtering" => 5,
                     "cost_tracking" => 10,
                     "logging" => 20,
@@ -547,6 +566,7 @@ impl Clone for Plugin {
             Plugin::CostTracking(p) => Plugin::CostTracking(p.clone()),
             Plugin::ContentFiltering(p) => Plugin::ContentFiltering(p.clone()),
             Plugin::Logging(p) => Plugin::Logging(p.clone()),
+            Plugin::InputValidation(p) => Plugin::InputValidation(p.clone()),
         }
     }
 }
@@ -566,6 +586,15 @@ pub fn create_plugin(config: &PluginConfig) -> Result<Plugin, GatewayError> {
             content_filtering::ContentFilteringPlugin::new(config)?,
         )),
         "logging" => Ok(Plugin::Logging(logging::LoggingPlugin::new(config)?)),
+        "input_validation" => Ok(Plugin::InputValidation(
+            crate::plugins::input_validation::build_input_validation_plugin(
+                config
+                    .config
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true),
+            ),
+        )),
         _ => Err(GatewayError::Config {
             message: format!("Unknown plugin: {}", config.name),
         }),
