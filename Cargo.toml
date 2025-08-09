@@ -10,7 +10,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["Ultrafast Gateway Contributors"]
-repository = "https://github.com/ultrafast-ai/ultrafast-gateway"
+repository = "https://github.com/techgopal/ultrafast-ai-gateway"
 keywords = ["ai", "llm", "gateway", "sdk", "api"]
 categories = ["api-bindings", "web-programming::http-server"]
 

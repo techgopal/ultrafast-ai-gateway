@@ -56,6 +56,14 @@
 - **Least Used**: Route to least busy provider
 - **Lowest Latency**: Route to fastest provider
 
+## 🖥️ Dashboard
+
+Below is a preview of the built-in monitoring dashboard showing live metrics, costs, and provider breakdowns.
+
+![Ultrafast Gateway Dashboard](./docs/images/dashboard.png)
+
+> Tip: Open the dashboard at `/dashboard` when the gateway is running.
+
 ## 🚀 Quick Start
 
 ### Installation
@@ -442,100 +450,6 @@ curl http://localhost:3000/admin/providers
 
 # Get configuration
 curl http://localhost:3000/admin/config
-```
-
-## 🐳 Deployment
-
-### Docker Deployment
-
-```dockerfile
-FROM rust:1.75 as builder
-WORKDIR /app
-COPY . .
-RUN cargo build --release
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/ultrafast-gateway /usr/local/bin/
-COPY config.toml /etc/ultrafast-gateway/config.toml
-
-EXPOSE 3000
-CMD ["ultrafast-gateway", "--config", "/etc/ultrafast-gateway/config.toml"]
-```
-
-```bash
-# Build and run
-docker build -t ultrafast-gateway .
-docker run -p 3000:3000 \
-  -e OPENAI_API_KEY="sk-your-key" \
-  -e ANTHROPIC_API_KEY="sk-ant-your-key" \
-  ultrafast-gateway
-```
-
-### Kubernetes Deployment
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ultrafast-gateway
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: ultrafast-gateway
-  template:
-    metadata:
-      labels:
-        app: ultrafast-gateway
-    spec:
-      containers:
-      - name: gateway
-        image: ultrafast-gateway:latest
-        ports:
-        - containerPort: 3000
-        env:
-        - name: OPENAI_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: api-keys
-              key: openai
-        - name: ANTHROPIC_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: api-keys
-              key: anthropic
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 3000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 3000
-          initialDelaySeconds: 5
-          periodSeconds: 5
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ultrafast-gateway
-spec:
-  selector:
-    app: ultrafast-gateway
-  ports:
-  - port: 80
-    targetPort: 3000
-  type: LoadBalancer
 ```
 
 
