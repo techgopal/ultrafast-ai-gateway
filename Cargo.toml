@@ -8,7 +8,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 authors = ["Ultrafast Gateway Contributors"]
 repository = "https://github.com/ultrafast-ai/ultrafast-gateway"
 keywords = ["ai", "llm", "gateway", "sdk", "api"]
