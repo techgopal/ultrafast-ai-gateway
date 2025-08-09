@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 0.1.0) used when manually dispatching'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -44,11 +50,15 @@ jobs:
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
 
-      - name: Extract version from tag
+      - name: Extract version
         id: version
         shell: bash
         run: |
           ver="${GITHUB_REF_NAME#v}"
+          if [ -z "$ver" ] || [ "$ver" = "$GITHUB_REF_NAME" ]; then
+            ver="${{ github.event.inputs.version }}"
+          fi
+          ver="${ver#v}"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "Release version: $ver"
 
@@ -72,9 +82,11 @@ jobs:
 
       - name: Check for crates.io token
         id: tokencheck
+        env:
+          TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         shell: bash
         run: |
-          if [ -z "${{ secrets.CRATES_IO_TOKEN }}" ]; then
+          if [ -z "$TOKEN" ]; then
             echo "has_token=false" >> "$GITHUB_OUTPUT"
           else
             echo "has_token=true" >> "$GITHUB_OUTPUT"
@@ -131,11 +143,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from tag
+      - name: Extract version
         id: version
         shell: bash
         run: |
           ver="${GITHUB_REF_NAME#v}"
+          if [ -z "$ver" ] || [ "$ver" = "$GITHUB_REF_NAME" ]; then
+            ver="${{ github.event.inputs.version }}"
+          fi
+          ver="${ver#v}"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
