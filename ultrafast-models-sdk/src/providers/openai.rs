@@ -6,57 +6,27 @@ use crate::models::{
 use crate::providers::{HealthStatus, Provider, ProviderConfig, ProviderHealth, StreamResult};
 use async_stream::stream;
 
-use reqwest::Client;
+use super::http_client::{AuthStrategy, HttpProviderClient, map_error_response};
 
 use std::collections::HashMap;
 use std::time::Instant;
 
 pub struct OpenAIProvider {
-    client: Client,
+    client: HttpProviderClient,
     config: ProviderConfig,
-    base_url: String,
 }
 
 impl OpenAIProvider {
     pub fn new(config: ProviderConfig) -> Result<Self, ProviderError> {
-        let client = Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(|e| ProviderError::Configuration {
-                message: format!("Failed to create HTTP client: {e}"),
-            })?;
+        let client = HttpProviderClient::new(
+            config.timeout,
+            config.base_url.clone(),
+            "https://api.openai.com/v1",
+            &config.headers,
+            AuthStrategy::Bearer { token: config.api_key.clone() },
+        )?;
 
-        let base_url = config
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-
-        Ok(Self {
-            client,
-            config,
-            base_url,
-        })
-    }
-
-    fn build_headers(&self) -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
-
-        headers.insert(
-            "Authorization",
-            format!("Bearer {}", self.config.api_key).parse().unwrap(),
-        );
-
-        headers.insert("Content-Type", "application/json".parse().unwrap());
-
-        for (key, value) in &self.config.headers {
-            if let (Ok(header_name), Ok(header_value)) =
-                (key.parse::<reqwest::header::HeaderName>(), value.parse())
-            {
-                headers.insert(header_name, header_value);
-            }
-        }
-
-        headers
+        Ok(Self { client, config })
     }
 
     fn map_model(&self, model: &str) -> String {
@@ -65,44 +35,6 @@ impl OpenAIProvider {
             .get(model)
             .cloned()
             .unwrap_or_else(|| model.to_string())
-    }
-
-    async fn handle_error_response(&self, response: reqwest::Response) -> ProviderError {
-        let status = response.status();
-
-        match response.text().await {
-            Ok(body) => {
-                if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&body) {
-                    let message = error_json
-                        .get("error")
-                        .and_then(|e| e.get("message"))
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("Unknown API error")
-                        .to_string();
-
-                    match status.as_u16() {
-                        401 => ProviderError::InvalidApiKey,
-                        404 => ProviderError::ModelNotFound {
-                            model: "unknown".to_string(),
-                        },
-                        429 => ProviderError::RateLimit,
-                        _ => ProviderError::Api {
-                            code: status.as_u16(),
-                            message,
-                        },
-                    }
-                } else {
-                    ProviderError::Api {
-                        code: status.as_u16(),
-                        message: body,
-                    }
-                }
-            }
-            Err(_) => ProviderError::Api {
-                code: status.as_u16(),
-                message: "Failed to read error response".to_string(),
-            },
-        }
     }
 }
 
@@ -144,22 +76,10 @@ impl Provider for OpenAIProvider {
     ) -> Result<ChatResponse, ProviderError> {
         request.model = self.map_model(&request.model);
 
-        let url = format!("{}/chat/completions", self.base_url);
-        let headers = self.build_headers();
-
-        let response = self
+        let chat_response: ChatResponse = self
             .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
+            .post_json("/chat/completions", &request)
             .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let chat_response: ChatResponse = response.json().await?;
         Ok(chat_response)
     }
 
@@ -170,20 +90,8 @@ impl Provider for OpenAIProvider {
         request.model = self.map_model(&request.model);
         request.stream = Some(true);
 
-        let url = format!("{}/chat/completions", self.base_url);
-        let headers = self.build_headers();
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
+        let response = self.client.post_json_raw("/chat/completions", &request).await?;
+        if !response.status().is_success() { return Err(map_error_response(response).await); }
 
         let stream = Box::pin(stream! {
             let mut bytes_stream = response.bytes_stream();
@@ -225,22 +133,10 @@ impl Provider for OpenAIProvider {
     ) -> Result<EmbeddingResponse, ProviderError> {
         request.model = self.map_model(&request.model);
 
-        let url = format!("{}/embeddings", self.base_url);
-        let headers = self.build_headers();
-
-        let response = self
+        let embedding_response: EmbeddingResponse = self
             .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
+            .post_json("/embeddings", &request)
             .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let embedding_response: EmbeddingResponse = response.json().await?;
         Ok(embedding_response)
     }
 
@@ -252,22 +148,10 @@ impl Provider for OpenAIProvider {
             request.model = Some(self.map_model(model));
         }
 
-        let url = format!("{}/images/generations", self.base_url);
-        let headers = self.build_headers();
-
-        let response = self
+        let image_response: ImageResponse = self
             .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
+            .post_json("/images/generations", &request)
             .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let image_response: ImageResponse = response.json().await?;
         Ok(image_response)
     }
 
@@ -276,9 +160,6 @@ impl Provider for OpenAIProvider {
         mut request: AudioRequest,
     ) -> Result<AudioResponse, ProviderError> {
         request.model = self.map_model(&request.model);
-
-        let url = format!("{}/audio/transcriptions", self.base_url);
-        let headers = self.build_headers();
 
         let form = reqwest::multipart::Form::new()
             .part(
@@ -301,20 +182,9 @@ impl Provider for OpenAIProvider {
             form
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .multipart(form)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
-
-        let audio_response: AudioResponse = response.json().await?;
-        Ok(audio_response)
+        let response = self.client.post_multipart("/audio/transcriptions", form).await?;
+        if !response.status().is_success() { return Err(map_error_response(response).await); }
+        let audio_response: AudioResponse = response.json().await?; Ok(audio_response)
     }
 
     async fn text_to_speech(
@@ -323,20 +193,8 @@ impl Provider for OpenAIProvider {
     ) -> Result<SpeechResponse, ProviderError> {
         request.model = self.map_model(&request.model);
 
-        let url = format!("{}/audio/speech", self.base_url);
-        let headers = self.build_headers();
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(self.handle_error_response(response).await);
-        }
+        let response = self.client.post_json_raw("/audio/speech", &request).await?;
+        if !response.status().is_success() { return Err(map_error_response(response).await); }
 
         let content_type = response
             .headers()
@@ -356,42 +214,24 @@ impl Provider for OpenAIProvider {
     async fn health_check(&self) -> Result<ProviderHealth, ProviderError> {
         let start = Instant::now();
 
-        let url = format!("{}/models", self.base_url);
-        let headers = self.build_headers();
-
-        let response = self.client.get(&url).headers(headers).send().await;
+        let response = self.client.get_json::<serde_json::Value>("/models").await;
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
         match response {
-            Ok(resp) if resp.status().is_success() => Ok(ProviderHealth {
+            Ok(_json) => Ok(ProviderHealth {
                 status: HealthStatus::Healthy,
                 latency_ms: Some(latency_ms),
                 error_rate: 0.0,
                 last_check: chrono::Utc::now(),
                 details: HashMap::new(),
             }),
-            Ok(resp) => {
-                let mut details = HashMap::new();
-                details.insert(
-                    "status_code".to_string(),
-                    resp.status().as_u16().to_string(),
-                );
-
-                Ok(ProviderHealth {
-                    status: HealthStatus::Degraded,
-                    latency_ms: Some(latency_ms),
-                    error_rate: 1.0,
-                    last_check: chrono::Utc::now(),
-                    details,
-                })
-            }
             Err(e) => {
                 let mut details = HashMap::new();
                 details.insert("error".to_string(), e.to_string());
 
                 Ok(ProviderHealth {
-                    status: HealthStatus::Unhealthy,
+                    status: HealthStatus::Degraded,
                     latency_ms: Some(latency_ms),
                     error_rate: 1.0,
                     last_check: chrono::Utc::now(),

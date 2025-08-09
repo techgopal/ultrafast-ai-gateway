@@ -201,6 +201,7 @@ pub mod anthropic;
 pub mod azure;
 pub mod circuit_breaker_provider;
 pub mod cohere;
+pub mod http_client;
 pub mod custom;
 pub mod gemini;
 pub mod google;
@@ -210,39 +211,8 @@ pub mod ollama;
 pub mod openai;
 pub mod perplexity;
 
-/// Duration serialization/deserialization utilities.
-///
-/// This module provides utilities for serializing and deserializing
-/// `Duration` values in configuration files and API responses.
-mod duration_serde {
-    use super::*;
-
-    /// Serialize a Duration to milliseconds.
-    ///
-    /// Converts a Duration to milliseconds for JSON serialization.
-    #[allow(dead_code)]
-    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let seconds = duration.as_secs();
-        let millis = duration.subsec_millis();
-        let total_millis = seconds * 1000 + millis as u64;
-        serializer.serialize_u64(total_millis)
-    }
-
-    /// Deserialize a Duration from milliseconds.
-    ///
-    /// Converts milliseconds back to a Duration for JSON deserialization.
-    #[allow(dead_code)]
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let millis = u64::deserialize(deserializer)?;
-        Ok(Duration::from_millis(millis))
-    }
-}
+// Use the canonical duration serde helpers from the common module
+use crate::common::duration_serde;
 
 /// Type alias for streaming response results.
 ///
