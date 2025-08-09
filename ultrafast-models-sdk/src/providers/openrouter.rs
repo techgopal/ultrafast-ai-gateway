@@ -127,9 +127,20 @@ impl Provider for OpenRouterProvider {
         mut request: EmbeddingRequest,
     ) -> Result<EmbeddingResponse, ProviderError> {
         request.model = self.map_model(&request.model);
-        let embedding_response: EmbeddingResponse =
-            self.client.post_json("/embeddings", &request).await?;
-        Ok(embedding_response)
+        // OpenRouter expects OpenAI-style embeddings endpoint, but some upstream models may not support it
+        let resp = self.client.post_json_raw("/embeddings", &request).await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(map_error_response(resp).await);
+        }
+        let text = resp.text().await?;
+        match serde_json::from_str::<EmbeddingResponse>(&text) {
+            Ok(er) => Ok(er),
+            Err(_) => Err(ProviderError::Api {
+                code: status.as_u16(),
+                message: text,
+            }),
+        }
     }
 
     async fn image_generation(
@@ -140,11 +151,29 @@ impl Provider for OpenRouterProvider {
             request.model = Some(self.map_model(model));
         }
 
-        let image_response: ImageResponse = self
+        // Fall back to 405 mapping if not supported
+        let resp = self
             .client
-            .post_json("/images/generations", &request)
+            .post_json_raw("/images/generations", &request)
             .await?;
-        Ok(image_response)
+        if resp.status().as_u16() == 405 {
+            return Err(ProviderError::Configuration {
+                message: "Image generation not supported by OpenRouter for selected model"
+                    .to_string(),
+            });
+        }
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(map_error_response(resp).await);
+        }
+        let text = resp.text().await?;
+        match serde_json::from_str::<ImageResponse>(&text) {
+            Ok(er) => Ok(er),
+            Err(_) => Err(ProviderError::Api {
+                code: status.as_u16(),
+                message: text,
+            }),
+        }
     }
 
     async fn audio_transcription(
