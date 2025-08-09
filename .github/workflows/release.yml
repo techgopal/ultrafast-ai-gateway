@@ -83,7 +83,7 @@ jobs:
       - name: Check for crates.io token
         id: tokencheck
         env:
-          TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CRATES_IO_TOKEN }}
         shell: bash
         run: |
           if [ -z "$TOKEN" ]; then
@@ -95,7 +95,7 @@ jobs:
       - name: Publish ultrafast-models-sdk
         if: steps.tokencheck.outputs.has_token == 'true'
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CRATES_IO_TOKEN }}
         run: |
           cargo publish -p ultrafast-models-sdk
 
@@ -115,7 +115,7 @@ jobs:
       - name: Publish ultrafast-gateway
         if: steps.tokencheck.outputs.has_token == 'true'
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CRATES_IO_TOKEN }}
         run: |
           cargo publish -p ultrafast-gateway
 
