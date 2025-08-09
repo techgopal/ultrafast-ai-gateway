@@ -1564,6 +1564,11 @@ impl StandaloneClientBuilder {
         self.with_provider("perplexity", config)
     }
 
+    pub fn with_openrouter(self, api_key: impl Into<String>) -> Self {
+        let config = ProviderConfig::new("openrouter", api_key);
+        self.with_provider("openrouter", config)
+    }
+
     pub fn with_ollama(self, base_url: impl Into<String>) -> Self {
         let mut config = ProviderConfig::new("ollama", "");
         config.base_url = Some(base_url.into());

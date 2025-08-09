@@ -209,6 +209,7 @@ pub mod http_client;
 pub mod mistral;
 pub mod ollama;
 pub mod openai;
+pub mod openrouter;
 pub mod perplexity;
 
 // Use the canonical duration serde helpers from the common module (keep import if used in this module)
@@ -804,6 +805,10 @@ pub fn create_provider(config: ProviderConfig) -> Result<Box<dyn Provider>, Prov
         }
         "ollama" => {
             let provider = ollama::OllamaProvider::new(config)?;
+            Ok(Box::new(provider))
+        }
+        "openrouter" => {
+            let provider = openrouter::OpenRouterProvider::new(config)?;
             Ok(Box::new(provider))
         }
         "custom" => {
