@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy workspace files
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml ./
 COPY ultrafast-gateway/Cargo.toml ultrafast-gateway/
 COPY ultrafast-models-sdk/Cargo.toml ultrafast-models-sdk/
 
