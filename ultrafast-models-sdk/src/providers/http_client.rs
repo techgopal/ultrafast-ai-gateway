@@ -27,24 +27,23 @@ impl HttpProviderClient {
         headers: &HashMap<String, String>,
         auth: AuthStrategy,
     ) -> Result<Self, ProviderError> {
-        let http = Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| ProviderError::Configuration {
+        let http = Client::builder().timeout(timeout).build().map_err(|e| {
+            ProviderError::Configuration {
                 message: format!("Failed to create HTTP client: {e}"),
-            })?;
+            }
+        })?;
 
         let mut default_headers = HeaderMap::new();
 
         match auth {
             AuthStrategy::Bearer { token } => {
-                default_headers.insert(
-                    "Authorization",
-                    format!("Bearer {token}").parse().unwrap(),
-                );
+                default_headers.insert("Authorization", format!("Bearer {token}").parse().unwrap());
             }
             AuthStrategy::Header { name, value } => {
-                if let (Ok(name), Ok(value)) = (name.parse(), value.parse()) {
+            if let (Ok(name), Ok(value)) = (
+                name.parse::<reqwest::header::HeaderName>(),
+                value.parse(),
+            ) {
                     default_headers.insert(name, value);
                 }
             }
@@ -52,7 +51,10 @@ impl HttpProviderClient {
         }
 
         for (k, v) in headers {
-            if let (Ok(name), Ok(value)) = (k.parse(), v.parse()) {
+            if let (Ok(name), Ok(value)) = (
+                k.parse::<reqwest::header::HeaderName>(),
+                v.parse(),
+            ) {
                 default_headers.insert(name, value);
             }
         }
@@ -67,7 +69,7 @@ impl HttpProviderClient {
     }
 
     fn build_url(&self, path: &str) -> String {
-        if path.starts_with("/") {
+        if path.starts_with('/') {
             format!("{}{}", self.base_url, path)
         } else {
             format!("{}/{}", self.base_url.trim_end_matches('/'), path)
@@ -176,5 +178,3 @@ pub async fn map_error_response(resp: Response) -> ProviderError {
         },
     }
 }
-
-

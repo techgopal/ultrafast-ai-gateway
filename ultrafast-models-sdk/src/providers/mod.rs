@@ -189,7 +189,7 @@ use crate::models::{
     ImageRequest, ImageResponse, SpeechRequest, SpeechResponse, StreamChunk,
 };
 use futures::Stream;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -201,17 +201,18 @@ pub mod anthropic;
 pub mod azure;
 pub mod circuit_breaker_provider;
 pub mod cohere;
-pub mod http_client;
 pub mod custom;
 pub mod gemini;
 pub mod google;
 pub mod groq;
+pub mod http_client;
 pub mod mistral;
 pub mod ollama;
 pub mod openai;
 pub mod perplexity;
 
-// Use the canonical duration serde helpers from the common module
+// Use the canonical duration serde helpers from the common module (keep import if used in this module)
+#[allow(unused_imports)]
 use crate::common::duration_serde;
 
 /// Type alias for streaming response results.

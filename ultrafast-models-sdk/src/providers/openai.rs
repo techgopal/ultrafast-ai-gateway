@@ -6,7 +6,7 @@ use crate::models::{
 use crate::providers::{HealthStatus, Provider, ProviderConfig, ProviderHealth, StreamResult};
 use async_stream::stream;
 
-use super::http_client::{AuthStrategy, HttpProviderClient, map_error_response};
+use super::http_client::{map_error_response, AuthStrategy, HttpProviderClient};
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -23,7 +23,9 @@ impl OpenAIProvider {
             config.base_url.clone(),
             "https://api.openai.com/v1",
             &config.headers,
-            AuthStrategy::Bearer { token: config.api_key.clone() },
+            AuthStrategy::Bearer {
+                token: config.api_key.clone(),
+            },
         )?;
 
         Ok(Self { client, config })
@@ -76,10 +78,8 @@ impl Provider for OpenAIProvider {
     ) -> Result<ChatResponse, ProviderError> {
         request.model = self.map_model(&request.model);
 
-        let chat_response: ChatResponse = self
-            .client
-            .post_json("/chat/completions", &request)
-            .await?;
+        let chat_response: ChatResponse =
+            self.client.post_json("/chat/completions", &request).await?;
         Ok(chat_response)
     }
 
@@ -90,8 +90,13 @@ impl Provider for OpenAIProvider {
         request.model = self.map_model(&request.model);
         request.stream = Some(true);
 
-        let response = self.client.post_json_raw("/chat/completions", &request).await?;
-        if !response.status().is_success() { return Err(map_error_response(response).await); }
+        let response = self
+            .client
+            .post_json_raw("/chat/completions", &request)
+            .await?;
+        if !response.status().is_success() {
+            return Err(map_error_response(response).await);
+        }
 
         let stream = Box::pin(stream! {
             let mut bytes_stream = response.bytes_stream();
@@ -133,10 +138,8 @@ impl Provider for OpenAIProvider {
     ) -> Result<EmbeddingResponse, ProviderError> {
         request.model = self.map_model(&request.model);
 
-        let embedding_response: EmbeddingResponse = self
-            .client
-            .post_json("/embeddings", &request)
-            .await?;
+        let embedding_response: EmbeddingResponse =
+            self.client.post_json("/embeddings", &request).await?;
         Ok(embedding_response)
     }
 
@@ -182,9 +185,15 @@ impl Provider for OpenAIProvider {
             form
         };
 
-        let response = self.client.post_multipart("/audio/transcriptions", form).await?;
-        if !response.status().is_success() { return Err(map_error_response(response).await); }
-        let audio_response: AudioResponse = response.json().await?; Ok(audio_response)
+        let response = self
+            .client
+            .post_multipart("/audio/transcriptions", form)
+            .await?;
+        if !response.status().is_success() {
+            return Err(map_error_response(response).await);
+        }
+        let audio_response: AudioResponse = response.json().await?;
+        Ok(audio_response)
     }
 
     async fn text_to_speech(
@@ -194,7 +203,9 @@ impl Provider for OpenAIProvider {
         request.model = self.map_model(&request.model);
 
         let response = self.client.post_json_raw("/audio/speech", &request).await?;
-        if !response.status().is_success() { return Err(map_error_response(response).await); }
+        if !response.status().is_success() {
+            return Err(map_error_response(response).await);
+        }
 
         let content_type = response
             .headers()

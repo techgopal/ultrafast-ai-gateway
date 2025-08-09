@@ -242,6 +242,7 @@ pub enum ClientMode {
 ///
 /// let response = client.chat_completion(request).await?;
 /// ```
+#[allow(dead_code)]
 pub struct UltrafastClient {
     /// Client operation mode (standalone or gateway)
     mode: ClientMode,
