@@ -59,7 +59,60 @@ WORKDIR /app
 COPY --from=builder /app/target/release/ultrafast-gateway /app/ultrafast-gateway
 
 # Copy configuration files
-COPY config.toml /app/config.toml
+RUN echo '[server]' > /app/config.toml && \
+    echo 'host = "0.0.0.0"' >> /app/config.toml && \
+    echo 'port = 3000' >> /app/config.toml && \
+    echo 'timeout = "30s"' >> /app/config.toml && \
+    echo 'max_body_size = 10485760' >> /app/config.toml && \
+    echo 'cors = { enabled = true, allowed_origins = ["*"], allowed_methods = ["GET", "POST", "PUT", "DELETE"], allowed_headers = ["*"] }' >> /app/config.toml && \
+    echo '' >> /app/config.toml && \
+    echo 'development_mode = true' >> /app/config.toml && \
+    echo '' >> /app/config.toml && \
+    echo '[providers.ollama]' >> /app/config.toml && \
+    echo 'name = "ollama"' >> /app/config.toml && \
+    echo 'api_key = ""' >> /app/config.toml && \
+    echo 'base_url = "http://localhost:11434"' >> /app/config.toml && \
+    echo 'timeout = "30s"' >> /app/config.toml && \
+    echo 'max_retries = 3' >> /app/config.toml && \
+    echo 'retry_delay = "1s"' >> /app/config.toml && \
+    echo 'enabled = true' >> /app/config.toml && \
+    echo 'model_mapping = {}' >> /app/config.toml && \
+    echo 'headers = {}' >> /app/config.toml && \
+    echo '' >> /app/config.toml && \
+    echo '[routing]' >> /app/config.toml && \
+    echo 'strategy = { Single = {} }' >> /app/config.toml && \
+    echo 'health_check_interval = "30s"' >> /app/config.toml && \
+    echo 'failover_threshold = 0.8' >> /app/config.toml && \
+    echo '' >> /app/config.toml && \
+    echo '[auth]' >> /app/config.toml && \
+    echo 'enabled = false' >> /app/config.toml && \
+    echo 'api_keys = []' >> /app/config.toml && \
+    echo 'rate_limiting = { requests_per_minute = 1000, requests_per_hour = 10000, tokens_per_minute = 100000 }' >> /app/config.toml && \
+    echo '' >> /app/config.toml && \
+    echo '[cache]' >> /app/config.toml && \
+    echo 'enabled = true' >> /app/config.toml && \
+    echo 'backend = "Memory"' >> /app/config.toml && \
+    echo 'ttl = "1h"' >> /app/config.toml && \
+    echo 'max_size = 1000' >> /app/config.toml && \
+    echo '' >> /app/config.toml && \
+    echo '[logging]' >> /app/config.toml && \
+    echo 'level = "info"' >> /app/config.toml && \
+    echo 'format = "Pretty"' >> /app/config.toml && \
+    echo 'output = "Stdout"' >> /app/config.toml && \
+    echo '' >> /app/config.toml && \
+    echo '[metrics]' >> /app/config.toml && \
+    echo 'enabled = true' >> /app/config.toml && \
+    echo 'port = 9090' >> /app/config.toml && \
+    echo 'path = "/metrics"' >> /app/config.toml && \
+    echo 'max_requests = 1000' >> /app/config.toml && \
+    echo 'retention_duration = "24h"' >> /app/config.toml && \
+    echo 'cleanup_interval = "1h"' >> /app/config.toml && \
+    echo '' >> /app/config.toml && \
+    echo '[[plugins]]' >> /app/config.toml && \
+    echo 'name = "cost_tracking"' >> /app/config.toml && \
+    echo 'enabled = true' >> /app/config.toml && \
+    echo 'config = { "track_costs" = true }' >> /app/config.toml
+
 COPY configs/ /app/configs/
 
 # Create directories for logs and data

@@ -3,24 +3,6 @@
 .gitignore
 .gitattributes
 
-# Documentation
-README.md
-*.md
-docs/
-DOCKERHUB_SETUP.md
-
-# CI/CD
-.github/
-.github/workflows/
-.github/actions/
-
-# Development files
-.vscode/
-.idea/
-*.swp
-*.swp
-*~
-
 # Rust build artifacts
 target/
 **/target/
@@ -51,35 +33,6 @@ temp/
 *.tmp
 *.temp
 
-# Test files
-tests/
-**/tests/
-**/*_test.rs
-**/*.test.rs
-
-# Benchmark files
-benches/
-**/benches/
-
-# Examples
-examples/
-**/examples/
-
-# Docker
-Dockerfile*
-docker-compose*
-.dockerignore
-
-# Deployment (exclude everything except config files)
-deployment/
-!deployment/config*.toml
-!deployment/env.development
-
-# Monitoring
-monitoring/
-grafana/
-prometheus/
-
 # Cache directories
 .cargo/
 .rustup/
@@ -89,7 +42,3 @@ prometheus/
 .idea/
 *.swp
 *.swp
-
-# OS
-.DS_Store
-Thumbs.db
