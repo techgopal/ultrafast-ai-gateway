@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for Ultrafast Gateway
 # Stage 1: Build stage
-FROM rust:latest AS builder
+FROM rust:1.75-slim AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -11,27 +11,43 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Copy workspace files
+# Copy workspace files first for better caching
 COPY Cargo.toml ./
 COPY ultrafast-gateway/Cargo.toml ultrafast-gateway/
 COPY ultrafast-models-sdk/Cargo.toml ultrafast-models-sdk/
 
-# Copy full source code (no dummy files)
+# Create dummy source files for dependency resolution
+RUN mkdir -p ultrafast-gateway/src ultrafast-models-sdk/src && \
+    echo "fn main() {}" > ultrafast-gateway/src/main.rs && \
+    echo "fn main() {}" > ultrafast-models-sdk/src/lib.rs
+
+# Download and cache dependencies
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release -p ultrafast-models-sdk && \
+    cargo build --release -p ultrafast-gateway
+
+# Remove dummy files and copy real source
+RUN rm -rf ultrafast-gateway/src ultrafast-models-sdk/src
 COPY ultrafast-gateway/ ultrafast-gateway/
 COPY ultrafast-models-sdk/ ultrafast-models-sdk/
 
-# Build the application
-RUN cargo build --release -p ultrafast-models-sdk && cargo build --release -p ultrafast-gateway
+# Build the application with real source
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release -p ultrafast-models-sdk && \
+    cargo build --release -p ultrafast-gateway
 
 # Stage 2: Runtime stage
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 # Create non-root user
 RUN groupadd -r gateway && useradd -r -g gateway gateway
@@ -68,15 +84,11 @@ ENV RUST_LOG=info
 ENV RUST_BACKTRACE=1
 ENV DEVELOPMENT_MODE=true
 
-# Labels for metadata
+# Labels for metadata (will be overridden by build args)
 LABEL org.opencontainers.image.title="Ultrafast Gateway"
 LABEL org.opencontainers.image.description="High-performance LLM gateway with advanced routing and caching"
-LABEL org.opencontainers.image.version="0.1.0"
-LABEL org.opencontainers.image.source="https://github.com/techgopal/ultrafast-ai-gateway"
 LABEL org.opencontainers.image.vendor="Ultrafast AI"
 LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.revision="${GITHUB_SHA:-unknown}"
-LABEL org.opencontainers.image.created="${BUILD_DATE:-unknown}"
 LABEL maintainer="techgopal <techgopal2@gmail.com>"
 LABEL description="Ultrafast Gateway - A high-performance AI gateway built in Rust that provides a unified interface to 10+ LLM providers with advanced routing, caching, and monitoring capabilities."
 LABEL usage="docker run -p 3000:3000 -v /path/to/config:/app/config.toml ultrafast-ai-gateway:latest"

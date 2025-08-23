@@ -5,15 +5,36 @@
 
 # Documentation
 README.md
-CHANGELOG.md
 *.md
+docs/
+DOCKERHUB_SETUP.md
 
-# IDE and editor files
+# CI/CD
+.github/
+.github/workflows/
+.github/actions/
+
+# Development files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+
+# Rust build artifacts
+target/
+**/target/
+Cargo.lock
+
+# Logs
+*.log
+logs/
+log/
+
+# Environment files
+.env
+.env.local
+.env.*.local
 
 # OS generated files
 .DS_Store
@@ -24,44 +45,50 @@ CHANGELOG.md
 ehthumbs.db
 Thumbs.db
 
-# Rust build artifacts (but keep Cargo.lock)
-target/
-**/*.rs.bk
-
-# Test and coverage files
-test_reports/
-coverage/
-*.profraw
-
-# Logs
-*.log
-logs/
-
-# Environment files
-.env
-.env.local
-.env.development
-.env.test
-.env.production
-
 # Temporary files
 tmp/
 temp/
 *.tmp
+*.temp
 
-# Docker files (except the one we're using)
-deployment/Dockerfile
-deployment/docker-compose.yml
+# Test files
+tests/
+**/tests/
+**/*_test.rs
+**/*.test.rs
 
-# CI/CD files
-.github/
-.cursorrules
-.claude/
+# Benchmark files
+benches/
+**/benches/
 
-# Development files
-CLAUDE.md
-notes
+# Examples
+examples/
+**/examples/
 
-# Build scripts
-build.sh
-*.sh
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Deployment
+deployment/
+deploy/
+
+# Monitoring
+monitoring/
+grafana/
+prometheus/
+
+# Cache directories
+.cargo/
+.rustup/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
