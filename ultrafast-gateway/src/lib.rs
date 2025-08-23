@@ -221,12 +221,12 @@
 //! [server]
 //! # Use multiple worker threads
 //! worker_threads = 8
-//! 
+//!
 //! [cache]
 //! # Enable Redis for distributed caching
 //! backend = "Redis"
 //! ttl = "6h"
-//! 
+//!
 //! [routing]
 //! # Aggressive health checking for fast failover
 //! health_check_interval = "10s"
