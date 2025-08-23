@@ -59,7 +59,7 @@ WORKDIR /app
 COPY --from=builder /app/target/release/ultrafast-gateway /app/ultrafast-gateway
 
 # Copy configuration files
-COPY deployment/config.dev.toml /app/config.toml
+COPY config.toml /app/config.toml
 COPY configs/ /app/configs/
 
 # Create directories for logs and data

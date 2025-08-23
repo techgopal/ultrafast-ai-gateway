@@ -18,7 +18,7 @@ DOCKERHUB_SETUP.md
 .vscode/
 .idea/
 *.swp
-*.swo
+*.swp
 *~
 
 # Rust build artifacts
@@ -70,9 +70,10 @@ Dockerfile*
 docker-compose*
 .dockerignore
 
-# Deployment
+# Deployment (exclude everything except config files)
 deployment/
-deploy/
+!deployment/config*.toml
+!deployment/env.development
 
 # Monitoring
 monitoring/
@@ -87,7 +88,7 @@ prometheus/
 .vscode/
 .idea/
 *.swp
-*.swo
+*.swp
 
 # OS
 .DS_Store
