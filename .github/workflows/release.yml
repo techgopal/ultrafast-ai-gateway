@@ -112,12 +112,20 @@ jobs:
           sed -i "s#ultrafast-models-sdk = { path = \"../ultrafast-models-sdk\" }#ultrafast-models-sdk = \"$ver\"#" ultrafast-gateway/Cargo.toml
           echo "Updated dependency in ultrafast-gateway/Cargo.toml to version $ver"
 
+      - name: Commit dependency update
+        if: steps.tokencheck.outputs.has_token == 'true'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add ultrafast-gateway/Cargo.toml
+          git commit -m "Update ultrafast-models-sdk dependency to published version ${{ steps.version.outputs.version }}"
+
       - name: Publish ultrafast-gateway
         if: steps.tokencheck.outputs.has_token == 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CRATES_IO_TOKEN }}
         run: |
-          cargo publish -p ultrafast-gateway
+          cargo publish -p ultrafast-gateway --allow-dirty
 
   docker:
     name: Build & Push Docker image (GHCR)
