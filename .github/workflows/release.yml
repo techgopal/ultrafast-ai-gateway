@@ -149,8 +149,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
         with:
           driver-opts: |
-            image=moby/buildkit:v0.12.0
-          buildkitd-flags: --debug
+            image=moby/buildkit:v0.13.0
           platforms: linux/amd64,linux/arm64
 
       - name: Extract version
@@ -207,7 +206,6 @@ jobs:
             type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/ultrafast-ai-gateway:buildcache,mode=max
           provenance: false  # Disable for faster builds
           sbom: false        # Disable for faster builds
-          outputs: type=docker,dest=/tmp/ultrafast-gateway.tar
           labels: |
             org.opencontainers.image.title=Ultrafast Gateway
             org.opencontainers.image.description=High-performance LLM gateway with advanced routing and caching
@@ -219,17 +217,18 @@ jobs:
             org.opencontainers.image.created=${{ steps.timestamp.outputs.iso8601 }}
             maintainer=techgopal <techgopal2@gmail.com>
 
-      - name: Verify image
+      - name: Verify images
         run: |
-          echo "Verifying built image..."
-          docker load --input /tmp/ultrafast-gateway.tar
-          docker images | grep ultrafast-gateway
+          echo "Verifying built images..."
+          echo "GHCR Images:"
+          docker images | grep ghcr.io || echo "No local GHCR images found"
+          echo "Docker Hub Images:"
+          docker images | grep ultrafast-ai-gateway || echo "No local Docker Hub images found"
           echo "Image verification complete"
 
       - name: Cleanup
         run: |
-          echo "Cleaning up temporary files..."
-          rm -f /tmp/ultrafast-gateway.tar
+          echo "Cleaning up Docker system..."
           docker system prune -f
 
 
