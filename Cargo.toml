@@ -6,13 +6,14 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 authors = ["Ultrafast Gateway Contributors"]
 repository = "https://github.com/techgopal/ultrafast-ai-gateway"
 keywords = ["ai", "llm", "gateway", "sdk", "api"]
 categories = ["api-bindings", "web-programming::http-server"]
+description = "High-performance AI gateway built in Rust with unified interface to 10+ LLM providers"
 
 [workspace.dependencies]
 # Core async runtime and utilities
