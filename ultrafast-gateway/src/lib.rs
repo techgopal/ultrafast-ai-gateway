@@ -66,6 +66,8 @@
 //! let response = client.chat_completion(ChatRequest {
 //!     model: "gpt-4".to_string(),
 //!     messages: vec![Message::user("Hello, world!")],
+//!     max_tokens: Some(100),
+//!     temperature: Some(0.7),
 //!     ..Default::default()
 //! }).await?;
 //! ```
@@ -99,29 +101,168 @@
 //!
 //! ## Security
 //!
-//! - Virtual API keys with user isolation
-//! - JWT token-based authentication
-//! - Rate limiting per user/provider
-//! - Request validation and sanitization
-//! - Content filtering with plugin system
+//! The gateway implements enterprise-grade security features:
 //!
-//! ## Monitoring
+//! - **API Key Management**: Virtual API keys with rate limiting
+//! - **JWT Authentication**: Stateless token-based authentication
+//! - **Request Validation**: Comprehensive input sanitization
+//! - **Content Filtering**: Plugin-based content moderation
+//! - **Rate Limiting**: Per-user and per-provider limits
 //!
-//! Built-in metrics and monitoring endpoints:
+//! ## Monitoring & Observability
 //!
-//! - `/health` - Service health check
-//! - `/metrics` - Performance metrics
-//! - `/admin/providers` - Provider status
-//! - `/admin/config` - Configuration status
+//! Built-in monitoring capabilities include:
+//!
+//! - **Real-time Dashboard**: WebSocket-based live metrics
+//! - **Performance Metrics**: Latency, throughput, and error rates
+//! - **Provider Health**: Circuit breaker status and health checks
+//! - **Cost Tracking**: Real-time cost monitoring per provider
+//! - **Logging**: Structured logging with multiple output formats
+//!
+//! ## Examples
+//!
+//! ### Basic Server Setup
+//!
+//! ```rust
+//! use ultrafast_gateway::{create_server, config::Config};
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     // Load configuration from file
+//!     let config = Config::from_file("config.toml")?;
+//!     
+//!     // Create and start the server
+//!     let app = create_server(config).await?;
+//!     
+//!     println!("Gateway server started successfully!");
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### Custom Configuration
+//!
+//! ```rust
+//! use ultrafast_gateway::config::{Config, ServerConfig, ProviderConfig};
+//!
+//! let config = Config {
+//!     server: ServerConfig {
+//!         host: "0.0.0.0".to_string(),
+//!         port: 8080,
+//!         timeout: Duration::from_secs(30),
+//!         ..Default::default()
+//!     },
+//!     providers: HashMap::new(),
+//!     auth: Default::default(),
+//!     cache: Default::default(),
+//!     routing: Default::default(),
+//!     metrics: Default::default(),
+//!     logging: Default::default(),
+//!     plugins: Vec::new(),
+//! };
+//! ```
+//!
+//! ### Plugin System
+//!
+//! ```rust
+//! use ultrafast_gateway::plugins::{Plugin, PluginConfig};
+//!
+//! #[derive(Debug)]
+//! struct CustomPlugin;
+//!
+//! impl Plugin for CustomPlugin {
+//!     fn name(&self) -> &'static str { "custom_plugin" }
+//!     fn process_request(&self, request: &mut Request) -> Result<(), Error> {
+//!         // Custom request processing logic
+//!         Ok(())
+//!     }
+//! }
+//! ```
+//!
+//! ## Error Handling
+//!
+//! The gateway provides comprehensive error handling:
+//!
+//! ```rust
+//! use ultrafast_gateway::error_handling::{ErrorHandler, ErrorType};
+//!
+//! match result {
+//!     Ok(response) => println!("Success: {:?}", response),
+//!     Err(ErrorType::AuthenticationError) => println!("Authentication failed"),
+//!     Err(ErrorType::RateLimitExceeded) => println!("Rate limit exceeded"),
+//!     Err(ErrorType::ProviderUnavailable) => println!("Provider unavailable"),
+//!     Err(e) => println!("Other error: {:?}", e),
+//! }
+//! ```
+//!
+//! ## Testing
+//!
+//! The library includes comprehensive testing utilities:
+//!
+//! ```rust
+//! #[cfg(test)]
+//! mod tests {
+//!     use super::*;
+//!     use tokio_test;
+//!
+//!     #[tokio_test]
+//!     async fn test_server_creation() {
+//!         let config = Config::default();
+//!         let result = create_server(config).await;
+//!         assert!(result.is_ok());
+//!     }
+//! }
+//! ```
+//!
+//! ## Performance Tuning
+//!
+//! For optimal performance, consider these settings:
+//!
+//! ```toml
+//! [server]
+//! # Use multiple worker threads
+//! worker_threads = 8
+//! 
+//! [cache]
+//! # Enable Redis for distributed caching
+//! backend = "Redis"
+//! ttl = "6h"
+//! 
+//! [routing]
+//! # Aggressive health checking for fast failover
+//! health_check_interval = "10s"
+//! failover_threshold = 0.7
+//! ```
+//!
+//! ## Deployment
+//!
+//! The gateway is designed for production deployment:
+//!
+//! - **Docker Support**: Multi-stage Dockerfile with Alpine Linux
+//! - **Health Checks**: Built-in health check endpoints
+//! - **Graceful Shutdown**: Proper signal handling and cleanup
+//! - **Resource Limits**: Configurable memory and CPU limits
+//! - **Monitoring**: Prometheus metrics and Grafana dashboards
+//!
+//! ## Contributing
+//!
+//! We welcome contributions! Please see our contributing guide for details on:
+//!
+//! - Code style and formatting
+//! - Testing requirements
+//! - Documentation standards
+//! - Pull request process
 //!
 //! ## License
 //!
-//! This project is licensed under either of
+//! This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 //!
-//! * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or https://www.apache.org/licenses/LICENSE-2.0)
-//! * MIT license ([LICENSE-MIT](LICENSE-MIT) or https://opensource.org/licenses/MIT)
+//! ## Support
 //!
-//! at your option.
+//! For support and questions:
+//!
+//! - **Issues**: [GitHub Issues](https://github.com/techgopal/ultrafast-ai-gateway/issues)
+//! - **Discussions**: [GitHub Discussions](https://github.com/techgopal/ultrafast-ai-gateway/discussions)
+//! - **Documentation**: [Project Wiki](https://github.com/techgopal/ultrafast-ai-gateway/wiki)
 
 pub mod advanced_routing;
 pub mod auth;

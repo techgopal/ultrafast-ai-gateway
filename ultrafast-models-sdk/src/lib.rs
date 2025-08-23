@@ -98,102 +98,315 @@
 //! ```rust
 //! use ultrafast_models_sdk::routing::RoutingStrategy;
 //!
+//! // Load balancing with custom weights
 //! let client = UltrafastClient::standalone()
-//!     .with_openai("key1")
-//!     .with_anthropic("key2")
+//!     .with_openai("openai-key")
+//!     .with_anthropic("anthropic-key")
 //!     .with_routing_strategy(RoutingStrategy::LoadBalance {
-//!         weights: vec![0.6, 0.4],
+//!         weights: vec![0.6, 0.4], // 60% OpenAI, 40% Anthropic
 //!     })
+//!     .build()?;
+//!
+//! // Failover strategy
+//! let client = UltrafastClient::standalone()
+//!     .with_openai("primary-key")
+//!     .with_anthropic("fallback-key")
+//!     .with_routing_strategy(RoutingStrategy::Failover)
 //!     .build()?;
 //! ```
 //!
-//! ## Circuit Breakers
+//! ## Advanced Features
+//!
+//! ### Circuit Breakers
 //!
 //! Automatic failover and recovery:
 //!
 //! ```rust
 //! use ultrafast_models_sdk::circuit_breaker::CircuitBreakerConfig;
 //!
-//! let config = CircuitBreakerConfig {
-//!     failure_threshold: 5,
-//!     recovery_timeout: Duration::from_secs(30),
-//!     half_open_max_calls: 3,
-//! };
-//!
 //! let client = UltrafastClient::standalone()
-//!     .with_openai("key")
-//!     .with_circuit_breaker_config(config)
+//!     .with_openai("your-key")
+//!     .with_circuit_breaker_config(CircuitBreakerConfig {
+//!         failure_threshold: 5,
+//!         recovery_timeout: Duration::from_secs(60),
+//!         request_timeout: Duration::from_secs(30),
+//!         half_open_max_calls: 3,
+//!     })
 //!     .build()?;
 //! ```
 //!
-//! ## Caching
+//! ### Caching
 //!
 //! Built-in response caching:
 //!
 //! ```rust
+//! use ultrafast_models_sdk::cache::CacheConfig;
+//!
 //! let client = UltrafastClient::standalone()
-//!     .with_openai("key")
-//!     .with_caching(true)
-//!     .with_cache_ttl(Duration::from_secs(3600))
+//!     .with_openai("your-key")
+//!     .with_cache_config(CacheConfig {
+//!         enabled: true,
+//!         ttl: Duration::from_hours(1),
+//!         max_size: 1000,
+//!     })
 //!     .build()?;
+//! ```
+//!
+//! ### Rate Limiting
+//!
+//! Per-provider rate limiting:
+//!
+//! ```rust
+//! use ultrafast_models_sdk::rate_limiting::RateLimitConfig;
+//!
+//! let client = UltrafastClient::standalone()
+//!     .with_openai("your-key")
+//!     .with_rate_limit_config(RateLimitConfig {
+//!         requests_per_minute: 100,
+//!         tokens_per_minute: 10000,
+//!         burst_size: 10,
+//!     })
+//!     .build()?;
+//! ```
+//!
+//! ## API Examples
+//!
+//! ### Chat Completions
+//!
+//! ```rust
+//! use ultrafast_models_sdk::{ChatRequest, Message, Role};
+//!
+//! let request = ChatRequest {
+//!     model: "gpt-4".to_string(),
+//!     messages: vec![
+//!         Message {
+//!             role: Role::System,
+//!             content: "You are a helpful assistant.".to_string(),
+//!         },
+//!         Message {
+//!             role: Role::User,
+//!             content: "What is the capital of France?".to_string(),
+//!         },
+//!     ],
+//!     temperature: Some(0.7),
+//!     max_tokens: Some(150),
+//!     stream: Some(false),
+//!     ..Default::default()
+//! };
+//!
+//! let response = client.chat_completion(request).await?;
+//! println!("Response: {}", response.choices[0].message.content);
+//! ```
+//!
+//! ### Streaming Responses
+//!
+//! ```rust
+//! use futures::StreamExt;
+//!
+//! let mut stream = client
+//!     .stream_chat_completion(ChatRequest {
+//!         model: "gpt-4".to_string(),
+//!         messages: vec![Message::user("Tell me a story")],
+//!         stream: Some(true),
+//!         ..Default::default()
+//!     })
+//!     .await?;
+//!
+//! while let Some(chunk) = stream.next().await {
+//!     match chunk {
+//!         Ok(chunk) => {
+//!             if let Some(content) = &chunk.choices[0].delta.content {
+//!                 print!("{}", content);
+//!             }
+//!         }
+//!         Err(e) => eprintln!("Error: {:?}", e),
+//!     }
+//! }
+//! ```
+//!
+//! ### Embeddings
+//!
+//! ```rust
+//! use ultrafast_models_sdk::{EmbeddingRequest, EmbeddingInput};
+//!
+//! let request = EmbeddingRequest {
+//!     model: "text-embedding-ada-002".to_string(),
+//!     input: EmbeddingInput::String("This is a test sentence.".to_string()),
+//!     ..Default::default()
+//! };
+//!
+//! let response = client.embedding(request).await?;
+//! println!("Embedding dimensions: {}", response.data[0].embedding.len());
+//! ```
+//!
+//! ### Image Generation
+//!
+//! ```rust
+//! use ultrafast_models_sdk::ImageGenerationRequest;
+//!
+//! let request = ImageGenerationRequest {
+//!     model: "dall-e-3".to_string(),
+//!     prompt: "A beautiful sunset over the ocean".to_string(),
+//!     n: Some(1),
+//!     size: Some("1024x1024".to_string()),
+//!     ..Default::default()
+//! };
+//!
+//! let response = client.generate_image(request).await?;
+//! println!("Image URL: {}", response.data[0].url);
 //! ```
 //!
 //! ## Error Handling
 //!
-//! Comprehensive error handling with retry logic:
+//! Comprehensive error handling with specific error types:
 //!
 //! ```rust
-//! use ultrafast_models_sdk::{ClientError, ProviderError};
+//! use ultrafast_models_sdk::error::UltrafastError;
 //!
 //! match client.chat_completion(request).await {
-//!     Ok(response) => println!("Success: {}", response.choices[0].message.content),
-//!     Err(ClientError::Provider(ProviderError::RateLimit { .. })) => {
-//!         println!("Rate limited, retrying...");
+//!     Ok(response) => println!("Success: {:?}", response),
+//!     Err(UltrafastError::AuthenticationError { .. }) => {
+//!         eprintln!("Authentication failed");
 //!     }
-//!     Err(ClientError::Provider(ProviderError::Timeout { .. })) => {
-//!         println!("Request timed out");
+//!     Err(UltrafastError::RateLimitExceeded { retry_after, .. }) => {
+//!         eprintln!("Rate limit exceeded, retry after: {:?}", retry_after);
 //!     }
-//!     Err(e) => println!("Error: {}", e),
+//!     Err(UltrafastError::ProviderError { provider, message, .. }) => {
+//!         eprintln!("Provider {} error: {}", provider, message);
+//!     }
+//!     Err(e) => eprintln!("Other error: {:?}", e),
 //! }
 //! ```
 //!
-//! ## Models and Requests
-//!
-//! The SDK supports various AI model types:
-//!
-//! - **Chat Completions**: Conversational AI models
-//! - **Text Completions**: Text generation models
-//! - **Embeddings**: Text embedding models
-//! - **Image Generation**: Image creation models
-//! - **Audio Transcription**: Speech-to-text models
-//! - **Text-to-Speech**: Text-to-speech models
-//!
-//! ## Performance Features
-//!
-//! - **Connection Pooling**: Reusable HTTP connections
-//! - **Request Batching**: Batch multiple requests
-//! - **Streaming Support**: Real-time response streaming
-//! - **Async/Await**: Non-blocking operations
-//! - **Memory Efficient**: Minimal memory footprint
-//!
 //! ## Configuration
 //!
-//! The SDK is highly configurable:
+//! Advanced client configuration:
 //!
-//! - **Timeouts**: Per-request and per-provider timeouts
-//! - **Retry Logic**: Configurable retry strategies
-//! - **Rate Limiting**: Per-provider rate limits
-//! - **Logging**: Structured logging support
-//! - **Metrics**: Performance monitoring
+//! ```rust
+//! use ultrafast_models_sdk::{UltrafastClient, ClientConfig};
+//! use std::time::Duration;
+//!
+//! let config = ClientConfig {
+//!     timeout: Duration::from_secs(30),
+//!     max_retries: 3,
+//!     retry_delay: Duration::from_secs(1),
+//!     user_agent: Some("MyApp/1.0".to_string()),
+//!     ..Default::default()
+//! };
+//!
+//! let client = UltrafastClient::standalone()
+//!     .with_config(config)
+//!     .with_openai("your-key")
+//!     .build()?;
+//! ```
+//!
+//! ## Testing
+//!
+//! The SDK includes testing utilities:
+//!
+//! ```rust
+//! #[cfg(test)]
+//! mod tests {
+//!     use super::*;
+//!     use tokio_test;
+//!
+//!     #[tokio_test]
+//!     async fn test_chat_completion() {
+//!         let client = UltrafastClient::standalone()
+//!             .with_openai("test-key")
+//!             .build()
+//!             .unwrap();
+//!
+//!         let request = ChatRequest {
+//!             model: "gpt-4".to_string(),
+//!             messages: vec![Message::user("Hello")],
+//!             ..Default::default()
+//!         };
+//!
+//!         let result = client.chat_completion(request).await;
+//!         assert!(result.is_ok());
+//!     }
+//! }
+//! ```
+//!
+//! ## Performance Optimization
+//!
+//! Tips for optimal performance:
+//!
+//! ```rust
+//! // Use connection pooling
+//! let client = UltrafastClient::standalone()
+//!     .with_connection_pool_size(10)
+//!     .with_openai("your-key")
+//!     .build()?;
+//!
+//! // Enable compression
+//! let client = UltrafastClient::standalone()
+//!     .with_compression(true)
+//!     .with_openai("your-key")
+//!     .build()?;
+//!
+//! // Configure timeouts
+//! let client = UltrafastClient::standalone()
+//!     .with_timeout(Duration::from_secs(15))
+//!     .with_openai("your-key")
+//!     .build()?;
+//! ```
+//!
+//! ## Migration Guide
+//!
+//! ### From OpenAI SDK
+//!
+//! ```rust
+//! // Before (OpenAI SDK)
+//! use openai::Client;
+//! let client = Client::new("your-key");
+//! let response = client.chat().create(request).await?;
+//!
+//! // After (Ultrafast SDK)
+//! use ultrafast_models_sdk::UltrafastClient;
+//! let client = UltrafastClient::standalone()
+//!     .with_openai("your-key")
+//!     .build()?;
+//! let response = client.chat_completion(request).await?;
+//! ```
+//!
+//! ### From Anthropic SDK
+//!
+//! ```rust
+//! // Before (Anthropic SDK)
+//! use anthropic::Client;
+//! let client = Client::new("your-key");
+//! let response = client.messages().create(request).await?;
+//!
+//! // After (Ultrafast SDK)
+//! use ultrafast_models_sdk::UltrafastClient;
+//! let client = UltrafastClient::standalone()
+//!     .with_anthropic("your-key")
+//!     .build()?;
+//! let response = client.chat_completion(request).await?;
+//! ```
+//!
+//! ## Contributing
+//!
+//! We welcome contributions! Please see our contributing guide for details on:
+//!
+//! - Code style and formatting
+//! - Testing requirements
+//! - Documentation standards
+//! - Pull request process
 //!
 //! ## License
 //!
-//! This project is licensed under either of
+//! This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 //!
-//! * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or https://www.apache.org/licenses/LICENSE-2.0)
-//! * MIT license ([LICENSE-MIT](LICENSE-MIT) or https://opensource.org/licenses/MIT)
+//! ## Support
 //!
-//! at your option.
+//! For support and questions:
+//!
+//! - **Issues**: [GitHub Issues](https://github.com/techgopal/ultrafast-ai-gateway/issues)
+//! - **Discussions**: [GitHub Discussions](https://github.com/techgopal/ultrafast-ai-gateway/discussions)
+//! - **Documentation**: [Project Wiki](https://github.com/techgopal/ultrafast-ai-gateway/wiki)
 
 pub mod cache;
 pub mod circuit_breaker;
