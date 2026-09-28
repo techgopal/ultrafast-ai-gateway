@@ -33,3 +33,9 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Tests
         run: cargo test --all --no-fail-fast
+      - name: Build image
+        run: docker build -t ultrafast:ci .
+      - name: Report binary size
+        run: |
+          cargo build --release --locked -p ultrafast-gateway
+          ls -l target/release/ultrafast | awk '{printf "binary size: %.1f MB\n", $5/1048576}'
