@@ -1,10 +1,12 @@
 //! Virtual keys.
 
 use anyhow::{Context, Result};
+use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 
-use super::{check_timestamp, Store, Tx, DEFAULT_ORG};
+use super::{check_timestamp, write_error, Store, Tx, DEFAULT_ORG};
 
+/// A virtual key as stored. It never holds the key or its hash.
 #[derive(Debug, Clone)]
 pub struct KeyRow {
     pub id: i64,
@@ -15,6 +17,35 @@ pub struct KeyRow {
     pub expires_at: Option<String>,
     pub revoked_at: Option<String>,
     pub created_at: String,
+    /// The email of the owner, if the key has one.
+    pub owner_email: Option<String>,
+    /// The name of the team, if the key belongs to one.
+    pub team_name: Option<String>,
+}
+
+/// Every key query reads through this, so the hash is never selected.
+const KEY_SELECT: &str = "SELECT k.id, k.name, k.display, k.user_id, k.team_id,
+            k.expires_at, k.revoked_at, k.created_at,
+            u.email AS owner_email, t.name AS team_name
+     FROM virtual_keys k
+     LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
+     LEFT JOIN teams t ON t.id = k.team_id AND t.org_id = k.org_id";
+
+const KEY_ORDER: &str = "ORDER BY k.created_at DESC, k.id DESC";
+
+fn key_from(r: &SqliteRow) -> KeyRow {
+    KeyRow {
+        id: r.get("id"),
+        name: r.get("name"),
+        display: r.get("display"),
+        user_id: r.get("user_id"),
+        team_id: r.get("team_id"),
+        expires_at: r.get("expires_at"),
+        revoked_at: r.get("revoked_at"),
+        created_at: r.get("created_at"),
+        owner_email: r.get("owner_email"),
+        team_name: r.get("team_name"),
+    }
 }
 
 impl Store {
@@ -35,28 +66,59 @@ impl Store {
     }
 
     pub async fn active_key_by_hash(&self, hash: &str) -> Result<Option<KeyRow>> {
-        let row = sqlx::query(
-            "SELECT id, name, display, user_id, team_id, expires_at, revoked_at, created_at
-             FROM virtual_keys
-             WHERE key_hash = ?
-               AND org_id = ?
-               AND revoked_at IS NULL
-               AND (expires_at IS NULL OR expires_at > datetime('now'))",
-        )
-        .bind(hash)
-        .bind(DEFAULT_ORG)
-        .fetch_optional(self.pool())
-        .await?;
-        Ok(row.map(|r| KeyRow {
-            id: r.get("id"),
-            name: r.get("name"),
-            display: r.get("display"),
-            user_id: r.get("user_id"),
-            team_id: r.get("team_id"),
-            expires_at: r.get("expires_at"),
-            revoked_at: r.get("revoked_at"),
-            created_at: r.get("created_at"),
-        }))
+        let sql = format!(
+            "{KEY_SELECT}
+             WHERE k.key_hash = ?
+               AND k.org_id = ?
+               AND k.revoked_at IS NULL
+               AND (k.expires_at IS NULL OR k.expires_at > datetime('now'))"
+        );
+        let row = sqlx::query(&sql)
+            .bind(hash)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.as_ref().map(key_from))
+    }
+
+    /// Finds a key whether or not it is live.
+    pub async fn key_by_id(&self, id: i64) -> Result<Option<KeyRow>> {
+        let sql = format!("{KEY_SELECT} WHERE k.id = ? AND k.org_id = ?");
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.as_ref().map(key_from))
+    }
+
+    /// Newest first, including revoked and expired keys.
+    pub async fn list_keys(&self) -> Result<Vec<KeyRow>> {
+        let sql = format!("{KEY_SELECT} WHERE k.org_id = ? {KEY_ORDER}");
+        let rows = sqlx::query(&sql)
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.iter().map(key_from).collect())
+    }
+
+    /// The keys that belong to any of the teams, and the keys owned by
+    /// `own_id`. Newest first, including revoked and expired keys.
+    pub async fn list_keys_in_teams(&self, team_ids: &[i64], own_id: i64) -> Result<Vec<KeyRow>> {
+        let marks = vec!["?"; team_ids.len()].join(", ");
+        // With no team the list is `IN (NULL)`, which matches nothing.
+        let marks = if marks.is_empty() { "NULL" } else { &marks };
+        let sql = format!(
+            "{KEY_SELECT}
+             WHERE k.org_id = ? AND (k.user_id = ? OR k.team_id IN ({marks}))
+             {KEY_ORDER}"
+        );
+        let mut query = sqlx::query(&sql).bind(DEFAULT_ORG).bind(own_id);
+        for team_id in team_ids {
+            query = query.bind(team_id);
+        }
+        let rows = query.fetch_all(self.pool()).await?;
+        Ok(rows.iter().map(key_from).collect())
     }
 
     /// Returns whether a live key was revoked. Revoking again changes nothing.
@@ -95,7 +157,8 @@ impl Tx<'_> {
         .bind(user_id)
         .bind(team_id)
         .execute(self.conn())
-        .await?;
+        .await
+        .map_err(write_error)?;
         Ok(r.last_insert_rowid())
     }
 
@@ -220,6 +283,63 @@ mod tests {
         .unwrap();
         assert!(s.active_key_by_hash("h").await.unwrap().is_none());
         assert!(!s.revoke_key(1).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn keys_are_listed_with_owner_and_team() {
+        use crate::identity::{Role, TeamRole, UserStatus};
+        use crate::store::NewUser;
+
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let lena = tx
+            .insert_user(NewUser {
+                email: "lena@example.com",
+                name: "Lena",
+                role: Role::Member,
+                status: UserStatus::Active,
+                password_hash: None,
+            })
+            .await
+            .unwrap();
+        let team = tx.insert_team("Platform").await.unwrap();
+        tx.put_member(team, lena, TeamRole::Member).await.unwrap();
+        let legacy = tx
+            .insert_key("old", "h1", "d1", None, None, None)
+            .await
+            .unwrap();
+        let own = tx
+            .insert_key("own", "h2", "d2", None, Some(lena), None)
+            .await
+            .unwrap();
+        let shared = tx
+            .insert_key("shared", "h3", "d3", None, None, Some(team))
+            .await
+            .unwrap();
+        tx.revoke_key(shared).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let ids = |rows: Vec<KeyRow>| rows.into_iter().map(|k| k.id).collect::<Vec<_>>();
+        assert_eq!(ids(s.list_keys().await.unwrap()), [shared, own, legacy]);
+        assert_eq!(
+            ids(s.list_keys_in_teams(&[team], lena).await.unwrap()),
+            [shared, own]
+        );
+        assert_eq!(ids(s.list_keys_in_teams(&[], lena).await.unwrap()), [own]);
+        assert!(s
+            .list_keys_in_teams(&[], lena + 100)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let k = s.key_by_id(own).await.unwrap().unwrap();
+        assert_eq!(k.owner_email.as_deref(), Some("lena@example.com"));
+        assert_eq!(k.team_name, None);
+        let k = s.key_by_id(shared).await.unwrap().unwrap();
+        assert_eq!(k.owner_email, None);
+        assert_eq!(k.team_name.as_deref(), Some("Platform"));
+        assert!(k.revoked_at.is_some());
+        assert!(s.key_by_id(shared + 100).await.unwrap().is_none());
     }
 
     #[tokio::test]
