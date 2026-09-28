@@ -4,7 +4,6 @@
 *.pdb
 
 # Cargo
-Cargo.lock
 Cargo.toml.bak
 
 # IDE and editor files
