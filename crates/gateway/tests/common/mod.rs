@@ -255,3 +255,105 @@ pub async fn call_with_token(
     )
     .await
 }
+
+/// The password of every user of [`org`].
+pub const ORG_PASSWORD: &str = "correct horse battery";
+
+/// A small organization: an admin, a lead, two members and a user without
+/// a team, in three teams.
+pub struct Org {
+    pub api: Api,
+    /// Admin.
+    pub maya: i64,
+    /// Lead of Platform, member of Research.
+    pub arjun: i64,
+    /// Member of Platform.
+    pub lena: i64,
+    /// Member of Research.
+    pub tomas: i64,
+    /// In no team.
+    pub priya: i64,
+    pub platform: i64,
+    pub research: i64,
+    /// A team without members.
+    pub growth: i64,
+}
+
+/// The email of a user of [`org`], from their first name.
+pub fn email_of(name: &str) -> String {
+    format!("{name}@example.com")
+}
+
+pub async fn org() -> Org {
+    let api = api().await;
+    let store = &api.store;
+    let maya = seed_user(store, &email_of("maya"), Role::Admin, ORG_PASSWORD).await;
+    let arjun = seed_user(store, &email_of("arjun"), Role::Member, ORG_PASSWORD).await;
+    let lena = seed_user(store, &email_of("lena"), Role::Member, ORG_PASSWORD).await;
+    let tomas = seed_user(store, &email_of("tomas"), Role::Member, ORG_PASSWORD).await;
+    let priya = seed_user(store, &email_of("priya"), Role::Member, ORG_PASSWORD).await;
+    let platform = seed_team(
+        store,
+        "Platform",
+        &[(arjun, TeamRole::Lead), (lena, TeamRole::Member)],
+    )
+    .await;
+    let research = seed_team(
+        store,
+        "Research",
+        &[(arjun, TeamRole::Member), (tomas, TeamRole::Member)],
+    )
+    .await;
+    let growth = seed_team(store, "Growth", &[]).await;
+    Org {
+        api,
+        maya,
+        arjun,
+        lena,
+        tomas,
+        priya,
+        platform,
+        research,
+        growth,
+    }
+}
+
+impl Org {
+    /// Signs in the user with this first name.
+    pub async fn sign_in(&self, name: &str) -> Signed {
+        sign_in(&self.api.app, &email_of(name), ORG_PASSWORD).await
+    }
+
+    /// Sends a request as `who`, or without credentials.
+    pub async fn call(
+        &self,
+        who: Option<&Signed>,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let (status, _, body) = call(&self.api.app, method, path, who, body).await;
+        (status, body)
+    }
+
+    /// The `action` of every audit entry, oldest first.
+    pub async fn audit_actions(&self) -> Vec<String> {
+        let mut rows = self.api.store.list_audit(200, None).await.unwrap();
+        rows.reverse();
+        rows.into_iter().map(|r| r.action).collect()
+    }
+
+    /// The summary of the newest audit entry with this action.
+    pub async fn last_summary(&self, action: &str) -> String {
+        let rows = self.api.store.list_audit(200, None).await.unwrap();
+        rows.into_iter()
+            .find(|r| r.action == action)
+            .unwrap_or_else(|| panic!("no audit entry for {action}"))
+            .summary
+    }
+}
+
+/// The `error.code` of an error body.
+pub fn error_code(body: &serde_json::Value) -> &str {
+    body["error"]["code"].as_str().unwrap_or("<no code>")
+}

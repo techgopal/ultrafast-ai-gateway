@@ -1,7 +1,10 @@
 //! The `/api` admin API: its router, its error type and the extractor that
 //! authenticates every request.
 
+pub mod audit;
 pub mod auth;
+pub mod teams;
+pub mod users;
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -13,7 +16,7 @@ use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -41,6 +44,22 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/auth/me", get(auth::me))
         .route("/auth/accept-invite", post(auth::accept_invite))
         .route("/auth/password", post(auth::change_password))
+        .route("/users", get(users::list).post(users::invite))
+        .route(
+            "/users/{id}",
+            get(users::view).patch(users::update).delete(users::delete),
+        )
+        .route("/users/{id}/invite", post(users::reinvite))
+        .route("/teams", get(teams::list).post(teams::create))
+        .route(
+            "/teams/{id}",
+            get(teams::view).patch(teams::rename).delete(teams::delete),
+        )
+        .route(
+            "/teams/{id}/members/{user_id}",
+            put(teams::put_member).delete(teams::remove_member),
+        )
+        .route("/audit", get(audit::list))
         .fallback(|| async { ApiError::not_found() })
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -177,6 +196,18 @@ impl From<anyhow::Error> for ApiError {
         tracing::error!(error = %e, "api request failed");
         Self::internal()
     }
+}
+
+/// The id of a path segment. Anything but a positive integer written in
+/// plain digits is answered like a row that does not exist.
+pub fn path_id(raw: &str) -> Result<i64, ApiError> {
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(ApiError::not_found());
+    }
+    raw.parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(ApiError::not_found)
 }
 
 /// Turns a policy decision into a result.
@@ -429,6 +460,27 @@ mod tests {
         assert_eq!((err.status, err.code), (StatusCode::FORBIDDEN, "forbidden"));
         let err = require(&member, &Action::DeleteUser { user_id: 2 }).unwrap_err();
         assert_eq!((err.status, err.code), (StatusCode::NOT_FOUND, "not_found"));
+    }
+
+    #[test]
+    fn path_ids_are_positive_integers() {
+        assert_eq!(path_id("1").unwrap(), 1);
+        assert_eq!(path_id("9223372036854775807").unwrap(), i64::MAX);
+        for bad in [
+            "",
+            "0",
+            "-1",
+            "+1",
+            "1.5",
+            "abc",
+            " 1",
+            "1 ",
+            "9223372036854775808",
+            "١",
+        ] {
+            let err = path_id(bad).unwrap_err();
+            assert_eq!((err.status, err.code), (StatusCode::NOT_FOUND, "not_found"));
+        }
     }
 
     #[test]
