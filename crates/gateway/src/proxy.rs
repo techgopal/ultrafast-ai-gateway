@@ -14,6 +14,7 @@ use futures::StreamExt;
 use http_body_util::LengthLimitError;
 use rand::rngs::OsRng;
 use rand::RngCore;
+use ultrafast_translate::error::TranslateError;
 use ultrafast_translate::ingress::openai::{
     parse_request, render_response, render_stream_error, render_stream_event,
 };
@@ -24,7 +25,7 @@ use ultrafast_translate::types::StreamEvent;
 
 use crate::app::AppState;
 use crate::auth::authenticate;
-use crate::errors::{error_response, translate_error_response};
+use crate::errors::{caller_message, error_response, translate_error_response};
 
 pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
@@ -148,7 +149,7 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Reque
         );
     }
     if req.stream && status < 400 {
-        return stream_response(upstream, kind, target.model);
+        return stream_to_caller(upstream, kind, target.model, provider.name);
     }
     let bytes = match read_capped(upstream, state.max_provider_response_bytes).await {
         Ok(b) => b,
@@ -214,7 +215,39 @@ fn stream_id() -> String {
 ///
 /// The body owns the upstream response, so when the caller disconnects and the
 /// body is dropped, the provider request is dropped with it.
+///
+/// Failures are logged under the provider kind; the handler uses the
+/// provider's name instead.
 pub fn stream_response(upstream: reqwest::Response, kind: ProviderKind, model: String) -> Response {
+    stream_to_caller(upstream, kind, model, kind.as_str().to_string())
+}
+
+/// Logs a stream failure and renders the error event the caller may see.
+fn stream_failure(provider: &str, e: &TranslateError) -> String {
+    let (_, _, message) = caller_message(e);
+    // The provider's text about a rejected credential may quote the
+    // credential, so only the masked message is logged for it.
+    let credential = matches!(
+        e,
+        TranslateError::Provider {
+            status: 401 | 403,
+            ..
+        }
+    );
+    if credential {
+        tracing::warn!(provider = %provider, error = %message, "provider stream failed");
+    } else {
+        tracing::warn!(provider = %provider, error = %e, "provider stream failed");
+    }
+    render_stream_error(&message)
+}
+
+fn stream_to_caller(
+    upstream: reqwest::Response,
+    kind: ProviderKind,
+    model: String,
+    provider: String,
+) -> Response {
     let created = now_secs();
     let id = stream_id();
     let body = async_stream::stream! {
@@ -223,7 +256,9 @@ pub fn stream_response(upstream: reqwest::Response, kind: ProviderKind, model: S
         while let Some(chunk) = chunks.next().await {
             let bytes = match chunk {
                 Ok(b) => b,
-                Err(_) => {
+                Err(e) => {
+                    let e = e.without_url();
+                    tracing::warn!(provider = %provider, error = %e, "provider stream was lost");
                     yield Ok::<String, Infallible>(render_stream_error(
                         "The connection to the provider was lost.",
                     ));
@@ -233,7 +268,7 @@ pub fn stream_response(upstream: reqwest::Response, kind: ProviderKind, model: S
             let events = match decoder.feed(&bytes) {
                 Ok(events) => events,
                 Err(e) => {
-                    yield Ok(render_stream_error(&e.to_string()));
+                    yield Ok(stream_failure(&provider, &e));
                     return;
                 }
             };
@@ -246,10 +281,11 @@ pub fn stream_response(upstream: reqwest::Response, kind: ProviderKind, model: S
             }
             // An error that followed those events in the same chunk.
             if let Some(e) = decoder.take_error() {
-                yield Ok(render_stream_error(&e.to_string()));
+                yield Ok(stream_failure(&provider, &e));
                 return;
             }
         }
+        tracing::warn!(provider = %provider, "provider stream ended before completion");
         yield Ok(render_stream_error("The provider stream ended before completion."));
     };
     Response::builder()
