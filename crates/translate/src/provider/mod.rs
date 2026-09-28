@@ -156,6 +156,10 @@ pub struct StreamDecoder {
     kind: ProviderKind,
     sse: SseParser,
     state: StreamState,
+    /// Set once an error has been hit; nothing is decoded afterwards.
+    failed: bool,
+    /// An error hit after events were already produced in the same `feed`.
+    pending_error: Option<TranslateError>,
 }
 
 impl StreamDecoder {
@@ -164,22 +168,50 @@ impl StreamDecoder {
             kind,
             sse: SseParser::new(),
             state: StreamState::default(),
+            failed: false,
+            pending_error: None,
         }
     }
 
+    /// Decodes the events completed by `chunk`.
+    ///
+    /// An error ends the stream. If events were already decoded in this call
+    /// they are returned and the error is kept for [`Self::take_error`];
+    /// otherwise the error is returned directly. After an error every call
+    /// returns no events.
     pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<StreamEvent>, TranslateError> {
         let mut out = Vec::new();
+        if self.failed {
+            return Ok(out);
+        }
         for ev in self.sse.feed(chunk) {
             // Keepalive events carry no data and are not provider JSON.
             if ev.data.trim().is_empty() {
                 continue;
             }
-            match self.kind {
-                ProviderKind::OpenAi => openai::decode(&mut self.state, &ev, &mut out)?,
-                ProviderKind::Anthropic => anthropic::decode(&mut self.state, &ev, &mut out)?,
+            // A failed decode must not leave partial output behind.
+            let produced = out.len();
+            let result = match self.kind {
+                ProviderKind::OpenAi => openai::decode(&mut self.state, &ev, &mut out),
+                ProviderKind::Anthropic => anthropic::decode(&mut self.state, &ev, &mut out),
+            };
+            if let Err(e) = result {
+                self.failed = true;
+                out.truncate(produced);
+                if out.is_empty() {
+                    return Err(e);
+                }
+                self.pending_error = Some(e);
+                break;
             }
         }
         Ok(out)
+    }
+
+    /// Returns the error that ended the stream, once, if `feed` did not
+    /// return it directly.
+    pub fn take_error(&mut self) -> Option<TranslateError> {
+        self.pending_error.take()
     }
 }
 
@@ -230,6 +262,85 @@ mod tests {
                 .feed(b"event: keepalive\n\ndata:\n\ndata:   \n\nevent: ping\ndata: \n\n")
                 .unwrap();
             assert_eq!(got, vec![], "{kind:?}");
+        }
+    }
+
+    /// Two deltas, then an error event, then one more delta.
+    fn stream_with_error(kind: ProviderKind) -> Vec<u8> {
+        match kind {
+            ProviderKind::OpenAi => concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"b\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"error\":{\"message\":\"overloaded\"}}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"never\"},\"finish_reason\":null}]}\n\n",
+            ),
+            ProviderKind::Anthropic => concat!(
+                "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"a\"}}\n\n",
+                "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"b\"}}\n\n",
+                "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n",
+                "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"never\"}}\n\n",
+            ),
+        }
+        .as_bytes()
+        .to_vec()
+    }
+
+    fn valid_delta(kind: ProviderKind) -> &'static [u8] {
+        match kind {
+            ProviderKind::OpenAi => {
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"late\"},\"finish_reason\":null}]}\n\n"
+            }
+            ProviderKind::Anthropic => {
+                b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"late\"}}\n\n"
+            }
+        }
+    }
+
+    fn two_deltas() -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::Delta { text: "a".into() },
+            StreamEvent::Delta { text: "b".into() },
+        ]
+    }
+
+    #[test]
+    fn events_before_an_error_in_the_same_chunk_are_kept() {
+        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic] {
+            let mut d = StreamDecoder::new(kind);
+            let got = d.feed(&stream_with_error(kind)).unwrap();
+            assert_eq!(got, two_deltas(), "{kind:?}");
+            let e = d.take_error();
+            assert!(
+                matches!(&e, Some(TranslateError::Provider { message, .. }) if message == "overloaded"),
+                "{kind:?}: {e:?}"
+            );
+            assert!(d.take_error().is_none(), "{kind:?}");
+            assert_eq!(d.feed(valid_delta(kind)).unwrap(), vec![], "{kind:?}");
+            assert!(d.take_error().is_none(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn events_before_an_error_are_kept_at_every_split_point() {
+        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic] {
+            let input = stream_with_error(kind);
+            for split in 0..=input.len() {
+                let mut d = StreamDecoder::new(kind);
+                let mut events = Vec::new();
+                let mut errors = 0;
+                for part in [&input[..split], &input[split..]] {
+                    match d.feed(part) {
+                        Ok(evs) => events.extend(evs),
+                        Err(_) => errors += 1,
+                    }
+                    if d.take_error().is_some() {
+                        errors += 1;
+                    }
+                }
+                assert_eq!(events, two_deltas(), "{kind:?} split {split}");
+                assert_eq!(errors, 1, "{kind:?} split {split}");
+                assert_eq!(d.feed(valid_delta(kind)).unwrap(), vec![], "{kind:?}");
+            }
         }
     }
 }
