@@ -18,6 +18,15 @@ pub fn translate_error_response(e: &TranslateError) -> Response {
         TranslateError::Provider {
             status, message, ..
         } => {
+            // A caller would read 401/403 as its own gateway key being bad, and
+            // the provider's message may describe the gateway's credential.
+            if *status == 401 || *status == 403 {
+                return error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "upstream_error",
+                    "Provider rejected the gateway's credential.",
+                );
+            }
             let code = if *status >= 500 {
                 StatusCode::BAD_GATEWAY
             } else {

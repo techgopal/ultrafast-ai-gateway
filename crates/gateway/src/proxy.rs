@@ -1,18 +1,27 @@
 //! The `/v1/chat/completions` handler.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::body::Body;
 use axum::extract::rejection::BytesRejection;
 use axum::extract::State;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
-use ultrafast_translate::ingress::openai::{parse_request, render_response};
-use ultrafast_translate::provider::{
-    build_request, parse_response, HttpRequest, ProviderKind, Target,
+use futures::StreamExt;
+use rand::rngs::OsRng;
+use rand::RngCore;
+use ultrafast_translate::ingress::openai::{
+    parse_request, render_response, render_stream_error, render_stream_event,
 };
+use ultrafast_translate::provider::{
+    build_request, parse_response, HttpRequest, ProviderKind, StreamDecoder, Target,
+};
+use ultrafast_translate::types::StreamEvent;
 
 use crate::app::AppState;
 use crate::auth::authenticate;
@@ -163,14 +172,59 @@ async fn send(
     rb.body(out.body).send().await
 }
 
-pub fn stream_response(
-    _upstream: reqwest::Response,
-    _kind: ProviderKind,
-    _model: String,
-) -> Response {
-    error_response(
-        StatusCode::NOT_IMPLEMENTED,
-        "invalid_request_error",
-        "Streaming is not available in this build.",
-    )
+fn stream_id() -> String {
+    let mut bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut bytes);
+    format!("chatcmpl-{}", hex::encode(bytes))
+}
+
+/// Forwards the provider's stream to the caller as OpenAI server-sent events.
+///
+/// The body owns the upstream response, so when the caller disconnects and the
+/// body is dropped, the provider request is dropped with it.
+pub fn stream_response(upstream: reqwest::Response, kind: ProviderKind, model: String) -> Response {
+    let created = now_secs();
+    let id = stream_id();
+    let body = async_stream::stream! {
+        let mut decoder = StreamDecoder::new(kind);
+        let mut chunks = upstream.bytes_stream();
+        while let Some(chunk) = chunks.next().await {
+            let bytes = match chunk {
+                Ok(b) => b,
+                Err(_) => {
+                    yield Ok::<String, Infallible>(render_stream_error(
+                        "The connection to the provider was lost.",
+                    ));
+                    return;
+                }
+            };
+            // The decoder returns either events or an error for a whole feed.
+            // Feeding one line at a time completes at most one provider event
+            // per call, so events that precede an error are still forwarded.
+            for line in bytes.split_inclusive(|b| *b == b'\n') {
+                match decoder.feed(line) {
+                    Ok(events) => {
+                        for ev in events {
+                            let done = matches!(ev, StreamEvent::Done { .. });
+                            yield Ok(render_stream_event(&ev, &id, &model, created));
+                            if done {
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        yield Ok(render_stream_error(&e.to_string()));
+                        return;
+                    }
+                }
+            }
+        }
+        yield Ok(render_stream_error("The provider stream ended before completion."));
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/event-stream")
+        .header(CACHE_CONTROL, "no-cache")
+        .body(Body::from_stream(body))
+        .expect("static headers are valid")
 }
