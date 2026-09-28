@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ultrafast_gateway::app::{
     http_client, router, shutdown_signal, AppState, DEFAULT_MAX_BODY_BYTES,
+    DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
 };
 use ultrafast_gateway::config::{
     db_path, load_master_key, restrict_permissions, validate_base_url,
@@ -105,6 +106,7 @@ async fn main() -> Result<()> {
                 cipher,
                 http: http_client(),
                 max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+                max_provider_response_bytes: DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
             });
             let listener = tokio::net::TcpListener::bind(addr)
                 .await

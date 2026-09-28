@@ -202,8 +202,16 @@ impl StreamDecoder {
                     return Err(e);
                 }
                 self.pending_error = Some(e);
-                break;
+                return Ok(out);
             }
+        }
+        if self.sse.overflowed() {
+            self.failed = true;
+            let e = TranslateError::Malformed("stream event exceeds the size limit".into());
+            if out.is_empty() {
+                return Err(e);
+            }
+            self.pending_error = Some(e);
         }
         Ok(out)
     }
@@ -341,6 +349,48 @@ mod tests {
                 assert_eq!(errors, 1, "{kind:?} split {split}");
                 assert_eq!(d.feed(valid_delta(kind)).unwrap(), vec![], "{kind:?}");
             }
+        }
+    }
+
+    fn oversized_event() -> Vec<u8> {
+        let mut v = b"data: ".to_vec();
+        v.resize(crate::sse::MAX_EVENT_BYTES + 1, b'x');
+        v
+    }
+
+    fn is_size_limit_error(e: &TranslateError) -> bool {
+        *e == TranslateError::Malformed("stream event exceeds the size limit".into())
+    }
+
+    #[test]
+    fn oversized_event_is_a_malformed_error() {
+        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic] {
+            let mut d = StreamDecoder::new(kind);
+            let e = d.feed(&oversized_event()).unwrap_err();
+            assert!(is_size_limit_error(&e), "{kind:?}: {e:?}");
+            assert!(d.take_error().is_none(), "{kind:?}");
+            assert_eq!(d.feed(valid_delta(kind)).unwrap(), vec![], "{kind:?}");
+            assert!(d.take_error().is_none(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn events_before_an_oversized_event_are_kept() {
+        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic] {
+            let mut input = valid_delta(kind).to_vec();
+            input.extend(oversized_event());
+            let mut d = StreamDecoder::new(kind);
+            let got = d.feed(&input).unwrap();
+            assert_eq!(
+                got,
+                vec![StreamEvent::Delta {
+                    text: "late".into()
+                }],
+                "{kind:?}"
+            );
+            let e = d.take_error().expect("the overflow must be reported");
+            assert!(is_size_limit_error(&e), "{kind:?}: {e:?}");
+            assert!(d.take_error().is_none(), "{kind:?}");
         }
     }
 }

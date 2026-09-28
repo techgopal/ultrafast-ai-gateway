@@ -6,7 +6,9 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use tower::ServiceExt;
-use ultrafast_gateway::app::{http_client, router, AppState, DEFAULT_MAX_BODY_BYTES};
+use ultrafast_gateway::app::{
+    http_client, router, AppState, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+};
 use ultrafast_gateway::secrets::{generate_key, Cipher};
 use ultrafast_gateway::store::Store;
 use wiremock::MockServer;
@@ -24,6 +26,19 @@ pub async fn harness(kind: &str) -> Harness {
 }
 
 pub async fn harness_with_limit(kind: &str, max_body_bytes: usize) -> Harness {
+    harness_with_limits(kind, max_body_bytes, DEFAULT_MAX_PROVIDER_RESPONSE_BYTES).await
+}
+
+/// Like [`harness`], with a cap on the provider response size.
+pub async fn harness_with_response_limit(kind: &str, max_response_bytes: usize) -> Harness {
+    harness_with_limits(kind, DEFAULT_MAX_BODY_BYTES, max_response_bytes).await
+}
+
+async fn harness_with_limits(
+    kind: &str,
+    max_body_bytes: usize,
+    max_provider_response_bytes: usize,
+) -> Harness {
     let upstream = MockServer::start().await;
     let store = Store::open_in_memory().await.unwrap();
     let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
@@ -42,6 +57,7 @@ pub async fn harness_with_limit(kind: &str, max_body_bytes: usize) -> Harness {
         cipher,
         http: http_client(),
         max_body_bytes,
+        max_provider_response_bytes,
     });
     Harness {
         app: router(state),

@@ -2,7 +2,7 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{harness, harness_with_limit, post_chat};
+use common::{harness, harness_with_limit, harness_with_response_limit, post_chat};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 use wiremock::matchers::{body_partial_json, header, method, path};
@@ -369,4 +369,44 @@ async fn unreadable_body_gets_400_not_413() {
     let v: Value = serde_json::from_str(&b).unwrap();
     assert_eq!(v["error"]["type"], "invalid_request_error");
     assert_eq!(error_message(&b), "Request body could not be read.");
+}
+
+#[tokio::test]
+async fn oversized_provider_response_gets_502() {
+    let h = harness_with_response_limit("openai", 256).await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "c1", "model": "gpt-4o",
+            "choices": [{ "message": { "role": "assistant", "content": "x".repeat(1000) }, "finish_reason": "stop" }],
+        })))
+        .mount(&h.upstream)
+        .await;
+    let (s, b) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(s, StatusCode::BAD_GATEWAY);
+    let v: Value = serde_json::from_str(&b).unwrap();
+    assert_eq!(v["error"]["type"], "upstream_error");
+    assert_eq!(error_message(&b), "The provider response was too large.");
+}
+
+#[tokio::test]
+async fn oversized_provider_error_response_gets_502() {
+    let h = harness_with_response_limit("openai", 256).await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("y".repeat(1000)))
+        .mount(&h.upstream)
+        .await;
+    let (s, b) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(s, StatusCode::BAD_GATEWAY);
+    assert_eq!(error_message(&b), "The provider response was too large.");
+}
+
+#[tokio::test]
+async fn provider_response_within_the_limit_is_returned() {
+    let h = harness_with_response_limit("openai", 4096).await;
+    Mock::given(method("POST"))
+        .respond_with(openai_ok())
+        .mount(&h.upstream)
+        .await;
+    let (s, _) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(s, StatusCode::OK);
 }

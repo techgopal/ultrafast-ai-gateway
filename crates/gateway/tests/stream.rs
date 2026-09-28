@@ -288,3 +288,29 @@ async fn caller_disconnect_drops_the_upstream_request() {
         .expect("the upstream connection must be closed when the caller disconnects")
         .unwrap();
 }
+
+#[tokio::test]
+async fn oversized_stream_event_sends_an_error_event_and_no_done() {
+    let h = harness("openai").await;
+    let upstream = format!(
+        concat!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"a\"}},\"finish_reason\":null}}]}}\n\n",
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}},\"finish_reason\":null}}]}}\n\n",
+            "data: [DONE]\n\n",
+        ),
+        "x".repeat(1024 * 1024 + 1)
+    );
+    Mock::given(method("POST"))
+        .respond_with(sse(&upstream))
+        .mount(&h.upstream)
+        .await;
+    let (status, body) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(text(&body), "a");
+    let last = payloads(&body).pop().unwrap();
+    assert!(last["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("stream event exceeds the size limit"));
+    assert!(!body.contains("[DONE]"));
+}
