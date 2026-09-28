@@ -86,8 +86,9 @@ fn check_api_key(api_key: Option<&str>, fields: &mut BTreeMap<String, String>) {
     }
 }
 
+/// Whitespace around a pasted key is not part of it.
 fn encrypted(cipher: &Cipher, api_key: &str) -> Vec<u8> {
-    cipher.encrypt(api_key.as_bytes())
+    cipher.encrypt(api_key.trim().as_bytes())
 }
 
 /// The provider of a path, or the answer for one that does not exist.
@@ -185,8 +186,10 @@ pub async fn update(
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     let store = &state.store;
-    let target = provider_of(store, &raw_id).await?;
+    // The answer does not depend on the provider, so it comes before the
+    // id is looked at: a refusal is the same for every id.
     require(me, &Action::ManageProviders)?;
+    let target = provider_of(store, &raw_id).await?;
     if req.base_url.is_none() && req.api_key.is_none() {
         return Err(ApiError::bad_request(
             "Send at least one of base_url and api_key.",
@@ -266,8 +269,10 @@ pub async fn delete(
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     let store = &state.store;
-    let target = provider_of(store, &raw_id).await?;
+    // The answer does not depend on the provider, so it comes before the
+    // id is looked at: a refusal is the same for every id.
     require(me, &Action::ManageProviders)?;
+    let target = provider_of(store, &raw_id).await?;
 
     let mut tx = store.begin().await?;
     if !tx.delete_provider(target.id).await? {

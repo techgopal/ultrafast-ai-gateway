@@ -161,7 +161,10 @@ async fn main() -> Result<()> {
             if api_key.as_deref().is_some_and(|k| k.trim().is_empty()) {
                 bail!("the API key must not be empty; leave it out for a provider without one");
             }
-            let credential = api_key.as_deref().map(|k| cipher.encrypt(k.as_bytes()));
+            // Whitespace around a pasted key is not part of it.
+            let credential = api_key
+                .as_deref()
+                .map(|k| cipher.encrypt(k.trim().as_bytes()));
             store
                 .insert_provider(&name, &kind, &base_url, credential.as_deref())
                 .await

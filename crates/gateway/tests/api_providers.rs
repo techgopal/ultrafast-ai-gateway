@@ -140,9 +140,8 @@ async fn only_admins_change_providers() {
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = patch(&org, &who, id, json!({ "api_key": null })).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        // Providers are listed for everyone, so a missing one may say so.
         let (status, _) = patch(&org, &who, 9999, json!({ "api_key": null })).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = org
             .call(Some(&who), "DELETE", &provider_path(id), None)
             .await;
@@ -150,7 +149,7 @@ async fn only_admins_change_providers() {
         let (status, _) = org
             .call(Some(&who), "DELETE", &provider_path(9999), None)
             .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     assert_eq!(org.api.store.list_providers().await.unwrap().len(), 1);
@@ -435,4 +434,61 @@ async fn deleting_a_provider() {
         create(&org, &maya, openai("openai")).await.0,
         StatusCode::CREATED
     );
+}
+
+#[tokio::test]
+async fn a_refusal_is_the_same_for_every_provider_id() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let id = seed(&org, &maya, "openai").await;
+    let paths = [
+        provider_path(id),
+        provider_path(9999),
+        "/api/providers/abc".to_string(),
+    ];
+
+    for name in ["arjun", "lena"] {
+        let who = org.sign_in(name).await;
+        for method in ["PATCH", "DELETE"] {
+            let body = (method == "PATCH").then(|| json!({ "api_key": null }));
+            let mut answers = Vec::new();
+            for path in &paths {
+                let answer = common::raw(&org, &who, method, path, body.clone()).await;
+                assert_eq!(answer.0, StatusCode::FORBIDDEN, "{name} {method} {path}");
+                answers.push(answer);
+            }
+            assert_eq!(answers[0], answers[1], "{name} {method}");
+            assert_eq!(answers[0], answers[2], "{name} {method}");
+        }
+    }
+    assert_eq!(stored_key(&org, id).await.as_deref(), Some(API_KEY));
+
+    for path in &paths[1..] {
+        let (status, _) = org
+            .call(Some(&maya), "PATCH", path, Some(json!({ "api_key": null })))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = org.call(Some(&maya), "DELETE", path, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    let (status, _) = patch(&org, &maya, id, json!({ "api_key": null })).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = org.call(Some(&maya), "DELETE", &paths[0], None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_key_is_stored_without_surrounding_whitespace() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let mut body = openai("openai");
+    body["api_key"] = json!("  sk-abc\n");
+    let (status, body) = create(&org, &maya, body).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = body["id"].as_i64().unwrap();
+    assert_eq!(stored_key(&org, id).await.as_deref(), Some("sk-abc"));
+
+    let (status, _) = patch(&org, &maya, id, json!({ "api_key": "\tsk-def \n" })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stored_key(&org, id).await.as_deref(), Some("sk-def"));
 }

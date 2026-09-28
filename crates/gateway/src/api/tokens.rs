@@ -103,10 +103,10 @@ pub async fn revoke(
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     let store = &state.store;
+    require(me, &Action::ManageOwnTokens)?;
     let id = path_id(&raw_id)?;
     let token = store.token_by_id(id).await?;
     let token = token.ok_or_else(ApiError::not_found)?;
-    require(me, &Action::ManageOwnTokens)?;
     // The action covers the caller's own tokens only. Anyone else's is
     // answered like one that does not exist, for an admin too.
     if token.user_id != me.user_id {
