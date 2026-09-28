@@ -3,7 +3,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
@@ -22,11 +21,10 @@ pub struct AppState {
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    let limit = state.max_body_bytes;
+    // The chat handler enforces `max_body_bytes` itself, after authentication.
     Router::new()
         .route("/health", get(|| async { Json(json!({ "status": "ok" })) }))
         .route("/v1/chat/completions", post(proxy::chat_completions))
-        .layer(DefaultBodyLimit::max(limit))
         .with_state(state)
 }
 

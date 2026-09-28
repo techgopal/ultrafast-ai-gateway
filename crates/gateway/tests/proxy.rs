@@ -306,3 +306,67 @@ async fn bearer_scheme_is_case_insensitive() {
         assert_eq!(resp.status(), StatusCode::OK, "scheme {scheme}");
     }
 }
+
+async fn post_raw(app: &axum::Router, key: &str, body: Body) -> (StatusCode, String) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", format!("Bearer {key}"))
+                .body(body)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn oversized_body_with_invalid_key_gets_401_not_413() {
+    let h = harness_with_limit("openai", 64).await;
+    let big = format!(
+        r#"{{"model":"p/m","messages":[{{"role":"user","content":"{}"}}]}}"#,
+        "x".repeat(200)
+    );
+    let (s, b) = post_chat(&h.app, Some("uf-sk-unknown"), &big).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(!error_message(&b).is_empty());
+}
+
+#[tokio::test]
+async fn body_is_not_read_before_the_key_is_checked() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let h = harness("openai").await;
+    let polled = Arc::new(AtomicBool::new(false));
+    let flag = polled.clone();
+    let stream = futures::stream::once(async move {
+        flag.store(true, Ordering::SeqCst);
+        Ok::<_, std::io::Error>(bytes::Bytes::from_static(BODY.as_bytes()))
+    });
+    let (s, _) = post_raw(&h.app, "uf-sk-unknown", Body::from_stream(stream)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(
+        !polled.load(Ordering::SeqCst),
+        "the body was read before authentication"
+    );
+}
+
+#[tokio::test]
+async fn unreadable_body_gets_400_not_413() {
+    let h = harness("openai").await;
+    let stream = futures::stream::once(async {
+        Err::<bytes::Bytes, _>(std::io::Error::other("connection reset"))
+    });
+    let (s, b) = post_raw(&h.app, &h.key, Body::from_stream(stream)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let v: Value = serde_json::from_str(&b).unwrap();
+    assert_eq!(v["error"]["type"], "invalid_request_error");
+    assert_eq!(error_message(&b), "Request body could not be read.");
+}

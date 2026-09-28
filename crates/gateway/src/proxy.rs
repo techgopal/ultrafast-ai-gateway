@@ -5,14 +5,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
-use axum::extract::rejection::BytesRejection;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use bytes::Bytes;
 use futures::StreamExt;
+use http_body_util::LengthLimitError;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use ultrafast_translate::ingress::openai::{
@@ -46,25 +45,31 @@ fn server_error(message: &str) -> Response {
     error_response(StatusCode::INTERNAL_SERVER_ERROR, "server_error", message)
 }
 
-pub async fn chat_completions(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Response {
-    // 1. Authenticate before looking at anything else.
-    if let Err(resp) = authenticate(&state.store, &headers).await {
+pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    // 1. Authenticate on the headers alone. The body has not been read yet.
+    let (parts, body) = request.into_parts();
+    if let Err(resp) = authenticate(&state.store, &parts.headers).await {
         return resp;
     }
 
     // 2. Read and parse the body.
-    let body = match body {
+    let body = match axum::body::to_bytes(body, state.max_body_bytes).await {
         Ok(b) => b,
-        Err(_) => {
-            return error_response(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "invalid_request_error",
-                "Request body is too large or could not be read.",
-            )
+        Err(e) => {
+            let too_large = e.into_inner().is::<LengthLimitError>();
+            return if too_large {
+                error_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "invalid_request_error",
+                    "Request body is too large.",
+                )
+            } else {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request_error",
+                    "Request body could not be read.",
+                )
+            };
         }
     };
     let req = match parse_request(&body) {
