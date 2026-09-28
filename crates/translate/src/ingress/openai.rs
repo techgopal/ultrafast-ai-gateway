@@ -22,40 +22,30 @@ struct WireRequest {
     stop: Option<StopField>,
     #[serde(default)]
     stream: bool,
-    #[serde(default)]
-    tools: Option<Value>,
+    /// Every field that is not named above.
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
 
-/// Request fields that change the output and that `ChatRequest` cannot carry.
-const UNSUPPORTED_REQUEST_FIELDS: &[&str] = &[
-    "tool_choice",
-    "functions",
-    "function_call",
-    "response_format",
-    "logit_bias",
-    "logprobs",
-    "top_logprobs",
-    "presence_penalty",
-    "frequency_penalty",
-    "seed",
-    "audio",
-    "modalities",
-    "prediction",
-    "reasoning_effort",
+/// Request fields that are accepted and not used: they cannot change the
+/// generated text.
+const IGNORED_REQUEST_FIELDS: &[&str] = &[
+    "user",
+    "metadata",
+    "store",
+    "stream_options",
+    "service_tier",
 ];
 
-/// Message fields that change the output and that `Message` cannot carry.
-const UNSUPPORTED_MESSAGE_FIELDS: &[&str] = &["tool_calls", "function_call", "audio"];
-
-fn reject_present(fields: &[&str], extra: &Map<String, Value>) -> Result<(), TranslateError> {
-    for field in fields {
-        if extra.get(*field).is_some_and(|v| !v.is_null()) {
-            return Err(unsupported_field(field));
-        }
+/// Rejects the first field that is present, not null and not in `allowed`.
+fn reject_unknown(extra: &Map<String, Value>, allowed: &[&str]) -> Result<(), TranslateError> {
+    match extra
+        .iter()
+        .find(|(k, v)| !v.is_null() && !allowed.contains(&k.as_str()))
+    {
+        Some((field, _)) => Err(unsupported_field(field)),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 fn unsupported_field(field: &str) -> TranslateError {
@@ -87,20 +77,33 @@ enum WireContent {
     Parts(Vec<Value>),
 }
 
-pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
-    let wire: WireRequest =
-        serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
-    if wire.tools.is_some() {
-        return Err(TranslateError::Unsupported(
-            "tools are not supported yet".into(),
-        ));
+/// The text of a content part. Only text parts are supported.
+fn part_text(part: &Value) -> Result<&str, TranslateError> {
+    let kind = part["type"].as_str();
+    if kind != Some("text") {
+        return Err(TranslateError::Unsupported(format!(
+            "content part '{}' is not supported yet",
+            kind.unwrap_or("unknown")
+        )));
     }
-    reject_present(UNSUPPORTED_REQUEST_FIELDS, &wire.extra)?;
-    if let Some(n) = wire.extra.get("n") {
+    if let Some(fields) = part.as_object() {
+        reject_unknown(fields, &["type", "text"])?;
+    }
+    part["text"].as_str().ok_or_else(|| {
+        TranslateError::InvalidRequest("content part 'text' must be a string".into())
+    })
+}
+
+pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
+    let mut wire: WireRequest =
+        serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
+    // `n` is only accepted as the integer 1, which is also the default.
+    if let Some(n) = wire.extra.remove("n") {
         if !n.is_null() && n.as_u64() != Some(1) {
             return Err(unsupported_field("n"));
         }
     }
+    reject_unknown(&wire.extra, IGNORED_REQUEST_FIELDS)?;
     if wire.messages.is_empty() {
         return Err(TranslateError::InvalidRequest(
             "messages must not be empty".into(),
@@ -118,7 +121,7 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
                 )))
             }
         };
-        reject_present(UNSUPPORTED_MESSAGE_FIELDS, &m.extra)?;
+        reject_unknown(&m.extra, &[])?;
         let content = match m.content {
             None => {
                 return Err(TranslateError::InvalidRequest(
@@ -128,16 +131,8 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
             Some(WireContent::Text(t)) => t,
             Some(WireContent::Parts(parts)) => {
                 let mut out = String::new();
-                for p in parts {
-                    match (p["type"].as_str(), p["text"].as_str()) {
-                        (Some("text"), Some(t)) => out.push_str(t),
-                        (kind, _) => {
-                            return Err(TranslateError::Unsupported(format!(
-                                "content part '{}' is not supported yet",
-                                kind.unwrap_or("unknown")
-                            )))
-                        }
-                    }
+                for p in &parts {
+                    out.push_str(part_text(p)?);
                 }
                 out
             }
@@ -440,7 +435,7 @@ mod tests {
     fn accepts_and_ignores_fields_that_do_not_change_output() {
         let body = br#"{"model":"m","messages":[{"role":"user","content":"x"}],
             "user":"u1","metadata":{"k":"v"},"store":true,"stream_options":{"include_usage":true},
-            "service_tier":"auto","parallel_tool_calls":false,"some_future_field":123}"#;
+            "service_tier":"auto"}"#;
         let req = parse_request(body).unwrap();
         assert_eq!(req.messages[0].content, "x");
     }
@@ -475,5 +470,107 @@ mod tests {
         let first = done.lines().next().unwrap();
         let v: serde_json::Value = serde_json::from_str(&first["data: ".len()..]).unwrap();
         assert_eq!(v["usage"]["total_tokens"], 8589934590u64);
+    }
+
+    fn with_top_level(field: &str, value: &str) -> String {
+        format!(r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],"{field}":{value}}}"#)
+    }
+
+    #[test]
+    fn rejects_top_level_fields_that_are_not_on_the_allowlist() {
+        let cases = [
+            ("web_search_options", r#"{"search_context_size":"low"}"#),
+            ("top_k", "40"),
+            ("parallel_tool_calls", "false"),
+            ("tools", r#"[{"type":"function"}]"#),
+            ("some_future_field", "123"),
+        ];
+        for (field, value) in cases {
+            let msg = unsupported_message(&with_top_level(field, value));
+            assert_eq!(msg, format!("field '{field}' is not supported yet"));
+            assert!(
+                parse_request(with_top_level(field, "null").as_bytes()).is_ok(),
+                "{field} null"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_each_ignored_field_on_its_own() {
+        let cases = [
+            ("user", r#""u1""#),
+            ("metadata", r#"{"k":"v"}"#),
+            ("store", "true"),
+            ("stream_options", r#"{"include_usage":true}"#),
+            ("service_tier", r#""auto""#),
+        ];
+        for (field, value) in cases {
+            for v in [value, "null"] {
+                let req = parse_request(with_top_level(field, v).as_bytes())
+                    .unwrap_or_else(|e| panic!("{field}={v}: {e:?}"));
+                assert_eq!(req.messages[0].content, "x");
+            }
+        }
+    }
+
+    #[test]
+    fn carried_fields_are_still_carried() {
+        let body = br#"{"model":"m","messages":[{"role":"user","content":"x","name":"bob"}],
+            "max_tokens":5,"temperature":0.5,"top_p":0.25,"stop":["a","b"],"stream":true,"n":1}"#;
+        let req = parse_request(body).unwrap();
+        assert_eq!(req.max_tokens, Some(5));
+        assert_eq!(req.temperature, Some(0.5));
+        assert_eq!(req.top_p, Some(0.25));
+        assert_eq!(req.stop, Some(vec!["a".to_string(), "b".to_string()]));
+        assert!(req.stream);
+        assert_eq!(req.messages[0].name.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn rejects_message_fields_that_are_not_on_the_allowlist() {
+        for (field, value) in [("refusal", r#""no""#), ("some_future_field", "1")] {
+            let body = format!(
+                r#"{{"model":"m","messages":[{{"role":"assistant","content":"x","{field}":{value}}}]}}"#
+            );
+            assert_eq!(
+                unsupported_message(&body),
+                format!("field '{field}' is not supported yet")
+            );
+            let null_body = format!(
+                r#"{{"model":"m","messages":[{{"role":"assistant","content":"x","{field}":null}}]}}"#
+            );
+            assert!(parse_request(null_body.as_bytes()).is_ok(), "{field} null");
+        }
+    }
+
+    fn with_part(part: &str) -> String {
+        format!(r#"{{"model":"m","messages":[{{"role":"user","content":[{part}]}}]}}"#)
+    }
+
+    #[test]
+    fn text_part_without_a_string_text_is_invalid() {
+        for part in [
+            r#"{"type":"text"}"#,
+            r#"{"type":"text","text":null}"#,
+            r#"{"type":"text","text":5}"#,
+        ] {
+            let got = parse_request(with_part(part).as_bytes());
+            assert!(
+                matches!(got, Err(TranslateError::InvalidRequest(_))),
+                "{part}: {got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_content_part_fields_that_are_not_on_the_allowlist() {
+        let part = r#"{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}"#;
+        assert_eq!(
+            unsupported_message(&with_part(part)),
+            "field 'cache_control' is not supported yet"
+        );
+        let part = r#"{"type":"text","text":"x","cache_control":null}"#;
+        let req = parse_request(with_part(part).as_bytes()).unwrap();
+        assert_eq!(req.messages[0].content, "x");
     }
 }
