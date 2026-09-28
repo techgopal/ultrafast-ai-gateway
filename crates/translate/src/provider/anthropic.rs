@@ -170,8 +170,10 @@ pub(crate) fn decode(
         }
         Some("error") => {
             let kind = v["error"]["type"].as_str().unwrap_or("");
+            // Reported as 401 so it is handled like a rejected credential.
+            let credential = kind == "authentication_error" || kind == "permission_error";
             return Err(TranslateError::Provider {
-                status: 502,
+                status: if credential { 401 } else { 502 },
                 retryable: kind == "overloaded_error" || kind == "api_error",
                 message: v["error"]["message"]
                     .as_str()
@@ -393,5 +395,29 @@ mod tests {
                 "message field 'name' is not supported by this provider".into()
             )
         );
+    }
+
+    fn stream_error_status(kind: &str) -> u16 {
+        let mut d = StreamDecoder::new(ProviderKind::Anthropic);
+        let input = format!(
+            "event: error\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"{kind}\",\"message\":\"invalid x-api-key sk-ant-abc\"}}}}\n\n"
+        );
+        match d.feed(input.as_bytes()).unwrap_err() {
+            TranslateError::Provider { status, .. } => status,
+            other => panic!("expected a provider error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_errors_inside_stream_have_status_401() {
+        assert_eq!(stream_error_status("authentication_error"), 401);
+        assert_eq!(stream_error_status("permission_error"), 401);
+    }
+
+    #[test]
+    fn other_errors_inside_stream_keep_status_502() {
+        assert_eq!(stream_error_status("overloaded_error"), 502);
+        assert_eq!(stream_error_status("api_error"), 502);
+        assert_eq!(stream_error_status("invalid_request_error"), 502);
     }
 }

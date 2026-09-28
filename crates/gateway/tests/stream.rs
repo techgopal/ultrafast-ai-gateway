@@ -314,3 +314,62 @@ async fn oversized_stream_event_sends_an_error_event_and_no_done() {
         .contains("stream event exceeds the size limit"));
     assert!(!body.contains("[DONE]"));
 }
+
+const MASKED: &str = "Provider rejected the gateway's credential.";
+
+async fn assert_stream_error(kind: &str, upstream: &str, expected: &str) -> String {
+    let h = harness(kind).await;
+    Mock::given(method("POST"))
+        .respond_with(sse(upstream))
+        .mount(&h.upstream)
+        .await;
+    let (status, body) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(text(&body), "a");
+    let last = payloads(&body).pop().unwrap();
+    assert_eq!(last["error"]["message"], expected);
+    assert_eq!(last["error"]["type"], "upstream_error");
+    assert!(!body.contains("[DONE]"));
+    body
+}
+
+#[tokio::test]
+async fn credential_error_inside_openai_stream_is_masked() {
+    let upstream = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"error\":{\"message\":\"Incorrect API key provided: sk-abc\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}\n\n",
+    );
+    let body = assert_stream_error("openai", upstream, MASKED).await;
+    assert!(!body.contains("sk-abc"));
+    assert!(!body.contains("Incorrect"));
+}
+
+#[tokio::test]
+async fn credential_error_inside_anthropic_stream_is_masked() {
+    for kind in ["authentication_error", "permission_error"] {
+        let upstream = format!(
+            concat!(
+                "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"delta\":{{\"type\":\"text_delta\",\"text\":\"a\"}}}}\n\n",
+                "event: error\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"{}\",\"message\":\"invalid x-api-key sk-ant-abc\"}}}}\n\n",
+            ),
+            kind
+        );
+        let body = assert_stream_error("anthropic", &upstream, MASKED).await;
+        assert!(!body.contains("sk-ant-abc"), "{kind}");
+        assert!(!body.contains("x-api-key"), "{kind}");
+    }
+}
+
+#[tokio::test]
+async fn other_error_inside_stream_shows_only_the_provider_message() {
+    let openai = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"error\":{\"message\":\"The server is overloaded\"}}\n\n",
+    );
+    assert_stream_error("openai", openai, "The server is overloaded").await;
+    let anthropic = concat!(
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"a\"}}\n\n",
+        "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+    );
+    assert_stream_error("anthropic", anthropic, "Overloaded").await;
+}

@@ -158,8 +158,10 @@ pub(crate) fn decode(
     let v: Value =
         serde_json::from_str(&ev.data).map_err(|e| TranslateError::Malformed(e.to_string()))?;
     if let Some(msg) = v["error"]["message"].as_str() {
+        // Reported as 401 so it is handled like a rejected credential.
+        let credential = v["error"]["code"] == "invalid_api_key";
         return Err(TranslateError::Provider {
-            status: 502,
+            status: if credential { 401 } else { 502 },
             retryable: false,
             message: msg.to_string(),
         });
@@ -446,6 +448,36 @@ mod tests {
                     usage: None
                 },
             ]
+        );
+    }
+
+    fn stream_error_status(data: &str) -> u16 {
+        let mut d = StreamDecoder::new(ProviderKind::OpenAi);
+        match d.feed(format!("data: {data}\n\n").as_bytes()).unwrap_err() {
+            TranslateError::Provider { status, .. } => status,
+            other => panic!("expected a provider error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_error_inside_stream_has_status_401() {
+        assert_eq!(
+            stream_error_status(
+                r#"{"error":{"message":"Incorrect API key provided: sk-abc","type":"invalid_request_error","code":"invalid_api_key"}}"#
+            ),
+            401
+        );
+    }
+
+    #[test]
+    fn other_error_inside_stream_keeps_status_502() {
+        assert_eq!(
+            stream_error_status(r#"{"error":{"message":"overloaded","code":"server_error"}}"#),
+            502
+        );
+        assert_eq!(
+            stream_error_status(r#"{"error":{"message":"overloaded"}}"#),
+            502
         );
     }
 }
