@@ -150,9 +150,17 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Reque
     if req.stream && status < 400 {
         return stream_response(upstream, kind, target.model);
     }
-    let bytes = match upstream.bytes().await {
+    let bytes = match read_capped(upstream, state.max_provider_response_bytes).await {
         Ok(b) => b,
-        Err(_) => {
+        Err(ReadError::TooLarge) => {
+            tracing::warn!(provider = %provider.name, "provider response was too large");
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                "upstream_error",
+                "The provider response was too large.",
+            );
+        }
+        Err(ReadError::Failed) => {
             return error_response(
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",
@@ -164,6 +172,25 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Reque
         Ok(r) => Json(render_response(&r, now_secs())).into_response(),
         Err(e) => translate_error_response(&e),
     }
+}
+
+enum ReadError {
+    TooLarge,
+    Failed,
+}
+
+/// Reads a provider response, giving up once it is larger than `max` bytes.
+async fn read_capped(upstream: reqwest::Response, max: usize) -> Result<Vec<u8>, ReadError> {
+    let mut out = Vec::new();
+    let mut chunks = upstream.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(|_| ReadError::Failed)?;
+        if chunk.len() > max - out.len() {
+            return Err(ReadError::TooLarge);
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 async fn send(

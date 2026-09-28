@@ -12,12 +12,15 @@ use crate::secrets::Cipher;
 use crate::store::Store;
 
 pub const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+pub const DEFAULT_MAX_PROVIDER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 pub struct AppState {
     pub store: Store,
     pub cipher: Cipher,
     pub http: reqwest::Client,
     pub max_body_bytes: usize,
+    /// The largest non-streaming provider response that is read.
+    pub max_provider_response_bytes: usize,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
