@@ -6,6 +6,7 @@ use std::time::Duration;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde_json::json;
+use tokio::sync::Semaphore;
 
 use crate::api;
 use crate::identity::limiter::LoginLimiter;
@@ -13,6 +14,8 @@ use crate::proxy;
 use crate::secrets::Cipher;
 use crate::store::Store;
 
+/// How many passwords may be hashed at the same time.
+pub const MAX_CONCURRENT_HASHES: usize = 4;
 pub const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 pub const DEFAULT_MAX_PROVIDER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -27,6 +30,9 @@ pub struct AppState {
     pub limiter: LoginLimiter,
     /// Whether the session cookie is marked `Secure`.
     pub cookie_secure: bool,
+    /// Bounds how many passwords are hashed at once, so a flood of
+    /// sign-ins cannot occupy every blocking thread.
+    pub hashing: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -40,6 +46,7 @@ impl AppState {
             max_provider_response_bytes: DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
             limiter: LoginLimiter::new(),
             cookie_secure: true,
+            hashing: Arc::new(Semaphore::new(MAX_CONCURRENT_HASHES)),
         }
     }
 }
