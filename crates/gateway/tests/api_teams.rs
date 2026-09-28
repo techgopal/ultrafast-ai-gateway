@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{error_code, org, Org, Signed};
+use common::{error_code, org, raw, Org, Signed};
 use serde_json::{json, Value};
 use ultrafast_gateway::identity::TeamRole;
 use ultrafast_gateway::secrets::generate_key;
@@ -239,46 +239,6 @@ async fn hidden_and_missing_teams_answer_alike() {
         org.api.store.members_of(org.research).await.unwrap().len(),
         2
     );
-}
-
-/// The status, the headers and the exact bytes of an answer.
-async fn raw(
-    org: &Org,
-    who: &Signed,
-    method: &str,
-    path: &str,
-    body: Option<Value>,
-) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
-    use tower::ServiceExt;
-    let mut req = axum::http::Request::builder()
-        .method(method)
-        .uri(path)
-        .header("cookie", &who.cookie)
-        .header("x-csrf-token", &who.csrf);
-    let body = match body {
-        Some(value) => {
-            req = req.header("content-type", "application/json");
-            axum::body::Body::from(serde_json::to_vec(&value).unwrap())
-        }
-        None => axum::body::Body::empty(),
-    };
-    let resp = org
-        .api
-        .app
-        .clone()
-        .oneshot(req.body(body).unwrap())
-        .await
-        .unwrap();
-    let status = resp.status();
-    let headers = resp
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
-        .collect();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    (status, headers, bytes.to_vec())
 }
 
 #[tokio::test]

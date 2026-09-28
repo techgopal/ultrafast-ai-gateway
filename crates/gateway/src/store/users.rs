@@ -129,7 +129,6 @@ impl Store {
         rows.iter().map(user_from).collect()
     }
 
-    /// Records that the user was active just now.
     /// The users who belong to any of the teams, and the user `own_id`.
     /// Ordered by email.
     pub async fn list_users_in_teams(&self, team_ids: &[i64], own_id: i64) -> Result<Vec<UserRow>> {
@@ -173,6 +172,7 @@ impl Store {
         Ok(found)
     }
 
+    /// Records that the user was active just now.
     pub async fn touch_user(&self, id: i64) -> Result<()> {
         sqlx::query(
             "UPDATE users SET last_active_at = datetime('now') WHERE id = ? AND org_id = ?",

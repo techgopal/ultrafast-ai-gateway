@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{error_code, org, Org, Signed};
+use common::{error_code, org, raw, Org, Signed};
 use serde_json::{json, Value};
 use ultrafast_gateway::secrets::{generate_key, generate_secret, TOKEN_PREFIX};
 
@@ -355,46 +355,6 @@ async fn hidden_and_missing_users_answer_alike() {
         assert_eq!(answers[0], answers[1], "{method}");
     }
     assert_eq!(org.api.store.count_users().await.unwrap(), 5);
-}
-
-/// The status, the content headers and the exact bytes of an answer.
-async fn raw(
-    org: &Org,
-    who: &Signed,
-    method: &str,
-    path: &str,
-    body: Option<Value>,
-) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
-    use tower::ServiceExt;
-    let mut req = axum::http::Request::builder()
-        .method(method)
-        .uri(path)
-        .header("cookie", &who.cookie)
-        .header("x-csrf-token", &who.csrf);
-    let body = match body {
-        Some(value) => {
-            req = req.header("content-type", "application/json");
-            axum::body::Body::from(serde_json::to_vec(&value).unwrap())
-        }
-        None => axum::body::Body::empty(),
-    };
-    let resp = org
-        .api
-        .app
-        .clone()
-        .oneshot(req.body(body).unwrap())
-        .await
-        .unwrap();
-    let status = resp.status();
-    let headers = resp
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
-        .collect();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    (status, headers, bytes.to_vec())
 }
 
 #[tokio::test]
@@ -775,4 +735,56 @@ async fn changes_need_the_csrf_header() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(error_code(&body), "csrf_failed");
     assert!(org.api.store.user_by_id(org.lena).await.unwrap().is_some());
+}
+
+/// Whoever may not invite learns nothing about an id from asking.
+#[tokio::test]
+async fn reinvite_hides_existence_from_non_admins() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let (_, body) = invite(
+        &org,
+        &maya,
+        json!({ "email": "noor@example.com", "name": "Noor", "role": "admin" }),
+    )
+    .await;
+    let noor = body["user"]["id"].as_i64().unwrap();
+    let token = token_of(&body);
+    let paths = [
+        format!("/api/users/{noor}/invite"),
+        format!("/api/users/{}/invite", org.tomas),
+        "/api/users/999/invite".to_string(),
+        "/api/users/abc/invite".to_string(),
+    ];
+
+    for name in ["lena", "arjun"] {
+        let who = org.sign_in(name).await;
+        let mut answers = Vec::new();
+        for path in &paths {
+            let answer = raw(&org, &who, "POST", path, None).await;
+            assert_eq!(answer.0, StatusCode::FORBIDDEN, "{name} {path}");
+            answers.push(answer);
+        }
+        for answer in &answers[1..] {
+            assert_eq!(*answer, answers[0], "{name}");
+        }
+    }
+    assert!(!org
+        .audit_actions()
+        .await
+        .contains(&"user.reinvite".to_string()));
+
+    let status = |path: &str| {
+        let path = path.to_string();
+        let (org, maya) = (&org, &maya);
+        async move { org.call(Some(maya), "POST", &path, None).await }
+    };
+    let (code, body) = status(&paths[1]).await;
+    assert_eq!(code, StatusCode::CONFLICT);
+    assert_eq!(error_code(&body), "not_invited");
+    assert_eq!(status(&paths[2]).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(status(&paths[3]).await.0, StatusCode::NOT_FOUND);
+    // The refused calls replaced nothing.
+    assert_eq!(status(&paths[0]).await.0, StatusCode::CREATED);
+    assert_eq!(accept(&org, &token).await, StatusCode::NOT_FOUND);
 }
