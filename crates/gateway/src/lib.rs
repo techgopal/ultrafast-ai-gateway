@@ -1,0 +1,1 @@
+//! Ultrafast gateway library.
