@@ -31,7 +31,7 @@ limits and budgets.
 
 > **A high-performance AI gateway built in Rust** that provides a unified interface to 10+ LLM providers with advanced routing, caching, and monitoring capabilities.
 
-[![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.88+-orange.svg)](LICENSE)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/ultrafast-ai/ultrafast-gateway/ci.yml?branch=main)](https://github.com/ultrafast-ai/ultrafast-gateway/actions)
 
