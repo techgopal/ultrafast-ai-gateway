@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::error::TranslateError;
-use crate::types::{ChatRequest, ChatResponse, Message, Role, StreamEvent};
+use crate::types::{ChatRequest, ChatResponse, Message, Role, StreamEvent, Usage};
 
 #[derive(Deserialize)]
 struct WireRequest {
@@ -162,6 +162,15 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
     })
 }
 
+/// The total is 64-bit: both counts may be saturated at `u32::MAX`.
+fn usage_json(u: Usage) -> Value {
+    json!({
+        "prompt_tokens": u.input_tokens,
+        "completion_tokens": u.output_tokens,
+        "total_tokens": u64::from(u.input_tokens) + u64::from(u.output_tokens),
+    })
+}
+
 pub fn render_response(r: &ChatResponse, created: u64) -> Value {
     let mut v = json!({
         "id": r.id,
@@ -175,11 +184,7 @@ pub fn render_response(r: &ChatResponse, created: u64) -> Value {
         }],
     });
     if let Some(u) = r.usage {
-        v["usage"] = json!({
-            "prompt_tokens": u.input_tokens,
-            "completion_tokens": u.output_tokens,
-            "total_tokens": u.input_tokens + u.output_tokens,
-        });
+        v["usage"] = usage_json(u);
     }
     v
 }
@@ -202,11 +207,7 @@ pub fn render_stream_event(ev: &StreamEvent, id: &str, model: &str, created: u64
                 "choices": [{ "index": 0, "delta": {}, "finish_reason": finish_reason.map(|f| f.as_openai()) }],
             });
             if let Some(u) = usage {
-                v["usage"] = json!({
-                    "prompt_tokens": u.input_tokens,
-                    "completion_tokens": u.output_tokens,
-                    "total_tokens": u.input_tokens + u.output_tokens,
-                });
+                v["usage"] = usage_json(*u);
             }
             format!("data: {v}\n\ndata: [DONE]\n\n")
         }
@@ -442,5 +443,37 @@ mod tests {
             "service_tier":"auto","parallel_tool_calls":false,"some_future_field":123}"#;
         let req = parse_request(body).unwrap();
         assert_eq!(req.messages[0].content, "x");
+    }
+
+    #[test]
+    fn saturated_token_counts_do_not_overflow_the_total() {
+        let usage = Some(Usage {
+            input_tokens: u32::MAX,
+            output_tokens: u32::MAX,
+        });
+        let r = ChatResponse {
+            id: "id1".into(),
+            model: "m".into(),
+            content: "x".into(),
+            finish_reason: Some(FinishReason::Stop),
+            usage,
+        };
+        let v = render_response(&r, 1);
+        assert_eq!(v["usage"]["prompt_tokens"], u32::MAX);
+        assert_eq!(v["usage"]["completion_tokens"], u32::MAX);
+        assert_eq!(v["usage"]["total_tokens"], 8589934590u64);
+
+        let done = render_stream_event(
+            &StreamEvent::Done {
+                finish_reason: Some(FinishReason::Stop),
+                usage,
+            },
+            "id1",
+            "m",
+            1,
+        );
+        let first = done.lines().next().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&first["data: ".len()..]).unwrap();
+        assert_eq!(v["usage"]["total_tokens"], 8589934590u64);
     }
 }
