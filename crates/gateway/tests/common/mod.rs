@@ -91,6 +91,8 @@ pub async fn post_chat(app: &Router, key: Option<&str>, body: &str) -> (StatusCo
 pub struct Api {
     pub app: Router,
     pub store: Store,
+    /// The state behind `app`, for tests that need its cipher.
+    pub state: Arc<AppState>,
 }
 
 /// A signed-in browser session.
@@ -111,9 +113,11 @@ pub fn api_on(store: Store, cookie_secure: bool) -> Api {
     let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
     let mut state = AppState::new(store.clone(), cipher);
     state.cookie_secure = cookie_secure;
+    let state = Arc::new(state);
     Api {
-        app: router(Arc::new(state)),
+        app: router(state.clone()),
         store,
+        state,
     }
 }
 

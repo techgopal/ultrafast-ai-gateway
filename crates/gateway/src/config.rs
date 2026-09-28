@@ -64,6 +64,27 @@ pub fn validate_base_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Longest accepted provider name, in characters.
+const MAX_PROVIDER_NAME_CHARS: usize = 40;
+
+/// Checks a provider name. Models are called as `NAME/MODEL`, so the name
+/// is kept to 1 to 40 of `a-z`, `0-9`, `-` and `_`, starting with a letter
+/// or a digit.
+pub fn validate_provider_name(name: &str) -> Result<()> {
+    let allowed = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_';
+    let starts_well = name
+        .bytes()
+        .next()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    if !starts_well || name.len() > MAX_PROVIDER_NAME_CHARS || !name.bytes().all(allowed) {
+        bail!(
+            "provider name must be 1 to 40 characters of a-z, 0-9, '-' and '_', \
+             starting with a letter or a digit"
+        );
+    }
+    Ok(())
+}
+
 /// Makes the database and its WAL side files readable by the owner only.
 /// Files that do not exist are skipped. Does nothing on non-Unix systems.
 #[cfg(unix)]
@@ -239,6 +260,30 @@ mod tests {
             db_path(Path::new("/x")),
             PathBuf::from("/x").join("gateway.db")
         );
+    }
+
+    #[test]
+    fn provider_names_are_short_lowercase_slugs() {
+        for good in ["a", "9", "openai", "open-ai_2", "0x", &"a".repeat(40)] {
+            assert!(validate_provider_name(good).is_ok(), "rejected {good:?}");
+        }
+        for bad in [
+            "",
+            " ",
+            "Open AI",
+            "OpenAI",
+            "a/b",
+            "-x",
+            "_x",
+            "a b",
+            "a.b",
+            " a",
+            "a\n",
+            "\u{e9}",
+            &"a".repeat(41),
+        ] {
+            assert!(validate_provider_name(bad).is_err(), "accepted {bad:?}");
+        }
     }
 
     #[test]

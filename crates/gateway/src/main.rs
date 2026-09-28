@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use ultrafast_gateway::api::auth::bootstrap_admin;
 use ultrafast_gateway::app::{router, shutdown_signal, AppState};
 use ultrafast_gateway::config::{
-    db_path, load_master_key, restrict_permissions, validate_base_url,
+    db_path, load_master_key, restrict_permissions, validate_base_url, validate_provider_name,
 };
 use ultrafast_gateway::identity::password;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
@@ -153,13 +153,14 @@ async fn main() -> Result<()> {
                     api_key,
                 },
         } => {
-            if name.is_empty() || name.contains('/') {
-                bail!("provider name must not be empty or contain '/'");
-            }
+            validate_provider_name(&name)?;
             if ProviderKind::parse(&kind).is_none() {
                 bail!("unknown kind '{kind}'. Use 'openai' or 'anthropic'");
             }
             validate_base_url(&base_url)?;
+            if api_key.as_deref().is_some_and(|k| k.trim().is_empty()) {
+                bail!("the API key must not be empty; leave it out for a provider without one");
+            }
             let credential = api_key.as_deref().map(|k| cipher.encrypt(k.as_bytes()));
             store
                 .insert_provider(&name, &kind, &base_url, credential.as_deref())

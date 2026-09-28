@@ -3,7 +3,10 @@
 
 pub mod audit;
 pub mod auth;
+pub mod keys;
+pub mod providers;
 pub mod teams;
+pub mod tokens;
 pub mod users;
 
 use std::collections::BTreeMap;
@@ -16,7 +19,7 @@ use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -59,6 +62,15 @@ pub fn router() -> Router<Arc<AppState>> {
             "/teams/{id}/members/{user_id}",
             put(teams::put_member).delete(teams::remove_member),
         )
+        .route("/keys", get(keys::list).post(keys::create))
+        .route("/keys/{id}", get(keys::view).delete(keys::revoke))
+        .route("/providers", get(providers::list).post(providers::create))
+        .route(
+            "/providers/{id}",
+            patch(providers::update).delete(providers::delete),
+        )
+        .route("/tokens", get(tokens::list).post(tokens::create))
+        .route("/tokens/{id}", delete(tokens::revoke))
         .route("/audit", get(audit::list))
         .fallback(|| async { ApiError::not_found() })
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
