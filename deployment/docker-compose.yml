@@ -5,7 +5,7 @@ services:
   gateway:
     build:
       context: ..
-      dockerfile: deployment/Dockerfile
+      dockerfile: Dockerfile
     ports:
       - "3000:3000"
     env_file:
