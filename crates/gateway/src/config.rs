@@ -13,10 +13,12 @@ pub fn db_path(data_dir: &Path) -> PathBuf {
 }
 
 /// Returns the master key as hex. Uses `from_env` when given. Otherwise reads
-/// `master.key` in the data directory, creating it on first use.
+/// `master.key` in the data directory, creating it on first use. The data
+/// directory is created in both cases, since the database lives there too.
 pub fn load_master_key(data_dir: &Path, from_env: Option<&str>) -> Result<String> {
     if let Some(v) = from_env {
         Cipher::from_hex(v).context("UF_MASTER_KEY is not valid")?;
+        create_data_dir(data_dir)?;
         return Ok(v.trim().to_string());
     }
     create_data_dir(data_dir)?;
@@ -136,6 +138,23 @@ mod tests {
         let master = Cipher::generate_master_hex();
         assert_eq!(load_master_key(dir.path(), Some(&master)).unwrap(), master);
         assert!(!dir.path().join("master.key").exists());
+    }
+
+    #[tokio::test]
+    async fn env_value_still_creates_a_missing_data_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a/b");
+        let master = Cipher::generate_master_hex();
+        assert_eq!(load_master_key(&nested, Some(&master)).unwrap(), master);
+        assert!(nested.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&nested).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        assert!(!nested.join("master.key").exists());
+        crate::store::Store::open(&db_path(&nested)).await.unwrap();
     }
 
     #[test]
