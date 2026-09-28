@@ -1,7 +1,7 @@
 //! OpenAI Chat Completions wire format, as received from and returned to callers.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::error::TranslateError;
 use crate::types::{ChatRequest, ChatResponse, Message, Role, StreamEvent};
@@ -24,6 +24,42 @@ struct WireRequest {
     stream: bool,
     #[serde(default)]
     tools: Option<Value>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+/// Request fields that change the output and that `ChatRequest` cannot carry.
+const UNSUPPORTED_REQUEST_FIELDS: &[&str] = &[
+    "tool_choice",
+    "functions",
+    "function_call",
+    "response_format",
+    "logit_bias",
+    "logprobs",
+    "top_logprobs",
+    "presence_penalty",
+    "frequency_penalty",
+    "seed",
+    "audio",
+    "modalities",
+    "prediction",
+    "reasoning_effort",
+];
+
+/// Message fields that change the output and that `Message` cannot carry.
+const UNSUPPORTED_MESSAGE_FIELDS: &[&str] = &["tool_calls", "function_call", "audio"];
+
+fn reject_present(fields: &[&str], extra: &Map<String, Value>) -> Result<(), TranslateError> {
+    for field in fields {
+        if extra.get(*field).is_some_and(|v| !v.is_null()) {
+            return Err(unsupported_field(field));
+        }
+    }
+    Ok(())
+}
+
+fn unsupported_field(field: &str) -> TranslateError {
+    TranslateError::Unsupported(format!("field '{field}' is not supported yet"))
 }
 
 #[derive(Deserialize)]
@@ -40,6 +76,8 @@ struct WireMessage {
     content: Option<WireContent>,
     #[serde(default)]
     name: Option<String>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -56,6 +94,12 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
         return Err(TranslateError::Unsupported(
             "tools are not supported yet".into(),
         ));
+    }
+    reject_present(UNSUPPORTED_REQUEST_FIELDS, &wire.extra)?;
+    if let Some(n) = wire.extra.get("n") {
+        if !n.is_null() && n.as_u64() != Some(1) {
+            return Err(unsupported_field("n"));
+        }
     }
     if wire.messages.is_empty() {
         return Err(TranslateError::InvalidRequest(
@@ -74,8 +118,13 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
                 )))
             }
         };
+        reject_present(UNSUPPORTED_MESSAGE_FIELDS, &m.extra)?;
         let content = match m.content {
-            None => String::new(),
+            None => {
+                return Err(TranslateError::InvalidRequest(
+                    "message content is required".into(),
+                ))
+            }
             Some(WireContent::Text(t)) => t,
             Some(WireContent::Parts(parts)) => {
                 let mut out = String::new();
@@ -292,5 +341,106 @@ mod tests {
         let s = render_stream_error("x\ny");
         let v: serde_json::Value = serde_json::from_str(s["data: ".len()..].trim()).unwrap();
         assert_eq!(v["error"]["message"], "x\ny");
+    }
+
+    fn unsupported_message(body: &str) -> String {
+        match parse_request(body.as_bytes()) {
+            Err(TranslateError::Unsupported(m)) => m,
+            other => panic!("expected Unsupported for {body}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_every_unsupported_top_level_field() {
+        let cases = [
+            ("tool_choice", r#""auto""#),
+            ("functions", r#"[{"name":"f"}]"#),
+            ("function_call", r#""auto""#),
+            ("response_format", r#"{"type":"json_object"}"#),
+            ("logit_bias", r#"{"50256":-100}"#),
+            ("logprobs", "true"),
+            ("top_logprobs", "2"),
+            ("presence_penalty", "0.5"),
+            ("frequency_penalty", "0.5"),
+            ("seed", "7"),
+            ("audio", r#"{"voice":"alloy","format":"wav"}"#),
+            ("modalities", r#"["text","audio"]"#),
+            ("prediction", r#"{"type":"content","content":"x"}"#),
+            ("reasoning_effort", r#""low""#),
+        ];
+        for (field, value) in cases {
+            let body = format!(
+                r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],"{field}":{value}}}"#
+            );
+            let msg = unsupported_message(&body);
+            assert!(msg.contains(&format!("'{field}'")), "{field}: {msg}");
+
+            let null_body = format!(
+                r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],"{field}":null}}"#
+            );
+            assert!(parse_request(null_body.as_bytes()).is_ok(), "{field} null");
+        }
+    }
+
+    #[test]
+    fn rejects_n_other_than_one() {
+        let body = |n: &str| {
+            format!(r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],"n":{n}}}"#)
+        };
+        assert!(parse_request(body("1").as_bytes()).is_ok());
+        assert!(parse_request(body("null").as_bytes()).is_ok());
+        for n in ["2", "0", "\"1\"", "1.5"] {
+            let msg = unsupported_message(&body(n));
+            assert!(msg.contains("'n'"), "{n}: {msg}");
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_message_fields() {
+        let cases = [
+            (
+                "tool_calls",
+                r#"[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"}}]"#,
+            ),
+            ("function_call", r#"{"name":"f","arguments":"{}"}"#),
+            ("audio", r#"{"id":"a1"}"#),
+        ];
+        for (field, value) in cases {
+            let body = format!(
+                r#"{{"model":"m","messages":[{{"role":"assistant","content":"x","{field}":{value}}}]}}"#
+            );
+            let msg = unsupported_message(&body);
+            assert!(msg.contains(&format!("'{field}'")), "{field}: {msg}");
+
+            let null_body = format!(
+                r#"{{"model":"m","messages":[{{"role":"assistant","content":"x","{field}":null}}]}}"#
+            );
+            assert!(parse_request(null_body.as_bytes()).is_ok(), "{field} null");
+        }
+    }
+
+    #[test]
+    fn rejects_missing_or_null_content() {
+        for body in [
+            r#"{"model":"m","messages":[{"role":"assistant"}]}"#,
+            r#"{"model":"m","messages":[{"role":"assistant","content":null}]}"#,
+            r#"{"model":"m","messages":[{"role":"user","content":null}]}"#,
+        ] {
+            match parse_request(body.as_bytes()) {
+                Err(TranslateError::InvalidRequest(m)) => {
+                    assert_eq!(m, "message content is required")
+                }
+                other => panic!("expected InvalidRequest for {body}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_and_ignores_fields_that_do_not_change_output() {
+        let body = br#"{"model":"m","messages":[{"role":"user","content":"x"}],
+            "user":"u1","metadata":{"k":"v"},"store":true,"stream_options":{"include_usage":true},
+            "service_tier":"auto","parallel_tool_calls":false,"some_future_field":123}"#;
+        let req = parse_request(body).unwrap();
+        assert_eq!(req.messages[0].content, "x");
     }
 }
