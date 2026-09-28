@@ -19,8 +19,7 @@ pub fn load_master_key(data_dir: &Path, from_env: Option<&str>) -> Result<String
         Cipher::from_hex(v).context("UF_MASTER_KEY is not valid")?;
         return Ok(v.trim().to_string());
     }
-    std::fs::create_dir_all(data_dir)
-        .with_context(|| format!("could not create {}", data_dir.display()))?;
+    create_data_dir(data_dir)?;
     let path = data_dir.join(MASTER_KEY_FILE);
     if path.exists() {
         let v = std::fs::read_to_string(&path)
@@ -61,6 +60,50 @@ pub fn validate_base_url(url: &str) -> Result<()> {
         bail!("base URL must include a host");
     }
     Ok(())
+}
+
+/// Makes the database and its WAL side files readable by the owner only.
+/// Files that do not exist are skipped. Does nothing on non-Unix systems.
+#[cfg(unix)]
+pub fn restrict_permissions(data_dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let db = db_path(data_dir);
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = db.clone().into_os_string();
+        name.push(suffix);
+        let path = PathBuf::from(name);
+        match std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("could not restrict {}", path.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn restrict_permissions(_data_dir: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// Creates the data directory if it is missing. Directories the gateway
+/// creates are owner-only; an existing directory is left as it is.
+fn create_data_dir(data_dir: &Path) -> Result<()> {
+    if data_dir.is_dir() {
+        return Ok(());
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(data_dir)
+        .with_context(|| format!("could not create {}", data_dir.display()))
 }
 
 #[cfg(unix)]
@@ -121,6 +164,47 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restrict_permissions_makes_database_files_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["gateway.db", "gateway.db-wal", "gateway.db-shm"];
+        for n in names {
+            let p = dir.path().join(n);
+            std::fs::write(&p, "x").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o666)).unwrap();
+        }
+        restrict_permissions(dir.path()).unwrap();
+        for n in names {
+            let mode = std::fs::metadata(dir.path().join(n))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{n}");
+        }
+    }
+
+    #[test]
+    fn restrict_permissions_ignores_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gateway.db"), "x").unwrap();
+        restrict_permissions(dir.path()).unwrap();
+        let empty = tempfile::tempdir().unwrap();
+        restrict_permissions(empty.path()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_data_directory_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a/b");
+        load_master_key(&nested, None).unwrap();
+        let mode = std::fs::metadata(&nested).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[test]

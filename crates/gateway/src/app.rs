@@ -44,3 +44,26 @@ pub fn http_client() -> reqwest::Client {
         .build()
         .expect("the HTTP client configuration is valid")
 }
+
+/// Resolves when the process is asked to stop: ctrl-c, or SIGTERM on Unix.
+pub async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => tokio::select! {
+                _ = ctrl_c => {}
+                _ = term.recv() => {}
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "could not listen for SIGTERM");
+                ctrl_c.await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    ctrl_c.await;
+}
