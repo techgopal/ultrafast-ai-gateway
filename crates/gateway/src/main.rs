@@ -4,8 +4,12 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use ultrafast_gateway::app::{http_client, router, AppState, DEFAULT_MAX_BODY_BYTES};
-use ultrafast_gateway::config::{db_path, load_master_key, validate_base_url};
+use ultrafast_gateway::app::{
+    http_client, router, shutdown_signal, AppState, DEFAULT_MAX_BODY_BYTES,
+};
+use ultrafast_gateway::config::{
+    db_path, load_master_key, restrict_permissions, validate_base_url,
+};
 use ultrafast_gateway::secrets::{generate_key, Cipher};
 use ultrafast_gateway::store::Store;
 use ultrafast_translate::provider::ProviderKind;
@@ -89,6 +93,7 @@ async fn main() -> Result<()> {
     let store = Store::open(&db_path(&cli.data_dir))
         .await
         .context("could not open the database")?;
+    restrict_permissions(&cli.data_dir)?;
 
     match cli.command {
         Command::Serve { host, port } => {
@@ -106,9 +111,7 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("could not listen on {addr}"))?;
             tracing::info!(%addr, "gateway listening");
             axum::serve(listener, router(state))
-                .with_graceful_shutdown(async {
-                    let _ = tokio::signal::ctrl_c().await;
-                })
+                .with_graceful_shutdown(shutdown_signal())
                 .await?;
         }
         Command::Provider {
