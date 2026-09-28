@@ -3,6 +3,7 @@
 mod audit;
 mod keys;
 mod providers;
+mod sessions;
 mod teams;
 mod users;
 
@@ -21,6 +22,7 @@ use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 pub use audit::{AuditEntry, AuditRow};
 pub use keys::KeyRow;
 pub use providers::ProviderRow;
+pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
 pub use teams::{MemberRow, TeamRow};
 pub use users::{InviteRow, NewUser, UserRow};
 
