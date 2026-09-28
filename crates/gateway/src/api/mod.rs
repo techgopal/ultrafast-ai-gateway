@@ -248,7 +248,7 @@ pub struct Authed {
 }
 
 /// The value of the session cookie, if the request has one.
-pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+fn session_cookie(headers: &HeaderMap) -> Option<&str> {
     headers
         .get_all(COOKIE)
         .iter()

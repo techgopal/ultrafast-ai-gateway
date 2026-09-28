@@ -261,6 +261,63 @@ async fn login_is_limited_per_email() {
     assert_eq!(status, StatusCode::OK);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_failures_cannot_exceed_the_limit() {
+    let api = api().await;
+    seed_user(&api.store, EMAIL, Role::Admin, PASSWORD).await;
+    let attempts = (0..12).map(|_| login(&api, EMAIL, "wrong horse battery"));
+    let results = futures::future::join_all(attempts).await;
+    let count = |status: StatusCode| results.iter().filter(|(s, _)| *s == status).count();
+    assert_eq!(count(StatusCode::UNAUTHORIZED), 5);
+    assert_eq!(count(StatusCode::TOO_MANY_REQUESTS), 7);
+    for (status, body) in &results {
+        if *status == StatusCode::TOO_MANY_REQUESTS {
+            assert_eq!(code(body), "too_many_attempts");
+        }
+    }
+    let (status, _) = login(&api, EMAIL, PASSWORD).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_wrong_current_passwords_cannot_exceed_the_limit() {
+    let api = api().await;
+    seed_user(&api.store, EMAIL, Role::Member, PASSWORD).await;
+    let signed = sign_in(&api.app, EMAIL, PASSWORD).await;
+    let attempts =
+        (0..12).map(|_| change_password(&api, &signed, "wrong horse battery", NEW_PASSWORD));
+    let results = futures::future::join_all(attempts).await;
+    let count = |status: StatusCode| results.iter().filter(|(s, _)| *s == status).count();
+    assert_eq!(count(StatusCode::UNAUTHORIZED), 5);
+    assert_eq!(count(StatusCode::TOO_MANY_REQUESTS), 7);
+}
+
+#[tokio::test]
+async fn a_successful_sign_in_costs_nothing() {
+    let api = api().await;
+    seed_user(&api.store, EMAIL, Role::Admin, PASSWORD).await;
+    // 19 of the address's 20 failures are used up by other emails.
+    for n in 0..19 {
+        let (status, _) = login(&api, &format!("user{n}@example.com"), PASSWORD).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    for _ in 0..4 {
+        let (status, _) = login(&api, EMAIL, PASSWORD).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    // A changed password is a success too.
+    let signed = sign_in(&api.app, EMAIL, PASSWORD).await;
+    for _ in 0..3 {
+        let (status, _) = change_password(&api, &signed, PASSWORD, PASSWORD).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    // The one slot left is still there, and it is the last.
+    let (status, _) = login(&api, "last@example.com", PASSWORD).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = login(&api, EMAIL, PASSWORD).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+}
+
 #[tokio::test]
 async fn login_limit_clears_on_success() {
     let api = api().await;
@@ -428,6 +485,21 @@ async fn logout_ends_the_session() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = me(&api, &kept).await;
     assert_eq!(status, StatusCode::OK);
+    assert!(api
+        .store
+        .live_session(cookie_value(&signed))
+        .await
+        .unwrap()
+        .is_none());
+
+    let audit = api.store.list_audit(20, None).await.unwrap();
+    let entries: Vec<_> = audit.iter().filter(|e| e.action == "auth.logout").collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].actor_email, EMAIL);
+    assert_eq!(entries[0].target_id, Some(signed.user_id));
+    assert!(entries[0].summary.contains(EMAIL));
+    assert!(!entries[0].summary.contains(cookie_value(&signed)));
+    assert!(!entries[0].summary.contains(&signed.csrf));
 }
 
 #[tokio::test]
@@ -608,6 +680,24 @@ async fn accept_invite_rejects_bad_input() {
     let user = api.store.user_by_id(off).await.unwrap().unwrap();
     assert_eq!(user.status, UserStatus::Disabled);
     assert_eq!(user.password_hash, None);
+
+    // A user who is already active cannot use an invite to set a password.
+    let active = seed_user(&api.store, "active@example.com", Role::Member, PASSWORD).await;
+    let before = api.store.user_by_id(active).await.unwrap().unwrap();
+    let for_active = seed_invite(&api.store, active, &after(3600)).await;
+    let (status, body) = accept(for_active.clone(), NEW_PASSWORD).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        body,
+        json!({ "error": { "code": "not_found", "message": "Not found." } })
+    );
+    let now = api.store.user_by_id(active).await.unwrap().unwrap();
+    assert_eq!(now.password_hash, before.password_hash);
+    // The invite was left unused.
+    let hash = ultrafast_gateway::secrets::hash_key(&for_active);
+    assert!(api.store.invite_by_hash(&hash).await.unwrap().is_some());
+    let audit = api.store.list_audit(20, None).await.unwrap();
+    assert!(audit.iter().all(|e| e.action != "user.accept_invite"));
 
     // The invite that met a weak password still works.
     let (status, _) = accept(live, PASSWORD).await;

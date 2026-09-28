@@ -9,14 +9,15 @@ use std::time::Instant;
 use anyhow::{anyhow, bail, Context};
 use axum::extract::State;
 use axum::http::header::SET_COOKIE;
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::Semaphore;
 
 use super::SESSION_COOKIE;
-use super::{require, session_cookie, ApiError, ApiJson, AuthVia, Authed, ClientAddr};
+use super::{require, ApiError, ApiJson, AuthVia, Authed, ClientAddr};
 use crate::app::AppState;
 use crate::identity::password::{
     check_password_policy, hash_password, verify_dummy, verify_password,
@@ -96,7 +97,8 @@ struct TeamView {
 }
 
 /// Hashes off the async threads: Argon2 takes tens of milliseconds.
-async fn hash_blocking(password: String) -> anyhow::Result<String> {
+async fn hash_blocking(hashing: &Semaphore, password: String) -> anyhow::Result<String> {
+    let _permit = hashing.acquire().await.context("hashing is closed")?;
     tokio::task::spawn_blocking(move || hash_password(&password))
         .await
         .context("the hashing task failed")?
@@ -104,7 +106,12 @@ async fn hash_blocking(password: String) -> anyhow::Result<String> {
 
 /// Checks a password against a stored hash, off the async threads. Without
 /// a hash it spends the same effort and answers `false`.
-async fn verify_blocking(password: String, hash: Option<String>) -> anyhow::Result<bool> {
+async fn verify_blocking(
+    hashing: &Semaphore,
+    password: String,
+    hash: Option<String>,
+) -> anyhow::Result<bool> {
+    let _permit = hashing.acquire().await.context("hashing is closed")?;
     tokio::task::spawn_blocking(move || match hash {
         Some(hash) => verify_password(&password, &hash),
         None => {
@@ -188,7 +195,8 @@ pub async fn bootstrap_admin(
     }
     let email = normalize_email(&email).map_err(|m| anyhow!("UF_ADMIN_EMAIL: {m}"))?;
     check_password_policy(&password).map_err(|m| anyhow!("UF_ADMIN_PASSWORD: {m}"))?;
-    let hash = hash_blocking(password).await?;
+    // Startup hashes one password, before the shared limit exists.
+    let hash = hash_blocking(&Semaphore::new(1), password).await?;
     if create_first_admin(store, &email, BOOTSTRAP_NAME, &hash)
         .await?
         .is_some()
@@ -231,7 +239,7 @@ pub async fn setup(
         return Err(ApiError::validation(fields));
     };
 
-    let hash = hash_blocking(req.password).await?;
+    let hash = hash_blocking(&state.hashing, req.password).await?;
     let id = create_first_admin(store, &email, name, &hash)
         .await?
         .ok_or_else(already_set_up)?;
@@ -251,11 +259,19 @@ fn limiter_key(raw_email: &str, normalized: Option<&str>) -> String {
     }
 }
 
-fn check_limit(state: &AppState, key: &str, addr: IpAddr) -> Result<(), ApiError> {
-    if state.limiter.is_blocked(key, addr, Instant::now()) {
+/// Counts an attempt against the limits, or refuses it. The attempt stays
+/// counted as a failure unless `attempt_succeeded` is called for it.
+fn begin_attempt(state: &AppState, key: &str, addr: IpAddr) -> Result<(), ApiError> {
+    if !state.limiter.try_begin(key, addr, Instant::now()) {
         return Err(ApiError::too_many_attempts());
     }
     Ok(())
+}
+
+/// Takes back what `begin_attempt` counted, and the email's failures.
+fn attempt_succeeded(state: &AppState, key: &str, addr: IpAddr) {
+    state.limiter.record_success(key);
+    state.limiter.forgive(addr, Instant::now());
 }
 
 pub async fn login(
@@ -266,7 +282,9 @@ pub async fn login(
     let store = &state.store;
     let email = normalize_email(&req.email).ok();
     let key = limiter_key(&req.email, email.as_deref());
-    check_limit(&state, &key, addr)?;
+    // Counted before the password is checked, so requests sent at the same
+    // time cannot each get a guess.
+    begin_attempt(&state, &key, addr)?;
 
     let user = match &email {
         Some(email) => store.user_by_email(email).await?,
@@ -275,12 +293,10 @@ pub async fn login(
     // Every way to fail takes the same path: a hash is always computed.
     let user = user.filter(|u| u.status == UserStatus::Active);
     let hash = user.as_ref().and_then(|u| u.password_hash.clone());
-    let verified = verify_blocking(req.password, hash).await?;
+    let verified = verify_blocking(&state.hashing, req.password, hash).await?;
     let Some(user) = user.filter(|_| verified) else {
-        state.limiter.record_failure(&key, addr, Instant::now());
         return Err(ApiError::invalid_credentials());
     };
-    state.limiter.record_success(&key);
 
     let mut tx = store.begin().await?;
     let session = tx.create_session(user.id).await?;
@@ -294,6 +310,7 @@ pub async fn login(
     })
     .await?;
     tx.commit().await?;
+    attempt_succeeded(&state, &key, addr);
 
     let cookie = cookie_header(&session.id, SESSION_SECONDS, state.cookie_secure)?;
     let body = json!({ "user": UserView::from(user), "csrf_token": session.csrf_token });
@@ -303,7 +320,6 @@ pub async fn login(
 pub async fn logout(
     State(state): State<Arc<AppState>>,
     authed: Authed,
-    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     require(
@@ -313,13 +329,27 @@ pub async fn logout(
             changes_role_or_status: false,
         },
     )?;
-    if let AuthVia::Token { .. } = authed.via {
+    let AuthVia::Session { session_id, .. } = authed.via else {
         return Err(ApiError::bad_request(
             "Only a browser session can be signed out.",
         ));
-    }
-    if let Some(cookie) = session_cookie(&headers) {
-        state.store.delete_session(cookie).await?;
+    };
+    let mut tx = state.store.begin().await?;
+    // False when another request ended the session in the meantime: then
+    // nothing changed and nothing is recorded.
+    if tx.delete_session_by_id(session_id).await? {
+        tx.audit(AuditEntry {
+            actor_user_id: Some(me.user_id),
+            actor_email: &me.email,
+            action: "auth.logout",
+            target_type: "user",
+            target_id: Some(me.user_id),
+            summary: &format!("{} signed out", me.email),
+        })
+        .await?;
+        tx.commit().await?;
+    } else {
+        drop(tx);
     }
     let cleared = cookie_header("", 0, state.cookie_secure)?;
     Ok((StatusCode::NO_CONTENT, [(SET_COOKIE, cleared)]).into_response())
@@ -377,10 +407,12 @@ pub async fn accept_invite(
     let user = store
         .user_by_id(invite.user_id)
         .await?
-        .filter(|u| u.status != UserStatus::Disabled)
+        // Only a user who has not signed up yet. For an active user this
+        // would be a password reset that ends no session.
+        .filter(|u| u.status == UserStatus::Invited)
         .ok_or_else(ApiError::not_found)?;
     check_password_policy(&req.password).map_err(|m| ApiError::invalid_field("password", m))?;
-    let hash = hash_blocking(req.password).await?;
+    let hash = hash_blocking(&state.hashing, req.password).await?;
 
     let mut tx = store.begin().await?;
     // False when another request used the invite in the meantime.
@@ -420,20 +452,18 @@ pub async fn change_password(
     )?;
     let store = &state.store;
     // A stolen session must not allow unlimited guesses at the password.
-    check_limit(&state, &me.email, addr)?;
+    begin_attempt(&state, &me.email, addr)?;
     let user = store
         .user_by_id(me.user_id)
         .await?
         .ok_or_else(ApiError::unauthenticated)?;
-    if !verify_blocking(req.current_password, user.password_hash).await? {
-        state
-            .limiter
-            .record_failure(&me.email, addr, Instant::now());
+    if !verify_blocking(&state.hashing, req.current_password, user.password_hash).await? {
         return Err(ApiError::invalid_credentials());
     }
+    attempt_succeeded(&state, &me.email, addr);
     check_password_policy(&req.new_password)
         .map_err(|m| ApiError::invalid_field("new_password", m))?;
-    let hash = hash_blocking(req.new_password).await?;
+    let hash = hash_blocking(&state.hashing, req.new_password).await?;
 
     let mut tx = store.begin().await?;
     if !tx.set_user_password(me.user_id, &hash).await? {

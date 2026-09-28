@@ -235,6 +235,17 @@ impl Tx<'_> {
         Ok(session)
     }
 
+    /// Deletes the session with this row id. Returns `false` if there was
+    /// no such session.
+    pub async fn delete_session_by_id(&mut self, id: i64) -> Result<bool> {
+        let r = sqlx::query("DELETE FROM sessions WHERE id = ? AND org_id = ?")
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
     /// Deletes the user's sessions except the one with row id `keep`, and
     /// returns how many that was.
     pub async fn delete_other_sessions_of(&mut self, user_id: i64, keep: i64) -> Result<u64> {
@@ -492,6 +503,30 @@ mod tests {
         assert!(s.live_session(&c.id).await.unwrap().is_some());
     }
 
+    async fn s_row_id(tx: &mut Tx<'_>, cookie_value: &str) -> i64 {
+        sqlx::query_scalar("SELECT id FROM sessions WHERE id_hash = ?")
+            .bind(hash_key(cookie_value))
+            .fetch_one(tx.conn())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn sessions_are_deleted_by_row_id() {
+        let s = Store::open_in_memory().await.unwrap();
+        let user = add_user(&s, "maya@example.com").await;
+        let a = s.create_session(user).await.unwrap();
+        let b = s.create_session(user).await.unwrap();
+        let id = s.live_session(&a.id).await.unwrap().unwrap().id;
+        let mut tx = s.begin().await.unwrap();
+        assert!(tx.delete_session_by_id(id).await.unwrap());
+        assert!(!tx.delete_session_by_id(id).await.unwrap());
+        assert!(!tx.delete_session_by_id(id + 1000).await.unwrap());
+        tx.commit().await.unwrap();
+        assert!(s.live_session(&a.id).await.unwrap().is_none());
+        assert!(s.live_session(&b.id).await.unwrap().is_some());
+    }
+
     #[tokio::test]
     async fn other_sessions_of_a_user_can_be_deleted() {
         let s = Store::open_in_memory().await.unwrap();
@@ -508,6 +543,13 @@ mod tests {
             tx.create_session(maya).await.unwrap()
         };
         assert!(s.live_session(&dropped.id).await.unwrap().is_none());
+
+        let mut tx = s.begin().await.unwrap();
+        let gone = s_row_id(&mut tx, &c.id).await;
+        assert!(tx.delete_session_by_id(gone).await.unwrap());
+        assert!(!tx.delete_session_by_id(gone).await.unwrap());
+        drop(tx);
+        assert!(s.live_session(&c.id).await.unwrap().is_some());
 
         let mut tx = s.begin().await.unwrap();
         assert_eq!(tx.delete_other_sessions_of(maya, keep).await.unwrap(), 1);
