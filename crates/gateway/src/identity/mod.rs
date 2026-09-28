@@ -1,6 +1,7 @@
 //! Identity types: roles, the request principal and email normalization.
 
 pub mod password;
+pub mod policy;
 
 use serde::{Deserialize, Serialize};
 
