@@ -1,19 +1,28 @@
 //! SQLite storage. Nothing outside this module writes SQL.
 
+mod audit;
 mod keys;
 mod providers;
+mod teams;
+mod users;
 
 use std::path::Path;
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteConnection, SqliteJournalMode, SqlitePool, SqlitePoolOptions,
+};
+use sqlx::Sqlite;
 use time::format_description::BorrowedFormatItem;
 use time::macros::format_description;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
+pub use audit::{AuditEntry, AuditRow};
 pub use keys::KeyRow;
 pub use providers::ProviderRow;
+pub use teams::{MemberRow, TeamRow};
+pub use users::{InviteRow, NewUser, UserRow};
 
 /// The only organisation until multi-tenancy arrives. Every query filters by it.
 pub const DEFAULT_ORG: i64 = 1;
@@ -40,6 +49,43 @@ pub fn after(seconds: i64) -> String {
     (OffsetDateTime::now_utc() + Duration::seconds(seconds))
         .format(TIMESTAMP)
         .expect("a UTC time formats with a fixed numeric layout")
+}
+
+/// A failure a caller can act on. Every other failure is a plain error.
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("already exists")]
+    Duplicate,
+}
+
+/// Turns a unique-constraint failure into `StoreError::Duplicate`.
+pub(crate) fn write_error(e: sqlx::Error) -> anyhow::Error {
+    match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => StoreError::Duplicate.into(),
+        _ => e.into(),
+    }
+}
+
+/// A database transaction. Every write goes through one, together with the
+/// audit entry that records it. Dropping it without `commit` rolls back.
+///
+/// It holds a pool connection until it is committed or dropped. Do not call
+/// a `Store` method while one is open: on a pool with a single connection
+/// (the in-memory database) that call waits forever. Read what you need
+/// first, then `begin`, write, and `commit`.
+pub struct Tx<'c> {
+    inner: sqlx::Transaction<'c, Sqlite>,
+}
+
+impl Tx<'_> {
+    pub async fn commit(self) -> Result<()> {
+        self.inner.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) fn conn(&mut self) -> &mut SqliteConnection {
+        &mut self.inner
+    }
 }
 
 #[derive(Clone)]
@@ -73,6 +119,12 @@ impl Store {
         let pool = pool.connect_with(opts).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self { pool })
+    }
+
+    pub async fn begin(&self) -> Result<Tx<'_>> {
+        Ok(Tx {
+            inner: self.pool.begin().await?,
+        })
     }
 
     pub(crate) fn pool(&self) -> &SqlitePool {
@@ -150,6 +202,55 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(s.active_key_by_hash("h").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn dropped_transaction_rolls_back() {
+        let s = Store::open_in_memory().await.unwrap();
+        {
+            let mut tx = s.begin().await.unwrap();
+            tx.insert_user(NewUser {
+                email: "maya@example.com",
+                name: "Maya",
+                role: crate::identity::Role::Admin,
+                status: crate::identity::UserStatus::Active,
+                password_hash: None,
+            })
+            .await
+            .unwrap();
+            tx.audit(AuditEntry {
+                actor_user_id: None,
+                actor_email: "maya@example.com",
+                action: "user.create",
+                target_type: "user",
+                target_id: Some(1),
+                summary: "created maya@example.com",
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(s.count_users().await.unwrap(), 0);
+        assert!(s.list_audit(10, None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn committed_transaction_keeps_change_and_audit() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let id = tx.insert_team("platform").await.unwrap();
+        tx.audit(AuditEntry {
+            actor_user_id: None,
+            actor_email: "maya@example.com",
+            action: "team.create",
+            target_type: "team",
+            target_id: Some(id),
+            summary: "created team platform",
+        })
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert!(s.team_by_id(id).await.unwrap().is_some());
+        assert_eq!(s.list_audit(10, None).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
