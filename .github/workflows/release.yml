@@ -1,9 +1,7 @@
 name: Release (crates.io + Docker)
 
+# Disabled for v2: manual trigger only, and the first job fails on purpose.
 on:
-  push:
-    tags:
-      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
@@ -19,6 +17,11 @@ jobs:
     name: Lint & Test
     runs-on: ubuntu-latest
     steps:
+      - name: Release workflow not yet updated for v2
+        run: |
+          echo "Release workflow not yet updated for v2" >&2
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v4
 

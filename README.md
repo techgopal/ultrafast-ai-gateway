@@ -1,5 +1,34 @@
 # Ultrafast Gateway 🚀
 
+> **v2 is in development on this branch.** The v1 code under `ultrafast-gateway/`
+> and `ultrafast-models-sdk/` is kept for reference and is tagged `v1-final`.
+> Design: `docs/superpowers/specs/2026-09-28-gateway-v2-design.md`.
+
+## v2 quickstart
+
+```bash
+cargo build --release -p ultrafast-gateway
+export UF_DATA_DIR=./data
+
+# Add a provider. Use kind "openai" for any OpenAI-compatible API.
+UF_PROVIDER_API_KEY=sk-... ./target/release/ultrafast provider add \
+  --name openai --kind openai --base-url https://api.openai.com/v1
+UF_PROVIDER_API_KEY=sk-ant-... ./target/release/ultrafast provider add \
+  --name anthropic --kind anthropic --base-url https://api.anthropic.com
+
+# Create a key for your app. It is printed once.
+./target/release/ultrafast key create --name my-app
+
+./target/release/ultrafast serve
+```
+
+Call it with any OpenAI SDK by setting the base URL to `http://127.0.0.1:3000/v1`
+and the model to `provider/model`, for example `anthropic/claude-sonnet-5`.
+
+What works today: chat completions, streaming, OpenAI-compatible and Anthropic
+providers. Not yet: tools, images, the console, users and teams, routing,
+limits and budgets.
+
 > **A high-performance AI gateway built in Rust** that provides a unified interface to 10+ LLM providers with advanced routing, caching, and monitoring capabilities.
 
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](LICENSE)
