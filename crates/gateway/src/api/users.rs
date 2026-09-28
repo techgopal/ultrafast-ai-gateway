@@ -178,6 +178,9 @@ pub async fn reinvite(
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     let store = &state.store;
+    // Whether the caller may invite at all does not depend on the target,
+    // so it is settled before anything is said about the id.
+    require(me, &Action::InviteUser { role: Role::Member })?;
     let target = user_of(store, &raw_id).await?;
     require(me, &Action::InviteUser { role: target.role })?;
 

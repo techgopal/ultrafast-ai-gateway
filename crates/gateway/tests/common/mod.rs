@@ -361,3 +361,42 @@ impl Org {
 pub fn error_code(body: &serde_json::Value) -> &str {
     body["error"]["code"].as_str().unwrap_or("<no code>")
 }
+
+/// The status, the headers and the exact bytes of an answer.
+pub async fn raw(
+    org: &Org,
+    who: &Signed,
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("cookie", &who.cookie)
+        .header("x-csrf-token", &who.csrf);
+    let body = match body {
+        Some(value) => {
+            req = req.header("content-type", "application/json");
+            Body::from(serde_json::to_vec(&value).unwrap())
+        }
+        None => Body::empty(),
+    };
+    let resp = org
+        .api
+        .app
+        .clone()
+        .oneshot(req.body(body).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let headers = resp
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
+        .collect();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, headers, bytes.to_vec())
+}
