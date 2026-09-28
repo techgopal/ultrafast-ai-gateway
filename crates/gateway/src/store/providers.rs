@@ -5,7 +5,7 @@ use std::fmt;
 use anyhow::Result;
 use sqlx::Row;
 
-use super::{Store, DEFAULT_ORG};
+use super::{Store, Tx, DEFAULT_ORG};
 
 #[derive(Clone)]
 pub struct ProviderRow {
@@ -35,9 +35,9 @@ impl fmt::Debug for ProviderRow {
     }
 }
 
-impl Store {
+impl Tx<'_> {
     pub async fn insert_provider(
-        &self,
+        &mut self,
         name: &str,
         kind: &str,
         base_url: &str,
@@ -52,9 +52,24 @@ impl Store {
         .bind(kind)
         .bind(base_url)
         .bind(credential)
-        .execute(self.pool())
+        .execute(self.conn())
         .await?;
         Ok(r.last_insert_rowid())
+    }
+}
+
+impl Store {
+    pub async fn insert_provider(
+        &self,
+        name: &str,
+        kind: &str,
+        base_url: &str,
+        credential: Option<&[u8]>,
+    ) -> Result<i64> {
+        let mut tx = self.begin().await?;
+        let id = tx.insert_provider(name, kind, base_url, credential).await?;
+        tx.commit().await?;
+        Ok(id)
     }
 
     pub async fn provider_by_name(&self, name: &str) -> Result<Option<ProviderRow>> {

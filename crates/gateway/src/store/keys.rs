@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use sqlx::Row;
 
-use super::{check_timestamp, Store, DEFAULT_ORG};
+use super::{check_timestamp, Store, Tx, DEFAULT_ORG};
 
 #[derive(Debug, Clone)]
 pub struct KeyRow {
@@ -26,21 +26,12 @@ impl Store {
         display: &str,
         expires_at: Option<&str>,
     ) -> Result<i64> {
-        if let Some(value) = expires_at {
-            check_timestamp(value).context("expires_at is not valid")?;
-        }
-        let r = sqlx::query(
-            "INSERT INTO virtual_keys (org_id, name, key_hash, display, expires_at)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(name)
-        .bind(hash)
-        .bind(display)
-        .bind(expires_at)
-        .execute(self.pool())
-        .await?;
-        Ok(r.last_insert_rowid())
+        let mut tx = self.begin().await?;
+        let id = tx
+            .insert_key(name, hash, display, expires_at, None, None)
+            .await?;
+        tx.commit().await?;
+        Ok(id)
     }
 
     pub async fn active_key_by_hash(&self, hash: &str) -> Result<Option<KeyRow>> {
@@ -70,13 +61,53 @@ impl Store {
 
     /// Returns whether a live key was revoked. Revoking again changes nothing.
     pub async fn revoke_key(&self, id: i64) -> Result<bool> {
+        let mut tx = self.begin().await?;
+        let revoked = tx.revoke_key(id).await?;
+        tx.commit().await?;
+        Ok(revoked)
+    }
+}
+
+impl Tx<'_> {
+    /// `expires_at` must be UTC in the form `YYYY-MM-DD HH:MM:SS`.
+    pub async fn insert_key(
+        &mut self,
+        name: &str,
+        hash: &str,
+        display: &str,
+        expires_at: Option<&str>,
+        user_id: Option<i64>,
+        team_id: Option<i64>,
+    ) -> Result<i64> {
+        if let Some(value) = expires_at {
+            check_timestamp(value).context("expires_at is not valid")?;
+        }
+        let r = sqlx::query(
+            "INSERT INTO virtual_keys
+                 (org_id, name, key_hash, display, expires_at, user_id, team_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(DEFAULT_ORG)
+        .bind(name)
+        .bind(hash)
+        .bind(display)
+        .bind(expires_at)
+        .bind(user_id)
+        .bind(team_id)
+        .execute(self.conn())
+        .await?;
+        Ok(r.last_insert_rowid())
+    }
+
+    /// Returns whether a live key was revoked. Revoking again changes nothing.
+    pub async fn revoke_key(&mut self, id: i64) -> Result<bool> {
         let r = sqlx::query(
             "UPDATE virtual_keys SET revoked_at = datetime('now')
              WHERE id = ? AND org_id = ? AND revoked_at IS NULL",
         )
         .bind(id)
         .bind(DEFAULT_ORG)
-        .execute(self.pool())
+        .execute(self.conn())
         .await?;
         Ok(r.rows_affected() == 1)
     }

@@ -10,6 +10,8 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 pub const KEY_PREFIX: &str = "uf-sk-";
+pub const TOKEN_PREFIX: &str = "uf-at-";
+pub const INVITE_PREFIX: &str = "uf-inv-";
 const NONCE_LEN: usize = 12;
 
 pub struct NewKey {
@@ -32,10 +34,15 @@ impl fmt::Debug for NewKey {
 }
 
 pub fn generate_key() -> NewKey {
+    generate_secret(KEY_PREFIX)
+}
+
+/// A secret with the given prefix and 32 random bytes as hex.
+pub fn generate_secret(prefix: &str) -> NewKey {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    let full = format!("{KEY_PREFIX}{}", hex::encode(bytes));
-    let display = format!("{KEY_PREFIX}\u{2026}{}", &full[full.len() - 4..]);
+    let full = format!("{prefix}{}", hex::encode(bytes));
+    let display = format!("{prefix}\u{2026}{}", &full[full.len() - 4..]);
     NewKey {
         hash: hash_key(&full),
         full,
@@ -115,6 +122,27 @@ mod tests {
         assert!(!a
             .display
             .contains(&a.full[KEY_PREFIX.len()..a.full.len() - 4]));
+    }
+
+    #[test]
+    fn generate_secret_uses_prefix() {
+        for prefix in [TOKEN_PREFIX, INVITE_PREFIX, KEY_PREFIX] {
+            let a = generate_secret(prefix);
+            let b = generate_secret(prefix);
+            assert_ne!(a.full, b.full);
+            assert!(a.full.starts_with(prefix));
+            assert_eq!(a.full.len(), prefix.len() + 64);
+            assert_eq!(a.hash, hash_key(&a.full));
+            assert!(a.display.starts_with(prefix));
+            assert!(a.display.ends_with(&a.full[a.full.len() - 4..]));
+            assert!(!a.display.contains(&a.full[prefix.len()..a.full.len() - 4]));
+            let shown = format!("{a:?}");
+            assert!(!shown.contains(&a.full));
+            assert!(!shown.contains(&a.full[prefix.len()..]));
+        }
+        assert_eq!(TOKEN_PREFIX, "uf-at-");
+        assert_eq!(INVITE_PREFIX, "uf-inv-");
+        assert_eq!(generate_secret(TOKEN_PREFIX).full.len(), 6 + 64);
     }
 
     #[test]
