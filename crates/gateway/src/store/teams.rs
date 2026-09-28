@@ -21,6 +21,38 @@ pub struct MemberRow {
     pub role: TeamRole,
 }
 
+/// A team with the number of its members.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TeamSummary {
+    pub id: i64,
+    pub name: String,
+    pub member_count: i64,
+    pub created_at: String,
+}
+
+/// A member of a team, with what names them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MemberDetail {
+    pub user_id: i64,
+    pub email: String,
+    pub name: String,
+    pub role: TeamRole,
+}
+
+const SUMMARY_SELECT: &str = "SELECT t.id, t.name, t.created_at,
+            (SELECT COUNT(*) FROM team_members m
+             WHERE m.team_id = t.id AND m.org_id = t.org_id) AS member_count
+     FROM teams t";
+
+fn summary_from(r: &SqliteRow) -> TeamSummary {
+    TeamSummary {
+        id: r.get("id"),
+        name: r.get("name"),
+        member_count: r.get("member_count"),
+        created_at: r.get("created_at"),
+    }
+}
+
 fn team_from(r: &SqliteRow) -> TeamRow {
     TeamRow {
         id: r.get("id"),
@@ -58,6 +90,69 @@ impl Store {
         Ok(rows.iter().map(team_from).collect())
     }
 
+    pub async fn team_summary(&self, id: i64) -> Result<Option<TeamSummary>> {
+        let sql = format!("{SUMMARY_SELECT} WHERE t.id = ? AND t.org_id = ?");
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.as_ref().map(summary_from))
+    }
+
+    /// Every team, ordered by name.
+    pub async fn list_team_summaries(&self) -> Result<Vec<TeamSummary>> {
+        let sql = format!("{SUMMARY_SELECT} WHERE t.org_id = ? ORDER BY t.name");
+        let rows = sqlx::query(&sql)
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.iter().map(summary_from).collect())
+    }
+
+    /// The teams the user belongs to in any role, ordered by name.
+    pub async fn list_team_summaries_of(&self, user_id: i64) -> Result<Vec<TeamSummary>> {
+        let sql = format!(
+            "{SUMMARY_SELECT}
+             JOIN team_members own ON own.team_id = t.id AND own.org_id = t.org_id
+             WHERE t.org_id = ? AND own.user_id = ?
+             ORDER BY t.name"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(DEFAULT_ORG)
+            .bind(user_id)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.iter().map(summary_from).collect())
+    }
+
+    /// The members of a team with their email and name, ordered by email.
+    pub async fn member_details(&self, team_id: i64) -> Result<Vec<MemberDetail>> {
+        let rows = sqlx::query(
+            "SELECT m.user_id, u.email, u.name, m.role
+             FROM team_members m
+             JOIN users u ON u.id = m.user_id AND u.org_id = m.org_id
+             WHERE m.team_id = ? AND m.org_id = ?
+             ORDER BY u.email",
+        )
+        .bind(team_id)
+        .bind(DEFAULT_ORG)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(|r| {
+                let role: String = r.get("role");
+                Ok(MemberDetail {
+                    user_id: r.get("user_id"),
+                    email: r.get("email"),
+                    name: r.get("name"),
+                    role: TeamRole::parse(&role)
+                        .ok_or_else(|| anyhow!("stored team role is not known"))?,
+                })
+            })
+            .collect()
+    }
+
     /// Ordered by user id.
     pub async fn members_of(&self, team_id: i64) -> Result<Vec<MemberRow>> {
         let rows = sqlx::query(
@@ -86,6 +181,30 @@ impl Store {
 }
 
 impl Tx<'_> {
+    /// The team as the transaction sees it.
+    pub async fn team_by_id(&mut self, id: i64) -> Result<Option<TeamRow>> {
+        let row = sqlx::query("SELECT id, name, created_at FROM teams WHERE id = ? AND org_id = ?")
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(self.conn())
+            .await?;
+        Ok(row.as_ref().map(team_from))
+    }
+
+    /// The user's role in the team, as the transaction sees it.
+    pub async fn member_role(&mut self, team_id: i64, user_id: i64) -> Result<Option<TeamRole>> {
+        let role: Option<String> = sqlx::query_scalar(
+            "SELECT role FROM team_members WHERE team_id = ? AND user_id = ? AND org_id = ?",
+        )
+        .bind(team_id)
+        .bind(user_id)
+        .bind(DEFAULT_ORG)
+        .fetch_optional(self.conn())
+        .await?;
+        role.map(|r| TeamRole::parse(&r).ok_or_else(|| anyhow!("stored team role is not known")))
+            .transpose()
+    }
+
     /// Fails with `StoreError::Duplicate` when the name is taken.
     pub async fn insert_team(&mut self, name: &str) -> Result<i64> {
         let r = sqlx::query("INSERT INTO teams (org_id, name) VALUES (?, ?)")
@@ -162,6 +281,59 @@ mod tests {
             status: UserStatus::Active,
             password_hash: None,
         }
+    }
+
+    #[tokio::test]
+    async fn summaries_details_and_reads_in_a_transaction() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let one = tx.insert_team("one").await.unwrap();
+        let two = tx.insert_team("two").await.unwrap();
+        let empty = tx.insert_team("empty").await.unwrap();
+        let maya = tx.insert_user(member("maya@example.com")).await.unwrap();
+        let noor = tx.insert_user(member("noor@example.com")).await.unwrap();
+        tx.put_member(one, noor, TeamRole::Lead).await.unwrap();
+        tx.put_member(one, maya, TeamRole::Member).await.unwrap();
+        tx.put_member(two, noor, TeamRole::Member).await.unwrap();
+        assert_eq!(tx.team_by_id(one).await.unwrap().unwrap().name, "one");
+        assert!(tx.team_by_id(empty + 1).await.unwrap().is_none());
+        assert_eq!(
+            tx.member_role(one, noor).await.unwrap(),
+            Some(TeamRole::Lead)
+        );
+        assert_eq!(tx.member_role(two, maya).await.unwrap(), None);
+        tx.commit().await.unwrap();
+
+        let counts = |rows: Vec<TeamSummary>| {
+            rows.into_iter()
+                .map(|t| (t.name, t.member_count))
+                .collect::<Vec<_>>()
+        };
+        let pair = |name: &str, n: i64| (name.to_string(), n);
+        assert_eq!(
+            counts(s.list_team_summaries().await.unwrap()),
+            [pair("empty", 0), pair("one", 2), pair("two", 1)]
+        );
+        assert_eq!(
+            counts(s.list_team_summaries_of(noor).await.unwrap()),
+            [pair("one", 2), pair("two", 1)]
+        );
+        assert_eq!(
+            counts(s.list_team_summaries_of(maya).await.unwrap()),
+            [pair("one", 2)]
+        );
+        let summary = s.team_summary(one).await.unwrap().unwrap();
+        assert_eq!((summary.id, summary.member_count), (one, 2));
+        assert!(check_timestamp(&summary.created_at).is_ok());
+        assert!(s.team_summary(empty + 1).await.unwrap().is_none());
+
+        let details = s.member_details(one).await.unwrap();
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[0].email, "maya@example.com");
+        assert_eq!(details[0].role, TeamRole::Member);
+        assert_eq!(details[1].user_id, noor);
+        assert_eq!(details[1].role, TeamRole::Lead);
+        assert!(s.member_details(empty).await.unwrap().is_empty());
     }
 
     #[tokio::test]

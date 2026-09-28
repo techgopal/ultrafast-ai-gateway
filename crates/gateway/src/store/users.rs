@@ -130,6 +130,49 @@ impl Store {
     }
 
     /// Records that the user was active just now.
+    /// The users who belong to any of the teams, and the user `own_id`.
+    /// Ordered by email.
+    pub async fn list_users_in_teams(&self, team_ids: &[i64], own_id: i64) -> Result<Vec<UserRow>> {
+        let marks = vec!["?"; team_ids.len()].join(", ");
+        // With no team the list is `IN (NULL)`, which matches nothing.
+        let marks = if marks.is_empty() { "NULL" } else { &marks };
+        let sql = format!(
+            "SELECT {USER_COLUMNS} FROM users
+             WHERE org_id = ?
+               AND (id = ? OR id IN (
+                   SELECT user_id FROM team_members
+                   WHERE org_id = ? AND team_id IN ({marks})))
+             ORDER BY email"
+        );
+        let mut query = sqlx::query(&sql)
+            .bind(DEFAULT_ORG)
+            .bind(own_id)
+            .bind(DEFAULT_ORG);
+        for team_id in team_ids {
+            query = query.bind(team_id);
+        }
+        let rows = query.fetch_all(self.pool()).await?;
+        rows.iter().map(user_from).collect()
+    }
+
+    /// Whether `user_id` belongs to at least one team that `lead_id` leads.
+    pub async fn shares_led_team(&self, lead_id: i64, user_id: i64) -> Result<bool> {
+        let found: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM team_members led
+                 JOIN team_members theirs ON theirs.team_id = led.team_id
+                 WHERE led.user_id = ? AND led.role = 'lead' AND led.org_id = ?
+                   AND theirs.user_id = ? AND theirs.org_id = ?)",
+        )
+        .bind(lead_id)
+        .bind(DEFAULT_ORG)
+        .bind(user_id)
+        .bind(DEFAULT_ORG)
+        .fetch_one(self.pool())
+        .await?;
+        Ok(found)
+    }
+
     pub async fn touch_user(&self, id: i64) -> Result<()> {
         sqlx::query(
             "UPDATE users SET last_active_at = datetime('now') WHERE id = ? AND org_id = ?",
@@ -163,6 +206,17 @@ impl Store {
 }
 
 impl Tx<'_> {
+    /// The user as the transaction sees them.
+    pub async fn user_by_id(&mut self, id: i64) -> Result<Option<UserRow>> {
+        let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE id = ? AND org_id = ?");
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(self.conn())
+            .await?;
+        row.as_ref().map(user_from).transpose()
+    }
+
     /// Counts inside the transaction, so it sees the transaction's own changes.
     pub async fn count_users(&mut self) -> Result<i64> {
         let n = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE org_id = ?")
@@ -302,6 +356,61 @@ impl Tx<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn users_of_teams_and_shared_led_teams() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let mut ids = Vec::new();
+        for email in [
+            "a@example.com",
+            "b@example.com",
+            "c@example.com",
+            "d@example.com",
+        ] {
+            ids.push(
+                tx.insert_user(new_user(email, Role::Member, UserStatus::Active))
+                    .await
+                    .unwrap(),
+            );
+        }
+        let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
+        let one = tx.insert_team("one").await.unwrap();
+        let two = tx.insert_team("two").await.unwrap();
+        tx.put_member(one, a, TeamRole::Lead).await.unwrap();
+        tx.put_member(one, b, TeamRole::Member).await.unwrap();
+        tx.put_member(two, a, TeamRole::Member).await.unwrap();
+        tx.put_member(two, c, TeamRole::Lead).await.unwrap();
+        assert_eq!(
+            tx.user_by_id(a).await.unwrap().unwrap().email,
+            "a@example.com"
+        );
+        assert!(tx.user_by_id(d + 1).await.unwrap().is_none());
+        tx.commit().await.unwrap();
+
+        let emails = |rows: Vec<UserRow>| rows.into_iter().map(|u| u.id).collect::<Vec<_>>();
+        assert_eq!(
+            emails(s.list_users_in_teams(&[one], a).await.unwrap()),
+            [a, b]
+        );
+        assert_eq!(
+            emails(s.list_users_in_teams(&[one], d).await.unwrap()),
+            [a, b, d]
+        );
+        assert_eq!(
+            emails(s.list_users_in_teams(&[one, two], a).await.unwrap()),
+            [a, b, c]
+        );
+        assert_eq!(emails(s.list_users_in_teams(&[], d).await.unwrap()), [d]);
+
+        assert!(s.shares_led_team(a, b).await.unwrap());
+        assert!(s.shares_led_team(a, a).await.unwrap());
+        // `a` is only a member of team two.
+        assert!(!s.shares_led_team(a, c).await.unwrap());
+        assert!(s.shares_led_team(c, a).await.unwrap());
+        assert!(!s.shares_led_team(b, a).await.unwrap());
+        assert!(!s.shares_led_team(a, d).await.unwrap());
+    }
     use crate::identity::TeamRole;
     use crate::store::{after, check_timestamp, StoreError};
 
