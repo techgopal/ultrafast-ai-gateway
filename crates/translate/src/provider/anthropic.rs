@@ -32,6 +32,11 @@ fn unsupported_block(kind: Option<&str>) -> TranslateError {
 }
 
 pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, TranslateError> {
+    if req.messages.iter().any(|m| m.name.is_some()) {
+        return Err(TranslateError::Unsupported(
+            "message field 'name' is not supported by this provider".into(),
+        ));
+    }
     let system: Vec<&str> = req
         .messages
         .iter()
@@ -375,5 +380,18 @@ mod tests {
             .feed(b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"f\",\"input\":{}}}\n\n")
             .unwrap_err();
         assert!(matches!(e, TranslateError::Unsupported(_)));
+    }
+
+    #[test]
+    fn message_name_is_unsupported() {
+        let mut m = msg(Role::User, "hi");
+        m.name = Some("bob".into());
+        let e = build_request(&target(), &request(vec![m])).unwrap_err();
+        assert_eq!(
+            e,
+            TranslateError::Unsupported(
+                "message field 'name' is not supported by this provider".into()
+            )
+        );
     }
 }
