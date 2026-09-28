@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{HttpRequest, StreamState, Target};
+use super::{saturate, HttpRequest, StreamState, Target};
 use crate::error::TranslateError;
 use crate::sse::SseEvent;
 use crate::types::{ChatRequest, ChatResponse, FinishReason, Role, StreamEvent, Usage};
@@ -22,11 +22,6 @@ fn finish(s: &str) -> Option<FinishReason> {
         "content_filter" => Some(FinishReason::ContentFilter),
         _ => None,
     }
-}
-
-/// Provider token counts are u64 on the wire; clamp rather than wrap.
-fn saturate(n: u64) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// True when a `tool_calls` / `function_call` value carries something.
