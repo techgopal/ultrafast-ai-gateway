@@ -1,6 +1,6 @@
 //! Password policy and Argon2id hashing.
 
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -20,6 +20,21 @@ const PARALLELISM: u32 = 1;
 static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| {
     hash_password("dummy-password-for-timing").expect("hashing the dummy password")
 });
+
+/// Computes the dummy hash now instead of during the first sign-in for an
+/// unknown account. Call it at startup: a hashing failure is returned here
+/// rather than raised inside a request.
+pub fn warm_up() -> anyhow::Result<()> {
+    static DONE: OnceLock<()> = OnceLock::new();
+    if DONE.get().is_some() {
+        return Ok(());
+    }
+    // Hashing fails here, as an error, before the dummy hash is forced.
+    hash_password("warm-up-probe")?;
+    LazyLock::force(&DUMMY_HASH);
+    let _ = DONE.set(());
+    Ok(())
+}
 
 fn argon2() -> anyhow::Result<Argon2<'static>> {
     let params = Params::new(MEMORY_KIB, ITERATIONS, PARALLELISM, None)
@@ -113,6 +128,13 @@ mod tests {
 
     #[test]
     fn dummy_verification_runs() {
+        verify_dummy("anything");
+    }
+
+    #[test]
+    fn warm_up_can_be_repeated() {
+        warm_up().unwrap();
+        warm_up().unwrap();
         verify_dummy("anything");
     }
 

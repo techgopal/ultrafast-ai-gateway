@@ -1,16 +1,19 @@
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
 use axum::Router;
 use tower::ServiceExt;
 use ultrafast_gateway::app::{
-    http_client, router, AppState, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+    router, AppState, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
 };
+use ultrafast_gateway::identity::password::{hash_password, warm_up};
+use ultrafast_gateway::identity::{Role, TeamRole, UserStatus};
 use ultrafast_gateway::secrets::{generate_key, Cipher};
-use ultrafast_gateway::store::Store;
+use ultrafast_gateway::store::{NewUser, Store};
 use wiremock::MockServer;
 
 pub struct Harness {
@@ -52,15 +55,12 @@ async fn harness_with_limits(
         .insert_key("test", &key.hash, &key.display, None)
         .await
         .unwrap();
-    let state = Arc::new(AppState {
-        store: store.clone(),
-        cipher,
-        http: http_client(),
-        max_body_bytes,
-        max_provider_response_bytes,
-    });
+    warm_up().unwrap();
+    let mut state = AppState::new(store.clone(), cipher);
+    state.max_body_bytes = max_body_bytes;
+    state.max_provider_response_bytes = max_provider_response_bytes;
     Harness {
-        app: router(state),
+        app: router(Arc::new(state)),
         upstream,
         key: key.full,
         store,
@@ -85,4 +85,173 @@ pub async fn post_chat(app: &Router, key: Option<&str>, body: &str) -> (StatusCo
         .await
         .unwrap();
     (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+/// A gateway for `/api` tests.
+pub struct Api {
+    pub app: Router,
+    pub store: Store,
+}
+
+/// A signed-in browser session.
+pub struct Signed {
+    pub cookie: String,
+    pub csrf: String,
+    pub user_id: i64,
+}
+
+/// An empty in-memory database, with insecure cookies allowed.
+pub async fn api() -> Api {
+    api_on(Store::open_in_memory().await.unwrap(), false)
+}
+
+/// A gateway over the given store.
+pub fn api_on(store: Store, cookie_secure: bool) -> Api {
+    warm_up().unwrap();
+    let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
+    let mut state = AppState::new(store.clone(), cipher);
+    state.cookie_secure = cookie_secure;
+    Api {
+        app: router(Arc::new(state)),
+        store,
+    }
+}
+
+/// Hashing is slow on purpose, so each test password is hashed once.
+fn hash_of(password: &str) -> String {
+    static HASHES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    let mut hashes = HASHES.get_or_init(Default::default).lock().unwrap();
+    hashes
+        .entry(password.to_string())
+        .or_insert_with(|| hash_password(password).unwrap())
+        .clone()
+}
+
+/// Adds an active user with a password. `email` must be in normalized form.
+pub async fn seed_user(store: &Store, email: &str, role: Role, password: &str) -> i64 {
+    let hash = hash_of(password);
+    let mut tx = store.begin().await.unwrap();
+    let id = tx
+        .insert_user(NewUser {
+            email,
+            name: "Test User",
+            role,
+            status: UserStatus::Active,
+            password_hash: Some(&hash),
+        })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    id
+}
+
+pub async fn seed_team(store: &Store, name: &str, members: &[(i64, TeamRole)]) -> i64 {
+    let mut tx = store.begin().await.unwrap();
+    let id = tx.insert_team(name).await.unwrap();
+    for (user_id, role) in members {
+        tx.put_member(id, *user_id, *role).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    id
+}
+
+/// The `uf_session` value of a `Set-Cookie` header, as `uf_session=<value>`.
+pub fn cookie_pair(headers: &HeaderMap) -> String {
+    let set = headers
+        .get("set-cookie")
+        .expect("a Set-Cookie header")
+        .to_str()
+        .unwrap();
+    set.split(';').next().unwrap().trim().to_string()
+}
+
+/// Signs in and panics unless that works.
+pub async fn sign_in(app: &Router, email: &str, password: &str) -> Signed {
+    let (status, headers, body) = call(
+        app,
+        "POST",
+        "/api/auth/login",
+        None,
+        Some(serde_json::json!({ "email": email, "password": password })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "sign-in failed");
+    Signed {
+        cookie: cookie_pair(&headers),
+        csrf: body["csrf_token"].as_str().unwrap().to_string(),
+        user_id: body["user"]["id"].as_i64().unwrap(),
+    }
+}
+
+/// Sends a request with exactly the given headers.
+pub async fn send(
+    app: &Router,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<Vec<u8>>,
+) -> (StatusCode, HeaderMap, serde_json::Value) {
+    let mut req = Request::builder().method(method).uri(path);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    let body = match body {
+        Some(bytes) => {
+            req = req.header("content-type", "application/json");
+            Body::from(bytes)
+        }
+        None => Body::empty(),
+    };
+    let resp = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let value = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).expect("the response body must be JSON")
+    };
+    (status, headers, value)
+}
+
+fn encode(body: Option<serde_json::Value>) -> Option<Vec<u8>> {
+    body.map(|b| serde_json::to_vec(&b).unwrap())
+}
+
+/// Sends the session cookie and, for methods other than GET, the CSRF header.
+pub async fn call(
+    app: &Router,
+    method: &str,
+    path: &str,
+    auth: Option<&Signed>,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, HeaderMap, serde_json::Value) {
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(signed) = auth {
+        headers.push(("cookie", &signed.cookie));
+        if method != "GET" {
+            headers.push(("x-csrf-token", &signed.csrf));
+        }
+    }
+    send(app, method, path, &headers, encode(body)).await
+}
+
+pub async fn call_with_token(
+    app: &Router,
+    method: &str,
+    path: &str,
+    token: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, HeaderMap, serde_json::Value) {
+    let bearer = format!("Bearer {token}");
+    send(
+        app,
+        method,
+        path,
+        &[("authorization", &bearer)],
+        encode(body),
+    )
+    .await
 }

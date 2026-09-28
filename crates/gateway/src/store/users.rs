@@ -163,6 +163,15 @@ impl Store {
 }
 
 impl Tx<'_> {
+    /// Counts inside the transaction, so it sees the transaction's own changes.
+    pub async fn count_users(&mut self) -> Result<i64> {
+        let n = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE org_id = ?")
+            .bind(DEFAULT_ORG)
+            .fetch_one(self.conn())
+            .await?;
+        Ok(n)
+    }
+
     /// Fails with `StoreError::Duplicate` when the email is taken.
     pub async fn insert_user(&mut self, u: NewUser<'_>) -> Result<i64> {
         let r = sqlx::query(
@@ -474,6 +483,7 @@ mod tests {
             tx.insert_user(new_user(email, role, status)).await.unwrap();
         }
         assert_eq!(tx.count_active_admins().await.unwrap(), 1);
+        assert_eq!(tx.count_users().await.unwrap(), 4);
         tx.commit().await.unwrap();
         assert_eq!(s.count_active_admins().await.unwrap(), 1);
         assert_eq!(s.count_users().await.unwrap(), 4);
