@@ -96,21 +96,9 @@ fn is_session_value(value: &str) -> bool {
 impl Store {
     /// Creates a session valid for `SESSION_SECONDS`.
     pub async fn create_session(&self, user_id: i64) -> Result<NewSession> {
-        let session = NewSession {
-            id: random_hex(),
-            csrf_token: random_hex(),
-        };
-        sqlx::query(
-            "INSERT INTO sessions (org_id, user_id, id_hash, csrf_token, expires_at)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(user_id)
-        .bind(hash_key(&session.id))
-        .bind(&session.csrf_token)
-        .bind(after(SESSION_SECONDS))
-        .execute(self.pool())
-        .await?;
+        let mut tx = self.begin().await?;
+        let session = tx.create_session(user_id).await?;
+        tx.commit().await?;
         Ok(session)
     }
 
@@ -227,6 +215,38 @@ impl Store {
 }
 
 impl Tx<'_> {
+    /// Creates a session valid for `SESSION_SECONDS`.
+    pub async fn create_session(&mut self, user_id: i64) -> Result<NewSession> {
+        let session = NewSession {
+            id: random_hex(),
+            csrf_token: random_hex(),
+        };
+        sqlx::query(
+            "INSERT INTO sessions (org_id, user_id, id_hash, csrf_token, expires_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(DEFAULT_ORG)
+        .bind(user_id)
+        .bind(hash_key(&session.id))
+        .bind(&session.csrf_token)
+        .bind(after(SESSION_SECONDS))
+        .execute(self.conn())
+        .await?;
+        Ok(session)
+    }
+
+    /// Deletes the user's sessions except the one with row id `keep`, and
+    /// returns how many that was.
+    pub async fn delete_other_sessions_of(&mut self, user_id: i64, keep: i64) -> Result<u64> {
+        let r = sqlx::query("DELETE FROM sessions WHERE user_id = ? AND org_id = ? AND id != ?")
+            .bind(user_id)
+            .bind(DEFAULT_ORG)
+            .bind(keep)
+            .execute(self.conn())
+            .await?;
+        Ok(r.rows_affected())
+    }
+
     /// `hash` is the SHA-256 hex of the full token. `expires_at`, when
     /// given, must be UTC in the form `YYYY-MM-DD HH:MM:SS`.
     pub async fn insert_token(
@@ -468,6 +488,32 @@ mod tests {
         assert_eq!(s.delete_sessions_of(maya).await.unwrap(), 2);
         assert_eq!(s.delete_sessions_of(maya).await.unwrap(), 0);
         assert!(s.live_session(&a.id).await.unwrap().is_none());
+        assert!(s.live_session(&b.id).await.unwrap().is_none());
+        assert!(s.live_session(&c.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn other_sessions_of_a_user_can_be_deleted() {
+        let s = Store::open_in_memory().await.unwrap();
+        let maya = add_user(&s, "maya@example.com").await;
+        let omar = add_user(&s, "omar@example.com").await;
+        let a = s.create_session(maya).await.unwrap();
+        let b = s.create_session(maya).await.unwrap();
+        let c = s.create_session(omar).await.unwrap();
+        let keep = s.live_session(&a.id).await.unwrap().unwrap().id;
+
+        // A session created in a transaction that is dropped does not exist.
+        let dropped = {
+            let mut tx = s.begin().await.unwrap();
+            tx.create_session(maya).await.unwrap()
+        };
+        assert!(s.live_session(&dropped.id).await.unwrap().is_none());
+
+        let mut tx = s.begin().await.unwrap();
+        assert_eq!(tx.delete_other_sessions_of(maya, keep).await.unwrap(), 1);
+        assert_eq!(tx.delete_other_sessions_of(maya, keep).await.unwrap(), 0);
+        tx.commit().await.unwrap();
+        assert!(s.live_session(&a.id).await.unwrap().is_some());
         assert!(s.live_session(&b.id).await.unwrap().is_none());
         assert!(s.live_session(&c.id).await.unwrap().is_some());
     }

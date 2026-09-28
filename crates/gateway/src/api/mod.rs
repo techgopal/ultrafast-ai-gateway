@@ -1,0 +1,462 @@
+//! The `/api` admin API: its router, its error type and the extractor that
+//! authenticates every request.
+
+pub mod auth;
+
+use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{ConnectInfo, DefaultBodyLimit, FromRequest, FromRequestParts, Request};
+use axum::http::header::{AUTHORIZATION, COOKIE};
+use axum::http::request::Parts;
+use axum::http::{HeaderMap, Method, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde::de::DeserializeOwned;
+use serde_json::json;
+
+use crate::app::AppState;
+use crate::identity::policy::{authorize, Action, Decision};
+use crate::identity::{Principal, UserStatus};
+use crate::secrets::secrets_equal;
+use crate::store::{after, Store, UserRow};
+
+/// The name of the session cookie.
+pub const SESSION_COOKIE: &str = "uf_session";
+/// The header that carries the CSRF token of a session.
+pub const CSRF_HEADER: &str = "x-csrf-token";
+/// The largest request body `/api` reads.
+pub const MAX_BODY_BYTES: usize = 64 * 1024;
+/// A user or token that was active this recently is not written again.
+const TOUCH_INTERVAL_SECONDS: i64 = 60;
+
+pub fn router() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/setup", get(auth::setup_status).post(auth::setup))
+        .route("/auth/login", post(auth::login))
+        .route("/auth/logout", post(auth::logout))
+        .route("/auth/me", get(auth::me))
+        .route("/auth/accept-invite", post(auth::accept_invite))
+        .route("/auth/password", post(auth::change_password))
+        .fallback(|| async { ApiError::not_found() })
+        .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+}
+
+/// An error answer of `/api`. `message` and `fields` are sent to the caller,
+/// so they must never hold a secret.
+#[derive(Debug)]
+pub struct ApiError {
+    pub status: StatusCode,
+    pub code: &'static str,
+    pub message: String,
+    pub fields: Option<BTreeMap<String, String>>,
+}
+
+impl ApiError {
+    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code,
+            message: message.into(),
+            fields: None,
+        }
+    }
+
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "bad_request", message)
+    }
+
+    /// One entry per field that failed.
+    pub fn validation(fields: BTreeMap<String, String>) -> Self {
+        Self {
+            fields: Some(fields),
+            ..Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation_failed",
+                "Some fields are not valid.",
+            )
+        }
+    }
+
+    /// A validation error for a single field.
+    pub fn invalid_field(field: &str, message: &str) -> Self {
+        Self::validation(BTreeMap::from([(field.to_string(), message.to_string())]))
+    }
+
+    pub fn unauthenticated() -> Self {
+        Self::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthenticated",
+            "Sign in to continue.",
+        )
+    }
+
+    /// The same answer whatever was wrong with the email or the password.
+    pub fn invalid_credentials() -> Self {
+        Self::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid_credentials",
+            "Email or password is incorrect.",
+        )
+    }
+
+    pub fn csrf() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "csrf_failed",
+            "The CSRF token is missing or does not match.",
+        )
+    }
+
+    pub fn forbidden() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "You are not allowed to do this.",
+        )
+    }
+
+    pub fn not_found() -> Self {
+        Self::new(StatusCode::NOT_FOUND, "not_found", "Not found.")
+    }
+
+    pub fn method_not_allowed() -> Self {
+        Self::new(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+            "This method is not supported here.",
+        )
+    }
+
+    pub fn conflict(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, code, message)
+    }
+
+    pub fn payload_too_large() -> Self {
+        Self::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+            "The request body is too large.",
+        )
+    }
+
+    pub fn too_many_attempts() -> Self {
+        Self::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_attempts",
+            "Too many failed attempts. Try again later.",
+        )
+    }
+
+    pub fn internal() -> Self {
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "Something went wrong.",
+        )
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let mut error = json!({ "code": self.code, "message": self.message });
+        if let Some(fields) = self.fields {
+            error["fields"] = json!(fields);
+        }
+        (self.status, Json(json!({ "error": error }))).into_response()
+    }
+}
+
+/// The error is logged and the caller is told nothing about it.
+impl From<anyhow::Error> for ApiError {
+    fn from(e: anyhow::Error) -> Self {
+        tracing::error!(error = %e, "api request failed");
+        Self::internal()
+    }
+}
+
+/// Turns a policy decision into a result.
+pub fn require(p: &Principal, action: &Action) -> Result<(), ApiError> {
+    match authorize(p, action) {
+        Decision::Allow => Ok(()),
+        Decision::Forbidden => Err(ApiError::forbidden()),
+        Decision::Hidden => Err(ApiError::not_found()),
+    }
+}
+
+/// A JSON request body. Unlike `axum::Json` it answers in the `/api` error
+/// shape, and never repeats any part of what was sent.
+pub struct ApiJson<T>(pub T);
+
+impl<S, T> FromRequest<S> for ApiJson<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match Json::<T>::from_request(req, state).await {
+            Ok(Json(value)) => Ok(Self(value)),
+            Err(rejection) => Err(json_error(&rejection)),
+        }
+    }
+}
+
+fn json_error(rejection: &JsonRejection) -> ApiError {
+    if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        return ApiError::payload_too_large();
+    }
+    // The parser's own message can quote the body, so it is not passed on.
+    ApiError::bad_request(
+        "The body must be JSON, sent as application/json, with exactly the expected fields.",
+    )
+}
+
+/// The address of the client, from the TCP connection. Forwarding headers
+/// are not trusted. Without connection information, as in tests that call
+/// the router directly, it is 127.0.0.1.
+pub struct ClientAddr(pub IpAddr);
+
+impl<S: Send + Sync> FromRequestParts<S> for ClientAddr {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+        let addr = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map_or(IpAddr::V4(Ipv4Addr::LOCALHOST), |info| info.0.ip());
+        Ok(Self(addr))
+    }
+}
+
+/// How the caller proved who they are. No `Debug`: it holds a CSRF token.
+pub enum AuthVia {
+    Session { session_id: i64, csrf_token: String },
+    Token { token_id: i64 },
+}
+
+/// The authenticated caller. Extracting it authenticates the request and,
+/// for cookie sessions on non-GET/HEAD requests, checks the CSRF header.
+pub struct Authed {
+    pub principal: Principal,
+    pub via: AuthVia,
+}
+
+/// The value of the session cookie, if the request has one.
+pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(name, _)| *name == SESSION_COOKIE)
+        .map(|(_, value)| value)
+}
+
+/// The token of an `Authorization: Bearer <token>` header value.
+fn bearer_token(value: &axum::http::HeaderValue) -> Option<&str> {
+    let (scheme, token) = value.to_str().ok()?.split_once(' ')?;
+    // HTTP auth schemes are case-insensitive.
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then_some(token.trim())
+}
+
+/// Whether a stored timestamp is within the last minute.
+fn is_recent(at: Option<&str>) -> bool {
+    let cutoff = after(-TOUCH_INTERVAL_SECONDS);
+    at.is_some_and(|at| at > cutoff.as_str())
+}
+
+/// Loads the user as they are now. `None` unless the user exists and is
+/// active.
+async fn active_user(store: &Store, user_id: i64) -> anyhow::Result<Option<UserRow>> {
+    let user = store.user_by_id(user_id).await?;
+    Ok(user.filter(|u| u.status == UserStatus::Active))
+}
+
+async fn principal_of(store: &Store, user: &UserRow) -> anyhow::Result<Principal> {
+    let teams = store.memberships_of(user.id).await?;
+    Ok(Principal {
+        user_id: user.id,
+        email: user.email.clone(),
+        role: user.role,
+        teams: teams.into_iter().map(|m| (m.team_id, m.role)).collect(),
+    })
+}
+
+impl FromRequestParts<Arc<AppState>> for Authed {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        let store = &state.store;
+
+        // An Authorization header decides alone: the cookie is not a fallback.
+        if let Some(value) = parts.headers.get(AUTHORIZATION) {
+            let token = bearer_token(value).ok_or_else(ApiError::unauthenticated)?;
+            let row = store
+                .live_token(token)
+                .await?
+                .ok_or_else(ApiError::unauthenticated)?;
+            let user = active_user(store, row.user_id)
+                .await?
+                .ok_or_else(ApiError::unauthenticated)?;
+            let principal = principal_of(store, &user).await?;
+            if !is_recent(row.last_used_at.as_deref()) {
+                store.touch_token(row.id).await?;
+            }
+            if !is_recent(user.last_active_at.as_deref()) {
+                store.touch_user(user.id).await?;
+            }
+            return Ok(Self {
+                principal,
+                via: AuthVia::Token { token_id: row.id },
+            });
+        }
+
+        let cookie = session_cookie(&parts.headers).ok_or_else(ApiError::unauthenticated)?;
+        let session = store
+            .live_session(cookie)
+            .await?
+            .ok_or_else(ApiError::unauthenticated)?;
+        let Some(user) = active_user(store, session.user_id).await? else {
+            store.delete_session(cookie).await?;
+            return Err(ApiError::unauthenticated());
+        };
+        if parts.method != Method::GET && parts.method != Method::HEAD {
+            let sent = parts
+                .headers
+                .get(CSRF_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(ApiError::csrf)?;
+            if !secrets_equal(sent, &session.csrf_token) {
+                return Err(ApiError::csrf());
+            }
+        }
+        let principal = principal_of(store, &user).await?;
+        if !is_recent(user.last_active_at.as_deref()) {
+            store.touch_user(user.id).await?;
+        }
+        Ok(Self {
+            principal,
+            via: AuthVia::Session {
+                session_id: session.id,
+                csrf_token: session.csrf_token,
+            },
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Role;
+
+    async fn body_of(error: ApiError) -> (StatusCode, serde_json::Value) {
+        let response = error.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn errors_have_one_shape() {
+        let cases = [
+            (ApiError::bad_request("no"), 400, "bad_request"),
+            (ApiError::unauthenticated(), 401, "unauthenticated"),
+            (ApiError::invalid_credentials(), 401, "invalid_credentials"),
+            (ApiError::csrf(), 403, "csrf_failed"),
+            (ApiError::forbidden(), 403, "forbidden"),
+            (ApiError::not_found(), 404, "not_found"),
+            (ApiError::method_not_allowed(), 405, "method_not_allowed"),
+            (ApiError::conflict("taken", "no"), 409, "taken"),
+            (ApiError::payload_too_large(), 413, "payload_too_large"),
+            (ApiError::too_many_attempts(), 429, "too_many_attempts"),
+            (ApiError::internal(), 500, "internal_error"),
+        ];
+        for (error, status, code) in cases {
+            let (got, body) = body_of(error).await;
+            assert_eq!(got.as_u16(), status);
+            assert_eq!(body["error"]["code"], code);
+            assert!(!body["error"]["message"].as_str().unwrap().is_empty());
+            assert_eq!(body["error"].as_object().unwrap().len(), 2, "{code}");
+            assert_eq!(body.as_object().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn validation_errors_list_fields() {
+        let (status, body) = body_of(ApiError::invalid_field("name", "too long")).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            body,
+            json!({ "error": {
+                "code": "validation_failed",
+                "message": "Some fields are not valid.",
+                "fields": { "name": "too long" }
+            }})
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_errors_hide_the_cause() {
+        let (status, body) = body_of(anyhow::anyhow!("disk is on fire").into()).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(!body.to_string().contains("fire"));
+    }
+
+    #[test]
+    fn require_follows_the_policy() {
+        let member = Principal {
+            user_id: 1,
+            email: "maya@example.com".into(),
+            role: Role::Member,
+            teams: vec![],
+        };
+        assert!(require(&member, &Action::ListUsers).is_ok());
+        let err = require(&member, &Action::CreateTeam).unwrap_err();
+        assert_eq!((err.status, err.code), (StatusCode::FORBIDDEN, "forbidden"));
+        let err = require(&member, &Action::DeleteUser { user_id: 2 }).unwrap_err();
+        assert_eq!((err.status, err.code), (StatusCode::NOT_FOUND, "not_found"));
+    }
+
+    #[test]
+    fn session_cookie_is_found_among_others() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(session_cookie(&headers), None);
+        headers.append(COOKIE, "theme=dark; xuf_session=no".parse().unwrap());
+        assert_eq!(session_cookie(&headers), None);
+        headers.append(COOKIE, "a=b;  uf_session=abc123 ; c=d".parse().unwrap());
+        assert_eq!(session_cookie(&headers), Some("abc123"));
+    }
+
+    #[test]
+    fn bearer_scheme_is_case_insensitive() {
+        let value = |s: &str| axum::http::HeaderValue::from_str(s).unwrap();
+        assert_eq!(bearer_token(&value("Bearer uf-at-1")), Some("uf-at-1"));
+        assert_eq!(bearer_token(&value("bEARER  uf-at-1 ")), Some("uf-at-1"));
+        assert_eq!(bearer_token(&value("Basic uf-at-1")), None);
+        assert_eq!(bearer_token(&value("Bearer")), None);
+        assert_eq!(bearer_token(&value("")), None);
+    }
+
+    #[test]
+    fn recent_means_within_a_minute() {
+        assert!(!is_recent(None));
+        assert!(is_recent(Some(&after(0))));
+        assert!(is_recent(Some(&after(-50))));
+        assert!(!is_recent(Some(&after(-70))));
+        assert!(!is_recent(Some("2000-01-01 00:00:00")));
+    }
+}

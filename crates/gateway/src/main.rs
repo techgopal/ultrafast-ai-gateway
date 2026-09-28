@@ -4,13 +4,12 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use ultrafast_gateway::app::{
-    http_client, router, shutdown_signal, AppState, DEFAULT_MAX_BODY_BYTES,
-    DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
-};
+use ultrafast_gateway::api::auth::bootstrap_admin;
+use ultrafast_gateway::app::{router, shutdown_signal, AppState};
 use ultrafast_gateway::config::{
     db_path, load_master_key, restrict_permissions, validate_base_url,
 };
+use ultrafast_gateway::identity::password;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
 use ultrafast_gateway::store::Store;
 use ultrafast_translate::provider::ProviderKind;
@@ -38,6 +37,10 @@ enum Command {
         host: String,
         #[arg(long, env = "UF_PORT", default_value_t = 3000)]
         port: u16,
+        /// Send the session cookie without `Secure`, for plain HTTP during
+        /// development. Never use this on a public address.
+        #[arg(long, env = "UF_INSECURE_COOKIES")]
+        insecure_cookies: bool,
     },
     /// Manage providers.
     Provider {
@@ -80,6 +83,19 @@ enum KeyCommand {
     },
 }
 
+const ADMIN_EMAIL: &str = "UF_ADMIN_EMAIL";
+const ADMIN_PASSWORD: &str = "UF_ADMIN_PASSWORD";
+
+/// Reads an environment variable. The error names the variable and never
+/// shows its value.
+fn env_value(name: &str) -> Result<Option<String>> {
+    match std::env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => bail!("{name} is not valid UTF-8"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -97,22 +113,34 @@ async fn main() -> Result<()> {
     restrict_permissions(&cli.data_dir)?;
 
     match cli.command {
-        Command::Serve { host, port } => {
+        Command::Serve {
+            host,
+            port,
+            insecure_cookies,
+        } => {
             let addr: SocketAddr = format!("{host}:{port}")
                 .parse()
                 .with_context(|| format!("'{host}:{port}' is not a valid address"))?;
-            let state = Arc::new(AppState {
-                store,
-                cipher,
-                http: http_client(),
-                max_body_bytes: DEFAULT_MAX_BODY_BYTES,
-                max_provider_response_bytes: DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
-            });
+            tokio::task::spawn_blocking(password::warm_up)
+                .await?
+                .context("password hashing does not work")?;
+            // Read here rather than as flags: a flag value is visible in the
+            // process list and shell history.
+            bootstrap_admin(&store, env_value(ADMIN_EMAIL)?, env_value(ADMIN_PASSWORD)?).await?;
+            let expired = store.delete_expired_sessions().await?;
+            tracing::debug!(expired, "removed expired sessions");
+            let mut state = AppState::new(store, cipher);
+            state.cookie_secure = !insecure_cookies;
+            if insecure_cookies {
+                tracing::warn!("session cookies are sent without Secure");
+            }
+            let state = Arc::new(state);
             let listener = tokio::net::TcpListener::bind(addr)
                 .await
                 .with_context(|| format!("could not listen on {addr}"))?;
             tracing::info!(%addr, "gateway listening");
-            axum::serve(listener, router(state))
+            let service = router(state).into_make_service_with_connect_info::<SocketAddr>();
+            axum::serve(listener, service)
                 .with_graceful_shutdown(shutdown_signal())
                 .await?;
         }

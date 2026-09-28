@@ -54,6 +54,12 @@ pub fn hash_key(key: &str) -> String {
     hex::encode(Sha256::digest(key.as_bytes()))
 }
 
+/// Whether two secrets are equal. It compares their SHA-256 digests, so how
+/// long the comparison takes says nothing about the secrets themselves.
+pub fn secrets_equal(a: &str, b: &str) -> bool {
+    hash_key(a) == hash_key(b)
+}
+
 pub struct Cipher(ChaCha20Poly1305);
 
 /// Never prints key material.
@@ -143,6 +149,18 @@ mod tests {
         assert_eq!(TOKEN_PREFIX, "uf-at-");
         assert_eq!(INVITE_PREFIX, "uf-inv-");
         assert_eq!(generate_secret(TOKEN_PREFIX).full.len(), 6 + 64);
+    }
+
+    #[test]
+    fn secrets_are_compared_by_value() {
+        let a = generate_key().full;
+        assert!(secrets_equal(&a, &a.clone()));
+        assert!(secrets_equal("", ""));
+        assert!(!secrets_equal(&a, &generate_key().full));
+        assert!(!secrets_equal(&a, &a[..a.len() - 1]));
+        assert!(!secrets_equal(&a, &a.to_uppercase()));
+        assert!(!secrets_equal(&a, ""));
+        assert!(!secrets_equal("", &a));
     }
 
     #[test]

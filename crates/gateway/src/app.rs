@@ -3,10 +3,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde_json::json;
 
+use crate::api;
+use crate::identity::limiter::LoginLimiter;
 use crate::proxy;
 use crate::secrets::Cipher;
 use crate::store::Store;
@@ -21,6 +23,25 @@ pub struct AppState {
     pub max_body_bytes: usize,
     /// The largest non-streaming provider response that is read.
     pub max_provider_response_bytes: usize,
+    /// Failed sign-in attempts, kept in memory.
+    pub limiter: LoginLimiter,
+    /// Whether the session cookie is marked `Secure`.
+    pub cookie_secure: bool,
+}
+
+impl AppState {
+    /// A state with the default limits, an empty limiter and secure cookies.
+    pub fn new(store: Store, cipher: Cipher) -> Self {
+        Self {
+            store,
+            cipher,
+            http: http_client(),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_provider_response_bytes: DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+            limiter: LoginLimiter::new(),
+            cookie_secure: true,
+        }
+    }
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -28,6 +49,9 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(|| async { Json(json!({ "status": "ok" })) }))
         .route("/v1/chat/completions", post(proxy::chat_completions))
+        .nest("/api", api::router())
+        // The nested router does not see this path.
+        .route("/api/", any(|| async { api::ApiError::not_found() }))
         .with_state(state)
 }
 

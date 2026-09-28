@@ -1,5 +1,6 @@
 //! Ultrafast gateway library.
 
+pub mod api;
 pub mod app;
 pub mod auth;
 pub mod config;
