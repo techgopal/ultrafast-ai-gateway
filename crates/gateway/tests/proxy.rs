@@ -209,6 +209,29 @@ async fn provider_errors_are_mapped() {
 }
 
 #[tokio::test]
+async fn provider_credential_rejection_is_502_not_401_or_403() {
+    for status in [401u16, 403] {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_body_json(json!({ "error": { "message": "Incorrect API key sk-abc" } })),
+            )
+            .mount(&h.upstream)
+            .await;
+        let (s, b) = post_chat(&h.app, Some(&h.key), BODY).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY, "provider status {status}");
+        let v: Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["error"]["type"], "upstream_error");
+        assert_eq!(
+            error_message(&b),
+            "Provider rejected the gateway's credential."
+        );
+        assert!(!b.contains("sk-abc"), "provider status {status}");
+    }
+}
+
+#[tokio::test]
 async fn unreachable_provider_gets_502() {
     let h = harness("openai").await;
     h.store
