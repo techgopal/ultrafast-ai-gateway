@@ -208,27 +208,34 @@ async fn provider_errors_are_mapped() {
     assert_eq!(error_message(&b), "slow down");
 }
 
+async fn assert_credential_rejection_is_502(status: u16) {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(status)
+                .set_body_json(json!({ "error": { "message": "Incorrect API key sk-abc" } })),
+        )
+        .mount(&h.upstream)
+        .await;
+    let (s, b) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(s, StatusCode::BAD_GATEWAY);
+    let v: Value = serde_json::from_str(&b).unwrap();
+    assert_eq!(v["error"]["type"], "upstream_error");
+    assert_eq!(
+        error_message(&b),
+        "Provider rejected the gateway's credential."
+    );
+    assert!(!b.contains("sk-abc"));
+}
+
 #[tokio::test]
-async fn provider_credential_rejection_is_502_not_401_or_403() {
-    for status in [401u16, 403] {
-        let h = harness("openai").await;
-        Mock::given(method("POST"))
-            .respond_with(
-                ResponseTemplate::new(status)
-                    .set_body_json(json!({ "error": { "message": "Incorrect API key sk-abc" } })),
-            )
-            .mount(&h.upstream)
-            .await;
-        let (s, b) = post_chat(&h.app, Some(&h.key), BODY).await;
-        assert_eq!(s, StatusCode::BAD_GATEWAY, "provider status {status}");
-        let v: Value = serde_json::from_str(&b).unwrap();
-        assert_eq!(v["error"]["type"], "upstream_error");
-        assert_eq!(
-            error_message(&b),
-            "Provider rejected the gateway's credential."
-        );
-        assert!(!b.contains("sk-abc"), "provider status {status}");
-    }
+async fn provider_401_is_502_with_a_fixed_message() {
+    assert_credential_rejection_is_502(401).await;
+}
+
+#[tokio::test]
+async fn provider_403_is_502_with_a_fixed_message() {
+    assert_credential_rejection_is_502(403).await;
 }
 
 #[tokio::test]

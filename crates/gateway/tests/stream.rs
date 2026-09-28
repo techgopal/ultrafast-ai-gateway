@@ -156,6 +156,39 @@ async fn provider_error_inside_stream_is_forwarded_as_error_event() {
     assert!(!body.contains("[DONE]"));
 }
 
+/// The same stream as the test above, with every line ending replaced.
+async fn error_inside_stream_with_line_ending(ending: &str) {
+    let h = harness("openai").await;
+    let upstream = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"error\":{\"message\":\"over \\\"loaded\\\"\"}}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"never\"},\"finish_reason\":null}]}\n\n",
+    )
+    .replace('\n', ending);
+    Mock::given(method("POST"))
+        .respond_with(sse(&upstream))
+        .mount(&h.upstream)
+        .await;
+    let (_, body) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(text(&body), "a");
+    let last = payloads(&body).pop().unwrap();
+    assert!(last["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("over \"loaded\""));
+    assert!(!body.contains("[DONE]"));
+}
+
+#[tokio::test]
+async fn provider_error_inside_crlf_stream_is_forwarded_as_error_event() {
+    error_inside_stream_with_line_ending("\r\n").await;
+}
+
+#[tokio::test]
+async fn provider_error_inside_cr_stream_is_forwarded_as_error_event() {
+    error_inside_stream_with_line_ending("\r").await;
+}
+
 #[tokio::test]
 async fn provider_error_before_stream_starts_is_a_normal_json_error() {
     let h = harness("openai").await;

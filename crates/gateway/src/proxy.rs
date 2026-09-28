@@ -198,25 +198,24 @@ pub fn stream_response(upstream: reqwest::Response, kind: ProviderKind, model: S
                     return;
                 }
             };
-            // The decoder returns either events or an error for a whole feed.
-            // Feeding one line at a time completes at most one provider event
-            // per call, so events that precede an error are still forwarded.
-            for line in bytes.split_inclusive(|b| *b == b'\n') {
-                match decoder.feed(line) {
-                    Ok(events) => {
-                        for ev in events {
-                            let done = matches!(ev, StreamEvent::Done { .. });
-                            yield Ok(render_stream_event(&ev, &id, &model, created));
-                            if done {
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        yield Ok(render_stream_error(&e.to_string()));
-                        return;
-                    }
+            let events = match decoder.feed(&bytes) {
+                Ok(events) => events,
+                Err(e) => {
+                    yield Ok(render_stream_error(&e.to_string()));
+                    return;
                 }
+            };
+            for ev in events {
+                let done = matches!(ev, StreamEvent::Done { .. });
+                yield Ok(render_stream_event(&ev, &id, &model, created));
+                if done {
+                    return;
+                }
+            }
+            // An error that followed those events in the same chunk.
+            if let Some(e) = decoder.take_error() {
+                yield Ok(render_stream_error(&e.to_string()));
+                return;
             }
         }
         yield Ok(render_stream_error("The provider stream ended before completion."));
