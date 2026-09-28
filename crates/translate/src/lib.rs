@@ -2,5 +2,6 @@
 
 pub mod error;
 pub mod ingress;
+pub mod provider;
 pub mod sse;
 pub mod types;
