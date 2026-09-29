@@ -1,18 +1,12 @@
-// The parts the sign-in, setup and invite pages share.
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useState,
-  type ComponentProps,
-  type ReactNode,
-  type Ref,
-  type RefObject,
-} from "react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+// The parts the sign-in, setup and invite pages share. The error of the form
+// and the focus after a failed submit are the ones every form of the console has.
+import type { ComponentProps, ReactNode } from "react";
+import { Field as SharedField } from "@/components/Field";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+
+export { useFocusOnFailure } from "@/components/form";
+export { FormError } from "@/components/FormError";
 
 export const PASSWORD_POLICY = "12 characters or more";
 export const PASSWORDS_DIFFER = "The passwords do not match.";
@@ -47,7 +41,7 @@ export const control = "min-h-11 w-full";
 
 type InputProps = Omit<
   ComponentProps<typeof Input>,
-  "id" | "className" | "aria-describedby" | "aria-invalid"
+  "id" | "name" | "className" | "aria-describedby" | "aria-invalid"
 >;
 
 interface FieldProps extends InputProps {
@@ -59,52 +53,12 @@ interface FieldProps extends InputProps {
   error?: string | undefined;
 }
 
-/** A labelled field. Its error and its hint are tied to it with `aria-describedby`. */
-export function Field({ label, hint, error, ...input }: FieldProps) {
-  const id = useId();
-  const errorId = `${id}-error`;
-  const hintId = `${id}-hint`;
-  const describedBy = [error === undefined ? null : errorId, hint === undefined ? null : hintId]
-    .filter((part) => part !== null)
-    .join(" ");
+/** A labelled text field of these pages: the shared field around an input. */
+export function Field({ label, name, hint, error, required, ...input }: FieldProps) {
   return (
-    <div className="flex flex-col gap-2">
-      <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        className={control}
-        aria-invalid={error === undefined ? undefined : true}
-        aria-describedby={describedBy === "" ? undefined : describedBy}
-        {...input}
-      />
-      {error === undefined ? null : (
-        <p id={errorId} role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      )}
-      {hint === undefined ? null : (
-        <p id={hintId} className="text-sm text-muted-foreground">
-          {hint}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/**
- * Why the request failed. It is announced when it appears, and it can take
- * the focus (see `useFocusOnFailure`).
- */
-export function FormError({ ref, children }: { ref?: Ref<HTMLDivElement>; children: ReactNode }) {
-  return (
-    <Alert
-      ref={ref}
-      tabIndex={-1}
-      variant="destructive"
-      className="outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <AlertDescription>{children}</AlertDescription>
-    </Alert>
+    <SharedField label={label} name={name} hint={hint} error={error} required={required}>
+      <Input className={control} {...input} />
+    </SharedField>
   );
 }
 
@@ -121,24 +75,4 @@ export function Notice({ children }: { children: ReactNode }) {
 export function textOf(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
-}
-
-/**
- * After a submit that failed, the focus goes to the first field with an error,
- * or to the message of the form when no field has one. Returns what the form
- * calls when a submit failed, after it set its errors.
- */
-export function useFocusOnFailure(
-  form: RefObject<HTMLFormElement | null>,
-  message: RefObject<HTMLDivElement | null>,
-): () => void {
-  const [failures, setFailures] = useState(0);
-  useEffect(() => {
-    if (failures === 0) return;
-    const field = form.current?.querySelector<HTMLElement>('[aria-invalid="true"]');
-    (field ?? message.current)?.focus();
-  }, [failures, form, message]);
-  return useCallback(() => {
-    setFailures((count) => count + 1);
-  }, []);
 }
