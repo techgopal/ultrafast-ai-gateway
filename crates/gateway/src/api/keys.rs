@@ -11,15 +11,12 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
+use super::{name_and_expiry, path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
 use crate::identity::UserStatus;
 use crate::secrets::generate_key;
-use crate::store::{check_timestamp, now, AuditEntry, KeyRow, Store};
-
-/// Longest accepted name of a key or an access token, in characters.
-const MAX_NAME_CHARS: usize = 100;
+use crate::store::{now, AuditEntry, KeyRow, Store};
 
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -83,50 +80,6 @@ fn key_status(revoked_at: Option<&str>, expires_at: Option<&str>, now: &str) -> 
         "expired"
     } else {
         "active"
-    }
-}
-
-/// The name of a key or an access token, trimmed.
-pub fn secret_name(raw: &str) -> Result<&str, &'static str> {
-    let name = raw.trim();
-    let chars = name.chars().count();
-    if chars == 0 || chars > MAX_NAME_CHARS || name.chars().any(char::is_control) {
-        return Err("name must be 1 to 100 characters");
-    }
-    Ok(name)
-}
-
-/// When a key or an access token stops working: a real time in the future.
-pub(super) fn future_timestamp(raw: &str) -> Result<&str, &'static str> {
-    if check_timestamp(raw).is_err() {
-        return Err("expires_at must be a UTC time in the form YYYY-MM-DD HH:MM:SS");
-    }
-    if raw <= now().as_str() {
-        return Err("expires_at must be in the future");
-    }
-    Ok(raw)
-}
-
-/// The name and the expiry of a request, or every field that is not valid.
-pub(super) fn name_and_expiry<'a>(
-    name: &'a str,
-    expires_at: Option<&'a str>,
-) -> Result<(&'a str, Option<&'a str>), ApiError> {
-    let mut fields = BTreeMap::new();
-    let name = secret_name(name)
-        .map_err(|m| fields.insert("name".to_string(), m.to_string()))
-        .ok();
-    let expires_at = match expires_at.map(future_timestamp) {
-        Some(Err(m)) => {
-            fields.insert("expires_at".to_string(), m.to_string());
-            None
-        }
-        Some(Ok(at)) => Some(at),
-        None => None,
-    };
-    match name {
-        Some(name) if fields.is_empty() => Ok((name, expires_at)),
-        _ => Err(ApiError::validation(fields)),
     }
 }
 
@@ -353,42 +306,6 @@ pub async fn revoke(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::after;
-
-    #[test]
-    fn names_are_trimmed_and_bounded() {
-        assert_eq!(secret_name("  ci "), Ok("ci"));
-        assert_eq!(secret_name(&"é".repeat(100)), Ok("é".repeat(100).as_str()));
-        for bad in ["", "   ", &"n".repeat(101), "a\nb"] {
-            assert!(secret_name(bad).is_err(), "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn expiry_is_a_real_time_in_the_future() {
-        let soon = after(60);
-        assert_eq!(future_timestamp(&soon), Ok(soon.as_str()));
-        assert!(future_timestamp("2999-12-31 23:59:59").is_ok());
-        for bad in [
-            after(-60).as_str(),
-            "2000-01-01 00:00:00",
-            "2999-02-31 00:00:00",
-            "2999-01-01",
-            "2999-01-01T00:00:00Z",
-            "",
-        ] {
-            assert!(future_timestamp(bad).is_err(), "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn every_invalid_field_is_named() {
-        let err = name_and_expiry("", Some("never")).unwrap_err();
-        let fields = err.fields.unwrap();
-        assert_eq!(fields.len(), 2);
-        assert!(fields.contains_key("name") && fields.contains_key("expires_at"));
-        assert!(name_and_expiry(" a ", None).is_ok());
-    }
 
     #[test]
     fn status_prefers_revoked() {

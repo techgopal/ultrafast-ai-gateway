@@ -5,8 +5,8 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ultrafast_gateway::api::auth::bootstrap_admin;
-use ultrafast_gateway::api::keys::secret_name;
 use ultrafast_gateway::api::openapi::spec;
+use ultrafast_gateway::api::trimmed_name;
 use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
 use ultrafast_gateway::config::{
     db_path, load_master_key, restrict_permissions, validate_base_url, validate_provider_name,
@@ -127,7 +127,7 @@ fn validate(command: &mut Command) -> Result<()> {
         Command::Key {
             command: KeyCommand::Create { name },
         } => {
-            *name = secret_name(name).map_err(anyhow::Error::msg)?.to_string();
+            *name = trimmed_name(name).map_err(anyhow::Error::msg)?.to_string();
         }
         Command::Openapi => {}
     }

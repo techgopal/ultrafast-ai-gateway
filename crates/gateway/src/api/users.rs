@@ -12,15 +12,13 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::auth::UserView;
-use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
+use super::{path_id, refresh_snapshot, require, trimmed_name, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
 use crate::identity::{normalize_email, Role, UserStatus};
 use crate::secrets::{generate_secret, INVITE_PREFIX};
 use crate::store::{after, AuditEntry, NewUser, Store, StoreError, Tx, UserRow};
 
-/// Longest accepted user name, in characters.
-const MAX_NAME_CHARS: usize = 100;
 /// How long an invite link works.
 const INVITE_SECONDS: i64 = 7 * 24 * 60 * 60;
 /// The page that takes an invite token.
@@ -40,15 +38,6 @@ pub struct UpdateRequest {
     name: Option<String>,
     role: Option<String>,
     status: Option<String>,
-}
-
-fn user_name(raw: &str) -> Result<&str, &'static str> {
-    let name = raw.trim();
-    let chars = name.chars().count();
-    if chars == 0 || chars > MAX_NAME_CHARS || name.chars().any(char::is_control) {
-        return Err("name must be 1 to 100 characters");
-    }
-    Ok(name)
 }
 
 fn last_admin() -> ApiError {
@@ -147,7 +136,7 @@ pub async fn invite(
     let email = normalize_email(&req.email)
         .map_err(|m| fields.insert("email".to_string(), m.to_string()))
         .ok();
-    let name = user_name(&req.name)
+    let name = trimmed_name(&req.name)
         .map_err(|m| fields.insert("name".to_string(), m.to_string()))
         .ok();
     if role.is_none() {
@@ -336,7 +325,7 @@ pub async fn update(
     }
 
     let mut fields = BTreeMap::new();
-    let name = match req.name.as_deref().map(user_name) {
+    let name = match req.name.as_deref().map(trimmed_name) {
         Some(Err(m)) => {
             fields.insert("name".to_string(), m.to_string());
             None
@@ -531,15 +520,6 @@ pub async fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn names_are_trimmed_and_bounded() {
-        assert_eq!(user_name("  Lena "), Ok("Lena"));
-        assert_eq!(user_name(&"é".repeat(100)), Ok("é".repeat(100).as_str()));
-        for bad in ["", "   ", &"n".repeat(101), "a\nb"] {
-            assert!(user_name(bad).is_err(), "{bad:?}");
-        }
-    }
 
     #[test]
     fn summaries_state_old_and_new_values() {

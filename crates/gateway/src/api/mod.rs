@@ -30,7 +30,7 @@ use crate::app::AppState;
 use crate::identity::policy::{authorize, Action, Decision};
 use crate::identity::{Principal, UserStatus};
 use crate::secrets::secrets_equal;
-use crate::store::{after, Store, UserRow};
+use crate::store::{after, check_timestamp, now, Store, UserRow};
 
 /// The name of the session cookie.
 pub const SESSION_COOKIE: &str = "uf_session";
@@ -40,6 +40,8 @@ pub const CSRF_HEADER: &str = "x-csrf-token";
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
 /// A user or token that was active this recently is not written again.
 const TOUCH_INTERVAL_SECONDS: i64 = 60;
+/// Longest accepted name of a user, a key or an access token, in characters.
+pub const MAX_NAME_CHARS: usize = 100;
 
 /// Every route of `/api` with its description. The router and the OpenAPI
 /// spec are both made from this, so a route cannot exist without being in
@@ -244,6 +246,52 @@ pub fn path_id(raw: &str) -> Result<i64, ApiError> {
         .ok()
         .filter(|id| *id > 0)
         .ok_or_else(ApiError::not_found)
+}
+
+/// The name of a user, a key or an access token, trimmed: 1 to
+/// `MAX_NAME_CHARS` characters, none of them a control character.
+pub fn trimmed_name(raw: &str) -> Result<&str, &'static str> {
+    let name = raw.trim();
+    let chars = name.chars().count();
+    if chars == 0 || chars > MAX_NAME_CHARS || name.chars().any(char::is_control) {
+        return Err("name must be 1 to 100 characters");
+    }
+    Ok(name)
+}
+
+/// When a key or an access token stops working: a real time in the future.
+pub(crate) fn future_timestamp(raw: &str) -> Result<&str, &'static str> {
+    if check_timestamp(raw).is_err() {
+        return Err("expires_at must be a UTC time in the form YYYY-MM-DD HH:MM:SS");
+    }
+    if raw <= now().as_str() {
+        return Err("expires_at must be in the future");
+    }
+    Ok(raw)
+}
+
+/// The name and the expiry of a new key or access token, or every field
+/// that is not valid.
+pub(crate) fn name_and_expiry<'a>(
+    name: &'a str,
+    expires_at: Option<&'a str>,
+) -> Result<(&'a str, Option<&'a str>), ApiError> {
+    let mut fields = BTreeMap::new();
+    let name = trimmed_name(name)
+        .map_err(|m| fields.insert("name".to_string(), m.to_string()))
+        .ok();
+    let expires_at = match expires_at.map(future_timestamp) {
+        Some(Err(m)) => {
+            fields.insert("expires_at".to_string(), m.to_string());
+            None
+        }
+        Some(Ok(at)) => Some(at),
+        None => None,
+    };
+    match name {
+        Some(name) if fields.is_empty() => Ok((name, expires_at)),
+        _ => Err(ApiError::validation(fields)),
+    }
 }
 
 /// Turns a policy decision into a result.
@@ -481,6 +529,41 @@ mod tests {
         let (status, body) = body_of(anyhow::anyhow!("disk is on fire").into()).await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert!(!body.to_string().contains("fire"));
+    }
+
+    #[test]
+    fn names_are_trimmed_and_bounded() {
+        assert_eq!(trimmed_name("  ci "), Ok("ci"));
+        assert_eq!(trimmed_name(&"é".repeat(100)), Ok("é".repeat(100).as_str()));
+        for bad in ["", "   ", &"n".repeat(101), "a\nb"] {
+            assert!(trimmed_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn expiry_is_a_real_time_in_the_future() {
+        let soon = after(60);
+        assert_eq!(future_timestamp(&soon), Ok(soon.as_str()));
+        assert!(future_timestamp("2999-12-31 23:59:59").is_ok());
+        for bad in [
+            after(-60).as_str(),
+            "2000-01-01 00:00:00",
+            "2999-02-31 00:00:00",
+            "2999-01-01",
+            "2999-01-01T00:00:00Z",
+            "",
+        ] {
+            assert!(future_timestamp(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn every_invalid_field_is_named() {
+        let err = name_and_expiry("", Some("never")).unwrap_err();
+        let fields = err.fields.unwrap();
+        assert_eq!(fields.len(), 2);
+        assert!(fields.contains_key("name") && fields.contains_key("expires_at"));
+        assert!(name_and_expiry(" a ", None).is_ok());
     }
 
     #[test]

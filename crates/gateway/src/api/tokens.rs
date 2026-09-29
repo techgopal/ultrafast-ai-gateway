@@ -10,8 +10,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::keys::name_and_expiry;
-use super::{path_id, require, ApiError, ApiJson, Authed};
+use super::{name_and_expiry, path_id, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::Action;
 use crate::secrets::{generate_secret, TOKEN_PREFIX};
