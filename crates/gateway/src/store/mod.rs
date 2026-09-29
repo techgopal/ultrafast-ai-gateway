@@ -273,6 +273,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_database_uses_wal_and_enforces_foreign_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("gateway.db")).await.unwrap();
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(mode, "wal");
+        let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+        // A key whose owner does not exist is refused.
+        let refused = sqlx::query(
+            "INSERT INTO virtual_keys (name, key_hash, display, user_id) VALUES ('k', 'h', 'd', 999)",
+        )
+        .execute(s.pool())
+        .await;
+        assert!(refused.is_err());
+    }
+
+    #[tokio::test]
     async fn plan1_database_migrates() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gateway.db");

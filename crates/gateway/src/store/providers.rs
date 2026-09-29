@@ -4,7 +4,7 @@ use std::fmt;
 
 use anyhow::Result;
 use sqlx::sqlite::SqliteRow;
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use super::{write_error, Store, Tx, DEFAULT_ORG};
 
@@ -52,7 +52,7 @@ impl Tx<'_> {
     /// For use inside a transaction; see `Store::provider_by_id`.
     pub async fn provider_by_id(&mut self, id: i64) -> Result<Option<ProviderRow>> {
         let sql = format!("{PROVIDER_SELECT} WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())
@@ -135,7 +135,7 @@ impl Store {
 
     pub async fn provider_by_name(&self, name: &str) -> Result<Option<ProviderRow>> {
         let sql = format!("{PROVIDER_SELECT} WHERE name = ? AND org_id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(name)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -145,7 +145,7 @@ impl Store {
 
     pub async fn provider_by_id(&self, id: i64) -> Result<Option<ProviderRow>> {
         let sql = format!("{PROVIDER_SELECT} WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -156,7 +156,7 @@ impl Store {
     /// Ordered by name.
     pub async fn list_providers(&self) -> Result<Vec<ProviderRow>> {
         let sql = format!("{PROVIDER_SELECT} WHERE org_id = ? ORDER BY name");
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .bind(DEFAULT_ORG)
             .fetch_all(self.pool())
             .await?;

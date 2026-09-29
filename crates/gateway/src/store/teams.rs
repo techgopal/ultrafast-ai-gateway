@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use sqlx::sqlite::SqliteRow;
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use super::{write_error, Store, Tx, DEFAULT_ORG};
 use crate::identity::TeamRole;
@@ -92,7 +92,7 @@ impl Store {
 
     pub async fn team_summary(&self, id: i64) -> Result<Option<TeamSummary>> {
         let sql = format!("{SUMMARY_SELECT} WHERE t.id = ? AND t.org_id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -103,7 +103,7 @@ impl Store {
     /// Every team, ordered by name.
     pub async fn list_team_summaries(&self) -> Result<Vec<TeamSummary>> {
         let sql = format!("{SUMMARY_SELECT} WHERE t.org_id = ? ORDER BY t.name");
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .bind(DEFAULT_ORG)
             .fetch_all(self.pool())
             .await?;
@@ -118,7 +118,7 @@ impl Store {
              WHERE t.org_id = ? AND own.user_id = ?
              ORDER BY t.name"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .bind(DEFAULT_ORG)
             .bind(user_id)
             .fetch_all(self.pool())
