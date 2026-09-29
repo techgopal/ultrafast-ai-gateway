@@ -12,6 +12,7 @@ import {
   PASSWORD_POLICY,
   PASSWORDS_DIFFER,
   textOf,
+  useFocusOnFailure,
 } from "@/components/AuthForm";
 import { Button } from "@/components/ui/button";
 
@@ -34,25 +35,31 @@ export function AcceptInvite() {
   const password = useRef<HTMLInputElement>(null);
   const confirm = useRef<HTMLInputElement>(null);
   const running = useRef(false);
+  const form = useRef<HTMLFormElement>(null);
+  const error = useRef<HTMLDivElement>(null);
+  const failed = useFocusOnFailure(form, error);
   const [message, setMessage] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | undefined>(undefined);
   const [confirmError, setConfirmError] = useState<string | undefined>(undefined);
 
-  async function setPassword(form: FormData) {
+  async function setPassword(data: FormData) {
     if (running.current || token === null) return;
     setMessage(null);
     setPasswordError(undefined);
-    if (textOf(form, "password") !== textOf(form, "confirm")) {
+    if (textOf(data, "password") !== textOf(data, "confirm")) {
       setConfirmError(PASSWORDS_DIFFER);
+      failed();
       return;
     }
     setConfirmError(undefined);
     running.current = true;
     let accepted = false;
     try {
-      await mutateAsync({ token, password: textOf(form, "password") });
+      await mutateAsync({ token, password: textOf(data, "password") });
       accepted = true;
-    } catch (error) {
+    } catch (reason) {
+      const error = reason;
+      failed();
       if (error instanceof ApiError && error.status === 404) {
         // The token is of no use any more.
         dropInvite();
@@ -85,7 +92,7 @@ export function AcceptInvite() {
   if (token === null) {
     return (
       <AuthPage title="Accept your invite">
-        {message === null ? null : <FormError>{message}</FormError>}
+        {message === null ? null : <FormError ref={error}>{message}</FormError>}
         <p className="text-sm text-muted-foreground">
           Open your invite link again. This page cannot be reloaded.
         </p>
@@ -131,8 +138,8 @@ export function AcceptInvite() {
 
   return (
     <AuthPage title="Accept your invite" description="Choose the password of your account.">
-      {message === null ? null : <FormError>{message}</FormError>}
-      <form aria-label="Accept your invite" className={formColumn} onSubmit={submit}>
+      {message === null ? null : <FormError ref={error}>{message}</FormError>}
+      <form ref={form} aria-label="Accept your invite" className={formColumn} onSubmit={submit}>
         <Field
           ref={password}
           label="Password"

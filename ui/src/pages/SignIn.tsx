@@ -10,6 +10,7 @@ import {
   FormError,
   Notice,
   textOf,
+  useFocusOnFailure,
 } from "@/components/AuthForm";
 import { Button } from "@/components/ui/button";
 
@@ -31,20 +32,24 @@ export function SignIn() {
   const { mutateAsync, reset } = login;
   const password = useRef<HTMLInputElement>(null);
   const running = useRef(false);
+  const form = useRef<HTMLFormElement>(null);
+  const error = useRef<HTMLDivElement>(null);
+  const failed = useFocusOnFailure(form, error);
   const [message, setMessage] = useState<string | null>(null);
 
-  async function signIn(form: FormData) {
+  async function signIn(data: FormData) {
     if (running.current) return;
     running.current = true;
     setMessage(null);
     try {
       const session = await mutateAsync({
-        email: textOf(form, "email"),
-        password: textOf(form, "password"),
+        email: textOf(data, "email"),
+        password: textOf(data, "password"),
       });
       begin(session.csrf_token);
-    } catch (error) {
-      setMessage(messageOf(error));
+    } catch (reason) {
+      setMessage(messageOf(reason));
+      failed();
     } finally {
       running.current = false;
       if (password.current !== null) password.current.value = "";
@@ -61,8 +66,8 @@ export function SignIn() {
   return (
     <AuthPage title="Sign in">
       {notice === null ? null : <Notice>{notice}</Notice>}
-      {message === null ? null : <FormError>{message}</FormError>}
-      <form aria-label="Sign in" className={formColumn} onSubmit={submit}>
+      {message === null ? null : <FormError ref={error}>{message}</FormError>}
+      <form ref={form} aria-label="Sign in" className={formColumn} onSubmit={submit}>
         <Field label="Email" name="email" type="email" autoComplete="username" required />
         <Field
           ref={password}

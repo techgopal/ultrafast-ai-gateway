@@ -205,19 +205,14 @@ export const useSetup = () =>
     () => ({ stale: [queryKeys.setup()] }),
   );
 
-// The three hooks of the session are the plain calls. What a sign-in, a
-// sign-out and the answer of `me` mean for the CSRF token and the caches is
-// decided in one place, `auth/session.tsx`.
+// `useMe` and `useLogin` are the plain calls. What a sign-in and the answer
+// of `me` mean for the CSRF token and the caches is decided in one place,
+// `auth/session.tsx`. Signing out has no hook here: it is `useSignOut` there,
+// which also forgets the session.
 
 export const useLogin = () =>
   useApiMutation(
     (body: BodyOf<"/api/auth/login", "post">) => api.post("/api/auth/login", { body }),
-    () => ({ stale: [] }),
-  );
-
-export const useLogout = () =>
-  useApiMutation(
-    () => api.post("/api/auth/logout"),
     () => ({ stale: [] }),
   );
 

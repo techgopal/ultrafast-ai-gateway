@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { describe, expect, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import { apiError, networkFailure, noContent, ok, override } from "@/test/handlers";
-import { api, onUnauthenticated, setCsrfToken } from "./client";
+import { api, onUnauthenticated } from "./client";
 import { ApiError, NetworkError } from "./errors";
 import * as q from "./queries";
 
@@ -289,7 +289,7 @@ describe("mutations invalidate", () => {
   test("the hooks of the session are plain calls", async () => {
     const client = appClient();
     const { result } = renderHook(
-      () => ({ me: q.useMe(), login: q.useLogin(), logout: q.useLogout() }),
+      () => ({ me: q.useMe(), login: q.useLogin() }),
       { wrapper: wrapperOf(client) },
     );
     await waitFor(() => {
@@ -309,12 +309,6 @@ describe("mutations invalidate", () => {
     await api.post("/api/teams", { body: { name: "x" } });
     expect(sent).toEqual([null, null]);
 
-    setCsrfToken(fixtures.csrfToken);
-    await act(async () => {
-      await result.current.logout.mutateAsync();
-    });
-    await api.post("/api/teams", { body: { name: "x" } });
-    expect(sent).toEqual([null, null, fixtures.csrfToken]);
     expect(client.getQueryData(q.queryKeys.users.list())).toBeDefined();
     expect(client.getQueryData(q.queryKeys.me())).toBeDefined();
   });
@@ -343,7 +337,6 @@ describe("every mutation calls its operation", () => {
     [
       ["useSetup", "POST /api/setup", q.useSetup, { email: "a@example.test", name: "A", password: "p" }],
       ["useLogin", "POST /api/auth/login", q.useLogin, { email: "a@example.test", password: "p" }],
-      ["useLogout", "POST /api/auth/logout", q.useLogout, undefined],
       ["useAcceptInvite", "POST /api/auth/accept-invite", q.useAcceptInvite, { token: "t", password: "p" }],
       ["useChangePassword", "POST /api/auth/password", q.useChangePassword, { current_password: "a", new_password: "b" }],
       ["useInviteUser", "POST /api/users", q.useInviteUser, { email: "a@example.test", name: "A", role: "member" }],
@@ -364,10 +357,12 @@ describe("every mutation calls its operation", () => {
       ["useRevokeToken", "DELETE /api/tokens/1", q.useRevokeToken, { id: 1 }],
     ];
 
-  test("there are 21 of them, and 11 queries", () => {
-    expect(cases).toHaveLength(21);
+  // Signing out has no hook here: it goes through `useSignOut` of the session only.
+  test("there are 20 of them, and 11 queries", () => {
+    expect(cases).toHaveLength(20);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(32);
+    expect(hooks).toHaveLength(31);
+    expect(hooks).not.toContain("useLogout");
     expect(hooks).toEqual(expect.arrayContaining(cases.map(([name]) => name)));
   });
 

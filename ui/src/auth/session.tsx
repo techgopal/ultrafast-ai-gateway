@@ -21,7 +21,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, onUnauthenticated, setCsrfToken } from "@/api/client";
-import { ApiError } from "@/api/errors";
+import { ApiError, NetworkError } from "@/api/errors";
 import { meOptions, queryKeys, setupStatusOptions } from "@/api/queries";
 import type { Me } from "./guards";
 
@@ -36,6 +36,8 @@ export type Session =
 export type Ending = "expired" | "left";
 
 export const SESSION_ENDED_NOTICE = "Your session ended. Sign in again.";
+export const GATEWAY_NOT_TOLD_NOTICE =
+  "You are signed out here, but the gateway could not be reached, so your session there may still be active.";
 
 export interface SessionControl {
   /** True while the gateway has no user yet. */
@@ -50,8 +52,11 @@ export interface SessionControl {
   ending: Ending | null;
   /** A sign-in succeeded: the token of the new session. */
   begin: (csrfToken: string) => void;
-  /** The session is over. Forgets the token and everything that was loaded. */
-  end: (how: Ending) => void;
+  /**
+   * The session is over. Forgets the token and everything that was loaded.
+   * `notice` is for a sign-out; a session that expired has its own.
+   */
+  end: (how: Ending, notice?: string) => void;
   /** Sets what the sign-in page tells the user. */
   announce: (notice: string) => void;
   /** The first admin exists now. */
@@ -164,10 +169,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const end = useCallback(
-    (how: Ending) => {
+    (how: Ending, said?: string) => {
       setCsrfToken(null);
       setEnding(how);
-      setNotice(how === "expired" ? SESSION_ENDED_NOTICE : null);
+      setNotice(how === "expired" ? SESSION_ENDED_NOTICE : (said ?? null));
       // Both caches. Requests on their way are cancelled with their queries.
       client.clear();
     },
@@ -260,12 +265,14 @@ export function useSessionControl(): SessionControl {
 export function useSignOut(): () => Promise<void> {
   const { end } = useSessionContext();
   return useCallback(async () => {
+    // The console forgets the session whatever becomes of the call.
+    let notice: string | undefined;
     try {
       await api.post("/api/auth/logout");
-    } catch {
-      // The console forgets the session whatever became of the call.
+    } catch (error) {
+      if (error instanceof NetworkError) notice = GATEWAY_NOT_TOLD_NOTICE;
     } finally {
-      end("left");
+      end("left", notice);
     }
   }, [end]);
 }
