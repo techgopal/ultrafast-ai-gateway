@@ -518,6 +518,87 @@ async fn the_background_task_survives_a_failed_refresh() {
         .unwrap();
 }
 
+/// The `id_hash` of every session row, read through a connection of its own.
+async fn session_hashes(file: &std::path::Path) -> Vec<String> {
+    use sqlx::{Connection, Row};
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(file);
+    let mut conn = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .unwrap();
+    let rows = sqlx::query("SELECT id_hash FROM sessions ORDER BY id_hash")
+        .fetch_all(&mut conn)
+        .await
+        .unwrap();
+    conn.close().await.unwrap();
+    rows.iter().map(|r| r.get("id_hash")).collect()
+}
+
+#[tokio::test]
+async fn the_background_task_deletes_expired_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("test.db");
+    let store = Store::open(&file).await.unwrap();
+    let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
+    let user = seed_user(
+        &store,
+        "maya@example.com",
+        Role::Admin,
+        "correct horse battery",
+    )
+    .await;
+    let live = store.create_session(user).await.unwrap();
+    let insert = format!(
+        "INSERT INTO sessions (user_id, id_hash, csrf_token, expires_at)
+         VALUES ({user}, 'expired-row', 'c', '{}')",
+        after(-1)
+    );
+    raw_sql(&file, &insert).await;
+    assert_eq!(session_hashes(&file).await.len(), 2);
+
+    let mut state = AppState::new(store.clone(), cipher).await.unwrap();
+    state.refresh_interval = Duration::from_millis(50);
+    let state = Arc::new(state);
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let task = spawn_refresher(state.clone(), stopped);
+
+    let mut left = Vec::new();
+    for _ in 0..100 {
+        left = session_hashes(&file).await;
+        if left.len() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(left, [hash_key(&live.id)]);
+    assert!(store.live_session(&live.id).await.unwrap().is_some());
+
+    // While the sessions table is away the cleanup fails; the task goes on
+    // and still refreshes the snapshot.
+    raw_sql(&file, "ALTER TABLE sessions RENAME TO sessions_away").await;
+    let key = generate_key();
+    store
+        .insert_key("k", &key.hash, &key.display, None)
+        .await
+        .unwrap();
+    let mut seen = false;
+    for _ in 0..100 {
+        seen = state.snapshot.load().key(&key.hash, &now()).is_some();
+        if seen {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(seen, "the snapshot is refreshed while the cleanup fails");
+    assert!(!task.is_finished());
+    raw_sql(&file, "ALTER TABLE sessions_away RENAME TO sessions").await;
+
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("the task stops when told to")
+        .unwrap();
+}
+
 async fn revoked_in_database(w: &World, id: i64) -> bool {
     let key = w.org.api.store.key_by_id(id).await.unwrap().unwrap();
     key.revoked_at.is_some()
