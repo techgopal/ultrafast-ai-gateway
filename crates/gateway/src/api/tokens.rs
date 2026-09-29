@@ -56,6 +56,7 @@ impl From<TokenRow> for TokenView {
     get,
     path = "/tokens",
     tag = "tokens",
+    operation_id = "tokens_list",
     responses(
         (status = 200, description = "The caller's access tokens.", body = super::openapi::TokenList),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
@@ -78,6 +79,7 @@ pub async fn list(
     post,
     path = "/tokens",
     tag = "tokens",
+    operation_id = "tokens_create",
     request_body = CreateTokenRequest,
     responses(
         (status = 201, description = "The new access token, with the token itself.", body = super::openapi::CreatedToken),
@@ -129,6 +131,7 @@ pub async fn create(
     delete,
     path = "/tokens/{id}",
     tag = "tokens",
+    operation_id = "tokens_revoke",
     params(
         ("id" = i64, Path, description = "The id of the access token."),
     ),

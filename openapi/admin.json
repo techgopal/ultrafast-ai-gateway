@@ -16,7 +16,7 @@
           "audit"
         ],
         "summary": "Newest first. `limit` is capped by the store; `before` is the id of the\nlast entry of the page before.",
-        "operationId": "list",
+        "operationId": "audit_list",
         "parameters": [
           {
             "name": "limit",
@@ -116,7 +116,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "accept_invite",
+        "operationId": "auth_accept_invite",
         "requestBody": {
           "content": {
             "application/json": {
@@ -189,7 +189,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "login",
+        "operationId": "auth_login",
         "requestBody": {
           "content": {
             "application/json": {
@@ -269,7 +269,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "logout",
+        "operationId": "auth_logout",
         "parameters": [
           {
             "name": "x-csrf-token",
@@ -341,7 +341,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "me",
+        "operationId": "auth_me",
         "responses": {
           "200": {
             "description": "The caller and their teams.",
@@ -389,7 +389,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "change_password",
+        "operationId": "auth_change_password",
         "parameters": [
           {
             "name": "x-csrf-token",
@@ -501,7 +501,7 @@
         "tags": [
           "keys"
         ],
-        "operationId": "list",
+        "operationId": "keys_list",
         "responses": {
           "200": {
             "description": "The keys the caller may see.",
@@ -547,7 +547,7 @@
         "tags": [
           "keys"
         ],
-        "operationId": "create",
+        "operationId": "keys_create",
         "parameters": [
           {
             "name": "x-csrf-token",
@@ -656,7 +656,7 @@
         "tags": [
           "keys"
         ],
-        "operationId": "view",
+        "operationId": "keys_view",
         "parameters": [
           {
             "name": "id",
@@ -724,7 +724,7 @@
         "tags": [
           "keys"
         ],
-        "operationId": "revoke",
+        "operationId": "keys_revoke",
         "parameters": [
           {
             "name": "id",
@@ -806,7 +806,7 @@
         "tags": [
           "providers"
         ],
-        "operationId": "list",
+        "operationId": "providers_list",
         "responses": {
           "200": {
             "description": "Every provider.",
@@ -852,7 +852,7 @@
         "tags": [
           "providers"
         ],
-        "operationId": "create",
+        "operationId": "providers_create",
         "parameters": [
           {
             "name": "x-csrf-token",
@@ -971,7 +971,7 @@
         "tags": [
           "providers"
         ],
-        "operationId": "delete",
+        "operationId": "providers_delete",
         "parameters": [
           {
             "name": "id",
@@ -1051,7 +1051,7 @@
         "tags": [
           "providers"
         ],
-        "operationId": "update",
+        "operationId": "providers_update",
         "parameters": [
           {
             "name": "id",
@@ -1180,7 +1180,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "setup_status",
+        "operationId": "auth_setup_status",
         "responses": {
           "200": {
             "description": "Whether the first admin still has to be created.",
@@ -1208,7 +1208,7 @@
         "tags": [
           "auth"
         ],
-        "operationId": "setup",
+        "operationId": "auth_setup",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1288,7 +1288,7 @@
         "tags": [
           "teams"
         ],
-        "operationId": "list",
+        "operationId": "teams_list",
         "responses": {
           "200": {
             "description": "The teams the caller may see.",
@@ -1334,7 +1334,7 @@
         "tags": [
           "teams"
         ],
-        "operationId": "create",
+        "operationId": "teams_create",
         "parameters": [
           {
             "name": "x-csrf-token",
@@ -1453,7 +1453,7 @@
         "tags": [
           "teams"
         ],
-        "operationId": "view",
+        "operationId": "teams_view",
         "parameters": [
           {
             "name": "id",
@@ -1521,7 +1521,7 @@
         "tags": [
           "teams"
         ],
-        "operationId": "delete",
+        "operationId": "teams_delete",
         "parameters": [
           {
             "name": "id",
@@ -1601,7 +1601,7 @@
         "tags": [
           "teams"
         ],
-        "operationId": "rename",
+        "operationId": "teams_rename",
         "parameters": [
           {
             "name": "id",
@@ -1740,7 +1740,7 @@
         "tags": [
           "teams"
         ],
-        "operationId": "put_member",
+        "operationId": "teams_member_put",
         "parameters": [
           {
             "name": "id",
@@ -1880,7 +1880,7 @@
         "tags": [
           "teams"
         ],
-        "operationId": "remove_member",
+        "operationId": "teams_member_remove",
         "parameters": [
           {
             "name": "id",
@@ -1972,7 +1972,7 @@
         "tags": [
           "tokens"
         ],
-        "operationId": "list",
+        "operationId": "tokens_list",
         "responses": {
           "200": {
             "description": "The caller's access tokens.",
@@ -2018,7 +2018,7 @@
         "tags": [
           "tokens"
         ],
-        "operationId": "create",
+        "operationId": "tokens_create",
         "parameters": [
           {
             "name": "x-csrf-token",
@@ -2127,7 +2127,7 @@
         "tags": [
           "tokens"
         ],
-        "operationId": "revoke",
+        "operationId": "tokens_revoke",
         "parameters": [
           {
             "name": "id",
@@ -2209,7 +2209,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "list",
+        "operationId": "users_list",
         "responses": {
           "200": {
             "description": "The users the caller may see.",
@@ -2255,7 +2255,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "invite",
+        "operationId": "users_invite",
         "parameters": [
           {
             "name": "x-csrf-token",
@@ -2374,7 +2374,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "view",
+        "operationId": "users_view",
         "parameters": [
           {
             "name": "id",
@@ -2442,7 +2442,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "delete",
+        "operationId": "users_delete",
         "parameters": [
           {
             "name": "id",
@@ -2532,7 +2532,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "update",
+        "operationId": "users_update",
         "parameters": [
           {
             "name": "id",
@@ -2671,7 +2671,7 @@
         "tags": [
           "users"
         ],
-        "operationId": "reinvite",
+        "operationId": "users_reinvite",
         "parameters": [
           {
             "name": "id",

@@ -72,6 +72,7 @@ async fn summary_of(store: &Store, id: i64) -> Result<TeamSummary, ApiError> {
     get,
     path = "/teams",
     tag = "teams",
+    operation_id = "teams_list",
     responses(
         (status = 200, description = "The teams the caller may see.", body = super::openapi::TeamList),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
@@ -98,6 +99,7 @@ pub async fn list(
     post,
     path = "/teams",
     tag = "teams",
+    operation_id = "teams_create",
     request_body = TeamNameRequest,
     responses(
         (status = 201, description = "The new team.", body = TeamSummary),
@@ -141,6 +143,7 @@ pub async fn create(
     get,
     path = "/teams/{id}",
     tag = "teams",
+    operation_id = "teams_view",
     params(
         ("id" = i64, Path, description = "The id of the team."),
     ),
@@ -172,6 +175,7 @@ pub async fn view(
     patch,
     path = "/teams/{id}",
     tag = "teams",
+    operation_id = "teams_rename",
     params(
         ("id" = i64, Path, description = "The id of the team."),
     ),
@@ -233,6 +237,7 @@ pub async fn rename(
     delete,
     path = "/teams/{id}",
     tag = "teams",
+    operation_id = "teams_delete",
     params(
         ("id" = i64, Path, description = "The id of the team."),
     ),
@@ -280,6 +285,7 @@ pub async fn delete(
     put,
     path = "/teams/{id}/members/{user_id}",
     tag = "teams",
+    operation_id = "teams_member_put",
     params(
         ("id" = i64, Path, description = "The id of the team."),
         ("user_id" = i64, Path, description = "The id of the user."),
@@ -374,6 +380,7 @@ pub async fn put_member(
     delete,
     path = "/teams/{id}/members/{user_id}",
     tag = "teams",
+    operation_id = "teams_member_remove",
     params(
         ("id" = i64, Path, description = "The id of the team."),
         ("user_id" = i64, Path, description = "The id of the user."),
