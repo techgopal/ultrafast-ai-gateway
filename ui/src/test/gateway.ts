@@ -1,8 +1,9 @@
 // A gateway that remembers whether somebody is signed in, for the tests of
 // the session: sign-in starts a session, sign-out ends it, and `me` and
 // `setup` answer accordingly.
+import { errors } from "./errors";
 import * as fixtures from "./fixtures";
-import { apiError, noContent, ok, override } from "./handlers";
+import { noContent, ok, override, refuse } from "./handlers";
 
 export const PASSWORD = "correct-horse-battery-staple";
 
@@ -36,7 +37,7 @@ export function startGateway(
     gateway.meCalls += 1;
     return gateway.signedIn
       ? ok("get", "/api/auth/me", 200, { ...me, csrf_token: gateway.csrfToken })
-      : apiError(401, "unauthorized", "Sign in to continue.");
+      : refuse(errors.unauthenticated);
   });
   override("post", "/api/auth/login", async ({ request }) => {
     const body: unknown = await request.json();
@@ -44,7 +45,7 @@ export function startGateway(
     const given: unknown =
       typeof body === "object" && body !== null ? Reflect.get(body, "password") : null;
     if (given !== PASSWORD) {
-      return apiError(401, "invalid_credentials", "The credentials are not valid.");
+      return refuse(errors.invalid_credentials);
     }
     gateway.signedIn = true;
     return ok("post", "/api/auth/login", 200, { user: me.user, csrf_token: gateway.csrfToken });

@@ -7,7 +7,8 @@ import { api } from "@/api/client";
 import * as fixtures from "@/test/fixtures";
 import { createQueryClient } from "@/api/queries";
 import { gate, PASSWORD, startGateway } from "@/test/gateway";
-import { apiError, networkFailure, noContent, ok, override } from "@/test/handlers";
+import { errors, fieldMessages, validationFailed } from "@/test/errors";
+import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import { renderWithApp, type AppRenderResult } from "@/test/render";
 
 const INVITE_TOKEN = "invite-token-0000-of-the-test";
@@ -141,14 +142,13 @@ describe("setup", () => {
   test("a 422 whose fields the form does not have shows the message of the API", async () => {
     startGateway({ needsSetup: true });
     override("post", "/api/setup", () =>
-      apiError(422, "validation_failed", "The organisation is not valid.", {
-        organisation: "It is too long.",
-      }),
+      // The gateway has no such field: this is a field the form does not know.
+      refuse(validationFailed({ organisation: "It is too long." })),
     );
     await renderWithApp(null, { route: "/setup" });
     await fillSetup({});
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("The organisation is not valid.");
+    expect(alert).toHaveTextContent("Some fields are not valid.");
     expect(screen.getAllByRole("alert")).toHaveLength(1);
     const form = screen.getByRole("form", { name: "Set up the gateway" });
     expect(form.querySelector('[aria-invalid="true"]')).toBeNull();
@@ -162,50 +162,45 @@ describe("setup", () => {
   test("a 422 with a field of the form and one it does not have shows both", async () => {
     startGateway({ needsSetup: true });
     override("post", "/api/setup", () =>
-      apiError(422, "validation_failed", "Some fields are not valid.", {
-        organisation: "It is too long.",
-        name: "A name is needed.",
-      }),
+      // `organisation` is a field the gateway does not have, and the form neither.
+      refuse(validationFailed({ organisation: "It is too long.", name: fieldMessages.name })),
     );
     await renderWithApp(null, { route: "/setup" });
     await fillSetup({});
     const name = screen.getByLabelText("Name");
     await waitFor(() => {
-      expect(descriptionOf(name)).toBe("A name is needed.");
+      expect(descriptionOf(name)).toBe("name must be 1 to 100 characters");
     });
     expect(name).toHaveFocus();
     expect(screen.getAllByRole("alert").map((a) => a.textContent)).toEqual([
       "Some fields are not valid.",
-      "A name is needed.",
+      "name must be 1 to 100 characters",
     ]);
   });
 
   test("setup shows field errors", async () => {
     startGateway({ needsSetup: true });
     override("post", "/api/setup", () =>
-      apiError(422, "validation_failed", "Some fields are not valid.", {
-        email: "This is not an email address.",
-        password: "Use 12 characters or more.",
-      }),
+      refuse(validationFailed({ email: fieldMessages.email, password: fieldMessages.password })),
     );
     const app = await renderWithApp(null, { route: "/setup" });
     await fillSetup({ email: "maya@example", password: "short", confirm: "short" });
     const email = screen.getByLabelText("Email");
     await waitFor(() => {
-      expect(descriptionOf(email)).toBe("This is not an email address.");
+      expect(descriptionOf(email)).toBe("email is not valid");
     });
     expect(email).toHaveAttribute("aria-invalid", "true");
     expect(email).toHaveValue("maya@example");
     // The first field with an error has the focus, and the errors are announced.
     expect(email).toHaveFocus();
     expect(screen.getAllByRole("alert").map((a) => a.textContent)).toEqual([
-      "This is not an email address.",
-      "Use 12 characters or more.",
+      "email is not valid",
+      "password must be at least 12 characters",
     ]);
     // The text is under its field: the next element after the input.
-    expect(email.nextElementSibling).toHaveTextContent("This is not an email address.");
+    expect(email.nextElementSibling).toHaveTextContent("email is not valid");
     const password = screen.getByLabelText("Password");
-    expect(descriptionOf(password)).toContain("Use 12 characters or more.");
+    expect(descriptionOf(password)).toContain("password must be at least 12 characters");
     expect(password).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByLabelText("Name")).not.toHaveAttribute("aria-invalid", "true");
     expect(screen.getByLabelText("Name")).toHaveValue("Maya Okafor");
@@ -221,7 +216,7 @@ describe("setup", () => {
   test("setup already done", async () => {
     startGateway({ needsSetup: true });
     override("post", "/api/setup", () =>
-      apiError(409, "already_set_up", "The gateway is set up."),
+      refuse(errors.already_set_up),
     );
     await renderWithApp(null, { route: "/setup" });
     await fillSetup({});
@@ -351,7 +346,7 @@ describe("accept invite", () => {
   test("invalid invite", async () => {
     startGateway();
     override("post", "/api/auth/accept-invite", () =>
-      apiError(404, "not_found", "It does not exist."),
+      refuse(errors.not_found),
     );
     const app = await renderWithApp(null, { route: `/accept-invite?token=${INVITE_TOKEN}` });
     await fillInvite();
@@ -360,7 +355,7 @@ describe("accept invite", () => {
     await waitFor(() => {
       expect(alert).toHaveFocus();
     });
-    expect(screen.queryByText("It does not exist.")).toBeNull();
+    expect(screen.queryByText(errors.not_found.body.error.message)).toBeNull();
     // The token is of no use any more, and the form went with it.
     expect(screen.queryByLabelText("Password")).toBeNull();
     expect(screen.queryByRole("button", { name: "Set password" })).toBeNull();
@@ -386,19 +381,17 @@ describe("accept invite", () => {
   test("a field error of the password is shown on its field", async () => {
     startGateway();
     override("post", "/api/auth/accept-invite", () =>
-      apiError(422, "validation_failed", "Some fields are not valid.", {
-        password: "Use 12 characters or more.",
-      }),
+      refuse(validationFailed({ password: fieldMessages.password })),
     );
     await renderWithApp(null, { route: `/accept-invite?token=${INVITE_TOKEN}` });
     await fillInvite("short");
     const password = screen.getByLabelText("Password");
     await waitFor(() => {
-      expect(descriptionOf(password)).toContain("Use 12 characters or more.");
+      expect(descriptionOf(password)).toContain("password must be at least 12 characters");
     });
     expect(password).toHaveAttribute("aria-invalid", "true");
     expect(password).toHaveFocus();
-    expect(screen.getByRole("alert")).toHaveTextContent("Use 12 characters or more.");
+    expect(screen.getByRole("alert")).toHaveTextContent("password must be at least 12 characters");
   });
 
   test("the password fields show the policy and are new passwords", async () => {
@@ -518,7 +511,7 @@ describe("accept invite", () => {
     test("the API refuses the invite", async () => {
       startGateway();
       override("post", "/api/auth/accept-invite", () =>
-        apiError(404, "not_found", "It does not exist."),
+        refuse(errors.not_found),
       );
       const app = await renderWithApp(null, {
         history: openInBrowser(`/accept-invite?token=${INVITE_TOKEN}`),
@@ -617,7 +610,7 @@ describe("accept invite", () => {
     const door = gate();
     override("get", "/api/auth/me", async () => {
       await door.opened;
-      return apiError(401, "unauthorized", "Sign in to continue.");
+      return refuse(errors.unauthenticated);
     });
     arrange();
     window.history.replaceState(null, "", `/accept-invite?token=${INVITE_TOKEN}`);

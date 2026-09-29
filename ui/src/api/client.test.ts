@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
-import { apiError, networkFailure, noContent, override } from "@/test/handlers";
+import { errors, fieldMessages, validationFailed, type GatewayError } from "@/test/errors";
+import { networkFailure, noContent, override, refuse } from "@/test/handlers";
 import { api, onUnauthenticated, setCsrfToken, type ResponseOf } from "./client";
 import { ApiError, NetworkError, SessionOverError } from "./errors";
 import type { components } from "./schema";
@@ -30,7 +31,7 @@ function everythingIn(error: Error): string {
   return JSON.stringify(own);
 }
 
-const unauthorized = () => apiError(401, "unauthorized", "Sign in to continue.");
+const unauthenticated = () => refuse(errors.unauthenticated);
 
 describe("responses", () => {
   test("get resolves typed data", async () => {
@@ -229,28 +230,24 @@ describe("requests", () => {
 
 describe("errors", () => {
   test("api error is parsed", async () => {
-    override("post", "/api/teams", () =>
-      apiError(409, "team_exists", "A team with this name exists."),
-    );
+    override("post", "/api/teams", () => refuse(errors.team_exists));
     const error = await apiFailure(api.post("/api/teams", { body: { name: "Platform" } }));
     expect(error.status).toBe(409);
     expect(error.code).toBe("team_exists");
-    expect(error.message).toBe("A team with this name exists.");
+    expect(error.message).toBe("A team with this name already exists.");
     expect(error.fields).toEqual({});
   });
 
   test("field errors are kept", async () => {
     override("post", "/api/users", () =>
-      apiError(422, "validation_failed", "Some fields are not valid.", {
-        email: "This is not an email address.",
-      }),
+      refuse(validationFailed({ email: fieldMessages.email })),
     );
     const error = await apiFailure(
       api.post("/api/users", { body: { email: "x", name: "X", role: "member" } }),
     );
     expect(error.status).toBe(422);
     expect(error.code).toBe("validation_failed");
-    expect(error.fields.email).toBe("This is not an email address.");
+    expect(error.fields.email).toBe("email is not valid");
   });
 
   test("html error body is not shown", async () => {
@@ -297,7 +294,7 @@ describe("errors", () => {
     const password = "correct-horse-battery";
     setCsrfToken(fixtures.csrfToken);
     override("post", "/api/auth/login", () =>
-      HttpResponseWithHeader(401, "invalid_credentials", "The email or the password is wrong."),
+      withHeader(errors.invalid_credentials),
     );
     const refused = await apiFailure(
       api.post("/api/auth/login", { body: { email: "maya@example.test", password } }),
@@ -324,7 +321,7 @@ describe("errors", () => {
     const spies = (["log", "info", "warn", "error", "debug"] as const).map((level) =>
       vi.spyOn(console, level).mockImplementation(() => undefined),
     );
-    override("post", "/api/teams", () => apiError(409, "team_exists", "It exists."));
+    override("post", "/api/teams", () => refuse(errors.team_exists));
     await api.get("/api/teams");
     await failure(api.post("/api/teams", { body: { name: "Platform" } }));
     override("get", "/api/teams", networkFailure);
@@ -336,9 +333,10 @@ describe("errors", () => {
   });
 });
 
-function HttpResponseWithHeader(status: number, code: string, message: string): Response {
-  return new Response(JSON.stringify({ error: { code, message } }), {
-    status,
+/** The error of the gateway, with a header the client must not keep. */
+function withHeader(error: GatewayError): Response {
+  return new Response(JSON.stringify(error.body), {
+    status: error.status,
     headers: { "Content-Type": "application/json", "x-test": "header-value-of-the-response" },
   });
 }
@@ -347,8 +345,8 @@ describe("the end of the session", () => {
   test("401 signs out once", async () => {
     const handler = vi.fn();
     const unsubscribe = onUnauthenticated(handler);
-    override("get", "/api/teams", unauthorized);
-    override("get", "/api/users", unauthorized);
+    override("get", "/api/teams", unauthenticated);
+    override("get", "/api/users", unauthenticated);
 
     const errors = await Promise.all([
       apiFailure(api.get("/api/teams")),
@@ -357,7 +355,7 @@ describe("the end of the session", () => {
 
     expect(handler).toHaveBeenCalledTimes(1);
     expect(errors.map((e) => e.status)).toEqual([401, 401]);
-    expect(errors.map((e) => e.code)).toEqual(["unauthorized", "unauthorized"]);
+    expect(errors.map((e) => e.code)).toEqual(["unauthenticated", "unauthenticated"]);
     unsubscribe();
   });
 
@@ -367,7 +365,7 @@ describe("the end of the session", () => {
     const gone = vi.fn();
     const stops = [onUnauthenticated(first), onUnauthenticated(second)];
     onUnauthenticated(gone)();
-    override("get", "/api/teams", unauthorized);
+    override("get", "/api/teams", unauthenticated);
     await failure(api.get("/api/teams"));
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
@@ -378,7 +376,7 @@ describe("the end of the session", () => {
   test("a new session is told of its end again", async () => {
     const handler = vi.fn();
     const unsubscribe = onUnauthenticated(handler);
-    override("get", "/api/teams", unauthorized);
+    override("get", "/api/teams", unauthenticated);
     await failure(api.get("/api/teams"));
     await failure(api.get("/api/teams"));
     expect(handler).toHaveBeenCalledTimes(1);
@@ -393,7 +391,7 @@ describe("the end of the session", () => {
   test("only a token starts a new session: answers and a cleared token do not", async () => {
     const handler = vi.fn();
     const unsubscribe = onUnauthenticated(handler);
-    override("get", "/api/teams", unauthorized);
+    override("get", "/api/teams", unauthenticated);
     await failure(api.get("/api/teams"));
     expect(handler).toHaveBeenCalledTimes(1);
     // An answer of the session that ended may still arrive.
@@ -406,9 +404,9 @@ describe("the end of the session", () => {
   });
 
   test.each([
-    ["a 401", unauthorized],
+    ["a 401", unauthenticated],
     ["a 200", () => noContent()],
-    ["a 500", () => apiError(500, "internal", "It failed.")],
+    ["a 500", () => refuse(errors.internal_error)],
   ])("%s for a session that is over is an error of its own and tells nobody", async (_, answer) => {
     const handler = vi.fn();
     const unsubscribe = onUnauthenticated(handler);
@@ -440,7 +438,7 @@ describe("the end of the session", () => {
   });
 
   test("a 401 that nobody hears is not counted", async () => {
-    override("get", "/api/teams", unauthorized);
+    override("get", "/api/teams", unauthenticated);
     await failure(api.get("/api/teams"));
     const handler = vi.fn();
     const unsubscribe = onUnauthenticated(handler);
@@ -457,10 +455,10 @@ describe("the end of the session", () => {
       }),
       onUnauthenticated(after),
     ];
-    override("get", "/api/teams", unauthorized);
+    override("get", "/api/teams", unauthenticated);
     const error = await apiFailure(api.get("/api/teams"));
     expect(error.status).toBe(401);
-    expect(error.code).toBe("unauthorized");
+    expect(error.code).toBe("unauthenticated");
     expect(after).toHaveBeenCalledTimes(1);
     for (const stop of stops) stop();
   });
@@ -469,21 +467,21 @@ describe("the end of the session", () => {
     [
       "POST /api/auth/login",
       () => {
-        override("post", "/api/auth/login", unauthorized);
+        override("post", "/api/auth/login", unauthenticated);
         return api.post("/api/auth/login", { body: { email: "a@example.test", password: "x" } });
       },
     ],
     [
       "POST /api/auth/accept-invite",
       () => {
-        override("post", "/api/auth/accept-invite", unauthorized);
+        override("post", "/api/auth/accept-invite", unauthenticated);
         return api.post("/api/auth/accept-invite", { body: { token: "t", password: "x" } });
       },
     ],
     [
       "POST /api/auth/password",
       () => {
-        override("post", "/api/auth/password", unauthorized);
+        override("post", "/api/auth/password", unauthenticated);
         return api.post("/api/auth/password", {
           body: { current_password: "x", new_password: "y" },
         });
@@ -492,7 +490,7 @@ describe("the end of the session", () => {
     [
       "GET /api/auth/me",
       () => {
-        override("get", "/api/auth/me", unauthorized);
+        override("get", "/api/auth/me", unauthenticated);
         return api.get("/api/auth/me");
       },
     ],
@@ -512,35 +510,35 @@ describe("the end of the session", () => {
     [
       "GET /api/teams",
       () => {
-        override("get", "/api/teams", unauthorized);
+        override("get", "/api/teams", unauthenticated);
         return api.get("/api/teams");
       },
     ],
     [
       "GET /api/users/{id}",
       () => {
-        override("get", "/api/users/{id}", unauthorized);
+        override("get", "/api/users/{id}", unauthenticated);
         return api.get("/api/users/{id}", { params: { id: 1 } });
       },
     ],
     [
       "POST /api/keys",
       () => {
-        override("post", "/api/keys", unauthorized);
+        override("post", "/api/keys", unauthenticated);
         return api.post("/api/keys", { body: { name: "k" } });
       },
     ],
     [
       "PATCH /api/providers/{id}",
       () => {
-        override("patch", "/api/providers/{id}", unauthorized);
+        override("patch", "/api/providers/{id}", unauthenticated);
         return api.patch("/api/providers/{id}", { params: { id: 1 }, body: {} });
       },
     ],
     [
       "PUT /api/teams/{id}/members/{user_id}",
       () => {
-        override("put", "/api/teams/{id}/members/{user_id}", unauthorized);
+        override("put", "/api/teams/{id}/members/{user_id}", unauthenticated);
         return api.put("/api/teams/{id}/members/{user_id}", {
           params: { id: 1, user_id: 2 },
           body: { role: "member" },
@@ -550,28 +548,28 @@ describe("the end of the session", () => {
     [
       "DELETE /api/tokens/{id}",
       () => {
-        override("delete", "/api/tokens/{id}", unauthorized);
+        override("delete", "/api/tokens/{id}", unauthenticated);
         return api.delete("/api/tokens/{id}", { params: { id: 1 } });
       },
     ],
     [
       "GET /api/audit",
       () => {
-        override("get", "/api/audit", unauthorized);
+        override("get", "/api/audit", unauthenticated);
         return api.get("/api/audit");
       },
     ],
     [
       "POST /api/auth/logout",
       () => {
-        override("post", "/api/auth/logout", unauthorized);
+        override("post", "/api/auth/logout", unauthenticated);
         return api.post("/api/auth/logout");
       },
     ],
     [
       "POST /api/users/{id}/invite",
       () => {
-        override("post", "/api/users/{id}/invite", unauthorized);
+        override("post", "/api/users/{id}/invite", unauthenticated);
         return api.post("/api/users/{id}/invite", { params: { id: 6 } });
       },
     ],
@@ -590,7 +588,7 @@ describe("the end of the session", () => {
   test("other errors do not sign out", async () => {
     const handler = vi.fn();
     const unsubscribe = onUnauthenticated(handler);
-    override("get", "/api/teams", () => apiError(403, "forbidden", "Not allowed."));
+    override("get", "/api/teams", () => refuse(errors.forbidden));
     await failure(api.get("/api/teams"));
     override("get", "/api/teams", networkFailure);
     await failure(api.get("/api/teams"));
