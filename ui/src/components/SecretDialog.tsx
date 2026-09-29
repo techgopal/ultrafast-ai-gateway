@@ -34,7 +34,8 @@ export interface SecretOnce {
  * Holds a secret that is shown once, in the state of the component that
  * calls it and nowhere else.
  *
- * `source` is the mutation whose answer holds the secret. A mutation keeps
+ * `source` is the mutation whose answer holds the secret; it is required, so
+ * that no page can show a secret and leave it in the mutation. A mutation keeps
  * its variables and its answer while a component observes it, so `show`
  * resets it at once: from then on the secret is in this state only. The
  * secret is forgotten by `clear`, and when the component unmounts.
@@ -47,13 +48,13 @@ export interface SecretOnce {
  * <SecretDialog title="…" description="…" secret={once.secret} onClose={once.clear} />
  * ```
  */
-export function useSecretOnce(source?: { reset: () => void }): SecretOnce {
+export function useSecretOnce(source: { reset: () => void }): SecretOnce {
   const [secret, setSecret] = useState<string | null>(null);
-  const reset = source?.reset;
+  const { reset } = source;
   const show = useCallback(
     (value: string) => {
       setSecret(value);
-      reset?.();
+      reset();
     },
     [reset],
   );

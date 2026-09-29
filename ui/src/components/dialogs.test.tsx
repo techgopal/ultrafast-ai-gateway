@@ -16,6 +16,7 @@ import { noContent, ok, override, refuse } from "@/test/handlers";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
 const SECRET = fixtures.newKeySecret;
+const NO_MUTATION = { reset: () => undefined };
 const ASK = "Have you copied it? It cannot be shown again.";
 
 function Users({ onConfirm }: { onConfirm?: () => Promise<unknown> }) {
@@ -508,10 +509,21 @@ describe("secret dialog", () => {
     expectNoSecret(app);
   });
 
+  test("the hook does not compile without the mutation", () => {
+    function Page() {
+      // @ts-expect-error The mutation is required: without it the secret would stay in its answer.
+      const once = useSecretOnce();
+      return <p>{once.secret}</p>;
+    }
+    // The check is the one of the compiler (`pnpm typecheck`); the page is never rendered.
+    expect(Page).toBeTypeOf("function");
+  });
+
   test("the secret of the hook goes when its page goes", async () => {
     const seen: (string | null)[] = [];
     function Page() {
-      const once = useSecretOnce();
+      // No mutation made this secret: there is nothing to reset.
+      const once = useSecretOnce(NO_MUTATION);
       seen.push(once.secret);
       return (
         <Button
