@@ -1,6 +1,7 @@
 import { useForm } from "@tanstack/react-form";
 import { Link } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
+import { ApiError } from "@/api/errors";
 import { useInviteUser, useUsers } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
@@ -38,9 +39,27 @@ export const INVITE_LINK_DESCRIPTION =
 
 const ROLE_NAMES: Record<string, string> = { admin: "Admin", member: "Member" };
 
-/** The invite link as the user can open it: the API gives the path. */
+export const INVITE_LINK_UNUSABLE = "The gateway returned an invite link that cannot be used.";
+
+/**
+ * The invite link as the user can open it. The API gives a path of the
+ * console, which starts with one `/`; anything else could name another
+ * host, and is refused with an error that the dialog shows as it shows a
+ * refusal of the gateway.
+ */
 export function inviteUrl(path: string): string {
-  return window.location.origin + path;
+  const { origin } = window.location;
+  const unusable = new ApiError(502, "invite_link_unusable", INVITE_LINK_UNUSABLE);
+  // A browser reads a backslash as a slash.
+  if (!/^\/[^/\\]/.test(path)) throw unusable;
+  let url: URL;
+  try {
+    url = new URL(path, origin);
+  } catch {
+    throw unusable;
+  }
+  if (url.origin !== origin) throw unusable;
+  return url.href;
 }
 
 /** A role in a neutral badge. One the console does not know is shown as it is. */
@@ -61,13 +80,21 @@ interface InviteFormProps {
 
 // Mounted while the dialog is open: every opening starts with an empty form.
 function InviteForm({ invite, onInvited, onCancel }: InviteFormProps) {
-  const { mutateAsync } = invite;
+  const { mutateAsync, reset } = invite;
   const form = useForm({
     defaultValues: { name: "", email: "", role: "member" },
     onSubmit: async ({ value }) => {
       try {
         const made = await mutateAsync(value);
-        onInvited(inviteUrl(made.invite_link));
+        let link: string;
+        try {
+          link = inviteUrl(made.invite_link);
+        } catch (error) {
+          // The mutation does not keep the link that is not shown.
+          reset();
+          throw error;
+        }
+        onInvited(link);
       } catch (error) {
         applyApiError(form, onField(error, "user_exists", "email"));
       }
@@ -148,7 +175,7 @@ function InviteForm({ invite, onInvited, onCancel }: InviteFormProps) {
           Cancel
         </Button>
         <Button type="submit" className={dialogButton} disabled={invite.isPending}>
-          {invite.isPending ? "Inviting" : "Send invite"}
+          {invite.isPending ? "Creating the link" : "Create invite link"}
         </Button>
       </DialogFooter>
     </form>

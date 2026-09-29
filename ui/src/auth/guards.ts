@@ -13,6 +13,8 @@ export type ConsoleAction =
   | { type: "inviteUser" }
   | { type: "editUserRoleOrStatus" }
   | { type: "deleteUser" }
+  /** Changes the name of the user: everybody their own, an admin every one. */
+  | { type: "renameUser"; userId: number }
   | { type: "createTeam" }
   | { type: "renameTeam"; teamId: number }
   | { type: "deleteTeam"; teamId: number }
@@ -57,6 +59,8 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "manageProviders":
     case "viewAudit":
       return false;
+    case "renameUser":
+      return action.userId === me.user.id;
     case "renameTeam":
     case "addMember":
     case "removeMember":
