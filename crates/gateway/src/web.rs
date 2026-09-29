@@ -48,9 +48,9 @@ const CROSS_ORIGIN_OPENER_POLICY: HeaderName =
     HeaderName::from_static("cross-origin-opener-policy");
 const PERMISSIONS_POLICY: HeaderName = HeaderName::from_static("permissions-policy");
 
-/// Paths the console never answers, whatever reaches the fallback.
-const RESERVED: [&str; 3] = ["/api", "/v1", "/health"];
-const RESERVED_PREFIXES: [&str; 2] = ["/api/", "/v1/"];
+/// First segments of paths the console never answers. They belong to the
+/// gateway's other handlers, so no spelling of them is a page of the app.
+const RESERVED: [&str; 3] = ["api", "v1", "health"];
 const ASSETS: &str = "/assets";
 /// How many times a path is percent-decoded when it is checked.
 const MAX_DECODE_ROUNDS: usize = 4;
@@ -154,7 +154,7 @@ impl Console {
 
     /// Every path no route claimed.
     fn other(&self, method: &Method, path: &str, headers: &HeaderMap) -> Response {
-        if RESERVED.contains(&path) || RESERVED_PREFIXES.iter().any(|p| path.starts_with(p)) {
+        if is_reserved(path) {
             return StatusCode::NOT_FOUND.into_response();
         }
         if method != Method::GET && method != Method::HEAD {
@@ -262,6 +262,27 @@ fn security_headers(headers: &mut HeaderMap, nonce: &str) {
         PERMISSIONS_POLICY,
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
+}
+
+/// Whether the first segment of the path that is not empty is a reserved
+/// name, however it is percent-encoded and in whatever case.
+fn is_reserved(path: &str) -> bool {
+    let mut bytes = path.as_bytes().to_vec();
+    for _ in 0..MAX_DECODE_ROUNDS {
+        let decoded = percent_decoded(&bytes);
+        if decoded == bytes {
+            break;
+        }
+        bytes = decoded;
+    }
+    bytes
+        .split(|b| *b == b'/')
+        .find(|segment| !segment.is_empty())
+        .is_some_and(|first| {
+            RESERVED
+                .iter()
+                .any(|name| first.eq_ignore_ascii_case(name.as_bytes()))
+        })
 }
 
 /// Whether the path, however often it was percent-encoded, is free of
@@ -533,6 +554,52 @@ mod tests {
         // A file of the build is served under its own name only.
         let (_, headers, _) = served(fixture(), "/app-abc123.js").await;
         assert_eq!(headers[CONTENT_TYPE], HTML);
+    }
+
+    #[tokio::test]
+    async fn reserved_names_are_never_the_app() {
+        for console in [fixture, not_built] {
+            for path in [
+                "/API/x",
+                "//api/x",
+                "/%61pi/x",
+                "/%2561pi/x",
+                "/Api",
+                "/V1/x",
+                "/health/",
+                "/HEALTH",
+                "/api",
+                "/api/x",
+                "/v1",
+                "/v1/x",
+                "/health",
+                "/health/more",
+                "///hEaLtH//x",
+                "/%2fapi/x",
+                "/API/x?next=/keys",
+            ] {
+                for method in ["GET", "HEAD", "POST"] {
+                    let (status, headers, text) = send(console(), method, path, &[]).await;
+                    assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+                    assert!(text.is_empty(), "{method} {path}");
+                    assert!(!headers.contains_key(CONTENT_SECURITY_POLICY));
+                }
+            }
+            // Names that only begin like them belong to the app.
+            for path in [
+                "/apiary",
+                "/v1x",
+                "/healthy",
+                "/keys/api",
+                "/x/v1/health",
+                "/ap%69ary",
+            ] {
+                let (status, headers, text) = served(console(), path).await;
+                assert_eq!(status, StatusCode::OK, "{path}");
+                assert_eq!(headers[CONTENT_TYPE], HTML, "{path}");
+                assert!(text.contains("<html"), "{path}");
+            }
+        }
     }
 
     #[tokio::test]

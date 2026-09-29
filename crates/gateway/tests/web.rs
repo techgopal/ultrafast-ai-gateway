@@ -131,9 +131,9 @@ async fn deep_links_serve_the_app() {
         "/users/12",
         "/accept-invite?token=x",
         "/index.html",
-        "/health/more",
         "/apiary",
         "/v1x",
+        "/healthy",
     ] {
         let page = get(&app, path).await;
         assert_eq!(page.status, StatusCode::OK, "{path}");
@@ -197,6 +197,21 @@ async fn api_and_v1_are_not_shadowed() {
     let wrong = request(app, "DELETE", "/api/setup", &[]).await;
     assert_eq!(wrong.status, StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(common::error_code(&wrong.json()), "method_not_allowed");
+}
+
+/// Other spellings of the reserved names reach no handler of theirs, and
+/// are not the app either.
+#[tokio::test]
+async fn reserved_names_in_any_form_are_404() {
+    let app = app().await;
+    for path in [
+        "/API/x", "//api/x", "/%61pi/x", "/Api", "/V1/x", "/health/", "/HEALTH",
+    ] {
+        let answer = get(&app, path).await;
+        assert_eq!(answer.status, StatusCode::NOT_FOUND, "{path}");
+        assert!(answer.body.is_empty(), "{path}");
+        assert!(answer.headers.get("content-security-policy").is_none());
+    }
 }
 
 #[tokio::test]
