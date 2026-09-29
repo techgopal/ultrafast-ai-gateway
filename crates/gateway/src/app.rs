@@ -78,8 +78,10 @@ impl AppState {
 }
 
 /// Refreshes the snapshot every `refresh_interval`, so changes made by the
-/// CLI reach a running gateway. A failure is logged and the next round runs
-/// as usual. The task ends when `stop` becomes true or its sender is dropped.
+/// CLI reach a running gateway, and deletes the sessions that have expired,
+/// so the table does not grow for the life of the process. A failure of
+/// either is logged; the other still runs, and so does the next round. The
+/// task ends when `stop` becomes true or its sender is dropped.
 pub fn spawn_refresher(state: Arc<AppState>, mut stop: watch::Receiver<bool>) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -94,6 +96,10 @@ pub fn spawn_refresher(state: Arc<AppState>, mut stop: watch::Receiver<bool>) ->
             }
             if let Err(e) = state.refresh().await {
                 tracing::error!(error = %e, "snapshot refresh failed");
+            }
+            match state.store.delete_expired_sessions().await {
+                Ok(expired) => tracing::debug!(expired, "removed expired sessions"),
+                Err(e) => tracing::warn!(error = %e, "could not remove expired sessions"),
             }
         }
     })
