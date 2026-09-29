@@ -1,6 +1,8 @@
-// The people, teams, keys and the rest that the tests share. Every value has
-// a type generated from the API description, so a change of the API that
-// these do not follow is a compile error.
+// The people, teams, keys and the rest that the tests share. The fixtures
+// imitate what the gateway produces (forms of secrets, timestamps, audit
+// entries); `fixtures.test.ts` pins those forms. Every value has a type
+// generated from the API description, so a change of the API that these do
+// not follow is a compile error.
 import type { components } from "@/api/schema";
 
 type Schemas = components["schemas"];
@@ -13,13 +15,20 @@ export type Token = Schemas["TokenView"];
 export type AuditEntry = Schemas["AuditRow"];
 export type Me = Schemas["MeResponse"];
 
-/** The CSRF token of the session in the tests. */
-export const csrfToken = "csrf-token-of-the-test-session";
+/** The CSRF token of the session in the tests: 64 hex characters, as the gateway makes it. */
+export const csrfToken = "c5".repeat(32);
 
-// Secrets that are shown once. They are made up and work nowhere.
-export const newKeySecret = "uf-sk-test-0000-shown-once-key";
-export const newTokenSecret = "uf-at-test-0000-shown-once-token";
-export const newInviteLink = "/accept-invite?token=test-0000-shown-once-invite";
+// Secrets that are shown once: a prefix and 64 hex characters, as the gateway
+// makes them. They are made up, in a pattern no random secret has, and work nowhere.
+export const newKeySecret = `uf-sk-${"0123456789abcdef".repeat(4)}`;
+export const newTokenSecret = `uf-at-${"fedcba9876543210".repeat(4)}`;
+export const newInviteToken = `uf-inv-${"00ff".repeat(16)}`;
+export const newInviteLink = `/accept-invite?token=${newInviteToken}`;
+
+/** What the gateway shows of a secret: the prefix, an ellipsis and the last 4 characters. */
+function displayOf(prefix: "uf-sk-" | "uf-at-", last4: string): string {
+  return `${prefix}\u2026${last4}`;
+}
 
 export const users = {
   /** An admin. */
@@ -29,8 +38,8 @@ export const users = {
     name: "Maya Okafor",
     role: "admin",
     status: "active",
-    created_at: "2026-06-01T09:00:00Z",
-    last_active_at: "2026-09-28T16:20:00Z",
+    created_at: "2026-06-01 09:00:00",
+    last_active_at: "2026-09-28 16:20:00",
   },
   /** Lead of Platform, member of Research. */
   arjun: {
@@ -39,8 +48,8 @@ export const users = {
     name: "Arjun Mehta",
     role: "member",
     status: "active",
-    created_at: "2026-06-03T10:00:00Z",
-    last_active_at: "2026-09-27T11:05:00Z",
+    created_at: "2026-06-03 10:00:00",
+    last_active_at: "2026-09-27 11:05:00",
   },
   /** Member of Platform. */
   lena: {
@@ -49,8 +58,8 @@ export const users = {
     name: "Lena Fischer",
     role: "member",
     status: "active",
-    created_at: "2026-06-10T08:30:00Z",
-    last_active_at: "2026-09-26T09:45:00Z",
+    created_at: "2026-06-10 08:30:00",
+    last_active_at: "2026-09-26 09:45:00",
   },
   /** Member of Research. */
   tomas: {
@@ -59,8 +68,8 @@ export const users = {
     name: "Tomas Novak",
     role: "member",
     status: "active",
-    created_at: "2026-07-01T12:00:00Z",
-    last_active_at: "2026-09-20T14:00:00Z",
+    created_at: "2026-07-01 12:00:00",
+    last_active_at: "2026-09-20 14:00:00",
   },
   /** In no team. */
   priya: {
@@ -69,7 +78,7 @@ export const users = {
     name: "Priya Raman",
     role: "member",
     status: "active",
-    created_at: "2026-07-15T12:00:00Z",
+    created_at: "2026-07-15 12:00:00",
     last_active_at: null,
   },
   /** Invited, has not set a password yet. */
@@ -79,7 +88,7 @@ export const users = {
     name: "Sam Carter",
     role: "member",
     status: "invited",
-    created_at: "2026-09-25T15:00:00Z",
+    created_at: "2026-09-25 15:00:00",
     last_active_at: null,
   },
   /** Disabled. Owns a key, which is suspended. */
@@ -89,18 +98,18 @@ export const users = {
     name: "Dana Whitfield",
     role: "member",
     status: "disabled",
-    created_at: "2026-06-20T10:00:00Z",
-    last_active_at: "2026-08-01T10:00:00Z",
+    created_at: "2026-06-20 10:00:00",
+    last_active_at: "2026-08-01 10:00:00",
   },
 } as const satisfies Record<string, User>;
 
 export const userList: User[] = Object.values(users);
 
 export const teams = {
-  platform: { id: 1, name: "Platform", member_count: 2, created_at: "2026-06-02T09:00:00Z" },
-  research: { id: 2, name: "Research", member_count: 2, created_at: "2026-06-05T09:00:00Z" },
+  platform: { id: 1, name: "Platform", member_count: 2, created_at: "2026-06-02 09:00:00" },
+  research: { id: 2, name: "Research", member_count: 2, created_at: "2026-06-05 09:00:00" },
   /** Has no members. */
-  growth: { id: 3, name: "Growth", member_count: 0, created_at: "2026-09-01T09:00:00Z" },
+  growth: { id: 3, name: "Growth", member_count: 0, created_at: "2026-09-01 09:00:00" },
 } as const satisfies Record<string, Team>;
 
 export const teamList: Team[] = Object.values(teams);
@@ -149,6 +158,7 @@ export const me = {
 
 function key(
   id: number,
+  last4: string,
   name: string,
   status: string,
   owner: User | null,
@@ -158,7 +168,7 @@ function key(
   return {
     id,
     name,
-    display: `uf-sk-...${String(id).padStart(4, "0")}`,
+    display: displayOf("uf-sk-", last4),
     status,
     owner_id: owner?.id ?? null,
     owner_email: owner?.email ?? null,
@@ -166,21 +176,22 @@ function key(
     team_name: team?.name ?? null,
     expires_at: dates.expires_at ?? null,
     revoked_at: dates.revoked_at ?? null,
-    created_at: "2026-08-01T09:00:00Z",
+    created_at: "2026-08-01 09:00:00",
   };
 }
 
 export const keys = {
-  active: key(1, "platform-prod", "active", users.arjun, teams.platform),
-  suspended: key(2, "dana-notebook", "suspended", users.dana, null),
-  expired: key(3, "research-trial", "expired", users.tomas, teams.research, {
-    expires_at: "2026-09-01T00:00:00Z",
+  /** The key that `POST /api/keys` answers with; its display ends as `newKeySecret` does. */
+  active: key(1, newKeySecret.slice(-4), "platform-prod", "active", users.arjun, teams.platform),
+  suspended: key(2, "7d2f", "dana-notebook", "suspended", users.dana, null),
+  expired: key(3, "03ab", "research-trial", "expired", users.tomas, teams.research, {
+    expires_at: "2026-09-01 00:00:00",
   }),
-  revoked: key(4, "lena-old-laptop", "revoked", users.lena, teams.platform, {
-    revoked_at: "2026-09-10T13:00:00Z",
+  revoked: key(4, "e41c", "lena-old-laptop", "revoked", users.lena, teams.platform, {
+    revoked_at: "2026-09-10 13:00:00",
   }),
   /** Belongs to a team and to no person. */
-  noOwner: key(5, "platform-ci", "active", null, teams.platform),
+  noOwner: key(5, "9b60", "platform-ci", "active", null, teams.platform),
 } satisfies Record<string, Key>;
 
 export const keyList: Key[] = Object.values(keys);
@@ -205,32 +216,33 @@ export const providers = {
 export const providerList: Provider[] = Object.values(providers);
 
 export const tokens = {
+  /** The token that `POST /api/tokens` answers with; its display ends as `newTokenSecret` does. */
   active: {
     id: 1,
     name: "terraform",
-    display: "uf-at-...0001",
+    display: displayOf("uf-at-", newTokenSecret.slice(-4)),
     expires_at: null,
     revoked_at: null,
-    last_used_at: "2026-09-28T08:00:00Z",
-    created_at: "2026-08-10T09:00:00Z",
+    last_used_at: "2026-09-28 08:00:00",
+    created_at: "2026-08-10 09:00:00",
   },
   neverUsed: {
     id: 2,
     name: "backup-script",
-    display: "uf-at-...0002",
-    expires_at: "2027-01-01T00:00:00Z",
+    display: displayOf("uf-at-", "5a1e"),
+    expires_at: "2027-01-01 00:00:00",
     revoked_at: null,
     last_used_at: null,
-    created_at: "2026-09-15T09:00:00Z",
+    created_at: "2026-09-15 09:00:00",
   },
   revoked: {
     id: 3,
     name: "old-ci",
-    display: "uf-at-...0003",
+    display: displayOf("uf-at-", "c07d"),
     expires_at: null,
-    revoked_at: "2026-09-05T09:00:00Z",
-    last_used_at: "2026-09-04T22:10:00Z",
-    created_at: "2026-07-01T09:00:00Z",
+    revoked_at: "2026-09-05 09:00:00",
+    last_used_at: "2026-09-04 22:10:00",
+    created_at: "2026-07-01 09:00:00",
   },
 } satisfies Record<string, Token>;
 
@@ -240,47 +252,47 @@ export const tokenList: Token[] = Object.values(tokens);
 export const auditEntries: AuditEntry[] = [
   {
     id: 5,
-    at: "2026-09-25T15:00:00Z",
+    at: "2026-09-25 15:00:00",
     actor_email: users.maya.email,
     action: "user.invite",
     target_type: "user",
     target_id: users.sam.id,
-    summary: "Invited sam@example.test as member",
+    summary: `Invited ${users.sam.email} as ${users.sam.role}`,
   },
   {
     id: 4,
-    at: "2026-09-10T13:00:00Z",
+    at: "2026-09-10 13:00:00",
     actor_email: users.lena.email,
     action: "key.revoke",
     target_type: "key",
     target_id: keys.revoked.id,
-    summary: "Revoked key lena-old-laptop",
+    summary: `Revoked key ${keys.revoked.name} (${keys.revoked.display})`,
   },
   {
     id: 3,
-    at: "2026-09-01T09:00:00Z",
+    at: "2026-09-01 09:00:00",
     actor_email: users.maya.email,
     action: "team.create",
     target_type: "team",
     target_id: teams.growth.id,
-    summary: "Created team Growth",
+    summary: `Created team ${teams.growth.name}`,
   },
   {
     id: 2,
-    at: "2026-08-01T10:05:00Z",
+    at: "2026-08-01 10:05:00",
     actor_email: users.maya.email,
     action: "user.update",
     target_type: "user",
     target_id: users.dana.id,
-    summary: "Disabled dana@example.test",
+    summary: `Changed status of ${users.dana.email} from active to disabled`,
   },
   {
     id: 1,
-    at: "2026-06-01T09:00:00Z",
+    at: "2026-06-01 09:00:00",
     actor_email: users.maya.email,
-    action: "setup",
-    target_type: "organization",
-    target_id: null,
-    summary: "Set up the gateway",
+    action: "setup.create_admin",
+    target_type: "user",
+    target_id: users.maya.id,
+    summary: `Created the first admin ${users.maya.email}`,
   },
 ];
