@@ -1,19 +1,22 @@
 import { ApiError } from "@/api/errors";
+import { NotAvailableContent } from "@/components/NotAvailableContent";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
-/** For a page that the account may not see. It is not an error. */
+/** The whole screen, for where there is no shell. Inside the shell: `NotAvailableContent`. */
 export function NotAvailable() {
   return (
-    <div className="flex flex-col gap-2">
-      <h1 className="text-2xl font-semibold">Not available</h1>
-      <p className="text-muted-foreground">This page is not available to your account.</p>
-    </div>
+    <main className="flex min-h-svh flex-col p-6">
+      <NotAvailableContent />
+    </main>
   );
 }
 
-/** What a page shows in place of its content when its data could not be loaded. */
+/**
+ * What a route shows in place of its content when its data could not be
+ * loaded. It is shown inside the shell, so it brings no `main`.
+ */
 export function PageProblem({ error }: { error: unknown }) {
-  if (error instanceof ApiError && error.status === 403) return <NotAvailable />;
+  if (error instanceof ApiError && error.status === 403) return <NotAvailableContent />;
   const message =
     error instanceof Error && error.message !== "" ? error.message : "Something went wrong.";
   return (

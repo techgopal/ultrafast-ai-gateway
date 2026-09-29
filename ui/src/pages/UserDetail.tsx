@@ -10,6 +10,7 @@ import { dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit
 import { Field } from "@/components/Field";
 import { applyApiError, useFormFailure } from "@/components/form";
 import { FormError } from "@/components/FormError";
+import { NotFoundContent } from "@/components/NotFoundContent";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
 import { SecretDialog, useSecretOnce } from "@/components/SecretDialog";
@@ -27,7 +28,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { NotFound } from "@/pages/NotFound";
 import {
   INVITE_LINK_DESCRIPTION,
   INVITE_LINK_TITLE,
@@ -397,6 +397,6 @@ function Details({ id }: { id: number }) {
 export function UserDetail({ id }: { id: string }) {
   const number = idOf(id);
   // Not an id: the API is not asked.
-  if (number === null) return <NotFound />;
+  if (number === null) return <NotFoundContent />;
   return <Details id={number} />;
 }
