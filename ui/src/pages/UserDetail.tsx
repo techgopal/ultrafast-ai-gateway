@@ -164,7 +164,8 @@ function Controls({ me, user }: { me: Me; user: User }) {
 
   const own = user.id === me.user.id;
   const mayEdit = can(me, { type: "editUserRoleOrStatus" });
-  const mayDelete = can(me, { type: "deleteUser" });
+  // Nobody can delete their own account: the API refuses it to everybody.
+  const mayDelete = !own && can(me, { type: "deleteUser" });
   // The API lets everybody change their own name, and admins every name.
   const mayRename = own || mayEdit;
   if (!mayRename && !mayDelete) return null;
