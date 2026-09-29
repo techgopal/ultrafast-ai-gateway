@@ -13,6 +13,7 @@ import {
   descriptionOf,
   expectNoSecret,
   expectNotAvailable,
+  expectOneMain,
   expectSessionEndsOnPage,
   forbid,
   forgetToasts,
@@ -137,6 +138,7 @@ describe("the list of users", () => {
     expect(rowOf(sam.name)).toHaveTextContent("Never");
     expect(within(rowOf(maya.name)).getByText(/2026/).tagName).toBe("TIME");
     expect(button("Invite user")).toBeInTheDocument();
+    expectOneMain();
   });
 
   test("member sees only what the API returns and no invite button", async () => {
@@ -283,6 +285,7 @@ describe("the list of users", () => {
     forbid("/api/users");
     await list();
     await expectNotAvailable();
+    expectOneMain();
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.queryByRole("button", { name: "Invite user" })).toBeNull();
   });
@@ -297,6 +300,21 @@ describe("the list of users", () => {
       at: "/users",
     });
     expect(shown()).not.toContain(lena.email);
+  });
+});
+
+describe("screens without a page", () => {
+  test("an address that is no page has one main landmark", async () => {
+    await renderWithApp(null, { route: "/users/3/keys" });
+    expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
+    expectOneMain();
+    expect(screen.getByRole("link", { name: "Back to Overview" })).toHaveAttribute("href", "/");
+  });
+
+  test("the audit log of a member is not available, with one main landmark", async () => {
+    await renderWithApp(null, { route: "/audit", user: fixtures.me.tomas });
+    await expectNotAvailable();
+    expectOneMain();
   });
 });
 
@@ -429,7 +447,7 @@ describe("inviting", () => {
     await screen.findByRole("dialog", { name: "Invite link" });
     expect(shown()).toContain(TOKEN);
 
-    await aCallFindsTheSessionEnded();
+    await aCallFindsTheSessionEnded("/api/teams");
 
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();
@@ -454,7 +472,7 @@ describe("inviting", () => {
     await table();
     await openInvite();
     await fillInvite();
-    await aCallFindsTheSessionEnded();
+    await aCallFindsTheSessionEnded("/api/teams");
     door.open();
     await settle();
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -482,6 +500,7 @@ describe("the page of a user", () => {
     expect(details.querySelectorAll("time")).toHaveLength(2);
     expect(screen.getByRole("link", { name: "Back to users" })).toHaveAttribute("href", "/users");
     expect(screen.queryByText("You")).toBeNull();
+    expectOneMain();
   });
 
   test("the own page is marked", async () => {
@@ -562,6 +581,9 @@ describe("the page of a user", () => {
     await detail(tomas, { user: fixtures.me.lena });
     expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
     expect(asked.calls).toBe(1);
+    expectOneMain();
+    // It is inside the shell, which is still there.
+    expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByText(tomas.email)).toBeNull();
     expect(actions()).toEqual([]);
@@ -575,6 +597,7 @@ describe("the page of a user", () => {
       expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
       await settle();
       expect(asked.calls).toBe(0);
+      expectOneMain();
     },
   );
 
@@ -594,6 +617,7 @@ describe("the page of a user", () => {
     forbid("/api/users/{id}");
     await detail(lena);
     await expectNotAvailable();
+    expectOneMain();
   });
 
   test("the session ends while the page of a user is open", async () => {
@@ -858,7 +882,7 @@ describe("changing a user", () => {
     const app = await detail(lena);
     const dialog = await ask("Make admin", "Make this user an admin?");
     await confirm(dialog, "Make admin");
-    await aCallFindsTheSessionEnded();
+    await aCallFindsTheSessionEnded("/api/teams");
     door.open();
     await settle();
     expect(screen.queryByRole("alertdialog")).toBeNull();
@@ -914,7 +938,7 @@ describe("a new invite", () => {
     await screen.findByRole("dialog", { name: "Invite link" });
     expect(shown()).toContain(TOKEN);
 
-    await aCallFindsTheSessionEnded();
+    await aCallFindsTheSessionEnded("/api/teams");
 
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();

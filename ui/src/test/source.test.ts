@@ -122,3 +122,13 @@ describe("source rules", () => {
     expect(html).not.toMatch(/(?:href|src)="(?:[a-z]+:)?\/\//i);
   });
 });
+
+describe("what depends on what", () => {
+  test("no shared component imports a page", () => {
+    const shared = allSources().filter(
+      (path) => path.startsWith("components/") && !path.includes(".test."),
+    );
+    expect(shared.length).toBeGreaterThan(10);
+    expect(findings(shared, importOf("@/pages"))).toEqual([]);
+  });
+});

@@ -11,12 +11,13 @@ import { useEffect, useMemo } from "react";
 import { can, safePath } from "@/auth/guards";
 import { useSession, useSessionControl, useSignOut } from "@/auth/session";
 import { FormError } from "@/components/AuthForm";
+import { NotAvailableContent } from "@/components/NotAvailableContent";
 import { PageHeader } from "@/components/PageHeader";
 import { Shell } from "@/components/Shell";
 import type { ShellUser } from "@/components/shell-context";
 import { Button } from "@/components/ui/button";
 import { AcceptInvite } from "@/pages/AcceptInvite";
-import { NotAvailable, PageProblem } from "@/pages/NotAvailable";
+import { PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
 import { Setup } from "@/pages/Setup";
 import { UserDetail } from "@/pages/UserDetail";
@@ -178,7 +179,7 @@ function page<const TPath extends string>(path: TPath, title: string) {
 function AuditPage() {
   const session = useSession();
   if (session.status !== "signedIn" || !can(session.me, { type: "viewAudit" })) {
-    return <NotAvailable />;
+    return <NotAvailableContent />;
   }
   return <PageHeader title="Audit log" />;
 }

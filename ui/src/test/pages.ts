@@ -81,18 +81,40 @@ export function counted<M extends Method>(
   return count;
 }
 
-/** Lets what is on its way arrive. */
+/**
+ * The document has exactly one `main` landmark: a screen that is shown inside
+ * the shell brings none of its own.
+ */
+export function expectOneMain(): void {
+  expect(document.querySelectorAll("main, [role=main]")).toHaveLength(1);
+  expect(screen.getAllByRole("main")).toHaveLength(1);
+}
+
+/**
+ * Waits a fixed time, so that what is on its way can arrive. An assertion
+ * that something did NOT happen, made after it, proves only that it did not
+ * happen within that time: it catches what follows an answer of MSW at once,
+ * which is what the pages do, and not what a timer or a slow answer would
+ * bring later. Where there is something to wait for, use `waitFor`.
+ */
 export async function settle(milliseconds = 30): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, milliseconds));
   });
 }
 
-/** A call that the gateway answers with 401, as it does when the session ended. */
-export async function aCallFindsTheSessionEnded(): Promise<void> {
-  override("get", "/api/teams", unauthenticated);
+/** The lists of the API, which take no parameter. */
+export type ListPath = "/api/users" | "/api/teams" | "/api/keys" | "/api/providers" | "/api/tokens";
+
+/**
+ * A call that the gateway answers with 401, as it does when the session
+ * ended. `path` is a list the page under test does not ask for itself, so
+ * that the answers of the page stay what the test set.
+ */
+export async function aCallFindsTheSessionEnded(path: ListPath): Promise<void> {
+  override("get", path, unauthenticated);
   await act(async () => {
-    await api.get("/api/teams").catch(() => undefined);
+    await api.get(path).catch(() => undefined);
   });
 }
 

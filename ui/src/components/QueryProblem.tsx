@@ -1,7 +1,7 @@
 import { ApiError } from "@/api/errors";
 import { ErrorState } from "@/components/ErrorState";
-import { NotAvailable } from "@/pages/NotAvailable";
-import { NotFound } from "@/pages/NotFound";
+import { NotAvailableContent } from "@/components/NotAvailableContent";
+import { NotFoundContent } from "@/components/NotFoundContent";
 
 interface QueryProblemProps {
   /** What the query of the page failed with. */
@@ -19,7 +19,7 @@ interface QueryProblemProps {
  * is over.
  */
 export function QueryProblem({ error, onRetry, notFound = false }: QueryProblemProps) {
-  if (error instanceof ApiError && error.status === 403) return <NotAvailable />;
-  if (notFound && error instanceof ApiError && error.status === 404) return <NotFound />;
+  if (error instanceof ApiError && error.status === 403) return <NotAvailableContent />;
+  if (notFound && error instanceof ApiError && error.status === 404) return <NotFoundContent />;
   return <ErrorState error={error} onRetry={onRetry} />;
 }
