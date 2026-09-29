@@ -74,6 +74,7 @@ async fn keep_an_admin(tx: &mut Tx<'_>, was: &UserRow) -> Result<(), ApiError> {
     get,
     path = "/users",
     tag = "users",
+    operation_id = "users_list",
     responses(
         (status = 200, description = "The users the caller may see.", body = super::openapi::UserList),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
@@ -104,6 +105,7 @@ pub async fn list(
     post,
     path = "/users",
     tag = "users",
+    operation_id = "users_invite",
     request_body = InviteRequest,
     responses(
         (status = 201, description = "The invited user and the invite link.", body = super::openapi::InviteResponse),
@@ -192,6 +194,7 @@ pub async fn invite(
     post,
     path = "/users/{id}/invite",
     tag = "users",
+    operation_id = "users_reinvite",
     params(
         ("id" = i64, Path, description = "The id of the user."),
     ),
@@ -250,6 +253,7 @@ pub async fn reinvite(
     get,
     path = "/users/{id}",
     tag = "users",
+    operation_id = "users_view",
     params(
         ("id" = i64, Path, description = "The id of the user."),
     ),
@@ -284,6 +288,7 @@ pub async fn view(
     patch,
     path = "/users/{id}",
     tag = "users",
+    operation_id = "users_update",
     params(
         ("id" = i64, Path, description = "The id of the user."),
     ),
@@ -473,6 +478,7 @@ fn delete_summary(email: &str, keys: KeysOnDelete) -> String {
     delete,
     path = "/users/{id}",
     tag = "users",
+    operation_id = "users_delete",
     params(
         ("id" = i64, Path, description = "The id of the user."),
     ),

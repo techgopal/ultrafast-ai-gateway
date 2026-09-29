@@ -353,6 +353,27 @@ mod tests {
     }
 
     #[test]
+    fn operation_ids_are_unique() {
+        let spec = spec_json();
+        let mut ids = BTreeSet::new();
+        for (method, path, operation) in operations(&spec) {
+            let id = operation["operationId"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{method} {path} has no operationId"));
+            let words: Vec<&str> = id.split('_').collect();
+            assert!(
+                words.len() >= 2
+                    && words
+                        .iter()
+                        .all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase())),
+                "{id} of {method} {path} is not of the form tag_action"
+            );
+            assert!(ids.insert(id.to_string()), "{id} names two operations");
+        }
+        assert_eq!(ids.len(), 32);
+    }
+
+    #[test]
     fn info_names_the_api_and_the_version() {
         let spec = spec_json();
         assert_eq!(spec["info"]["title"], "Ultrafast Gateway Admin API");

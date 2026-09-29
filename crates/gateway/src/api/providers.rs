@@ -106,6 +106,7 @@ async fn provider_of(store: &Store, raw_id: &str) -> Result<ProviderRow, ApiErro
     get,
     path = "/providers",
     tag = "providers",
+    operation_id = "providers_list",
     responses(
         (status = 200, description = "Every provider.", body = super::openapi::ProviderList),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
@@ -127,6 +128,7 @@ pub async fn list(
     post,
     path = "/providers",
     tag = "providers",
+    operation_id = "providers_create",
     request_body = CreateProviderRequest,
     responses(
         (status = 201, description = "The new provider.", body = ProviderView),
@@ -213,6 +215,7 @@ pub async fn create(
     patch,
     path = "/providers/{id}",
     tag = "providers",
+    operation_id = "providers_update",
     params(
         ("id" = i64, Path, description = "The id of the provider."),
     ),
@@ -320,6 +323,7 @@ pub async fn update(
     delete,
     path = "/providers/{id}",
     tag = "providers",
+    operation_id = "providers_delete",
     params(
         ("id" = i64, Path, description = "The id of the provider."),
     ),

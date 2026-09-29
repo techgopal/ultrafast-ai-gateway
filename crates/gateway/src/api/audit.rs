@@ -37,6 +37,7 @@ fn positive(raw: &str) -> Option<i64> {
     get,
     path = "/audit",
     tag = "audit",
+    operation_id = "audit_list",
     params(
         ("limit" = Option<i64>, Query, description = "How many entries to return, 1 to 200. 50 when left out."),
         ("before" = Option<i64>, Query, description = "The id of the last entry of the page before."),

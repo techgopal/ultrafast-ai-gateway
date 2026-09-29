@@ -108,6 +108,7 @@ async fn key_of(store: &Store, raw_id: &str) -> Result<KeyRow, ApiError> {
     get,
     path = "/keys",
     tag = "keys",
+    operation_id = "keys_list",
     responses(
         (status = 200, description = "The keys the caller may see.", body = super::openapi::KeyList),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
@@ -139,6 +140,7 @@ pub async fn list(
     post,
     path = "/keys",
     tag = "keys",
+    operation_id = "keys_create",
     request_body = CreateKeyRequest,
     responses(
         (status = 201, description = "The new key, with the key itself.", body = super::openapi::CreatedKey),
@@ -237,6 +239,7 @@ pub async fn create(
     get,
     path = "/keys/{id}",
     tag = "keys",
+    operation_id = "keys_view",
     params(
         ("id" = i64, Path, description = "The id of the key."),
     ),
@@ -268,6 +271,7 @@ pub async fn view(
     delete,
     path = "/keys/{id}",
     tag = "keys",
+    operation_id = "keys_revoke",
     params(
         ("id" = i64, Path, description = "The id of the key."),
     ),

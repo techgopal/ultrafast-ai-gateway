@@ -225,6 +225,7 @@ pub async fn bootstrap_admin(
     get,
     path = "/setup",
     tag = "auth",
+    operation_id = "auth_setup_status",
     responses(
         (status = 200, description = "Whether the first admin still has to be created.", body = super::openapi::SetupStatus),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
@@ -243,6 +244,7 @@ fn already_set_up() -> ApiError {
     post,
     path = "/setup",
     tag = "auth",
+    operation_id = "auth_setup",
     request_body = SetupRequest,
     responses(
         (status = 201, description = "The first admin.", body = UserView),
@@ -316,6 +318,7 @@ fn attempt_succeeded(state: &AppState, key: &str, addr: IpAddr) {
     post,
     path = "/auth/login",
     tag = "auth",
+    operation_id = "auth_login",
     request_body = LoginRequest,
     responses(
         (status = 200, description = "Signed in. The session cookie is set.", body = super::openapi::LoginResponse),
@@ -373,6 +376,7 @@ pub async fn login(
     post,
     path = "/auth/logout",
     tag = "auth",
+    operation_id = "auth_logout",
     responses(
         (status = 204, description = "Signed out. The session cookie is cleared."),
         (status = 400, description = "The caller used an access token. Only a browser session can be signed out.", body = super::openapi::ApiErrorBody),
@@ -424,6 +428,7 @@ pub async fn logout(
     get,
     path = "/auth/me",
     tag = "auth",
+    operation_id = "auth_me",
     responses(
         (status = 200, description = "The caller and their teams.", body = super::openapi::MeResponse),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
@@ -472,6 +477,7 @@ pub async fn me(State(state): State<Arc<AppState>>, authed: Authed) -> Result<Re
     post,
     path = "/auth/accept-invite",
     tag = "auth",
+    operation_id = "auth_accept_invite",
     request_body = AcceptInviteRequest,
     responses(
         (status = 204, description = "The password is set and the user is active."),
@@ -531,6 +537,7 @@ pub async fn accept_invite(
     post,
     path = "/auth/password",
     tag = "auth",
+    operation_id = "auth_change_password",
     request_body = ChangePasswordRequest,
     responses(
         (status = 204, description = "The password is changed. Other sessions and all access tokens of the caller end."),
