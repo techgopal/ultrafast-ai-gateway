@@ -212,6 +212,20 @@ impl Tx<'_> {
         Ok(r.rows_affected())
     }
 
+    /// How many keys of the user work: not revoked and not expired.
+    pub async fn count_live_keys_of(&mut self, user_id: i64) -> Result<i64> {
+        let count = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM virtual_keys
+             WHERE user_id = ? AND org_id = ? AND revoked_at IS NULL
+               AND (expires_at IS NULL OR expires_at > datetime('now'))",
+        )
+        .bind(user_id)
+        .bind(DEFAULT_ORG)
+        .fetch_one(self.conn())
+        .await?;
+        Ok(count)
+    }
+
     /// Returns whether a live key was revoked. Revoking again changes nothing.
     pub async fn revoke_key(&mut self, id: i64) -> Result<bool> {
         let r = sqlx::query(
@@ -364,7 +378,24 @@ mod tests {
             .unwrap();
 
         let mut tx = s.begin().await.unwrap();
-        assert_eq!(tx.revoke_keys_of(lena).await.unwrap(), 1);
+        // Lena's key that has expired does not count either.
+        tx.insert_key(
+            "old",
+            "h5",
+            "d5",
+            Some("2000-01-01 00:00:00"),
+            Some(lena),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tx.count_live_keys_of(lena).await.unwrap(), 1);
+        assert_eq!(tx.count_live_keys_of(tomas).await.unwrap(), 1);
+        assert_eq!(tx.count_live_keys_of(tomas + 100).await.unwrap(), 0);
+        tx.commit().await.unwrap();
+
+        let mut tx = s.begin().await.unwrap();
+        assert_eq!(tx.revoke_keys_of(lena).await.unwrap(), 2);
         assert_eq!(tx.revoke_keys_of(lena).await.unwrap(), 0);
         assert_eq!(tx.revoke_keys_of(tomas + 100).await.unwrap(), 0);
         tx.commit().await.unwrap();

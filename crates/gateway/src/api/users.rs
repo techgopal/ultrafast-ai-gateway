@@ -444,11 +444,28 @@ fn update_summary(email: &str, changes: &[(&str, &str, &str)]) -> String {
     format!("Changed {}", parts.join(", "))
 }
 
-fn delete_summary(email: &str, revoked_keys: u64) -> String {
-    match revoked_keys {
-        0 => format!("Deleted user {email}"),
-        1 => format!("Deleted user {email}, revoked 1 key"),
-        n => format!("Deleted user {email}, revoked {n} keys"),
+/// What deleting a user did to the keys they owned.
+#[derive(Clone, Copy)]
+enum KeysOnDelete {
+    /// The user was not active: their unrevoked keys were revoked.
+    Revoked(u64),
+    /// The user was active: their working keys go on working, ownerless.
+    LeftWorking(i64),
+}
+
+fn delete_summary(email: &str, keys: KeysOnDelete) -> String {
+    match keys {
+        KeysOnDelete::Revoked(0) | KeysOnDelete::LeftWorking(0) => {
+            format!("Deleted user {email}")
+        }
+        KeysOnDelete::Revoked(1) => format!("Deleted user {email}, revoked 1 key"),
+        KeysOnDelete::Revoked(n) => format!("Deleted user {email}, revoked {n} keys"),
+        KeysOnDelete::LeftWorking(1) => {
+            format!("Deleted user {email}, left 1 key working without an owner")
+        }
+        KeysOnDelete::LeftWorking(n) => {
+            format!("Deleted user {email}, left {n} keys working without an owner")
+        }
     }
 }
 
@@ -493,11 +510,12 @@ pub async fn delete(
     tx.delete_sessions_of(was.id).await?;
     tx.revoke_tokens_of(was.id).await?;
     // Deleting the user makes their keys ownerless. The keys of a user who
-    // is not active do not work, and must not start to work that way.
-    let revoked = if was.status == UserStatus::Active {
-        0
+    // is not active do not work, and must not start to work that way. The
+    // keys of an active user go on working, which the audit entry states.
+    let keys = if was.status == UserStatus::Active {
+        KeysOnDelete::LeftWorking(tx.count_live_keys_of(was.id).await?)
     } else {
-        tx.revoke_keys_of(was.id).await?
+        KeysOnDelete::Revoked(tx.revoke_keys_of(was.id).await?)
     };
     if !tx.delete_user(was.id).await? {
         return Err(ApiError::not_found());
@@ -509,7 +527,7 @@ pub async fn delete(
         action: "user.delete",
         target_type: "user",
         target_id: Some(was.id),
-        summary: &delete_summary(&was.email, revoked),
+        summary: &delete_summary(&was.email, keys),
     })
     .await?;
     tx.commit().await?;
@@ -534,6 +552,37 @@ mod tests {
             ),
             "Changed name of lena@example.com from Lena to Lena K, status from active to disabled"
         );
+    }
+
+    #[test]
+    fn delete_summaries_state_what_happened_to_the_keys() {
+        let email = "lena@example.com";
+        let cases = [
+            (KeysOnDelete::Revoked(0), "Deleted user lena@example.com"),
+            (
+                KeysOnDelete::Revoked(1),
+                "Deleted user lena@example.com, revoked 1 key",
+            ),
+            (
+                KeysOnDelete::Revoked(2),
+                "Deleted user lena@example.com, revoked 2 keys",
+            ),
+            (
+                KeysOnDelete::LeftWorking(0),
+                "Deleted user lena@example.com",
+            ),
+            (
+                KeysOnDelete::LeftWorking(1),
+                "Deleted user lena@example.com, left 1 key working without an owner",
+            ),
+            (
+                KeysOnDelete::LeftWorking(2),
+                "Deleted user lena@example.com, left 2 keys working without an owner",
+            ),
+        ];
+        for (keys, expected) in cases {
+            assert_eq!(delete_summary(email, keys), expected);
+        }
     }
 
     #[test]
