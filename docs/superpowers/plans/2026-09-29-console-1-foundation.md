@@ -6,7 +6,9 @@
 
 **Architecture:** A static single-page app under `ui/` (React, TypeScript, Vite, TanStack Router, Query, Table and Form). Its built files are embedded in the `ultrafast` binary and served at `/`, with the existing `/api`, `/v1` and `/health` untouched. The app talks only to `/api`, through a client whose types are generated from `openapi/admin.json`.
 
-**Tech Stack:** TypeScript, React, Vite, TanStack Router / Query / Table / Form, Vitest, Testing Library, MSW, Playwright, pnpm. Gateway side: rust-embed, mime_guess.
+**Tech Stack:** TypeScript, React, Vite, Tailwind CSS, shadcn/ui (Radix primitives, lucide icons), TanStack Router / Query / Table / Form, Vitest, Testing Library, MSW, Playwright, pnpm. Gateway side: rust-embed, mime_guess.
+
+**Owner decisions (2026-09-29):** shadcn/ui with its default look; default fonts; light and dark themes; mobile friendly; no external URL needed at runtime; frontend and backend in one Rust binary.
 
 **Spec:** `docs/superpowers/specs/2026-09-28-gateway-v2-design.md` (section 13, and sections 6 and 8 for what the API enforces)
 **Prototype:** https://claude.ai/artifact/UaWzRPnuMzfVVrZkFSceAk (layout, navigation and visual language; its numbers are sample data)
@@ -38,32 +40,24 @@ As in gateway plan 2, each task gives **Interfaces**, **Rules** and **Tests** (t
 - The session cookie is `HttpOnly`; the app never reads or writes it. The CSRF token lives in memory only: never in `localStorage`, `sessionStorage`, a cookie, the URL, or a log.
 - Secrets shown once (new virtual key, new access token, invite link) live in component state only, are never put in the query cache, the router state, the URL or browser storage, and are gone when the dialog closes.
 - Passwords and provider API keys are cleared from form state after a successful submit and when the form unmounts.
-- No `dangerouslySetInnerHTML`. No inline `style` attributes and no runtime-injected `<style>` (the Content Security Policy forbids them); styling is in CSS files.
+- No `dangerouslySetInnerHTML`. No inline `<script>` and no runtime-injected `<style>` element. Our own code sets no inline `style` attribute; Radix primitives inside shadcn/ui set them for positioning, which the Content Security Policy allows through `style-src-attr` only.
+- UI components come from shadcn/ui, added with its CLI into `ui/src/components/ui/` and committed as source. They are used with their default styling. A component is written by hand only when shadcn/ui has none for the job.
+- Fonts are the defaults: the system font stack that Tailwind and shadcn/ui ship with. No font files are bundled and none are downloaded.
 - The API decides what a user may do. The console hides what the API would refuse, using the role and teams from `/api/auth/me`, and still handles a 403 or 404 for every call.
 - Accessibility: every interactive element is a real `button`, `a` or form control, reachable and usable by keyboard, with a visible focus ring and an accessible name. Dialogs trap focus and close on Escape. Form errors are tied to their field. Text contrast is at least 4.5:1. Status is never conveyed by colour alone.
-- Works at 1280 px wide and up. Below that it must remain usable (no overlapping or cut-off controls) down to 1024 px; phone layouts are out of scope.
-- Light theme only in this plan.
+- Mobile friendly: every screen works from 360 px wide to desktop widths, with no horizontal page scroll and no overlapping or cut-off controls. Below 768 px the sidebar becomes a drawer opened from a menu button; tables either scroll inside their own container or turn into stacked cards; dialogs fit the screen and scroll inside; touch targets are at least 44 px.
+- Light and dark themes. The default follows the device setting (`prefers-color-scheme`); the user can choose Light, Dark or System, and the choice is kept in `localStorage` under `uf-theme` (a preference, not a secret). The theme is applied before first paint so there is no flash of the wrong theme. Both themes meet the contrast rule.
 - The gateway's existing behavior does not change: all 401 Rust tests pass unchanged; `/api`, `/v1` and `/health` answer as before.
 - Commit with `git -c user.name=techgopal -c user.email=techgopal2@gmail.com commit`; messages end with the two trailer lines in use on this branch (`Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and the `Claude-Session:` line).
 
-## Visual language (from the prototype)
+## Visual language
 
-| Token | Value |
-|---|---|
-| Ground | `#f6f5f1` |
-| Surface | `#ffffff` |
-| Ink | `#1a1917` |
-| Muted text | `#5f5d57` |
-| Border | `#e2e0d8`; control border `#cfcdc6` |
-| Sidebar | ground `#1a1917`, text `#cfcdc6`, active item `#34322e` with white text |
-| Accent (primary buttons, links) | `#9a3412`; hover `#7c2d12` |
-| Data blue (bars, meters) | `#2f5d8a` |
-| Status pills | ok `#e3f1e7` / `#14532d`; warn `#fdf0d5` / `#78350f`; error `#fde4e1` / `#7f1d1d`; neutral `#eceae4` / `#3d3b37` |
-| Typeface | Instrument Sans for text, JetBrains Mono for ids, keys and numbers, both self-hosted from `@fontsource` packages |
-| Radius | 8 px controls, 12 px cards |
-| Control height | 44 px |
+The look is shadcn/ui's default: its default style, its neutral base colour, its default radius, its light and dark colour variables, and the default system font stack. The prototype still defines the layout and navigation (sidebar sections, page headers, tables, pills, dialogs), not the colours or fonts.
 
-These are defined once as CSS custom properties in `ui/src/styles/tokens.css`. Components use the properties, never the literal values.
+- Colours are used only through the theme's CSS variables and Tailwind's theme classes (`bg-background`, `text-muted-foreground`, `border`, `bg-destructive`, and so on). No hex, rgb or hsl literal appears outside the theme file `ui/src/styles/globals.css`.
+- Status pills use the `Badge` component: `active` and `ok` as default, `invited`, `suspended` and warnings as secondary, errors as destructive, `disabled`, `expired` and `revoked` as outline. The text always states the status.
+- Ids, keys, tokens and numbers in tables use the default monospace stack (`font-mono`).
+- Icons come from `lucide-react`, which shadcn/ui uses; they are bundled, not fetched.
 
 ## Review Focus
 
@@ -78,21 +72,25 @@ These are defined once as CSS custom properties in `ui/src/styles/tokens.css`. C
 ```
 ui/
   package.json  pnpm-lock.yaml  tsconfig.json  vite.config.ts  eslint.config.js
+  components.json                shadcn/ui configuration
   index.html
+  public/theme.js                applies the saved theme before first paint
   playwright.config.ts
   src/
     main.tsx                     entry: providers, router
     router.tsx                   route tree and guards
-    styles/tokens.css  base.css  components.css
+    styles/globals.css           Tailwind entry and the shadcn/ui theme variables
+    components/ui/               shadcn/ui components, added by its CLI
+    theme/theme.tsx              theme provider and the Light / Dark / System switch
     api/schema.d.ts              generated from openapi/admin.json (committed)
     api/client.ts                fetch wrapper, CSRF, error type
     api/errors.ts                ApiError, field errors
     api/queries.ts               query keys and hooks per resource
     auth/session.tsx             current user, CSRF token, sign-out
     auth/guards.ts               who may see what
-    components/                  Shell, Sidebar, PageHeader, DataTable, Field,
-                                 Button, Dialog, ConfirmDialog, SecretDialog,
-                                 Pill, Toast, EmptyState, ErrorState, Spinner
+    components/                  Shell, AppSidebar, PageHeader, DataTable, Field,
+                                 ConfirmDialog, SecretDialog, StatusBadge,
+                                 EmptyState, ErrorState (built from components/ui)
     pages/                       SignIn, Setup, AcceptInvite, Overview,
                                  Users, UserDetail, Teams, TeamDetail,
                                  Keys, Providers, Account, Audit, NotFound,
@@ -106,49 +104,57 @@ crates/gateway/
 
 ---
 
-### Task 1: Scaffold, tokens and shell
+### Task 1: Scaffold, theme and shell
 
 **Files:**
-- Create: everything under `ui/` listed above for the entry, router skeleton, styles, `components/Shell.tsx`, `Sidebar.tsx`, `PageHeader.tsx`, `Button.tsx`, `Pill.tsx`, `Spinner.tsx`, `pages/NotFound.tsx`, `test/render.tsx`
+- Create: the project files under `ui/` listed above for the entry, router skeleton, `styles/globals.css`, `components.json`, `public/theme.js`, `theme/theme.tsx`, `components/ui/*` (added by the shadcn CLI), `components/Shell.tsx`, `AppSidebar.tsx`, `PageHeader.tsx`, `StatusBadge.tsx`, `pages/NotFound.tsx`, `test/render.tsx`
 - Modify: `.gitignore` (add `ui/node_modules`, `ui/dist`, `ui/test-results`, `ui/playwright-report`), `.github/workflows/ci.yml`, `.dockerignore`
 
 **Interfaces (produces):**
 - `pnpm` scripts in `ui/package.json`: `dev`, `build`, `typecheck`, `lint`, `test`, `test:e2e`, `gen:api`, `check:api`
 - `ui/dist/` as the build output, with hashed asset names under `ui/dist/assets/`
-- `<Shell>` with the sidebar and a content outlet; `<Sidebar items={…} />`; `<PageHeader title subtitle actions />`; `<Button variant="primary" | "ghost" | "danger">`; `<Pill tone="ok" | "warn" | "error" | "neutral">`
-- `renderWithApp(ui, { route?, user? })` test helper
+- `<Shell>` with the sidebar and a content outlet; `<AppSidebar />`; `<PageHeader title subtitle actions />`; `<StatusBadge status />`; `<ThemeProvider>`, `useTheme()` returning `{ theme: "light" | "dark" | "system", setTheme }`, and `<ThemeSwitch />`
+- `renderWithApp(ui, { route?, user?, theme?, width? })` test helper
 
 **Rules:**
-1. Packages: `react`, `react-dom`, `@tanstack/react-router`, `@tanstack/react-query`, `@tanstack/react-table`, `@tanstack/react-form`, `@fontsource/instrument-sans`, `@fontsource/jetbrains-mono`; dev: `typescript`, `vite`, `@vitejs/plugin-react`, `vitest`, `jsdom`, `@testing-library/react`, `@testing-library/user-event`, `@testing-library/jest-dom`, `msw`, `eslint` with `typescript-eslint`, `eslint-plugin-react-hooks` and `eslint-plugin-jsx-a11y`, `openapi-typescript`, `@playwright/test`. Nothing else without a stated reason in the report. No CSS framework, no component library, no icon package (inline SVG for the few icons).
-2. The router is code-based (one `router.tsx`), so no code generation step is needed for routes.
-3. Sidebar sections and items, in this order. Items marked coming are rendered as non-interactive text with a "Coming" tag and `aria-disabled="true"`.
+1. Packages: `react`, `react-dom`, `@tanstack/react-router`, `@tanstack/react-query`, `@tanstack/react-table`, `@tanstack/react-form`, `tailwindcss` with its Vite plugin, and what the shadcn CLI adds for the components used (`class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`, the needed `@radix-ui/*` packages, `sonner` for toasts, `tw-animate-css` or the animation package the CLI installs). Dev: `typescript`, `vite`, `@vitejs/plugin-react`, `vitest`, `jsdom`, `@testing-library/react`, `@testing-library/user-event`, `@testing-library/jest-dom`, `msw`, `eslint` with `typescript-eslint`, `eslint-plugin-react-hooks` and `eslint-plugin-jsx-a11y`, `openapi-typescript`, `@playwright/test`. Nothing else without a stated reason in the report.
+2. shadcn/ui is initialised with its defaults (default style, neutral base colour, CSS variables on). Components added in this plan: `button`, `input`, `label`, `select`, `checkbox`, `radio-group`, `textarea`, `dialog`, `alert-dialog`, `dropdown-menu`, `sheet`, `sidebar`, `table`, `badge`, `card`, `alert`, `skeleton`, `separator`, `tooltip`, `sonner`. Their generated source is committed unchanged, except where a rule of this plan requires a change; every such change is listed in the report. ESLint and the colour scan of the tests skip `src/components/ui/`.
+3. If a component's generated source refers to an external URL (a font, an image, a CDN), that reference is removed. `index.html` has no `<link>` or `<script>` pointing at another host.
+4. The router is code-based (one `router.tsx`), so no code generation step is needed for routes.
+5. Sidebar sections and items, in this order, built with the shadcn `sidebar` component. Items marked coming are rendered as non-interactive text with a "Coming" badge and `aria-disabled="true"`.
    - Observe: Overview (`/`), Logs (coming), Playground (coming)
    - Configure: Providers (`/providers`), Models (coming), Routing (coming), Virtual keys (`/keys`)
    - Govern: Users (`/users`), Teams (`/teams`), Budgets and limits (coming), Guardrails (coming), MCP tools (coming)
-   - Bottom: Audit log (`/audit`, admins only), Account (`/account`), and the signed-in user's name, role and a Sign out button
-4. The active item is marked with `aria-current="page"`.
-5. `vite.config.ts`: `base: "/"`, build output `dist`, asset file names hashed, no source maps in the production build, dev server proxy of `/api`, `/v1` and `/health` to `http://127.0.0.1:3900`.
-6. Fonts are imported from the `@fontsource` packages so Vite emits them as local assets. Only the weights used (400, 500, 600, 700 for text; 400, 500 for mono) are imported.
-7. ESLint fails on any warning. `jsx-a11y` recommended rules are on.
-8. CI gains a job `console`: `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, using Node 22 and the pnpm version recorded in `package.json` `packageManager`.
+   - Footer: Audit log (`/audit`, admins only), Account (`/account`), the theme switch, and the signed-in user's name, role and a Sign out button
+6. The active item is marked with `aria-current="page"`.
+7. Below 768 px the sidebar is a drawer: closed by default, opened by a menu button in a top bar that also shows the page title; it closes when an item is chosen, on Escape, and when the backdrop is pressed; focus moves into it when it opens and back to the menu button when it closes.
+8. Theme: `public/theme.js` is a plain script file (not inline) loaded in `<head>` before the app. It reads `localStorage["uf-theme"]`; for `"dark"`, or for `"system"` or no value when the device prefers dark, it adds the class `dark` to `<html>`; it also sets `color-scheme`. Reading storage is wrapped in try/catch so a browser that blocks storage falls back to the device setting. `ThemeProvider` keeps the class in step when the user changes the choice and when the device setting changes while the choice is System.
+9. `vite.config.ts`: `base: "/"`, build output `dist`, asset file names hashed, no source maps in the production build, dev server proxy of `/api`, `/v1` and `/health` to `http://127.0.0.1:3900`.
+10. ESLint fails on any warning. `jsx-a11y` recommended rules are on.
+11. CI gains a job `console`: `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, using Node 22 and the pnpm version recorded in `package.json` `packageManager`.
 
 **Tests** (Vitest, Testing Library):
 
 | Test | Assertion |
 |---|---|
-| `sidebar lists sections in order` | the three section headings and every item text appear in the order of rule 3 |
+| `sidebar lists sections in order` | the three section headings and every item text appear in the order of rule 5 |
 | `coming items are not links` | "Logs" has no `href`, is `aria-disabled`, and carries the text "Coming" |
 | `active item is marked` | at route `/keys`, the "Virtual keys" link has `aria-current="page"` and no other item has it |
 | `audit item is for admins` | with a member user the sidebar has no "Audit log"; with an admin it has |
 | `unknown route shows not found` | route `/nope` renders the NotFound page with a link back to Overview |
-| `tokens are the only colours` | a test reads every `.css` file under `src/styles` except `tokens.css` and every `.tsx` file, and fails if it finds a hex colour literal |
-| `no inline styles` | the same scan fails on `style=` in any `.tsx` file |
-| `build output is self-contained` | after `pnpm build`, no file in `dist` contains `http://` or `https://` pointing at a host other than in a licence comment or the SVG/XML namespace URIs `www.w3.org` |
+| `narrow screens use a drawer` | at width 390 the sidebar is not visible until the menu button is pressed; choosing an item closes it; Escape closes it; focus returns to the menu button |
+| `theme follows the device by default` | with no saved choice and the device preferring dark, `<html>` has class `dark`; preferring light, it has not |
+| `theme choice is kept` | choosing Dark sets the class and `localStorage["uf-theme"] === "dark"`; a fresh render keeps it; choosing System removes the override and follows the device |
+| `theme survives blocked storage` | with `localStorage` throwing, the app renders and follows the device setting |
+| `theme script is not inline` | `index.html` contains no `<script>` with a body; `theme.js` is referenced by `src` |
+| `colours come from the theme` | a scan of every `.tsx` and `.css` file under `src`, except `styles/globals.css` and `components/ui/`, fails on a hex, `rgb(` or `hsl(` colour literal |
+| `no inline styles in our code` | the same scan fails on `style=` in any `.tsx` file outside `components/ui/` |
+| `build output is self-contained` | after `pnpm build`, no file in `dist` contains a URL with a host, except the namespace URIs of `www.w3.org` and URLs inside licence comments; the test lists what it found |
 
-- [ ] Step 1: Create the project and write the tests. Run `pnpm test`. Expected: failures (components missing).
+- [ ] Step 1: Create the project, initialise shadcn/ui, write the tests. Run `pnpm test`. Expected: failures (components missing).
 - [ ] Step 2: Implement.
-- [ ] Step 3: `pnpm lint && pnpm typecheck && pnpm test && pnpm build`. Expected: all pass; report the size of `dist` and of the largest JavaScript file, gzipped.
-- [ ] Step 4: Commit `feat(console): scaffold, design tokens and shell`.
+- [ ] Step 3: `pnpm lint && pnpm typecheck && pnpm test && pnpm build`. Expected: all pass; report the size of `dist` and the gzipped size of the JavaScript and CSS.
+- [ ] Step 4: Commit `feat(console): scaffold, theme and shell`.
 
 ---
 
@@ -167,13 +173,14 @@ crates/gateway/
 2. `web.rs` embeds `$OUT_DIR/console` and serves:
    - `GET /` and `HEAD /`: `index.html`.
    - `GET /assets/<file>`: the embedded file, or 404 if missing. Never `index.html` for a missing asset.
+   - `GET /theme.js` and any other file at the root of the console build (for example `favicon.svg`): the embedded file, with `Cache-Control: no-cache` and an `ETag`.
    - Any other `GET` or `HEAD` path that does not start with `/api/`, `/v1/` or equal `/api`, `/v1`, `/health`: `index.html`, so deep links work. This is the fallback of the app router.
    - Other methods on those paths: 405.
 3. `/api/*`, `/v1/*` and `/health` keep their handlers and their own 404 and 405 bodies. An unknown `/api/...` path still answers the `/api` JSON 404, not `index.html`. An unknown `/v1/...` path answers 404 in the OpenAI error shape.
 4. Headers on `index.html`: `Cache-Control: no-cache`, and the security headers of rule 6. Headers on `/assets/*`: `Cache-Control: public, max-age=31536000, immutable`, `X-Content-Type-Options: nosniff`, and the right `Content-Type` from the file extension. `ETag` is set from the embedded file's hash and `If-None-Match` answers 304.
 5. Path handling: the requested path is never used to read from disk. Paths containing `..`, a backslash, a NUL or a percent-encoded form of those answer 404.
 6. Security headers on every HTML response:
-   - `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`
+   - `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; manifest-src 'self'`. `style-src-attr 'unsafe-inline'` is there because Radix primitives position popovers, selects and dialogs with inline `style` attributes; inline `<style>` elements and inline scripts stay forbidden.
    - `X-Content-Type-Options: nosniff`
    - `Referrer-Policy: no-referrer`
    - `X-Frame-Options: DENY`
@@ -196,6 +203,7 @@ crates/gateway/
 | `post to a page path is 405` | `POST /keys` |
 | `traversal is refused` | `/assets/../Cargo.toml`, `/assets/..%2f..%2fCargo.toml`, `/assets/%2e%2e/x`, `/assets/a\b` are 404 |
 | `api responses are not cached or sniffed` | `GET /api/setup` has `cache-control: no-store` and `x-content-type-options: nosniff` |
+| `root files are served` | `GET /theme.js` is 200 with a JavaScript content type when the console is built |
 | `etag gives 304` | second request with `If-None-Match` set to the first response's `ETag` is 304 with an empty body |
 | `placeholder when not built` | when `CONSOLE_BUILT` is false, `/` contains the text "console was not built"; when true the test asserts the page contains `<div id="root">` |
 
@@ -275,7 +283,7 @@ export const api: {
 
 **Files:**
 - Create: `ui/src/auth/session.tsx`, `auth/guards.ts`, `pages/SignIn.tsx`, `pages/Setup.tsx`, `pages/AcceptInvite.tsx`, `pages/NotAvailable.tsx`
-- Modify: `ui/src/router.tsx`, `main.tsx`, `components/Sidebar.tsx`
+- Modify: `ui/src/router.tsx`, `main.tsx`, `components/AppSidebar.tsx`
 
 **Interfaces (produces):**
 
@@ -339,14 +347,15 @@ export function can(me: Me, action: ConsoleAction): boolean   // mirrors the API
 ### Task 5: Shared components
 
 **Files:**
-- Create: `ui/src/components/DataTable.tsx`, `Field.tsx`, `Dialog.tsx`, `ConfirmDialog.tsx`, `SecretDialog.tsx`, `Toast.tsx`, `EmptyState.tsx`, `ErrorState.tsx`, `FormError.tsx`, `ui/src/components/form.ts`
+- Create: `ui/src/components/DataTable.tsx`, `Field.tsx`, `ConfirmDialog.tsx`, `SecretDialog.tsx`, `EmptyState.tsx`, `ErrorState.tsx`, `FormError.tsx`, `ui/src/components/form.ts`
+
+These are built from the shadcn/ui components in `components/ui/` (`dialog`, `alert-dialog`, `table`, `input`, `label`, `alert`, `skeleton`, `sonner`). Dialogs on screens narrower than 768 px take the full width and scroll inside.
 
 **Interfaces (produces):**
 
 ```tsx
 <DataTable columns rows getRowId empty={<EmptyState …/>} caption="…" />   // TanStack Table, client-side sort
 <Field label name error? hint? required?>{control}</Field>
-<Dialog title open onClose>{…}</Dialog>
 <ConfirmDialog title body confirmLabel tone="danger" | "primary" onConfirm />   // onConfirm may reject with ApiError
 <SecretDialog title secret description />      // shows a secret once
 <ErrorState error onRetry? />                   // for failed queries
@@ -355,18 +364,18 @@ applyApiError(form, error): void                // puts ApiError.fields on field
 ```
 
 **Rules:**
-1. `Dialog` uses the native `<dialog>` element opened with `showModal()`: focus moves into it, Tab stays inside, Escape closes, and focus returns to the control that opened it. The title is its accessible name.
+1. Dialogs use the shadcn `dialog` and `alert-dialog` components: focus moves into the dialog, Tab stays inside, Escape closes, and focus returns to the control that opened it. Every dialog has a title, which is its accessible name, and a description.
 2. `ConfirmDialog` disables its buttons while `onConfirm` runs. If `onConfirm` rejects with an `ApiError` the dialog stays open and shows the message; it closes only on success or cancel.
 3. `SecretDialog`:
    - shows the secret in a read-only mono field with a Copy button and the description (for example "Copy this key now. It is not shown again.");
    - Copy uses `navigator.clipboard.writeText` and confirms with "Copied"; if the clipboard is not available it selects the text and says "Press Ctrl+C to copy";
    - closing (button, Escape, backdrop) first asks "Have you copied it? It cannot be shown again." with Keep open as the default;
    - the secret is held in the state of the component that opened the dialog and is set to `null` on close; it is never passed to a toast, a log, the query cache or the router.
-4. `DataTable` renders a real `<table>` with a `<caption>` (visually hidden is fine), `<th scope="col">`, and sortable headers as buttons with `aria-sort`. Sorting is client-side. An empty list renders the `empty` element, not an empty table. A loading list renders 5 skeleton rows with `aria-busy="true"`.
+4. `DataTable` renders a real `<table>` (the shadcn `table`) with a `<caption>` (visually hidden is fine), `<th scope="col">`, and sortable headers as buttons with `aria-sort`. Sorting is client-side. An empty list renders the `empty` element, not an empty table. A loading list renders 5 skeleton rows with `aria-busy="true"`. Below 768 px each row is shown as a card: every cell becomes a labelled line (the column header, then the value), in the column order, with the row's actions at the end; columns marked `hideOnMobile` are left out.
 5. `Field` ties its label, hint and error to the control with `htmlFor`, `aria-describedby` and `aria-invalid`.
 6. `applyApiError`: each key of `error.fields` that matches a form field is set as that field's error; keys that match no field, and the error's message when there are no field errors, are shown by `FormError` at the top of the form with `role="alert"`. The form keeps every value the user typed.
 7. `ErrorState` shows the error's message and a Retry button when `onRetry` is given. For a `NetworkError` it shows the network message. It never shows a stack trace or a raw response.
-8. Toasts are announced with `role="status"`, disappear after 5 seconds, and can be dismissed. Errors from mutations are shown in the form or dialog that caused them, not as toasts. Toasts are for successes.
+8. Toasts use the shadcn `sonner` component, are announced to screen readers, disappear after 5 seconds, and can be dismissed. Errors from mutations are shown in the form or dialog that caused them, not as toasts. Toasts are for successes.
 9. Dates from the API (`YYYY-MM-DD HH:MM:SS`, UTC) are shown in the browser's locale and time zone, with the exact UTC value in a `title` attribute; a helper `formatTimestamp` does this and returns "Never" for null.
 
 **Tests:**
@@ -382,6 +391,9 @@ applyApiError(form, error): void                // puts ApiError.fields on field
 | `secret is gone after close` | after closing, the secret string is nowhere in `document.body.innerHTML`, and the query cache has no entry containing it |
 | `table sorts` | clicking a header sorts ascending, again descending, with `aria-sort` set |
 | `table empty and loading` | the two states of rule 4 |
+| `table becomes cards on narrow screens` | at width 390 no `<table>` row layout is used: each row shows its header labels beside the values, actions are present, and `hideOnMobile` columns are absent |
+| `dialogs fit narrow screens` | at width 390 the dialog is no wider than the viewport and its content scrolls |
+| `components work in both themes` | each shared component renders in light and in dark without a colour literal of its own (covered by the scan) and with its text present |
 | `field wiring` | label click focuses the control; error is announced through `aria-describedby`; `aria-invalid="true"` when there is an error |
 | `api field errors land on fields` | 422 with `fields: {name: "must not be empty", other: "x"}` puts the first on the name field and shows `other` in the form error |
 | `form keeps values after an error` | |
@@ -404,7 +416,7 @@ applyApiError(form, error): void                // puts ApiError.fields on field
 **Routes:** `/users`, `/users/$id`
 
 **Rules:**
-1. `/users` lists what `GET /api/users` returns: name, email, role, status, teams are not in this response so the list does not show them, last active. Status is a pill: `active` ok, `invited` warn, `disabled` neutral.
+1. `/users` lists what `GET /api/users` returns: name, email, role, status, teams are not in this response so the list does not show them, last active. Status is a `StatusBadge`.
 2. Admins see an "Invite user" button. It opens a dialog: name, email, role (Member or Admin). On success the dialog is replaced by a `SecretDialog` holding the invite link as an absolute URL built from `window.location.origin` and the `invite_link` path the API returned, with the description "Send this link to the user. It works once and expires in 7 days."
 3. A row links to `/users/$id`. The detail page shows the user's fields and, for admins, controls: edit name, change role, disable or enable, resend invite (only when `invited`), delete.
 4. Every user can edit their own name on their own detail page. Non-admins see no role, status or delete controls, even on their own page.
@@ -493,7 +505,7 @@ applyApiError(form, error): void                // puts ApiError.fields on field
 **Routes:** `/keys`, `/providers`
 
 **Rules for keys:**
-1. The list shows name, key (the masked `display`, in mono), owner, team, expires, status. Status pills: `active` ok, `suspended` warn with the hint "The owner is not active", `expired` neutral, `revoked` neutral. A key with no owner shows "No owner".
+1. The list shows name, key (the masked `display`, in mono), owner, team, expires, status. Status is a `StatusBadge`; `suspended` carries the hint "The owner is not active". A key with no owner shows "No owner".
 2. Filters above the table, all client-side: text search over name, owner and display; team; status. "Show revoked" is off by default.
 3. "Create key" opens a dialog: name; team (none, or one of the teams the chosen owner belongs to); owner (admins: any active user; leads: themselves or a member of a team they lead; members: themselves, shown as fixed text); expires (never, 30 days, 90 days, or a date). The expiry is sent as UTC `YYYY-MM-DD HH:MM:SS` at the end of the chosen day.
 4. On success the `secret` is shown in a `SecretDialog` with "Copy this key now. It is not shown again.", together with a short example of using it: the base URL of this gateway followed by `/v1` and the header `Authorization: Bearer <key>`. The example shows the placeholder, not the secret.
@@ -588,7 +600,7 @@ applyApiError(form, error): void                // puts ApiError.fields on field
 **Rules:**
 1. The end-to-end tests run against the real `ultrafast` binary with the console embedded, on a free port, with a fresh temporary data directory, `--insecure-cookies`, and an admin from `UF_ADMIN_EMAIL` and `UF_ADMIN_PASSWORD`. No API mocking. The launcher builds nothing: CI builds the console and the binary first.
 2. A mock provider (a small local HTTP server in the test process) stands in for an upstream model API, so the "first call" flow can be tested without a real provider.
-3. Browsers: Chromium only in CI.
+3. Browsers: Chromium only in CI, in two projects: desktop (1280 x 800) and phone (390 x 844, touch). Every flow runs in both. `a11y.spec` also runs in dark theme.
 4. The tests fail on any browser console error, any Content Security Policy violation report, and any request to another origin.
 5. Flows:
 
@@ -603,6 +615,8 @@ applyApiError(form, error): void                // puts ApiError.fields on field
 | `last-admin.spec` | the only admin trying to disable themselves sees the API's message in the dialog and stays an admin |
 | `session-end.spec` | with `/keys` open, the session row is removed (by signing out in a second context); the next action lands on sign-in with the notice, and signing in returns to `/keys` |
 | `a11y.spec` | on sign-in, overview, users, keys and the create-key dialog: every control is reachable with Tab in a sensible order, the dialog traps focus, and an automated check (`@axe-core/playwright`, added as a dev dependency) reports no violations |
+| `mobile.spec` | at 390 x 844: no page has horizontal scroll (`document.documentElement.scrollWidth <= clientWidth`) on sign-in, overview, users, teams, keys, providers, account and audit; the menu button opens and closes the drawer; a table row shows as a card; the create-key dialog fits and its submit button can be reached |
+| `theme.spec` | the first paint matches the device setting (checked by emulating `prefers-color-scheme` and reading the `dark` class before the app script runs); choosing Dark persists across a reload; both themes pass the automated contrast check on overview and keys |
 | `headers.spec` | the document response has the Content Security Policy and the other headers of Task 2 rule 6; assets are served with the immutable cache header |
 
 6. CI: the `console` job builds the console; a new job `e2e` builds the console, builds the binary (so it embeds the console), installs Chromium, and runs `pnpm test:e2e`. It uploads the Playwright report when it fails.
@@ -621,14 +635,14 @@ applyApiError(form, error): void                // puts ApiError.fields on field
 - A team lead adds a member by user ID, because the API does not let a lead find users outside their teams. The project owner has an open decision on adding members by email; when the API changes, the console's add-member dialog changes with it.
 - The users list does not show each user's teams, because the API's list response does not include them.
 - No usage, spend, request logs, models, routes or budgets: their backends do not exist yet.
-- Light theme only; desktop widths only.
 - Sign-in limiting counts the reverse proxy's address when the gateway is behind one.
 
 ## Spec coverage
 
 | Spec section 13 requirement | Covered here | Deferred to |
 |---|---|---|
-| Static single-page app compiled into the binary; no Node runtime | Tasks 1, 2 | |
+| Static single-page app compiled into the binary; no Node runtime; no external URL at runtime | Tasks 1, 2, 10 | |
+| Owner decisions: shadcn/ui defaults, default fonts, light and dark themes, mobile friendly | Tasks 1, 5, 10 | |
 | TanStack Router, Query, Table, Form; built with Vite | Tasks 1, 3, 5 | |
 | Pages: Overview, Providers, Virtual keys, Users and teams, Settings (sign-in, backup, audit log) | Tasks 6 to 9 (overview without usage; audit log; account) | retention and backup settings: gateway plan 5 |
 | Pages: Logs, Playground, Models, Routing, Budgets and limits | shown as coming | console plans 2 to 4 |
