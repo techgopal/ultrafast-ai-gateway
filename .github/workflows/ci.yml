@@ -41,6 +41,8 @@ jobs:
           fi
       - name: Build image
         run: docker build -t ultrafast:ci .
+      - name: Run image
+        run: docker run --rm ultrafast:ci --version
       - name: Report binary size
         run: |
           cargo build --release --locked -p ultrafast-gateway
