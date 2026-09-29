@@ -4,6 +4,7 @@
 pub mod audit;
 pub mod auth;
 pub mod keys;
+pub mod openapi;
 pub mod providers;
 pub mod teams;
 pub mod tokens;

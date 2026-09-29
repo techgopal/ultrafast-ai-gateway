@@ -1,0 +1,402 @@
+//! Every `/api` endpoint that needs a caller, called as every kind of
+//! caller. The table is the last check on access control: a cell that
+//! fails means the table or the code is wrong, and neither is changed
+//! without finding out which.
+
+mod common;
+
+use std::collections::BTreeSet;
+
+use axum::http::StatusCode;
+use common::{error_code, org, send, Org, Signed, ORG_PASSWORD};
+use serde_json::{json, Value};
+use ultrafast_gateway::api::openapi::spec;
+use ultrafast_gateway::identity::{Role, UserStatus};
+use ultrafast_gateway::secrets::{generate_key, generate_secret, INVITE_PREFIX, TOKEN_PREFIX};
+use ultrafast_gateway::store::{after, NewUser};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Caller {
+    /// maya, with a session.
+    Admin,
+    /// arjun, who leads Platform, with a session.
+    Lead,
+    /// lena, a member of Platform, with a session.
+    Member,
+    /// No cookie and no Authorization header.
+    Nobody,
+    /// lena's access token as `Authorization: Bearer`, without a CSRF
+    /// header.
+    MemberToken,
+}
+
+const CALLERS: [Caller; 5] = [
+    Caller::Admin,
+    Caller::Lead,
+    Caller::Member,
+    Caller::Nobody,
+    Caller::MemberToken,
+];
+
+/// An access token: its id and the token itself.
+struct Token {
+    id: i64,
+    full: String,
+}
+
+/// The organization of `common::org` with what the table needs on top.
+struct World {
+    org: Org,
+    /// Invited, in no team.
+    sam: i64,
+    provider: i64,
+    /// Owned by lena, in Platform.
+    lena_key: i64,
+    /// Owned by tomas, in Research.
+    tomas_key: i64,
+    maya_token: Token,
+    arjun_token: Token,
+    lena_token: Token,
+}
+
+async fn seed_token(org: &Org, user_id: i64) -> Token {
+    let token = generate_secret(TOKEN_PREFIX);
+    let mut tx = org.api.store.begin().await.unwrap();
+    let id = tx
+        .insert_token(user_id, "table", &token.hash, &token.display, None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    Token {
+        id,
+        full: token.full,
+    }
+}
+
+async fn seed_key(org: &Org, name: &str, owner: i64, team: i64) -> i64 {
+    let key = generate_key();
+    let mut tx = org.api.store.begin().await.unwrap();
+    let id = tx
+        .insert_key(name, &key.hash, &key.display, None, Some(owner), Some(team))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    id
+}
+
+async fn world() -> World {
+    let org = org().await;
+    let store = &org.api.store;
+
+    let mut tx = store.begin().await.unwrap();
+    let sam = tx
+        .insert_user(NewUser {
+            email: "sam@example.com",
+            name: "Sam",
+            role: Role::Member,
+            status: UserStatus::Invited,
+            password_hash: None,
+        })
+        .await
+        .unwrap();
+    let invite = generate_secret(INVITE_PREFIX);
+    tx.insert_invite(sam, &invite.hash, &after(3600))
+        .await
+        .unwrap();
+    let provider = tx
+        .insert_provider("main", "openai", "https://api.openai.com/v1", None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let lena_key = seed_key(&org, "lena", org.lena, org.platform).await;
+    let tomas_key = seed_key(&org, "tomas", org.tomas, org.research).await;
+    let maya_token = seed_token(&org, org.maya).await;
+    let arjun_token = seed_token(&org, org.arjun).await;
+    let lena_token = seed_token(&org, org.lena).await;
+    World {
+        org,
+        sam,
+        provider,
+        lena_key,
+        tomas_key,
+        maya_token,
+        arjun_token,
+        lena_token,
+    }
+}
+
+impl World {
+    /// The caller's own access token. Nobody gets lena's, which exists.
+    fn token_of(&self, caller: Caller) -> &Token {
+        match caller {
+            Caller::Admin => &self.maya_token,
+            Caller::Lead => &self.arjun_token,
+            Caller::Member | Caller::MemberToken | Caller::Nobody => &self.lena_token,
+        }
+    }
+
+    /// A session made in the store: signing in is not what the table
+    /// tests, and it would hash a password for every cell.
+    async fn session_of(&self, user_id: i64) -> Signed {
+        let session = self.org.api.store.create_session(user_id).await.unwrap();
+        Signed {
+            cookie: format!("uf_session={}", session.id),
+            csrf: session.csrf_token,
+            user_id,
+        }
+    }
+
+    async fn call(
+        &self,
+        caller: Caller,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let body = body.map(|b| serde_json::to_vec(&b).unwrap());
+        let app = &self.org.api.app;
+        let user_id = match caller {
+            Caller::Admin => self.org.maya,
+            Caller::Lead => self.org.arjun,
+            Caller::Member => self.org.lena,
+            Caller::Nobody => {
+                let (status, _, body) = send(app, method, path, &[], body).await;
+                return (status, body);
+            }
+            Caller::MemberToken => {
+                let bearer = format!("Bearer {}", self.lena_token.full);
+                let headers = [("authorization", bearer.as_str())];
+                let (status, _, body) = send(app, method, path, &headers, body).await;
+                return (status, body);
+            }
+        };
+        let signed = self.session_of(user_id).await;
+        let mut headers = vec![("cookie", signed.cookie.as_str())];
+        if method != "GET" {
+            headers.push(("x-csrf-token", signed.csrf.as_str()));
+        }
+        let (status, _, body) = send(app, method, path, &headers, body).await;
+        (status, body)
+    }
+}
+
+type PathOf = fn(&World, Caller) -> String;
+type BodyOf = fn() -> Option<Value>;
+
+struct Row {
+    number: u32,
+    method: &'static str,
+    /// The path as the OpenAPI spec writes it.
+    template: &'static str,
+    /// What the row is about, for the failure message.
+    note: &'static str,
+    path: PathOf,
+    body: BodyOf,
+    /// admin, lead, member, nobody.
+    expect: [u16; 4],
+}
+
+fn no_body() -> Option<Value> {
+    None
+}
+
+const NEW_PASSWORD: &str = "another horse staple";
+
+#[rustfmt::skip]
+fn table() -> Vec<Row> {
+    let row = |number, method, template, note, path: PathOf, body: BodyOf, expect| Row {
+        number, method, template, note, path, body, expect,
+    };
+    vec![
+        row(1, "GET", "/api/auth/me", "", |_, _| "/api/auth/me".into(), no_body, [200, 200, 200, 401]),
+        row(2, "GET", "/api/users", "", |_, _| "/api/users".into(), no_body, [200, 200, 200, 401]),
+        row(3, "POST", "/api/users", "valid body", |_, _| "/api/users".into(),
+            || Some(json!({ "email": "nora@example.com", "name": "Nora", "role": "member" })),
+            [201, 403, 403, 401]),
+        row(4, "GET", "/api/users/{id}", "lena", |w, _| format!("/api/users/{}", w.org.lena), no_body,
+            [200, 200, 200, 401]),
+        row(5, "GET", "/api/users/{id}", "tomas", |w, _| format!("/api/users/{}", w.org.tomas), no_body,
+            [200, 404, 404, 401]),
+        row(6, "PATCH", "/api/users/{id}", "lena, name", |w, _| format!("/api/users/{}", w.org.lena),
+            || Some(json!({ "name": "Lena K" })),
+            [200, 404, 200, 401]),
+        row(7, "PATCH", "/api/users/{id}", "lena, role admin", |w, _| format!("/api/users/{}", w.org.lena),
+            || Some(json!({ "role": "admin" })),
+            [200, 404, 403, 401]),
+        row(8, "DELETE", "/api/users/{id}", "priya", |w, _| format!("/api/users/{}", w.org.priya), no_body,
+            [204, 404, 404, 401]),
+        row(9, "GET", "/api/teams", "", |_, _| "/api/teams".into(), no_body, [200, 200, 200, 401]),
+        row(10, "POST", "/api/teams", "", |_, _| "/api/teams".into(),
+            || Some(json!({ "name": "Design" })),
+            [201, 403, 403, 401]),
+        row(11, "GET", "/api/teams/{id}", "platform", |w, _| format!("/api/teams/{}", w.org.platform), no_body,
+            [200, 200, 200, 401]),
+        row(12, "GET", "/api/teams/{id}", "growth", |w, _| format!("/api/teams/{}", w.org.growth), no_body,
+            [200, 404, 404, 401]),
+        row(13, "PATCH", "/api/teams/{id}", "platform", |w, _| format!("/api/teams/{}", w.org.platform),
+            || Some(json!({ "name": "Platform Core" })),
+            [200, 200, 403, 401]),
+        row(14, "DELETE", "/api/teams/{id}", "growth", |w, _| format!("/api/teams/{}", w.org.growth), no_body,
+            [204, 404, 404, 401]),
+        row(15, "PUT", "/api/teams/{id}/members/{user_id}", "platform, priya as member",
+            |w, _| format!("/api/teams/{}/members/{}", w.org.platform, w.org.priya),
+            || Some(json!({ "role": "member" })),
+            [204, 204, 403, 401]),
+        row(16, "PUT", "/api/teams/{id}/members/{user_id}", "platform, priya as lead",
+            |w, _| format!("/api/teams/{}/members/{}", w.org.platform, w.org.priya),
+            || Some(json!({ "role": "lead" })),
+            [204, 403, 403, 401]),
+        row(17, "DELETE", "/api/teams/{id}/members/{user_id}", "platform, lena",
+            |w, _| format!("/api/teams/{}/members/{}", w.org.platform, w.org.lena), no_body,
+            [204, 204, 403, 401]),
+        row(18, "GET", "/api/keys", "", |_, _| "/api/keys".into(), no_body, [200, 200, 200, 401]),
+        row(19, "POST", "/api/keys", "own, no team", |_, _| "/api/keys".into(),
+            || Some(json!({ "name": "mine" })),
+            [201, 201, 201, 401]),
+        row(20, "GET", "/api/keys/{id}", "lena's", |w, _| format!("/api/keys/{}", w.lena_key), no_body,
+            [200, 200, 200, 401]),
+        row(21, "GET", "/api/keys/{id}", "tomas's", |w, _| format!("/api/keys/{}", w.tomas_key), no_body,
+            [200, 404, 404, 401]),
+        row(22, "DELETE", "/api/keys/{id}", "lena's", |w, _| format!("/api/keys/{}", w.lena_key), no_body,
+            [204, 204, 204, 401]),
+        row(23, "GET", "/api/providers", "", |_, _| "/api/providers".into(), no_body, [200, 200, 200, 401]),
+        row(24, "POST", "/api/providers", "", |_, _| "/api/providers".into(),
+            || Some(json!({
+                "name": "extra", "kind": "openai",
+                "base_url": "https://api.example.com/v1", "api_key": "sk-test",
+            })),
+            [201, 403, 403, 401]),
+        row(25, "PATCH", "/api/providers/{id}", "", |w, _| format!("/api/providers/{}", w.provider),
+            || Some(json!({ "base_url": "https://other.example.com/v1" })),
+            [200, 403, 403, 401]),
+        row(26, "DELETE", "/api/providers/{id}", "", |w, _| format!("/api/providers/{}", w.provider), no_body,
+            [204, 403, 403, 401]),
+        row(27, "GET", "/api/tokens", "", |_, _| "/api/tokens".into(), no_body, [200, 200, 200, 401]),
+        row(28, "POST", "/api/tokens", "", |_, _| "/api/tokens".into(),
+            || Some(json!({ "name": "ci" })),
+            [201, 201, 201, 401]),
+        row(29, "GET", "/api/audit", "", |_, _| "/api/audit".into(), no_body, [200, 403, 403, 401]),
+        row(30, "POST", "/api/auth/logout", "", |_, _| "/api/auth/logout".into(), no_body,
+            [204, 204, 204, 401]),
+        row(31, "POST", "/api/auth/password", "valid body", |_, _| "/api/auth/password".into(),
+            || Some(json!({ "current_password": ORG_PASSWORD, "new_password": NEW_PASSWORD })),
+            [204, 204, 204, 401]),
+        row(32, "POST", "/api/users/{id}/invite", "sam, who is invited",
+            |w, _| format!("/api/users/{}/invite", w.sam), no_body,
+            [201, 403, 403, 401]),
+        row(33, "DELETE", "/api/tokens/{id}", "the caller's own token",
+            |w, caller| format!("/api/tokens/{}", w.token_of(caller).id), no_body,
+            [204, 204, 204, 401]),
+    ]
+}
+
+/// The status and, for an error, the code a cell must give.
+fn expected(row: &Row, caller: Caller) -> (u16, Option<&'static str>) {
+    let status = match caller {
+        Caller::Admin => row.expect[0],
+        Caller::Lead => row.expect[1],
+        Caller::Member => row.expect[2],
+        Caller::Nobody => row.expect[3],
+        // A token carries the role of its owner. It cannot be signed out.
+        Caller::MemberToken if row.number == 30 => return (400, Some("bad_request")),
+        Caller::MemberToken => row.expect[2],
+    };
+    // The code tells a refusal by the policy from a failed CSRF check,
+    // which is a 403 too.
+    let code = match status {
+        401 => Some("unauthenticated"),
+        403 => Some("forbidden"),
+        404 => Some("not_found"),
+        _ => None,
+    };
+    (status, code)
+}
+
+#[tokio::test]
+async fn every_endpoint_for_every_role() {
+    let rows = table();
+    let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
+    assert_eq!(numbers, (1..=33).collect::<Vec<u32>>());
+
+    let mut failures = Vec::new();
+    for row in &rows {
+        for caller in CALLERS {
+            // A world of its own, so no call changes the result of another.
+            let world = world().await;
+            let path = (row.path)(&world, caller);
+            let (status, body) = world.call(caller, row.method, &path, (row.body)()).await;
+            let (want_status, want_code) = expected(row, caller);
+            let code_matches = want_code.is_none_or(|code| error_code(&body) == code);
+            if status.as_u16() != want_status || !code_matches {
+                failures.push(format!(
+                    "row {} {} {} ({}) as {:?}: expected {} {}, got {} {}",
+                    row.number,
+                    row.method,
+                    row.template,
+                    row.note,
+                    caller,
+                    want_status,
+                    want_code.unwrap_or(""),
+                    status.as_u16(),
+                    body,
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} cells failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The operations anyone may call. A new one is added here on purpose.
+const PUBLIC: [(&str, &str); 4] = [
+    ("GET", "/api/setup"),
+    ("POST", "/api/setup"),
+    ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/accept-invite"),
+];
+
+#[test]
+fn every_documented_operation_is_in_the_role_table() {
+    let spec = serde_json::to_value(spec()).unwrap();
+    let mut secured = BTreeSet::new();
+    let mut open = BTreeSet::new();
+    for (path, item) in spec["paths"].as_object().expect("paths") {
+        for (method, operation) in item.as_object().expect("a path item") {
+            let needs_caller = operation["security"]
+                .as_array()
+                .is_some_and(|schemes| !schemes.is_empty());
+            let operation = (method.to_uppercase(), path.clone());
+            if needs_caller {
+                secured.insert(operation);
+            } else {
+                open.insert(operation);
+            }
+        }
+    }
+    let owned = |(method, path): (&str, &str)| (method.to_string(), path.to_string());
+    let in_table: BTreeSet<_> = table()
+        .iter()
+        .map(|row| owned((row.method, row.template)))
+        .collect();
+    let public: BTreeSet<_> = PUBLIC.into_iter().map(owned).collect();
+
+    let without_row: Vec<_> = secured.difference(&in_table).collect();
+    assert!(
+        without_row.is_empty(),
+        "operations without a row in the role table: {without_row:?}"
+    );
+    let undocumented: Vec<_> = in_table.difference(&secured).collect();
+    assert!(
+        undocumented.is_empty(),
+        "rows that are not a documented operation with a security requirement: {undocumented:?}"
+    );
+    assert_eq!(
+        open, public,
+        "the operations without a security requirement must be exactly the public ones"
+    );
+}

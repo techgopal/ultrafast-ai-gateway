@@ -17,7 +17,7 @@ use crate::identity::policy::Action;
 use crate::secrets::{generate_secret, TOKEN_PREFIX};
 use crate::store::{AuditEntry, TokenRow};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTokenRequest {
     name: String,
@@ -25,13 +25,16 @@ pub struct CreateTokenRequest {
 }
 
 /// A token as `/api` shows it. It has no field for the token or its hash.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct TokenView {
     pub id: i64,
     pub name: String,
     pub display: String,
+    #[schema(required)]
     pub expires_at: Option<String>,
+    #[schema(required)]
     pub revoked_at: Option<String>,
+    #[schema(required)]
     pub last_used_at: Option<String>,
     pub created_at: String,
 }
@@ -50,6 +53,17 @@ impl From<TokenRow> for TokenView {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/tokens",
+    tag = "tokens",
+    responses(
+        (status = 200, description = "The caller's access tokens.", body = super::openapi::TokenList),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -61,6 +75,22 @@ pub async fn list(
     Ok(Json(json!({ "tokens": tokens })).into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/tokens",
+    tag = "tokens",
+    request_body = CreateTokenRequest,
+    responses(
+        (status = 201, description = "The new access token, with the token itself.", body = super::openapi::CreatedToken),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn create(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -96,6 +126,22 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(body)).into_response())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/tokens/{id}",
+    tag = "tokens",
+    params(
+        ("id" = i64, Path, description = "The id of the access token."),
+    ),
+    responses(
+        (status = 204, description = "The access token is revoked."),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn revoke(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,

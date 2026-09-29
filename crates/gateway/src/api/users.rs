@@ -26,7 +26,7 @@ const INVITE_SECONDS: i64 = 7 * 24 * 60 * 60;
 /// The page that takes an invite token.
 const INVITE_PAGE: &str = "/accept-invite?token=";
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InviteRequest {
     email: String,
@@ -34,7 +34,7 @@ pub struct InviteRequest {
     role: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateRequest {
     name: Option<String>,
@@ -81,6 +81,17 @@ async fn keep_an_admin(tx: &mut Tx<'_>, was: &UserRow) -> Result<(), ApiError> {
     Ok(())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/users",
+    tag = "users",
+    responses(
+        (status = 200, description = "The users the caller may see.", body = super::openapi::UserList),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -100,6 +111,23 @@ pub async fn list(
     Ok(Json(json!({ "users": users })).into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/users",
+    tag = "users",
+    request_body = InviteRequest,
+    responses(
+        (status = 201, description = "The invited user and the invite link.", body = super::openapi::InviteResponse),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`user_exists`: the email is taken.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn invite(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -171,6 +199,23 @@ pub async fn invite(
     Ok((StatusCode::CREATED, Json(body)).into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/users/{id}/invite",
+    tag = "users",
+    params(
+        ("id" = i64, Path, description = "The id of the user."),
+    ),
+    responses(
+        (status = 201, description = "A new invite link. Earlier links stop working.", body = super::openapi::ReinviteResponse),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`not_invited`: the user has accepted an invite already.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn reinvite(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -212,6 +257,21 @@ pub async fn reinvite(
     Ok((StatusCode::CREATED, Json(body)).into_response())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/users/{id}",
+    tag = "users",
+    params(
+        ("id" = i64, Path, description = "The id of the user."),
+    ),
+    responses(
+        (status = 200, description = "The user.", body = UserView),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn view(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -231,6 +291,27 @@ pub async fn view(
     Ok(Json(UserView::from(target)).into_response())
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/users/{id}",
+    tag = "users",
+    params(
+        ("id" = i64, Path, description = "The id of the user."),
+    ),
+    request_body = UpdateRequest,
+    responses(
+        (status = 200, description = "The user after the change.", body = UserView),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`last_admin`: no active admin would be left. `no_password`: the user has no password yet.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn update(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -382,6 +463,23 @@ fn delete_summary(email: &str, revoked_keys: u64) -> String {
     }
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/users/{id}",
+    tag = "users",
+    params(
+        ("id" = i64, Path, description = "The id of the user."),
+    ),
+    responses(
+        (status = 204, description = "The user is deleted."),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`cannot_delete_self`, or `last_admin`: no active admin would be left.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,

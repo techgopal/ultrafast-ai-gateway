@@ -22,21 +22,23 @@ use crate::store::{AuditEntry, ProviderRow, Store, StoreError};
 // The request types hold an API key, so they have neither `Debug` nor
 // `Serialize`: there is no way to print one.
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateProviderRequest {
     name: String,
     kind: String,
     base_url: String,
+    #[schema(write_only)]
     api_key: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateProviderRequest {
     base_url: Option<String>,
     /// Absent leaves the key, `null` removes it, a string replaces it.
     #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<String>, write_only)]
     api_key: Option<Option<String>>,
 }
 
@@ -50,7 +52,7 @@ where
 
 /// A provider as `/api` shows it: whether it has a credential, never the
 /// credential.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ProviderView {
     pub id: i64,
     pub name: String,
@@ -100,6 +102,17 @@ async fn provider_of(store: &Store, raw_id: &str) -> Result<ProviderRow, ApiErro
         .ok_or_else(ApiError::not_found)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/providers",
+    tag = "providers",
+    responses(
+        (status = 200, description = "Every provider.", body = super::openapi::ProviderList),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -110,6 +123,23 @@ pub async fn list(
     Ok(Json(json!({ "providers": providers })).into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/providers",
+    tag = "providers",
+    request_body = CreateProviderRequest,
+    responses(
+        (status = 201, description = "The new provider.", body = ProviderView),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`provider_exists`: the name is taken.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn create(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -179,6 +209,26 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(ProviderView::of(&row))).into_response())
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/providers/{id}",
+    tag = "providers",
+    params(
+        ("id" = i64, Path, description = "The id of the provider."),
+    ),
+    request_body = UpdateProviderRequest,
+    responses(
+        (status = 200, description = "The provider after the change.", body = ProviderView),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn update(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -266,6 +316,22 @@ pub async fn update(
     Ok(Json(ProviderView::of(&row)).into_response())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/providers/{id}",
+    tag = "providers",
+    params(
+        ("id" = i64, Path, description = "The id of the provider."),
+    ),
+    responses(
+        (status = 204, description = "The provider is deleted."),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,

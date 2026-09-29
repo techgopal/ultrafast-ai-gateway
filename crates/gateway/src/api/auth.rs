@@ -33,7 +33,7 @@ const MAX_NAME_CHARS: usize = 100;
 const BOOTSTRAP_NAME: &str = "Admin";
 
 /// A user as `/api` shows it. It has no field for the password hash.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UserView {
     pub id: i64,
     pub email: String,
@@ -41,6 +41,7 @@ pub struct UserView {
     pub role: Role,
     pub status: UserStatus,
     pub created_at: String,
+    #[schema(required)]
     pub last_active_at: Option<String>,
 }
 
@@ -60,37 +61,45 @@ impl From<UserRow> for UserView {
 
 // Request types have no `Debug`: most of them hold a password or a token.
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SetupRequest {
     email: String,
     name: String,
+    #[schema(write_only)]
     password: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LoginRequest {
     email: String,
+    #[schema(write_only)]
     password: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AcceptInviteRequest {
+    /// The token of the invite link.
+    #[schema(write_only)]
     token: String,
+    #[schema(write_only)]
     password: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChangePasswordRequest {
+    #[schema(write_only)]
     current_password: String,
+    #[schema(write_only)]
     new_password: String,
 }
 
-#[derive(Serialize)]
-struct TeamView {
+/// A team of the caller, with their role in it.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct TeamView {
     team_id: i64,
     name: String,
     role: TeamRole,
@@ -206,6 +215,15 @@ pub async fn bootstrap_admin(
     Ok(())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/setup",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Whether the first admin still has to be created.", body = super::openapi::SetupStatus),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+)]
 pub async fn setup_status(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {
     let needs_setup = state.store.count_users().await? == 0;
     Ok(Json(json!({ "needs_setup": needs_setup })).into_response())
@@ -215,6 +233,20 @@ fn already_set_up() -> ApiError {
     ApiError::conflict("already_set_up", "The gateway is already set up.")
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/setup",
+    tag = "auth",
+    request_body = SetupRequest,
+    responses(
+        (status = 201, description = "The first admin.", body = UserView),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`already_set_up`: a user exists.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+)]
 pub async fn setup(
     State(state): State<Arc<AppState>>,
     ApiJson(req): ApiJson<SetupRequest>,
@@ -274,6 +306,20 @@ fn attempt_succeeded(state: &AppState, key: &str, addr: IpAddr) {
     state.limiter.forgive(addr, Instant::now());
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/login",
+    tag = "auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Signed in. The session cookie is set.", body = super::openapi::LoginResponse),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "`invalid_credentials`: the email or the password is incorrect.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 429, description = "Too many failed attempts.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+)]
 pub async fn login(
     State(state): State<Arc<AppState>>,
     ClientAddr(addr): ClientAddr,
@@ -317,6 +363,19 @@ pub async fn login(
     Ok(([(SET_COOKIE, cookie)], Json(body)).into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/logout",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Signed out. The session cookie is cleared."),
+        (status = 400, description = "The caller used an access token. Only a browser session can be signed out.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn logout(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -355,6 +414,17 @@ pub async fn logout(
     Ok((StatusCode::NO_CONTENT, [(SET_COOKIE, cleared)]).into_response())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/auth/me",
+    tag = "auth",
+    responses(
+        (status = 200, description = "The caller and their teams.", body = super::openapi::MeResponse),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn me(State(state): State<Arc<AppState>>, authed: Authed) -> Result<Response, ApiError> {
     let me = &authed.principal;
     require(
@@ -392,6 +462,20 @@ pub async fn me(State(state): State<Arc<AppState>>, authed: Authed) -> Result<Re
     Ok(Json(body).into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/accept-invite",
+    tag = "auth",
+    request_body = AcceptInviteRequest,
+    responses(
+        (status = 204, description = "The password is set and the user is active."),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "The invite does not exist, has expired or was used.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+)]
 pub async fn accept_invite(
     State(state): State<Arc<AppState>>,
     ApiJson(req): ApiJson<AcceptInviteRequest>,
@@ -437,6 +521,23 @@ pub async fn accept_invite(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/password",
+    tag = "auth",
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 204, description = "The password is changed. Other sessions and all access tokens of the caller end."),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token, or `invalid_credentials`: the current password is incorrect.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 429, description = "Too many failed attempts.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn change_password(
     State(state): State<Arc<AppState>>,
     ClientAddr(addr): ClientAddr,

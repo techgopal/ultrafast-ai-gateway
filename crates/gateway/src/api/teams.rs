@@ -19,13 +19,13 @@ use crate::store::{AuditEntry, Store, StoreError, TeamRow, TeamSummary};
 /// Longest accepted team name, in characters.
 const MAX_TEAM_NAME_CHARS: usize = 60;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TeamNameRequest {
     name: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemberRequest {
     role: String,
@@ -68,6 +68,17 @@ async fn summary_of(store: &Store, id: i64) -> Result<TeamSummary, ApiError> {
         .ok_or_else(|| anyhow!("the team is missing after the change"))?)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/teams",
+    tag = "teams",
+    responses(
+        (status = 200, description = "The teams the caller may see.", body = super::openapi::TeamList),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -83,6 +94,23 @@ pub async fn list(
     Ok(Json(json!({ "teams": teams })).into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/teams",
+    tag = "teams",
+    request_body = TeamNameRequest,
+    responses(
+        (status = 201, description = "The new team.", body = TeamSummary),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`team_exists`: the name is taken.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn create(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -109,6 +137,21 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(team)).into_response())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/teams/{id}",
+    tag = "teams",
+    params(
+        ("id" = i64, Path, description = "The id of the team."),
+    ),
+    responses(
+        (status = 200, description = "The team and its members.", body = super::openapi::TeamDetail),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn view(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -125,6 +168,27 @@ pub async fn view(
     Ok(Json(json!({ "team": summary, "members": members })).into_response())
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/teams/{id}",
+    tag = "teams",
+    params(
+        ("id" = i64, Path, description = "The id of the team."),
+    ),
+    request_body = TeamNameRequest,
+    responses(
+        (status = 200, description = "The team after the change.", body = TeamSummary),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`team_exists`: the name is taken.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn rename(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -165,6 +229,22 @@ pub async fn rename(
     Ok(Json(team).into_response())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/teams/{id}",
+    tag = "teams",
+    params(
+        ("id" = i64, Path, description = "The id of the team."),
+    ),
+    responses(
+        (status = 204, description = "The team is deleted."),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -196,6 +276,28 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/teams/{id}/members/{user_id}",
+    tag = "teams",
+    params(
+        ("id" = i64, Path, description = "The id of the team."),
+        ("user_id" = i64, Path, description = "The id of the user."),
+    ),
+    request_body = MemberRequest,
+    responses(
+        (status = 204, description = "The user is a member of the team with this role."),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`user_disabled`: a disabled user cannot be added.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn put_member(
     State(state): State<Arc<AppState>>,
     Path((raw_team, raw_user)): Path<(String, String)>,
@@ -268,6 +370,23 @@ pub async fn put_member(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/teams/{id}/members/{user_id}",
+    tag = "teams",
+    params(
+        ("id" = i64, Path, description = "The id of the team."),
+        ("user_id" = i64, Path, description = "The id of the user."),
+    ),
+    responses(
+        (status = 204, description = "The user is no longer a member of the team."),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn remove_member(
     State(state): State<Arc<AppState>>,
     Path((raw_team, raw_user)): Path<(String, String)>,

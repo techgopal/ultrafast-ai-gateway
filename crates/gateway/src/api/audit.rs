@@ -33,6 +33,24 @@ fn positive(raw: &str) -> Option<i64> {
 
 /// Newest first. `limit` is capped by the store; `before` is the id of the
 /// last entry of the page before.
+#[utoipa::path(
+    get,
+    path = "/api/audit",
+    tag = "audit",
+    params(
+        ("limit" = Option<i64>, Query, description = "How many entries to return, 1 to 200. 50 when left out."),
+        ("before" = Option<i64>, Query, description = "The id of the last entry of the page before."),
+    ),
+    responses(
+        (status = 200, description = "Audit entries, newest first.", body = super::openapi::AuditPage),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
