@@ -583,3 +583,51 @@ async fn status_reflects_expiry_and_revocation() {
     assert_eq!(of(expired), "expired");
     assert_eq!(of(both), "revoked");
 }
+
+fn status_of(list: &Value, id: i64) -> &str {
+    let keys = list["keys"].as_array().expect("a keys array");
+    let key = keys.iter().find(|k| k["id"] == id).expect("the key");
+    key["status"].as_str().unwrap()
+}
+
+#[tokio::test]
+async fn the_key_of_a_disabled_owner_is_suspended() {
+    let org = org().await;
+    let keys = seed_keys(&org).await;
+    let expired = seed_key(&org, "old", Some(PAST), Some(org.lena), None).await;
+    let revoked = seed_key(&org, "gone", None, Some(org.lena), None).await;
+    let maya = org.sign_in("maya").await;
+    let (status, _) = revoke(&org, &maya, revoked).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let lena = format!("/api/users/{}", org.lena);
+
+    let disable = json!({ "status": "disabled" });
+    let (status, body) = org.call(Some(&maya), "PATCH", &lena, Some(disable)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, list) = org.call(Some(&maya), "GET", "/api/keys", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status_of(&list, keys.lena), "suspended");
+    // Revoked and expired say more, and win.
+    assert_eq!(status_of(&list, revoked), "revoked");
+    assert_eq!(status_of(&list, expired), "expired");
+    // The keys of others, and keys without an owner, are as before.
+    assert_eq!(status_of(&list, keys.arjun), "active");
+    assert_eq!(status_of(&list, keys.legacy), "active");
+    let (status, seen) = org
+        .call(Some(&maya), "GET", &key_path(keys.lena), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(seen["status"], "suspended");
+
+    let enable = json!({ "status": "active" });
+    let (status, body) = org.call(Some(&maya), "PATCH", &lena, Some(enable)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, list) = org.call(Some(&maya), "GET", "/api/keys", None).await;
+    assert_eq!(status_of(&list, keys.lena), "active");
+    assert_eq!(status_of(&list, revoked), "revoked");
+    assert_eq!(status_of(&list, expired), "expired");
+    let (_, seen) = org
+        .call(Some(&maya), "GET", &key_path(keys.lena), None)
+        .await;
+    assert_eq!(seen["status"], "active");
+}

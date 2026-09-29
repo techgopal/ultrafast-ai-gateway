@@ -21,12 +21,16 @@ pub struct KeyRow {
     pub owner_email: Option<String>,
     /// The name of the team, if the key belongs to one.
     pub team_name: Option<String>,
+    /// Whether the key has an owner who is not active. Such a key does not
+    /// work on `/v1`.
+    pub owner_inactive: bool,
 }
 
 /// Every key query reads through this, so the hash is never selected.
 const KEY_SELECT: &str = "SELECT k.id, k.name, k.display, k.user_id, k.team_id,
             k.expires_at, k.revoked_at, k.created_at,
-            u.email AS owner_email, t.name AS team_name
+            u.email AS owner_email, t.name AS team_name,
+            (u.id IS NOT NULL AND u.status <> 'active') AS owner_inactive
      FROM virtual_keys k
      LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
      LEFT JOIN teams t ON t.id = k.team_id AND t.org_id = k.org_id";
@@ -45,6 +49,7 @@ fn key_from(r: &SqliteRow) -> KeyRow {
         created_at: r.get("created_at"),
         owner_email: r.get("owner_email"),
         team_name: r.get("team_name"),
+        owner_inactive: r.get("owner_inactive"),
     }
 }
 
