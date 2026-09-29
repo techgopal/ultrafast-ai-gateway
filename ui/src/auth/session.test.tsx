@@ -103,6 +103,22 @@ describe("guards of the routes", () => {
     expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
   });
 
+  test("a signed out visitor who opens /setup on a gateway that is set up goes to sign-in", async () => {
+    startGateway();
+    let sent = 0;
+    override("post", "/api/setup", () => {
+      sent += 1;
+      return apiError(409, "already_set_up", "The gateway is set up.");
+    });
+    const app = await renderWithApp(null, { route: "/setup" });
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in");
+    });
+    expect(heading("Sign in")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Set up the gateway" })).toBeNull();
+    expect(sent).toBe(0);
+  });
+
   test("a signed out visitor of the overview goes to sign-in without next", async () => {
     startGateway();
     const app = await renderWithApp(null, { route: "/" });
@@ -267,6 +283,10 @@ describe("sign-in", () => {
     expect(screen.getByLabelText("Password")).toHaveValue("");
     expect(screen.getByLabelText("Email")).toHaveValue("maya@example.test");
     expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
+    // No field has an error, so the focus is on the message.
+    await waitFor(() => {
+      expect(alert).toHaveFocus();
+    });
     expect(href(app)).toBe("/sign-in?next=%2Fkeys");
     expect(ended).not.toHaveBeenCalled();
     stop();
@@ -816,6 +836,33 @@ describe("sign out", () => {
     ["a 401", unauthorized],
     ["a 403", () => apiError(403, "csrf", "The token is not valid.")],
   ];
+
+  const NOT_TOLD =
+    "You are signed out here, but the gateway could not be reached, so your session there may still be active.";
+
+  test("sign out says so when the gateway could not be told", async () => {
+    startGateway({ signedIn: true });
+    override("post", "/api/auth/logout", networkFailure);
+    const app = await renderWithApp(null, { route: "/keys" });
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in");
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(NOT_TOLD);
+    expect(await tokenOfAWrite()).toBeNull();
+  });
+
+  test.each(failing.slice(1))("sign out that the gateway refused shows no notice: %s", async (_, answer) => {
+    startGateway({ signedIn: true });
+    override("post", "/api/auth/logout", answer);
+    const app = await renderWithApp(null, { route: "/keys" });
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in");
+    });
+    expect(heading("Sign in")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
 
   test.each(failing)("sign out cleans up even if the call fails: %s", async (_, answer) => {
     startGateway({ signedIn: true });

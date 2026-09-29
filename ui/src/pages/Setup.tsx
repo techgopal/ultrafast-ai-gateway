@@ -12,23 +12,30 @@ import {
   PASSWORD_POLICY,
   PASSWORDS_DIFFER,
   textOf,
+  useFocusOnFailure,
 } from "@/components/AuthForm";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
 export const SETUP_DONE_NOTICE = "The admin account is created. Sign in to continue.";
 
-type FieldErrors = Readonly<Record<string, string>>;
+/** The fields of the form that the API may find fault with. */
+const FIELDS = ["name", "email", "password"] as const;
+type FieldErrors = Partial<Record<(typeof FIELDS)[number] | "confirm", string>>;
 
 /** Creates the first admin. The passwords are held by their fields only. */
 export function Setup() {
-  const { needsSetup, markSetUp, announce } = useSessionControl();
+  const { markSetUp, announce } = useSessionControl();
   const navigate = useNavigate();
   const setup = useSetup();
   const { mutateAsync, reset } = setup;
   const password = useRef<HTMLInputElement>(null);
   const confirm = useRef<HTMLInputElement>(null);
   const running = useRef(false);
+  const form = useRef<HTMLFormElement>(null);
+  const error = useRef<HTMLDivElement>(null);
+  const failed = useFocusOnFailure(form, error);
+  const [alreadyDone, setAlreadyDone] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
 
@@ -38,11 +45,12 @@ export function Setup() {
     }
   }
 
-  async function create(form: FormData) {
+  async function create(data: FormData) {
     if (running.current) return;
     setMessage(null);
-    if (textOf(form, "password") !== textOf(form, "confirm")) {
+    if (textOf(data, "password") !== textOf(data, "confirm")) {
       setErrors({ confirm: PASSWORDS_DIFFER });
+      failed();
       return;
     }
     setErrors({});
@@ -50,19 +58,28 @@ export function Setup() {
     let created = false;
     try {
       await mutateAsync({
-        name: textOf(form, "name"),
-        email: textOf(form, "email"),
-        password: textOf(form, "password"),
+        name: textOf(data, "name"),
+        email: textOf(data, "email"),
+        password: textOf(data, "password"),
       });
       created = true;
-    } catch (error) {
-      if (error instanceof ApiError && error.code === "already_set_up") {
-        markSetUp();
-      } else if (error instanceof ApiError && Object.keys(error.fields).length > 0) {
-        setErrors(error.fields);
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.code === "already_set_up") {
+        setAlreadyDone(true);
+      } else if (reason instanceof ApiError) {
+        const known: FieldErrors = {};
+        for (const field of FIELDS) {
+          const text = reason.fields[field];
+          if (text !== undefined) known[field] = text;
+        }
+        setErrors(known);
+        // What the form has no field for is said by the message of the API.
+        const others = Object.keys(reason.fields).length - Object.keys(known).length;
+        if (others > 0 || Object.keys(known).length === 0) setMessage(reason.message);
       } else {
-        setMessage(error instanceof Error ? error.message : "Something went wrong.");
+        setMessage(reason instanceof Error ? reason.message : "Something went wrong.");
       }
+      failed();
     } finally {
       running.current = false;
       clearPasswords();
@@ -81,14 +98,16 @@ export function Setup() {
     void create(new FormData(event.currentTarget));
   }
 
-  if (!needsSetup) {
+  if (alreadyDone) {
     return (
       <AuthPage title="Set up the gateway">
-        <Alert>
+        <Alert ref={error} tabIndex={-1}>
           <AlertTitle>Setup is already complete.</AlertTitle>
           <AlertDescription>
             <p>
-              This gateway has its admin account. <Link to="/sign-in">Sign in</Link>
+              This gateway has its admin account. <Link to="/sign-in" onClick={markSetUp}>
+                Sign in
+              </Link>
             </p>
           </AlertDescription>
         </Alert>
@@ -101,8 +120,8 @@ export function Setup() {
       title="Set up the gateway"
       description="Create the first admin account of this gateway."
     >
-      {message === null ? null : <FormError>{message}</FormError>}
-      <form aria-label="Set up the gateway" className={formColumn} onSubmit={submit}>
+      {message === null ? null : <FormError ref={error}>{message}</FormError>}
+      <form ref={form} aria-label="Set up the gateway" className={formColumn} onSubmit={submit}>
         <Field label="Name" name="name" autoComplete="name" required error={errors.name} />
         <Field
           label="Email"

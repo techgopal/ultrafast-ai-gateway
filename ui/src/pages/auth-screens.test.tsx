@@ -132,8 +132,52 @@ describe("setup", () => {
       expect(descriptionOf(confirm)).toContain("The passwords do not match.");
     });
     expect(confirm).toHaveAttribute("aria-invalid", "true");
+    expect(confirm).toHaveFocus();
+    expect(screen.getByRole("alert")).toHaveTextContent("The passwords do not match.");
     expect(sent).toEqual([]);
     expect(href(app)).toBe("/setup");
+  });
+
+  test("a 422 whose fields the form does not have shows the message of the API", async () => {
+    startGateway({ needsSetup: true });
+    override("post", "/api/setup", () =>
+      apiError(422, "validation_failed", "The organisation is not valid.", {
+        organisation: "It is too long.",
+      }),
+    );
+    await renderWithApp(null, { route: "/setup" });
+    await fillSetup({});
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("The organisation is not valid.");
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    const form = screen.getByRole("form", { name: "Set up the gateway" });
+    expect(form.querySelector('[aria-invalid="true"]')).toBeNull();
+    // It is at the top of the form, and the focus is on it.
+    expect(alert.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    await waitFor(() => {
+      expect(alert).toHaveFocus();
+    });
+  });
+
+  test("a 422 with a field of the form and one it does not have shows both", async () => {
+    startGateway({ needsSetup: true });
+    override("post", "/api/setup", () =>
+      apiError(422, "validation_failed", "Some fields are not valid.", {
+        organisation: "It is too long.",
+        name: "A name is needed.",
+      }),
+    );
+    await renderWithApp(null, { route: "/setup" });
+    await fillSetup({});
+    const name = screen.getByLabelText("Name");
+    await waitFor(() => {
+      expect(descriptionOf(name)).toBe("A name is needed.");
+    });
+    expect(name).toHaveFocus();
+    expect(screen.getAllByRole("alert").map((a) => a.textContent)).toEqual([
+      "Some fields are not valid.",
+      "A name is needed.",
+    ]);
   });
 
   test("setup shows field errors", async () => {
@@ -152,6 +196,12 @@ describe("setup", () => {
     });
     expect(email).toHaveAttribute("aria-invalid", "true");
     expect(email).toHaveValue("maya@example");
+    // The first field with an error has the focus, and the errors are announced.
+    expect(email).toHaveFocus();
+    expect(screen.getAllByRole("alert").map((a) => a.textContent)).toEqual([
+      "This is not an email address.",
+      "Use 12 characters or more.",
+    ]);
     // The text is under its field: the next element after the input.
     expect(email.nextElementSibling).toHaveTextContent("This is not an email address.");
     const password = screen.getByLabelText("Password");
@@ -177,7 +227,12 @@ describe("setup", () => {
     await fillSetup({});
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Setup is already complete.");
-    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/sign-in");
+    const link = screen.getByRole("link", { name: "Sign in" });
+    expect(link).toHaveAttribute("href", "/sign-in");
+    await userEvent.click(link);
+    await waitFor(() => {
+      expect(heading("Sign in")).toBeInTheDocument();
+    });
   });
 
   test("setup shows a network error", async () => {
@@ -300,7 +355,11 @@ describe("accept invite", () => {
     );
     const app = await renderWithApp(null, { route: `/accept-invite?token=${INVITE_TOKEN}` });
     await fillInvite();
-    expect(await screen.findByRole("alert")).toHaveTextContent(INVALID_INVITE);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(INVALID_INVITE);
+    await waitFor(() => {
+      expect(alert).toHaveFocus();
+    });
     expect(screen.queryByText("It does not exist.")).toBeNull();
     // The token is of no use any more, and the form went with it.
     expect(screen.queryByLabelText("Password")).toBeNull();
@@ -338,6 +397,8 @@ describe("accept invite", () => {
       expect(descriptionOf(password)).toContain("Use 12 characters or more.");
     });
     expect(password).toHaveAttribute("aria-invalid", "true");
+    expect(password).toHaveFocus();
+    expect(screen.getByRole("alert")).toHaveTextContent("Use 12 characters or more.");
   });
 
   test("the password fields show the policy and are new passwords", async () => {

@@ -207,7 +207,10 @@ const setupRoute = createRoute({
   path: "/setup",
   component: function SetupRoute() {
     const session = useSession();
+    const { needsSetup } = useSessionControl();
     if (session.status === "signedIn") return <GoTo path="/" />;
+    // Setup is done: there is nothing to do here but to sign in.
+    if (!needsSetup) return <GoTo path="/sign-in" />;
     return <Setup />;
   },
 });

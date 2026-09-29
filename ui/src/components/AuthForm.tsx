@@ -1,5 +1,14 @@
 // The parts the sign-in, setup and invite pages share.
-import { useId, type ComponentProps, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+  type Ref,
+  type RefObject,
+} from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -69,7 +78,7 @@ export function Field({ label, hint, error, ...input }: FieldProps) {
         {...input}
       />
       {error === undefined ? null : (
-        <p id={errorId} className="text-sm text-destructive">
+        <p id={errorId} role="alert" className="text-sm text-destructive">
           {error}
         </p>
       )}
@@ -82,10 +91,18 @@ export function Field({ label, hint, error, ...input }: FieldProps) {
   );
 }
 
-/** Why the request failed. It is announced when it appears. */
-export function FormError({ children }: { children: ReactNode }) {
+/**
+ * Why the request failed. It is announced when it appears, and it can take
+ * the focus (see `useFocusOnFailure`).
+ */
+export function FormError({ ref, children }: { ref?: Ref<HTMLDivElement>; children: ReactNode }) {
   return (
-    <Alert variant="destructive">
+    <Alert
+      ref={ref}
+      tabIndex={-1}
+      variant="destructive"
+      className="outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
       <AlertDescription>{children}</AlertDescription>
     </Alert>
   );
@@ -104,4 +121,24 @@ export function Notice({ children }: { children: ReactNode }) {
 export function textOf(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
+}
+
+/**
+ * After a submit that failed, the focus goes to the first field with an error,
+ * or to the message of the form when no field has one. Returns what the form
+ * calls when a submit failed, after it set its errors.
+ */
+export function useFocusOnFailure(
+  form: RefObject<HTMLFormElement | null>,
+  message: RefObject<HTMLDivElement | null>,
+): () => void {
+  const [failures, setFailures] = useState(0);
+  useEffect(() => {
+    if (failures === 0) return;
+    const field = form.current?.querySelector<HTMLElement>('[aria-invalid="true"]');
+    (field ?? message.current)?.focus();
+  }, [failures, form, message]);
+  return useCallback(() => {
+    setFailures((count) => count + 1);
+  }, []);
 }
