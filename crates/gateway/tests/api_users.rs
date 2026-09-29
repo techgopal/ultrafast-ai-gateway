@@ -661,7 +661,7 @@ async fn deleting_a_user() {
     assert!(body.is_null());
     assert_eq!(
         org.last_summary("user.delete").await,
-        "Deleted user lena@example.com"
+        "Deleted user lena@example.com, left 1 key working without an owner"
     );
 
     let store = &org.api.store;

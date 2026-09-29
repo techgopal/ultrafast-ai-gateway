@@ -667,15 +667,36 @@ async fn deleting_an_invited_user_revokes_their_keys() {
 async fn deleting_an_active_user_revokes_nothing() {
     let w = world().await;
     let (id, secret) = w.key_for(w.org.lena).await;
+    let (other, other_secret) = w.key_for(w.org.lena).await;
+    // A key that is already revoked is not one that was left working.
+    let (gone, _) = w.key_for(w.org.lena).await;
+    let status = w.admin("DELETE", &format!("/api/keys/{gone}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
     let status = w
         .admin("DELETE", &format!("/api/users/{}", w.org.lena), None)
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(w.chat(&secret, CHAT).await, StatusCode::OK);
+    assert_eq!(w.chat(&other_secret, CHAT).await, StatusCode::OK);
     assert!(!revoked_in_database(&w, id).await);
+    assert!(!revoked_in_database(&w, other).await);
     assert_eq!(
         w.org.last_summary("user.delete").await,
-        "Deleted user lena@example.com"
+        "Deleted user lena@example.com, left 2 keys working without an owner"
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_active_user_without_keys_mentions_none() {
+    let w = world().await;
+    let status = w
+        .admin("DELETE", &format!("/api/users/{}", w.org.tomas), None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        w.org.last_summary("user.delete").await,
+        "Deleted user tomas@example.com"
     );
 }
 
