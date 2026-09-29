@@ -213,4 +213,52 @@ mod tests {
         assert!(!shown.contains(&k.full[KEY_PREFIX.len()..]));
         assert!(shown.contains(&k.display));
     }
+
+    // Known answers. The values below were produced by sha2 0.10 and
+    // chacha20poly1305 0.10. Stored hashes and credentials depend on them:
+    // never change the expected values.
+
+    #[test]
+    fn hash_key_matches_stored_hashes() {
+        assert_eq!(
+            hash_key("uf-sk-00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"),
+            "44d70721051f4488e32fcf97e42380e3b2371f022c9984e45fca8530d41f16b5"
+        );
+        assert_eq!(
+            hash_key(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            hash_key("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn cipher_decrypts_a_stored_credential() {
+        let c =
+            Cipher::from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+                .unwrap();
+        let stored = hex::decode(
+            "ab9df8363ccae36d1c5561c3498fad8249f6c496f7333e0a19e74e8f4e245ac6\
+             58ece260e7e13e1964a7a124881fb5c4b4c7aa776f7063573b41",
+        )
+        .unwrap();
+        // 12-byte nonce, the ciphertext, a 16-byte tag.
+        assert_eq!(stored.len(), 12 + 30 + 16);
+        assert_eq!(
+            c.decrypt(&stored).unwrap(),
+            b"sk-fixture-provider-credential"
+        );
+    }
+
+    #[test]
+    fn cipher_output_is_nonce_then_ciphertext_and_tag() {
+        let c =
+            Cipher::from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+                .unwrap();
+        let out = c.encrypt(b"sk-fixture-provider-credential");
+        assert_eq!(out.len(), 12 + 30 + 16);
+        assert_eq!(c.decrypt(&out).unwrap(), b"sk-fixture-provider-credential");
+    }
 }

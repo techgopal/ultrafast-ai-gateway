@@ -143,4 +143,26 @@ mod tests {
         assert!(DUMMY_HASH.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"));
         assert!(verify_password("dummy-password-for-timing", &DUMMY_HASH));
     }
+
+    /// A hash produced by argon2 0.5. Stored password hashes depend on it:
+    /// never change the literal.
+    #[test]
+    fn verifies_a_stored_hash() {
+        let phc = "$argon2id$v=19$m=19456,t=2,p=1$fe8Ej8UHYOxCtFwa7fvMaA$JR6eJo3EMi2Q2Yzmn1KRaF9FOHSIl9Hi2Tqe3P1d2no";
+        assert!(verify_password("fixture password 2026", phc));
+        assert!(!verify_password("fixture password 2025", phc));
+    }
+
+    #[test]
+    fn new_hashes_have_the_stored_shape() {
+        let phc = hash_password("correct horse battery").unwrap();
+        let parts: Vec<&str> = phc.split('$').collect();
+        assert_eq!(parts.len(), 6);
+        assert_eq!(parts[1], "argon2id");
+        assert_eq!(parts[2], "v=19");
+        assert_eq!(parts[3], "m=19456,t=2,p=1");
+        // A 16-byte salt and a 32-byte hash, in base64 without padding.
+        assert_eq!(parts[4].len(), 22);
+        assert_eq!(parts[5].len(), 43);
+    }
 }
