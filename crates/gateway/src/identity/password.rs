@@ -2,9 +2,10 @@
 
 use std::sync::{LazyLock, OnceLock};
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use argon2::{Algorithm, Argon2, Params, Version};
-use rand::rngs::OsRng;
+use rand::rngs::SysRng;
 
 pub const MIN_PASSWORD_LEN: usize = 12;
 pub const MAX_PASSWORD_LEN: usize = 256;
@@ -57,9 +58,9 @@ pub fn check_password_policy(password: &str) -> Result<(), &'static str> {
 /// Hashes a password with Argon2id and a fresh salt, returning the PHC
 /// string. Does not check the password policy.
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
-    let hash = argon2()?
-        .hash_password(password.as_bytes(), &salt)
+    // A 16-byte salt from the operating system's generator.
+    let hash: PasswordHash = argon2()?
+        .hash_password_with_rng(&mut SysRng, password.as_bytes())
         .map_err(|e| anyhow::anyhow!("password hashing failed: {e}"))?;
     Ok(hash.to_string())
 }
