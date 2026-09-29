@@ -317,6 +317,11 @@ pub async fn update(
     if changes.is_empty() {
         // Nothing to change, so nothing to record.
         drop(tx);
+        // An earlier call may have committed this status and failed to
+        // refresh.
+        if req.status.is_some() {
+            refresh_snapshot(&state).await?;
+        }
         return Ok(Json(UserView::from(was)).into_response());
     }
     keep_an_admin(&mut tx, &was).await?;
@@ -369,6 +374,14 @@ fn update_summary(email: &str, changes: &[(&str, &str, &str)]) -> String {
     format!("Changed {}", parts.join(", "))
 }
 
+fn delete_summary(email: &str, revoked_keys: u64) -> String {
+    match revoked_keys {
+        0 => format!("Deleted user {email}"),
+        1 => format!("Deleted user {email}, revoked 1 key"),
+        n => format!("Deleted user {email}, revoked {n} keys"),
+    }
+}
+
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -392,6 +405,13 @@ pub async fn delete(
         .ok_or_else(ApiError::not_found)?;
     tx.delete_sessions_of(was.id).await?;
     tx.revoke_tokens_of(was.id).await?;
+    // Deleting the user makes their keys ownerless. The keys of a user who
+    // is not active do not work, and must not start to work that way.
+    let revoked = if was.status == UserStatus::Active {
+        0
+    } else {
+        tx.revoke_keys_of(was.id).await?
+    };
     if !tx.delete_user(was.id).await? {
         return Err(ApiError::not_found());
     }
@@ -402,7 +422,7 @@ pub async fn delete(
         action: "user.delete",
         target_type: "user",
         target_id: Some(was.id),
-        summary: &format!("Deleted user {}", was.email),
+        summary: &delete_summary(&was.email, revoked),
     })
     .await?;
     tx.commit().await?;

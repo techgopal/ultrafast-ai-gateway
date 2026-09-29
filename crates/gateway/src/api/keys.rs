@@ -266,6 +266,8 @@ pub async fn revoke(
     if !tx.revoke_key(key.id).await? {
         // Already revoked: nothing changed, so nothing to record.
         drop(tx);
+        // An earlier call may have revoked it and failed to refresh.
+        refresh_snapshot(&state).await?;
         return Ok(StatusCode::NO_CONTENT.into_response());
     }
     tx.audit(AuditEntry {

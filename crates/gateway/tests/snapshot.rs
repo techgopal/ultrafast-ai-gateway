@@ -6,9 +6,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use common::{api_on, harness, org, post_chat, Org, Signed};
+use common::{
+    api_on, call, error_code, harness, org, post_chat, seed_user, sign_in, Api, Org, Signed,
+};
 use serde_json::{json, Value};
+use ultrafast_gateway::api::refresh_snapshot;
 use ultrafast_gateway::app::{router, spawn_refresher, AppState};
+use ultrafast_gateway::identity::Role;
 use ultrafast_gateway::secrets::{generate_key, hash_key, Cipher};
 use ultrafast_gateway::snapshot::{SnapProvider, Snapshot};
 use ultrafast_gateway::store::{after, now, Store};
@@ -111,7 +115,7 @@ async fn v1_does_not_touch_the_database() {
         .expect(1)
         .mount(&h.upstream)
         .await;
-    h.store.pool().close().await;
+    h.store.close().await;
     let (status, body) = post_chat(&h.app, Some(&h.key), CHAT).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
@@ -459,6 +463,21 @@ async fn the_background_task_picks_up_direct_changes_and_stops() {
         .unwrap();
 }
 
+/// Runs SQL on the database file through a connection of its own.
+async fn raw_sql(file: &std::path::Path, sql: &str) {
+    use sqlx::Connection;
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(file);
+    let mut conn = sqlx::SqliteConnection::connect_with(&options)
+        .await
+        .unwrap();
+    sqlx::query(sql).execute(&mut conn).await.unwrap();
+    conn.close().await.unwrap();
+}
+
+// While the providers table is away every refresh fails.
+const BREAK: &str = "ALTER TABLE providers RENAME TO providers_away";
+const MEND: &str = "ALTER TABLE providers_away RENAME TO providers";
+
 #[tokio::test]
 async fn the_background_task_survives_a_failed_refresh() {
     let dir = tempfile::tempdir().unwrap();
@@ -471,18 +490,11 @@ async fn the_background_task_survives_a_failed_refresh() {
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let task = spawn_refresher(state.clone(), stopped);
 
-    // While the table is away every refresh fails.
-    sqlx::query("ALTER TABLE providers RENAME TO providers_away")
-        .execute(store.pool())
-        .await
-        .unwrap();
+    raw_sql(&file, BREAK).await;
     assert!(state.refresh().await.is_err());
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(!task.is_finished());
-    sqlx::query("ALTER TABLE providers_away RENAME TO providers")
-        .execute(store.pool())
-        .await
-        .unwrap();
+    raw_sql(&file, MEND).await;
 
     let key = generate_key();
     store
@@ -504,4 +516,218 @@ async fn the_background_task_survives_a_failed_refresh() {
         .await
         .expect("the task stops when told to")
         .unwrap();
+}
+
+async fn revoked_in_database(w: &World, id: i64) -> bool {
+    let key = w.org.api.store.key_by_id(id).await.unwrap().unwrap();
+    key.revoked_at.is_some()
+}
+
+#[tokio::test]
+async fn deleting_a_disabled_user_revokes_their_keys() {
+    let w = world().await;
+    let (first, secret) = w.key_for(w.org.lena).await;
+    let (second, other) = w.key_for(w.org.lena).await;
+    let (tomas_key, tomas_secret) = w.key_for(w.org.tomas).await;
+    let lena = format!("/api/users/{}", w.org.lena);
+    let status = w
+        .admin("PATCH", &lena, Some(json!({ "status": "disabled" })))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::UNAUTHORIZED);
+    assert!(!revoked_in_database(&w, first).await);
+
+    assert_eq!(w.admin("DELETE", &lena, None).await, StatusCode::NO_CONTENT);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(w.chat(&other, CHAT).await, StatusCode::UNAUTHORIZED);
+    assert!(revoked_in_database(&w, first).await);
+    assert!(revoked_in_database(&w, second).await);
+    assert_eq!(
+        w.org.last_summary("user.delete").await,
+        "Deleted user lena@example.com, revoked 2 keys"
+    );
+
+    // The keys of others are left alone.
+    assert!(!revoked_in_database(&w, tomas_key).await);
+    assert_eq!(w.chat(&tomas_secret, CHAT).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn deleting_an_invited_user_revokes_their_keys() {
+    let w = world().await;
+    let invite = json!({ "email": "nora@example.com", "name": "Nora", "role": "member" });
+    let (status, body) = w
+        .org
+        .call(Some(&w.maya), "POST", "/api/users", Some(invite))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let nora = body["user"]["id"].as_i64().unwrap();
+    let key = generate_key();
+    let mut tx = w.org.api.store.begin().await.unwrap();
+    let id = tx
+        .insert_key("k", &key.hash, &key.display, None, Some(nora), None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    w.org.api.state.refresh().await.unwrap();
+    assert_eq!(w.chat(&key.full, CHAT).await, StatusCode::UNAUTHORIZED);
+
+    let status = w.admin("DELETE", &format!("/api/users/{nora}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(w.chat(&key.full, CHAT).await, StatusCode::UNAUTHORIZED);
+    assert!(revoked_in_database(&w, id).await);
+    assert_eq!(
+        w.org.last_summary("user.delete").await,
+        "Deleted user nora@example.com, revoked 1 key"
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_active_user_revokes_nothing() {
+    let w = world().await;
+    let (id, secret) = w.key_for(w.org.lena).await;
+    let status = w
+        .admin("DELETE", &format!("/api/users/{}", w.org.lena), None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::OK);
+    assert!(!revoked_in_database(&w, id).await);
+    assert_eq!(
+        w.org.last_summary("user.delete").await,
+        "Deleted user lena@example.com"
+    );
+}
+
+#[tokio::test]
+async fn revoking_a_revoked_key_still_refreshes() {
+    let w = world().await;
+    let (id, secret) = w.key_for(w.org.maya).await;
+    // As after a revoke whose refresh failed: committed, not in the snapshot.
+    assert!(w.org.api.store.revoke_key(id).await.unwrap());
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::OK);
+
+    let status = w.admin("DELETE", &format!("/api/keys/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn deleting_a_deleted_provider_still_refreshes() {
+    let w = world().await;
+    let (_, secret) = w.key_for(w.org.maya).await;
+    let mut tx = w.org.api.store.begin().await.unwrap();
+    assert!(tx.delete_provider(w.provider_id).await.unwrap());
+    tx.commit().await.unwrap();
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::OK);
+
+    let path = format!("/api/providers/{}", w.provider_id);
+    assert_eq!(w.admin("DELETE", &path, None).await, StatusCode::NOT_FOUND);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_provider_update_that_changes_nothing_still_refreshes() {
+    let w = world().await;
+    let (_, secret) = w.key_for(w.org.maya).await;
+    let server = upstream().await;
+    // As after an update whose refresh failed.
+    let mut tx = w.org.api.store.begin().await.unwrap();
+    tx.update_provider(w.provider_id, Some("http://127.0.0.1:9"), None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    drop(server);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::OK);
+
+    let path = format!("/api/providers/{}", w.provider_id);
+    let same = json!({ "base_url": "http://127.0.0.1:9" });
+    assert_eq!(w.admin("PATCH", &path, Some(same)).await, StatusCode::OK);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::BAD_GATEWAY);
+}
+
+async fn in_snapshot(api: &Api, hash: &str) -> bool {
+    for _ in 0..100 {
+        if api.state.snapshot.load().key(hash, &now()).is_some() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn a_refresh_finishes_when_its_caller_goes_away() {
+    let w = world().await;
+    let api = &w.org.api;
+    let key = generate_key();
+    // The open transaction holds the only connection, so the refresh waits.
+    let mut tx = api.store.begin().await.unwrap();
+    tx.insert_key("k", &key.hash, &key.display, None, None, None)
+        .await
+        .unwrap();
+
+    // Polled and dropped, as the handler of a caller who disconnects.
+    let waited =
+        tokio::time::timeout(Duration::from_millis(50), refresh_snapshot(&api.state)).await;
+    assert!(waited.is_err(), "the refresh was not finished when dropped");
+    tx.commit().await.unwrap();
+    assert!(in_snapshot(api, &key.hash).await);
+}
+
+#[tokio::test]
+async fn a_failed_refresh_is_500_and_the_change_stays() {
+    const EMAIL: &str = "maya@example.com";
+    const PASSWORD: &str = "correct horse battery";
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("test.db");
+    let api = api_on(Store::open(&file).await.unwrap(), false).await;
+    seed_user(&api.store, EMAIL, Role::Admin, PASSWORD).await;
+    let maya = sign_in(&api.app, EMAIL, PASSWORD).await;
+    let server = upstream().await;
+    let provider = json!({ "name": "p", "kind": "openai", "base_url": server.uri() });
+    let (status, _, _) = call(
+        &api.app,
+        "POST",
+        "/api/providers",
+        Some(&maya),
+        Some(provider),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let new_key = json!({ "name": "k" });
+    let (status, _, body) = call(&api.app, "POST", "/api/keys", Some(&maya), Some(new_key)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = body["key"]["id"].as_i64().unwrap();
+    let secret = body["secret"].as_str().unwrap().to_string();
+    assert_eq!(
+        post_chat(&api.app, Some(&secret), CHAT).await.0,
+        StatusCode::OK
+    );
+
+    raw_sql(&file, BREAK).await;
+    let path = format!("/api/keys/{id}");
+    let (status, _, body) = call(&api.app, "DELETE", &path, Some(&maya), None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(error_code(&body), "internal_error");
+    assert_eq!(
+        body,
+        json!({ "error": { "code": "internal_error", "message": "Something went wrong." } })
+    );
+    // Committed, with its audit entry, though `/v1` does not know yet.
+    let key = api.store.key_by_id(id).await.unwrap().unwrap();
+    assert!(key.revoked_at.is_some());
+    let audit = api.store.list_audit(10, None).await.unwrap();
+    assert_eq!(audit[0].action, "key.revoke");
+    assert_eq!(
+        post_chat(&api.app, Some(&secret), CHAT).await.0,
+        StatusCode::OK
+    );
+
+    raw_sql(&file, MEND).await;
+    // The next write that refreshes carries the change along.
+    let other = json!({ "name": "other" });
+    let (status, _, _) = call(&api.app, "POST", "/api/keys", Some(&maya), Some(other)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let status = post_chat(&api.app, Some(&secret), CHAT).await.0;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

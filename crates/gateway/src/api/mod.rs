@@ -213,11 +213,27 @@ impl From<anyhow::Error> for ApiError {
 /// Makes a committed change visible to `/v1`. Call it after `commit`, never
 /// while a `Tx` is open. When it fails the change stays committed and the
 /// next refresh picks it up.
-pub(crate) async fn refresh_snapshot(state: &AppState) -> Result<(), ApiError> {
-    state.refresh().await.map_err(|e| {
-        tracing::error!(error = %e, "snapshot refresh failed after a committed change");
-        ApiError::internal()
-    })
+///
+/// The refresh runs as a task of its own, so it finishes even when the
+/// caller disconnects and this future is dropped.
+pub async fn refresh_snapshot(state: &Arc<AppState>) -> Result<(), ApiError> {
+    let state = state.clone();
+    let refreshed = tokio::spawn(async move {
+        let result = state.refresh().await;
+        // Logged here, so a failure is recorded with nobody waiting.
+        if let Err(e) = &result {
+            tracing::error!(error = %e, "snapshot refresh failed after a committed change");
+        }
+        result.is_ok()
+    });
+    match refreshed.await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ApiError::internal()),
+        Err(e) => {
+            tracing::error!(error = %e, "snapshot refresh task failed");
+            Err(ApiError::internal())
+        }
+    }
 }
 
 /// The id of a path segment. Anything but a positive integer written in
