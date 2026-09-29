@@ -4,7 +4,7 @@ use std::fmt;
 
 use anyhow::{anyhow, Context, Result};
 use sqlx::sqlite::SqliteRow;
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use super::{check_timestamp, write_error, Store, Tx, DEFAULT_ORG};
 use crate::identity::{Role, UserStatus};
@@ -100,7 +100,7 @@ impl Store {
 
     pub async fn user_by_id(&self, id: i64) -> Result<Option<UserRow>> {
         let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -111,7 +111,7 @@ impl Store {
     /// `email` must already be normalized.
     pub async fn user_by_email(&self, email: &str) -> Result<Option<UserRow>> {
         let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE email = ? AND org_id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(email)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -122,7 +122,7 @@ impl Store {
     /// Ordered by email.
     pub async fn list_users(&self) -> Result<Vec<UserRow>> {
         let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE org_id = ? ORDER BY email");
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .bind(DEFAULT_ORG)
             .fetch_all(self.pool())
             .await?;
@@ -143,7 +143,7 @@ impl Store {
                    WHERE org_id = ? AND team_id IN ({marks})))
              ORDER BY email"
         );
-        let mut query = sqlx::query(&sql)
+        let mut query = sqlx::query(AssertSqlSafe(sql))
             .bind(DEFAULT_ORG)
             .bind(own_id)
             .bind(DEFAULT_ORG);
@@ -209,7 +209,7 @@ impl Tx<'_> {
     /// The user as the transaction sees them.
     pub async fn user_by_id(&mut self, id: i64) -> Result<Option<UserRow>> {
         let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())

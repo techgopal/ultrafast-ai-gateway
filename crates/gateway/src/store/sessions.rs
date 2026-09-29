@@ -4,7 +4,7 @@ use std::fmt;
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::SqliteRow;
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use super::{after, check_timestamp, write_error, Store, Tx, DEFAULT_ORG};
 use crate::secrets::{hash_key, TOKEN_PREFIX};
@@ -165,7 +165,7 @@ impl Store {
             "SELECT {TOKEN_COLUMNS} FROM access_tokens
              WHERE token_hash = ? AND org_id = ? AND {TOKEN_IS_LIVE}"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(hash_key(token))
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -188,7 +188,7 @@ impl Store {
     /// Finds a token whether or not it is live.
     pub async fn token_by_id(&self, id: i64) -> Result<Option<TokenRow>> {
         let sql = format!("SELECT {TOKEN_COLUMNS} FROM access_tokens WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -203,7 +203,7 @@ impl Store {
              WHERE user_id = ? AND org_id = ?
              ORDER BY created_at DESC, id DESC"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .bind(user_id)
             .bind(DEFAULT_ORG)
             .fetch_all(self.pool())
@@ -363,7 +363,7 @@ mod tests {
     }
 
     async fn count(s: &Store, table: &str) -> i64 {
-        sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+        sqlx::query_scalar(AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
             .fetch_one(s.pool())
             .await
             .unwrap()

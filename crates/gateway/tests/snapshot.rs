@@ -470,7 +470,10 @@ async fn raw_sql(file: &std::path::Path, sql: &str) {
     let mut conn = sqlx::SqliteConnection::connect_with(&options)
         .await
         .unwrap();
-    sqlx::query(sql).execute(&mut conn).await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(sql))
+        .execute(&mut conn)
+        .await
+        .unwrap();
     conn.close().await.unwrap();
 }
 

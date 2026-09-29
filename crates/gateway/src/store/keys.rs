@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::SqliteRow;
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 use super::{check_timestamp, write_error, Store, Tx, DEFAULT_ORG};
 
@@ -115,7 +115,7 @@ impl Store {
                AND k.revoked_at IS NULL
                AND (k.expires_at IS NULL OR k.expires_at > datetime('now'))"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(hash)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -126,7 +126,7 @@ impl Store {
     /// Finds a key whether or not it is live.
     pub async fn key_by_id(&self, id: i64) -> Result<Option<KeyRow>> {
         let sql = format!("{KEY_SELECT} WHERE k.id = ? AND k.org_id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -137,7 +137,7 @@ impl Store {
     /// Newest first, including revoked and expired keys.
     pub async fn list_keys(&self) -> Result<Vec<KeyRow>> {
         let sql = format!("{KEY_SELECT} WHERE k.org_id = ? {KEY_ORDER}");
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .bind(DEFAULT_ORG)
             .fetch_all(self.pool())
             .await?;
@@ -155,7 +155,9 @@ impl Store {
              WHERE k.org_id = ? AND (k.user_id = ? OR k.team_id IN ({marks}))
              {KEY_ORDER}"
         );
-        let mut query = sqlx::query(&sql).bind(DEFAULT_ORG).bind(own_id);
+        let mut query = sqlx::query(AssertSqlSafe(sql))
+            .bind(DEFAULT_ORG)
+            .bind(own_id);
         for team_id in team_ids {
             query = query.bind(team_id);
         }
