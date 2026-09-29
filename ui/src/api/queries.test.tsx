@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { describe, expect, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import { apiError, networkFailure, noContent, ok, override } from "@/test/handlers";
-import { api, onUnauthenticated } from "./client";
+import { api, onUnauthenticated, setCsrfToken } from "./client";
 import { ApiError, NetworkError } from "./errors";
 import * as q from "./queries";
 
@@ -95,20 +95,6 @@ describe("queries", () => {
       expect(result.current.isSuccess).toBe(true);
     });
     expect(search).toBe("?limit=20&before=3");
-  });
-
-  test("me gives the client the csrf token", async () => {
-    let sent: string | null = null;
-    override("post", "/api/teams", ({ request }) => {
-      sent = request.headers.get("x-csrf-token");
-      return ok("post", "/api/teams", 201, fixtures.teams.growth);
-    });
-    const { result } = renderHook(() => q.useMe(), { wrapper: wrapperOf(appClient()) });
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBe(true);
-    });
-    await api.post("/api/teams", { body: { name: "Growth" } });
-    expect(sent).toBe(fixtures.csrfToken);
   });
 
   test("a 404 is an ApiError of the query", async () => {
@@ -298,40 +284,39 @@ describe("mutations invalidate", () => {
     expect(client.getQueryData(q.queryKeys.teams.detail(fixtures.teams.growth.id))).toBeUndefined();
   });
 
-  test("sign-out empties the cache and forgets the csrf token", async () => {
+  // The session (`auth/session.tsx`) owns the CSRF token and the caches; its
+  // tests say what a sign-in, a sign-out and `me` do to them.
+  test("the hooks of the session are plain calls", async () => {
     const client = appClient();
-    const { result } = renderHook(() => ({ me: q.useMe(), logout: q.useLogout() }), {
-      wrapper: wrapperOf(client),
-    });
+    const { result } = renderHook(
+      () => ({ me: q.useMe(), login: q.useLogin(), logout: q.useLogout() }),
+      { wrapper: wrapperOf(client) },
+    );
     await waitFor(() => {
       expect(result.current.me.isSuccess).toBe(true);
     });
     await client.query(q.usersOptions());
-    let sent: string | null = "unset";
+    const sent: (string | null)[] = [];
     override("post", "/api/teams", ({ request }) => {
-      sent = request.headers.get("x-csrf-token");
+      sent.push(request.headers.get("x-csrf-token"));
       return noContent();
     });
+
+    await api.post("/api/teams", { body: { name: "x" } });
+    await act(async () => {
+      await result.current.login.mutateAsync({ email: "maya@example.test", password: "p" });
+    });
+    await api.post("/api/teams", { body: { name: "x" } });
+    expect(sent).toEqual([null, null]);
+
+    setCsrfToken(fixtures.csrfToken);
     await act(async () => {
       await result.current.logout.mutateAsync();
     });
-    expect(client.getQueryData(q.queryKeys.users.list())).toBeUndefined();
     await api.post("/api/teams", { body: { name: "x" } });
-    expect(sent).toBeNull();
-  });
-
-  test("sign-in gives the client the csrf token", async () => {
-    let sent: string | null = null;
-    override("post", "/api/teams", ({ request }) => {
-      sent = request.headers.get("x-csrf-token");
-      return noContent();
-    });
-    const { result } = renderHook(() => q.useLogin(), { wrapper: wrapperOf(appClient()) });
-    await act(async () => {
-      await result.current.mutateAsync({ email: "maya@example.test", password: "a-password" });
-    });
-    await api.post("/api/teams", { body: { name: "x" } });
-    expect(sent).toBe(fixtures.csrfToken);
+    expect(sent).toEqual([null, null, fixtures.csrfToken]);
+    expect(client.getQueryData(q.queryKeys.users.list())).toBeDefined();
+    expect(client.getQueryData(q.queryKeys.me())).toBeDefined();
   });
 
   test("a wrong current password does not sign out", async () => {
@@ -500,7 +485,8 @@ describe("the render helper", () => {
 
     const second = await renderWithApp(<Teams />);
     expect(second.queryClient).not.toBe(first.queryClient);
-    expect(second.queryClient.getQueryCache().getAll().length).toBeLessThanOrEqual(1);
+    // At most what this render asks for: the page's teams, and the session's `setup` and `me`.
+    expect(second.queryClient.getQueryCache().getAll().length).toBeLessThanOrEqual(3);
     await second.findByText("failed");
     expect(calls).toBe(2);
   });

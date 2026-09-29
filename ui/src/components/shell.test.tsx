@@ -1,7 +1,8 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test } from "vitest";
-import { memberUser, renderWithApp } from "@/test/render";
+import { noContent, override } from "@/test/handlers";
+import { adminUser, memberUser, renderWithApp } from "@/test/render";
 
 const sections = ["Observe", "Configure", "Govern"];
 const items = [
@@ -118,7 +119,7 @@ describe("sidebar", () => {
     expect(within(sidebar()).queryByText("Audit log")).toBeNull();
     first.unmount();
 
-    await renderWithApp(null);
+    await renderWithApp(null, { user: adminUser });
     expect(
       within(sidebar()).getByRole("link", { name: "Audit log" }),
     ).toHaveAttribute("href", "/audit");
@@ -126,17 +127,21 @@ describe("sidebar", () => {
 
   test("footer shows the signed-in user and signs out", async () => {
     let signedOut = 0;
-    await renderWithApp(null, {
-      user: memberUser,
-      onSignOut: () => {
-        signedOut += 1;
-      },
+    override("post", "/api/auth/logout", () => {
+      signedOut += 1;
+      return noContent();
     });
+    await renderWithApp(null, { user: memberUser });
     const nav = sidebar();
     expect(within(nav).getByText("Mel Member")).toBeInTheDocument();
     expect(within(nav).getByText("member")).toBeInTheDocument();
     await userEvent.click(within(nav).getByRole("button", { name: "Sign out" }));
-    expect(signedOut).toBe(1);
+    await waitFor(() => {
+      expect(signedOut).toBe(1);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    });
   });
 });
 

@@ -13,12 +13,9 @@ const router = createAppRouter();
 const root = document.getElementById("root");
 if (root === null) throw new Error("index.html has no #root element.");
 
-// The session code supplies the user and the sign-out action.
-const signOut = () => undefined;
-
 createRoot(root).render(
   <StrictMode>
-    <AppProviders user={null} onSignOut={signOut}>
+    <AppProviders>
       <RouterProvider router={router} />
     </AppProviders>
   </StrictMode>,

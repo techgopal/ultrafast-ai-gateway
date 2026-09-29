@@ -68,11 +68,13 @@ let signedOutTold = false;
 const unauthenticatedHandlers = new Set<() => void>();
 
 /**
- * The CSRF token of the session, kept in memory only.
+ * The CSRF token of the session, kept in memory only. The session code
+ * (`auth/session.tsx`) is the only caller.
  *
  * The `onUnauthenticated` handlers are told of the end of a session once.
- * They are told again after a new session began: a token was set here, or
- * sign-in or `/api/auth/me` succeeded.
+ * They are told again only after a new session began, which is when a token
+ * is set here. Neither an answer of the gateway nor a cleared token does
+ * that: an answer may belong to the session that ended.
  */
 export function setCsrfToken(token: string | null): void {
   csrfToken = token;
@@ -96,15 +98,17 @@ const NOT_A_SIGN_OUT: ReadonlySet<string> = new Set([
   "get /api/auth/me",
 ]);
 
-const SHOWS_A_SESSION: ReadonlySet<string> = new Set([
-  "post /api/auth/login",
-  "get /api/auth/me",
-]);
-
 function tellUnauthenticated(): void {
-  if (signedOutTold) return;
+  // A 401 that nobody hears is not counted: the first handler still learns of the next one.
+  if (signedOutTold || unauthenticatedHandlers.size === 0) return;
   signedOutTold = true;
-  for (const handler of [...unauthenticatedHandlers]) handler();
+  for (const handler of [...unauthenticatedHandlers]) {
+    try {
+      handler();
+    } catch {
+      // The other handlers still run, and the call still fails with its ApiError.
+    }
+  }
 }
 
 interface RequestOptions {
@@ -120,6 +124,14 @@ function fillPath(path: string, params: unknown): string {
     const value = given.get(name);
     if (typeof value !== "string" && typeof value !== "number") {
       throw new Error(`The path ${path} needs the parameter "${name}".`);
+    }
+    // These would name another path than the one of the operation, or none.
+    const usable =
+      typeof value === "number"
+        ? Number.isFinite(value)
+        : value !== "" && value !== "." && value !== "..";
+    if (!usable) {
+      throw new Error(`The path ${path} cannot take this value for the parameter "${name}".`);
     }
     return encodeURIComponent(String(value));
   });
@@ -204,8 +216,6 @@ async function request(method: Method, path: string, opts: RequestOptions = {}):
     }
     throw error;
   }
-  // An answer to these two with a success says that there is a session.
-  if (SHOWS_A_SESSION.has(`${method} ${path}`)) signedOutTold = false;
   if (response.status === 204 || text === "") return undefined;
   const body = parseJson(text);
   if (body === undefined) throw unexpected(response.status);

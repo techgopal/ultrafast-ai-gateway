@@ -6,7 +6,9 @@
 // nothing observes it (`gcTime: 0`), because its variables can hold a password
 // or a provider API key and its answer can hold a secret that is shown once.
 // While a component observes a mutation, the hook gives it the variables and
-// the answer; a dialog calls `reset()` when it closes.
+// the answer; a form calls `reset()` when its request settled, a dialog when
+// it closes. No mutation has a `mutationKey`, and nothing reads the state of
+// a mutation from elsewhere.
 import {
   QueryClient,
   queryOptions,
@@ -15,7 +17,7 @@ import {
   useQueryClient,
   type QueryKey,
 } from "@tanstack/react-query";
-import { api, setCsrfToken, type BodyOf, type QueryOf } from "./client";
+import { api, type BodyOf, type QueryOf } from "./client";
 import { ApiError, NetworkError } from "./errors";
 
 declare module "@tanstack/react-query" {
@@ -100,12 +102,7 @@ export const setupStatusOptions = () =>
 export const meOptions = () =>
   queryOptions({
     queryKey: queryKeys.me(),
-    queryFn: async ({ signal }) => {
-      const me = await api.get("/api/auth/me", { signal });
-      // After a reload of the page this is where the token comes from.
-      if (me.csrf_token !== null) setCsrfToken(me.csrf_token);
-      return me;
-    },
+    queryFn: ({ signal }) => api.get("/api/auth/me", { signal }),
   });
 
 export const usersOptions = () =>
@@ -208,32 +205,21 @@ export const useSetup = () =>
     () => ({ stale: [queryKeys.setup()] }),
   );
 
-export function useLogin() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (body: BodyOf<"/api/auth/login", "post">) => api.post("/api/auth/login", { body }),
-    retry: false,
-    gcTime: 0,
-    onSuccess: (session) => {
-      setCsrfToken(session.csrf_token);
-      void client.invalidateQueries({ queryKey: queryKeys.me() });
-    },
-  });
-}
+// The three hooks of the session are the plain calls. What a sign-in, a
+// sign-out and the answer of `me` mean for the CSRF token and the caches is
+// decided in one place, `auth/session.tsx`.
 
-export function useLogout() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.post("/api/auth/logout"),
-    retry: false,
-    gcTime: 0,
-    onSuccess: () => {
-      setCsrfToken(null);
-      // Nothing of the session stays behind for the next person.
-      client.clear();
-    },
-  });
-}
+export const useLogin = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/auth/login", "post">) => api.post("/api/auth/login", { body }),
+    () => ({ stale: [] }),
+  );
+
+export const useLogout = () =>
+  useApiMutation(
+    () => api.post("/api/auth/logout"),
+    () => ({ stale: [] }),
+  );
 
 export const useAcceptInvite = () =>
   useApiMutation(
