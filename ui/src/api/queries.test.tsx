@@ -3,7 +3,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
-import { apiError, networkFailure, noContent, ok, override } from "@/test/handlers";
+import { errors } from "@/test/errors";
+import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import { api, onUnauthenticated } from "./client";
 import { ApiError, NetworkError } from "./errors";
 import * as q from "./queries";
@@ -113,7 +114,7 @@ describe("retries", () => {
     let calls = 0;
     override("get", "/api/teams", () => {
       calls += 1;
-      return apiError(500, "internal", "Something went wrong.");
+      return refuse(errors.internal_error);
     });
     const { result } = renderHook(() => q.useTeams(), { wrapper: wrapperOf(appClient()) });
     await waitFor(() => {
@@ -204,7 +205,7 @@ describe("mutations invalidate", () => {
 
   test("a failed mutation invalidates nothing", async () => {
     const teams = counted("/api/teams");
-    override("post", "/api/teams", () => apiError(409, "team_exists", "It exists."));
+    override("post", "/api/teams", () => refuse(errors.team_exists));
     const { result } = renderHook(() => ({ teams: q.useTeams(), create: q.useCreateTeam() }), {
       wrapper: wrapperOf(appClient()),
     });
@@ -316,9 +317,7 @@ describe("mutations invalidate", () => {
   test("a wrong current password does not sign out", async () => {
     const handler = vi.fn();
     const unsubscribe = onUnauthenticated(handler);
-    override("post", "/api/auth/password", () =>
-      apiError(401, "invalid_credentials", "The current password is wrong."),
-    );
+    override("post", "/api/auth/password", () => refuse(errors.invalid_credentials));
     const { result } = renderHook(() => q.useChangePassword(), {
       wrapper: wrapperOf(appClient()),
     });

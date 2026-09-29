@@ -16,8 +16,9 @@ import { AppProviders } from "@/providers";
 import { createAppRouter } from "@/router";
 import { THEME_STORAGE_KEY, type Theme } from "@/theme/theme";
 import { setDevice } from "./device";
+import { errors } from "./errors";
 import * as fixtures from "./fixtures";
-import { apiError, ok, override } from "./handlers";
+import { ok, override, refuse } from "./handlers";
 
 /** What `/api/auth/me` answers for an admin. */
 export const adminUser: fixtures.Me = {
@@ -57,7 +58,8 @@ export interface AppRenderResult extends RenderResult {
   queryClient: QueryClient;
 }
 
-export const unauthorized = () => apiError(401, "unauthorized", "Sign in to continue.");
+/** What the gateway answers when nobody is signed in. */
+export const unauthenticated = () => refuse(errors.unauthenticated);
 
 /**
  * Renders inside the app's providers and a router with memory history.
@@ -77,7 +79,7 @@ export async function renderWithApp(
     window.localStorage.setItem(THEME_STORAGE_KEY, options.theme);
   }
   const { user } = options;
-  if (user === null) override("get", "/api/auth/me", unauthorized);
+  if (user === null) override("get", "/api/auth/me", unauthenticated);
   if (user !== null && user !== undefined) {
     override("get", "/api/auth/me", () => ok("get", "/api/auth/me", 200, user));
   }

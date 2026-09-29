@@ -17,8 +17,9 @@ import {
 import { PageProblem } from "@/pages/NotAvailable";
 import * as fixtures from "@/test/fixtures";
 import { gate, PASSWORD, startGateway } from "@/test/gateway";
-import { apiError, networkFailure, noContent, ok, override } from "@/test/handlers";
-import { renderWithApp, unauthorized, type AppRenderResult } from "@/test/render";
+import { errors } from "@/test/errors";
+import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
+import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 import { useSession, useSessionControl, useSignOut } from "./session";
 
 const SESSION_ENDED = "Your session ended. Sign in again.";
@@ -70,7 +71,7 @@ function shown(): string {
 
 /** A call that the gateway answers with 401, as it does when the session ended. */
 async function aCallFindsTheSessionEnded(): Promise<void> {
-  override("get", "/api/teams", unauthorized);
+  override("get", "/api/teams", unauthenticated);
   await act(async () => {
     await api.get("/api/teams").catch(() => undefined);
   });
@@ -108,7 +109,7 @@ describe("guards of the routes", () => {
     let sent = 0;
     override("post", "/api/setup", () => {
       sent += 1;
-      return apiError(409, "already_set_up", "The gateway is set up.");
+      return refuse(errors.already_set_up);
     });
     const app = await renderWithApp(null, { route: "/setup" });
     await waitFor(() => {
@@ -195,7 +196,7 @@ describe("guards of the routes", () => {
   });
 
   test("403 from a page renders not available", async () => {
-    override("get", "/api/keys", () => apiError(403, "forbidden", "You may not do this."));
+    override("get", "/api/keys", () => refuse(errors.forbidden));
     function Page() {
       const keys = useKeys();
       if (keys.isError) return <PageProblem error={keys.error} />;
@@ -206,17 +207,17 @@ describe("guards of the routes", () => {
       await screen.findByText("This page is not available to your account."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.queryByText("You may not do this.")).toBeNull();
+    expect(screen.queryByText(errors.forbidden.body.error.message)).toBeNull();
   });
 
   test("another failure of a page is shown as an error", async () => {
-    override("get", "/api/keys", () => apiError(500, "internal", "It failed."));
+    override("get", "/api/keys", () => refuse(errors.internal_error));
     function Page() {
       const keys = useKeys();
       return keys.isError ? <PageProblem error={keys.error} /> : <p>Keys</p>;
     }
     await renderWithApp(<Page />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("It failed.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Something went wrong.");
   });
 
   test("the app says so when the gateway cannot be reached, and tries again", async () => {
@@ -259,12 +260,12 @@ describe("sign-in", () => {
   const failures: [string, () => Response, string][] = [
     [
       "401",
-      () => apiError(401, "invalid_credentials", "The credentials are not valid."),
+      () => refuse(errors.invalid_credentials),
       "Email or password is incorrect.",
     ],
     [
       "429",
-      () => apiError(429, "rate_limited", "Slow down."),
+      () => refuse(errors.too_many_attempts),
       "Too many attempts. Try again in a few minutes.",
     ],
     ["a network error", networkFailure, "Could not reach the gateway."],
@@ -450,7 +451,7 @@ describe("the session", () => {
     const app = await renderWithApp(null, { route: "/keys" });
 
     gateway.signedIn = false;
-    override("get", "/api/users", unauthorized);
+    override("get", "/api/users", unauthenticated);
     await act(async () => {
       await Promise.all([
         api.get("/api/users").catch(() => undefined),
@@ -582,7 +583,7 @@ describe("the session", () => {
     await waitFor(() => {
       expect(heading("Overview")).toBeInTheDocument();
     });
-    override("get", "/api/users", unauthorized);
+    override("get", "/api/users", unauthenticated);
     await act(async () => {
       await api.get("/api/users").catch(() => undefined);
       await api.get("/api/users").catch(() => undefined);
@@ -638,7 +639,7 @@ describe("answers of a session that is over", () => {
     const app = await renderWithApp(null, { route: "/keys" });
     const told = vi.fn();
     const stop = onUnauthenticated(told);
-    const write = aWriteOnItsWay(unauthorized);
+    const write = aWriteOnItsWay(unauthenticated);
     await write.started();
 
     await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
@@ -784,7 +785,7 @@ describe("answers of a session that is over", () => {
     const app = await renderWithApp(null, { route: "/keys" });
     const told = vi.fn();
     const stop = onUnauthenticated(told);
-    const write = aWriteOnItsWay(unauthorized);
+    const write = aWriteOnItsWay(unauthenticated);
     await write.started();
 
     await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
@@ -832,9 +833,9 @@ describe("sign out", () => {
 
   const failing: [string, () => Response][] = [
     ["a network error", networkFailure],
-    ["a 500", () => apiError(500, "internal", "It failed.")],
-    ["a 401", unauthorized],
-    ["a 403", () => apiError(403, "csrf", "The token is not valid.")],
+    ["a 500", () => refuse(errors.internal_error)],
+    ["a 401", unauthenticated],
+    ["a 403", () => refuse(errors.csrf_failed)],
   ];
 
   const NOT_TOLD =

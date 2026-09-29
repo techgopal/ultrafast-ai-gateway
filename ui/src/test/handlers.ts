@@ -4,6 +4,7 @@ import { http, HttpResponse, type JsonBodyType } from "msw";
 import { setupServer } from "msw/node";
 import type { Method, PathFor, ResponseOf } from "@/api/client";
 import type { components } from "@/api/schema";
+import { errors, type GatewayError } from "./errors";
 import * as fixtures from "./fixtures";
 
 type ApiErrorBody = components["schemas"]["ApiErrorBody"];
@@ -16,17 +17,10 @@ export interface Call {
 
 type Resolver = (call: Call) => Response | Promise<Response>;
 
-/** An error in the shape of `/api`. */
-export function apiError(
-  status: number,
-  code: string,
-  message: string,
-  fields?: Record<string, string>,
-): Response {
-  const body: ApiErrorBody = {
-    error: fields === undefined ? { code, message } : { code, message, fields },
-  };
-  return HttpResponse.json(body, { status });
+/** The gateway's answer for an error of `./errors`. */
+export function refuse(error: GatewayError): Response {
+  const body: ApiErrorBody = error.body;
+  return HttpResponse.json(body, { status: error.status });
 }
 
 /** A success of the operation; the body has the type the API description gives. */
@@ -48,7 +42,7 @@ export function networkFailure(): Response {
   return HttpResponse.error();
 }
 
-const notFound = () => apiError(404, "not_found", "It does not exist.");
+const notFound = () => refuse(errors.not_found);
 
 function handler<M extends Method>(method: M, path: PathFor<M>, resolver: Resolver) {
   // `{id}` in the API description is `:id` for MSW.
