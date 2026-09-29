@@ -190,7 +190,7 @@ impl Modify for Credentials {
                 operation
                     .parameters
                     .get_or_insert_with(Vec::new)
-                    .push(csrf_parameter());
+                    .push(csrf_parameter().into());
             }
         };
         for item in openapi.paths.paths.values_mut() {
