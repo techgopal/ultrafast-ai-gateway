@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{error_code, org, raw, Org, Signed};
+use common::{compared, error_code, org, raw, Org, Signed};
 use serde_json::{json, Value};
 use ultrafast_gateway::secrets::{generate_key, generate_secret, TOKEN_PREFIX};
 
@@ -348,11 +348,11 @@ async fn hidden_and_missing_users_answer_alike() {
         let mut answers = Vec::new();
         for id in [org.tomas, 999] {
             let path = format!("/api/users/{id}{suffix}");
-            let (status, headers, bytes) = raw(&org, &arjun, method, &path, body.clone()).await;
-            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
-            answers.push((status, headers, bytes));
+            let answer = raw(&org, &arjun, method, &path, body.clone()).await;
+            assert_eq!(answer.0, StatusCode::NOT_FOUND, "{method} {path}");
+            answers.push(answer);
         }
-        assert_eq!(answers[0], answers[1], "{method}");
+        assert_eq!(compared(&answers[0]), compared(&answers[1]), "{method}");
     }
     assert_eq!(org.api.store.count_users().await.unwrap(), 5);
 }
@@ -766,7 +766,7 @@ async fn reinvite_hides_existence_from_non_admins() {
             answers.push(answer);
         }
         for answer in &answers[1..] {
-            assert_eq!(*answer, answers[0], "{name}");
+            assert_eq!(compared(answer), compared(&answers[0]), "{name}");
         }
     }
     assert!(!org

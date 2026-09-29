@@ -368,6 +368,22 @@ pub fn error_code(body: &serde_json::Value) -> &str {
     body["error"]["code"].as_str().unwrap_or("<no code>")
 }
 
+/// What two answers that must look the same are compared by: the status,
+/// the `content-type` header and the exact bytes of the body. Other
+/// headers are left out, so a header that differs with every request, such
+/// as a request id, does not make equal answers look different.
+pub fn compared(
+    answer: &(StatusCode, Vec<(String, String)>, Vec<u8>),
+) -> impl PartialEq + std::fmt::Debug + '_ {
+    let (status, headers, bytes) = answer;
+    let content_type: Vec<&str> = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.as_str())
+        .collect();
+    (*status, content_type, String::from_utf8_lossy(bytes))
+}
+
 /// The status, the headers and the exact bytes of an answer.
 pub async fn raw(
     org: &Org,

@@ -513,22 +513,12 @@ async fn a_hidden_key_looks_like_a_missing_one() {
     let keys = seed_keys(&org).await;
     let lena = org.sign_in("lena").await;
     for method in ["GET", "DELETE"] {
-        let hidden = common::call(
-            &org.api.app,
-            method,
-            &key_path(keys.arjun),
-            Some(&lena),
-            None,
-        )
-        .await;
-        let missing = common::call(&org.api.app, method, &key_path(9999), Some(&lena), None).await;
-        let malformed =
-            common::call(&org.api.app, method, "/api/keys/abc", Some(&lena), None).await;
+        let hidden = common::raw(&org, &lena, method, &key_path(keys.arjun), None).await;
+        let missing = common::raw(&org, &lena, method, &key_path(9999), None).await;
+        let malformed = common::raw(&org, &lena, method, "/api/keys/abc", None).await;
         assert_eq!(hidden.0, StatusCode::NOT_FOUND);
-        assert_eq!(hidden.0, missing.0);
-        assert_eq!(hidden.1, missing.1, "headers differ");
-        assert_eq!(hidden.2.to_string(), missing.2.to_string());
-        assert_eq!(hidden.2.to_string(), malformed.2.to_string());
+        assert_eq!(common::compared(&hidden), common::compared(&missing));
+        assert_eq!(common::compared(&hidden), common::compared(&malformed));
     }
     assert!(audited(&org).await.is_empty());
 }

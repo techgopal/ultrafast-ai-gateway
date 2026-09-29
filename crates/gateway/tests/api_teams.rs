@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{error_code, org, raw, Org, Signed};
+use common::{compared, error_code, org, raw, Org, Signed};
 use serde_json::{json, Value};
 use ultrafast_gateway::identity::TeamRole;
 use ultrafast_gateway::secrets::generate_key;
@@ -231,8 +231,9 @@ async fn hidden_and_missing_teams_answer_alike() {
             assert_eq!(answer.0, StatusCode::NOT_FOUND, "{method} {path}");
             answers.push(answer);
         }
-        assert_eq!(answers[0], answers[1], "{method} {suffix}");
-        assert_eq!(answers[0], answers[2], "{method} {suffix}");
+        for answer in &answers[1..] {
+            assert_eq!(compared(answer), compared(&answers[0]), "{method} {suffix}");
+        }
     }
     assert_eq!(org.api.store.list_teams().await.unwrap().len(), 3);
     assert_eq!(
