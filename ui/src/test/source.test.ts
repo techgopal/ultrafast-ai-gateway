@@ -18,6 +18,7 @@ function ours(extensions: string[]): string[] {
     .map((path) => relative(src, path).split(sep).join("/"))
     .filter((path) => extensions.some((ext) => path.endsWith(ext)))
     .filter((path) => path !== "styles/globals.css")
+    .filter((path) => path !== "styles/shadcn.css")
     .filter((path) => !path.startsWith("components/ui/"));
 }
 
@@ -35,6 +36,48 @@ function findings(paths: string[], pattern: RegExp): string[] {
 const colour =
   /#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})\b|\b(?:rgba?|hsla?|oklch|oklab)\(\s*[\d.]/i;
 const inlineStyle = /\bstyle\s*=/;
+
+// An import, a re-export, a dynamic import or a CSS @import of the bare module or a path inside it.
+function importOf(name: string): RegExp {
+  return new RegExp(
+    `(?:\\bfrom\\s*|\\bimport\\s*\\(?\\s*|@import\\s+(?:url\\(\\s*)?)["']${name}(?:/[^"']*)?["']`,
+  );
+}
+
+function allSources(): string[] {
+  return files(src).map((path) => relative(src, path).split(sep).join("/"));
+}
+
+function listedPackages(): string[] {
+  const manifest: unknown = JSON.parse(readFileSync(join(ui, "package.json"), "utf8"));
+  if (typeof manifest !== "object" || manifest === null) throw new Error("package.json is not an object");
+  return ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"].flatMap(
+    (field) => {
+      const group: unknown = (manifest as Record<string, unknown>)[field];
+      return typeof group === "object" && group !== null ? Object.keys(group) : [];
+    },
+  );
+}
+
+describe.each(["shadcn"])("the package %s is not used", (name) => {
+  test("the import scan sees what it should", () => {
+    const quote = '"';
+    expect(importOf(name).test(`import { x } from ${quote}${name}${quote}`)).toBe(true);
+    expect(importOf(name).test(`export { x } from '${name}'`)).toBe(true);
+    expect(importOf(name).test(`@import ${quote}${name}/tailwind.css${quote};`)).toBe(true);
+    expect(importOf(name).test(`import(${quote}${name}${quote})`)).toBe(true);
+    expect(importOf(name).test(`import { cn } from ${quote}@/lib/utils${quote}`)).toBe(false);
+    expect(importOf(name).test(`import x from ${quote}${name}-extra${quote}`)).toBe(false);
+  });
+
+  test("no file under src imports it", () => {
+    expect(findings(allSources(), importOf(name))).toEqual([]);
+  });
+
+  test("package.json does not list it", () => {
+    expect(listedPackages()).not.toContain(name);
+  });
+});
 
 describe("source rules", () => {
   test("the scans see what they should", () => {
