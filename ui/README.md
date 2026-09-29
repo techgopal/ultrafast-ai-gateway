@@ -30,3 +30,18 @@ After the CLI has run:
 4. `src/styles/shadcn.css` is a copy of `dist/tailwind.css` of the `shadcn` package.
    If you ran a newer version of the CLI than the one named in the header of that
    file, replace the copy with the file of the new version and update the header.
+
+## The API client
+
+`src/api/schema.d.ts` is generated from `../openapi/admin.json` and committed.
+After the API description changed:
+
+```
+pnpm gen:api     # writes src/api/schema.d.ts
+pnpm check:api   # fails when the committed file is not what gen:api writes
+```
+
+`pnpm typecheck` also compiles the generated file on its own, with library checks on
+(`tsconfig.api.json`), so a description that gives broken types fails the build.
+Pages use the hooks of `src/api/queries.ts`; tests answer the API with MSW from
+`src/test/fixtures.ts` and `src/test/handlers.ts`.
