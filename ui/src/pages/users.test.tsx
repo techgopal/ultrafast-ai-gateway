@@ -20,11 +20,12 @@ import {
   href,
   installPointerCapture,
   NOT_FOUND,
+  SESSION_ENDED,
   settle,
   shown,
   toasts,
 } from "@/test/pages";
-import { renderWithApp, type AppRenderResult } from "@/test/render";
+import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
 const { maya, arjun, lena, tomas, sam, dana } = fixtures.users;
 const LINK = window.location.origin + fixtures.newInviteLink;
@@ -723,7 +724,8 @@ describe("changing a user", () => {
 
   test("last admin refusal stays in the dialog", async () => {
     override("patch", "/api/users/{id}", () => refuse(errors.last_admin));
-    await detail(maya);
+    // Another admin looks at the page; the own page has its own texts and tests.
+    await detail(maya, { user: { ...fixtures.me.maya, user: { ...arjun, role: "admin" } } });
     const dialog = await ask("Make member", "Make this user a member?");
     await confirm(dialog, "Make member");
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
@@ -889,6 +891,122 @@ describe("changing a user", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect(toasts()).toEqual([]);
     expect(href(app)).toBe(`/sign-in?next=${encodeURIComponent(`/users/${lena.id}`)}`);
+  });
+});
+
+describe("changing the own account", () => {
+  const OWN_ROLE = "You will lose your admin rights and be signed out.";
+  const OWN_DISABLE =
+    "You will be signed out and cannot sign in again until another admin enables your account.";
+  const CHANGED = "You changed your own account. Sign in again.";
+
+  /** A gateway that ends the sessions of the user when their role or status changes. */
+  function endsTheSessionOnChange() {
+    const gateway = startGateway({ signedIn: true });
+    const patches = counted("patch", "/api/users/{id}", () => {
+      gateway.signedIn = false;
+      for (const path of ["/api/users", "/api/teams", "/api/keys", "/api/audit"] as const) {
+        override("get", path, unauthenticated);
+      }
+      override("get", "/api/users/{id}", unauthenticated);
+      return ok("patch", "/api/users/{id}", 200, { ...maya, role: "member" });
+    });
+    return { gateway, patches };
+  }
+
+  async function expectSignedOutByOwnChange(app: AppRenderResult): Promise<void> {
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in");
+    });
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(CHANGED);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(app.queryClient.getQueryCache().getAll()).toEqual([]);
+    expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+    // The answers of what was asked before the session ended change nothing.
+    await settle(60);
+    expect(href(app)).toBe("/sign-in");
+    expect(screen.getByRole("status")).toHaveTextContent(CHANGED);
+    expect(screen.queryByText(SESSION_ENDED)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(toasts()).toEqual([]);
+    expect(app.queryClient.getQueryCache().getAll()).toEqual([]);
+    expect(shown()).not.toContain(maya.email);
+  }
+
+  test("an admin who makes themselves a member is told so, and signed out", async () => {
+    const { patches } = endsTheSessionOnChange();
+    const app = await detail(maya);
+    const dialog = await ask("Make member", "Make this user a member?");
+    expect(dialog).toHaveTextContent(OWN_ROLE);
+    expect(dialog).not.toHaveTextContent(ROLE);
+    expect(patches.calls).toBe(0);
+    await confirm(dialog, "Make member");
+    await expectSignedOutByOwnChange(app);
+    expect(patches.bodies).toEqual([{ role: "member" }]);
+  });
+
+  test("an admin who disables themselves is told so, and signed out", async () => {
+    const { patches } = endsTheSessionOnChange();
+    const app = await detail(maya);
+    const dialog = await ask("Disable", "Disable this user?");
+    expect(dialog).toHaveTextContent(OWN_DISABLE);
+    expect(dialog).not.toHaveTextContent(DISABLE);
+    await confirm(dialog, "Disable");
+    await expectSignedOutByOwnChange(app);
+    expect(patches.bodies).toEqual([{ status: "disabled" }]);
+  });
+
+  test("the texts for another user are the ones of the brief", async () => {
+    await detail(lena);
+    const role = await ask("Make admin", "Make this user an admin?");
+    expect(role).toHaveTextContent(ROLE);
+    await confirm(role, "Cancel");
+    const disable = await ask("Disable", "Disable this user?");
+    expect(disable).toHaveTextContent(DISABLE);
+    expect(disable).not.toHaveTextContent(OWN_DISABLE);
+  });
+
+  test.each([
+    ["Make member", "Make this user a member?", OWN_ROLE],
+    ["Disable", "Disable this user?", OWN_DISABLE],
+  ])("last admin on oneself stays in the dialog: %s", async (action, title, text) => {
+    startGateway({ signedIn: true });
+    const patches = counted("patch", "/api/users/{id}", () => refuse(errors.last_admin));
+    const app = await detail(maya);
+    const dialog = await ask(action, title);
+    await confirm(dialog, action);
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      errors.last_admin.body.error.message,
+    );
+    expect(patches.calls).toBe(1);
+    expect(dialog).toHaveTextContent(text);
+    await settle();
+    // Nothing changed: the same page, the same session, the same user.
+    expect(href(app)).toBe(`/users/${maya.id}`);
+    expect(toasts()).toEqual([]);
+    const details = screen.getByLabelText("Details");
+    expect(within(details).getByText("Admin")).toBeInTheDocument();
+    expect(within(details).getByText("active")).toBeInTheDocument();
+    expect(app.queryClient.getQueryData(queryKeys.me())).toBeDefined();
+    await confirm(dialog, "Cancel");
+    expect(actions()).toEqual(["Edit name", "Make member", "Disable"]);
+  });
+
+  test("a change of the own name signs nobody out", async () => {
+    startGateway({ signedIn: true });
+    keeps(maya);
+    const app = await detail(maya);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit name" }));
+    const name = screen.getByLabelText("Name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Maya O");
+    await userEvent.click(button("Save"));
+    expect(await screen.findByRole("heading", { level: 1, name: "Maya O" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(toasts()).toEqual(["Name changed."]);
+    });
+    expect(href(app)).toBe(`/users/${maya.id}`);
   });
 });
 

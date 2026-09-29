@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { useDeleteUser, useReinviteUser, useUpdateUser, useUser } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can, type Me } from "@/auth/guards";
-import { useSession } from "@/auth/session";
+import { useSession, useSessionControl } from "@/auth/session";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit";
 import { Field } from "@/components/Field";
@@ -48,6 +48,15 @@ export const CONSEQUENCES = {
     "Their virtual keys keep working without an owner. Revoke the keys first if they should stop.",
   deleteNotActive: "Their virtual keys are revoked.",
 } as const;
+
+/** The same, said to the user who changes their own account. */
+export const OWN_CONSEQUENCES = {
+  role: "You will lose your admin rights and be signed out.",
+  disable:
+    "You will be signed out and cannot sign in again until another admin enables your account.",
+} as const;
+
+export const OWN_ACCOUNT_CHANGED_NOTICE = "You changed your own account. Sign in again.";
 
 export const DONE = {
   name: "Name changed.",
@@ -160,6 +169,7 @@ function Controls({ me, user }: { me: Me; user: User }) {
   const remove = useDeleteUser();
   const reinvite = useReinviteUser();
   const once = useSecretOnce(reinvite);
+  const { end } = useSessionControl();
   const [asking, setAsking] = useState<Asking | null>(null);
 
   const own = user.id === me.user.id;
@@ -177,6 +187,16 @@ function Controls({ me, user }: { me: Me; user: User }) {
     return () => {
       setAsking(what);
     };
+  }
+
+  /**
+   * After a change of a role or a status. The gateway ended the sessions of
+   * the user: when that is the user who is signed in, the console does not
+   * wait for a 401 to learn it, and ends the session as a sign-out does.
+   */
+  function changed(done: string) {
+    if (own) end("left", OWN_ACCOUNT_CHANGED_NOTICE);
+    else toast(done);
   }
 
   /** For the dialogs of `update`. */
@@ -243,23 +263,23 @@ function Controls({ me, user }: { me: Me; user: User }) {
             open={asking === "role"}
             onOpenChange={closeUpdate}
             title={otherRole === "admin" ? "Make this user an admin?" : "Make this user a member?"}
-            body={CONSEQUENCES.role}
+            body={own ? OWN_CONSEQUENCES.role : CONSEQUENCES.role}
             confirmLabel={otherRole === "admin" ? "Make admin" : "Make member"}
             onConfirm={async () => {
               await update.mutateAsync({ id, body: { role: otherRole } });
-              toast(DONE.role);
+              changed(DONE.role);
             }}
           />
           <ConfirmDialog
             open={asking === "disable"}
             onOpenChange={closeUpdate}
             title="Disable this user?"
-            body={CONSEQUENCES.disable}
+            body={own ? OWN_CONSEQUENCES.disable : CONSEQUENCES.disable}
             confirmLabel="Disable"
             tone="danger"
             onConfirm={async () => {
               await update.mutateAsync({ id, body: { status: "disabled" } });
-              toast(DONE.disable);
+              changed(DONE.disable);
             }}
           />
           <ConfirmDialog
