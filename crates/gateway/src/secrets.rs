@@ -5,8 +5,8 @@ use std::fmt;
 use anyhow::{anyhow, bail, Result};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
-use rand::rngs::OsRng;
-use rand::RngCore;
+use rand::rngs::SysRng;
+use rand::TryRng;
 use sha2::{Digest, Sha256};
 
 pub const KEY_PREFIX: &str = "uf-sk-";
@@ -33,6 +33,17 @@ impl fmt::Debug for NewKey {
     }
 }
 
+/// Fills `buf` from the operating system's random number generator.
+///
+/// # Panics
+/// If the operating system cannot supply random bytes. No secret is made
+/// from anything else.
+pub fn fill_random(buf: &mut [u8]) {
+    SysRng
+        .try_fill_bytes(buf)
+        .expect("the operating system supplies random bytes");
+}
+
 pub fn generate_key() -> NewKey {
     generate_secret(KEY_PREFIX)
 }
@@ -40,7 +51,7 @@ pub fn generate_key() -> NewKey {
 /// A secret with the given prefix and 32 random bytes as hex.
 pub fn generate_secret(prefix: &str) -> NewKey {
     let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    fill_random(&mut bytes);
     let full = format!("{prefix}{}", hex::encode(bytes));
     let display = format!("{prefix}\u{2026}{}", &full[full.len() - 4..]);
     NewKey {
@@ -72,7 +83,7 @@ impl fmt::Debug for Cipher {
 impl Cipher {
     pub fn generate_master_hex() -> String {
         let mut bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut bytes);
+        fill_random(&mut bytes);
         hex::encode(bytes)
     }
 
@@ -84,16 +95,17 @@ impl Cipher {
         if bytes.iter().all(|b| *b == 0) {
             bail!("master key must not be all zeros");
         }
-        Ok(Self(ChaCha20Poly1305::new(Key::from_slice(&bytes))))
+        let key = Key::try_from(bytes.as_slice()).expect("the length was checked to be 32 bytes");
+        Ok(Self(ChaCha20Poly1305::new(&key)))
     }
 
     /// Output is the 12-byte nonce followed by the ciphertext.
     pub fn encrypt(&self, plain: &[u8]) -> Vec<u8> {
         let mut nonce = [0u8; NONCE_LEN];
-        OsRng.fill_bytes(&mut nonce);
+        fill_random(&mut nonce);
         let ct = self
             .0
-            .encrypt(Nonce::from_slice(&nonce), plain)
+            .encrypt(&Nonce::from(nonce), plain)
             .expect("encryption with a valid key and nonce cannot fail");
         let mut out = nonce.to_vec();
         out.extend(ct);
@@ -105,8 +117,9 @@ impl Cipher {
             bail!("encrypted value is too short");
         }
         let (nonce, ct) = data.split_at(NONCE_LEN);
+        let nonce = Nonce::try_from(nonce).expect("the slice is 12 bytes long");
         self.0
-            .decrypt(Nonce::from_slice(nonce), ct)
+            .decrypt(&nonce, ct)
             .map_err(|_| anyhow!("could not decrypt: wrong master key or corrupted value"))
     }
 }

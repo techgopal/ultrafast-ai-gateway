@@ -3,8 +3,6 @@
 use std::fmt;
 
 use anyhow::{Context, Result};
-use rand::rngs::OsRng;
-use rand::RngCore;
 use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 
@@ -80,7 +78,7 @@ fn token_from(r: &SqliteRow) -> TokenRow {
 /// 32 random bytes as lowercase hex.
 fn random_hex() -> String {
     let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
+    crate::secrets::fill_random(&mut bytes);
     hex::encode(bytes)
 }
 

@@ -12,8 +12,6 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures::StreamExt;
 use http_body_util::LengthLimitError;
-use rand::rngs::OsRng;
-use rand::RngCore;
 use ultrafast_translate::error::TranslateError;
 use ultrafast_translate::ingress::openai::{
     parse_request, render_response, render_stream_error, render_stream_event,
@@ -182,7 +180,7 @@ async fn send(
 
 fn stream_id() -> String {
     let mut bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut bytes);
+    crate::secrets::fill_random(&mut bytes);
     format!("chatcmpl-{}", hex::encode(bytes))
 }
 
