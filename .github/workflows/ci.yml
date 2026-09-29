@@ -27,12 +27,26 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+      # The console is compiled into the binary, and the tests marked
+      # `ignore` check the one that is really in it.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Build the console
+        run: |
+          pnpm --dir ui install --frozen-lockfile
+          pnpm --dir ui build
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Tests
-        run: cargo test --all --no-fail-fast
+        run: cargo test --all --no-fail-fast -- --include-ignored
       - name: OpenAPI spec is current
         run: |
           if ! cargo run -q -p ultrafast-gateway -- openapi | diff - openapi/admin.json; then
@@ -62,8 +76,22 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('Cargo.lock') }}
+      # The console is compiled into the binary, and the tests marked
+      # `ignore` check the one that is really in it.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Build the console
+        run: |
+          pnpm --dir ui install --frozen-lockfile
+          pnpm --dir ui build
       - name: Tests
-        run: cargo test --all --locked
+        run: cargo test --all --locked -- --include-ignored
 
   console:
     name: Console

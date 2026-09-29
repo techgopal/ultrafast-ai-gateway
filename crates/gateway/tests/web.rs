@@ -1,4 +1,9 @@
 //! The console served at `/`, and what it must leave alone.
+//!
+//! These tests hold in every build. How files are answered is tested in
+//! `src/web.rs` against a small set of files. The tests marked `ignore`
+//! check the console that is really in the binary, so they need
+//! `pnpm --dir ui build` before `cargo test -- --include-ignored`.
 
 mod common;
 
@@ -82,11 +87,17 @@ async fn app() -> Router {
 /// The page without what differs with every response.
 fn without_nonce(answer: &Answer) -> String {
     let nonce = answer.nonce();
-    let text = answer.text();
-    if CONSOLE_BUILT {
-        assert!(text.contains(&nonce), "the page does not hold its nonce");
-    }
-    text.replace(&nonce, "")
+    answer.text().replace(&nonce, "")
+}
+
+/// Fails the test, rather than letting it pass on nothing, when the binary
+/// holds no console.
+fn needs_build() {
+    let built = CONSOLE_BUILT;
+    assert!(
+        built,
+        "this test needs the console: run `pnpm --dir ui build` first"
+    );
 }
 
 /// The paths of the files the built page loads from `/assets/`.
@@ -225,15 +236,21 @@ async fn html_has_the_security_headers() {
 }
 
 #[tokio::test]
-async fn html_is_not_cached_assets_are() {
+async fn html_is_not_cached() {
+    let app = app().await;
+    for path in ["/", "/keys"] {
+        let page = get(&app, path).await;
+        assert_eq!(page.header("cache-control"), "no-store");
+        assert!(page.headers.get("etag").is_none());
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a console build"]
+async fn built_assets_are_cached() {
+    needs_build();
     let app = app().await;
     let page = get(&app, "/").await;
-    assert_eq!(page.header("cache-control"), "no-store");
-    assert!(page.headers.get("etag").is_none());
-
-    if !CONSOLE_BUILT {
-        return;
-    }
     let paths = asset_paths(&page.text());
     assert!(
         paths.iter().any(|p| p.ends_with(".js")) && paths.iter().any(|p| p.ends_with(".css")),
@@ -340,14 +357,11 @@ async fn api_responses_are_not_cached_or_sniffed() {
 }
 
 #[tokio::test]
-async fn root_files_are_served() {
+#[ignore = "needs a console build"]
+async fn built_root_files_are_served() {
+    needs_build();
     let app = app().await;
     let file = get(&app, "/theme.js").await;
-    if !CONSOLE_BUILT {
-        // Without a build there is no such file, so the path is a page.
-        assert!(file.text().contains(NOT_BUILT));
-        return;
-    }
     assert_eq!(file.status, StatusCode::OK);
     assert!(file.header("content-type").contains("javascript"));
     assert_eq!(file.header("cache-control"), "no-cache");
@@ -357,10 +371,9 @@ async fn root_files_are_served() {
 }
 
 #[tokio::test]
-async fn etag_gives_304() {
-    if !CONSOLE_BUILT {
-        return;
-    }
+#[ignore = "needs a console build"]
+async fn built_files_give_304_for_their_etag() {
+    needs_build();
     let app = app().await;
     let page = get(&app, "/").await;
     let mut paths = asset_paths(&page.text());
@@ -390,15 +403,19 @@ async fn etag_gives_304() {
 }
 
 #[tokio::test]
-async fn placeholder_when_not_built() {
+#[ignore = "needs a console build"]
+async fn the_built_console_is_the_page() {
+    needs_build();
     let app = app().await;
-    let page = get(&app, "/").await.text();
-    if CONSOLE_BUILT {
-        assert!(page.contains("<div id=\"root\">"));
-        assert!(!page.contains(NOT_BUILT));
-    } else {
-        assert!(page.contains(NOT_BUILT));
-        assert!(page.contains("pnpm --dir ui build"));
+    for path in ["/", "/keys"] {
+        let page = get(&app, path).await;
+        let nonce = page.nonce();
+        let text = page.text();
+        assert!(text.contains("<div id=\"root\">"));
+        assert!(!text.contains(NOT_BUILT));
+        let meta = format!("<meta name=\"csp-nonce\" content=\"{nonce}\"");
+        assert_eq!(text.matches(&meta).count(), 1, "{text}");
+        assert_eq!(text.matches(nonce.as_str()).count(), 1);
     }
 }
 
@@ -423,10 +440,5 @@ async fn every_page_has_its_own_nonce() {
         );
         let text = page.text();
         assert!(!text.contains("__CSP_NONCE__"));
-        if CONSOLE_BUILT {
-            let meta = format!("<meta name=\"csp-nonce\" content=\"{nonce}\"");
-            assert_eq!(text.matches(&meta).count(), 1, "{text}");
-            assert_eq!(text.matches(nonce.as_str()).count(), 1);
-        }
     }
 }
