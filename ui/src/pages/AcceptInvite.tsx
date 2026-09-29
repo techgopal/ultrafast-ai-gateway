@@ -1,5 +1,5 @@
-import { Link, useNavigate, useRouter } from "@tanstack/react-router";
-import { useEffect, useRef, useState, type SyntheticEvent } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { useRef, useState, type SyntheticEvent } from "react";
 import { ApiError } from "@/api/errors";
 import { useAcceptInvite } from "@/api/queries";
 import { useSession, useSessionControl, useSignOut } from "@/auth/session";
@@ -18,49 +18,25 @@ import { Button } from "@/components/ui/button";
 export const INVITE_ACCEPTED_NOTICE = "Your password is set. Sign in to continue.";
 const INVALID_INVITE = "This invite link is not valid or has expired. Ask an admin for a new one.";
 
-// Signing out mounts the pages anew. The token crosses that in here, in
-// memory, from the click on "Sign out and continue" to the next mount of the
-// page. At every other time this is `null`.
-let carried: string | null = null;
-
-function tokenIn(search: string): string | null {
-  const token = new URLSearchParams(search).get("token");
-  return token === null || token === "" ? null : token;
-}
-
 /**
- * Sets the password of an invited user. The token of the link is read once
- * and then taken out of the address; it lives in the state of this page and
- * nowhere else. Without it the link has to be opened again.
+ * Sets the password of an invited user. The token of the link is held by the
+ * session for as long as this goes on, and the address never shows it here.
+ * Without it the link has to be opened again.
  */
 export function AcceptInvite() {
-  const router = useRouter();
   const navigate = useNavigate();
   const session = useSession();
-  const { announce } = useSessionControl();
+  const { announce, invite: token, dropInvite } = useSessionControl();
+  const [leaving, setLeaving] = useState(false);
   const signOut = useSignOut();
   const accept = useAcceptInvite();
   const { mutateAsync, reset } = accept;
-  const [token] = useState(() => tokenIn(router.state.location.searchStr) ?? carried);
   const password = useRef<HTMLInputElement>(null);
   const confirm = useRef<HTMLInputElement>(null);
   const running = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | undefined>(undefined);
   const [confirmError, setConfirmError] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    carried = null;
-    const { pathname, searchStr, hash } = router.state.location;
-    const search = new URLSearchParams(searchStr);
-    if (!search.has("token")) return;
-    search.delete("token");
-    const rest = search.toString();
-    // Replaces the entry of the history: with a browser, `history.replaceState`.
-    router.history.replace(
-      pathname + (rest === "" ? "" : `?${rest}`) + (hash === "" ? "" : `#${hash}`),
-    );
-  }, [router]);
 
   async function setPassword(form: FormData) {
     if (running.current || token === null) return;
@@ -78,6 +54,8 @@ export function AcceptInvite() {
       accepted = true;
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
+        // The token is of no use any more.
+        dropInvite();
         setMessage(INVALID_INVITE);
       } else if (error instanceof ApiError && error.fields.password !== undefined) {
         setPasswordError(error.fields.password);
@@ -93,6 +71,7 @@ export function AcceptInvite() {
       reset();
     }
     if (accepted) {
+      dropInvite();
       announce(INVITE_ACCEPTED_NOTICE);
       await navigate({ to: "/sign-in" });
     }
@@ -106,8 +85,9 @@ export function AcceptInvite() {
   if (token === null) {
     return (
       <AuthPage title="Accept your invite">
+        {message === null ? null : <FormError>{message}</FormError>}
         <p className="text-sm text-muted-foreground">
-          Open the link of your invite again. This page cannot be reloaded.
+          Open your invite link again. This page cannot be reloaded.
         </p>
       </AuthPage>
     );
@@ -124,16 +104,26 @@ export function AcceptInvite() {
           <Button
             type="button"
             className={control}
+            disabled={leaving}
             onClick={() => {
-              carried = token;
+              setLeaving(true);
+              // Signing out mounts this page anew; the session holds the token.
               void signOut();
             }}
           >
-            Sign out and continue
+            {leaving ? "Signing out" : "Sign out and continue"}
           </Button>
-          <Button asChild variant="outline" className={control}>
-            <Link to="/">Stay signed in</Link>
-          </Button>
+          {leaving ? (
+            <Button type="button" variant="outline" className={control} disabled>
+              Stay signed in
+            </Button>
+          ) : (
+            <Button asChild variant="outline" className={control}>
+              <Link to="/" onClick={dropInvite}>
+                Stay signed in
+              </Link>
+            </Button>
+          )}
         </div>
       </AuthPage>
     );

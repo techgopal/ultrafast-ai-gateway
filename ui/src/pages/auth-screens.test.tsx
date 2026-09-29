@@ -5,7 +5,8 @@ import { createBrowserHistory } from "@tanstack/react-router";
 import { afterEach, describe, expect, test } from "vitest";
 import { api } from "@/api/client";
 import * as fixtures from "@/test/fixtures";
-import { PASSWORD, startGateway } from "@/test/gateway";
+import { createQueryClient } from "@/api/queries";
+import { gate, PASSWORD, startGateway } from "@/test/gateway";
 import { apiError, networkFailure, noContent, ok, override } from "@/test/handlers";
 import { renderWithApp, type AppRenderResult } from "@/test/render";
 
@@ -202,6 +203,33 @@ describe("setup", () => {
   });
 });
 
+const OPEN_AGAIN = "Open your invite link again. This page cannot be reloaded.";
+
+/** The token is in none of the places something could read it from later. */
+function expectNoToken(app: AppRenderResult): void {
+  expect(shown()).not.toContain(INVITE_TOKEN);
+  expect(JSON.stringify(app.router.state)).not.toContain(INVITE_TOKEN);
+  expect(cached(app.queryClient)).not.toContain(INVITE_TOKEN);
+  expect(stored()).not.toContain(INVITE_TOKEN);
+  expect(window.location.href).not.toContain(INVITE_TOKEN);
+}
+
+/** Comes back to the page without a token in the address: it has none. */
+async function expectTheFlowIsOver(app: AppRenderResult): Promise<void> {
+  const sent = record("post", "/api/auth/accept-invite", noContent);
+  await act(async () => {
+    await app.router.navigate({ to: "/accept-invite" });
+  });
+  await waitFor(() => {
+    expect(screen.getByText(OPEN_AGAIN)).toBeInTheDocument();
+  });
+  expect(screen.queryByLabelText("Password")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Set password" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Sign out and continue" })).toBeNull();
+  expect(sent).toEqual([]);
+  expectNoToken(app);
+}
+
 describe("accept invite", () => {
   afterEach(() => {
     window.history.replaceState(null, "", "/");
@@ -274,8 +302,10 @@ describe("accept invite", () => {
     await fillInvite();
     expect(await screen.findByRole("alert")).toHaveTextContent(INVALID_INVITE);
     expect(screen.queryByText("It does not exist.")).toBeNull();
-    expect(screen.getByLabelText("Password")).toHaveValue("");
-    expect(screen.getByLabelText("Confirm password")).toHaveValue("");
+    // The token is of no use any more, and the form went with it.
+    expect(screen.queryByLabelText("Password")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Set password" })).toBeNull();
+    expectNoToken(app);
     await waitFor(() => {
       expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
     });
@@ -328,7 +358,7 @@ describe("accept invite", () => {
       await renderWithApp(null, { route });
       expect(heading("Accept your invite")).toBeInTheDocument();
       expect(
-        screen.getByText("Open the link of your invite again. This page cannot be reloaded."),
+        screen.getByText("Open your invite link again. This page cannot be reloaded."),
       ).toBeInTheDocument();
       expect(screen.queryByLabelText("Password")).toBeNull();
       expect(screen.queryByRole("button", { name: "Set password" })).toBeNull();
@@ -350,7 +380,7 @@ describe("accept invite", () => {
     // The reload: a new app at the address the browser has now.
     await renderWithApp(null, { history: createBrowserHistory() });
     expect(
-      screen.getByText("Open the link of your invite again. This page cannot be reloaded."),
+      screen.getByText("Open your invite link again. This page cannot be reloaded."),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Password")).toBeNull();
   });
@@ -403,10 +433,153 @@ describe("accept invite", () => {
       await app.router.navigate({ to: "/accept-invite" });
     });
     expect(
-      screen.getByText("Open the link of your invite again. This page cannot be reloaded."),
+      screen.getByText("Open your invite link again. This page cannot be reloaded."),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Password")).toBeNull();
     expect(sent).toEqual([]);
+  });
+
+  describe("the ways the flow ends", () => {
+    test("the invite is accepted", async () => {
+      startGateway();
+      override("post", "/api/auth/accept-invite", noContent);
+      const app = await renderWithApp(null, {
+        history: openInBrowser(`/accept-invite?token=${INVITE_TOKEN}`),
+      });
+      await fillInvite();
+      await waitFor(() => {
+        expect(href(app)).toBe("/sign-in");
+      });
+      expectNoToken(app);
+      await expectTheFlowIsOver(app);
+    });
+
+    test("the API refuses the invite", async () => {
+      startGateway();
+      override("post", "/api/auth/accept-invite", () =>
+        apiError(404, "not_found", "It does not exist."),
+      );
+      const app = await renderWithApp(null, {
+        history: openInBrowser(`/accept-invite?token=${INVITE_TOKEN}`),
+      });
+      await fillInvite();
+      expect(await screen.findByRole("alert")).toHaveTextContent(INVALID_INVITE);
+      expectNoToken(app);
+      await act(async () => {
+        await app.router.navigate({ to: "/sign-in" });
+      });
+      await expectTheFlowIsOver(app);
+    });
+
+    test("the user stays signed in", async () => {
+      const gateway = startGateway({ signedIn: true });
+      const app = await renderWithApp(null, {
+        history: openInBrowser(`/accept-invite?token=${INVITE_TOKEN}`),
+      });
+      await userEvent.click(await screen.findByRole("link", { name: "Stay signed in" }));
+      await waitFor(() => {
+        expect(heading("Overview")).toBeInTheDocument();
+      });
+      expect(gateway.logouts).toBe(0);
+      expectNoToken(app);
+      await expectTheFlowIsOver(app);
+    });
+
+    test("the user goes to another route", async () => {
+      startGateway();
+      const app = await renderWithApp(null, {
+        history: openInBrowser(`/accept-invite?token=${INVITE_TOKEN}`),
+      });
+      expect(await screen.findByLabelText("Password")).toBeInTheDocument();
+      await act(async () => {
+        await app.router.navigate({ to: "/sign-in" });
+      });
+      expect(heading("Sign in")).toBeInTheDocument();
+      expectNoToken(app);
+      await expectTheFlowIsOver(app);
+    });
+
+    test.each([
+      ["answers", () => noContent()],
+      ["fails", networkFailure],
+    ])("the user leaves while the sign-out runs, which then %s", async (_, answer) => {
+      startGateway({ signedIn: true });
+      const door = gate();
+      let asked = 0;
+      override("post", "/api/auth/logout", async () => {
+        asked += 1;
+        await door.opened;
+        return answer();
+      });
+      const app = await renderWithApp(null, {
+        history: openInBrowser(`/accept-invite?token=${INVITE_TOKEN}`),
+      });
+      await userEvent.click(await screen.findByRole("button", { name: "Sign out and continue" }));
+      await waitFor(() => {
+        expect(asked).toBe(1);
+      });
+      // Both are disabled while the sign-out runs.
+      expect(screen.getByRole("button", { name: /Sign(ing)? out/ })).toBeDisabled();
+      const stay = screen.getByText("Stay signed in").closest("a, button");
+      expect(stay).not.toBeNull();
+      expect(
+        stay?.getAttribute("aria-disabled") === "true" || stay?.hasAttribute("disabled") === true,
+      ).toBe(true);
+      expect(stay).not.toHaveAttribute("href");
+
+      // The user leaves by the address, and the call settles after that.
+      await act(async () => {
+        await app.router.navigate({ to: "/keys" });
+      });
+      await act(async () => {
+        door.open();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      await waitFor(() => {
+        expect(heading("Sign in")).toBeInTheDocument();
+      });
+      expectNoToken(app);
+      await expectTheFlowIsOver(app);
+    });
+  });
+
+  test.each([
+    ["the app is loading", () => undefined],
+    [
+      "the gateway cannot be reached",
+      () => {
+        override("get", "/api/setup", networkFailure);
+      },
+    ],
+  ])("the token leaves the URL while %s", async (_, arrange) => {
+    startGateway();
+    const door = gate();
+    override("get", "/api/auth/me", async () => {
+      await door.opened;
+      return apiError(401, "unauthorized", "Sign in to continue.");
+    });
+    arrange();
+    window.history.replaceState(null, "", `/accept-invite?token=${INVITE_TOKEN}`);
+    const { AppProviders } = await import("@/providers");
+    const { createAppRouter } = await import("@/router");
+    const { RouterProvider } = await import("@tanstack/react-router");
+    const { render } = await import("@testing-library/react");
+    const router = createAppRouter({ history: createBrowserHistory() });
+    const view = render(
+      <AppProviders queryClient={createQueryClient({ retry: false })}>
+        <RouterProvider router={router} />
+      </AppProviders>,
+    );
+    await waitFor(() => {
+      expect(window.location.href).not.toContain("token");
+    });
+    // The session is not known yet: the page itself is not there.
+    expect(screen.queryByRole("heading", { name: "Accept your invite" })).toBeNull();
+    expect(window.location.pathname).toBe("/accept-invite");
+    expect(JSON.stringify(router.state)).not.toContain(INVITE_TOKEN);
+    expect(shown()).not.toContain(INVITE_TOKEN);
+    door.open();
+    view.unmount();
   });
 
   test("no link of the page carries the token", async () => {

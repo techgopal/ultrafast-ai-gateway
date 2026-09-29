@@ -62,6 +62,38 @@ function ToSignIn({ comeBack }: { comeBack: boolean }) {
   return null;
 }
 
+const INVITE_PAGE = "/accept-invite";
+
+/**
+ * Takes the token of an invite link out of the address and gives it to the
+ * session to hold. This runs above the gate, so the token is gone from the
+ * address also while the app loads or cannot reach the gateway. The token is
+ * dropped as soon as the address is that of another page.
+ */
+function useInviteToken() {
+  const router = useRouter();
+  const { holdInvite, dropInvite } = useSessionControl();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const searchStr = useRouterState({ select: (state) => state.location.searchStr });
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  useEffect(() => {
+    if (pathname !== INVITE_PAGE) {
+      dropInvite();
+      return;
+    }
+    const search = new URLSearchParams(searchStr);
+    const token = search.get("token");
+    if (token === null) return;
+    if (token !== "") holdInvite(token);
+    search.delete("token");
+    const rest = search.toString();
+    // Replaces the entry of the history: with a browser, `history.replaceState`.
+    router.history.replace(
+      INVITE_PAGE + (rest === "" ? "" : `?${rest}`) + (hash === "" ? "" : `#${hash}`),
+    );
+  }, [router, pathname, searchStr, hash, holdInvite, dropInvite]);
+}
+
 /**
  * Nothing of the app shows before it is known whether the gateway is set up
  * and who is signed in. While it is not set up, every address is `/setup`.
@@ -70,6 +102,7 @@ function Root() {
   const session = useSession();
   const { needsSetup, problem, retry } = useSessionControl();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  useInviteToken();
 
   if (problem !== null) {
     return (
