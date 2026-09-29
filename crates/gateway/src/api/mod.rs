@@ -43,9 +43,14 @@ const TOUCH_INTERVAL_SECONDS: i64 = 60;
 /// Longest accepted name of a user, a key or an access token, in characters.
 pub const MAX_NAME_CHARS: usize = 100;
 
-/// Every route of `/api` with its description. The router and the OpenAPI
-/// spec are both made from this, so a route cannot exist without being in
-/// the spec. Paths are relative to `/api`.
+/// Every route of `/api` with its description. Paths are relative to
+/// `/api`. The router and the OpenAPI spec are both made from this, so a
+/// route registered here through `routes!` is in both.
+///
+/// Nothing enforces that for a route added any other way: one added with
+/// `OpenApiRouter::route`, on the axum router after `split_for_parts`, or
+/// at another registration site is served but is not in the spec, and so
+/// escapes the role table test. Add routes only here, only with `routes!`.
 pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(auth::setup_status, auth::setup))
