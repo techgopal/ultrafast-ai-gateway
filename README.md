@@ -30,12 +30,35 @@ address of the proxy, so 20 failed sign-ins from anyone block sign-in for
 everyone for 15 minutes. This is a known limitation until forwarded addresses
 are supported.
 
+### The console
+
+The web console is served by the same binary at `/`. It is compiled into the
+binary from `ui/dist`, so build the console first, then the gateway:
+
+```bash
+pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build && cargo build --release -p ultrafast-gateway
+```
+
+This needs Node 22 and pnpm. `cargo build` alone never runs Node and works
+without it: the binary then serves a page at `/` that says the console was not
+built, and `/api`, `/v1` and `/health` work as usual. The Docker image builds
+both.
+
+To work on the console, run a gateway on port 3900 with `--insecure-cookies`
+(plain HTTP on your own machine only) and the Vite dev server next to it,
+which passes `/api`, `/v1` and `/health` on to that gateway:
+
+```bash
+cargo run -p ultrafast-gateway -- serve --port 3900 --insecure-cookies
+pnpm --dir ui dev
+```
+
 Call it with any OpenAI SDK by setting the base URL to `http://127.0.0.1:3000/v1`
 and the model to `provider/model`, for example `anthropic/claude-sonnet-5`.
 
 What works today: chat completions, streaming, OpenAI-compatible and Anthropic
-providers. Not yet: tools, images, the console, users and teams, routing,
-limits and budgets.
+providers, and the shell of the console. Not yet: tools, images, the pages of
+the console, routing, limits and budgets.
 
 > **A high-performance AI gateway built in Rust** that provides a unified interface to 10+ LLM providers with advanced routing, caching, and monitoring capabilities.
 

@@ -4,6 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use axum::http::header::{CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS};
+use axum::http::{HeaderValue, StatusCode};
+use axum::middleware::map_response;
+use axum::response::Response;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde_json::json;
@@ -11,11 +15,13 @@ use tokio::sync::{watch, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::api;
+use crate::errors::error_response;
 use crate::identity::limiter::LoginLimiter;
 use crate::proxy;
 use crate::secrets::Cipher;
 use crate::snapshot::Snapshot;
 use crate::store::Store;
+use crate::web;
 
 /// How many passwords may be hashed at the same time.
 pub const MAX_CONCURRENT_HASHES: usize = 4;
@@ -110,10 +116,37 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(|| async { Json(json!({ "status": "ok" })) }))
         .route("/v1/chat/completions", post(proxy::chat_completions))
-        .nest("/api", api::router())
+        // Every other path under `/v1` is answered here, so the console's
+        // pages never stand in for a model API that does not exist.
+        .route("/v1", any(v1_not_found))
+        .route("/v1/", any(v1_not_found))
+        .route("/v1/{*rest}", any(v1_not_found))
+        .nest("/api", api::router().layer(map_response(api_headers)))
         // The nested router does not see this path.
-        .route("/api/", any(|| async { api::ApiError::not_found() }))
+        .route(
+            "/api/",
+            any(|| async { api::ApiError::not_found() }).layer(map_response(api_headers)),
+        )
+        // The console: `/`, its files, and every path not claimed above.
+        .merge(web::router())
         .with_state(state)
+}
+
+async fn v1_not_found() -> Response {
+    error_response(
+        StatusCode::NOT_FOUND,
+        "invalid_request_error",
+        "Unknown path.",
+    )
+}
+
+/// What every answer of `/api` carries: it is never stored by a browser or
+/// a proxy, and never read as anything but its declared type.
+async fn api_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    response
 }
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
