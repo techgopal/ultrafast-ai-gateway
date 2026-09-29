@@ -105,23 +105,39 @@ pub struct TeamView {
     role: TeamRole,
 }
 
-/// Hashes off the async threads: Argon2 takes tens of milliseconds.
-async fn hash_blocking(hashing: &Semaphore, password: String) -> anyhow::Result<String> {
-    let _permit = hashing.acquire().await.context("hashing is closed")?;
-    tokio::task::spawn_blocking(move || hash_password(&password))
+/// Runs `work` on a blocking thread while holding one permit of `hashing`.
+/// The permit belongs to the work, not to the caller: a caller that goes
+/// away while the work runs does not free it early.
+async fn run_bounded<T: Send + 'static>(
+    hashing: &Arc<Semaphore>,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> anyhow::Result<T> {
+    let permit = hashing
+        .clone()
+        .acquire_owned()
         .await
-        .context("the hashing task failed")?
+        .context("hashing is closed")?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .context("the hashing task failed")
+}
+
+/// Hashes off the async threads: Argon2 takes tens of milliseconds.
+async fn hash_blocking(hashing: &Arc<Semaphore>, password: String) -> anyhow::Result<String> {
+    run_bounded(hashing, move || hash_password(&password)).await?
 }
 
 /// Checks a password against a stored hash, off the async threads. Without
 /// a hash it spends the same effort and answers `false`.
 async fn verify_blocking(
-    hashing: &Semaphore,
+    hashing: &Arc<Semaphore>,
     password: String,
     hash: Option<String>,
 ) -> anyhow::Result<bool> {
-    let _permit = hashing.acquire().await.context("hashing is closed")?;
-    tokio::task::spawn_blocking(move || match hash {
+    run_bounded(hashing, move || match hash {
         Some(hash) => verify_password(&password, &hash),
         None => {
             verify_dummy(&password);
@@ -129,7 +145,6 @@ async fn verify_blocking(
         }
     })
     .await
-    .context("the verification task failed")
 }
 
 /// The `Set-Cookie` value for the session cookie.
@@ -205,7 +220,7 @@ pub async fn bootstrap_admin(
     let email = normalize_email(&email).map_err(|m| anyhow!("UF_ADMIN_EMAIL: {m}"))?;
     check_password_policy(&password).map_err(|m| anyhow!("UF_ADMIN_PASSWORD: {m}"))?;
     // Startup hashes one password, before the shared limit exists.
-    let hash = hash_blocking(&Semaphore::new(1), password).await?;
+    let hash = hash_blocking(&Arc::new(Semaphore::new(1)), password).await?;
     if create_first_admin(store, &email, BOOTSTRAP_NAME, &hash)
         .await?
         .is_some()
@@ -595,6 +610,9 @@ pub async fn change_password(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
     use super::*;
 
     const PASSWORD: &str = "correct horse battery";
@@ -662,6 +680,59 @@ mod tests {
             assert!(!shown.contains("secret"), "{shown}");
         }
         assert_eq!(store.count_users().await.unwrap(), 0);
+    }
+
+    /// Counts the closures running at once and the most seen so far.
+    #[derive(Default)]
+    struct Running {
+        now: AtomicUsize,
+        most: AtomicUsize,
+        started: AtomicUsize,
+    }
+
+    fn slow_work(running: Arc<Running>) -> impl FnOnce() + Send + 'static {
+        move || {
+            let now = running.now.fetch_add(1, Ordering::SeqCst) + 1;
+            running.most.fetch_max(now, Ordering::SeqCst);
+            running.started.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            running.now.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dropped_caller_keeps_its_permit_until_the_hash_ends() {
+        const PERMITS: usize = 2;
+        let hashing = Arc::new(Semaphore::new(PERMITS));
+        let running = Arc::new(Running::default());
+        let start = |count: usize| -> Vec<tokio::task::JoinHandle<()>> {
+            (0..count)
+                .map(|_| {
+                    let (hashing, running) = (hashing.clone(), running.clone());
+                    tokio::spawn(async move {
+                        run_bounded(&hashing, slow_work(running)).await.unwrap();
+                    })
+                })
+                .collect()
+        };
+
+        // The first callers go away while their work runs.
+        let dropped = start(PERMITS);
+        while running.started.load(Ordering::SeqCst) < PERMITS {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        for task in dropped {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        }
+        // More callers than permits arrive at once.
+        for task in start(PERMITS * 2) {
+            task.await.unwrap();
+        }
+
+        assert_eq!(running.started.load(Ordering::SeqCst), PERMITS * 3);
+        assert_eq!(running.most.load(Ordering::SeqCst), PERMITS);
+        assert_eq!(hashing.available_permits(), PERMITS);
     }
 
     #[test]
