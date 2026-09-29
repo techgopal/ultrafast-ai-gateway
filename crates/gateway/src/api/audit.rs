@@ -35,7 +35,7 @@ fn positive(raw: &str) -> Option<i64> {
 /// last entry of the page before.
 #[utoipa::path(
     get,
-    path = "/api/audit",
+    path = "/audit",
     tag = "audit",
     params(
         ("limit" = Option<i64>, Query, description = "How many entries to return, 1 to 200. 50 when left out."),

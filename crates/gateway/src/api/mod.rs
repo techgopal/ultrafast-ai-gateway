@@ -20,10 +20,11 @@ use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::app::AppState;
 use crate::identity::policy::{authorize, Action, Decision};
@@ -40,39 +41,35 @@ pub const MAX_BODY_BYTES: usize = 64 * 1024;
 /// A user or token that was active this recently is not written again.
 const TOUCH_INTERVAL_SECONDS: i64 = 60;
 
+/// Every route of `/api` with its description. The router and the OpenAPI
+/// spec are both made from this, so a route cannot exist without being in
+/// the spec. Paths are relative to `/api`.
+pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
+    OpenApiRouter::new()
+        .routes(routes!(auth::setup_status, auth::setup))
+        .routes(routes!(auth::login))
+        .routes(routes!(auth::logout))
+        .routes(routes!(auth::me))
+        .routes(routes!(auth::accept_invite))
+        .routes(routes!(auth::change_password))
+        .routes(routes!(users::list, users::invite))
+        .routes(routes!(users::view, users::update, users::delete))
+        .routes(routes!(users::reinvite))
+        .routes(routes!(teams::list, teams::create))
+        .routes(routes!(teams::view, teams::rename, teams::delete))
+        .routes(routes!(teams::put_member, teams::remove_member))
+        .routes(routes!(keys::list, keys::create))
+        .routes(routes!(keys::view, keys::revoke))
+        .routes(routes!(providers::list, providers::create))
+        .routes(routes!(providers::update, providers::delete))
+        .routes(routes!(tokens::list, tokens::create))
+        .routes(routes!(tokens::revoke))
+        .routes(routes!(audit::list))
+}
+
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/setup", get(auth::setup_status).post(auth::setup))
-        .route("/auth/login", post(auth::login))
-        .route("/auth/logout", post(auth::logout))
-        .route("/auth/me", get(auth::me))
-        .route("/auth/accept-invite", post(auth::accept_invite))
-        .route("/auth/password", post(auth::change_password))
-        .route("/users", get(users::list).post(users::invite))
-        .route(
-            "/users/{id}",
-            get(users::view).patch(users::update).delete(users::delete),
-        )
-        .route("/users/{id}/invite", post(users::reinvite))
-        .route("/teams", get(teams::list).post(teams::create))
-        .route(
-            "/teams/{id}",
-            get(teams::view).patch(teams::rename).delete(teams::delete),
-        )
-        .route(
-            "/teams/{id}/members/{user_id}",
-            put(teams::put_member).delete(teams::remove_member),
-        )
-        .route("/keys", get(keys::list).post(keys::create))
-        .route("/keys/{id}", get(keys::view).delete(keys::revoke))
-        .route("/providers", get(providers::list).post(providers::create))
-        .route(
-            "/providers/{id}",
-            patch(providers::update).delete(providers::delete),
-        )
-        .route("/tokens", get(tokens::list).post(tokens::create))
-        .route("/tokens/{id}", delete(tokens::revoke))
-        .route("/audit", get(audit::list))
+    let (router, _) = documented().split_for_parts();
+    router
         .fallback(|| async { ApiError::not_found() })
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))

@@ -83,7 +83,7 @@ async fn keep_an_admin(tx: &mut Tx<'_>, was: &UserRow) -> Result<(), ApiError> {
 
 #[utoipa::path(
     get,
-    path = "/api/users",
+    path = "/users",
     tag = "users",
     responses(
         (status = 200, description = "The users the caller may see.", body = super::openapi::UserList),
@@ -113,7 +113,7 @@ pub async fn list(
 
 #[utoipa::path(
     post,
-    path = "/api/users",
+    path = "/users",
     tag = "users",
     request_body = InviteRequest,
     responses(
@@ -201,7 +201,7 @@ pub async fn invite(
 
 #[utoipa::path(
     post,
-    path = "/api/users/{id}/invite",
+    path = "/users/{id}/invite",
     tag = "users",
     params(
         ("id" = i64, Path, description = "The id of the user."),
@@ -259,7 +259,7 @@ pub async fn reinvite(
 
 #[utoipa::path(
     get,
-    path = "/api/users/{id}",
+    path = "/users/{id}",
     tag = "users",
     params(
         ("id" = i64, Path, description = "The id of the user."),
@@ -293,7 +293,7 @@ pub async fn view(
 
 #[utoipa::path(
     patch,
-    path = "/api/users/{id}",
+    path = "/users/{id}",
     tag = "users",
     params(
         ("id" = i64, Path, description = "The id of the user."),
@@ -465,7 +465,7 @@ fn delete_summary(email: &str, revoked_keys: u64) -> String {
 
 #[utoipa::path(
     delete,
-    path = "/api/users/{id}",
+    path = "/users/{id}",
     tag = "users",
     params(
         ("id" = i64, Path, description = "The id of the user."),

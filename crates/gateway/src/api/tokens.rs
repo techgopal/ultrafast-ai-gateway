@@ -55,7 +55,7 @@ impl From<TokenRow> for TokenView {
 
 #[utoipa::path(
     get,
-    path = "/api/tokens",
+    path = "/tokens",
     tag = "tokens",
     responses(
         (status = 200, description = "The caller's access tokens.", body = super::openapi::TokenList),
@@ -77,7 +77,7 @@ pub async fn list(
 
 #[utoipa::path(
     post,
-    path = "/api/tokens",
+    path = "/tokens",
     tag = "tokens",
     request_body = CreateTokenRequest,
     responses(
@@ -128,7 +128,7 @@ pub async fn create(
 
 #[utoipa::path(
     delete,
-    path = "/api/tokens/{id}",
+    path = "/tokens/{id}",
     tag = "tokens",
     params(
         ("id" = i64, Path, description = "The id of the access token."),

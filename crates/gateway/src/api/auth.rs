@@ -217,7 +217,7 @@ pub async fn bootstrap_admin(
 
 #[utoipa::path(
     get,
-    path = "/api/setup",
+    path = "/setup",
     tag = "auth",
     responses(
         (status = 200, description = "Whether the first admin still has to be created.", body = super::openapi::SetupStatus),
@@ -235,7 +235,7 @@ fn already_set_up() -> ApiError {
 
 #[utoipa::path(
     post,
-    path = "/api/setup",
+    path = "/setup",
     tag = "auth",
     request_body = SetupRequest,
     responses(
@@ -308,7 +308,7 @@ fn attempt_succeeded(state: &AppState, key: &str, addr: IpAddr) {
 
 #[utoipa::path(
     post,
-    path = "/api/auth/login",
+    path = "/auth/login",
     tag = "auth",
     request_body = LoginRequest,
     responses(
@@ -365,7 +365,7 @@ pub async fn login(
 
 #[utoipa::path(
     post,
-    path = "/api/auth/logout",
+    path = "/auth/logout",
     tag = "auth",
     responses(
         (status = 204, description = "Signed out. The session cookie is cleared."),
@@ -416,7 +416,7 @@ pub async fn logout(
 
 #[utoipa::path(
     get,
-    path = "/api/auth/me",
+    path = "/auth/me",
     tag = "auth",
     responses(
         (status = 200, description = "The caller and their teams.", body = super::openapi::MeResponse),
@@ -464,7 +464,7 @@ pub async fn me(State(state): State<Arc<AppState>>, authed: Authed) -> Result<Re
 
 #[utoipa::path(
     post,
-    path = "/api/auth/accept-invite",
+    path = "/auth/accept-invite",
     tag = "auth",
     request_body = AcceptInviteRequest,
     responses(
@@ -523,7 +523,7 @@ pub async fn accept_invite(
 
 #[utoipa::path(
     post,
-    path = "/api/auth/password",
+    path = "/auth/password",
     tag = "auth",
     request_body = ChangePasswordRequest,
     responses(

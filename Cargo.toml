@@ -36,4 +36,5 @@ tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
 wiremock = "0.6"

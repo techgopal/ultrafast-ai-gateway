@@ -104,7 +104,7 @@ async fn provider_of(store: &Store, raw_id: &str) -> Result<ProviderRow, ApiErro
 
 #[utoipa::path(
     get,
-    path = "/api/providers",
+    path = "/providers",
     tag = "providers",
     responses(
         (status = 200, description = "Every provider.", body = super::openapi::ProviderList),
@@ -125,7 +125,7 @@ pub async fn list(
 
 #[utoipa::path(
     post,
-    path = "/api/providers",
+    path = "/providers",
     tag = "providers",
     request_body = CreateProviderRequest,
     responses(
@@ -211,7 +211,7 @@ pub async fn create(
 
 #[utoipa::path(
     patch,
-    path = "/api/providers/{id}",
+    path = "/providers/{id}",
     tag = "providers",
     params(
         ("id" = i64, Path, description = "The id of the provider."),
@@ -318,7 +318,7 @@ pub async fn update(
 
 #[utoipa::path(
     delete,
-    path = "/api/providers/{id}",
+    path = "/providers/{id}",
     tag = "providers",
     params(
         ("id" = i64, Path, description = "The id of the provider."),

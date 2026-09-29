@@ -11,12 +11,12 @@ use utoipa::openapi::schema::{ObjectBuilder, Type};
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::Required;
 use utoipa::{Modify, OpenApi, ToSchema};
+use utoipa_axum::router::OpenApiRouter;
 
 use super::auth::{TeamView, UserView};
 use super::keys::KeyView;
 use super::providers::ProviderView;
 use super::tokens::TokenView;
-use super::{audit, auth, keys, providers, teams, tokens, users};
 use super::{CSRF_HEADER, SESSION_COOKIE};
 use crate::store::{AuditRow, MemberDetail, TeamSummary};
 
@@ -135,40 +135,6 @@ pub struct AuditPage {
         title = "Ultrafast Gateway Admin API",
         description = "The admin API of the Ultrafast gateway, served under /api."
     ),
-    paths(
-        auth::setup_status,
-        auth::setup,
-        auth::login,
-        auth::logout,
-        auth::me,
-        auth::accept_invite,
-        auth::change_password,
-        users::list,
-        users::invite,
-        users::view,
-        users::update,
-        users::delete,
-        users::reinvite,
-        teams::list,
-        teams::create,
-        teams::view,
-        teams::rename,
-        teams::delete,
-        teams::put_member,
-        teams::remove_member,
-        keys::list,
-        keys::create,
-        keys::view,
-        keys::revoke,
-        providers::list,
-        providers::create,
-        providers::update,
-        providers::delete,
-        tokens::list,
-        tokens::create,
-        tokens::revoke,
-        audit::list,
-    ),
     tags(
         (name = "auth", description = "Setup, sign-in and the caller's own account."),
         (name = "users", description = "Users and their invites."),
@@ -177,8 +143,7 @@ pub struct AuditPage {
         (name = "providers", description = "Upstream providers."),
         (name = "tokens", description = "The caller's access tokens for /api."),
         (name = "audit", description = "The audit log."),
-    ),
-    modifiers(&Credentials)
+    )
 )]
 struct AdminApi;
 
@@ -237,10 +202,16 @@ impl Modify for Credentials {
     }
 }
 
-/// The description of `/api`. It reads nothing: not the data directory,
-/// not the database, not the master key.
+/// The description of `/api`, made from the routes of the router. It
+/// reads nothing: not the data directory, not the database, not the
+/// master key.
 pub fn spec() -> utoipa::openapi::OpenApi {
-    AdminApi::openapi()
+    let (_, mut spec) = OpenApiRouter::with_openapi(AdminApi::openapi())
+        .nest("/api", super::documented())
+        .split_for_parts();
+    // After the routes are in, as it adds to each operation.
+    Credentials.modify(&mut spec);
+    spec
 }
 
 #[cfg(test)]
