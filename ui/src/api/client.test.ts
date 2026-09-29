@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import { apiError, networkFailure, noContent, override } from "@/test/handlers";
 import { api, onUnauthenticated, setCsrfToken, type ResponseOf } from "./client";
-import { ApiError, NetworkError } from "./errors";
+import { ApiError, NetworkError, SessionOverError } from "./errors";
 import type { components } from "./schema";
 
 type Schemas = components["schemas"];
@@ -403,6 +403,40 @@ describe("the end of the session", () => {
     await failure(api.get("/api/teams"));
     expect(handler).toHaveBeenCalledTimes(1);
     unsubscribe();
+  });
+
+  test.each([
+    ["a 401", unauthorized],
+    ["a 200", () => noContent()],
+    ["a 500", () => apiError(500, "internal", "It failed.")],
+  ])("%s for a session that is over is an error of its own and tells nobody", async (_, answer) => {
+    const handler = vi.fn();
+    const unsubscribe = onUnauthenticated(handler);
+    let open: () => void = () => undefined;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    override("post", "/api/teams", async () => {
+      await opened;
+      return answer();
+    });
+    setCsrfToken(fixtures.csrfToken);
+    const call = failure(api.post("/api/teams", { body: { name: "x" } }));
+    setCsrfToken(null);
+    setCsrfToken("the-token-of-the-next-session");
+    open();
+    const error = await call;
+    expect(error).toBeInstanceOf(SessionOverError);
+    expect(handler).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  test("the token of `me` does not make what was asked beside it an old answer", async () => {
+    const teams = api.get("/api/teams");
+    setCsrfToken(fixtures.csrfToken);
+    // The same token again, as `me` gives it every time it is asked.
+    setCsrfToken(fixtures.csrfToken);
+    await expect(teams).resolves.toEqual({ teams: fixtures.teamList });
   });
 
   test("a 401 that nobody hears is not counted", async () => {

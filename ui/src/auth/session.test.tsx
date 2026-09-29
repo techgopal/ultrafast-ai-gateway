@@ -5,7 +5,7 @@ import { createMemoryHistory } from "@tanstack/react-router";
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
 import { api, onUnauthenticated } from "@/api/client";
-import { keysOptions, meOptions, useKeys } from "@/api/queries";
+import { keysOptions, meOptions, useCreateTeam, useKeys, useTeams } from "@/api/queries";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -19,7 +19,7 @@ import * as fixtures from "@/test/fixtures";
 import { gate, PASSWORD, startGateway } from "@/test/gateway";
 import { apiError, networkFailure, noContent, ok, override } from "@/test/handlers";
 import { renderWithApp, unauthorized, type AppRenderResult } from "@/test/render";
-import { useSession } from "./session";
+import { useSession, useSessionControl, useSignOut } from "./session";
 
 const SESSION_ENDED = "Your session ended. Sign in again.";
 
@@ -584,6 +584,207 @@ describe("the session", () => {
     expect(screen.getByRole("status")).toHaveTextContent(SESSION_ENDED);
     expect(app.queryClient.getQueryCache().getAll()).toEqual([]);
     expect(await tokenOfAWrite()).toBeNull();
+  });
+});
+
+describe("answers of a session that is over", () => {
+  /** A write that is on its way and answers when the gate opens. */
+  function aWriteOnItsWay(answer: () => Response) {
+    const door = gate();
+    let asked = 0;
+    override("post", "/api/keys", async () => {
+      asked += 1;
+      await door.opened;
+      return answer();
+    });
+    const settled = api
+      .post("/api/keys", { body: { name: "a key" } })
+      .then(
+        () => "resolved",
+        (error: unknown) => (error instanceof Error ? error.name : "rejected"),
+      );
+    return {
+      settled,
+      answer: door.open,
+      started: () =>
+        waitFor(() => {
+          expect(asked).toBe(1);
+        }),
+    };
+  }
+
+  test("a 401 for the user before does not end the session of the next user", async () => {
+    startGateway({ signedIn: true });
+    const app = await renderWithApp(null, { route: "/keys" });
+    const told = vi.fn();
+    const stop = onUnauthenticated(told);
+    const write = aWriteOnItsWay(unauthorized);
+    await write.started();
+
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in");
+    });
+    const next = startGateway({ me: fixtures.me.lena });
+    next.csrfToken = "the-token-of-the-next-user";
+    await signIn(PASSWORD, "lena@example.test");
+    await waitFor(() => {
+      expect(heading("Overview")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      write.answer();
+      expect(await write.settled).toBe("SessionOverError");
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(told).not.toHaveBeenCalled();
+    expect(heading("Overview")).toBeInTheDocument();
+    expect(href(app)).toBe("/");
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    expect(within(nav).getByText("Lena Fischer")).toBeInTheDocument();
+    expect(screen.queryByText(SESSION_ENDED)).toBeNull();
+    expect(await tokenOfAWrite()).toBe("the-token-of-the-next-user");
+
+    // The session of the next user still hears of its own end.
+    await aCallFindsTheSessionEnded();
+    expect(told).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  test("a success for the user before refetches nothing of the next user", async () => {
+    const door = gate();
+    let teamCalls = 0;
+    let created = 0;
+    override("get", "/api/teams", () => {
+      teamCalls += 1;
+      return ok("get", "/api/teams", 200, { teams: fixtures.teamList });
+    });
+    override("post", "/api/teams", async () => {
+      created += 1;
+      await door.opened;
+      return ok("post", "/api/teams", 201, fixtures.teams.growth);
+    });
+    const outcome: string[] = [];
+
+    function Teams() {
+      const teams = useTeams();
+      const create = useCreateTeam();
+      return (
+        <div>
+          <p>{teams.isSuccess ? "teams shown" : "teams loading"}</p>
+          <Button
+            type="button"
+            onClick={() => {
+              create.mutate(
+                { name: "Growth" },
+                {
+                  onSuccess: () => outcome.push("success"),
+                  onError: () => outcome.push("error"),
+                },
+              );
+            }}
+          >
+            Create team
+          </Button>
+        </div>
+      );
+    }
+    function Page() {
+      const session = useSession();
+      const signOut = useSignOut();
+      const { begin } = useSessionControl();
+      if (session.status === "loading") return <p>loading</p>;
+      if (session.status === "signedOut") {
+        return (
+          <Button
+            type="button"
+            onClick={() => {
+              void api
+                .post("/api/auth/login", { body: { email: "lena@example.test", password: PASSWORD } })
+                .then((answer) => {
+                  begin(answer.csrf_token);
+                });
+            }}
+          >
+            Enter
+          </Button>
+        );
+      }
+      return (
+        <main>
+          <p>{session.me.user.name}</p>
+          <Teams />
+          <Button type="button" onClick={() => void signOut()}>
+            Leave
+          </Button>
+        </main>
+      );
+    }
+
+    startGateway({ signedIn: true });
+    const app = await renderWithApp(<Page />);
+    await screen.findByText("teams shown");
+    expect(teamCalls).toBe(1);
+    await userEvent.click(screen.getByRole("button", { name: "Create team" }));
+    await waitFor(() => {
+      expect(created).toBe(1);
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Leave" }));
+    startGateway({ me: fixtures.me.lena });
+    await userEvent.click(await screen.findByRole("button", { name: "Enter" }));
+    await screen.findByText("Lena Fischer");
+    await screen.findByText("teams shown");
+    expect(teamCalls).toBe(2);
+    const before = app.queryClient
+      .getQueryCache()
+      .getAll()
+      .map((query) => [query.queryHash, query.state.dataUpdatedAt, query.state.isInvalidated]);
+
+    await act(async () => {
+      door.open();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(teamCalls).toBe(2);
+    expect(outcome).toEqual([]);
+    expect(
+      app.queryClient
+        .getQueryCache()
+        .getAll()
+        .map((query) => [query.queryHash, query.state.dataUpdatedAt, query.state.isInvalidated]),
+    ).toEqual(before);
+    expect(screen.getByText("Lena Fischer")).toBeInTheDocument();
+  });
+
+  test("a 401 after a sign-out shows no notice", async () => {
+    startGateway({ signedIn: true });
+    const app = await renderWithApp(null, { route: "/keys" });
+    const told = vi.fn();
+    const stop = onUnauthenticated(told);
+    const write = aWriteOnItsWay(unauthorized);
+    await write.started();
+
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in");
+    });
+    await act(async () => {
+      write.answer();
+      expect(await write.settled).toBe("SessionOverError");
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(told).not.toHaveBeenCalled();
+    expect(heading("Sign in")).toBeInTheDocument();
+    expect(href(app)).toBe("/sign-in");
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText(SESSION_ENDED)).toBeNull();
+    stop();
   });
 });
 

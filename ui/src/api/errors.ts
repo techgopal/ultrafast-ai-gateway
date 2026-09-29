@@ -32,3 +32,15 @@ export class NetworkError extends Error {
     super("Could not reach the gateway.");
   }
 }
+
+/**
+ * The answer belongs to a session that has ended since the request was made.
+ * Whatever it says, it says nothing to whoever is signed in now.
+ */
+export class SessionOverError extends Error {
+  override readonly name = "SessionOverError";
+
+  constructor() {
+    super("The session this request was made in is over.");
+  }
+}

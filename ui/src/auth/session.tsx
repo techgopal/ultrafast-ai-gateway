@@ -21,7 +21,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, onUnauthenticated, setCsrfToken } from "@/api/client";
-import { ApiError, type NetworkError } from "@/api/errors";
+import { ApiError } from "@/api/errors";
 import { meOptions, queryKeys, setupStatusOptions } from "@/api/queries";
 import type { Me } from "./guards";
 
@@ -41,7 +41,7 @@ export interface SessionControl {
   /** True while the gateway has no user yet. */
   needsSetup: boolean;
   /** Why the app could not learn who is signed in; `null` when it could. */
-  problem: ApiError | NetworkError | null;
+  problem: Error | null;
   /** Asks again after a problem. */
   retry: () => void;
   /** What the sign-in page tells the user. */
@@ -111,7 +111,7 @@ function LiveSession({ actions, children }: { actions: Actions; children: ReactN
 
   const value = useMemo((): SessionContextValue => {
     const signedOut = isUnauthorized(me.error);
-    let problem: ApiError | NetworkError | null = null;
+    let problem: Error | null = null;
     if (setup.data === undefined && setup.error !== null) problem = setup.error;
     else if (me.data === undefined && me.error !== null && !signedOut) problem = me.error;
 
