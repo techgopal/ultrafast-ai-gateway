@@ -4,9 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { useRef } from "react";
 import { describe, expect, test } from "vitest";
 import { api } from "@/api/client";
-import { NetworkError, SessionOverError } from "@/api/errors";
 import { Field } from "@/components/Field";
-import { applyApiError, useFormFailure } from "@/components/form";
+import { ApiError, NetworkError, SessionOverError } from "@/api/errors";
+import { applyApiError, onField, useFormFailure } from "@/components/form";
 import { FormError } from "@/components/FormError";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -411,5 +411,29 @@ describe("applyApiError", () => {
     expect(await screen.findByText("name must be 1 to 100 characters")).toBeInTheDocument();
     expect(screen.getByText("other: x")).toBeInTheDocument();
     expect(screen.getByText("Name")).toBeInTheDocument();
+  });
+});
+
+describe("onField", () => {
+  const taken = errors.user_exists;
+  const error = new ApiError(taken.status, taken.body.error.code, taken.body.error.message);
+
+  test("a refusal of the code is said by the field", () => {
+    const said = onField(error, "user_exists", "email");
+    expect(said).toBeInstanceOf(ApiError);
+    expect(said).toMatchObject({
+      status: 409,
+      code: "user_exists",
+      message: taken.body.error.message,
+      fields: { email: taken.body.error.message },
+    });
+  });
+
+  test("every other error is returned as it is", () => {
+    expect(onField(error, "team_exists", "name")).toBe(error);
+    const network = new NetworkError();
+    expect(onField(network, "user_exists", "email")).toBe(network);
+    const over = new SessionOverError();
+    expect(onField(over, "user_exists", "email")).toBe(over);
   });
 });

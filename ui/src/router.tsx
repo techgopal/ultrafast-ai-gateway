@@ -19,6 +19,8 @@ import { AcceptInvite } from "@/pages/AcceptInvite";
 import { NotAvailable, PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
 import { Setup } from "@/pages/Setup";
+import { UserDetail } from "@/pages/UserDetail";
+import { Users } from "@/pages/Users";
 import { SignIn } from "@/pages/SignIn";
 
 declare module "@tanstack/react-router" {
@@ -188,6 +190,24 @@ const auditRoute = createRoute({
   component: AuditPage,
 });
 
+const usersRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/users",
+  staticData: { title: "Users" },
+  component: Users,
+});
+
+const userRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/users/$id",
+  staticData: { title: "User" },
+  component: function UserRoute() {
+    const { id } = userRoute.useParams();
+    // Another user is another page: its dialogs and its state do not carry over.
+    return <UserDetail key={id} id={id} />;
+  },
+});
+
 const signInRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/sign-in",
@@ -229,7 +249,8 @@ const routeTree = rootRoute.addChildren([
     page("/", "Overview"),
     page("/providers", "Providers"),
     page("/keys", "Virtual keys"),
-    page("/users", "Users"),
+    usersRoute,
+    userRoute,
     page("/teams", "Teams"),
     auditRoute,
     page("/account", "Account"),

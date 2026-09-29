@@ -62,7 +62,28 @@ class FakeMediaQueryList {
   }
 }
 
+/** jsdom has no layout, so nothing ever changes its size. */
+class FakeResizeObserver {
+  observe(): void {
+    return undefined;
+  }
+
+  unobserve(): void {
+    return undefined;
+  }
+
+  disconnect(): void {
+    return undefined;
+  }
+}
+
 function install(): void {
+  // Radix measures its radio buttons and checkboxes with it.
+  Object.defineProperty(window, "ResizeObserver", {
+    configurable: true,
+    writable: true,
+    value: FakeResizeObserver,
+  });
   // jsdom has no scrolling; the router resets the scroll position after it navigates.
   Object.defineProperty(window, "scrollTo", {
     configurable: true,

@@ -112,6 +112,16 @@ export function applyApiError(form: FormLike, error: unknown): void {
   storeOf(form).set({ attempt: form.state.submissionAttempts, fields, messages });
 }
 
+/**
+ * The error, said by a field of the form: a refusal such as `user_exists` is
+ * about what one field holds, and the gateway sends it without `fields`. An
+ * error of another code is returned as it is.
+ */
+export function onField(error: unknown, code: string, field: string): unknown {
+  if (!(error instanceof ApiError) || error.code !== code) return error;
+  return new ApiError(error.status, error.code, error.message, { [field]: error.message });
+}
+
 function focusOnFailure(form: HTMLFormElement | null, message: HTMLElement | null): void {
   const field = form?.querySelector<HTMLElement>('[aria-invalid="true"]');
   (field ?? message)?.focus();
