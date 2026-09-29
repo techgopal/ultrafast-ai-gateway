@@ -259,6 +259,8 @@ async fn caller_disconnect_drops_the_upstream_request() {
         .insert_provider("hang", "openai", &uri, None)
         .await
         .unwrap();
+    // `/v1` reads the snapshot, so the row written above must be loaded.
+    h.state.refresh().await.unwrap();
     let body = r#"{"model":"hang/m","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
     let resp = h
         .app

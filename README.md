@@ -22,6 +22,14 @@ UF_PROVIDER_API_KEY=sk-ant-... ./target/release/ultrafast provider add \
 ./target/release/ultrafast serve
 ```
 
+Changes made through the admin API under `/api` apply at once. Changes made
+with the CLI reach a running gateway within 30 seconds.
+
+Sign-in limiting behind a reverse proxy: the limit per address counts the
+address of the proxy, so 20 failed sign-ins from anyone block sign-in for
+everyone for 15 minutes. This is a known limitation until forwarded addresses
+are supported.
+
 Call it with any OpenAI SDK by setting the base URL to `http://127.0.0.1:3000/v1`
 and the model to `provider/model`, for example `anthropic/claude-sonnet-5`.
 
@@ -542,7 +550,7 @@ cargo clippy
 
 ### Code Quality
 
-- **Rust 1.75+** required
+- **Rust 1.88+** required
 - **Clippy** for linting
 - **rustfmt** for code formatting
 - **Tarpaulin** for test coverage

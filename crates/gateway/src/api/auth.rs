@@ -17,7 +17,7 @@ use serde_json::json;
 use tokio::sync::Semaphore;
 
 use super::SESSION_COOKIE;
-use super::{require, ApiError, ApiJson, AuthVia, Authed, ClientAddr};
+use super::{refresh_snapshot, require, ApiError, ApiJson, AuthVia, Authed, ClientAddr};
 use crate::app::AppState;
 use crate::identity::password::{
     check_password_policy, hash_password, verify_dummy, verify_password,
@@ -433,6 +433,7 @@ pub async fn accept_invite(
     })
     .await?;
     tx.commit().await?;
+    refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

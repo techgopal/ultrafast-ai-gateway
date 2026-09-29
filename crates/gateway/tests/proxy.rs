@@ -112,6 +112,8 @@ async fn bad_keys_get_401_and_never_reach_the_provider() {
         )
         .await
         .unwrap();
+    // `/v1` reads the snapshot, so the rows written above must be loaded.
+    h.state.refresh().await.unwrap();
 
     let cases: Vec<Option<String>> = vec![
         None,
@@ -245,6 +247,8 @@ async fn unreachable_provider_gets_502() {
         .insert_provider("dead", "openai", "http://127.0.0.1:1", None)
         .await
         .unwrap();
+    // `/v1` reads the snapshot, so the row written above must be loaded.
+    h.state.refresh().await.unwrap();
     let body = r#"{"model":"dead/m","messages":[{"role":"user","content":"x"}]}"#;
     let (s, b) = post_chat(&h.app, Some(&h.key), body).await;
     assert_eq!(s, StatusCode::BAD_GATEWAY);

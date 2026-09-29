@@ -12,6 +12,7 @@ repository = "https://github.com/techgopal/ultrafast-ai-gateway"
 
 [workspace.dependencies]
 anyhow = "1"
+arc-swap = "1"
 argon2 = "0.5"
 async-stream = "0.3"
 axum = "0.8"

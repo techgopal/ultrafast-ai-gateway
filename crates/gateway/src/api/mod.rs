@@ -210,6 +210,16 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
+/// Makes a committed change visible to `/v1`. Call it after `commit`, never
+/// while a `Tx` is open. When it fails the change stays committed and the
+/// next refresh picks it up.
+pub(crate) async fn refresh_snapshot(state: &AppState) -> Result<(), ApiError> {
+    state.refresh().await.map_err(|e| {
+        tracing::error!(error = %e, "snapshot refresh failed after a committed change");
+        ApiError::internal()
+    })
+}
+
 /// The id of a path segment. Anything but a positive integer written in
 /// plain digits is answered like a row that does not exist.
 pub fn path_id(raw: &str) -> Result<i64, ApiError> {

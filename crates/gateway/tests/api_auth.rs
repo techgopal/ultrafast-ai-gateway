@@ -191,7 +191,7 @@ async fn login_sets_a_strict_cookie() {
         .to_string()
         .contains(&cookie_pair(&headers)["uf_session=".len()..]));
 
-    let secure = api_on(Store::open_in_memory().await.unwrap(), true);
+    let secure = api_on(Store::open_in_memory().await.unwrap(), true).await;
     seed_user(&secure.store, EMAIL, Role::Admin, PASSWORD).await;
     let (status, headers, _) = call(
         &secure.app,
@@ -562,7 +562,7 @@ async fn expired_session_is_401() {
     // let anyone change.
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("test.db");
-    let api = api_on(Store::open(&file).await.unwrap(), false);
+    let api = api_on(Store::open(&file).await.unwrap(), false).await;
     seed_user(&api.store, EMAIL, Role::Admin, PASSWORD).await;
     let signed = sign_in(&api.app, EMAIL, PASSWORD).await;
     assert_eq!(me(&api, &signed).await.0, StatusCode::OK);

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ultrafast_gateway::api::auth::bootstrap_admin;
-use ultrafast_gateway::app::{router, shutdown_signal, AppState};
+use ultrafast_gateway::api::keys::secret_name;
+use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
 use ultrafast_gateway::config::{
     db_path, load_master_key, restrict_permissions, validate_base_url, validate_provider_name,
 };
@@ -96,6 +97,45 @@ fn env_value(name: &str) -> Result<Option<String>> {
     }
 }
 
+/// Checks every argument of the command, and trims what is stored trimmed.
+fn validate(command: &mut Command) -> Result<()> {
+    match command {
+        Command::Serve { host, port, .. } => {
+            serve_address(host, *port)?;
+        }
+        Command::Provider {
+            command:
+                ProviderCommand::Add {
+                    name,
+                    kind,
+                    base_url,
+                    api_key,
+                },
+        } => {
+            validate_provider_name(name)?;
+            if ProviderKind::parse(kind).is_none() {
+                bail!("unknown kind '{kind}'. Use 'openai' or 'anthropic'");
+            }
+            validate_base_url(base_url)?;
+            if api_key.as_deref().is_some_and(|k| k.trim().is_empty()) {
+                bail!("the API key must not be empty; leave it out for a provider without one");
+            }
+        }
+        Command::Key {
+            command: KeyCommand::Create { name },
+        } => {
+            *name = secret_name(name).map_err(anyhow::Error::msg)?.to_string();
+        }
+    }
+    Ok(())
+}
+
+fn serve_address(host: &str, port: u16) -> Result<SocketAddr> {
+    format!("{host}:{port}")
+        .parse()
+        .with_context(|| format!("'{host}:{port}' is not a valid address"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -104,7 +144,9 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // Before anything is read or created, so a refused command leaves no files.
+    validate(&mut cli.command)?;
     let master = load_master_key(&cli.data_dir, cli.master_key.as_deref())?;
     let cipher = Cipher::from_hex(&master)?;
     let store = Store::open(&db_path(&cli.data_dir))
@@ -118,9 +160,7 @@ async fn main() -> Result<()> {
             port,
             insecure_cookies,
         } => {
-            let addr: SocketAddr = format!("{host}:{port}")
-                .parse()
-                .with_context(|| format!("'{host}:{port}' is not a valid address"))?;
+            let addr = serve_address(&host, port)?;
             tokio::task::spawn_blocking(password::warm_up)
                 .await?
                 .context("password hashing does not work")?;
@@ -129,7 +169,7 @@ async fn main() -> Result<()> {
             bootstrap_admin(&store, env_value(ADMIN_EMAIL)?, env_value(ADMIN_PASSWORD)?).await?;
             let expired = store.delete_expired_sessions().await?;
             tracing::debug!(expired, "removed expired sessions");
-            let mut state = AppState::new(store, cipher);
+            let mut state = AppState::new(store, cipher).await?;
             state.cookie_secure = !insecure_cookies;
             if insecure_cookies {
                 tracing::warn!("session cookies are sent without Secure");
@@ -139,10 +179,16 @@ async fn main() -> Result<()> {
                 .await
                 .with_context(|| format!("could not listen on {addr}"))?;
             tracing::info!(%addr, "gateway listening");
+            let (stop, stopped) = tokio::sync::watch::channel(false);
+            let refresher = spawn_refresher(state.clone(), stopped);
             let service = router(state).into_make_service_with_connect_info::<SocketAddr>();
-            axum::serve(listener, service)
+            let served = axum::serve(listener, service)
                 .with_graceful_shutdown(shutdown_signal())
-                .await?;
+                .await;
+            // Also when serving failed, so the task never outlives the server.
+            let _ = stop.send(true);
+            let _ = refresher.await;
+            served?;
         }
         Command::Provider {
             command:
@@ -153,14 +199,6 @@ async fn main() -> Result<()> {
                     api_key,
                 },
         } => {
-            validate_provider_name(&name)?;
-            if ProviderKind::parse(&kind).is_none() {
-                bail!("unknown kind '{kind}'. Use 'openai' or 'anthropic'");
-            }
-            validate_base_url(&base_url)?;
-            if api_key.as_deref().is_some_and(|k| k.trim().is_empty()) {
-                bail!("the API key must not be empty; leave it out for a provider without one");
-            }
             // Whitespace around a pasted key is not part of it.
             let credential = api_key
                 .as_deref()

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::auth::UserView;
-use super::{path_id, require, ApiError, ApiJson, Authed};
+use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
 use crate::identity::{normalize_email, Role, UserStatus};
@@ -340,6 +340,10 @@ pub async fn update(
     })
     .await?;
     tx.commit().await?;
+    // Only a change of status alters which keys work.
+    if status.is_some() {
+        refresh_snapshot(&state).await?;
+    }
 
     let user = store
         .user_by_id(was.id)
@@ -402,6 +406,7 @@ pub async fn delete(
     })
     .await?;
     tx.commit().await?;
+    refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

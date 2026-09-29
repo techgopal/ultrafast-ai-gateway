@@ -3,19 +3,24 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde_json::json;
-use tokio::sync::Semaphore;
+use tokio::sync::{watch, Mutex, Semaphore};
+use tokio::task::JoinHandle;
 
 use crate::api;
 use crate::identity::limiter::LoginLimiter;
 use crate::proxy;
 use crate::secrets::Cipher;
+use crate::snapshot::Snapshot;
 use crate::store::Store;
 
 /// How many passwords may be hashed at the same time.
 pub const MAX_CONCURRENT_HASHES: usize = 4;
+/// How often a running gateway reads changes made outside it.
+pub const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 pub const DEFAULT_MAX_PROVIDER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -33,12 +38,24 @@ pub struct AppState {
     /// Bounds how many passwords are hashed at once, so a flood of
     /// sign-ins cannot occupy every blocking thread.
     pub hashing: Arc<Semaphore>,
+    /// The keys and providers `/v1` works from.
+    pub snapshot: ArcSwap<Snapshot>,
+    /// How long the background task waits between refreshes.
+    pub refresh_interval: Duration,
+    /// Held while a snapshot is loaded and swapped in, so an older one
+    /// can never replace a newer one.
+    refreshing: Mutex<()>,
 }
 
 impl AppState {
     /// A state with the default limits, an empty limiter and secure cookies.
-    pub fn new(store: Store, cipher: Cipher) -> Self {
-        Self {
+    /// Loads the first snapshot.
+    pub async fn new(store: Store, cipher: Cipher) -> anyhow::Result<Self> {
+        let snapshot = Snapshot::load(&store, &cipher).await?;
+        Ok(Self {
+            snapshot: ArcSwap::from_pointee(snapshot),
+            refresh_interval: DEFAULT_REFRESH_INTERVAL,
+            refreshing: Mutex::new(()),
             store,
             cipher,
             http: http_client(),
@@ -47,8 +64,39 @@ impl AppState {
             limiter: LoginLimiter::new(),
             cookie_secure: true,
             hashing: Arc::new(Semaphore::new(MAX_CONCURRENT_HASHES)),
-        }
+        })
     }
+
+    /// Rebuilds the snapshot from the database and swaps it in. Do not call
+    /// it while a `Tx` is open.
+    pub async fn refresh(&self) -> anyhow::Result<()> {
+        let _guard = self.refreshing.lock().await;
+        let snapshot = Snapshot::load(&self.store, &self.cipher).await?;
+        self.snapshot.store(Arc::new(snapshot));
+        Ok(())
+    }
+}
+
+/// Refreshes the snapshot every `refresh_interval`, so changes made by the
+/// CLI reach a running gateway. A failure is logged and the next round runs
+/// as usual. The task ends when `stop` becomes true or its sender is dropped.
+pub fn spawn_refresher(state: Arc<AppState>, mut stop: watch::Receiver<bool>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(state.refresh_interval) => {}
+                changed = stop.changed() => {
+                    if changed.is_err() || *stop.borrow() {
+                        return;
+                    }
+                    continue;
+                }
+            }
+            if let Err(e) = state.refresh().await {
+                tracing::error!(error = %e, "snapshot refresh failed");
+            }
+        }
+    })
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
