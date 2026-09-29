@@ -1,10 +1,11 @@
-FROM rust:1.94-slim AS builder
+FROM rust:1.94-slim-trixie AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release --locked -p ultrafast-gateway
 
-FROM debian:bookworm-slim
+# Same Debian release as the builder, so the binary finds the C library it was linked against.
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --create-home --home-dir /var/lib/ultrafast ultrafast
