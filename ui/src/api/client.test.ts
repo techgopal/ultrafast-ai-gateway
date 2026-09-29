@@ -79,24 +79,64 @@ describe("responses", () => {
 
 describe("requests", () => {
   test("csrf header on writes only", async () => {
-    const seen: (string | null)[] = [];
-    override("post", "/api/teams", ({ request }) => {
-      seen.push(request.headers.get("x-csrf-token"));
+    const seen: [string, string | null][] = [];
+    const note = ({ request }: { request: Request }) => {
+      seen.push([request.method, request.headers.get("x-csrf-token")]);
       return noContent();
-    });
-    override("get", "/api/teams", ({ request }) => {
-      seen.push(request.headers.get("x-csrf-token"));
-      return noContent();
-    });
+    };
+    override("get", "/api/teams", note);
+    override("post", "/api/teams", note);
+    override("put", "/api/teams/{id}/members/{user_id}", note);
+    override("patch", "/api/teams/{id}", note);
+    override("delete", "/api/teams/{id}", note);
 
-    await api.post("/api/teams", { body: { name: "Growth" } });
+    const writes = async () => {
+      await api.post("/api/teams", { body: { name: "Growth" } });
+      await api.put("/api/teams/{id}/members/{user_id}", {
+        params: { id: 1, user_id: 3 },
+        body: { role: "member" },
+      });
+      await api.patch("/api/teams/{id}", { params: { id: 1 }, body: { name: "Growth" } });
+      await api.delete("/api/teams/{id}", { params: { id: 1 } });
+    };
+
     setCsrfToken(fixtures.csrfToken);
-    await api.post("/api/teams", { body: { name: "Growth" } });
     await api.get("/api/teams");
+    await writes();
     setCsrfToken(null);
-    await api.post("/api/teams", { body: { name: "Growth" } });
+    await api.get("/api/teams");
+    await writes();
 
-    expect(seen).toEqual([null, fixtures.csrfToken, null, null]);
+    expect(seen).toEqual([
+      ["GET", null],
+      ["POST", fixtures.csrfToken],
+      ["PUT", fixtures.csrfToken],
+      ["PATCH", fixtures.csrfToken],
+      ["DELETE", fixtures.csrfToken],
+      ["GET", null],
+      ["POST", null],
+      ["PUT", null],
+      ["PATCH", null],
+      ["DELETE", null],
+    ]);
+  });
+
+  test.each([
+    ["an empty text", ""],
+    ["one dot", "."],
+    ["two dots", ".."],
+    ["not a number", Number.NaN],
+    ["infinity", Number.POSITIVE_INFINITY],
+  ])("a path parameter that is %s throws before any request", async (_, id) => {
+    let calls = 0;
+    override("get", "/api/teams/{id}", () => {
+      calls += 1;
+      return noContent();
+    });
+    // The description types the id as a number; the check is for what gets past the types.
+    const params = { id } as unknown as { id: number };
+    await expect(api.get("/api/teams/{id}", { params })).rejects.toThrow(/parameter "id"/);
+    expect(calls).toBe(0);
   });
 
   test("headers, credentials and body", async () => {
@@ -347,10 +387,48 @@ describe("the end of the session", () => {
     expect(handler).toHaveBeenCalledTimes(2);
     await failure(api.get("/api/teams"));
     expect(handler).toHaveBeenCalledTimes(2);
-    await api.get("/api/auth/me");
-    await failure(api.get("/api/teams"));
-    expect(handler).toHaveBeenCalledTimes(3);
     unsubscribe();
+  });
+
+  test("only a token starts a new session: answers and a cleared token do not", async () => {
+    const handler = vi.fn();
+    const unsubscribe = onUnauthenticated(handler);
+    override("get", "/api/teams", unauthorized);
+    await failure(api.get("/api/teams"));
+    expect(handler).toHaveBeenCalledTimes(1);
+    // An answer of the session that ended may still arrive.
+    await api.get("/api/auth/me");
+    await api.post("/api/auth/login", { body: { email: "a@example.test", password: "x" } });
+    setCsrfToken(null);
+    await failure(api.get("/api/teams"));
+    expect(handler).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  test("a 401 that nobody hears is not counted", async () => {
+    override("get", "/api/teams", unauthorized);
+    await failure(api.get("/api/teams"));
+    const handler = vi.fn();
+    const unsubscribe = onUnauthenticated(handler);
+    await failure(api.get("/api/teams"));
+    expect(handler).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  test("a handler that throws stops neither the others nor the ApiError", async () => {
+    const after = vi.fn();
+    const stops = [
+      onUnauthenticated(() => {
+        throw new Error("a handler failed");
+      }),
+      onUnauthenticated(after),
+    ];
+    override("get", "/api/teams", unauthorized);
+    const error = await apiFailure(api.get("/api/teams"));
+    expect(error.status).toBe(401);
+    expect(error.code).toBe("unauthorized");
+    expect(after).toHaveBeenCalledTimes(1);
+    for (const stop of stops) stop();
   });
 
   const exceptions: [string, () => Promise<unknown>][] = [
