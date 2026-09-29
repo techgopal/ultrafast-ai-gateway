@@ -1,7 +1,7 @@
 // The one place that talks to the gateway. Requests go to the console's own
 // origin, under `/api`, with the session cookie the browser holds. Nothing
 // here logs a request or a response.
-import { ApiError, NetworkError } from "./errors";
+import { ApiError, NetworkError, SessionOverError } from "./errors";
 import type { paths } from "./schema";
 
 export type Method = "get" | "post" | "put" | "patch" | "delete";
@@ -65,6 +65,9 @@ type Args<P extends keyof paths, M extends Method> =
 
 let csrfToken: string | null = null;
 let signedOutTold = false;
+// Counts the sessions that ended. A request remembers the number it was made
+// under; an answer under another number is of a session that is over.
+let sessionsOver = 0;
 const unauthenticatedHandlers = new Set<() => void>();
 
 /**
@@ -75,8 +78,14 @@ const unauthenticatedHandlers = new Set<() => void>();
  * They are told again only after a new session began, which is when a token
  * is set here. Neither an answer of the gateway nor a cleared token does
  * that: an answer may belong to the session that ended.
+ *
+ * A call whose session ended before its answer came rejects with
+ * `SessionOverError`, whatever the answer was, and tells no handler.
  */
 export function setCsrfToken(token: string | null): void {
+  // A token that goes or is replaced ends its session. The first token does
+  // not: it comes with the answer of `me`, beside other requests.
+  if (csrfToken !== null && token !== csrfToken) sessionsOver += 1;
   csrfToken = token;
   if (token !== null) signedOutTold = false;
 }
@@ -198,6 +207,7 @@ async function request(method: Method, path: string, opts: RequestOptions = {}):
   if (method !== "get" && csrfToken !== null) headers["x-csrf-token"] = csrfToken;
   if (opts.signal !== undefined) init.signal = opts.signal;
 
+  const madeUnder = sessionsOver;
   let response: Response;
   let text: string;
   try {
@@ -206,8 +216,11 @@ async function request(method: Method, path: string, opts: RequestOptions = {}):
   } catch (error) {
     // A cancelled request is not a failure of the network.
     if (opts.signal?.aborted === true) throw error;
+    if (madeUnder !== sessionsOver) throw new SessionOverError();
     throw new NetworkError();
   }
+  // Before anything is made of the answer: it may be for the user before.
+  if (madeUnder !== sessionsOver) throw new SessionOverError();
 
   if (!response.ok) {
     const error = errorOf(response.status, text);

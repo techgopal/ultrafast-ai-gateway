@@ -18,11 +18,11 @@ import {
   type QueryKey,
 } from "@tanstack/react-query";
 import { api, type BodyOf, type QueryOf } from "./client";
-import { ApiError, NetworkError } from "./errors";
+import { ApiError, NetworkError, type SessionOverError } from "./errors";
 
 declare module "@tanstack/react-query" {
   interface Register {
-    defaultError: ApiError | NetworkError;
+    defaultError: ApiError | NetworkError | SessionOverError;
   }
 }
 
