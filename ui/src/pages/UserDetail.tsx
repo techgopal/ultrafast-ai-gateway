@@ -43,7 +43,7 @@ export const CONSEQUENCES = {
   disable:
     "They are signed out, their access tokens are revoked, and their virtual keys stop working until they are enabled again.",
   enable: "They can sign in again, and their virtual keys work again.",
-  reinvite: "You get a new link to send them. Earlier links stop working.",
+  reinvite: "Earlier links stop working.",
   deleteActive:
     "Their virtual keys keep working without an owner. Revoke the keys first if they should stop.",
   deleteNotActive: "Their virtual keys are revoked.",
@@ -176,8 +176,7 @@ function Controls({ me, user }: { me: Me; user: User }) {
   const mayEdit = can(me, { type: "editUserRoleOrStatus" });
   // Nobody can delete their own account: the API refuses it to everybody.
   const mayDelete = !own && can(me, { type: "deleteUser" });
-  // The API lets everybody change their own name, and admins every name.
-  const mayRename = own || mayEdit;
+  const mayRename = can(me, { type: "renameUser", userId: user.id });
   if (!mayRename && !mayDelete) return null;
 
   const { id } = user;
@@ -209,9 +208,11 @@ function Controls({ me, user }: { me: Me; user: User }) {
   return (
     <>
       <div role="group" aria-label="Actions" className="flex flex-wrap gap-2">
-        <Button type="button" variant="outline" className={control} onClick={ask("name")}>
-          Edit name
-        </Button>
+        {mayRename ? (
+          <Button type="button" variant="outline" className={control} onClick={ask("name")}>
+            Edit name
+          </Button>
+        ) : null}
         {mayEdit ? (
           <>
             <Button type="button" variant="outline" className={control} onClick={ask("role")}>
@@ -233,7 +234,7 @@ function Controls({ me, user }: { me: Me; user: User }) {
                 className={control}
                 onClick={ask("reinvite")}
               >
-                Resend invite
+                New invite link
               </Button>
             ) : null}
           </>
@@ -300,13 +301,21 @@ function Controls({ me, user }: { me: Me; user: User }) {
               setAsking(null);
               reinvite.reset();
             }}
-            title="Send a new invite?"
+            title="Create a new invite link?"
             body={CONSEQUENCES.reinvite}
             confirmLabel="Create link"
             onConfirm={async () => {
               const made = await reinvite.mutateAsync({ id });
+              let link: string;
+              try {
+                link = inviteUrl(made.invite_link);
+              } catch (error) {
+                // The mutation does not keep the link that is not shown.
+                reinvite.reset();
+                throw error;
+              }
               // Shows the link, and makes the mutation forget its answer.
-              once.show(inviteUrl(made.invite_link));
+              once.show(link);
             }}
           />
           <SecretDialog

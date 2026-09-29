@@ -91,7 +91,7 @@ async function openInvite(): Promise<HTMLElement> {
 async function fillInvite(name = "Sam Carter", email = "sam@example.test"): Promise<void> {
   await userEvent.type(screen.getByLabelText("Name"), name);
   await userEvent.type(screen.getByLabelText("Email"), email);
-  await userEvent.click(button("Send invite"));
+  await userEvent.click(button("Create invite link"));
 }
 
 async function closeSecret(): Promise<void> {
@@ -239,6 +239,8 @@ describe("the list of users", () => {
     expect(screen.queryByRole("table")).toBeNull();
     expect(toasts()).toEqual([]);
     expect(failing.calls).toBe(1);
+    // Nobody is invited into a list that cannot be shown.
+    expect(screen.queryByRole("button", { name: "Invite user" })).toBeNull();
 
     const again = usersAre(fixtures.userList);
     await userEvent.click(button("Retry"));
@@ -246,6 +248,7 @@ describe("the list of users", () => {
     expect(again.calls).toBe(1);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(rowOf(maya.name)).toBeInTheDocument();
+    expect(button("Invite user")).toBeInTheDocument();
   });
 
   test("a gateway that cannot be reached is an error with Retry", async () => {
@@ -388,7 +391,7 @@ describe("inviting", () => {
     await userEvent.clear(email);
     await userEvent.type(email, "other@example.test");
     expect(email).not.toHaveAttribute("aria-invalid");
-    await userEvent.click(button("Send invite"));
+    await userEvent.click(button("Create invite link"));
     await waitFor(() => {
       expect(invited.calls).toBe(2);
     });
@@ -483,6 +486,204 @@ describe("inviting", () => {
   });
 });
 
+describe("an invite link that cannot be used", () => {
+  const UNUSABLE = "The gateway returned an invite link that cannot be used.";
+  const paths = [
+    `//other.example.test/accept-invite?token=${TOKEN}`,
+    `https://other.example.test/accept-invite?token=${TOKEN}`,
+    `accept-invite?token=${TOKEN}`,
+    `/\\other.example.test/accept-invite?token=${TOKEN}`,
+    "",
+  ];
+
+  test.each(paths)("the invite dialog says so for %j, and shows no link", async (path) => {
+    override("post", "/api/users", () =>
+      ok("post", "/api/users", 201, { user: sam, invite_link: path }),
+    );
+    const app = await list();
+    await table();
+    const dialog = await openInvite();
+    await fillInvite();
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(UNUSABLE);
+    expect(screen.queryByRole("dialog", { name: "Invite link" })).toBeNull();
+    expect(screen.getByLabelText("Name")).toHaveValue("Sam Carter");
+    expect(toasts()).toEqual([]);
+    expectNoSecret(app, TOKEN);
+    expect(shown()).not.toContain("other.example.test");
+  });
+
+  test.each(paths)("the dialog of a new link says so for %j, and shows no link", async (path) => {
+    override("post", "/api/users/{id}/invite", () =>
+      ok("post", "/api/users/{id}/invite", 201, { invite_link: path }),
+    );
+    const app = await detail(sam);
+    const dialog = await ask("New invite link", "Create a new invite link?");
+    await confirm(dialog, "Create link");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(UNUSABLE);
+    expect(screen.queryByRole("dialog", { name: "Invite link" })).toBeNull();
+    expectNoSecret(app, TOKEN);
+    expect(shown()).not.toContain("other.example.test");
+  });
+
+  test("a usable path keeps its query string", async () => {
+    await list();
+    await table();
+    await openInvite();
+    await fillInvite();
+    const dialog = await screen.findByRole("dialog", { name: "Invite link" });
+    expect(within(dialog).getByLabelText("Invite link")).toHaveValue(
+      `${window.location.origin}/accept-invite?token=${TOKEN}`,
+    );
+  });
+});
+
+describe("while a request runs", () => {
+  test("the invite dialog: the button is disabled and says so", async () => {
+    const door = gate();
+    const invited = counted("post", "/api/users", async () => {
+      await door.opened;
+      return ok("post", "/api/users", 201, { user: sam, invite_link: fixtures.newInviteLink });
+    });
+    await list();
+    await table();
+    await openInvite();
+    expect(button("Create invite link")).toBeEnabled();
+    await fillInvite();
+    const running = await screen.findByRole("button", { name: "Creating the link" });
+    expect(running).toBeDisabled();
+    expect(running).toHaveAttribute("type", "submit");
+    expect(screen.queryByRole("button", { name: "Create invite link" })).toBeNull();
+    // Enter in a field sends nothing a second time.
+    await userEvent.type(screen.getByLabelText("Name"), "{Enter}");
+    expect(invited.calls).toBe(1);
+    act(() => {
+      door.open();
+    });
+    expect(await screen.findByRole("dialog", { name: "Invite link" })).toBeInTheDocument();
+    expect(invited.calls).toBe(1);
+  });
+
+  test("the name dialog: the button is disabled and says so", async () => {
+    const door = gate();
+    const patches = counted("patch", "/api/users/{id}", async () => {
+      await door.opened;
+      return ok("patch", "/api/users/{id}", 200, { ...lena, name: "Lena K" });
+    });
+    await detail(lena);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit name" }));
+    const name = screen.getByLabelText("Name");
+    await userEvent.type(name, " K");
+    await userEvent.click(button("Save"));
+    const running = await screen.findByRole("button", { name: "Saving" });
+    expect(running).toBeDisabled();
+    await userEvent.type(name, "{Enter}");
+    expect(patches.calls).toBe(1);
+    act(() => {
+      door.open();
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(patches.calls).toBe(1);
+  });
+
+  test("a confirm dialog: both buttons are disabled", async () => {
+    const door = gate();
+    const patches = counted("patch", "/api/users/{id}", async () => {
+      await door.opened;
+      return ok("patch", "/api/users/{id}", 200, { ...lena, status: "disabled" });
+    });
+    await detail(lena);
+    const dialog = await ask("Disable", "Disable this user?");
+    await confirm(dialog, "Disable");
+    await waitFor(() => {
+      expect(within(dialog).getByRole("button", { name: "Disable" })).toBeDisabled();
+    });
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await userEvent.keyboard("{Escape}");
+    expect(dialog).toBeInTheDocument();
+    expect(patches.calls).toBe(1);
+    act(() => {
+      door.open();
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+  });
+});
+
+describe("the list after a change", () => {
+  /** A gateway whose list and whose user are the same people. */
+  function keepsAll(start: fixtures.User) {
+    const state = keeps(start);
+    const listed = counted("get", "/api/users", () =>
+      ok("get", "/api/users", 200, {
+        users: fixtures.userList.map((user) => (user.id === start.id ? state.user : user)),
+      }),
+    );
+    return { state, listed };
+  }
+
+  async function fromTheListTo(user: fixtures.User): Promise<AppRenderResult> {
+    const app = await list();
+    await table();
+    await userEvent.click(screen.getByRole("link", { name: user.name }));
+    await screen.findByRole("heading", { level: 1, name: user.name });
+    return app;
+  }
+
+  async function backToTheList(): Promise<void> {
+    await userEvent.click(screen.getByRole("link", { name: "Back to users" }));
+    await table();
+  }
+
+  test("a role change shows in the list", async () => {
+    const { listed } = keepsAll(lena);
+    await fromTheListTo(lena);
+    expect(listed.calls).toBe(1);
+    const dialog = await ask("Make admin", "Make this user an admin?");
+    await confirm(dialog, "Make admin");
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+    await backToTheList();
+    await waitFor(() => {
+      expect(rowOf(lena.name)).toHaveTextContent("Admin");
+    });
+    expect(listed.calls).toBe(2);
+  });
+
+  test("a status change shows in the list", async () => {
+    const { listed } = keepsAll(lena);
+    await fromTheListTo(lena);
+    const dialog = await ask("Disable", "Disable this user?");
+    await confirm(dialog, "Disable");
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+    await backToTheList();
+    await waitFor(() => {
+      expect(within(rowOf(lena.name)).getByText("disabled")).toBeInTheDocument();
+    });
+    expect(listed.calls).toBe(2);
+  });
+
+  test("a new name shows in the list", async () => {
+    const { listed } = keepsAll(lena);
+    await fromTheListTo(lena);
+    await userEvent.click(button("Edit name"));
+    const name = screen.getByLabelText("Name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "Lena K");
+    await userEvent.click(button("Save"));
+    await screen.findByRole("heading", { level: 1, name: "Lena K" });
+    await backToTheList();
+    expect(await screen.findByRole("link", { name: "Lena K" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: lena.name })).toBeNull();
+    expect(listed.calls).toBe(2);
+  });
+});
+
 describe("the page of a user", () => {
   test("it shows the fields of the user", async () => {
     await detail(dana);
@@ -547,15 +748,15 @@ describe("the page of a user", () => {
     expect(actions()).toEqual(["Edit name", "Make admin", "Enable", "Delete"]);
   });
 
-  test("resend invite only when invited", async () => {
+  test("resend invite only when invited: the button New invite link", async () => {
     const first = await detail(sam);
     await screen.findByRole("heading", { level: 1, name: sam.name });
-    expect(actions()).toEqual(["Edit name", "Make admin", "Disable", "Resend invite", "Delete"]);
+    expect(actions()).toEqual(["Edit name", "Make admin", "Disable", "New invite link", "Delete"]);
     first.unmount();
     for (const user of [lena, dana]) {
       const app = await detail(user);
       await screen.findByRole("heading", { level: 1, name: user.name });
-      expect(screen.queryByRole("button", { name: "Resend invite" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "New invite link" })).toBeNull();
       app.unmount();
     }
   });
@@ -1013,8 +1214,8 @@ describe("changing the own account", () => {
 describe("a new invite", () => {
   test("the new link is shown once", async () => {
     const app = await detail(sam);
-    const dialog = await ask("Resend invite", "Send a new invite?");
-    expect(dialog).toHaveTextContent("Earlier links stop working.");
+    const dialog = await ask("New invite link", "Create a new invite link?");
+    expect(within(dialog).getByText("Earlier links stop working.")).toBeInTheDocument();
     await confirm(dialog, "Create link");
     const secret = await screen.findByRole("dialog", { name: "Invite link" });
     expect(secret).toHaveTextContent(LINK_DESCRIPTION);
@@ -1039,7 +1240,7 @@ describe("a new invite", () => {
   test("a user who has accepted cannot get one: the refusal stays in the dialog", async () => {
     override("post", "/api/users/{id}/invite", () => refuse(errors.not_invited));
     await detail(sam);
-    const dialog = await ask("Resend invite", "Send a new invite?");
+    const dialog = await ask("New invite link", "Create a new invite link?");
     await confirm(dialog, "Create link");
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       errors.not_invited.body.error.message,
@@ -1051,7 +1252,7 @@ describe("a new invite", () => {
   test("the session ends while the new link is shown", async () => {
     startGateway({ signedIn: true });
     const app = await detail(sam);
-    const dialog = await ask("Resend invite", "Send a new invite?");
+    const dialog = await ask("New invite link", "Create a new invite link?");
     await confirm(dialog, "Create link");
     await screen.findByRole("dialog", { name: "Invite link" });
     expect(shown()).toContain(TOKEN);
