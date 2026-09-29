@@ -37,41 +37,12 @@ const sonnerWithoutStyleInjection = editedLibrary("sonner-without-style-injectio
   what: "the call that injects its stylesheet (__insertCSS)",
 });
 
-// React's production build names the page of its error codes in the text of its
-// errors. Nothing fetches it, but the build is to hold no URL of another host,
-// so the scheme is dropped and the text reads "react.dev/errors/<code>".
-function withoutReactErrorUrl(name: string, file: RegExp): Plugin {
-  return editedLibrary(name, {
-    library: "react-dom",
-    file,
-    find: "https://react.dev/errors/",
-    replaceWith: "react.dev/errors/",
-    what: "the URL of its error codes (https://react.dev/errors/)",
-  });
-}
-
-// TanStack Router falls back to the origin "http://localhost" when the page has
-// none (`window.origin` missing or "null"), as the base for parsing paths.
-// Nothing is fetched from it and a page served by the gateway always has an
-// origin, but the build is to hold no URL of another host, so the same value
-// is put together at run time instead of standing in the file as a URL.
-const routerWithoutFallbackUrl = editedLibrary("router-without-fallback-url", {
-  library: "@tanstack/router-core",
-  file: /\/@tanstack\/router-core\/dist\/esm\/router\.js$/,
-  find: '"http://localhost"',
-  replaceWith: '["http:", "", "localhost"].join("/")',
-  what: 'the fallback origin ("http://localhost")',
-});
-
 const gateway = "http://127.0.0.1:3900";
 
 export default defineConfig({
   base: "/",
   plugins: [
     sonnerWithoutStyleInjection,
-    routerWithoutFallbackUrl,
-    withoutReactErrorUrl("react-dom-shared-without-error-url", /\/react-dom\/cjs\/react-dom\.production\.js$/),
-    withoutReactErrorUrl("react-dom-without-error-url", /\/react-dom\/cjs\/react-dom-client\.production\.js$/),
     react(),
     tailwindcss(),
   ],

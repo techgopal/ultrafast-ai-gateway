@@ -1,4 +1,10 @@
 // @vitest-environment node
+//
+// What matters is that the app makes no request to another origin. A scan of the
+// text of the build cannot prove that: it only finds URLs that stand in the files.
+// The browser tests (e2e) prove it: they fail on any request to another origin.
+// This scan is the early warning, so that a URL in the build is a decision and
+// not an accident.
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
@@ -33,6 +39,54 @@ const urlWithHost =
 function urlsIn(text: string): string[] {
   return withoutLicenceComments(text).match(urlWithHost) ?? [];
 }
+
+interface AllowedUrl {
+  /** The exact text of the URL as the scan finds it. */
+  text: string;
+  /** `exact`: the whole URL is this text. `prefix`: the URL starts with it. */
+  match: "exact" | "prefix";
+}
+
+const allowedUrls: AllowedUrl[] = [
+  // react-dom: the production build shortens its error messages to a code and
+  // names the page that explains the code. It is text inside an Error message.
+  // No request: nothing fetches it; a person reads it in the console.
+  { text: "https://react.dev/errors/", match: "prefix" },
+  // @tanstack/router-core: the origin the router falls back to when the page has
+  // none (`window.origin` missing or "null"). It is the base for parsing paths
+  // with `new URL(path, origin)`. No request: it is only parsed, and a page
+  // served by the gateway always has its own origin.
+  { text: "http://localhost", match: "exact" },
+];
+
+function allowedEntry(url: string): AllowedUrl | undefined {
+  return allowedUrls.find((entry) =>
+    entry.match === "exact" ? url === entry.text : url.startsWith(entry.text),
+  );
+}
+
+describe("the allow-list of the URL scan", () => {
+  test.each([
+    "http://localhost:3900",
+    "http://localhost/api",
+    "https://localhost",
+    "//localhost",
+    "http://127.0.0.1",
+    "http://localhost.example.com",
+    "https://react.dev/",
+    "https://react.dev/link/x",
+    "http://react.dev/errors/1",
+    "https://example.com/?u=https://react.dev/errors/",
+  ])("does not allow %s", (url) => {
+    expect(allowedEntry(url)).toBeUndefined();
+  });
+
+  test("allows exactly what is listed", () => {
+    expect(allowedEntry("http://localhost")?.text).toBe("http://localhost");
+    expect(allowedEntry("https://react.dev/errors/")?.match).toBe("prefix");
+    expect(allowedEntry("https://react.dev/errors/418")?.match).toBe("prefix");
+  });
+});
 
 describe("the URL scan", () => {
   test.each([
@@ -97,21 +151,36 @@ afterAll(() => {
 });
 
 describe("build output", () => {
-  test("build output is self-contained", () => {
-    const allowed = /^https?:\/\/www\.w3\.org\//;
+  function scan(): { found: string[]; namespaces: Set<string>; used: Set<string> } {
+    const namespace = /^https?:\/\/www\.w3\.org\//;
     const found: string[] = [];
     const namespaces = new Set<string>();
+    const used = new Set<string>();
     for (const path of files(dist)) {
-      const urls = urlsIn(readFileSync(path, "utf8"));
-      for (const url of urls) {
-        if (allowed.test(url)) namespaces.add(url);
+      for (const url of urlsIn(readFileSync(path, "utf8"))) {
+        const entry = allowedEntry(url);
+        if (namespace.test(url)) namespaces.add(url);
+        else if (entry !== undefined) used.add(entry.text);
         else found.push(`${relative(dist, path)}: ${url}`);
       }
     }
+    return { found, namespaces, used };
+  }
+
+  test("build output is self-contained", () => {
+    const { found, namespaces, used } = scan();
     console.info(
-      `build output: ${files(dist).length} files; namespace URIs: ${[...namespaces].sort().join(", ") || "none"}; other URLs: ${found.length}`,
+      `build output: ${files(dist).length} files; namespace URIs: ${[...namespaces].sort().join(", ") || "none"}; allowed: ${[...used].sort().join(", ") || "none"}; other URLs: ${found.length}`,
     );
     expect(found).toEqual([]);
+  });
+
+  test("the allow-list has no unused entry", () => {
+    const { used } = scan();
+    const unused = allowedUrls
+      .filter((entry) => !used.has(entry.text))
+      .map((entry) => `${entry.text} is no longer in the build: remove it from allowedUrls`);
+    expect(unused).toEqual([]);
   });
 
   test("assets have hashed names and no source maps", () => {
