@@ -19,3 +19,14 @@ export function useToast(): (message: string, tone?: ToastTone) => void {
     show(message, { duration: TOAST_DURATION, closeButton: true, dismissible: true });
   }, []);
 }
+
+/**
+ * Takes every toast away, at once. The toasts are kept by the module of
+ * sonner, not by a component, and a `Toaster` that mounts shows every toast
+ * that is still active: without this a toast of one session would show in
+ * the next. The clean-up of the session calls it wherever a session ends or
+ * is replaced.
+ */
+export function dismissAll(): void {
+  toast.dismiss();
+}

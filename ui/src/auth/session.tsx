@@ -23,6 +23,7 @@ import {
 import { api, onUnauthenticated, setCsrfToken } from "@/api/client";
 import { ApiError, NetworkError } from "@/api/errors";
 import { meOptions, queryKeys, setupStatusOptions } from "@/api/queries";
+import { dismissAll } from "@/components/toast";
 import type { Me } from "./guards";
 
 export type { Me } from "./guards";
@@ -175,6 +176,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setNotice(how === "expired" ? SESSION_ENDED_NOTICE : (said ?? null));
       // Both caches. Requests on their way are cancelled with their queries.
       client.clear();
+      // A toast of this session is not for who signs in next.
+      dismissAll();
     },
     [client],
   );
@@ -184,6 +187,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setCsrfToken(csrfToken);
       setEnding(null);
       setNotice(null);
+      // When this sign-in replaces a session, no session ended: its toasts go here.
+      dismissAll();
       // Nobody was signed in a moment ago; now `me` has an answer.
       void client.resetQueries({ queryKey: queryKeys.me() });
     },
