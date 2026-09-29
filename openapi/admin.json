@@ -3114,7 +3114,7 @@
           },
           "status": {
             "type": "string",
-            "description": "`active`, `expired` or `revoked`."
+            "description": "`revoked`, `expired`, `suspended` or `active`, the first that\napplies. `suspended`: the owner of the key is not active, so the key\ndoes not work until they are. Only an `active` key works."
           },
           "team_id": {
             "type": [

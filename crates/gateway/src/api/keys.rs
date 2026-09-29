@@ -46,7 +46,9 @@ pub struct KeyView {
     #[schema(required)]
     pub revoked_at: Option<String>,
     pub created_at: String,
-    /// `active`, `expired` or `revoked`.
+    /// `revoked`, `expired`, `suspended` or `active`, the first that
+    /// applies. `suspended`: the owner of the key is not active, so the key
+    /// does not work until they are. Only an `active` key works.
     #[schema(value_type = String)]
     pub status: &'static str,
 }
@@ -54,7 +56,12 @@ pub struct KeyView {
 impl KeyView {
     /// `now` is the current time as the store writes it.
     fn new(k: KeyRow, now: &str) -> Self {
-        let status = key_status(k.revoked_at.as_deref(), k.expires_at.as_deref(), now);
+        let status = key_status(
+            k.revoked_at.as_deref(),
+            k.expires_at.as_deref(),
+            k.owner_inactive,
+            now,
+        );
         Self {
             id: k.id,
             name: k.name,
@@ -71,13 +78,21 @@ impl KeyView {
     }
 }
 
-/// Revoked wins over expired. A key stops working at `expires_at`, not
-/// after it, as in the lookup that authenticates `/v1`.
-fn key_status(revoked_at: Option<&str>, expires_at: Option<&str>, now: &str) -> &'static str {
+/// Revoked wins over expired, and both over suspended: they do not end.
+/// A key stops working at `expires_at`, not after it, as in the lookup that
+/// authenticates `/v1`.
+fn key_status(
+    revoked_at: Option<&str>,
+    expires_at: Option<&str>,
+    owner_inactive: bool,
+    now: &str,
+) -> &'static str {
     if revoked_at.is_some() {
         "revoked"
     } else if expires_at.is_some_and(|at| at <= now) {
         "expired"
+    } else if owner_inactive {
+        "suspended"
     } else {
         "active"
     }
@@ -312,11 +327,16 @@ mod tests {
         let now = "2026-01-01 00:00:00";
         let past = Some("2025-01-01 00:00:00");
         let future = Some("2027-01-01 00:00:00");
-        assert_eq!(key_status(None, None, now), "active");
-        assert_eq!(key_status(None, future, now), "active");
-        assert_eq!(key_status(None, past, now), "expired");
-        assert_eq!(key_status(None, Some(now), now), "expired");
-        assert_eq!(key_status(past, None, now), "revoked");
-        assert_eq!(key_status(past, past, now), "revoked");
+        for owner_inactive in [false, true] {
+            assert_eq!(key_status(None, past, owner_inactive, now), "expired");
+            assert_eq!(key_status(None, Some(now), owner_inactive, now), "expired");
+            assert_eq!(key_status(past, None, owner_inactive, now), "revoked");
+            assert_eq!(key_status(past, past, owner_inactive, now), "revoked");
+            assert_eq!(key_status(past, future, owner_inactive, now), "revoked");
+        }
+        assert_eq!(key_status(None, None, false, now), "active");
+        assert_eq!(key_status(None, future, false, now), "active");
+        assert_eq!(key_status(None, None, true, now), "suspended");
+        assert_eq!(key_status(None, future, true, now), "suspended");
     }
 }
