@@ -22,8 +22,11 @@ After the CLI has run:
 
 1. If the CLI added the packages `shadcn` or `cn` to `package.json`, remove them
    (`pnpm remove shadcn cn`). A test fails while either is listed or imported.
-2. In `src/styles/globals.css`, keep `@import "./shadcn.css";`. If the CLI put
+2. Change the `cn` import of every added component from `"cn"` to `"@/lib/utils"`
+   (`import { cn } from "@/lib/utils"`). `cn` there is `twMerge(clsx(inputs))`, from the
+   packages `clsx` and `tailwind-merge`. Do not add the `cn` package.
+3. In `src/styles/globals.css`, keep `@import "./shadcn.css";`. If the CLI put
    `@import "shadcn/tailwind.css";` back, remove that line.
-3. `src/styles/shadcn.css` is a copy of `dist/tailwind.css` of the `shadcn` package.
+4. `src/styles/shadcn.css` is a copy of `dist/tailwind.css` of the `shadcn` package.
    If you ran a newer version of the CLI than the one named in the header of that
    file, replace the copy with the file of the new version and update the header.

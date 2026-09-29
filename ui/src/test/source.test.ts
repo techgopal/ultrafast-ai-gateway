@@ -59,7 +59,7 @@ function listedPackages(): string[] {
   );
 }
 
-describe.each(["shadcn"])("the package %s is not used", (name) => {
+describe.each(["shadcn", "cn"])("the package %s is not used", (name) => {
   test("the import scan sees what it should", () => {
     const quote = '"';
     expect(importOf(name).test(`import { x } from ${quote}${name}${quote}`)).toBe(true);
