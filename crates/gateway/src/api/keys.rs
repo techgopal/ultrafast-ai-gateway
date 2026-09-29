@@ -11,7 +11,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{path_id, require, ApiError, ApiJson, Authed};
+use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
 use crate::identity::UserStatus;
@@ -79,7 +79,7 @@ fn key_status(revoked_at: Option<&str>, expires_at: Option<&str>, now: &str) -> 
 }
 
 /// The name of a key or an access token, trimmed.
-pub(super) fn secret_name(raw: &str) -> Result<&str, &'static str> {
+pub fn secret_name(raw: &str) -> Result<&str, &'static str> {
     let name = raw.trim();
     let chars = name.chars().count();
     if chars == 0 || chars > MAX_NAME_CHARS || name.chars().any(char::is_control) {
@@ -219,6 +219,7 @@ pub async fn create(
     })
     .await?;
     tx.commit().await?;
+    refresh_snapshot(&state).await?;
 
     let row = store
         .key_by_id(id)
@@ -277,6 +278,7 @@ pub async fn revoke(
     })
     .await?;
     tx.commit().await?;
+    refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

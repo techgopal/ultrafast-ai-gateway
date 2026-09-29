@@ -21,6 +21,9 @@ pub struct Harness {
     pub upstream: MockServer,
     pub key: String,
     pub store: Store,
+    /// The state behind `app`. Call `refresh` on it after changing the
+    /// store directly: `/v1` does not read the store.
+    pub state: Arc<AppState>,
 }
 
 /// A gateway with one provider named "p" of the given kind, pointing at a mock server.
@@ -56,11 +59,14 @@ async fn harness_with_limits(
         .await
         .unwrap();
     warm_up().unwrap();
-    let mut state = AppState::new(store.clone(), cipher);
+    // After seeding, so the first snapshot holds the provider and the key.
+    let mut state = AppState::new(store.clone(), cipher).await.unwrap();
     state.max_body_bytes = max_body_bytes;
     state.max_provider_response_bytes = max_provider_response_bytes;
+    let state = Arc::new(state);
     Harness {
-        app: router(Arc::new(state)),
+        app: router(state.clone()),
+        state,
         upstream,
         key: key.full,
         store,
@@ -104,14 +110,14 @@ pub struct Signed {
 
 /// An empty in-memory database, with insecure cookies allowed.
 pub async fn api() -> Api {
-    api_on(Store::open_in_memory().await.unwrap(), false)
+    api_on(Store::open_in_memory().await.unwrap(), false).await
 }
 
 /// A gateway over the given store.
-pub fn api_on(store: Store, cookie_secure: bool) -> Api {
+pub async fn api_on(store: Store, cookie_secure: bool) -> Api {
     warm_up().unwrap();
     let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
-    let mut state = AppState::new(store.clone(), cipher);
+    let mut state = AppState::new(store.clone(), cipher).await.unwrap();
     state.cookie_secure = cookie_secure;
     let state = Arc::new(state);
     Api {

@@ -5,7 +5,8 @@ use axum::response::Response;
 
 use crate::errors::error_response;
 use crate::secrets::{hash_key, KEY_PREFIX};
-use crate::store::{KeyRow, Store};
+use crate::snapshot::{SnapKey, Snapshot};
+use crate::store::now;
 
 fn unauthorized() -> Response {
     error_response(
@@ -15,7 +16,9 @@ fn unauthorized() -> Response {
     )
 }
 
-pub async fn authenticate(store: &Store, headers: &HeaderMap) -> Result<KeyRow, Response> {
+// The error is the finished answer; boxing it would change the interface.
+#[allow(clippy::result_large_err)]
+pub fn authenticate(snapshot: &Snapshot, headers: &HeaderMap) -> Result<SnapKey, Response> {
     let key = headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -25,16 +28,8 @@ pub async fn authenticate(store: &Store, headers: &HeaderMap) -> Result<KeyRow, 
         .map(|(_, key)| key.trim())
         .filter(|k| k.starts_with(KEY_PREFIX))
         .ok_or_else(unauthorized)?;
-    match store.active_key_by_hash(&hash_key(key)).await {
-        Ok(Some(row)) => Ok(row),
-        Ok(None) => Err(unauthorized()),
-        Err(e) => {
-            tracing::error!(error = %e, "key lookup failed");
-            Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                "Could not verify the API key.",
-            ))
-        }
-    }
+    snapshot
+        .key(&hash_key(key), &now())
+        .cloned()
+        .ok_or_else(unauthorized)
 }

@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use ultrafast_translate::provider::ProviderKind;
 
-use super::{path_id, require, ApiError, ApiJson, Authed};
+use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::config::{validate_base_url, validate_provider_name};
 use crate::identity::policy::Action;
@@ -170,6 +170,7 @@ pub async fn create(
     })
     .await?;
     tx.commit().await?;
+    refresh_snapshot(&state).await?;
 
     let row = store
         .provider_by_id(id)
@@ -254,6 +255,7 @@ pub async fn update(
     })
     .await?;
     tx.commit().await?;
+    refresh_snapshot(&state).await?;
 
     let row = store
         .provider_by_id(was.id)
@@ -288,6 +290,7 @@ pub async fn delete(
     })
     .await?;
     tx.commit().await?;
+    refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

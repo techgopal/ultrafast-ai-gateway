@@ -42,14 +42,12 @@ fn not_found(model: &str) -> Response {
     )
 }
 
-fn server_error(message: &str) -> Response {
-    error_response(StatusCode::INTERNAL_SERVER_ERROR, "server_error", message)
-}
-
 pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Request) -> Response {
     // 1. Authenticate on the headers alone. The body has not been read yet.
     let (parts, body) = request.into_parts();
-    if let Err(resp) = authenticate(&state.store, &parts.headers).await {
+    // One snapshot serves the whole request.
+    let snapshot = state.snapshot.load_full();
+    if let Err(resp) = authenticate(&snapshot, &parts.headers) {
         return resp;
     }
 
@@ -85,37 +83,14 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Reque
     if provider_name.is_empty() || model.is_empty() {
         return not_found(&req.model);
     }
-    let provider = match state.store.provider_by_name(provider_name).await {
-        Ok(Some(p)) => p,
-        Ok(None) => return not_found(&req.model),
-        Err(e) => {
-            tracing::error!(error = %e, "provider lookup failed");
-            return server_error("Could not load the provider.");
-        }
+    let Some(provider) = snapshot.provider(provider_name) else {
+        return not_found(&req.model);
     };
-    let Some(kind) = ProviderKind::parse(&provider.kind) else {
-        tracing::error!(provider = %provider.name, kind = %provider.kind, "unknown provider kind");
-        return server_error("The provider is misconfigured.");
-    };
-    let api_key = match provider
-        .credential
-        .as_deref()
-        .map(|c| state.cipher.decrypt(c))
-    {
-        None => None,
-        Some(Ok(bytes)) => match String::from_utf8(bytes) {
-            Ok(s) => Some(s),
-            Err(_) => return server_error("The provider credential is unreadable."),
-        },
-        Some(Err(e)) => {
-            tracing::error!(provider = %provider.name, error = %e, "credential decrypt failed");
-            return server_error("The provider credential is unreadable.");
-        }
-    };
+    let kind = provider.kind;
     let target = Target {
         kind,
-        base_url: provider.base_url,
-        api_key,
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
         model: model.to_string(),
     };
 
@@ -149,7 +124,7 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Reque
         );
     }
     if req.stream && status < 400 {
-        return stream_to_caller(upstream, kind, target.model, provider.name);
+        return stream_to_caller(upstream, kind, target.model, provider.name.clone());
     }
     let bytes = match read_capped(upstream, state.max_provider_response_bytes).await {
         Ok(b) => b,
@@ -211,17 +186,6 @@ fn stream_id() -> String {
     format!("chatcmpl-{}", hex::encode(bytes))
 }
 
-/// Forwards the provider's stream to the caller as OpenAI server-sent events.
-///
-/// The body owns the upstream response, so when the caller disconnects and the
-/// body is dropped, the provider request is dropped with it.
-///
-/// Failures are logged under the provider kind; the handler uses the
-/// provider's name instead.
-pub fn stream_response(upstream: reqwest::Response, kind: ProviderKind, model: String) -> Response {
-    stream_to_caller(upstream, kind, model, kind.as_str().to_string())
-}
-
 /// Logs a stream failure and renders the error event the caller may see.
 fn stream_failure(provider: &str, e: &TranslateError) -> String {
     let (_, _, message) = caller_message(e);
@@ -242,6 +206,10 @@ fn stream_failure(provider: &str, e: &TranslateError) -> String {
     render_stream_error(&message)
 }
 
+/// Forwards the provider's stream to the caller as OpenAI server-sent events.
+///
+/// The body owns the upstream response, so when the caller disconnects and the
+/// body is dropped, the provider request is dropped with it.
 fn stream_to_caller(
     upstream: reqwest::Response,
     kind: ProviderKind,

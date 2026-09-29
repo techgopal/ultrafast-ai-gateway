@@ -20,7 +20,7 @@ use time::macros::format_description;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 pub use audit::{AuditEntry, AuditRow};
-pub use keys::KeyRow;
+pub use keys::{KeyRow, LiveKey};
 pub use providers::ProviderRow;
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
 pub use teams::{MemberDetail, MemberRow, TeamRow, TeamSummary};
@@ -129,7 +129,8 @@ impl Store {
         })
     }
 
-    pub(crate) fn pool(&self) -> &SqlitePool {
+    /// For closing the pool and for tests. SQL belongs in this module.
+    pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
 }
