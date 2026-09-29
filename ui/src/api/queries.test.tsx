@@ -1,0 +1,507 @@
+import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { describe, expect, test, vi } from "vitest";
+import * as fixtures from "@/test/fixtures";
+import { apiError, networkFailure, noContent, ok, override } from "@/test/handlers";
+import { api, onUnauthenticated } from "./client";
+import { ApiError, NetworkError } from "./errors";
+import * as q from "./queries";
+
+function wrapperOf(client: QueryClient) {
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  };
+}
+
+/** A client with the app's rules, and no wait between the tries. */
+const appClient = () => q.createQueryClient({ retryDelay: 0 });
+
+/** Counts the calls of a GET, which answers as before. */
+function counted(path: "/api/teams" | "/api/keys" | "/api/users" | "/api/audit" | "/api/auth/me") {
+  const count = { calls: 0 };
+  const answers = {
+    "/api/teams": () => ok("get", "/api/teams", 200, { teams: fixtures.teamList }),
+    "/api/keys": () => ok("get", "/api/keys", 200, { keys: fixtures.keyList }),
+    "/api/users": () => ok("get", "/api/users", 200, { users: fixtures.userList }),
+    "/api/audit": () => ok("get", "/api/audit", 200, { entries: fixtures.auditEntries }),
+    "/api/auth/me": () => ok("get", "/api/auth/me", 200, fixtures.me.maya),
+  };
+  override("get", path, () => {
+    count.calls += 1;
+    return answers[path]();
+  });
+  return count;
+}
+
+/** Everything the two caches hold, as one text. */
+function cached(client: QueryClient): string {
+  const queries = client
+    .getQueryCache()
+    .getAll()
+    .map((query) => ({ key: query.queryKey, state: query.state }));
+  const mutations = client
+    .getMutationCache()
+    .getAll()
+    .map((mutation) => ({ key: mutation.options.mutationKey, state: mutation.state }));
+  return JSON.stringify({ queries, mutations });
+}
+
+describe("queries", () => {
+  test("lists and details answer from the API", async () => {
+    const wrapper = wrapperOf(appClient());
+    const { result } = renderHook(
+      () => ({
+        setup: q.useSetupStatus(),
+        me: q.useMe(),
+        users: q.useUsers(),
+        user: q.useUser(fixtures.users.arjun.id),
+        teams: q.useTeams(),
+        team: q.useTeam(fixtures.teams.platform.id),
+        keys: q.useKeys(),
+        key: q.useKey(fixtures.keys.expired.id),
+        providers: q.useProviders(),
+        tokens: q.useTokens(),
+        audit: q.useAuditLog(),
+      }),
+      { wrapper },
+    );
+    await waitFor(() => {
+      expect(Object.values(result.current).every((query) => query.isSuccess)).toBe(true);
+    });
+    expect(result.current.setup.data).toEqual({ needs_setup: false });
+    expect(result.current.me.data).toEqual(fixtures.me.maya);
+    expect(result.current.users.data).toEqual({ users: fixtures.userList });
+    expect(result.current.user.data).toEqual(fixtures.users.arjun);
+    expect(result.current.teams.data).toEqual({ teams: fixtures.teamList });
+    expect(result.current.team.data).toEqual(fixtures.teamDetails.platform);
+    expect(result.current.keys.data).toEqual({ keys: fixtures.keyList });
+    expect(result.current.key.data).toEqual(fixtures.keys.expired);
+    expect(result.current.providers.data).toEqual({ providers: fixtures.providerList });
+    expect(result.current.tokens.data).toEqual({ tokens: fixtures.tokenList });
+    expect(result.current.audit.data).toEqual({ entries: fixtures.auditEntries });
+  });
+
+  test("the audit log asks for the page", async () => {
+    let search = "";
+    override("get", "/api/audit", ({ request }) => {
+      search = new URL(request.url).search;
+      return ok("get", "/api/audit", 200, { entries: [] });
+    });
+    const { result } = renderHook(() => q.useAuditLog({ limit: 20, before: 3 }), {
+      wrapper: wrapperOf(appClient()),
+    });
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+    expect(search).toBe("?limit=20&before=3");
+  });
+
+  test("me gives the client the csrf token", async () => {
+    let sent: string | null = null;
+    override("post", "/api/teams", ({ request }) => {
+      sent = request.headers.get("x-csrf-token");
+      return ok("post", "/api/teams", 201, fixtures.teams.growth);
+    });
+    const { result } = renderHook(() => q.useMe(), { wrapper: wrapperOf(appClient()) });
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+    await api.post("/api/teams", { body: { name: "Growth" } });
+    expect(sent).toBe(fixtures.csrfToken);
+  });
+
+  test("a 404 is an ApiError of the query", async () => {
+    const { result } = renderHook(() => q.useTeam(999), { wrapper: wrapperOf(appClient()) });
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+    const { error } = result.current;
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error instanceof ApiError ? error.status : null).toBe(404);
+  });
+});
+
+describe("retries", () => {
+  test("api errors are not retried", async () => {
+    let calls = 0;
+    override("get", "/api/teams", () => {
+      calls += 1;
+      return apiError(500, "internal", "Something went wrong.");
+    });
+    const { result } = renderHook(() => q.useTeams(), { wrapper: wrapperOf(appClient()) });
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+    expect(result.current.error).toBeInstanceOf(ApiError);
+    expect(calls).toBe(1);
+  });
+
+  test("network errors are retried twice", async () => {
+    let calls = 0;
+    override("get", "/api/teams", () => {
+      calls += 1;
+      return networkFailure();
+    });
+    const { result } = renderHook(() => q.useTeams(), { wrapper: wrapperOf(appClient()) });
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+    expect(result.current.error).toBeInstanceOf(NetworkError);
+    expect(calls).toBe(3);
+  });
+
+  test("a query recovers when the network does", async () => {
+    let calls = 0;
+    override("get", "/api/teams", () => {
+      calls += 1;
+      return calls < 3
+        ? networkFailure()
+        : ok("get", "/api/teams", 200, { teams: fixtures.teamList });
+    });
+    const { result } = renderHook(() => q.useTeams(), { wrapper: wrapperOf(appClient()) });
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+    expect(calls).toBe(3);
+  });
+
+  test("mutations never retry", async () => {
+    let calls = 0;
+    override("post", "/api/teams", () => {
+      calls += 1;
+      return networkFailure();
+    });
+    const { result } = renderHook(() => q.useCreateTeam(), { wrapper: wrapperOf(appClient()) });
+    await act(async () => {
+      await expect(result.current.mutateAsync({ name: "Growth" })).rejects.toBeInstanceOf(
+        NetworkError,
+      );
+    });
+    expect(calls).toBe(1);
+  });
+});
+
+describe("mutations invalidate", () => {
+  test("after create team the teams list refetches", async () => {
+    const teams = counted("/api/teams");
+    const audit = counted("/api/audit");
+    const users = counted("/api/users");
+    const { result } = renderHook(
+      () => ({
+        teams: q.useTeams(),
+        audit: q.useAuditLog(),
+        users: q.useUsers(),
+        create: q.useCreateTeam(),
+      }),
+      { wrapper: wrapperOf(appClient()) },
+    );
+    await waitFor(() => {
+      expect(result.current.teams.isSuccess && result.current.audit.isSuccess).toBe(true);
+    });
+    expect(teams.calls).toBe(1);
+
+    let created: unknown;
+    await act(async () => {
+      created = await result.current.create.mutateAsync({ name: "Growth" });
+    });
+    expect(created).toEqual(fixtures.teams.growth);
+    await waitFor(() => {
+      expect(teams.calls).toBe(2);
+    });
+    await waitFor(() => {
+      expect(audit.calls).toBe(2);
+    });
+    // What the mutation does not affect is left alone.
+    expect(users.calls).toBe(1);
+  });
+
+  test("a failed mutation invalidates nothing", async () => {
+    const teams = counted("/api/teams");
+    override("post", "/api/teams", () => apiError(409, "team_exists", "It exists."));
+    const { result } = renderHook(() => ({ teams: q.useTeams(), create: q.useCreateTeam() }), {
+      wrapper: wrapperOf(appClient()),
+    });
+    await waitFor(() => {
+      expect(result.current.teams.isSuccess).toBe(true);
+    });
+    await act(async () => {
+      await expect(result.current.create.mutateAsync({ name: "Platform" })).rejects.toBeInstanceOf(
+        ApiError,
+      );
+    });
+    expect(teams.calls).toBe(1);
+  });
+
+  test("a change of a user refetches users, keys, teams and the caller", async () => {
+    const users = counted("/api/users");
+    const keys = counted("/api/keys");
+    const teams = counted("/api/teams");
+    const me = counted("/api/auth/me");
+    let detail = 0;
+    override("get", "/api/users/{id}", () => {
+      detail += 1;
+      return ok("get", "/api/users/{id}", 200, fixtures.users.dana);
+    });
+    const { result } = renderHook(
+      () => ({
+        users: q.useUsers(),
+        user: q.useUser(fixtures.users.dana.id),
+        keys: q.useKeys(),
+        teams: q.useTeams(),
+        me: q.useMe(),
+        update: q.useUpdateUser(),
+      }),
+      { wrapper: wrapperOf(appClient()) },
+    );
+    await waitFor(() => {
+      expect(
+        [result.current.users, result.current.user, result.current.keys, result.current.teams]
+          .concat([])
+          .every((query) => query.isSuccess) && result.current.me.isSuccess,
+      ).toBe(true);
+    });
+    await act(async () => {
+      await result.current.update.mutateAsync({
+        id: fixtures.users.dana.id,
+        body: { status: "active" },
+      });
+    });
+    await waitFor(() => {
+      expect([users.calls, detail, keys.calls, teams.calls, me.calls]).toEqual([2, 2, 2, 2, 2]);
+    });
+  });
+
+  test("a deleted team is not asked for again", async () => {
+    let detail = 0;
+    override("get", "/api/teams/{id}", () => {
+      detail += 1;
+      return ok("get", "/api/teams/{id}", 200, fixtures.teamDetails.growth);
+    });
+    const teams = counted("/api/teams");
+    const client = appClient();
+    const { result } = renderHook(
+      () => ({ teams: q.useTeams(), remove: q.useDeleteTeam() }),
+      { wrapper: wrapperOf(client) },
+    );
+    await client.query(q.teamOptions(fixtures.teams.growth.id));
+    await waitFor(() => {
+      expect(result.current.teams.isSuccess).toBe(true);
+    });
+    await act(async () => {
+      await result.current.remove.mutateAsync({ id: fixtures.teams.growth.id });
+    });
+    await waitFor(() => {
+      expect(teams.calls).toBe(2);
+    });
+    expect(detail).toBe(1);
+    expect(client.getQueryData(q.queryKeys.teams.detail(fixtures.teams.growth.id))).toBeUndefined();
+  });
+
+  test("sign-out empties the cache and forgets the csrf token", async () => {
+    const client = appClient();
+    const { result } = renderHook(() => ({ me: q.useMe(), logout: q.useLogout() }), {
+      wrapper: wrapperOf(client),
+    });
+    await waitFor(() => {
+      expect(result.current.me.isSuccess).toBe(true);
+    });
+    await client.query(q.usersOptions());
+    let sent: string | null = "unset";
+    override("post", "/api/teams", ({ request }) => {
+      sent = request.headers.get("x-csrf-token");
+      return noContent();
+    });
+    await act(async () => {
+      await result.current.logout.mutateAsync();
+    });
+    expect(client.getQueryData(q.queryKeys.users.list())).toBeUndefined();
+    await api.post("/api/teams", { body: { name: "x" } });
+    expect(sent).toBeNull();
+  });
+
+  test("sign-in gives the client the csrf token", async () => {
+    let sent: string | null = null;
+    override("post", "/api/teams", ({ request }) => {
+      sent = request.headers.get("x-csrf-token");
+      return noContent();
+    });
+    const { result } = renderHook(() => q.useLogin(), { wrapper: wrapperOf(appClient()) });
+    await act(async () => {
+      await result.current.mutateAsync({ email: "maya@example.test", password: "a-password" });
+    });
+    await api.post("/api/teams", { body: { name: "x" } });
+    expect(sent).toBe(fixtures.csrfToken);
+  });
+
+  test("a wrong current password does not sign out", async () => {
+    const handler = vi.fn();
+    const unsubscribe = onUnauthenticated(handler);
+    override("post", "/api/auth/password", () =>
+      apiError(401, "invalid_credentials", "The current password is wrong."),
+    );
+    const { result } = renderHook(() => q.useChangePassword(), {
+      wrapper: wrapperOf(appClient()),
+    });
+    await act(async () => {
+      await expect(
+        result.current.mutateAsync({ current_password: "wrong", new_password: "new-password" }),
+      ).rejects.toBeInstanceOf(ApiError);
+    });
+    expect(handler).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+});
+
+describe("every mutation calls its operation", () => {
+  const cases: [string, string, () => { mutateAsync: (v: never) => Promise<unknown> }, unknown][] =
+    [
+      ["useSetup", "POST /api/setup", q.useSetup, { email: "a@example.test", name: "A", password: "p" }],
+      ["useLogin", "POST /api/auth/login", q.useLogin, { email: "a@example.test", password: "p" }],
+      ["useLogout", "POST /api/auth/logout", q.useLogout, undefined],
+      ["useAcceptInvite", "POST /api/auth/accept-invite", q.useAcceptInvite, { token: "t", password: "p" }],
+      ["useChangePassword", "POST /api/auth/password", q.useChangePassword, { current_password: "a", new_password: "b" }],
+      ["useInviteUser", "POST /api/users", q.useInviteUser, { email: "a@example.test", name: "A", role: "member" }],
+      ["useUpdateUser", "PATCH /api/users/3", q.useUpdateUser, { id: 3, body: { name: "L" } }],
+      ["useDeleteUser", "DELETE /api/users/3", q.useDeleteUser, { id: 3 }],
+      ["useReinviteUser", "POST /api/users/6/invite", q.useReinviteUser, { id: 6 }],
+      ["useCreateTeam", "POST /api/teams", q.useCreateTeam, { name: "Growth" }],
+      ["useRenameTeam", "PATCH /api/teams/2", q.useRenameTeam, { id: 2, body: { name: "R" } }],
+      ["useDeleteTeam", "DELETE /api/teams/3", q.useDeleteTeam, { id: 3 }],
+      ["usePutTeamMember", "PUT /api/teams/1/members/5", q.usePutTeamMember, { id: 1, userId: 5, body: { role: "member" } }],
+      ["useRemoveTeamMember", "DELETE /api/teams/1/members/3", q.useRemoveTeamMember, { id: 1, userId: 3 }],
+      ["useCreateKey", "POST /api/keys", q.useCreateKey, { name: "k" }],
+      ["useRevokeKey", "DELETE /api/keys/1", q.useRevokeKey, { id: 1 }],
+      ["useCreateProvider", "POST /api/providers", q.useCreateProvider, { name: "p", kind: "openai", base_url: "u" }],
+      ["useUpdateProvider", "PATCH /api/providers/2", q.useUpdateProvider, { id: 2, body: { api_key: null } }],
+      ["useDeleteProvider", "DELETE /api/providers/2", q.useDeleteProvider, { id: 2 }],
+      ["useCreateToken", "POST /api/tokens", q.useCreateToken, { name: "t" }],
+      ["useRevokeToken", "DELETE /api/tokens/1", q.useRevokeToken, { id: 1 }],
+    ];
+
+  test("there are 21 of them, and 11 queries", () => {
+    expect(cases).toHaveLength(21);
+    const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
+    expect(hooks).toHaveLength(32);
+    expect(hooks).toEqual(expect.arrayContaining(cases.map(([name]) => name)));
+  });
+
+  test.each(cases)("%s calls %s", async (_, operation, useHook, variables) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const { result } = renderHook(() => useHook(), { wrapper: wrapperOf(appClient()) });
+    await act(async () => {
+      await result.current.mutateAsync(variables as never);
+    });
+    const [url, init] = fetchSpy.mock.calls[0] ?? [];
+    expect(`${String(init?.method)} ${typeof url === "string" ? url : "not a text"}`).toBe(operation);
+    fetchSpy.mockRestore();
+  });
+});
+
+describe("secrets stay out of the caches", () => {
+  const password = "a-password-that-is-secret";
+  const apiKey = "sk-provider-api-key-that-is-secret";
+  const cases: [string, () => { mutateAsync: (v: never) => Promise<unknown> }, unknown, string[]][] =
+    [
+      ["useCreateKey", q.useCreateKey, { name: "k" }, [fixtures.newKeySecret]],
+      ["useCreateToken", q.useCreateToken, { name: "t" }, [fixtures.newTokenSecret]],
+      ["useInviteUser", q.useInviteUser, { email: "s@example.test", name: "S", role: "member" }, [fixtures.newInviteLink]],
+      ["useReinviteUser", q.useReinviteUser, { id: 6 }, [fixtures.newInviteLink]],
+      ["useLogin", q.useLogin, { email: "m@example.test", password }, [password]],
+      ["useSetup", q.useSetup, { email: "m@example.test", name: "M", password }, [password]],
+      ["useAcceptInvite", q.useAcceptInvite, { token: "invite-token-that-is-secret", password }, [password, "invite-token-that-is-secret"]],
+      ["useChangePassword", q.useChangePassword, { current_password: password, new_password: `${password}-new` }, [password]],
+      ["useCreateProvider", q.useCreateProvider, { name: "p", kind: "openai", base_url: "u", api_key: apiKey }, [apiKey]],
+      ["useUpdateProvider", q.useUpdateProvider, { id: 1, body: { api_key: apiKey } }, [apiKey]],
+    ];
+
+  test.each(cases)("%s", async (_, useHook, variables, secrets) => {
+    const client = appClient();
+    const { result, unmount } = renderHook(
+      () => ({
+        mutation: useHook(),
+        keys: q.useKeys(),
+        tokens: q.useTokens(),
+        users: q.useUsers(),
+        providers: q.useProviders(),
+      }),
+      { wrapper: wrapperOf(client) },
+    );
+    let answer: unknown;
+    await act(async () => {
+      answer = await result.current.mutation.mutateAsync(variables as never);
+    });
+    // The caller of the mutation is the one who gets the secret.
+    if (secrets[0] === fixtures.newKeySecret) {
+      expect(answer).toEqual({ key: fixtures.keys.active, secret: fixtures.newKeySecret });
+    }
+    await waitFor(() => {
+      expect(client.isFetching()).toBe(0);
+    });
+    for (const secret of secrets) {
+      expect(JSON.stringify(client.getQueryCache().getAll().map((c) => [c.queryKey, c.state]))).not.toContain(secret);
+    }
+
+    unmount();
+    await waitFor(() => {
+      expect(client.getMutationCache().getAll()).toHaveLength(0);
+    });
+    for (const secret of secrets) expect(cached(client)).not.toContain(secret);
+  });
+
+  test("the scan of the caches sees a secret that is there", async () => {
+    const client = q.createQueryClient({ retryDelay: 0, mutationGcTime: 60_000 });
+    client.setQueryData(["probe"], { secret: "probe-secret" });
+    expect(cached(client)).toContain("probe-secret");
+    await client
+      .getMutationCache()
+      .build(client, { mutationFn: () => Promise.resolve("mutation-secret") })
+      .execute(undefined);
+    expect(cached(client)).toContain("mutation-secret");
+  });
+
+  test("query keys hold ids and page numbers only", () => {
+    const keys = [
+      q.queryKeys.setup(),
+      q.queryKeys.me(),
+      q.queryKeys.users.all(),
+      q.queryKeys.users.list(),
+      q.queryKeys.users.detail(1),
+      q.queryKeys.teams.list(),
+      q.queryKeys.teams.detail(1),
+      q.queryKeys.keys.list(),
+      q.queryKeys.keys.detail(1),
+      q.queryKeys.providers.list(),
+      q.queryKeys.tokens.list(),
+      q.queryKeys.audit.list({ limit: 10, before: 5 }),
+    ];
+    expect(new Set(keys.map((key) => JSON.stringify(key))).size).toBe(keys.length);
+    expect(q.queryKeys.users.detail(1).slice(0, 1)).toEqual(q.queryKeys.users.all());
+    expect(q.queryKeys.users.list().slice(0, 1)).toEqual(q.queryKeys.users.all());
+  });
+});
+
+describe("the render helper", () => {
+  test("every render has a query client of its own, which does not retry", async () => {
+    const { renderWithApp } = await import("@/test/render");
+    let calls = 0;
+    override("get", "/api/teams", () => {
+      calls += 1;
+      return networkFailure();
+    });
+    function Teams() {
+      const teams = q.useTeams();
+      return <p>{teams.isError ? "failed" : teams.isSuccess ? "loaded" : "loading"}</p>;
+    }
+    const first = await renderWithApp(<Teams />);
+    await first.findByText("failed");
+    expect(calls).toBe(1);
+    first.unmount();
+
+    const second = await renderWithApp(<Teams />);
+    expect(second.queryClient).not.toBe(first.queryClient);
+    expect(second.queryClient.getQueryCache().getAll().length).toBeLessThanOrEqual(1);
+    await second.findByText("failed");
+    expect(calls).toBe(2);
+  });
+});

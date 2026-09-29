@@ -1,3 +1,4 @@
+import type { QueryClient } from "@tanstack/react-query";
 import { render, type RenderResult } from "@testing-library/react";
 import {
   createMemoryHistory,
@@ -8,6 +9,7 @@ import {
 } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { act } from "react";
+import { createQueryClient } from "@/api/queries";
 import { AppProviders } from "@/providers";
 import { createAppRouter } from "@/router";
 import type { ShellUser } from "@/components/shell-context";
@@ -37,12 +39,15 @@ export interface RenderOptions {
   width?: number;
   /** What the device prefers. Default `light`. */
   device?: "light" | "dark";
+  /** Default: a new client for this render, which does not retry. */
+  queryClient?: QueryClient;
   /** Called by the Sign out button. */
   onSignOut?: () => void;
 }
 
 export interface AppRenderResult extends RenderResult {
   router: AnyRouter;
+  queryClient: QueryClient;
 }
 
 /**
@@ -76,12 +81,16 @@ export async function renderWithApp(
           }),
         });
 
+  // A client of its own, so that no test sees what another one fetched.
+  const queryClient = options.queryClient ?? createQueryClient({ retry: false });
+
   let result: RenderResult | undefined;
   await act(async () => {
     result = render(
       <AppProviders
         user={options.user === undefined ? adminUser : options.user}
         onSignOut={options.onSignOut ?? (() => undefined)}
+        queryClient={queryClient}
       >
         <RouterProvider router={router} />
       </AppProviders>,
@@ -89,5 +98,5 @@ export async function renderWithApp(
     await router.load();
   });
   if (result === undefined) throw new Error("render did not run");
-  return Object.assign(result, { router });
+  return Object.assign(result, { router, queryClient });
 }

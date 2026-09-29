@@ -6,8 +6,9 @@
   "packageManager": "pnpm@11.20.0",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
+    "build": "pnpm typecheck && vite build",
+    "typecheck": "tsc --noEmit && pnpm typecheck:api",
+    "typecheck:api": "tsc --noEmit -p tsconfig.api.json",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "test:e2e": "playwright test",
