@@ -250,15 +250,12 @@ async fn another_users_token_looks_like_a_missing_one() {
     let arjun = org.sign_in("arjun").await;
     let (lena_token, _) = create(&org, &lena, "ci").await;
 
-    let app = &org.api.app;
-    let hidden = common::call(app, "DELETE", &token_path(lena_token), Some(&arjun), None).await;
-    let missing = common::call(app, "DELETE", &token_path(9999), Some(&arjun), None).await;
-    let malformed = common::call(app, "DELETE", "/api/tokens/abc", Some(&arjun), None).await;
+    let hidden = common::raw(&org, &arjun, "DELETE", &token_path(lena_token), None).await;
+    let missing = common::raw(&org, &arjun, "DELETE", &token_path(9999), None).await;
+    let malformed = common::raw(&org, &arjun, "DELETE", "/api/tokens/abc", None).await;
     assert_eq!(hidden.0, StatusCode::NOT_FOUND);
-    assert_eq!(hidden.0, missing.0);
-    assert_eq!(hidden.1, missing.1, "headers differ");
-    assert_eq!(hidden.2.to_string(), missing.2.to_string());
-    assert_eq!(hidden.2.to_string(), malformed.2.to_string());
+    assert_eq!(common::compared(&hidden), common::compared(&missing));
+    assert_eq!(common::compared(&hidden), common::compared(&malformed));
 }
 
 #[tokio::test]

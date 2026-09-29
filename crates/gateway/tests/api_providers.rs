@@ -457,8 +457,13 @@ async fn a_refusal_is_the_same_for_every_provider_id() {
                 assert_eq!(answer.0, StatusCode::FORBIDDEN, "{name} {method} {path}");
                 answers.push(answer);
             }
-            assert_eq!(answers[0], answers[1], "{name} {method}");
-            assert_eq!(answers[0], answers[2], "{name} {method}");
+            for answer in &answers[1..] {
+                assert_eq!(
+                    common::compared(answer),
+                    common::compared(&answers[0]),
+                    "{name} {method}"
+                );
+            }
         }
     }
     assert_eq!(stored_key(&org, id).await.as_deref(), Some(API_KEY));
