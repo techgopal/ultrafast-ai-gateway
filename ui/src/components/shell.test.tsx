@@ -204,7 +204,9 @@ describe("narrow screens", () => {
       expect(menu).toHaveFocus();
     });
   });
+});
 
+describe("wide screens", () => {
   test("wide screens show the sidebar without a menu button", async () => {
     await renderWithApp(null, { width: 1280 });
     expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
