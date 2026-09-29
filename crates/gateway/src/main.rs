@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use ultrafast_gateway::api::auth::bootstrap_admin;
 use ultrafast_gateway::api::keys::secret_name;
+use ultrafast_gateway::api::openapi::spec;
 use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
 use ultrafast_gateway::config::{
     db_path, load_master_key, restrict_permissions, validate_base_url, validate_provider_name,
@@ -53,6 +54,8 @@ enum Command {
         #[command(subcommand)]
         command: KeyCommand,
     },
+    /// Print the OpenAPI description of the admin API as JSON.
+    Openapi,
 }
 
 #[derive(Subcommand)]
@@ -126,6 +129,7 @@ fn validate(command: &mut Command) -> Result<()> {
         } => {
             *name = secret_name(name).map_err(anyhow::Error::msg)?.to_string();
         }
+        Command::Openapi => {}
     }
     Ok(())
 }
@@ -147,6 +151,11 @@ async fn main() -> Result<()> {
     let mut cli = Cli::parse();
     // Before anything is read or created, so a refused command leaves no files.
     validate(&mut cli.command)?;
+    // Answered from the code alone: nothing is read and nothing is created.
+    if matches!(cli.command, Command::Openapi) {
+        println!("{}", serde_json::to_string_pretty(&spec())?);
+        return Ok(());
+    }
     let master = load_master_key(&cli.data_dir, cli.master_key.as_deref())?;
     let cipher = Cipher::from_hex(&master)?;
     let store = Store::open(&db_path(&cli.data_dir))
@@ -219,6 +228,7 @@ async fn main() -> Result<()> {
             println!("Created key '{name}'. Copy it now; it is not shown again:");
             println!("{}", key.full);
         }
+        Command::Openapi => unreachable!("answered before the data directory is opened"),
     }
     Ok(())
 }

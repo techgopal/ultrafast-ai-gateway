@@ -18,13 +18,14 @@ pub struct AuditEntry<'a> {
     pub summary: &'a str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct AuditRow {
     pub id: i64,
     pub at: String,
     pub actor_email: String,
     pub action: String,
     pub target_type: String,
+    #[schema(required)]
     pub target_id: Option<i64>,
     pub summary: String,
 }

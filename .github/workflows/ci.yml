@@ -33,9 +33,32 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Tests
         run: cargo test --all --no-fail-fast
+      - name: OpenAPI spec is current
+        run: |
+          if ! cargo run -q -p ultrafast-gateway -- openapi | diff - openapi/admin.json; then
+            echo "openapi/admin.json is out of date; run: cargo run -p ultrafast-gateway -- openapi > openapi/admin.json"
+            exit 1
+          fi
       - name: Build image
         run: docker build -t ultrafast:ci .
       - name: Report binary size
         run: |
           cargo build --release --locked -p ultrafast-gateway
           ls -l target/release/ultrafast | awk '{printf "binary size: %.1f MB\n", $5/1048576}'
+
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('Cargo.lock') }}
+      - name: Tests
+        run: cargo test --all --locked

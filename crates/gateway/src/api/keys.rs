@@ -21,7 +21,7 @@ use crate::store::{check_timestamp, now, AuditEntry, KeyRow, Store};
 /// Longest accepted name of a key or an access token, in characters.
 const MAX_NAME_CHARS: usize = 100;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateKeyRequest {
     name: String,
@@ -31,18 +31,26 @@ pub struct CreateKeyRequest {
 }
 
 /// A key as `/api` shows it. It has no field for the key or its hash.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct KeyView {
     pub id: i64,
     pub name: String,
     pub display: String,
+    #[schema(required)]
     pub owner_id: Option<i64>,
+    #[schema(required)]
     pub owner_email: Option<String>,
+    #[schema(required)]
     pub team_id: Option<i64>,
+    #[schema(required)]
     pub team_name: Option<String>,
+    #[schema(required)]
     pub expires_at: Option<String>,
+    #[schema(required)]
     pub revoked_at: Option<String>,
     pub created_at: String,
+    /// `active`, `expired` or `revoked`.
+    #[schema(value_type = String)]
     pub status: &'static str,
 }
 
@@ -128,6 +136,17 @@ async fn key_of(store: &Store, raw_id: &str) -> Result<KeyRow, ApiError> {
     store.key_by_id(id).await?.ok_or_else(ApiError::not_found)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/keys",
+    tag = "keys",
+    responses(
+        (status = 200, description = "The keys the caller may see.", body = super::openapi::KeyList),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -148,6 +167,22 @@ pub async fn list(
     Ok(Json(json!({ "keys": keys })).into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/keys",
+    tag = "keys",
+    request_body = CreateKeyRequest,
+    responses(
+        (status = 201, description = "The new key, with the key itself.", body = super::openapi::CreatedKey),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn create(
     State(state): State<Arc<AppState>>,
     authed: Authed,
@@ -230,6 +265,21 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(body)).into_response())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/keys/{id}",
+    tag = "keys",
+    params(
+        ("id" = i64, Path, description = "The id of the key."),
+    ),
+    responses(
+        (status = 200, description = "The key.", body = KeyView),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn view(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -246,6 +296,22 @@ pub async fn view(
     Ok(Json(KeyView::new(key, &now())).into_response())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/keys/{id}",
+    tag = "keys",
+    params(
+        ("id" = i64, Path, description = "The id of the key."),
+    ),
+    responses(
+        (status = 204, description = "The key is revoked."),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
 pub async fn revoke(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,

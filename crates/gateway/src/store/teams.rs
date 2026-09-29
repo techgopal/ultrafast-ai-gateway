@@ -22,7 +22,7 @@ pub struct MemberRow {
 }
 
 /// A team with the number of its members.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct TeamSummary {
     pub id: i64,
     pub name: String,
@@ -31,7 +31,7 @@ pub struct TeamSummary {
 }
 
 /// A member of a team, with what names them.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 pub struct MemberDetail {
     pub user_id: i64,
     pub email: String,

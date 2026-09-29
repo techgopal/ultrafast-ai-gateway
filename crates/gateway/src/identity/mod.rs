@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 const MAX_EMAIL_BYTES: usize = 254;
 
 /// A user's role in the organization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Admin,
@@ -18,7 +18,7 @@ pub enum Role {
 }
 
 /// A user's role inside one team.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TeamRole {
     Lead,
@@ -26,7 +26,7 @@ pub enum TeamRole {
 }
 
 /// The state of a user account.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum UserStatus {
     Active,
