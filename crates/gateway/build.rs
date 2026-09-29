@@ -32,9 +32,12 @@ fn main() -> io::Result<()> {
     let console = out.join("console");
 
     println!("cargo:rerun-if-changed=build.rs");
-    // Cargo runs this script on every build while a watched path is missing,
-    // and compiles the gateway again each time. So without a console build
-    // the directory it will appear in is watched instead.
+    // Cargo takes a watched path that is missing as changed, so watching a
+    // missing `ui/dist` compiles the gateway again on every build. Without a
+    // console build, `ui` is watched instead: a build of the console changes
+    // nothing outside `ui/dist` but the directory `ui` itself, so nothing
+    // narrower would notice it. Cargo then reads all of `ui`, `node_modules`
+    // included, which takes about a second until the console is built.
     let ui = manifest.join("../../ui");
     if dist.exists() {
         println!("cargo:rerun-if-changed={}", dist.display());
@@ -66,8 +69,9 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let target = to.join(entry.file_name());
-        // Follows links, so what is embedded is always a copy.
-        let kind = fs::metadata(entry.path())?;
+        // Of the entry itself: a symbolic link is neither, so it is skipped
+        // and nothing outside the build gets into the binary.
+        let kind = entry.file_type()?;
         if kind.is_dir() {
             copy_dir(&entry.path(), &target)?;
         } else if kind.is_file() {

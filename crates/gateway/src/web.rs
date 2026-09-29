@@ -76,6 +76,7 @@ where
                 assets.asset(uri.path(), &headers)
             }),
         )
+        .method_not_allowed_fallback(|| async { method_not_allowed() })
         .fallback(
             move |method: Method, uri: Uri, headers: HeaderMap| async move {
                 let head = method == Method::HEAD;
@@ -86,6 +87,16 @@ where
                 response
             },
         )
+}
+
+fn not_found() -> Response {
+    (StatusCode::NOT_FOUND, [(X_CONTENT_TYPE_OPTIONS, NOSNIFF)]).into_response()
+}
+
+fn method_not_allowed() -> Response {
+    let allow = HeaderValue::from_static("GET, HEAD");
+    let headers = [(ALLOW, allow), (X_CONTENT_TYPE_OPTIONS, NOSNIFF)];
+    (StatusCode::METHOD_NOT_ALLOWED, headers).into_response()
 }
 
 /// A file of the console's build.
@@ -143,25 +154,25 @@ impl Console {
     /// `GET /assets/<name>`: the file, or 404. Never the page.
     fn asset(&self, path: &str, headers: &HeaderMap) -> Response {
         if !is_plain(path) {
-            return StatusCode::NOT_FOUND.into_response();
+            return not_found();
         }
         let name = path.trim_start_matches('/');
         match self.files.get(name) {
             Some(file) => file_response(name, file, IMMUTABLE, headers),
-            None => StatusCode::NOT_FOUND.into_response(),
+            None => not_found(),
         }
     }
 
     /// Every path no route claimed.
     fn other(&self, method: &Method, path: &str, headers: &HeaderMap) -> Response {
         if is_reserved(path) {
-            return StatusCode::NOT_FOUND.into_response();
+            return not_found();
         }
         if method != Method::GET && method != Method::HEAD {
-            return (StatusCode::METHOD_NOT_ALLOWED, [(ALLOW, "GET, HEAD")]).into_response();
+            return method_not_allowed();
         }
         if !is_plain(path) || path == ASSETS || path.starts_with("/assets/") {
-            return StatusCode::NOT_FOUND.into_response();
+            return not_found();
         }
         // A file at the root of the build, such as `theme.js`.
         let name = path.trim_start_matches('/');

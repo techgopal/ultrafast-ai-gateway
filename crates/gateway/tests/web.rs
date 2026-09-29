@@ -211,6 +211,7 @@ async fn reserved_names_in_any_form_are_404() {
         assert_eq!(answer.status, StatusCode::NOT_FOUND, "{path}");
         assert!(answer.body.is_empty(), "{path}");
         assert!(answer.headers.get("content-security-policy").is_none());
+        assert_eq!(answer.header("x-content-type-options"), "nosniff");
     }
 }
 
@@ -229,6 +230,7 @@ async fn missing_asset_is_404_not_html() {
         let text = answer.text();
         assert!(!text.contains("<html"), "{path}");
         assert!(!text.contains(NOT_BUILT), "{path}");
+        assert_eq!(answer.header("x-content-type-options"), "nosniff");
     }
 }
 
@@ -312,6 +314,8 @@ async fn post_to_a_page_path_is_405() {
             "{method} {path}"
         );
         assert!(!answer.text().contains("<html"));
+        assert_eq!(answer.header("x-content-type-options"), "nosniff");
+        assert_eq!(answer.header("allow"), "GET, HEAD");
     }
 }
 
@@ -337,6 +341,7 @@ async fn traversal_is_refused() {
         assert_eq!(answer.status, StatusCode::NOT_FOUND, "{path}");
         assert!(!answer.text().contains("<html"), "{path}");
         assert!(!answer.text().contains("[workspace]"), "{path}");
+        assert_eq!(answer.header("x-content-type-options"), "nosniff");
     }
 }
 
@@ -344,10 +349,8 @@ async fn traversal_is_refused() {
 #[tokio::test]
 async fn a_literal_backslash_is_refused() {
     let app = app().await;
-    let Ok(uri) = axum::http::Uri::try_from("/assets/a\\b") else {
-        // The HTTP library does not let such a request exist.
-        return;
-    };
+    let uri = axum::http::Uri::try_from("/assets/a\\b")
+        .expect("the HTTP library accepts a backslash in a path");
     let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
