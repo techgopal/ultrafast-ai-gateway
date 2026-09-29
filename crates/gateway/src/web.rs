@@ -5,6 +5,7 @@
 //! that copy inside the binary: a requested path is only ever a name looked
 //! up in it, never a path read from disk.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -16,7 +17,9 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use rust_embed::{Embed, EmbeddedFile};
+use bytes::Bytes;
+use rust_embed::Embed;
+use sha2::{Digest, Sha256};
 
 use crate::app::AppState;
 use crate::secrets::fill_random;
@@ -55,28 +58,120 @@ const MAX_DECODE_ROUNDS: usize = 4;
 /// The console: `/`, the files of its build, and as the fallback every
 /// other path, so a link into the app works when opened directly.
 pub fn router() -> Router<Arc<AppState>> {
-    router_for(Page::embedded())
+    router_for(Console::embedded())
 }
 
-fn router_for<S>(page: Page) -> Router<S>
+fn router_for<S>(console: Console) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    let page = Arc::new(page);
-    let root = page.clone();
+    let console = Arc::new(console);
+    let root = console.clone();
+    let assets = console.clone();
     Router::new()
-        .route("/", get(move || async move { root.response() }))
-        .route("/assets/{*name}", get(asset))
+        .route("/", get(move || async move { root.page.response() }))
+        .route(
+            "/assets/{*name}",
+            get(move |uri: Uri, headers: HeaderMap| async move {
+                assets.asset(uri.path(), &headers)
+            }),
+        )
         .fallback(
             move |method: Method, uri: Uri, headers: HeaderMap| async move {
                 let head = method == Method::HEAD;
-                let mut response = other(&page, &method, uri.path(), &headers);
+                let mut response = console.other(&method, uri.path(), &headers);
                 if head {
                     *response.body_mut() = Body::empty();
                 }
                 response
             },
         )
+}
+
+/// A file of the console's build.
+struct File {
+    data: Bytes,
+    sha256: [u8; 32],
+}
+
+/// What is served: the files of a build by their names, such as
+/// `assets/index-1a2b3c4d.js`, and the page made from its `index.html`.
+/// The answers depend on nothing else, so they are the same for the files
+/// in the binary and for any other set.
+struct Console {
+    files: HashMap<String, File>,
+    page: Page,
+}
+
+impl Console {
+    /// The files compiled into the binary.
+    fn embedded() -> Self {
+        let files = Files::iter().filter_map(|name| {
+            let file = Files::get(&name)?;
+            let data = match file.data {
+                std::borrow::Cow::Borrowed(bytes) => Bytes::from_static(bytes),
+                std::borrow::Cow::Owned(bytes) => Bytes::from(bytes),
+            };
+            Some((name.into_owned(), data))
+        });
+        Self::of(files, CONSOLE_BUILT)
+    }
+
+    /// `built` says whether the files are a build of the console. Without
+    /// one, or with one whose `index.html` cannot be used, the page says
+    /// that the console was not built.
+    fn of(files: impl IntoIterator<Item = (String, Bytes)>, built: bool) -> Self {
+        let files: HashMap<String, File> = files
+            .into_iter()
+            .map(|(name, data)| {
+                let sha256 = Sha256::digest(&data).into();
+                (name, File { data, sha256 })
+            })
+            .collect();
+        let page = if built {
+            let index = files.get(INDEX).map(|file| &file.data[..]);
+            Page::of_console(index.unwrap_or_default()).unwrap_or_else(|reason| {
+                tracing::error!(reason, "the console cannot be served");
+                Page::NotBuilt
+            })
+        } else {
+            Page::NotBuilt
+        };
+        Self { files, page }
+    }
+
+    /// `GET /assets/<name>`: the file, or 404. Never the page.
+    fn asset(&self, path: &str, headers: &HeaderMap) -> Response {
+        if !is_plain(path) {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        let name = path.trim_start_matches('/');
+        match self.files.get(name) {
+            Some(file) => file_response(name, file, IMMUTABLE, headers),
+            None => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
+    /// Every path no route claimed.
+    fn other(&self, method: &Method, path: &str, headers: &HeaderMap) -> Response {
+        if RESERVED.contains(&path) || RESERVED_PREFIXES.iter().any(|p| path.starts_with(p)) {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        if method != Method::GET && method != Method::HEAD {
+            return (StatusCode::METHOD_NOT_ALLOWED, [(ALLOW, "GET, HEAD")]).into_response();
+        }
+        if !is_plain(path) || path == ASSETS || path.starts_with("/assets/") {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        // A file at the root of the build, such as `theme.js`.
+        let name = path.trim_start_matches('/');
+        if name != INDEX && !name.contains('/') {
+            if let Some(file) = self.files.get(name) {
+                return file_response(name, file, REVALIDATED, headers);
+            }
+        }
+        self.page.response()
+    }
 }
 
 /// The page every path of the app is answered with.
@@ -90,20 +185,6 @@ enum Page {
 }
 
 impl Page {
-    fn embedded() -> Self {
-        if !CONSOLE_BUILT {
-            return Self::NotBuilt;
-        }
-        let index = Files::get(INDEX).map(|file| file.data.into_owned());
-        match Self::of_console(index.as_deref().unwrap_or_default()) {
-            Ok(page) => page,
-            Err(reason) => {
-                tracing::error!(reason, "the console cannot be served");
-                Self::NotBuilt
-            }
-        }
-    }
-
     /// The page of a built console. Its `index.html` must hold the nonce
     /// placeholder exactly once.
     fn of_console(index: &[u8]) -> Result<Self, &'static str> {
@@ -183,40 +264,6 @@ fn security_headers(headers: &mut HeaderMap, nonce: &str) {
     );
 }
 
-/// `GET /assets/<name>`: the file, or 404. Never the page.
-async fn asset(uri: Uri, headers: HeaderMap) -> Response {
-    let path = uri.path();
-    if !is_plain(path) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let name = path.trim_start_matches('/');
-    match Files::get(name) {
-        Some(file) => file_response(name, file, IMMUTABLE, &headers),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-/// Every path no route claimed.
-fn other(page: &Page, method: &Method, path: &str, headers: &HeaderMap) -> Response {
-    if RESERVED.contains(&path) || RESERVED_PREFIXES.iter().any(|p| path.starts_with(p)) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    if method != Method::GET && method != Method::HEAD {
-        return (StatusCode::METHOD_NOT_ALLOWED, [(ALLOW, "GET, HEAD")]).into_response();
-    }
-    if !is_plain(path) || path == ASSETS || path.starts_with("/assets/") {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    // A file at the root of the build, such as `theme.js`.
-    let name = path.trim_start_matches('/');
-    if name != INDEX && !name.contains('/') {
-        if let Some(file) = Files::get(name) {
-            return file_response(name, file, REVALIDATED, headers);
-        }
-    }
-    page.response()
-}
-
 /// Whether the path, however often it was percent-encoded, is free of
 /// `..`, backslashes and NUL bytes.
 fn is_plain(path: &str) -> bool {
@@ -262,13 +309,8 @@ fn percent_decoded(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-fn file_response(
-    name: &str,
-    file: EmbeddedFile,
-    cache: &'static str,
-    request: &HeaderMap,
-) -> Response {
-    let etag = format!("\"{}\"", hex::encode(&file.metadata.sha256_hash()[..16]));
+fn file_response(name: &str, file: &File, cache: &'static str, request: &HeaderMap) -> Response {
+    let etag = format!("\"{}\"", hex::encode(&file.sha256[..16]));
     let unchanged = request
         .get_all(IF_NONE_MATCH)
         .iter()
@@ -286,7 +328,7 @@ fn file_response(
         } else {
             mime.essence_str().to_string()
         };
-        let mut response = file.data.into_owned().into_response();
+        let mut response = file.data.clone().into_response();
         response.headers_mut().insert(
             CONTENT_TYPE,
             HeaderValue::from_str(&content_type).expect("a media type is valid in a header"),
@@ -316,10 +358,53 @@ mod tests {
     const BUILT: &str = "<html><head><meta name=\"csp-nonce\" content=\"__CSP_NONCE__\"></head>\
         <body><div id=\"root\"></div></body></html>";
 
-    async fn served(page: Page, path: &str) -> (StatusCode, HeaderMap, String) {
-        let app: Router = router_for(page);
-        let request = Request::builder().uri(path).body(Body::empty()).unwrap();
-        let response = app.oneshot(request).await.unwrap();
+    const SCRIPT: &str = "/assets/app-abc123.js";
+    const STYLES: &str = "/assets/app-abc123.css";
+    const NOT_BUILT: &str = "console was not built";
+
+    /// A small build of the console.
+    fn fixture() -> Console {
+        console_with(BUILT.as_bytes())
+    }
+
+    fn console_with(index: &[u8]) -> Console {
+        let files: [(&str, &[u8]); 5] = [
+            ("index.html", index),
+            ("assets/app-abc123.js", b"console.log(\"app\");"),
+            ("assets/app-abc123.css", b"body { margin: 0 }"),
+            ("theme.js", b"/* uf-theme */"),
+            (
+                "favicon.svg",
+                b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+            ),
+        ];
+        let files = files
+            .into_iter()
+            .map(|(name, data)| (name.to_string(), Bytes::copy_from_slice(data)));
+        Console::of(files, true)
+    }
+
+    /// What a binary without a console build holds.
+    fn not_built() -> Console {
+        let page = Bytes::from_static(NOT_BUILT_PAGE.as_bytes());
+        Console::of([(INDEX.to_string(), page)], false)
+    }
+
+    async fn send(
+        console: Console,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, HeaderMap, String) {
+        let app: Router = router_for(console);
+        let mut request = Request::builder().method(method).uri(path);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = app
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         let status = response.status();
         let headers = response.headers().clone();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -328,9 +413,146 @@ mod tests {
         (status, headers, String::from_utf8(body.to_vec()).unwrap())
     }
 
-    /// What `embedded` does with the `index.html` of a build.
-    fn page_of(index: &[u8]) -> Page {
-        Page::of_console(index).unwrap_or(Page::NotBuilt)
+    async fn served(console: Console, path: &str) -> (StatusCode, HeaderMap, String) {
+        send(console, "GET", path, &[]).await
+    }
+
+    fn page_of(index: &[u8]) -> Console {
+        console_with(index)
+    }
+
+    #[tokio::test]
+    async fn assets_are_cached_for_good() {
+        for (path, content_type, body) in [
+            (
+                SCRIPT,
+                "text/javascript; charset=utf-8",
+                "console.log(\"app\");",
+            ),
+            (STYLES, "text/css; charset=utf-8", "body { margin: 0 }"),
+        ] {
+            let (status, headers, text) = served(fixture(), path).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert_eq!(text, body);
+            assert_eq!(headers[CONTENT_TYPE], content_type);
+            assert_eq!(
+                headers[CACHE_CONTROL],
+                "public, max-age=31536000, immutable"
+            );
+            assert_eq!(headers[X_CONTENT_TYPE_OPTIONS], "nosniff");
+            assert_eq!(headers["content-length"], body.len().to_string());
+            let etag = headers[ETAG].to_str().unwrap();
+            assert!(etag.len() == 34 && etag.starts_with('"') && etag.ends_with('"'));
+            assert!(!headers.contains_key(CONTENT_SECURITY_POLICY));
+
+            let (status, headers, text) = send(fixture(), "HEAD", path, &[]).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers[CONTENT_TYPE], content_type);
+            assert!(text.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn root_files_are_revalidated() {
+        for (path, content_type, body) in [
+            (
+                "/theme.js",
+                "text/javascript; charset=utf-8",
+                "/* uf-theme */",
+            ),
+            (
+                "/favicon.svg",
+                "image/svg+xml",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+            ),
+        ] {
+            let (status, headers, text) = served(fixture(), path).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert_eq!(text, body);
+            assert_eq!(headers[CONTENT_TYPE], content_type);
+            assert_eq!(headers[CACHE_CONTROL], "no-cache");
+            assert_eq!(headers[X_CONTENT_TYPE_OPTIONS], "nosniff");
+            assert!(headers.contains_key(ETAG));
+        }
+        // Without a build there is no such file: the path is a page.
+        let (status, headers, text) = served(not_built(), "/theme.js").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[CONTENT_TYPE], HTML);
+        assert!(text.contains(NOT_BUILT));
+    }
+
+    #[tokio::test]
+    async fn a_matching_etag_gives_304() {
+        for path in [SCRIPT, STYLES, "/theme.js", "/favicon.svg"] {
+            let (_, first, body) = served(fixture(), path).await;
+            let etag = first[ETAG].to_str().unwrap().to_string();
+            let weak = format!("W/{etag}");
+            let listed = format!("\"other\", {etag}");
+            for sent in [etag.as_str(), weak.as_str(), listed.as_str(), "*"] {
+                let (status, headers, text) =
+                    send(fixture(), "GET", path, &[("if-none-match", sent)]).await;
+                assert_eq!(status, StatusCode::NOT_MODIFIED, "{path} {sent}");
+                assert!(text.is_empty());
+                assert_eq!(headers[ETAG], first[ETAG]);
+                assert_eq!(headers[CACHE_CONTROL], first[CACHE_CONTROL]);
+                assert_eq!(headers[X_CONTENT_TYPE_OPTIONS], "nosniff");
+            }
+            let (status, _, text) =
+                send(fixture(), "GET", path, &[("if-none-match", "\"other\"")]).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(text, body);
+        }
+        // Files with other bytes have other tags.
+        let (_, script, _) = served(fixture(), SCRIPT).await;
+        let (_, styles, _) = served(fixture(), STYLES).await;
+        assert_ne!(script[ETAG], styles[ETAG]);
+        // A page has no tag, so nothing makes it a 304.
+        let (status, headers, _) = send(fixture(), "GET", "/", &[("if-none-match", "*")]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!headers.contains_key(ETAG));
+    }
+
+    #[tokio::test]
+    async fn a_missing_asset_is_404_and_never_the_page() {
+        for console in [fixture, not_built] {
+            for path in [
+                "/assets/nope.js",
+                "/assets/",
+                "/assets",
+                "/assets/index.html",
+                "/assets/theme.js",
+                "/assets/../theme.js",
+                "/assets/%2e%2e/theme.js",
+            ] {
+                let (status, headers, text) = served(console(), path).await;
+                assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+                assert!(text.is_empty(), "{path}");
+                assert!(!headers.contains_key(CONTENT_SECURITY_POLICY));
+            }
+        }
+        // A file of the build is served under its own name only.
+        let (_, headers, _) = served(fixture(), "/app-abc123.js").await;
+        assert_eq!(headers[CONTENT_TYPE], HTML);
+    }
+
+    #[tokio::test]
+    async fn the_page_says_whether_the_console_was_built() {
+        for path in ["/", "/keys", "/index.html"] {
+            let (status, headers, text) = served(fixture(), path).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers[CACHE_CONTROL], "no-store");
+            assert!(!headers.contains_key(ETAG));
+            assert!(text.contains("<div id=\"root\">"));
+            assert!(!text.contains(NOT_BUILT));
+            assert!(!text.contains(NONCE_PLACEHOLDER));
+
+            let (status, headers, text) = served(not_built(), path).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers[CACHE_CONTROL], "no-store");
+            assert!(headers.contains_key(CONTENT_SECURITY_POLICY));
+            assert!(text.contains(NOT_BUILT));
+            assert!(text.contains("pnpm --dir ui build"));
+        }
     }
 
     #[tokio::test]
@@ -346,6 +568,9 @@ mod tests {
                 .unwrap();
             assert_eq!(nonce.len(), 22);
             assert_eq!(body, BUILT.replace(NONCE_PLACEHOLDER, nonce));
+            let meta = format!("<meta name=\"csp-nonce\" content=\"{nonce}\">");
+            assert_eq!(body.matches(&meta).count(), 1);
+            assert_eq!(body.matches(nonce).count(), 1);
         }
     }
 
