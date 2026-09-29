@@ -110,6 +110,11 @@ describe("confirm dialog", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     const alert = await within(dialog).findByRole("alert");
     expect(alert).toHaveTextContent("At least one active admin is required.");
+    // The focus goes to what went wrong; Tab from there reaches the buttons.
+    expect(alert).toHaveAttribute("tabindex", "-1");
+    await waitFor(() => {
+      expect(alert).toHaveFocus();
+    });
     expect(screen.getByRole("alertdialog", { name: "Delete this user?" })).toBeInTheDocument();
     // It can be tried again, and cancelled.
     expect(within(dialog).getByRole("button", { name: "Delete" })).toBeEnabled();
@@ -314,13 +319,18 @@ function stored(): string {
   ]);
 }
 
-function expectNoSecret(app: AppRenderResult): void {
-  expect(document.body.innerHTML).not.toContain(SECRET);
-  expect(shown()).not.toContain(SECRET);
-  expect(cached(app.queryClient)).not.toContain(SECRET);
-  expect(JSON.stringify(app.router.state)).not.toContain(SECRET);
-  expect(JSON.stringify(window.history.state)).not.toContain(SECRET);
-  expect(stored()).not.toContain(SECRET);
+function routed(app: AppRenderResult): string {
+  return JSON.stringify(app.router.state);
+}
+
+/** `text` is nowhere: by default the secret of the fixtures. */
+function expectNoSecret(app: AppRenderResult, text = SECRET): void {
+  expect(document.body.innerHTML).not.toContain(text);
+  expect(shown()).not.toContain(text);
+  expect(cached(app.queryClient)).not.toContain(text);
+  expect(routed(app)).not.toContain(text);
+  expect(JSON.stringify(window.history.state)).not.toContain(text);
+  expect(stored()).not.toContain(text);
 }
 
 const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
@@ -342,6 +352,100 @@ describe("secret dialog", () => {
     }).toThrow();
     app.queryClient.setQueryData(["a-test"], { secret: SECRET });
     expect(cached(app.queryClient)).toContain(SECRET);
+  });
+
+  test("the scan finds a marker in the mutation cache", async () => {
+    const marker = "marker-7f3a";
+    const app = await renderWithApp(<p>A page</p>);
+    expectNoSecret(app, marker);
+    const mutation = app.queryClient
+      .getMutationCache()
+      .build(app.queryClient, { mutationFn: () => Promise.resolve({ value: marker }) });
+    await mutation.execute(undefined);
+    // It is the mutation cache that holds it, not the query cache.
+    const queries = app.queryClient.getQueryCache().getAll();
+    expect(JSON.stringify(queries.map((query) => query.state))).not.toContain(marker);
+    expect(cached(app.queryClient)).toContain(marker);
+    expect(() => {
+      expectNoSecret(app, marker);
+    }).toThrow();
+  });
+
+  test("the scan finds a marker in the variables of a mutation", async () => {
+    const marker = "marker-2c9e";
+    const app = await renderWithApp(<p>A page</p>);
+    const mutation = app.queryClient
+      .getMutationCache()
+      .build(app.queryClient, { mutationFn: () => Promise.resolve(null) });
+    await mutation.execute({ value: marker });
+    expect(cached(app.queryClient)).toContain(marker);
+    expect(() => {
+      expectNoSecret(app, marker);
+    }).toThrow();
+  });
+
+  test("the scan finds a marker in router state", async () => {
+    const marker = "marker-5b1d";
+    const app = await renderWithApp(<p>A page</p>);
+    expectNoSecret(app, marker);
+    // No page of the console keeps state in the router, so it has no such field.
+    await act(async () => {
+      await app.router.navigate({
+        to: "/",
+        state: (before) => Object.assign({}, before, { note: marker }),
+      });
+    });
+    expect(routed(app)).toContain(marker);
+    expect(() => {
+      expectNoSecret(app, marker);
+    }).toThrow();
+  });
+
+  test("the scan finds a marker in the address of the router", async () => {
+    const marker = "marker-8e4f";
+    const app = await renderWithApp(<p>A page</p>);
+    await act(async () => {
+      await app.router.navigate({ to: "/", search: { note: marker } });
+    });
+    expect(routed(app)).toContain(marker);
+    expect(() => {
+      expectNoSecret(app, marker);
+    }).toThrow();
+  });
+
+  test.each(["localStorage", "sessionStorage"] as const)(
+    "the scan finds a marker in browser storage: %s",
+    async (name) => {
+      const marker = "marker-a06c";
+      const app = await renderWithApp(<p>A page</p>);
+      expectNoSecret(app, marker);
+      window[name].setItem("a-test", marker);
+      try {
+        expect(stored()).toContain(marker);
+        expect(() => {
+          expectNoSecret(app, marker);
+        }).toThrow();
+      } finally {
+        window[name].removeItem("a-test");
+      }
+      expectNoSecret(app, marker);
+    },
+  );
+
+  test("the scan finds a marker in the state of the history of the browser", async () => {
+    const marker = "marker-d713";
+    const app = await renderWithApp(<p>A page</p>);
+    const before: unknown = window.history.state;
+    window.history.replaceState({ note: marker }, "");
+    try {
+      expect(stored()).toContain(marker);
+      expect(() => {
+        expectNoSecret(app, marker);
+      }).toThrow();
+    } finally {
+      window.history.replaceState(before, "");
+    }
+    expectNoSecret(app, marker);
   });
 
   test("secret is shown and copied", async () => {
@@ -571,5 +675,32 @@ describe("narrow screens and themes", () => {
     expect(dialog).toHaveTextContent("Copy this key now. It is not shown again.");
     await userEvent.keyboard("{Escape}");
     expect(await screen.findByRole("alertdialog")).toHaveTextContent(ASK);
+  });
+});
+
+describe("confirm dialog: the focus after a failure", () => {
+  test("every failure moves the focus to its message, also the second one", async () => {
+    override("delete", "/api/users/{id}", () => refuse(errors.last_admin));
+    await renderWithApp(<Users />);
+    const dialog = await openConfirm();
+    const confirm = within(dialog).getByRole("button", { name: "Delete" });
+    await userEvent.click(confirm);
+    await waitFor(() => {
+      expect(within(dialog).getByRole("alert")).toHaveFocus();
+    });
+    await userEvent.tab();
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    expect(within(dialog).getByRole("alert")).not.toHaveFocus();
+
+    override("delete", "/api/users/{id}", () => refuse(errors.cannot_delete_self));
+    await userEvent.click(confirm);
+    await waitFor(() => {
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        "You cannot delete your own account.",
+      );
+    });
+    await waitFor(() => {
+      expect(within(dialog).getByRole("alert")).toHaveFocus();
+    });
   });
 });

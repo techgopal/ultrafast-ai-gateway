@@ -120,6 +120,86 @@ describe("data table", () => {
     expect(names()).toEqual(["Batch", "mobile", "ci"]);
   });
 
+  test("a list of exactly one row", async () => {
+    const [only] = rows;
+    if (only === undefined) throw new Error("the test has no rows");
+    await renderWithApp(<Keys list={[only]} />);
+    const table = screen.getByRole("table", { name: "Virtual keys" });
+    expect(table).not.toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("No keys yet")).toBeNull();
+    expect(names()).toEqual(["mobile"]);
+    expect(screen.getAllByRole("button", { name: /^Revoke / })).toHaveLength(1);
+    // One row sorts too, and stays.
+    const header = screen.getByRole("columnheader", { name: "Name" });
+    await userEvent.click(within(header).getByRole("button", { name: "Name" }));
+    expect(header).toHaveAttribute("aria-sort", "ascending");
+    expect(names()).toEqual(["mobile"]);
+    await userEvent.click(within(header).getByRole("button", { name: "Name" }));
+    expect(header).toHaveAttribute("aria-sort", "descending");
+    expect(names()).toEqual(["mobile"]);
+  });
+
+  test("a list of exactly one row, as a card", async () => {
+    const [only] = rows;
+    if (only === undefined) throw new Error("the test has no rows");
+    await renderWithApp(<Keys list={[only]} />, { width: 390 });
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByText("No keys yet")).toBeNull();
+    expect(screen.getAllByText("mobile")).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^Revoke / })).toHaveLength(1);
+  });
+
+  test("a list of 500 rows is shown and sorts", async () => {
+    // 37 and 500 share no factor: every number of requests from 0 to 499 is there once.
+    const many: Key[] = Array.from({ length: 500 }, (_, index) => ({
+      id: index + 1,
+      name: `key-${String(index + 1)}`,
+      status: index % 7 === 0 ? "revoked" : "active",
+      requests: (index * 37) % 500,
+      created: "2026-03-01",
+    }));
+    const started = performance.now();
+    await renderWithApp(<Keys list={many} />);
+    const took = performance.now() - started;
+    // Measured in the test environment (jsdom): see the report. The bound is
+    // far above it, and says only that the render does not hang.
+    expect(took).toBeLessThan(20_000);
+    // Queries by role take seconds on 500 rows in jsdom: the rows are read from the table.
+    const table = screen.getByRole("table", { name: "Virtual keys" });
+    const head = table.querySelector("thead");
+    if (head === null) throw new Error("the table has no head");
+    const shown = () =>
+      [...table.querySelectorAll("tbody tr")].map(
+        (row) => row.querySelector("td")?.textContent ?? null,
+      );
+    const all = shown();
+    expect(all).toHaveLength(500);
+    expect(all[0]).toBe("key-1");
+    expect(all[499]).toBe("key-500");
+    expect(table.querySelectorAll("tbody button")).toHaveLength(500);
+
+    const requests = within(head).getByRole("columnheader", { name: "Requests" });
+    const button = within(requests).getByRole("button", { name: "Requests" });
+    await userEvent.click(button);
+    expect(requests).toHaveAttribute("aria-sort", "ascending");
+    const byRequests = (order: "asc" | "desc") =>
+      [...many]
+        .sort((a, b) => (order === "asc" ? a.requests - b.requests : b.requests - a.requests))
+        .map((key) => key.name);
+    expect(shown()).toEqual(byRequests("asc"));
+    await userEvent.click(button);
+    expect(requests).toHaveAttribute("aria-sort", "descending");
+    expect(shown()).toEqual(byRequests("desc"));
+
+    // Names with numbers sort by the value of the number: key-2 before key-10.
+    const name = within(head).getByRole("columnheader", { name: "Name" });
+    await userEvent.click(within(name).getByRole("button", { name: "Name" }));
+    expect(shown()).toEqual(many.map((key) => key.name));
+    if (process.env.UF_SHOW_TIMES === "1") {
+      console.info(`500 rows: first render ${took.toFixed(0)} ms`);
+    }
+  }, 30_000);
+
   test("the sort button works from the keyboard", async () => {
     await renderWithApp(<Keys />);
     const header = screen.getByRole("columnheader", { name: "Name" });

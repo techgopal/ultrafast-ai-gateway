@@ -24,8 +24,10 @@ export function FormError({ ref, messages = [], children }: FormErrorProps) {
       className="outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <AlertDescription>
-        {messages.map((message) => (
-          <p key={message}>{message}</p>
+        {messages.map((message, index) => (
+          // Two messages may say the same, so the text is no key. The lines
+          // have no state and no order of their own: the place is the key.
+          <p key={index}>{message}</p>
         ))}
         {children}
       </AlertDescription>
