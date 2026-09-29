@@ -138,7 +138,7 @@ async fn key_of(store: &Store, raw_id: &str) -> Result<KeyRow, ApiError> {
 
 #[utoipa::path(
     get,
-    path = "/api/keys",
+    path = "/keys",
     tag = "keys",
     responses(
         (status = 200, description = "The keys the caller may see.", body = super::openapi::KeyList),
@@ -169,7 +169,7 @@ pub async fn list(
 
 #[utoipa::path(
     post,
-    path = "/api/keys",
+    path = "/keys",
     tag = "keys",
     request_body = CreateKeyRequest,
     responses(
@@ -267,7 +267,7 @@ pub async fn create(
 
 #[utoipa::path(
     get,
-    path = "/api/keys/{id}",
+    path = "/keys/{id}",
     tag = "keys",
     params(
         ("id" = i64, Path, description = "The id of the key."),
@@ -298,7 +298,7 @@ pub async fn view(
 
 #[utoipa::path(
     delete,
-    path = "/api/keys/{id}",
+    path = "/keys/{id}",
     tag = "keys",
     params(
         ("id" = i64, Path, description = "The id of the key."),

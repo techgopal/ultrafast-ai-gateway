@@ -313,13 +313,34 @@ fn expected(row: &Row, caller: Caller) -> (u16, Option<&'static str>) {
     (status, code)
 }
 
+/// The top-level properties of the body the spec documents for this
+/// status of the row's operation.
+fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a str> {
+    let operation = &spec["paths"][row.template][row.method.to_lowercase()];
+    let response = &operation["responses"][status.to_string()];
+    let schema = &response["content"]["application/json"]["schema"];
+    let schema = match schema["$ref"].as_str() {
+        Some(reference) => {
+            let name = reference.strip_prefix("#/components/schemas/").unwrap();
+            &spec["components"]["schemas"][name]
+        }
+        None => schema,
+    };
+    schema["properties"]
+        .as_object()
+        .map(|properties| properties.keys().map(String::as_str).collect())
+        .unwrap_or_default()
+}
+
 #[tokio::test]
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
     assert_eq!(numbers, (1..=33).collect::<Vec<u32>>());
 
+    let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
+    let mut bodies_compared = 0;
     for row in &rows {
         for caller in CALLERS {
             // A world of its own, so no call changes the result of another.
@@ -327,6 +348,20 @@ async fn every_endpoint_for_every_role() {
             let path = (row.path)(&world, caller);
             let (status, body) = world.call(caller, row.method, &path, (row.body)()).await;
             let (want_status, want_code) = expected(row, caller);
+            if let Some(sent) = body
+                .as_object()
+                .filter(|_| matches!(status.as_u16(), 200 | 201))
+            {
+                let sent: BTreeSet<&str> = sent.keys().map(String::as_str).collect();
+                let documented = documented_keys(&spec, row, status.as_u16());
+                bodies_compared += 1;
+                if sent != documented {
+                    failures.push(format!(
+                        "row {} {} {} ({}) as {:?}: the body has the keys {:?}, the spec documents {:?}",
+                        row.number, row.method, row.template, row.note, caller, sent, documented,
+                    ));
+                }
+            }
             let code_matches = want_code.is_none_or(|code| error_code(&body) == code);
             if status.as_u16() != want_status || !code_matches {
                 failures.push(format!(
@@ -344,6 +379,7 @@ async fn every_endpoint_for_every_role() {
             }
         }
     }
+    assert!(bodies_compared > 50, "only {bodies_compared} bodies");
     assert!(
         failures.is_empty(),
         "{} cells failed:\n{}",
@@ -399,4 +435,45 @@ fn every_documented_operation_is_in_the_role_table() {
         open, public,
         "the operations without a security requirement must be exactly the public ones"
     );
+}
+
+/// The router and the spec come from one list of routes: what the spec
+/// names is served, and what it does not name is not.
+#[tokio::test]
+async fn every_documented_operation_is_routed_and_nothing_else() {
+    let world = world().await;
+    let app = &world.org.api.app;
+    let spec = serde_json::to_value(spec()).unwrap();
+    let mut operations = 0;
+    for (template, item) in spec["paths"].as_object().expect("paths") {
+        let path = template.replace("{id}", "1").replace("{user_id}", "1");
+        assert!(!path.contains('{'), "{template}");
+        for method in item.as_object().expect("a path item").keys() {
+            let method = method.to_uppercase();
+            // Without credentials no handler answers 404, so a 404 here
+            // comes from the fallback.
+            let (status, _, body) = send(app, &method, &path, &[], None).await;
+            assert_ne!(status, StatusCode::NOT_FOUND, "{method} {path}: {body}");
+            assert_ne!(
+                status,
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {path}: {body}"
+            );
+            operations += 1;
+        }
+    }
+    assert_eq!(operations, 32);
+
+    for (method, path) in [
+        ("GET", "/api/nothing"),
+        ("GET", "/api/users/1/keys"),
+        ("POST", "/api/api/users"),
+    ] {
+        let (status, _, body) = send(app, method, path, &[], None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert_eq!(error_code(&body), "not_found", "{method} {path}");
+    }
+    let (status, _, body) = send(app, "PUT", "/api/users", &[], None).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(error_code(&body), "method_not_allowed");
 }

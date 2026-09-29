@@ -70,7 +70,7 @@ async fn summary_of(store: &Store, id: i64) -> Result<TeamSummary, ApiError> {
 
 #[utoipa::path(
     get,
-    path = "/api/teams",
+    path = "/teams",
     tag = "teams",
     responses(
         (status = 200, description = "The teams the caller may see.", body = super::openapi::TeamList),
@@ -96,7 +96,7 @@ pub async fn list(
 
 #[utoipa::path(
     post,
-    path = "/api/teams",
+    path = "/teams",
     tag = "teams",
     request_body = TeamNameRequest,
     responses(
@@ -139,7 +139,7 @@ pub async fn create(
 
 #[utoipa::path(
     get,
-    path = "/api/teams/{id}",
+    path = "/teams/{id}",
     tag = "teams",
     params(
         ("id" = i64, Path, description = "The id of the team."),
@@ -170,7 +170,7 @@ pub async fn view(
 
 #[utoipa::path(
     patch,
-    path = "/api/teams/{id}",
+    path = "/teams/{id}",
     tag = "teams",
     params(
         ("id" = i64, Path, description = "The id of the team."),
@@ -231,7 +231,7 @@ pub async fn rename(
 
 #[utoipa::path(
     delete,
-    path = "/api/teams/{id}",
+    path = "/teams/{id}",
     tag = "teams",
     params(
         ("id" = i64, Path, description = "The id of the team."),
@@ -278,7 +278,7 @@ pub async fn delete(
 
 #[utoipa::path(
     put,
-    path = "/api/teams/{id}/members/{user_id}",
+    path = "/teams/{id}/members/{user_id}",
     tag = "teams",
     params(
         ("id" = i64, Path, description = "The id of the team."),
@@ -372,7 +372,7 @@ pub async fn put_member(
 
 #[utoipa::path(
     delete,
-    path = "/api/teams/{id}/members/{user_id}",
+    path = "/teams/{id}/members/{user_id}",
     tag = "teams",
     params(
         ("id" = i64, Path, description = "The id of the team."),
