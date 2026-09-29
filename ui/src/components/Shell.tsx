@@ -4,7 +4,11 @@ import { useEffect, useRef } from "react";
 import { AppSidebar } from "@/components/AppSidebar";
 import type { ShellUser } from "@/components/shell-context";
 import { Button } from "@/components/ui/button";
-import { SidebarProvider, useSidebar } from "@/components/ui/sidebar";
+import {
+  SidebarProvider,
+  SidebarTrigger,
+  useSidebar,
+} from "@/components/ui/sidebar";
 
 interface ShellProps {
   user: ShellUser | null;
@@ -18,7 +22,10 @@ function usePageTitle(): string {
   return titles.findLast((title) => title !== undefined) ?? "";
 }
 
-/** The bar of narrow screens: the menu button and the page title. */
+/**
+ * On narrow screens: the menu button and the page title.
+ * On wide screens: the control that collapses and reopens the sidebar.
+ */
 function TopBar() {
   const { isMobile, openMobile, setOpenMobile } = useSidebar();
   const title = usePageTitle();
@@ -31,7 +38,13 @@ function TopBar() {
     wasOpen.current = openMobile;
   }, [openMobile]);
 
-  if (!isMobile) return null;
+  if (!isMobile) {
+    return (
+      <header className="sticky top-0 z-10 flex h-12 items-center border-b bg-background px-2">
+        <SidebarTrigger aria-label="Toggle sidebar" />
+      </header>
+    );
+  }
   return (
     <header className="sticky top-0 z-10 flex h-14 items-center gap-2 border-b bg-background px-2">
       <Button

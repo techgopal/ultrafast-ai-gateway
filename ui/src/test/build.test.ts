@@ -15,12 +15,60 @@ function files(dir: string): string[] {
   });
 }
 
-/** Removes licence comments: block comments that start with `/*!` or carry `@license`. */
+/**
+ * Removes licence banners: a block comment at the very start of the file, and
+ * any block comment that carries `@license` or `@preserve`. Other comments stay.
+ */
 function withoutLicenceComments(text: string): string {
-  return text.replace(/\/\*[\s\S]*?\*\//g, (comment) =>
-    /^\/\*!|@license|@preserve|licen[cs]e/i.test(comment) ? "" : comment,
+  return text.replace(/\/\*[\s\S]*?\*\//g, (comment, offset: number) =>
+    text.slice(0, offset).trim() === "" || /@license|@preserve/i.test(comment) ? "" : comment,
   );
 }
+
+// A URL with a host: a scheme and `//`, or a protocol-relative `//`, then a host
+// name (dotted or not, such as `localhost`), an IPv4 address or an IPv6 address.
+const urlWithHost =
+  /(?:\b[a-z][a-z0-9+.-]*:\/\/|(?<![:/\w.*-])\/\/)(?:[^\s"'`/@<>\\]*@)?(?:\[[0-9a-f:.]+\]|[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::\d+)?(?:[/?#][^\s"'`)<>\\]*)?/gi;
+
+function urlsIn(text: string): string[] {
+  return withoutLicenceComments(text).match(urlWithHost) ?? [];
+}
+
+describe("the URL scan", () => {
+  test.each([
+    "https://example.com/a",
+    "http://localhost",
+    "http://localhost:3900/api",
+    "http://127.0.0.1:8080/x",
+    "http://[::1]/x",
+    "ws://intranet/socket",
+    "https://user@host/path",
+  ])("sees %s", (url) => {
+    expect(urlsIn(`fetch("${url}")`)).toEqual([url]);
+  });
+
+  test("sees a protocol-relative URL", () => {
+    expect(urlsIn('src="//cdn.example.com/x.js"')).toEqual(["//cdn.example.com/x.js"]);
+    expect(urlsIn('src="//localhost/x.js"')).toEqual(["//localhost/x.js"]);
+  });
+
+  test("does not take paths and comments for URLs", () => {
+    expect(urlsIn('href="/assets/index.js"')).toEqual([]);
+    expect(urlsIn("a = b; // a comment")).toEqual([]);
+    expect(urlsIn("react.dev/errors/418")).toEqual([]);
+  });
+
+  test("drops licence banners only", () => {
+    const banner = "/*! lib v1 https://banner.example/licence */";
+    const tagged = "/** @license MIT https://tagged.example */";
+    const other = "/* see the license at https://other.example/terms */";
+    expect(urlsIn(`${banner}\ncode();${tagged}${other}`)).toEqual([
+      "https://other.example/terms",
+    ]);
+    // A comment that is not at the start and has no licence tag is kept.
+    expect(urlsIn(`code();/*! https://late.example/x */`)).toEqual(["https://late.example/x"]);
+  });
+});
 
 beforeAll(async () => {
   dist = mkdtempSync(join(tmpdir(), "uf-console-build-"));
@@ -54,10 +102,8 @@ describe("build output", () => {
     const found: string[] = [];
     const namespaces = new Set<string>();
     for (const path of files(dist)) {
-      const text = withoutLicenceComments(readFileSync(path, "utf8"));
-      // A URL with a host: a scheme or a protocol-relative `//host`.
-      const urls = text.match(/(?:\b[a-z][a-z0-9+.-]*:)?\/\/[a-z0-9][a-z0-9.-]*\.[a-z]{2,}[^\s"'`)<>\\]*/gi);
-      for (const url of urls ?? []) {
+      const urls = urlsIn(readFileSync(path, "utf8"));
+      for (const url of urls) {
         if (allowed.test(url)) namespaces.add(url);
         else found.push(`${relative(dist, path)}: ${url}`);
       }

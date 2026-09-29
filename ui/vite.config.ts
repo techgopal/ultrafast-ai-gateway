@@ -3,46 +3,78 @@ import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import { libraryEdit, type LibraryEditOptions } from "./build/library-edit";
+
+function editedLibrary(name: string, options: LibraryEditOptions): Plugin {
+  const edit = libraryEdit(options);
+  let building = false;
+  return {
+    name,
+    enforce: "pre",
+    configResolved(config) {
+      building = config.command === "build";
+    },
+    transform(code, id) {
+      const edited = edit.transform(code, id);
+      return edited === null ? null : { code: edited, map: null };
+    },
+    buildEnd(error) {
+      // Only a finished production build has seen every file.
+      if (building && error === undefined) edit.assertTargetSeen();
+    },
+  };
+}
 
 // sonner carries its stylesheet inside its script and adds it to <head> as a
 // <style> element when the script loads. The Content Security Policy of the
 // console allows no such element, so that call is taken out here and the same
 // stylesheet, `sonner/dist/styles.css`, is imported from `styles/globals.css`.
-// The build fails if a new version of sonner no longer has the call in this form.
-function sonnerWithoutStyleInjection(): Plugin {
-  const call = /^__insertCSS\(".*"\);?$/m;
-  return {
-    name: "sonner-without-style-injection",
-    enforce: "pre",
-    transform(code, id) {
-      if (!/\/sonner\/dist\/index\.m?js/.test(id)) return null;
-      if (!call.test(code)) {
-        this.error("sonner: the style injection call was not found; check how this version adds its styles.");
-      }
-      return { code: code.replace(call, ""), map: null };
-    },
-  };
-}
-
-const gateway = "http://127.0.0.1:3900";
+const sonnerWithoutStyleInjection = editedLibrary("sonner-without-style-injection", {
+  library: "sonner",
+  file: /\/sonner\/dist\/index\.m?js$/,
+  find: /^__insertCSS\(".*"\);?$/m,
+  replaceWith: "",
+  what: "the call that injects its stylesheet (__insertCSS)",
+});
 
 // React's production build names the page of its error codes in the text of its
 // errors. Nothing fetches it, but the build is to hold no URL of another host,
 // so the scheme is dropped and the text reads "react.dev/errors/<code>".
-function withoutReactErrorUrl(): Plugin {
-  return {
-    name: "without-react-error-url",
-    apply: "build",
-    renderChunk(code) {
-      if (!code.includes("https://react.dev/errors/")) return null;
-      return { code: code.replaceAll("https://react.dev/errors/", "react.dev/errors/"), map: null };
-    },
-  };
+function withoutReactErrorUrl(name: string, file: RegExp): Plugin {
+  return editedLibrary(name, {
+    library: "react-dom",
+    file,
+    find: "https://react.dev/errors/",
+    replaceWith: "react.dev/errors/",
+    what: "the URL of its error codes (https://react.dev/errors/)",
+  });
 }
+
+// TanStack Router falls back to the origin "http://localhost" when the page has
+// none (`window.origin` missing or "null"), as the base for parsing paths.
+// Nothing is fetched from it and a page served by the gateway always has an
+// origin, but the build is to hold no URL of another host, so the same value
+// is put together at run time instead of standing in the file as a URL.
+const routerWithoutFallbackUrl = editedLibrary("router-without-fallback-url", {
+  library: "@tanstack/router-core",
+  file: /\/@tanstack\/router-core\/dist\/esm\/router\.js$/,
+  find: '"http://localhost"',
+  replaceWith: '["http:", "", "localhost"].join("/")',
+  what: 'the fallback origin ("http://localhost")',
+});
+
+const gateway = "http://127.0.0.1:3900";
 
 export default defineConfig({
   base: "/",
-  plugins: [sonnerWithoutStyleInjection(), withoutReactErrorUrl(), react(), tailwindcss()],
+  plugins: [
+    sonnerWithoutStyleInjection,
+    routerWithoutFallbackUrl,
+    withoutReactErrorUrl("react-dom-shared-without-error-url", /\/react-dom\/cjs\/react-dom\.production\.js$/),
+    withoutReactErrorUrl("react-dom-without-error-url", /\/react-dom\/cjs\/react-dom-client\.production\.js$/),
+    react(),
+    tailwindcss(),
+  ],
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },

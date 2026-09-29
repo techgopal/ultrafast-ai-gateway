@@ -200,11 +200,33 @@ describe("narrow screens", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
+    await waitFor(() => {
+      expect(menu).toHaveFocus();
+    });
   });
 
   test("wide screens show the sidebar without a menu button", async () => {
     await renderWithApp(null, { width: 1280 });
     expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  test("a collapsed sidebar can be reopened on wide screens", async () => {
+    const user = userEvent.setup();
+    await renderWithApp(null, { width: 1280 });
+    const state = () =>
+      document.querySelector('[data-slot="sidebar"]')?.getAttribute("data-state");
+    expect(state()).toBe("expanded");
+    const toggle = screen.getByRole("button", { name: "Toggle sidebar" });
+
+    // Collapsed with the keyboard shortcut: the control is still there to reopen it.
+    await user.keyboard("{Control>}b{/Control}");
+    expect(state()).toBe("collapsed");
+    expect(toggle).toBeVisible();
+    await user.click(toggle);
+    expect(state()).toBe("expanded");
+
+    await user.click(toggle);
+    expect(state()).toBe("collapsed");
   });
 });
