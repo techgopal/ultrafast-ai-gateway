@@ -129,8 +129,12 @@ impl Store {
         })
     }
 
-    /// For closing the pool and for tests. SQL belongs in this module.
-    pub fn pool(&self) -> &SqlitePool {
+    /// Closes every connection. Every later call fails.
+    pub async fn close(&self) {
+        self.pool.close().await;
+    }
+
+    pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
 }

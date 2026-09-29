@@ -199,6 +199,19 @@ impl Tx<'_> {
         Ok(r.last_insert_rowid())
     }
 
+    /// Revokes every key of the user that is not revoked yet. Returns how many.
+    pub async fn revoke_keys_of(&mut self, user_id: i64) -> Result<u64> {
+        let r = sqlx::query(
+            "UPDATE virtual_keys SET revoked_at = datetime('now')
+             WHERE user_id = ? AND org_id = ? AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(DEFAULT_ORG)
+        .execute(self.conn())
+        .await?;
+        Ok(r.rows_affected())
+    }
+
     /// Returns whether a live key was revoked. Revoking again changes nothing.
     pub async fn revoke_key(&mut self, id: i64) -> Result<bool> {
         let r = sqlx::query(
@@ -307,6 +320,63 @@ mod tests {
             Some("2000-01-01 00:00:00")
         );
         assert!(!s.revoke_key(id + 1000).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn revoking_the_keys_of_a_user_leaves_the_rest() {
+        use crate::identity::{Role, UserStatus};
+        use crate::store::NewUser;
+
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let mut users = Vec::new();
+        for email in ["lena@example.com", "tomas@example.com"] {
+            let user = NewUser {
+                email,
+                name: "User",
+                role: Role::Member,
+                status: UserStatus::Active,
+                password_hash: None,
+            };
+            users.push(tx.insert_user(user).await.unwrap());
+        }
+        let (lena, tomas) = (users[0], users[1]);
+        let one = tx
+            .insert_key("one", "h1", "d1", None, Some(lena), None)
+            .await
+            .unwrap();
+        let gone = tx
+            .insert_key("gone", "h2", "d2", None, Some(lena), None)
+            .await
+            .unwrap();
+        tx.insert_key("other", "h3", "d3", None, Some(tomas), None)
+            .await
+            .unwrap();
+        tx.insert_key("legacy", "h4", "d4", None, None, None)
+            .await
+            .unwrap();
+        tx.revoke_key(gone).await.unwrap();
+        tx.commit().await.unwrap();
+        sqlx::query("UPDATE virtual_keys SET revoked_at = '2000-01-01 00:00:00' WHERE id = ?")
+            .bind(gone)
+            .execute(s.pool())
+            .await
+            .unwrap();
+
+        let mut tx = s.begin().await.unwrap();
+        assert_eq!(tx.revoke_keys_of(lena).await.unwrap(), 1);
+        assert_eq!(tx.revoke_keys_of(lena).await.unwrap(), 0);
+        assert_eq!(tx.revoke_keys_of(tomas + 100).await.unwrap(), 0);
+        tx.commit().await.unwrap();
+
+        assert!(revoked_at(&s, one).await.is_some());
+        // The earlier revocation keeps its time.
+        assert_eq!(
+            revoked_at(&s, gone).await.as_deref(),
+            Some("2000-01-01 00:00:00")
+        );
+        assert!(s.active_key_by_hash("h3").await.unwrap().is_some());
+        assert!(s.active_key_by_hash("h4").await.unwrap().is_some());
     }
 
     #[tokio::test]

@@ -231,6 +231,8 @@ pub async fn update(
     if changes.is_empty() {
         // Nothing to change, so nothing to record.
         drop(tx);
+        // An earlier call may have made the change and failed to refresh.
+        refresh_snapshot(&state).await?;
         return Ok(Json(ProviderView::of(&was)).into_response());
     }
 
@@ -274,10 +276,19 @@ pub async fn delete(
     // The answer does not depend on the provider, so it comes before the
     // id is looked at: a refusal is the same for every id.
     require(me, &Action::ManageProviders)?;
-    let target = provider_of(store, &raw_id).await?;
+    let target = match provider_of(store, &raw_id).await {
+        Ok(target) => target,
+        Err(e) => {
+            // An earlier call may have deleted it and failed to refresh.
+            refresh_snapshot(&state).await?;
+            return Err(e);
+        }
+    };
 
     let mut tx = store.begin().await?;
     if !tx.delete_provider(target.id).await? {
+        drop(tx);
+        refresh_snapshot(&state).await?;
         return Err(ApiError::not_found());
     }
     tx.audit(AuditEntry {
