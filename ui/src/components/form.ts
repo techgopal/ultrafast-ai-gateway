@@ -31,7 +31,10 @@ interface Failure {
   readonly count: number;
   /** The attempt that failed. The next attempt starts without its errors. */
   readonly attempt: number;
-  /** The message of each field, with the value the field had. */
+  /**
+   * The message of each field, with the value the field had. A field that
+   * was changed since is not in it any more.
+   */
   readonly fields: ReadonlyMap<string, { message: string; value: unknown }>;
   /** What no field stands for. */
   readonly messages: readonly string[];
@@ -43,11 +46,46 @@ const NO_MESSAGES: readonly string[] = [];
 class FailureStore {
   private failure = NONE;
   private readonly listeners = new Set<() => void>();
+  /** Ends the watch of the form that the failure before started. */
+  private unwatch: () => void = () => undefined;
 
   get = (): Failure => this.failure;
 
-  set(failure: Omit<Failure, "count">): void {
+  /**
+   * A new failure. `form` is watched from now on: the error of a field is
+   * removed for good when the field gets another value.
+   */
+  set(failure: Omit<Failure, "count">, form: FormLike): void {
+    this.unwatch();
+    this.unwatch = () => undefined;
     this.failure = { ...failure, count: this.failure.count + 1 };
+    if (failure.fields.size > 0) {
+      const subscription = form.store.subscribe(() => {
+        this.forgetChanged(form);
+      });
+      this.unwatch = () => {
+        subscription.unsubscribe();
+      };
+    }
+    this.tell();
+  }
+
+  private forgetChanged(form: FormLike): void {
+    const now = valuesOf(form);
+    const kept = new Map(
+      [...this.failure.fields].filter(([name, field]) => Object.is(now.get(name), field.value)),
+    );
+    if (kept.size === this.failure.fields.size) return;
+    // The same count: a field that lost its error moves no focus.
+    this.failure = { ...this.failure, fields: kept };
+    if (kept.size === 0) {
+      this.unwatch();
+      this.unwatch = () => undefined;
+    }
+    this.tell();
+  }
+
+  private tell(): void {
     for (const listener of [...this.listeners]) listener();
   }
 
@@ -89,9 +127,17 @@ function named(field: string, message: string): string {
  * `FormError`. Then the focus goes to the first field that got an error, or
  * to the error of the form. The values of the form are not touched.
  *
- * The form shows this through `useFormFailure(form)`. The error of a field
- * goes when the field is changed, and all of them go when the next submit
- * starts.
+ * The form shows this through `useFormFailure`, and through nothing else:
+ * the errors of the API are kept beside the form, not in it, so a page must
+ * never read them from `field.state.meta.errors`, where they are not. (There
+ * they would keep the form from being sent again.)
+ *
+ * Only top-level field names are matched: a key of `error.fields` is a field
+ * of the form when it is a key of `form.state.values`. A key such as
+ * `members.0.email` matches no field and is shown by `FormError`.
+ *
+ * The error of a field goes for good when the field is changed, also when the
+ * old value is typed again; all errors go when the next submit starts.
  *
  * An answer of a session that is over (`SessionOverError`) puts nothing on
  * the form and moves no focus: it says nothing to who is signed in now.
@@ -109,7 +155,7 @@ export function applyApiError(form: FormLike, error: unknown): void {
     }
   }
   if (fields.size === 0 && messages.length === 0) messages.push(message);
-  storeOf(form).set({ attempt: form.state.submissionAttempts, fields, messages });
+  storeOf(form).set({ attempt: form.state.submissionAttempts, fields, messages }, form);
 }
 
 /**
@@ -159,6 +205,12 @@ export interface FormFailure {
  * What `applyApiError` put onto the form, for the form to show. `formRef` is
  * the ref of the `<form>`, `errorRef` the one of the `FormError` at its top:
  * they are where the focus goes after a failure.
+ *
+ * It is the only way to the errors of the API: a page gives `messages` to
+ * its `FormError` and `fieldError(name)` to each `Field`, and never reads
+ * `field.state.meta.errors` for them, which does not hold them. `name` is a
+ * top-level field name, a key of the values of the form; names of nested
+ * fields are not matched.
  */
 export function useFormFailure(
   form: FormLike,
@@ -185,16 +237,10 @@ export function useFormFailure(
 
   return useMemo(() => {
     const current = state.submissionAttempts === failure.attempt;
-    const { values } = state;
-    const now = new Map(typeof values === "object" && values !== null ? Object.entries(values) : []);
     return {
       messages: current ? failure.messages : NO_MESSAGES,
-      fieldError: (name) => {
-        const field = failure.fields.get(name);
-        if (!current || field === undefined) return undefined;
-        // The message was about the value the field had then.
-        return Object.is(now.get(name), field.value) ? field.message : undefined;
-      },
+      // A field that was changed since the failure is not among them any more.
+      fieldError: (name) => (current ? failure.fields.get(name)?.message : undefined),
     };
   }, [failure, state]);
 }

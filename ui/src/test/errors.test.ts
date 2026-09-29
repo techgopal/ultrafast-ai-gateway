@@ -1,6 +1,14 @@
 // @vitest-environment node
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { errors, fieldMessages, validationFailed, type ErrorName } from "./errors";
+import {
+  badRequest,
+  errors,
+  fieldMessages,
+  validationFailed,
+  type ErrorName,
+} from "./errors";
 
 /** The status of every code, as the gateway source has it. */
 const statuses: Record<ErrorName, number> = {
@@ -73,4 +81,51 @@ test("a validation error made for a test has the gateway's status, code and mess
     message: "Some fields are not valid.",
     fields: { password: "password must be at least 12 characters" },
   });
+});
+
+test("a bad request made for a test has the gateway's status and code, and the message given", () => {
+  const made = badRequest("Send at least one of base_url and api_key.");
+  expect(made.status).toBe(400);
+  expect(made.body.error).toEqual({
+    code: "bad_request",
+    message: "Send at least one of base_url and api_key.",
+  });
+  expect(Reflect.get(made.body.error, "fields")).toBeUndefined();
+  // With the message of a body that is not valid, it is the fixture of the code.
+  expect(badRequest(errors.bad_request.body.error.message)).toEqual(errors.bad_request);
+});
+
+test("the messages of the name and of the base URL of a provider are the gateway's", () => {
+  expect({
+    providerName: fieldMessages.providerName,
+    baseUrl: fieldMessages.baseUrl,
+    baseUrlWhitespace: fieldMessages.baseUrlWhitespace,
+    baseUrlQuery: fieldMessages.baseUrlQuery,
+    baseUrlFragment: fieldMessages.baseUrlFragment,
+    baseUrlCredentials: fieldMessages.baseUrlCredentials,
+    baseUrlHost: fieldMessages.baseUrlHost,
+  }).toEqual({
+    providerName:
+      "provider name must be 1 to 40 characters of a-z, 0-9, '-' and '_', starting with a letter or a digit",
+    baseUrl: "base URL must start with http:// or https://",
+    baseUrlWhitespace: "base URL must not contain whitespace",
+    baseUrlQuery: "base URL must not contain a query string",
+    baseUrlFragment: "base URL must not contain a fragment",
+    baseUrlCredentials:
+      "base URL must not contain credentials; give the key with --api-key or UF_PROVIDER_API_KEY",
+    baseUrlHost: "base URL must include a host",
+  });
+});
+
+test("every message of a provider's name and base URL is in the gateway source", () => {
+  const path = fileURLToPath(new URL("../../../crates/gateway/src/config.rs", import.meta.url));
+  // A Rust string goes on in the next line after a backslash.
+  const source = readFileSync(path, "utf8").replace(/\\\n\s*/g, "");
+  const names = Object.keys(fieldMessages).filter(
+    (name) => name === "providerName" || name.startsWith("baseUrl"),
+  );
+  expect(names).toHaveLength(7);
+  for (const name of names) {
+    expect(source).toContain(`"${String(Reflect.get(fieldMessages, name))}"`);
+  }
 });

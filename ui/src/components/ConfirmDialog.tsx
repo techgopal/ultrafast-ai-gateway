@@ -1,4 +1,4 @@
-import { useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { alertDialogFit, dialogButton, useReturnFocus } from "@/components/dialog-fit";
 import { messageOfError } from "@/components/ErrorState";
 import {
@@ -26,7 +26,7 @@ interface ConfirmDialogProps {
   /**
    * Does it. While it runs, the buttons are disabled and the dialog stays.
    * When it rejects, the dialog stays open and shows the message of the
-   * error; of an answer of a session that is over it shows nothing, and the
+   * error, which takes the focus; of an answer of a session that is over it shows nothing, and the
    * clean-up of the session closes the dialog.
    */
   onConfirm: () => Promise<unknown>;
@@ -45,7 +45,14 @@ export function ConfirmDialog({
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const busy = useRef(false);
+  const alert = useRef<HTMLParagraphElement>(null);
   const returnFocus = useReturnFocus(open);
+
+  // The button that was pressed was disabled while the call ran, and so lost
+  // the focus: after a failure it goes to what went wrong.
+  useEffect(() => {
+    if (message !== null) alert.current?.focus();
+  }, [message]);
 
   function change(next: boolean) {
     if (busy.current) return;
@@ -85,7 +92,12 @@ export function ConfirmDialog({
           <AlertDialogDescription>{body}</AlertDialogDescription>
         </AlertDialogHeader>
         {message === null ? null : (
-          <p role="alert" className="text-sm text-destructive">
+          <p
+            ref={alert}
+            role="alert"
+            tabIndex={-1}
+            className="rounded-sm text-sm text-destructive outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
             {message}
           </p>
         )}

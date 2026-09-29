@@ -34,7 +34,16 @@ export const fieldMessages = {
   teamId: "team does not exist",
   teamIdOwner: "owner is not a member of this team",
   providerKind: "kind must be openai or anthropic",
+  // The name and the base URL of a provider (`crates/gateway/src/config.rs`).
+  providerName:
+    "provider name must be 1 to 40 characters of a-z, 0-9, '-' and '_', starting with a letter or a digit",
   baseUrl: "base URL must start with http:// or https://",
+  baseUrlWhitespace: "base URL must not contain whitespace",
+  baseUrlQuery: "base URL must not contain a query string",
+  baseUrlFragment: "base URL must not contain a fragment",
+  baseUrlCredentials:
+    "base URL must not contain credentials; give the key with --api-key or UF_PROVIDER_API_KEY",
+  baseUrlHost: "base URL must include a host",
   apiKey: "must not be empty",
   positive: "must be a positive integer",
 } as const;
@@ -53,11 +62,18 @@ export function validationFailed(fields: Readonly<Record<string, string>>): Gate
   };
 }
 
+/**
+ * A 400 of the gateway with this message. The code has several messages in
+ * the gateway: the one of a body that is not valid is `errors.bad_request`,
+ * and a handler has its own, such as "Send at least one of base_url and api_key."
+ */
+export function badRequest(message: string): GatewayError {
+  return error(400, "bad_request", message);
+}
+
 export const errors = {
   // The general ones (`api/mod.rs`).
-  bad_request: error(
-    400,
-    "bad_request",
+  bad_request: badRequest(
     "The body must be JSON, sent as application/json, with exactly the expected fields.",
   ),
   validation_failed: validationFailed({

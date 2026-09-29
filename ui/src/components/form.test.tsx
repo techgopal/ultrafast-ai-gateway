@@ -1,8 +1,8 @@
 import { useForm } from "@tanstack/react-form";
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useRef } from "react";
-import { describe, expect, test } from "vitest";
+import { useRef, useState } from "react";
+import { describe, expect, test, vi } from "vitest";
 import { api } from "@/api/client";
 import { Field } from "@/components/Field";
 import { ApiError, NetworkError, SessionOverError } from "@/api/errors";
@@ -272,6 +272,32 @@ describe("applyApiError", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  test("the error of a field that was changed stays away when the old value is typed again", async () => {
+    answerWith(validationFailed({ email: fieldMessages.email, name: fieldMessages.name }));
+    await renderWithApp(<InviteForm />);
+    await fill("Sam Carter", "sam@example");
+    const email = screen.getByLabelText("Email");
+    const name = screen.getByLabelText("Name");
+    await waitFor(() => {
+      expect(email).toHaveAttribute("aria-invalid", "true");
+    });
+    await userEvent.type(email, "x");
+    expect(email).toHaveValue("sam@examplex");
+    expect(email).not.toHaveAttribute("aria-invalid");
+    await userEvent.type(email, "{Backspace}");
+    // The value is the one the gateway refused, and the user knows: it was changed since.
+    expect(email).toHaveValue("sam@example");
+    expect(email).not.toHaveAttribute("aria-invalid");
+    expect(descriptionOf(email)).toBe("");
+    // The field that was not changed keeps its error.
+    expect(name).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getAllByRole("alert").map((alert) => alert.textContent)).toEqual([
+      fieldMessages.name,
+    ]);
+    // Changing a field moves no focus.
+    expect(email).toHaveFocus();
+  });
+
   test("the errors of an attempt go when the next one starts", async () => {
     answerWith(validationFailed({ email: fieldMessages.email, other: "x" }));
     const sent: string[] = [];
@@ -411,6 +437,50 @@ describe("applyApiError", () => {
     expect(await screen.findByText("name must be 1 to 100 characters")).toBeInTheDocument();
     expect(screen.getByText("other: x")).toBeInTheDocument();
     expect(screen.getByText("Name")).toBeInTheDocument();
+  });
+});
+
+describe("form error", () => {
+  test("two equal messages are both shown", async () => {
+    const said = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await renderWithApp(
+        <FormError messages={["must not be empty", "must not be empty", "another"]} />,
+      );
+      const lines = [...screen.getByRole("alert").querySelectorAll("p")];
+      expect(lines.map((line) => line.textContent)).toEqual([
+        "must not be empty",
+        "must not be empty",
+        "another",
+      ]);
+      // React says nothing about the keys of the lines.
+      expect(said).not.toHaveBeenCalled();
+    } finally {
+      said.mockRestore();
+    }
+  });
+
+  test("a line that goes leaves the other ones", async () => {
+    function Page() {
+      const [messages, setMessages] = useState(["must not be empty", "must not be empty"]);
+      return (
+        <main>
+          <FormError messages={messages} />
+          <Button
+            type="button"
+            onClick={() => {
+              setMessages(["must not be empty"]);
+            }}
+          >
+            One
+          </Button>
+        </main>
+      );
+    }
+    await renderWithApp(<Page />);
+    expect(screen.getByRole("alert").querySelectorAll("p")).toHaveLength(2);
+    await userEvent.click(screen.getByRole("button", { name: "One" }));
+    expect(screen.getByRole("alert").querySelectorAll("p")).toHaveLength(1);
   });
 });
 
