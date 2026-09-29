@@ -31,10 +31,12 @@ function withoutLicenceComments(text: string): string {
   );
 }
 
-// A URL with a host: a scheme and `//`, or a protocol-relative `//`, then a host
-// name (dotted or not, such as `localhost`), an IPv4 address or an IPv6 address.
+// A URL with a host: a scheme and `//`, or a protocol-relative `//`, and then
+// the whole run of text up to the first closing delimiter: a quote, whitespace,
+// `)`, `<`, `>` or the end. The run is not cut where a host would end, so that
+// what is compared with the allow-list is all of what stands in the file.
 const urlWithHost =
-  /(?:\b[a-z][a-z0-9+.-]*:\/\/|(?<![:/\w.*-])\/\/)(?:[^\s"'`/@<>\\]*@)?(?:\[[0-9a-f:.]+\]|[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::\d+)?(?:[/?#][^\s"'`)<>\\]*)?/gi;
+  /(?:\b[a-z][a-z0-9+.-]*:\/\/(?=[^\s"'`)<>/])|(?<![:/\w.*-])\/\/(?=[a-z0-9[]))[^\s"'`)<>]+/gi;
 
 function urlsIn(text: string): string[] {
   return withoutLicenceComments(text).match(urlWithHost) ?? [];
@@ -59,9 +61,14 @@ const allowedUrls: AllowedUrl[] = [
   { text: "http://localhost", match: "exact" },
 ];
 
+// What may follow a `prefix` entry: characters of a path and a query, nothing else.
+const pathAndQuery = /^[A-Za-z0-9\-_.~/?=&%[\]]*$/;
+
 function allowedEntry(url: string): AllowedUrl | undefined {
   return allowedUrls.find((entry) =>
-    entry.match === "exact" ? url === entry.text : url.startsWith(entry.text),
+    entry.match === "exact"
+      ? url === entry.text
+      : url.startsWith(entry.text) && pathAndQuery.test(url.slice(entry.text.length)),
   );
 }
 
@@ -85,6 +92,46 @@ describe("the allow-list of the URL scan", () => {
     expect(allowedEntry("http://localhost")?.text).toBe("http://localhost");
     expect(allowedEntry("https://react.dev/errors/")?.match).toBe("prefix");
     expect(allowedEntry("https://react.dev/errors/418")?.match).toBe("prefix");
+  });
+});
+
+/** The URLs the scan finds in the text that the allow-list does not accept. */
+function refused(text: string): string[] {
+  return urlsIn(text).filter((url) => allowedEntry(url) === undefined);
+}
+
+describe("the scan and the allow-list together", () => {
+  const dollar = "$";
+  test.each([
+    // A listed text that goes on as something else must be seen whole.
+    ["`http://localhost" + dollar + "{h}/x`", "http://localhost" + dollar + "{h}/x"],
+    ["`http://localhost:" + dollar + "{port}`", "http://localhost:" + dollar + "{port}"],
+    ['"http://localhost_a.evil.example/x"', "http://localhost_a.evil.example/x"],
+    ['"http://localhost%2eevil.example"', "http://localhost%2eevil.example"],
+    ['"http://localhost\\@evil.example"', "http://localhost\\@evil.example"],
+    ['"http://localhost\u00e9.example"', "http://localhost\u00e9.example"],
+    ['"http://localhost."', "http://localhost."],
+    ['"http://localhost.evil.example"', "http://localhost.evil.example"],
+    ['"https://react.dev.evil.example/errors/"', "https://react.dev.evil.example/errors/"],
+    ['"http://localhost:3900"', "http://localhost:3900"],
+    ['"http://localhost@evil.example"', "http://localhost@evil.example"],
+    ["`https://react.dev/errors/" + dollar + "{x}`", "https://react.dev/errors/" + dollar + "{x}"],
+    ['"https://react.dev/errors/1#x"', "https://react.dev/errors/1#x"],
+    ['"https://react.dev/errors/1;x"', "https://react.dev/errors/1;x"],
+  ])("refuses %s", (text, whole) => {
+    expect(refused(`a=${text};b()`)).toEqual([whole]);
+  });
+
+  test.each([
+    // The two entries in the forms they have in the build.
+    "window.origin:`http://localhost`;let n",
+    'this.origin = "http://localhost";',
+    "`https://react.dev/errors/`+e",
+    '"https://react.dev/errors/"+e',
+    '"https://react.dev/errors/418?args[]=a&args[]=b%20c"',
+  ])("allows %s", (text) => {
+    expect(urlsIn(text)).toHaveLength(1);
+    expect(refused(text)).toEqual([]);
   });
 });
 
