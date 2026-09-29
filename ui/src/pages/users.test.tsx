@@ -1007,9 +1007,20 @@ describe("deleting a user", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
+  test("delete is not offered on the own page", async () => {
+    await detail(maya);
+    await screen.findByRole("heading", { level: 1, name: maya.name });
+    expect(actions()).toEqual(["Edit name", "Make member", "Disable"]);
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
   test("the own account cannot be deleted: the refusal stays in the dialog", async () => {
+    // The page takes the user shown for another one, and the gateway knows better.
     override("delete", "/api/users/{id}", () => refuse(errors.cannot_delete_self));
-    const app = await detail(maya);
+    const app = await detail(maya, {
+      user: { ...fixtures.me.maya, user: { ...arjun, role: "admin" } },
+    });
     const dialog = await ask("Delete", "Delete this user?");
     await confirm(dialog, "Delete");
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
