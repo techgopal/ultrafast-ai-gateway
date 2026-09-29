@@ -56,6 +56,15 @@ export interface SessionControl {
   announce: (notice: string) => void;
   /** The first admin exists now. */
   markSetUp: () => void;
+  /**
+   * The token of the invite link that was opened, while the invite is being
+   * accepted; `null` at every other time. It is held here, in memory, because
+   * a sign-out mounts the pages anew. The router takes it from the address
+   * and drops it as soon as the address is another page.
+   */
+  invite: string | null;
+  holdInvite: (token: string) => void;
+  dropInvite: () => void;
 }
 
 interface SessionContextValue extends SessionControl {
@@ -71,7 +80,18 @@ function isUnauthorized(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;
 }
 
-type Actions = Pick<SessionControl, "notice" | "ending" | "begin" | "end" | "announce" | "markSetUp">;
+type Actions = Pick<
+  SessionControl,
+  | "notice"
+  | "ending"
+  | "begin"
+  | "end"
+  | "announce"
+  | "markSetUp"
+  | "invite"
+  | "holdInvite"
+  | "dropInvite"
+>;
 
 /** The session while it is not known to have ended: asks the gateway. */
 function LiveSession({ actions, children }: { actions: Actions; children: ReactNode }) {
@@ -138,6 +158,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const client = useQueryClient();
   const [ending, setEnding] = useState<Ending | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [invite, setInvite] = useState<string | null>(null);
+  const dropInvite = useCallback(() => {
+    setInvite(null);
+  }, []);
 
   const end = useCallback(
     (how: Ending) => {
@@ -174,8 +198,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const actions = useMemo(
-    (): Actions => ({ notice, ending, begin, end, announce: setNotice, markSetUp }),
-    [notice, ending, begin, end, markSetUp],
+    (): Actions => ({
+      notice,
+      ending,
+      begin,
+      end,
+      announce: setNotice,
+      markSetUp,
+      invite,
+      holdInvite: setInvite,
+      dropInvite,
+    }),
+    [notice, ending, begin, end, markSetUp, invite, dropInvite],
   );
   const ended = useMemo(
     (): SessionContextValue => ({
