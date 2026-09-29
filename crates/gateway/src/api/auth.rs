@@ -17,7 +17,9 @@ use serde_json::json;
 use tokio::sync::Semaphore;
 
 use super::SESSION_COOKIE;
-use super::{refresh_snapshot, require, ApiError, ApiJson, AuthVia, Authed, ClientAddr};
+use super::{
+    refresh_snapshot, require, trimmed_name, ApiError, ApiJson, AuthVia, Authed, ClientAddr,
+};
 use crate::app::AppState;
 use crate::identity::password::{
     check_password_policy, hash_password, verify_dummy, verify_password,
@@ -27,8 +29,6 @@ use crate::identity::{normalize_email, Role, TeamRole, UserStatus};
 use crate::secrets::{hash_key, INVITE_PREFIX};
 use crate::store::{AuditEntry, NewUser, Store, UserRow, SESSION_SECONDS};
 
-/// Longest accepted user name, in characters.
-const MAX_NAME_CHARS: usize = 100;
 /// The name of an admin created from the environment at startup.
 const BOOTSTRAP_NAME: &str = "Admin";
 
@@ -155,15 +155,6 @@ fn cookie_header(value: &str, max_age: i64, secure: bool) -> anyhow::Result<Head
     );
     // The error would quote the cookie, so it is not passed on.
     HeaderValue::from_str(&text).map_err(|_| anyhow!("the session cookie is not a valid header"))
-}
-
-fn trimmed_name(name: &str) -> Result<&str, &'static str> {
-    let name = name.trim();
-    let chars = name.chars().count();
-    if chars == 0 || chars > MAX_NAME_CHARS || name.chars().any(char::is_control) {
-        return Err("name must be 1 to 100 characters");
-    }
-    Ok(name)
 }
 
 /// Inserts the first admin unless a user exists, which is checked in the
@@ -733,16 +724,6 @@ mod tests {
         assert_eq!(running.started.load(Ordering::SeqCst), PERMITS * 3);
         assert_eq!(running.most.load(Ordering::SeqCst), PERMITS);
         assert_eq!(hashing.available_permits(), PERMITS);
-    }
-
-    #[test]
-    fn names_are_trimmed_and_bounded() {
-        assert_eq!(trimmed_name("  Maya "), Ok("Maya"));
-        assert_eq!(trimmed_name(&"é".repeat(100)), Ok("é".repeat(100).as_str()));
-        assert!(trimmed_name(&"n".repeat(101)).is_err());
-        assert!(trimmed_name("").is_err());
-        assert!(trimmed_name("   ").is_err());
-        assert!(trimmed_name("a\nb").is_err());
     }
 
     #[test]
