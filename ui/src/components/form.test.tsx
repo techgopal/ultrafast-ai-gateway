@@ -158,6 +158,83 @@ function InviteForm({ onSent }: { onSent?: () => void }) {
   );
 }
 
+/**
+ * A form that holds one field of the API in a value with two parts, as the
+ * expiry of a key is a choice and a day. It sends with the real client.
+ */
+function ExpiryForm() {
+  const form = useForm({
+    defaultValues: { name: "", expires_at: { choice: "date", day: "" } },
+    onSubmit: async ({ value }) => {
+      try {
+        await api.post("/api/keys", {
+          body: { name: value.name, expires_at: `${value.expires_at.day} 23:59:59` },
+        });
+      } catch (error) {
+        applyApiError(form, error);
+      }
+    },
+  });
+  const formRef = useRef<HTMLFormElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const failure = useFormFailure(form, formRef, errorRef);
+  return (
+    <main>
+      <form
+        ref={formRef}
+        aria-label="Create key"
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault();
+          void form.handleSubmit();
+        }}
+      >
+        <FormError ref={errorRef} messages={failure.messages} />
+        <form.Field name="name">
+          {(field) => (
+            <Field label="Name" name={field.name} error={failure.fieldError(field.name)}>
+              <Input
+                value={field.state.value}
+                onChange={(event) => {
+                  field.handleChange(event.target.value);
+                }}
+              />
+            </Field>
+          )}
+        </form.Field>
+        <form.Field name="expires_at">
+          {(field) => (
+            <Field label="Expires" name={field.name} error={failure.fieldError(field.name)}>
+              {(wiring) => (
+                <div>
+                  <select
+                    {...wiring}
+                    value={field.state.value.choice}
+                    onChange={(event) => {
+                      field.handleChange({ ...field.state.value, choice: event.target.value });
+                    }}
+                  >
+                    <option value="never">Never</option>
+                    <option value="date">On a date</option>
+                  </select>
+                  <Input
+                    aria-label="Day"
+                    value={field.state.value.day}
+                    onChange={(event) => {
+                      field.handleChange({ ...field.state.value, day: event.target.value });
+                    }}
+                  />
+                </div>
+              )}
+            </Field>
+          )}
+        </form.Field>
+        <Button type="submit">Create key</Button>
+      </form>
+    </main>
+  );
+}
+
 async function fill(name = "Sam Carter", email = "sam@example.test"): Promise<void> {
   await userEvent.type(screen.getByLabelText("Name"), name);
   await userEvent.type(screen.getByLabelText("Email"), email);
@@ -296,6 +373,43 @@ describe("applyApiError", () => {
     ]);
     // Changing a field moves no focus.
     expect(email).toHaveFocus();
+  });
+
+  test("the error of a field whose value has parts goes when a part is changed, and stays while another field is changed", async () => {
+    override("post", "/api/keys", () =>
+      refuse(validationFailed({ expires_at: fieldMessages.expiresAtPast })),
+    );
+    await renderWithApp(<ExpiryForm />);
+    const expires = screen.getByLabelText("Expires");
+    const day = screen.getByLabelText("Day");
+    const send = screen.getByRole("button", { name: "Create key" });
+    async function refused(): Promise<void> {
+      await userEvent.click(send);
+      await waitFor(() => {
+        expect(descriptionOf(expires)).toBe(fieldMessages.expiresAtPast);
+      });
+      expect(expires).toHaveAttribute("aria-invalid", "true");
+    }
+
+    await userEvent.type(day, "2001-01-01");
+    await refused();
+    // Another field of the form: the error is not about it.
+    await userEvent.type(screen.getByLabelText("Name"), "laptop");
+    expect(descriptionOf(expires)).toBe(fieldMessages.expiresAtPast);
+
+    // One part of the value.
+    await userEvent.type(day, "0");
+    expect(expires).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // The other part.
+    await refused();
+    await userEvent.selectOptions(expires, "never");
+    expect(expires).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByRole("alert")).toBeNull();
+    // And it stays away when the part is set back.
+    await userEvent.selectOptions(expires, "date");
+    expect(expires).not.toHaveAttribute("aria-invalid");
   });
 
   test("the errors of an attempt go when the next one starts", async () => {
