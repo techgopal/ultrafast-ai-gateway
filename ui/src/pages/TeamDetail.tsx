@@ -15,11 +15,11 @@ import { can, type Me } from "@/auth/guards";
 import { useSession } from "@/auth/session";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
-import { dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
 import { Field, type FieldWiring } from "@/components/Field";
-import { applyApiError, onField, useFormFailure } from "@/components/form";
+import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
+import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { NotFoundContent } from "@/components/NotFoundContent";
 import { PageHeader } from "@/components/PageHeader";
@@ -28,14 +28,6 @@ import { TeamRoleBadge } from "@/components/RoleBadge";
 import { Timestamp } from "@/components/Timestamp";
 import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -219,10 +211,7 @@ function AddForm({ team, put, onDone, onCancel, choice }: AddFormProps & { choic
       aria-label="Add member"
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void form.handleSubmit();
-      }}
+      onSubmit={submitOnce(form)}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="user_id">
@@ -260,14 +249,13 @@ function AddForm({ team, put, onDone, onCancel, choice }: AddFormProps & { choic
           )
         }
       </form.Field>
-      <DialogFooter>
-        <Button type="button" variant="outline" className={dialogButton} onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" className={dialogButton} disabled={put.isPending || !anybody}>
-          {put.isPending ? "Adding" : "Add member"}
-        </Button>
-      </DialogFooter>
+      <FormDialogFooter
+        running={put.isPending}
+        submit="Add member"
+        submitting="Adding"
+        disabled={!anybody}
+        onCancel={onCancel}
+      />
     </form>
   );
 }
@@ -277,23 +265,16 @@ function AddDialog({
   fromList,
   ...form
 }: AddFormProps & { open: boolean; fromList: boolean }) {
-  const returnFocus = useReturnFocus(open);
-  const { onCancel } = form;
   return (
-    <Dialog
+    <FormDialog
       open={open}
-      onOpenChange={(next) => {
-        if (!next) onCancel();
-      }}
+      running={form.put.isPending}
+      title="Add member"
+      description="The user joins this team as a member."
+      onCancel={form.onCancel}
     >
-      <DialogContent className={dialogFit} onCloseAutoFocus={returnFocus}>
-        <DialogHeader>
-          <DialogTitle>Add member</DialogTitle>
-          <DialogDescription>The user joins this team as a member.</DialogDescription>
-        </DialogHeader>
-        {fromList ? <AddFromListForm {...form} /> : <AddForm {...form} />}
-      </DialogContent>
-    </Dialog>
+      {fromList ? <AddFromListForm {...form} /> : <AddForm {...form} />}
+    </FormDialog>
   );
 }
 

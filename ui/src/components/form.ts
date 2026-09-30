@@ -1,5 +1,5 @@
-// What the forms of the console share: where the errors of the API go, and
-// where the focus goes after a submit that failed.
+// What the forms of the console share: how a form is sent, where the errors
+// of the API go, and where the focus goes after a submit that failed.
 import {
   useCallback,
   useEffect,
@@ -16,6 +16,30 @@ export interface FormLike {
   readonly state: FormSnapshot;
   readonly store: {
     subscribe(listener: () => void): { unsubscribe: () => void };
+  };
+}
+
+/** What `submitOnce` needs of a form of TanStack Form. Every `useForm` gives it. */
+interface Submittable {
+  readonly state: { readonly isSubmitting: boolean };
+  handleSubmit: () => Promise<unknown>;
+}
+
+/**
+ * The `onSubmit` of every `<form>` of TanStack Form: it sends the form,
+ * unless the form is being sent. One request at a time.
+ *
+ * The form library lets a second submit through while the first one runs.
+ * A button that is disabled while the request runs does not stop it either:
+ * it is disabled by a render, and a second press, a second Enter or a submit
+ * from a script can come before that. The form itself knows at once that it
+ * is being sent, so that is what is asked.
+ */
+export function submitOnce(form: Submittable): (event: { preventDefault: () => void }) => void {
+  return (event) => {
+    event.preventDefault();
+    if (form.state.isSubmitting) return;
+    void form.handleSubmit();
   };
 }
 

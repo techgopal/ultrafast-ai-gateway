@@ -6,10 +6,10 @@ import { can } from "@/auth/guards";
 import { useSession } from "@/auth/session";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
-import { dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit";
 import { EmptyState } from "@/components/EmptyState";
 import { Field, type FieldWiring } from "@/components/Field";
-import { applyApiError, onField, useFormFailure } from "@/components/form";
+import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
+import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
@@ -17,14 +17,6 @@ import { useToast } from "@/components/toast";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -157,12 +149,7 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
       aria-label="Add provider"
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        // One request at a time: a form that is being sent is not sent again.
-        if (form.state.isSubmitting) return;
-        void form.handleSubmit();
-      }}
+      onSubmit={submitOnce(form)}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">
@@ -279,54 +266,27 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
           </Field>
         )}
       </form.Field>
-      <DialogFooter>
-        <Button
-          type="button"
-          variant="outline"
-          className={dialogButton}
-          disabled={create.isPending}
-          onClick={onCancel}
-        >
-          Cancel
-        </Button>
-        <Button type="submit" className={dialogButton} disabled={create.isPending}>
-          {create.isPending ? "Adding the provider" : "Add provider"}
-        </Button>
-      </DialogFooter>
+      <FormDialogFooter
+        running={create.isPending}
+        submit="Add provider"
+        submitting="Adding the provider"
+        onCancel={onCancel}
+      />
     </form>
   );
 }
 
-// While the request of a form runs its dialog stays, as a dialog that asks
-// does while its call runs: it cannot be closed, and the form cannot be sent
-// a second time. A dialog that was closed could be opened again and send the
-// same once more, and the answer of the first would close it over what was typed.
-
 function AddDialog({ open, ...form }: AddFormProps & { open: boolean }) {
-  const returnFocus = useReturnFocus(open);
-  const { create, onCancel } = form;
-  const running = create.isPending;
   return (
-    <Dialog
+    <FormDialog
       open={open}
-      onOpenChange={(next) => {
-        if (!next && !running) onCancel();
-      }}
+      running={form.create.isPending}
+      title="Add provider"
+      description="The gateway sends the calls for the models of a provider to its base URL."
+      onCancel={form.onCancel}
     >
-      <DialogContent
-        className={dialogFit}
-        showCloseButton={!running}
-        onCloseAutoFocus={returnFocus}
-      >
-        <DialogHeader>
-          <DialogTitle>Add provider</DialogTitle>
-          <DialogDescription>
-            The gateway sends the calls for the models of a provider to its base URL.
-          </DialogDescription>
-        </DialogHeader>
-        <AddForm {...form} />
-      </DialogContent>
-    </Dialog>
+      <AddForm {...form} />
+    </FormDialog>
   );
 }
 
@@ -390,12 +350,7 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
       aria-label="Edit provider"
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        // One request at a time: a form that is being sent is not sent again.
-        if (form.state.isSubmitting) return;
-        void form.handleSubmit();
-      }}
+      onSubmit={submitOnce(form)}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="base_url">
@@ -477,20 +432,12 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
           </>
         )}
       </form.Field>
-      <DialogFooter>
-        <Button
-          type="button"
-          variant="outline"
-          className={dialogButton}
-          disabled={update.isPending}
-          onClick={onCancel}
-        >
-          Cancel
-        </Button>
-        <Button type="submit" className={dialogButton} disabled={update.isPending}>
-          {update.isPending ? "Saving" : "Save"}
-        </Button>
-      </DialogFooter>
+      <FormDialogFooter
+        running={update.isPending}
+        submit="Save"
+        submitting="Saving"
+        onCancel={onCancel}
+      />
     </form>
   );
 }
@@ -502,32 +449,20 @@ interface EditDialogProps extends Omit<EditFormProps, "provider"> {
 }
 
 function EditDialog({ open, provider, ...form }: EditDialogProps) {
-  const returnFocus = useReturnFocus(open);
-  const { update, onCancel } = form;
-  const running = update.isPending;
   return (
-    <Dialog
+    <FormDialog
       open={open && provider !== null}
-      onOpenChange={(next) => {
-        if (!next && !running) onCancel();
-      }}
+      running={form.update.isPending}
+      title="Edit provider"
+      description={
+        provider === null
+          ? null
+          : `${provider.name} (${kindName(provider.kind)}). The name and the kind cannot be changed.`
+      }
+      onCancel={form.onCancel}
     >
-      <DialogContent
-        className={dialogFit}
-        showCloseButton={!running}
-        onCloseAutoFocus={returnFocus}
-      >
-        <DialogHeader>
-          <DialogTitle>Edit provider</DialogTitle>
-          <DialogDescription>
-            {provider === null
-              ? null
-              : `${provider.name} (${kindName(provider.kind)}). The name and the kind cannot be changed.`}
-          </DialogDescription>
-        </DialogHeader>
-        {provider === null ? null : <EditForm provider={provider} {...form} />}
-      </DialogContent>
-    </Dialog>
+      {provider === null ? null : <EditForm provider={provider} {...form} />}
+    </FormDialog>
   );
 }
 

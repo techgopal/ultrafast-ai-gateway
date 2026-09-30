@@ -20,10 +20,12 @@ import {
   descriptionOf,
   expectNoSecret,
   expectNotAvailable,
+  expectOneRequestWhileTheDialogStays,
   expectOneMain,
   expectSessionEndsOnPage,
   forbid,
   forgetToasts,
+  held,
   href,
   inside,
   installPointerCapture,
@@ -579,6 +581,9 @@ describe("an invite link that cannot be used", () => {
 });
 
 describe("while a request runs", () => {
+  const HOLDS =
+    "two submits at once are one request, it stays while the request runs, and after a refusal it can be left";
+
   test("the invite dialog: the button is disabled and says so", async () => {
     const door = gate();
     const invited = counted("post", "/api/users", async () => {
@@ -602,6 +607,35 @@ describe("while a request runs", () => {
     });
     expect(await screen.findByRole("dialog", { name: "Invite link" })).toBeInTheDocument();
     expect(invited.calls).toBe(1);
+  });
+
+  test(`the invite dialog: ${HOLDS}`, async () => {
+    const request = held("post", "/api/users");
+    await list();
+    await table();
+    const dialog = await openInvite();
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.type(name, "Sam Carter");
+    await userEvent.type(within(dialog).getByLabelText("Email"), "sam@example.test");
+    await expectOneRequestWhileTheDialogStays(dialog, name, "Creating the link", request);
+    expect(request.bodies).toEqual([
+      { name: "Sam Carter", email: "sam@example.test", role: "member" },
+    ]);
+    // Nothing was made, so there is no link to show.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(toasts()).toEqual([]);
+  });
+
+  test(`the name dialog: ${HOLDS}`, async () => {
+    const request = held("patch", "/api/users/{id}");
+    await detail(lena);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit name" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit name" });
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.type(name, " K");
+    await expectOneRequestWhileTheDialogStays(dialog, name, "Saving", request);
+    expect(request.bodies).toEqual([{ name: `${lena.name} K` }]);
+    expect(toasts()).toEqual([]);
   });
 
   test("the name dialog: the button is disabled and says so", async () => {

@@ -142,6 +142,58 @@ describe("errors of the API", () => {
   });
 });
 
+describe("dialogs and forms", () => {
+  /** The sources of the app that are no test and no generated component. */
+  function written(): string[] {
+    return ours([".ts", ".tsx"]).filter(
+      (path) => !path.includes(".test.") && !path.startsWith("test/"),
+    );
+  }
+
+  const sending = /\.handleSubmit\s*\(/;
+
+  test("the scans see what they should", () => {
+    const quote = '"';
+    const from = (path: string) => `} from ${quote}${path}${quote};`;
+    expect(importOf("@/components/ui/dialog").test(from("@/components/ui/dialog"))).toBe(true);
+    expect(importOf("@/components/ui/dialog").test(from("@/components/ui/alert-dialog"))).toBe(false);
+    expect(importOf("@/components/ui/alert-dialog").test(from("@/components/ui/alert-dialog"))).toBe(
+      true,
+    );
+    expect(importOf("@/components/ui/dialog").test(from("@/components/FormDialog"))).toBe(false);
+    expect(sending.test("void form" + ".handleSubmit();")).toBe(true);
+    expect(sending.test("onSubmit={submitOnce(form)}")).toBe(false);
+    expect(written()).toContain("pages/Users.tsx");
+    expect(written()).toContain("components/FormDialog.tsx");
+    expect(written().some((path) => path.includes(".test."))).toBe(false);
+  });
+
+  // A dialog is one of three: `FormDialog` for a form, `ConfirmDialog` for a
+  // question, `SecretDialog` for what is shown once. What a dialog does while
+  // its request runs is written once, in them.
+  test("only the three dialogs of components/ are built from the dialog primitives", () => {
+    const users = (name: string) =>
+      written().filter((path) => importOf(name).test(readFileSync(join(src, path), "utf8")));
+    expect(users("@/components/ui/dialog")).toEqual([
+      "components/FormDialog.tsx",
+      "components/SecretDialog.tsx",
+    ]);
+    expect(users("@/components/ui/alert-dialog")).toEqual([
+      "components/ConfirmDialog.tsx",
+      "components/SecretDialog.tsx",
+    ]);
+  });
+
+  // `submitOnce` of `components/form.ts` sends a form, and refuses a second
+  // submit while the first one runs. A form that called `handleSubmit` itself
+  // would be without that.
+  test("a form is sent by submitOnce, and by nothing else", () => {
+    expect(
+      findings(written(), sending).map((finding) => finding.replace(/:\d+: .*$/, "")),
+    ).toEqual(["components/form.ts"]);
+  });
+});
+
 /**
  * The area of a page file: the list and the page of one thing are one area,
  * as `Teams` and `TeamDetail`, `Users` and `UserDetail`.

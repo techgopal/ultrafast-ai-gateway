@@ -14,12 +14,12 @@ import { can, type Me } from "@/auth/guards";
 import { useSession } from "@/auth/session";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
-import { dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState, messageOfError } from "@/components/ErrorState";
 import { ExpiryField } from "@/components/ExpiryField";
 import { Field } from "@/components/Field";
-import { applyApiError, useFormFailure } from "@/components/form";
+import { applyApiError, submitOnce, useFormFailure } from "@/components/form";
+import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
@@ -30,14 +30,6 @@ import { useToast } from "@/components/toast";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -367,12 +359,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
       noValidate
       // No wider than the dialog, whatever its fields hold.
       className="flex min-w-0 flex-col gap-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        // One request at a time: a form that is being sent is not sent again.
-        if (form.state.isSubmitting) return;
-        void form.handleSubmit();
-      }}
+      onSubmit={submitOnce(form)}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">
@@ -519,20 +506,13 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
         )}
       </form.Field>
 
-      <DialogFooter>
-        <Button
-          type="button"
-          variant="outline"
-          className={dialogButton}
-          disabled={create.isPending}
-          onClick={onCancel}
-        >
-          Cancel
-        </Button>
-        <Button type="submit" className={dialogButton} disabled={create.isPending || waiting}>
-          {create.isPending ? "Creating the key" : "Create key"}
-        </Button>
-      </DialogFooter>
+      <FormDialogFooter
+        running={create.isPending}
+        submit="Create key"
+        submitting="Creating the key"
+        disabled={waiting}
+        onCancel={onCancel}
+      />
     </form>
   );
 }
@@ -634,39 +614,22 @@ interface CreateDialogProps extends Omit<KeyFormProps, "choice"> {
   open: boolean;
 }
 
-/**
- * While the key is being made the dialog stays, as a dialog that asks does
- * while its call runs: it cannot be closed, and the form cannot be sent a
- * second time. A dialog that was closed could be opened again and send a
- * second key, and the answer of the first would close it over what was typed.
- */
 function CreateDialog({ open, ...form }: CreateDialogProps) {
-  const returnFocus = useReturnFocus(open);
-  const { me, create, onCancel } = form;
-  const running = create.isPending;
+  const { me } = form;
   // Who may make a key for somebody else chooses the owner.
   const chooses =
     can(me, { type: "createKeyForAnyone" }) ||
     me.teams.some((team) => can(me, { type: "createKeyForMember", teamId: team.team_id }));
   return (
-    <Dialog
+    <FormDialog
       open={open}
-      onOpenChange={(next) => {
-        if (!next && !running) onCancel();
-      }}
+      running={form.create.isPending}
+      title="Create key"
+      description="The key itself is shown once, when it is created."
+      onCancel={form.onCancel}
     >
-      <DialogContent
-        className={dialogFit}
-        showCloseButton={!running}
-        onCloseAutoFocus={returnFocus}
-      >
-        <DialogHeader>
-          <DialogTitle>Create key</DialogTitle>
-          <DialogDescription>The key itself is shown once, when it is created.</DialogDescription>
-        </DialogHeader>
-        {chooses ? <ChoosingKeyForm {...form} /> : <KeyForm {...form} />}
-      </DialogContent>
-    </Dialog>
+      {chooses ? <ChoosingKeyForm {...form} /> : <KeyForm {...form} />}
+    </FormDialog>
   );
 }
 

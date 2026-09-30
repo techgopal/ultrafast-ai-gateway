@@ -7,10 +7,10 @@ import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
 import { useSession } from "@/auth/session";
 import { DataTable, type Column } from "@/components/DataTable";
-import { dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit";
 import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
-import { applyApiError, onField, useFormFailure } from "@/components/form";
+import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
+import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
@@ -19,14 +19,6 @@ import { SecretDialog, useSecretOnce } from "@/components/SecretDialog";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timestamp } from "@/components/Timestamp";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -99,10 +91,7 @@ function InviteForm({ invite, onInvited, onCancel }: InviteFormProps) {
       aria-label="Invite user"
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void form.handleSubmit();
-      }}
+      onSubmit={submitOnce(form)}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">
@@ -159,14 +148,12 @@ function InviteForm({ invite, onInvited, onCancel }: InviteFormProps) {
           </Field>
         )}
       </form.Field>
-      <DialogFooter>
-        <Button type="button" variant="outline" className={dialogButton} onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" className={dialogButton} disabled={invite.isPending}>
-          {invite.isPending ? "Creating the link" : "Create invite link"}
-        </Button>
-      </DialogFooter>
+      <FormDialogFooter
+        running={invite.isPending}
+        submit="Create invite link"
+        submitting="Creating the link"
+        onCancel={onCancel}
+      />
     </form>
   );
 }
@@ -176,22 +163,16 @@ interface InviteDialogProps extends InviteFormProps {
 }
 
 function InviteDialog({ open, invite, onInvited, onCancel }: InviteDialogProps) {
-  const returnFocus = useReturnFocus(open);
   return (
-    <Dialog
+    <FormDialog
       open={open}
-      onOpenChange={(next) => {
-        if (!next) onCancel();
-      }}
+      running={invite.isPending}
+      title="Invite user"
+      description="They get a link to set their password."
+      onCancel={onCancel}
     >
-      <DialogContent className={dialogFit} onCloseAutoFocus={returnFocus}>
-        <DialogHeader>
-          <DialogTitle>Invite user</DialogTitle>
-          <DialogDescription>They get a link to set their password.</DialogDescription>
-        </DialogHeader>
-        <InviteForm invite={invite} onInvited={onInvited} onCancel={onCancel} />
-      </DialogContent>
-    </Dialog>
+      <InviteForm invite={invite} onInvited={onInvited} onCancel={onCancel} />
+    </FormDialog>
   );
 }
 

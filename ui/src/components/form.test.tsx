@@ -1,19 +1,20 @@
 import { useForm } from "@tanstack/react-form";
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef, useState } from "react";
 import { describe, expect, test, vi } from "vitest";
 import { api } from "@/api/client";
 import { Field } from "@/components/Field";
 import { ApiError, ConsoleRefusal, NetworkError, SessionOverError } from "@/api/errors";
-import { applyApiError, onField, useFormFailure } from "@/components/form";
+import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
 import { FormError } from "@/components/FormError";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { errors, fieldMessages, validationFailed, type GatewayError } from "@/test/errors";
-import { startGateway } from "@/test/gateway";
+import { gate, startGateway } from "@/test/gateway";
 import { ok, override, refuse } from "@/test/handlers";
+import { counted, settle } from "@/test/pages";
 import * as fixtures from "@/test/fixtures";
 import { renderWithApp, unauthenticated } from "@/test/render";
 
@@ -590,6 +591,127 @@ describe("applyApiError", () => {
     expect(await screen.findByText("name must be 1 to 100 characters")).toBeInTheDocument();
     expect(screen.getByText("other: x")).toBeInTheDocument();
     expect(screen.getByText("Name")).toBeInTheDocument();
+  });
+});
+
+/** A form that is sent with `submitOnce`, by the real client. */
+function TeamForm() {
+  const form = useForm({
+    defaultValues: { name: "" },
+    onSubmit: async ({ value }) => {
+      try {
+        await api.post("/api/teams", { body: value });
+      } catch (error) {
+        applyApiError(form, error);
+      }
+    },
+  });
+  const formRef = useRef<HTMLFormElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const failure = useFormFailure(form, formRef, errorRef);
+  return (
+    <main>
+      <form ref={formRef} aria-label="New team" noValidate onSubmit={submitOnce(form)}>
+        <FormError ref={errorRef} messages={failure.messages} />
+        <form.Field name="name">
+          {(field) => (
+            <Field label="Name" name={field.name} error={failure.fieldError(field.name)}>
+              <Input
+                value={field.state.value}
+                onChange={(event) => {
+                  field.handleChange(event.target.value);
+                }}
+              />
+            </Field>
+          )}
+        </form.Field>
+        <Button type="submit">Create team</Button>
+      </form>
+    </main>
+  );
+}
+
+describe("submitOnce", () => {
+  /** The form, filled, and its request, whose answer is held. */
+  async function filled(answer: () => Response) {
+    const door = gate();
+    const posts = counted("post", "/api/teams", async () => {
+      await door.opened;
+      return answer();
+    });
+    await renderWithApp(<TeamForm />);
+    await userEvent.type(screen.getByLabelText("Name"), "Growth");
+    const open = () => {
+      act(() => {
+        door.open();
+      });
+    };
+    return { posts, open, form: screen.getByRole("form", { name: "New team" }) };
+  }
+
+  const created = () => ok("post", "/api/teams", 201, fixtures.teams.growth);
+
+  test("two submits in one tick are one request", async () => {
+    const { posts, open, form } = await filled(created);
+    act(() => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    await waitFor(() => {
+      expect(posts.calls).toBe(1);
+    });
+    await settle();
+    expect(posts.calls).toBe(1);
+    expect(posts.bodies).toEqual([{ name: "Growth" }]);
+    open();
+  });
+
+  test("a form that is being sent is not sent again: not by Enter, not by the button, not by a submit of its own", async () => {
+    const { posts, open, form } = await filled(created);
+    await userEvent.click(screen.getByRole("button", { name: "Create team" }));
+    await waitFor(() => {
+      expect(posts.calls).toBe(1);
+    });
+    await userEvent.type(screen.getByLabelText("Name"), "{Enter}{Enter}");
+    await userEvent.click(screen.getByRole("button", { name: "Create team" }));
+    fireEvent.submit(form);
+    await settle();
+    expect(posts.calls).toBe(1);
+    open();
+  });
+
+  test("when the request has its answer the form can be sent again: after a refusal, and after a success", async () => {
+    const { posts, open } = await filled(() => refuse(errors.forbidden));
+    await userEvent.type(screen.getByLabelText("Name"), "{Enter}");
+    open();
+    expect(await screen.findByRole("alert")).toHaveTextContent(errors.forbidden.body.error.message);
+    expect(posts.calls).toBe(1);
+
+    const again = counted("post", "/api/teams", created);
+    await userEvent.type(screen.getByLabelText("Name"), "{Enter}");
+    await waitFor(() => {
+      expect(again.calls).toBe(1);
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+    await userEvent.type(screen.getByLabelText("Name"), "{Enter}");
+    await waitFor(() => {
+      expect(again.calls).toBe(2);
+    });
+  });
+
+  test("the browser does not send the form itself, also not the submit that is refused", async () => {
+    const { open, form } = await filled(created);
+    // `fireEvent` answers whether the event was left to the browser.
+    let first = true;
+    let second = true;
+    act(() => {
+      first = fireEvent.submit(form);
+      second = fireEvent.submit(form);
+    });
+    expect([first, second]).toEqual([false, false]);
+    open();
   });
 });
 

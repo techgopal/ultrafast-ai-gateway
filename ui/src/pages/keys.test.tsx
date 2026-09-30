@@ -17,10 +17,12 @@ import {
   expectLabelsNameControls,
   expectNoSecret,
   expectNotAvailable,
+  expectOneRequestWhileTheDialogStays,
   expectOneMain,
   expectSessionEndsOnPage,
   forbid,
   forgetToasts,
+  held,
   href,
   installSelect,
   listenToConsole,
@@ -1495,6 +1497,26 @@ describe("creating a key", () => {
       await waitFor(() => {
         expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
       });
+    });
+
+    test("two submits at once are one request, and after the refusal the X leaves the dialog", async () => {
+      const request = held("post", "/api/keys");
+      await page({ user: fixtures.me.lena });
+      const dialog = await openCreate(false);
+      const name = within(dialog).getByLabelText("Name");
+      await userEvent.type(name, "laptop");
+      await expectOneRequestWhileTheDialogStays(dialog, name, "Creating the key", request);
+      expect(request.bodies).toEqual([{ name: "laptop" }]);
+    });
+
+    test("the same for who chooses the owner", async () => {
+      const request = held("post", "/api/keys");
+      await page();
+      const dialog = await openCreate();
+      const name = within(dialog).getByLabelText("Name");
+      await userEvent.type(name, "laptop");
+      await expectOneRequestWhileTheDialogStays(dialog, name, "Creating the key", request);
+      expect(request.bodies).toEqual([{ name: "laptop" }]);
     });
 
     test("after a refusal it can be left again", async () => {
