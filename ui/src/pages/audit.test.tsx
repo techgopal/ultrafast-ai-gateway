@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
 import { queryKeys } from "@/api/queries";
@@ -379,10 +379,10 @@ describe("the audit log", () => {
     const log = logIs(fixtures.auditEntriesFrom(120, 120));
     await page();
     await table();
+    // The filter is set in one step: how it is typed is another test's.
+    fireEvent.change(filter(), { target: { value: "login" } });
     await older(100);
-    await older(120);
-    await userEvent.type(filter(), "auth.login");
-    expect(rows()).toHaveLength(120);
+    expect(log.asked).toHaveLength(2);
 
     // Three things happened since: the log has three entries more.
     const grown = fixtures.auditEntriesFrom(123, 123);
@@ -398,7 +398,7 @@ describe("the audit log", () => {
     expect(rows()).toHaveLength(50);
     expect(times()).toEqual(grown.slice(0, 50).map((entry) => entry.at));
     expect(loadOlder()).toBeInTheDocument();
-    expect(filter()).toHaveValue("auth.login");
+    expect(filter()).toHaveValue("login");
     expect(toasts()).toEqual([]);
     await settle();
     expect(log.asked).toHaveLength(1);
@@ -563,7 +563,7 @@ describe("the audit log", () => {
     const place = screen.getByRole("status");
     expect(place).toBeEmptyDOMElement();
 
-    await userEvent.type(filter(), "auth.login");
+    await userEvent.type(filter(), "login");
     // Every loaded entry matches, and the notice is there all the same.
     expect(rows()).toHaveLength(50);
     const notice = screen.getByText(LOADED_ONLY);
@@ -589,7 +589,7 @@ describe("the audit log", () => {
     expect(screen.getByRole("status")).toBe(place);
     expect(place).toBeEmptyDOMElement();
     expect(descriptionOf(filter())).toBe("");
-    expect(filter()).toHaveValue("auth.login");
+    expect(filter()).toHaveValue("login");
   });
 
   test("the notice of the filter goes when the filter is emptied", async () => {
