@@ -607,6 +607,38 @@ describe("the page of a team", () => {
     expectOneMain();
   });
 
+  test("a team that is hidden when it is asked for again is not found, though it was shown", async () => {
+    const state = keeps(fixtures.teamDetails.platform);
+    const app = await detail(platform);
+    await table("Members");
+    state.hidden = true;
+    await act(async () => {
+      await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(platform.id) });
+    });
+    expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
+    expect(state.reads).toBe(2);
+    expectOneMain();
+    expect(screen.queryByRole("heading", { name: platform.name })).toBeNull();
+    expect(shown()).not.toContain(lena.email);
+    expect(actions()).toEqual([]);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("asking again that fails with something else keeps what is shown", async () => {
+    const app = await detail(platform);
+    await table("Members");
+    const again = counted("get", "/api/teams/{id}", () => refuse(errors.internal_error));
+    await act(async () => {
+      await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(platform.id) });
+    });
+    expect(again.calls).toBe(1);
+    await settle();
+    expect(screen.getByRole("heading", { level: 1, name: platform.name })).toBeInTheDocument();
+    expect(rowOf(lena.name)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: NOT_FOUND })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   test("the session ends while the page of a team is open", async () => {
     startGateway({ signedIn: true });
     const app = await detail(platform);
@@ -867,6 +899,62 @@ describe("adding a member", () => {
       expect(state.puts).toEqual([]);
     },
   );
+
+  test("a 404 can be the team: a team that is gone meanwhile is not found", async () => {
+    const state = keeps(fixtures.teamDetails.platform);
+    const app = await detail(platform, { user: fixtures.me.arjun });
+    const dialog = await open("Add member", "Add member");
+    await userEvent.type(screen.getByLabelText("User ID"), String(priya.id));
+    expect(state.reads).toBe(1);
+    // Meanwhile the team was deleted, or hidden from the caller. The gateway
+    // answers 404 for the team before it looks at the user.
+    state.hidden = true;
+    const puts = counted("put", "/api/teams/{id}/members/{user_id}", () =>
+      refuse(errors.not_found),
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
+    expectOneMain();
+    expect(puts.calls).toBe(1);
+    expect(state.reads).toBe(2);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("heading", { name: platform.name })).toBeNull();
+    expect(shown()).not.toContain(lena.email);
+    expect(actions()).toEqual([]);
+    expect(toasts()).toEqual([]);
+    expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
+    expect(href(app)).toBe(`/teams/${platform.id}`);
+  });
+
+  test("a 404 can be the team: when the team is still there the field says it, and the page stays", async () => {
+    const state = keeps(fixtures.teamDetails.platform);
+    const app = await detail(platform, { user: fixtures.me.arjun });
+    const dialog = await open("Add member", "Add member");
+    const id = screen.getByLabelText("User ID");
+    await userEvent.type(id, "999");
+    expect(state.reads).toBe(1);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await waitFor(() => {
+      expect(descriptionOf(id)).toBe(`${NO_USER} ${ID_HINT}`);
+    });
+    // The team was asked for again, and is still there.
+    await waitFor(() => {
+      expect(state.reads).toBe(2);
+    });
+    await settle();
+    expect(state.reads).toBe(2);
+    expect(dialog).toBeInTheDocument();
+    expect(id).toHaveValue("999");
+    expect(descriptionOf(id)).toBe(`${NO_USER} ${ID_HINT}`);
+    // Behind the dialog, which hides the page from the roles.
+    expect(
+      screen.getByRole("heading", { level: 1, name: platform.name, hidden: true }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: NOT_FOUND, hidden: true })).toBeNull();
+    expect(document.querySelectorAll("main")).toHaveLength(1);
+    expect(toasts()).toEqual([]);
+    expect(href(app)).toBe(`/teams/${platform.id}`);
+  });
 
   test("a lead adds a disabled user: the refusal is on the field", async () => {
     const state = keeps(fixtures.teamDetails.platform);
