@@ -6,7 +6,7 @@ import { describe, expect, test, vi } from "vitest";
 import { api } from "@/api/client";
 import { Field } from "@/components/Field";
 import { ApiError, ConsoleRefusal, NetworkError, SessionOverError } from "@/api/errors";
-import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, onField, onStatus, submitOnce, useFormFailure } from "@/components/form";
 import { FormError } from "@/components/FormError";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -798,6 +798,55 @@ describe("onField", () => {
     expect(onField(over, "user_exists", "email")).toBe(over);
     const refusal = new ConsoleRefusal("Choose a user.", "user_id");
     expect(onField(refusal, "user_exists", "email")).toBe(refusal);
+  });
+});
+
+describe("onStatus", () => {
+  const TEXT = "Too many attempts. Try again in a few minutes.";
+  const many = errors.too_many_attempts;
+  const error = new ApiError(many.status, many.body.error.code, many.body.error.message);
+
+  test("an answer of the status is said in the words of the console, by no field, and stays the answer of the gateway", () => {
+    const said = onStatus(error, 429, TEXT);
+    expect(said).toBeInstanceOf(ApiError);
+    expect(said).not.toBeInstanceOf(ConsoleRefusal);
+    expect(said).toMatchObject({ status: 429, code: "too_many_attempts", message: TEXT, fields: {} });
+  });
+
+  test("it is the status that is matched, whatever the code", () => {
+    const other = new ApiError(429, "rate_limited", "Slow down.");
+    expect(onStatus(other, 429, TEXT)).toMatchObject({
+      status: 429,
+      code: "rate_limited",
+      message: TEXT,
+    });
+  });
+
+  test("what the answer says of single fields is kept", () => {
+    const invalid = validationFailed({ name: fieldMessages.name });
+    const answer = new ApiError(
+      invalid.status,
+      invalid.body.error.code,
+      invalid.body.error.message,
+      invalid.body.error.fields,
+    );
+    expect(onStatus(answer, 422, "Look at the fields.")).toMatchObject({
+      status: 422,
+      message: "Look at the fields.",
+      fields: { name: fieldMessages.name },
+    });
+  });
+
+  test("every other error is returned as it is", () => {
+    expect(onStatus(error, 401, TEXT)).toBe(error);
+    const network = new NetworkError();
+    expect(onStatus(network, 429, TEXT)).toBe(network);
+    const over = new SessionOverError();
+    expect(onStatus(over, 429, TEXT)).toBe(over);
+    const refusal = new ConsoleRefusal("Choose a user.", "user_id");
+    expect(onStatus(refusal, 429, TEXT)).toBe(refusal);
+    const thrown = new Error("whatever");
+    expect(onStatus(thrown, 429, TEXT)).toBe(thrown);
   });
 });
 

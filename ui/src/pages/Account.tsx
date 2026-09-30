@@ -18,7 +18,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { ErrorState, messageOfError } from "@/components/ErrorState";
 import { ExpiryField } from "@/components/ExpiryField";
 import { Field } from "@/components/Field";
-import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, onField, onStatus, submitOnce, useFormFailure } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { NameDialog } from "@/components/NameDialog";
@@ -169,12 +169,16 @@ function saysTheSessionIsOver(error: unknown): boolean {
 }
 
 /**
- * What the gateway refused, said by the field it is about in the words of
- * this form: both refusals are about the current password.
+ * What the gateway refused, in the words of this form. A wrong current
+ * password is said by its field. Too many attempts are about no field: the
+ * gateway refuses before it looks at the password, and the limit is the one
+ * of the sign-in. It is said as on the sign-in page: by the status, in the
+ * same text, at the top of the form, where it stays until the form is sent
+ * again.
  */
-function aboutTheCurrentPassword(error: unknown): unknown {
+function inTheWordsOfTheForm(error: unknown): unknown {
   const wrong = onField(error, "invalid_credentials", "current_password", WRONG_CURRENT_PASSWORD);
-  return onField(wrong, "too_many_attempts", "current_password", TOO_MANY_ATTEMPTS);
+  return onStatus(wrong, 429, TOO_MANY_ATTEMPTS);
 }
 
 /**
@@ -228,7 +232,7 @@ function PasswordForm({ email }: { email: string }) {
       if (messageOfError(refusal) === null) return;
       // After the fields were emptied: the error of a field is about the
       // field as it is now, and goes when something is typed into it.
-      applyApiError(form, aboutTheCurrentPassword(refusal));
+      applyApiError(form, inTheWordsOfTheForm(refusal));
       setRefusals((count) => count + 1);
     },
   });

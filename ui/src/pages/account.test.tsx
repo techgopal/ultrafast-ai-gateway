@@ -156,6 +156,13 @@ function expectCleared(): void {
   for (const one of fields()) expect(one).toHaveValue("");
 }
 
+/** The error at the top of the password form: before its fields, and the error of none of them. */
+function formError(): HTMLElement | null {
+  const form = within(part("Password")).getByRole("form", { name: "Change password" });
+  const first = form.firstElementChild;
+  return first instanceof HTMLElement && first.getAttribute("role") === "alert" ? first : null;
+}
+
 /** A gateway that changes the password as `POST /api/auth/password` does. */
 function passwordIs(current: string, tokens?: { tokens: fixtures.Token[] }) {
   const state = { bodies: [] as unknown[], csrf: [] as (string | null)[] };
@@ -813,10 +820,15 @@ describe("the password", () => {
     await fill(CURRENT, NEXT);
     await userEvent.click(changeButton());
     const current = field("Current password");
-    // The text of the sign-in page, not the one of the gateway.
+    // The text of the sign-in page, not the one of the gateway, at the top of
+    // the form as there: it is about no field.
     await waitFor(() => {
-      expect(descriptionOf(current)).toBe(TOO_MANY);
+      expect(formError()).toHaveTextContent(TOO_MANY);
     });
+    expect(formError()?.textContent).toBe(TOO_MANY);
+    expect(within(part("Password")).getAllByRole("alert")).toEqual([formError()]);
+    for (const one of fields()) expect(one).not.toHaveAttribute("aria-invalid");
+    expect(descriptionOf(current)).toBe("");
     expect(screen.queryByText(errors.too_many_attempts.body.error.message)).toBeNull();
     expectCleared();
     await waitFor(() => {
@@ -826,6 +838,86 @@ describe("the password", () => {
     expect(toasts()).toEqual([]);
     expect(href(app)).toBe("/account");
     for (const password of [CURRENT, NEXT]) expectNoSecret(app, password);
+  });
+
+  test("too many attempts stays while the form is typed in, and goes when the form is sent again", async () => {
+    const door = gate();
+    const posts = counted("post", "/api/auth/password", async () => {
+      // The first attempt is one too many; the second is held, and then taken.
+      if (posts.calls === 1) return refuse(errors.too_many_attempts);
+      await door.opened;
+      return noContent();
+    });
+    await page();
+    await fill(CURRENT, NEXT);
+    await userEvent.click(changeButton());
+    await waitFor(() => {
+      expect(formError()).toHaveTextContent(TOO_MANY);
+    });
+
+    // A keystroke in a field does not take it away: the limit lasts for minutes.
+    await userEvent.type(field("Current password"), "c");
+    expect(formError()).toHaveTextContent(TOO_MANY);
+    await fill(CURRENT, NEXT);
+    expect(formError()).toHaveTextContent(TOO_MANY);
+    expect(posts.calls).toBe(1);
+
+    // The next submit starts without it.
+    await userEvent.click(changeButton());
+    await within(part("Password")).findByRole("button", { name: "Changing the password" });
+    expect(formError()).toBeNull();
+    expect(posts.calls).toBe(2);
+    act(() => {
+      door.open();
+    });
+    await waitFor(() => {
+      expect(toasts()).toEqual([PASSWORD_CHANGED]);
+    });
+    expect(within(part("Password")).queryByRole("alert")).toBeNull();
+  });
+
+  test("a press right after too many attempts sends nothing, and the message stays", async () => {
+    const posts = counted("post", "/api/auth/password", () => refuse(errors.too_many_attempts));
+    await page();
+    await fill(CURRENT, NEXT);
+    await userEvent.click(changeButton());
+    await waitFor(() => {
+      expect(formError()).toHaveTextContent(TOO_MANY);
+    });
+    // The form is empty.
+    await userEvent.click(changeButton());
+    await userEvent.type(field("Current password"), "{Enter}");
+    fireEvent.submit(within(part("Password")).getByRole("form", { name: "Change password" }));
+    await settle();
+    expect(posts.calls).toBe(1);
+    expect(formError()).toHaveTextContent(TOO_MANY);
+
+    // Sent again and refused again, it says so again.
+    await fill(CURRENT, NEXT);
+    await userEvent.click(changeButton());
+    await waitFor(() => {
+      expect(posts.calls).toBe(2);
+    });
+    await waitFor(() => {
+      expect(formError()).toHaveTextContent(TOO_MANY);
+    });
+    expectCleared();
+  });
+
+  test("a 429 is known by its status, whatever its code", async () => {
+    override("post", "/api/auth/password", () =>
+      // What a proxy or a later gateway may answer: the description of the API has no such code.
+      HttpResponse.json({ error: { code: "rate_limited", message: "Slow down." } }, { status: 429 }),
+    );
+    await page();
+    await fill(CURRENT, NEXT);
+    await userEvent.click(changeButton());
+    await waitFor(() => {
+      expect(formError()?.textContent).toBe(TOO_MANY);
+    });
+    expect(screen.queryByText("Slow down.")).toBeNull();
+    for (const one of fields()) expect(one).not.toHaveAttribute("aria-invalid");
+    expectCleared();
   });
 
   test("a new password the gateway does not take shows on its field; the fields are cleared", async () => {
