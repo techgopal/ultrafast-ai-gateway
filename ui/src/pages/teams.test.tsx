@@ -6,7 +6,7 @@ import { HttpResponse } from "msw";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { ApiError, ConsoleRefusal, NetworkError } from "@/api/errors";
 import { queryKeys } from "@/api/queries";
-import { aboutTheUser } from "@/pages/TeamDetail";
+import { aboutTheUser } from "@/pages/TeamDetailAddMember";
 import { errors, fieldMessages, validationFailed } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
 import { gate, startGateway } from "@/test/gateway";
