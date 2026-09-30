@@ -210,6 +210,21 @@ export function onField(error: unknown, code: string, field: string, text?: stri
   });
 }
 
+/**
+ * The error, said in the words of the console by no field: an answer such as
+ * a 429 is about nothing the form holds, and the console has a text for it
+ * that says what to do. It is known by its status. An error of another status
+ * is returned as it is.
+ *
+ * The error stays what the gateway answered, with its status, its code and
+ * what it says of single fields; only its message is `text`. A form shows it
+ * at its top, until it is sent again.
+ */
+export function onStatus(error: unknown, status: number, text: string): unknown {
+  if (!(error instanceof ApiError) || error.status !== status) return error;
+  return new ApiError(error.status, error.code, text, error.fields);
+}
+
 function focusOnFailure(form: HTMLFormElement | null, message: HTMLElement | null): void {
   const field = form?.querySelector<HTMLElement>('[aria-invalid="true"]');
   (field ?? message)?.focus();
