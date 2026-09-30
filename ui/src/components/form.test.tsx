@@ -80,6 +80,45 @@ describe("field", () => {
     expect(descriptionOf(owner)).toBe("owner must be an active user");
   });
 
+  test("a group of controls is named by the label, which is no label of a control", async () => {
+    await renderWithApp(
+      <form aria-label="New provider">
+        <Field
+          group
+          label="Kind"
+          name="kind"
+          hint="What the provider speaks"
+          error="kind must be openai or anthropic"
+        >
+          {({ id, name, ...described }) => (
+            <div role="radiogroup" id={id} {...described}>
+              <input type="radio" name={name} aria-label="OpenAI-compatible" />
+              <input type="radio" name={name} aria-label="Anthropic" />
+            </div>
+          )}
+        </Field>
+        <Field label="Name" name="name">
+          <Input />
+        </Field>
+      </form>,
+    );
+    const group = screen.getByRole("radiogroup", { name: "Kind" });
+    // Named by the visible text, which is no `<label>`: a label names one control.
+    const name = document.getElementById(group.getAttribute("aria-labelledby") ?? "");
+    expect(name).toHaveTextContent(/^Kind$/);
+    expect(name?.tagName).not.toBe("LABEL");
+    expect(document.querySelector(`label[for="${group.id}"]`)).toBeNull();
+    expect(screen.getAllByText("Kind")).toHaveLength(1);
+    // The rest of the wiring is as for a control.
+    expect(group).toHaveAttribute("aria-invalid", "true");
+    expect(descriptionOf(group)).toBe("kind must be openai or anthropic What the provider speaks");
+
+    // A control is named by its label, as before, and gets no `aria-labelledby`.
+    const control = screen.getByLabelText("Name");
+    expect(control).not.toHaveAttribute("aria-labelledby");
+    expect(document.querySelector(`label[for="${control.id}"]`)).toHaveTextContent("Name");
+  });
+
   test("two fields of the same name do not share their ids", async () => {
     await renderWithApp(
       <main>

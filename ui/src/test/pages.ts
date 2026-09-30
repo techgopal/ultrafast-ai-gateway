@@ -332,6 +332,31 @@ export async function optionsOf(select: HTMLElement): Promise<string[]> {
   return options;
 }
 
+/**
+ * In `scope`, every `<label for>` is the label of a control that a label can
+ * name, and every radio group is named once, by the text that `aria-labelledby`
+ * points at: not by a label, which cannot name a group, and not by a second
+ * name of its own.
+ */
+export function expectLabelsNameControls(scope: HTMLElement): void {
+  const labels = [...scope.querySelectorAll("label[for]")];
+  expect(labels.length).toBeGreaterThan(0);
+  for (const label of labels) {
+    const target = document.getElementById(label.getAttribute("for") ?? "");
+    expect([label.textContent, target?.matches("input, select, textarea, button")]).toEqual([
+      label.textContent,
+      true,
+    ]);
+  }
+  for (const group of within(scope).queryAllByRole("radiogroup")) {
+    expect(group).not.toHaveAttribute("aria-label");
+    const name = document.getElementById(group.getAttribute("aria-labelledby") ?? "");
+    expect(name).not.toBeNull();
+    expect(name?.tagName).not.toBe("LABEL");
+    expect(group).toHaveAccessibleName(name?.textContent ?? "no name");
+  }
+}
+
 /** What describes the control: its error and its hint. */
 export function descriptionOf(control: HTMLElement): string {
   return (control.getAttribute("aria-describedby") ?? "")

@@ -14,6 +14,7 @@ import {
   clientThatKeepsDataFresh,
   counted,
   descriptionOf,
+  expectLabelsNameControls,
   expectNoSecret,
   expectNotAvailable,
   expectOneMain,
@@ -836,6 +837,21 @@ describe("creating a key", () => {
       await settle();
       expect(state.created).toEqual([]);
     });
+  });
+
+  test("the labels of the form name controls, and the group of expiries is named once", async () => {
+    await page();
+    const dialog = await openCreate();
+    expectLabelsNameControls(dialog);
+    const expires = within(dialog).getByRole("radiogroup", { name: "Expires" });
+    expect(within(dialog).getAllByText("Expires")).toHaveLength(1);
+    // The field of the day keeps its own name, and is described as the group is.
+    await userEvent.click(within(expires).getByRole("radio", { name: "On a date" }));
+    const day = within(dialog).getByLabelText("Expiry date");
+    expect(day).toHaveAccessibleName("Expiry date");
+    expect(day).not.toHaveAttribute("aria-labelledby");
+    expect(descriptionOf(day)).toBe(descriptionOf(expires));
+    expectLabelsNameControls(dialog);
   });
 
   test("new key is shown once", async () => {

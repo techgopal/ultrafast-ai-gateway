@@ -9,6 +9,8 @@ export interface FieldWiring {
   required?: true;
   "aria-invalid"?: true;
   "aria-describedby"?: string;
+  /** For a group of controls only: the id of the text that names the group. */
+  "aria-labelledby"?: string;
 }
 
 interface FieldProps {
@@ -21,6 +23,13 @@ interface FieldProps {
   hint?: string | undefined;
   required?: boolean | undefined;
   /**
+   * The field is a group of controls, such as a radio group, each with a
+   * label of its own. A `<label>` names one control and cannot name a group:
+   * the label of the field is then a text, and the wiring has its id as
+   * `aria-labelledby`, which goes on the group and on nothing else.
+   */
+  group?: boolean;
+  /**
    * The control: an element, which is given the wiring as its props, or a
    * function that puts the wiring on the control itself.
    */
@@ -30,10 +39,12 @@ interface FieldProps {
 /**
  * A labelled control. The label is tied to it with `htmlFor`, the error and
  * the hint with `aria-describedby`, and an error sets `aria-invalid`. The
- * error is announced when it appears.
+ * error is announced when it appears. A group of controls is named by the
+ * label with `aria-labelledby` instead: see `group`.
  */
-export function Field({ label, name, error, hint, required, children }: FieldProps) {
+export function Field({ label, name, error, hint, required, group, children }: FieldProps) {
   const id = useId();
+  const labelId = `${id}-label`;
   const errorId = `${id}-error`;
   const hintId = `${id}-hint`;
   const describedBy = [error === undefined ? null : errorId, hint === undefined ? null : hintId]
@@ -45,11 +56,18 @@ export function Field({ label, name, error, hint, required, children }: FieldPro
     ...(required === true ? { required: true } : {}),
     ...(error === undefined ? {} : { "aria-invalid": true }),
     ...(describedBy === "" ? {} : { "aria-describedby": describedBy }),
+    ...(group === true ? { "aria-labelledby": labelId } : {}),
   };
   return (
     <div className="flex flex-col gap-2">
       <div className="flex gap-1">
-        <Label htmlFor={id}>{label}</Label>
+        {group === true ? (
+          <Label asChild>
+            <span id={labelId}>{label}</span>
+          </Label>
+        ) : (
+          <Label htmlFor={id}>{label}</Label>
+        )}
         {required === true ? (
           <span aria-hidden="true" className="text-sm leading-none text-destructive">
             *
