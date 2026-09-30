@@ -166,6 +166,23 @@ export function choiceOffered(
   return { owner_id, team_id: teamOffered(chosen.team_id, teamsFor(owner_id)) };
 }
 
+/**
+ * The choice the form shows and holds (`KeyForm` writes it back): the choice
+ * as it is offered, but while the owners are read for who chooses them
+ * (`waiting`), the choice as it is. The teams of another owner are not known
+ * then, and `teamsFor` falls back to the viewer's own teams, by which a team
+ * chosen for another owner must not be judged: it would be taken away.
+ */
+export function choiceShown(
+  chosen: Chosen,
+  me: Me,
+  owners: Owners | null,
+  teamsFor: (ownerId: string) => TeamChoices,
+  waiting: boolean,
+): Chosen {
+  return waiting ? chosen : choiceOffered(chosen, me, owners, teamsFor);
+}
+
 /** The request for the key. What cannot be sent is refused by the console itself. */
 export function requestOf(values: KeyValues, me: Me): CreateKeyRequest {
   const body: CreateKeyRequest = { name: values.name };

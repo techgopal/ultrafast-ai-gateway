@@ -24,6 +24,7 @@ import { NO_EXPIRY } from "@/lib/expiry";
 import { idOf } from "@/lib/id";
 import {
   choiceOffered,
+  choiceShown,
   goneAmong,
   isFirstRead,
   isMissing,
@@ -85,6 +86,9 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
   const form = useForm({
     defaultValues: start,
     onSubmit: async ({ value }) => {
+      // Nothing is sent while the owners are not known: the button is off for
+      // that time, and a submit that comes all the same has no choice to send.
+      if (waiting) return;
       try {
         // What is sent is what the form shows: see `choiceOffered`.
         const choice = choiceOffered(value, me, owners, teamsFor);
@@ -113,10 +117,17 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
   // as it is offered now, and that is written back into the form: the form
   // holds one value, the one it shows. So an error of the gateway about a
   // choice goes when the choice does, and a team or an owner that comes back
-  // does not bring back a choice that the form showed no more.
+  // does not bring back a choice that the form showed no more. While the
+  // owners are not known the choice is left as it is (`choiceShown`).
   const ownerHeld = useSelector(form.store, (state) => state.values.owner_id);
   const teamHeld = useSelector(form.store, (state) => state.values.team_id);
-  const shown = choiceOffered({ owner_id: ownerHeld, team_id: teamHeld }, me, owners, teamsFor);
+  const shown = choiceShown(
+    { owner_id: ownerHeld, team_id: teamHeld },
+    me,
+    owners,
+    teamsFor,
+    waiting,
+  );
   const offered = teamsFor(shown.owner_id);
   useEffect(() => {
     if (shown.owner_id !== ownerHeld) form.setFieldValue("owner_id", shown.owner_id);
@@ -319,13 +330,16 @@ function ChoosingKeyForm(props: Omit<KeyFormProps, "choice">) {
   let owners: Owners | null = null;
   if (users.data !== undefined && teams.data !== undefined && !details.some(isFirstRead)) {
     const known = details.flatMap((detail) => (detail.data === undefined ? [] : [detail.data]));
-    // A team is there when the list names it, and it did not answer 404.
+    // A team is there when the list names it, and it did not answer 404. A
+    // list whose last reading failed can be older than the session: a team
+    // of the viewer's own is not taken away on its word.
     const listed = new Set(teams.data.teams.map((team) => team.id));
+    const listFailed = teams.error !== null;
     owners = ownersFor(
       me,
       users.data.users,
       known,
-      (teamId) => listed.has(teamId) && !gone.includes(teamId),
+      (teamId) => (listFailed || listed.has(teamId)) && !gone.includes(teamId),
     );
   }
   const missing = details.filter(
