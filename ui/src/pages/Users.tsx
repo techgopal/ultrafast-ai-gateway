@@ -128,13 +128,12 @@ function InviteForm({ invite, onInvited, onCancel }: InviteFormProps) {
       </form.Field>
       <form.Field name="role">
         {(field) => (
-          <Field label="Role" name={field.name} error={failure.fieldError(field.name)}>
+          <Field group label="Role" name={field.name} error={failure.fieldError(field.name)}>
             {({ id, name, ...described }) => (
               <RadioGroup
                 {...described}
                 id={id}
                 name={name}
-                aria-label="Role"
                 value={field.state.value}
                 onValueChange={field.handleChange}
               >

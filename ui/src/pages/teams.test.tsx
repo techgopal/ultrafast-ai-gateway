@@ -19,6 +19,7 @@ import {
   counted,
   descriptionOf,
   expectNotAvailable,
+  expectLabelsNameControls,
   expectOneRequestWhileTheDialogStays,
   expectOneH1,
   expectOneMain,
@@ -952,6 +953,13 @@ describe("adding a member", () => {
     await expectOneRequestWhileTheDialogStays(dialog, id, "Adding", request);
     expect(request.bodies).toEqual([{ role: "member" }]);
     expect(toasts()).toEqual([]);
+  });
+
+  test("the labels of the form name controls, and the group of users is named once, by its field", async () => {
+    await detail(platform);
+    const dialog = await open("Add member", "Add member");
+    await within(dialog).findByRole("radiogroup", { name: "User" });
+    expectLabelsNameControls(dialog);
   });
 
   test("admin picks a user from a list", async () => {
