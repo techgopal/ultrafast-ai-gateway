@@ -616,7 +616,7 @@ describe("mutations invalidate", () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
     });
     // Asked for again, the team would answer 404 to the page that still shows
-    // it; dropped, the page would ask for it. The page drops it when it has gone.
+    // it; dropped, the page would ask for it. It is dropped when the page has gone.
     expect(detail).toBe(2);
     expect(client.getQueryData(q.queryKeys.teams.detail(id))).toEqual(fixtures.teamDetails.platform);
     expect(client.getQueryState(q.queryKeys.teams.detail(id))?.isInvalidated).toBe(false);
@@ -666,6 +666,187 @@ describe("mutations invalidate", () => {
     });
     expect(handler).not.toHaveBeenCalled();
     unsubscribe();
+  });
+});
+
+describe("what a mutation says is gone", () => {
+  const { growth, platform } = fixtures.teams;
+  const { arjun, lena } = fixtures.users;
+
+  /** Answers the reads of the one thing, and counts them. */
+  function reads(path: "/api/teams/{id}" | "/api/users/{id}", answer: () => Response) {
+    const count = { calls: 0 };
+    override("get", path, () => {
+      count.calls += 1;
+      return answer();
+    });
+    return count;
+  }
+
+  const cases = [
+    {
+      what: "a deleted team",
+      key: q.queryKeys.teams.detail(growth.id),
+      load: (client: QueryClient) => client.query(q.teamOptions(growth.id)),
+      read: () =>
+        reads("/api/teams/{id}", () => ok("get", "/api/teams/{id}", 200, fixtures.teamDetails.growth)),
+      list: "/api/teams",
+      useShown: () => q.useTeam(growth.id),
+      useList: () => q.useTeams(),
+      useChange: () => q.useDeleteTeam(),
+      variables: { id: growth.id },
+    },
+    {
+      what: "a deleted user",
+      key: q.queryKeys.users.detail(lena.id),
+      load: (client: QueryClient) => client.query(q.userOptions(lena.id)),
+      read: () => reads("/api/users/{id}", () => ok("get", "/api/users/{id}", 200, lena)),
+      list: "/api/users",
+      useShown: () => q.useUser(lena.id),
+      useList: () => q.useUsers(),
+      useChange: () => q.useDeleteUser(),
+      variables: { id: lena.id },
+    },
+    {
+      what: "a team the caller left",
+      key: q.queryKeys.teams.detail(platform.id),
+      load: (client: QueryClient) => client.query(q.teamOptions(platform.id)),
+      read: () =>
+        reads("/api/teams/{id}", () =>
+          ok("get", "/api/teams/{id}", 200, fixtures.teamDetails.platform),
+        ),
+      list: "/api/teams",
+      useShown: () => q.useTeam(platform.id),
+      useList: () => q.useTeams(),
+      useChange: () => q.useRemoveTeamMember(),
+      variables: { id: platform.id, userId: arjun.id, leaving: true },
+    },
+  ] as const;
+
+  type Case = (typeof cases)[number];
+
+  function inCache(client: QueryClient, one: Case) {
+    return client.getQueryCache().find({ queryKey: one.key, exact: true });
+  }
+
+  /** The list and the mutation, as a part of the app that stays. */
+  function elsewhere(client: QueryClient, one: Case) {
+    return renderHook(() => ({ list: one.useList(), change: one.useChange() }), {
+      wrapper: wrapperOf(client),
+    });
+  }
+
+  async function settled(): Promise<void> {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+  }
+
+  test.each(cases)(
+    "$what is kept while its page shows it, is not asked for again, and is dropped when the page goes",
+    async (one) => {
+      const detail = one.read();
+      const list = counted(one.list);
+      const client = appClient();
+      const page = renderHook(() => one.useShown(), { wrapper: wrapperOf(client) });
+      const app = elsewhere(client, one);
+      await waitFor(() => {
+        expect(page.result.current.isSuccess && app.result.current.list.isSuccess).toBe(true);
+      });
+      const loaded: unknown = page.result.current.data;
+      expect([detail.calls, list.calls]).toEqual([1, 1]);
+
+      await act(async () => {
+        await app.result.current.change.mutateAsync(one.variables as never);
+      });
+      // What the mutation says is stale is asked for again.
+      await waitFor(() => {
+        expect(list.calls).toBe(2);
+      });
+      await settled();
+      // The page still shows what it showed: not asked for again, which would
+      // answer 404, and not dropped, which would make the page ask.
+      expect(detail.calls).toBe(1);
+      expect(inCache(client, one)?.state).toMatchObject({ data: loaded, isInvalidated: false });
+      expect(page.result.current.data).toEqual(loaded);
+      expect(page.result.current.isFetching).toBe(false);
+
+      // The page goes, to the list: nothing of what is gone is kept.
+      page.unmount();
+      expect(inCache(client, one)).toBeUndefined();
+      expect(client.getQueryData(one.key)).toBeUndefined();
+      // And nothing goes on watching for it.
+      expect(client.getQueryCache().hasListeners()).toBe(false);
+      await settled();
+      expect(detail.calls).toBe(1);
+    },
+  );
+
+  test.each(cases)("$what that nothing shows is dropped at once", async (one) => {
+    const detail = one.read();
+    const list = counted(one.list);
+    const client = appClient();
+    const app = elsewhere(client, one);
+    // Loaded before, by a page that is gone by now.
+    await one.load(client);
+    await waitFor(() => {
+      expect(app.result.current.list.isSuccess).toBe(true);
+    });
+    expect(inCache(client, one)).toBeDefined();
+
+    await act(async () => {
+      await app.result.current.change.mutateAsync(one.variables as never);
+    });
+    expect(inCache(client, one)).toBeUndefined();
+    expect(client.getQueryCache().hasListeners()).toBe(false);
+    await waitFor(() => {
+      expect(list.calls).toBe(2);
+    });
+    expect(detail.calls).toBe(1);
+  });
+
+  test("what two places show is dropped when the last of them goes", async () => {
+    const [one] = cases;
+    const detail = one.read();
+    const client = appClient();
+    const first = renderHook(() => one.useShown(), { wrapper: wrapperOf(client) });
+    const second = renderHook(() => one.useShown(), { wrapper: wrapperOf(client) });
+    const app = elsewhere(client, one);
+    await waitFor(() => {
+      expect(first.result.current.isSuccess && second.result.current.isSuccess).toBe(true);
+    });
+    await act(async () => {
+      await app.result.current.change.mutateAsync(one.variables as never);
+    });
+
+    first.unmount();
+    expect(inCache(client, one)?.state.data).toEqual(fixtures.teamDetails.growth);
+    expect(second.result.current.data).toEqual(fixtures.teamDetails.growth);
+    second.unmount();
+    expect(inCache(client, one)).toBeUndefined();
+    expect(client.getQueryCache().hasListeners()).toBe(false);
+    expect(detail.calls).toBe(1);
+  });
+
+  test("the watch for what is gone ends when the caches are cleared, as at the end of a session", async () => {
+    const [one] = cases;
+    one.read();
+    const client = appClient();
+    const page = renderHook(() => one.useShown(), { wrapper: wrapperOf(client) });
+    const app = elsewhere(client, one);
+    await waitFor(() => {
+      expect(page.result.current.isSuccess).toBe(true);
+    });
+    await act(async () => {
+      await app.result.current.change.mutateAsync(one.variables as never);
+    });
+    expect(inCache(client, one)).toBeDefined();
+
+    act(() => {
+      client.clear();
+    });
+    expect(inCache(client, one)).toBeUndefined();
+    expect(client.getQueryCache().hasListeners()).toBe(false);
   });
 });
 

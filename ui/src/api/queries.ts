@@ -226,9 +226,45 @@ export const useAuditLog = (page: AuditPageRequest = {}) => useQuery(auditLogOpt
 // -------------------------------------------------------------- mutations
 
 /**
+ * Drops what no longer exists, or is the caller's to see no more. It is not
+ * asked for again, and it is kept only as long as something shows it.
+ *
+ * What nothing shows is removed at once. What a page still shows is left as
+ * it is, and removed when the last that shows it has gone: removed under the
+ * page, it would be asked for again by the page's next render, and the page
+ * would show its skeleton and then "not found" on its way to the list.
+ *
+ * Returns what is left for now, which must not be asked for again either.
+ */
+function dropWhatIsGone(cache: QueryCache, gone: readonly QueryKey[]): ReadonlySet<Query> {
+  const shown = new Set<Query>();
+  for (const queryKey of gone) {
+    for (const query of cache.findAll({ queryKey })) {
+      if (query.getObserversCount() === 0) {
+        cache.remove(query);
+        continue;
+      }
+      shown.add(query);
+      const stop = cache.subscribe((event) => {
+        if (event.query !== query) return;
+        if (event.type === "removed") {
+          // Somebody else dropped it: the end of the session clears the caches.
+          stop();
+        } else if (event.type === "observerRemoved" && query.getObserversCount() === 0) {
+          stop();
+          cache.remove(query);
+        }
+      });
+    }
+  }
+  return shown;
+}
+
+/**
  * A mutation that, after it succeeded, marks what it affects as stale, so
  * that what is on the screen is fetched again. It does not wait for that.
- * `gone` is what no longer exists: it is dropped, not fetched again.
+ * `gone` is what no longer exists: it is dropped, not fetched again (see
+ * `dropWhatIsGone` for when).
  *
  * A mutation that failed changed nothing, and marks nothing as stale, but
  * for what its failure puts in doubt (`doubts`): that is fetched again.
@@ -245,8 +281,11 @@ function useApiMutation<TVariables, TData>(
     gcTime: 0,
     onSuccess: (_data, variables) => {
       const { stale, gone = [] } = affects(variables);
-      for (const queryKey of gone) client.removeQueries({ queryKey });
-      for (const queryKey of stale) void client.invalidateQueries({ queryKey });
+      const shown = dropWhatIsGone(client.getQueryCache(), gone);
+      for (const queryKey of stale) {
+        // A key of `stale` can be the area of what is gone: `["teams"]` has the team.
+        void client.invalidateQueries({ queryKey, predicate: (query) => !shown.has(query) });
+      }
     },
     onError: (error, variables) => {
       for (const queryKey of doubts(error, variables)) void client.invalidateQueries({ queryKey });
@@ -375,12 +414,11 @@ export const useRemoveTeamMember = () =>
   useApiMutation(
     ({ id, userId }: { id: number; userId: number; leaving?: boolean }) =>
       api.delete("/api/teams/{id}/members/{user_id}", { params: { id, user_id: userId } }),
-    // `leaving`: the caller removed themselves and sees the team no more. Its
-    // page still shows it then. Asked for again, the team would answer 404 to
-    // that page; dropped here, the page would ask for it. So the team is left
-    // as it is, and the page drops it when it has gone to the list.
-    ({ leaving = false }) => ({
-      stale: leaving ? [queryKeys.teams.list(), queryKeys.me(), audit] : membersChanged,
+    // `leaving`: the caller removed themselves and sees the team no more.
+    // Asked for again, it would answer 404: to the caller it is gone.
+    ({ id, leaving = false }) => ({
+      stale: membersChanged,
+      gone: leaving ? [queryKeys.teams.detail(id)] : [],
     }),
   );
 
