@@ -58,14 +58,20 @@ async function table(): Promise<HTMLElement> {
   return found;
 }
 
-/** The rows of the table, each as the texts of its cells. */
+/**
+ * The rows of the table, each as the texts of its cells. The table is found
+ * by its role and its name; its rows and cells by their elements, not by
+ * their roles. A query by role asks of every row and cell it finds whether it
+ * is hidden, up through everything around it, and this is called at every
+ * look of a `waitFor`, for a table of a hundred rows: on a busy machine a
+ * test then ran out of its time.
+ */
 function rows(): string[][] {
   const found = screen.queryByRole("table", { name: "Audit log" });
   if (found === null) return [];
-  return within(found)
-    .getAllByRole("row")
-    .slice(1)
-    .map((row) => within(row).getAllByRole("cell").map((cell) => cell.textContent));
+  return [...found.querySelectorAll("tbody tr")].map((row) =>
+    [...row.querySelectorAll("td")].map((cell) => cell.textContent),
+  );
 }
 
 /** The summaries that are listed, in their order. */
