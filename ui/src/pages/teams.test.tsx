@@ -11,6 +11,7 @@ import { gate, startGateway } from "@/test/gateway";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import {
   aCallFindsTheSessionEnded,
+  cached,
   clientThatKeepsDataFresh,
   counted,
   descriptionOf,
@@ -20,12 +21,14 @@ import {
   forbid,
   forgetToasts,
   href,
+  inside,
   installPointerCapture,
   NOT_FOUND,
   SESSION_ENDED,
   settle,
   shown,
   toasts,
+  watchTheDocument,
 } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
@@ -213,6 +216,20 @@ function watchTheWay(): { seen: () => string[] } {
       return [...seen].sort();
     },
   };
+}
+
+/**
+ * What shows of Platform, the team of the fixtures: its heading, a member,
+ * its controls. For `watchTheDocument`.
+ */
+function ofPlatform(scope: Element): string[] {
+  const found: string[] = [];
+  if (inside(scope, "h1").some((heading) => heading.textContent === platform.name)) {
+    found.push("the heading");
+  }
+  if (scope.textContent.includes(lena.email)) found.push("a member");
+  if (inside(scope, '[role="group"][aria-label="Actions"]').length > 0) found.push("the controls");
+  return found;
 }
 
 function meIs(me: fixtures.Me) {
@@ -656,6 +673,100 @@ describe("the page of a team", () => {
     expect(shown()).not.toContain(lena.email);
     expect(actions()).toEqual([]);
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("nothing of a team that is hidden when it is asked for again is kept", async () => {
+    const state = keeps(fixtures.teamDetails.platform);
+    const app = await detail(platform);
+    await table("Members");
+    const key = queryKeys.teams.detail(platform.id);
+    expect(app.queryClient.getQueryData(key)).toEqual(fixtures.teamDetails.platform);
+    expect(cached(app.queryClient)).toContain(lena.email);
+    state.hidden = true;
+    await act(async () => {
+      await app.queryClient.invalidateQueries({ queryKey: key });
+    });
+    expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
+    expect(app.queryClient.getQueryData(key)).toBeUndefined();
+    expect(cached(app.queryClient)).not.toContain(lena.email);
+  });
+
+  test.each([
+    [
+      "an error of the gateway",
+      () => refuse(errors.internal_error),
+      errors.internal_error.body.error.message,
+    ],
+    ["a gateway that cannot be reached", networkFailure, "Could not reach the gateway."],
+  ])(
+    "a team that was hidden does not come back when asking again fails with %s",
+    async (_, answer, message) => {
+      const state = keeps(fixtures.teamDetails.platform);
+      const app = await detail(platform);
+      await table("Members");
+      state.hidden = true;
+      const key = queryKeys.teams.detail(platform.id);
+      await act(async () => {
+        await app.queryClient.invalidateQueries({ queryKey: key });
+      });
+      expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
+      expect(state.reads).toBe(2);
+
+      // Asked for again, as the app does when the window gets the focus.
+      const way = watchTheDocument(ofPlatform);
+      const again = counted("get", "/api/teams/{id}", answer);
+      await act(async () => {
+        await app.queryClient.invalidateQueries({ queryKey: key });
+      });
+      expect(again.calls).toBe(1);
+      await settle();
+      // The failure is what shows, with Retry, and not what was loaded once.
+      expect(way.seen()).toEqual([]);
+      expect(await screen.findByRole("alert")).toHaveTextContent(message);
+      expect(button("Retry")).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: platform.name })).toBeNull();
+      expect(shown()).not.toContain(lena.email);
+      expect(actions()).toEqual([]);
+      expectOneMain();
+    },
+  );
+
+  test("a team that was hidden does not come back on a return to its page while the gateway cannot be reached", async () => {
+    const state = keeps(fixtures.teamDetails.platform);
+    const app = await detail(platform);
+    await table("Members");
+    state.hidden = true;
+    await act(async () => {
+      await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(platform.id) });
+    });
+    expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
+
+    // To the list, and back while nothing answers.
+    await userEvent.click(screen.getByRole("link", { name: "Teams" }));
+    await table("Teams");
+    expect(screen.queryByRole("link", { name: platform.name })).toBeNull();
+    const again = counted("get", "/api/teams/{id}", networkFailure);
+    const way = watchTheDocument(ofPlatform);
+    await act(async () => {
+      await app.router.navigate({ to: `/teams/${platform.id}` });
+    });
+    await waitFor(() => {
+      expect(again.calls).toBe(1);
+    });
+    await settle();
+    expect(href(app)).toBe(`/teams/${platform.id}`);
+    expect(way.seen()).toEqual([]);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach the gateway.");
+    expect(screen.queryByRole("heading", { name: platform.name })).toBeNull();
+    expect(shown()).not.toContain(lena.email);
+    expect(actions()).toEqual([]);
+  });
+
+  test("the watch of the team sees what shows of it", async () => {
+    const way = watchTheDocument(ofPlatform);
+    await detail(platform);
+    await table("Members");
+    expect(way.seen()).toEqual(["a member", "the controls", "the heading"]);
   });
 
   test("asking again that fails with something else keeps what is shown", async () => {

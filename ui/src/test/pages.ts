@@ -95,6 +95,40 @@ export function clientThatKeepsDataFresh(): QueryClient {
   return client;
 }
 
+/** The elements that the selector finds in `scope`, which may be one itself. */
+export function inside(scope: Element, selector: string): Element[] {
+  return [...(scope.matches(selector) ? [scope] : []), ...scope.querySelectorAll(selector)];
+}
+
+/**
+ * Watches what comes into the document from now on, until the test ends, also
+ * what is there only for a moment. `find` names what it finds of what the
+ * test looks for: it is given every element that was added, also one that is
+ * gone again by now, and the document as it is after every change.
+ */
+export function watchTheDocument(find: (scope: Element) => string[]): { seen: () => string[] } {
+  const seen = new Set<string>();
+  function look(node: Node): void {
+    if (!(node instanceof Element)) return;
+    for (const name of find(node)) seen.add(name);
+  }
+  function read(records: MutationRecord[]): void {
+    for (const record of records) record.addedNodes.forEach(look);
+    look(document.body);
+  }
+  const observer = new MutationObserver(read);
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  onTestFinished(() => {
+    observer.disconnect();
+  });
+  return {
+    seen: () => {
+      read(observer.takeRecords());
+      return [...seen].sort();
+    },
+  };
+}
+
 export interface Counted {
   calls: number;
   /** The bodies of the calls that had one. */
