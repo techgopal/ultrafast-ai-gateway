@@ -94,7 +94,6 @@ function Candidates({
       {...described}
       id={id}
       name={name}
-      aria-label="User"
       value={value}
       onValueChange={onChange}
     >
@@ -173,7 +172,7 @@ function AddForm({ team, put, onDone, onCancel, choice }: AddFormProps & { choic
       <form.Field name="user_id">
         {(field) =>
           choice !== undefined ? (
-            <Field label="User" name={field.name} error={failure.fieldError(field.name)}>
+            <Field group label="User" name={field.name} error={failure.fieldError(field.name)}>
               {(wiring) => (
                 <Candidates
                   choice={choice}

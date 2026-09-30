@@ -19,6 +19,7 @@ import {
   counted,
   descriptionOf,
   expectNoSecret,
+  expectLabelsNameControls,
   expectNotAvailable,
   expectOneRequestWhileTheDialogStays,
   expectOneH1,
@@ -477,6 +478,14 @@ describe("inviting", () => {
     expect(name).toHaveValue("x");
     expect(email).toHaveValue("not-an-email");
     expect(screen.queryByRole("dialog", { name: "Invite link" })).toBeNull();
+  });
+
+  test("the labels of the form name controls, and the group of roles is named once, by its field", async () => {
+    await list();
+    await table();
+    const dialog = await openInvite();
+    expect(within(dialog).getByRole("radiogroup", { name: "Role" })).toBeInTheDocument();
+    expectLabelsNameControls(dialog);
   });
 
   test("a dialog that is opened again is empty and shows no old error", async () => {
