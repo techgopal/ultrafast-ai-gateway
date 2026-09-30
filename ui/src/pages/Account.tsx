@@ -15,15 +15,15 @@ import { PASSWORD_POLICY, PASSWORDS_DIFFER, TOO_MANY_ATTEMPTS } from "@/componen
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
-import { ErrorState, messageOfError } from "@/components/ErrorState";
+import { messageOfError } from "@/components/ErrorState";
 import { ExpiryField } from "@/components/ExpiryField";
 import { Field } from "@/components/Field";
 import { applyApiError, onField, onStatus, submitOnce, useFormFailure } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { NameDialog } from "@/components/NameDialog";
-import { NotAvailableNote } from "@/components/NotAvailableNote";
 import { PageHeader } from "@/components/PageHeader";
+import { QueryProblem } from "@/components/QueryProblem";
 import { RoleBadge, TeamRoleBadge } from "@/components/RoleBadge";
 import { SecretDialog, useSecretOnce } from "@/components/SecretDialog";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -526,12 +526,11 @@ function Tokens() {
         {...(rowActions === undefined ? {} : { actions: rowActions })}
       />
     );
-  } else if (tokens.error instanceof ApiError && tokens.error.status === 403) {
-    // The rest of the page is the user's own whatever the tokens are.
-    content = <NotAvailableNote />;
   } else {
+    // The rest of the page is the user's own whatever the tokens are.
     content = (
-      <ErrorState
+      <QueryProblem
+        part
         error={tokens.error}
         onRetry={() => {
           void tokens.refetch();

@@ -7,6 +7,8 @@ import { errors, type GatewayError } from "@/test/errors";
 import { NOT_AVAILABLE, NOT_FOUND } from "@/test/pages";
 import { renderWithApp } from "@/test/render";
 
+const PART_NOT_AVAILABLE = "Not available to your account.";
+
 function errorOf(fixture: GatewayError): ApiError {
   return new ApiError(fixture.status, fixture.body.error.code, fixture.body.error.message);
 }
@@ -66,5 +68,65 @@ describe("query problem", () => {
   test("an answer of a session that is over shows nothing", async () => {
     await inPage(new SessionOverError(), { notFound: true });
     expect(screen.getByRole("main")).toBeEmptyDOMElement();
+  });
+});
+
+/** The problem of a part of a page: the page has its heading, the part its own. */
+function inPart(error: unknown, onRetry: () => void = () => undefined) {
+  return renderWithApp(
+    <main>
+      <h1>Account</h1>
+      <section aria-label="Access tokens">
+        <h2>Access tokens</h2>
+        <QueryProblem part error={error} onRetry={onRetry} />
+      </section>
+    </main>,
+  );
+}
+
+function headings(): string[] {
+  return screen.getAllByRole("heading").map((heading) => heading.textContent);
+}
+
+describe("query problem of a part of a page", () => {
+  test("a 403 is a note that the part is not available: no heading, no error, no Retry", async () => {
+    await inPart(errorOf(errors.forbidden));
+    const part = screen.getByRole("region", { name: "Access tokens" });
+    expect(part).toHaveTextContent(PART_NOT_AVAILABLE);
+    // The page and the part keep their headings: the note brings none, and is not the page's.
+    expect(headings()).toEqual(["Account", "Access tokens"]);
+    expect(screen.queryByText(NOT_AVAILABLE)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByText(errors.forbidden.body.error.message)).toBeNull();
+  });
+
+  test("a 500 is an error with Retry, and Retry asks again", async () => {
+    const retry = vi.fn();
+    await inPart(errorOf(errors.internal_error), retry);
+    expect(screen.getByRole("alert")).toHaveTextContent(errors.internal_error.body.error.message);
+    expect(headings()).toEqual(["Account", "Access tokens"]);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  test("a 404 is an error with Retry: a part is no page that could be not found", async () => {
+    await inPart(errorOf(errors.not_found));
+    expect(screen.getByRole("alert")).toHaveTextContent(errors.not_found.body.error.message);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(headings()).toEqual(["Account", "Access tokens"]);
+  });
+
+  test("a network error is an error with Retry", async () => {
+    await inPart(new NetworkError());
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not reach the gateway.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  test("an answer of a session that is over shows nothing", async () => {
+    await inPart(new SessionOverError());
+    const part = screen.getByRole("region", { name: "Access tokens" });
+    expect(part.textContent).toBe("Access tokens");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
