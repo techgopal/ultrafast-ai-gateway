@@ -1617,7 +1617,6 @@ describe("deleting a user", () => {
     expect(screen.queryByRole("link", { name: lena.name })).toBeNull();
   });
 
-
   test("who deletes a user sees neither of them when the window gets the focus on the way", async () => {
     startGateway({ signedIn: true });
     const read = counted("get", "/api/users/{id}", () => ok("get", "/api/users/{id}", 200, lena));
@@ -1667,6 +1666,7 @@ describe("deleting a user", () => {
       app.queryClient.getQueryCache().find({ queryKey: queryKeys.users.detail(lena.id) }),
     ).toBeUndefined();
   });
+
   test("delete is not offered on the own page", async () => {
     await detail(maya);
     await screen.findByRole("heading", { level: 1, name: maya.name });

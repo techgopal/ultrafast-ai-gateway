@@ -5,7 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import { errors } from "@/test/errors";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
-import { theBrowserIsOffline } from "@/test/pages";
+import { theBrowserIsOffline, theWindowGetsTheFocus } from "@/test/pages";
 import { renderWithApp } from "@/test/render";
 import { api, onUnauthenticated } from "./client";
 import { ApiError, NetworkError } from "./errors";
@@ -960,12 +960,6 @@ describe("what a mutation says is gone", () => {
   // must not take from the page what it shows: "not found" would show on the
   // way to the list.
   const answers404 = () => refuse(errors.not_found);
-
-  function theWindowGetsTheFocus(): void {
-    act(() => {
-      window.dispatchEvent(new Event("visibilitychange"));
-    });
-  }
 
   test.each(cases)(
     "$what that is still shown keeps what is shown when a read of it answers 404, and is dropped when the page goes",
