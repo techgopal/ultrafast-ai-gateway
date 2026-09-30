@@ -194,12 +194,29 @@ describe("dialogs and forms", () => {
   });
 });
 
+/** The files directly in `pages/` that are no tests, by their names without the extension. */
+function pageFiles(): string[] {
+  return allSources()
+    .filter((path) => /^pages\/[^/]+\.tsx?$/.test(path) && !path.includes(".test."))
+    .map((path) => path.replace(/^pages\//, "").replace(/\.tsx?$/, ""));
+}
+
 /**
  * The area of a page file: the list and the page of one thing are one area,
  * as `Teams` and `TeamDetail`, `Users` and `UserDetail`.
+ *
+ * A page that grew is split into files of the same folder. A file that holds
+ * a part of a page has the name of that page and then a name of its own,
+ * which begins with a capital letter: `KeysCreate` and `KeysFilters` are
+ * parts of `Keys`, `TeamDetailAddMember` is one of `TeamDetail`. A part is of
+ * the area of its page. `files` are the page files there are.
  */
-function areaOf(page: string): string {
-  return page.replace(/Detail$/, "").replace(/s$/, "");
+function areaOf(page: string, files: readonly string[] = pageFiles()): string {
+  const [whole = page] = files
+    .filter((other) => page.startsWith(other) && /^[A-Z]/.test(page.slice(other.length)))
+    // Of two pages it begins with, the longer one is its page.
+    .sort((a, b) => b.length - a.length);
+  return whole.replace(/Detail$/, "").replace(/s$/, "");
 }
 
 /**
@@ -262,6 +279,28 @@ describe("what depends on what", () => {
     expect(areaOf("Keys")).toBe(areaOf("KeyDetail"));
     expect(areaOf("Users")).not.toBe(areaOf("TeamDetail"));
     expect(areaOf("UserDetail")).not.toBe(areaOf("TeamDetail"));
+    // A part of a page is named after the page, and is of its area.
+    const files = ["Keys", "KeysCreate", "KeysFilters", "Teams", "TeamDetail", "TeamDetailAddMember"];
+    expect(areaOf("KeysCreate", files)).toBe(areaOf("Keys", files));
+    expect(areaOf("KeysFilters", files)).toBe(areaOf("KeysCreate", files));
+    expect(areaOf("TeamDetailAddMember", files)).toBe(areaOf("TeamDetail", files));
+    expect(areaOf("TeamDetailAddMember", files)).toBe(areaOf("Teams", files));
+    expect(areaOf("KeysCreate", files)).not.toBe(areaOf("TeamDetailAddMember", files));
+    // Only of a page that is there, and only when its own name follows with a capital letter.
+    expect(areaOf("KeysCreate", ["Teams", "KeysCreate"])).not.toBe(areaOf("Keys", ["Teams"]));
+    expect(areaOf("Keyseeker", files)).not.toBe(areaOf("Keys", files));
+    expect(areaOf("Keys.tsx", files)).not.toBe(areaOf("Keys", files));
+    expect(areaOf("Keys/Create", files)).not.toBe(areaOf("Keys", files));
+    expect(areaOf("keysCreate", files)).not.toBe(areaOf("Keys", files));
+    // Two pages whose names begin alike are no parts of each other.
+    expect(areaOf("NotFound", ["NotFound", "NotAvailable"])).not.toBe(
+      areaOf("NotAvailable", ["NotFound", "NotAvailable"]),
+    );
+    expect(areaOf("Users", ["User", "Users"])).toBe(areaOf("User", ["User", "Users"]));
+    // The files that are there are what the rule asks by default.
+    expect(pageFiles()).toContain("TeamDetail");
+    expect(pageFiles()).toContain("Keys");
+    expect(pageFiles().some((name) => name.includes("."))).toBe(false);
   });
 
   // The rule of the areas reads the files directly in `pages/`, and takes the
