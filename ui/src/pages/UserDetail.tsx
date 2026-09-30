@@ -28,13 +28,9 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  INVITE_LINK_DESCRIPTION,
-  INVITE_LINK_TITLE,
-  inviteUrl,
-  RoleBadge,
-  YouBadge,
-} from "@/pages/Users";
+import { YouBadge } from "@/components/YouBadge";
+import { idOf } from "@/lib/id";
+import { INVITE_LINK_DESCRIPTION, INVITE_LINK_TITLE, inviteUrl, RoleBadge } from "@/pages/Users";
 
 type User = components["schemas"]["UserView"];
 
@@ -65,13 +61,6 @@ export const DONE = {
   enable: "User enabled.",
   delete: "User deleted.",
 } as const;
-
-/** The id of the address, when it is a positive integer. */
-export function idOf(text: string): number | null {
-  if (!/^[1-9]\d{0,15}$/.test(text)) return null;
-  const id = Number(text);
-  return Number.isSafeInteger(id) ? id : null;
-}
 
 type Asking = "name" | "role" | "disable" | "enable" | "reinvite" | "delete";
 

@@ -42,9 +42,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Skeleton } from "@/components/ui/skeleton";
+import { YouBadge } from "@/components/YouBadge";
+import { idOf } from "@/lib/id";
 import { TeamNameDialog } from "@/pages/Teams";
-import { idOf } from "@/pages/UserDetail";
-import { YouBadge } from "@/pages/Users";
 
 type Team = components["schemas"]["TeamSummary"];
 type Member = components["schemas"]["MemberDetail"];
