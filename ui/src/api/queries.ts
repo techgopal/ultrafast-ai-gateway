@@ -148,6 +148,15 @@ export function createQueryClient(settings: QueryClientSettings = {}): QueryClie
       queries: {
         retry: settings.retry ?? retryQuery,
         ...(settings.retryDelay === undefined ? {} : { retryDelay: settings.retryDelay }),
+        // A query is asked whatever the browser says about the network, as a
+        // mutation is sent. The gateway can be on the same machine, where the
+        // browser's "offline" says nothing about it; held back, the app would
+        // say "Loading" until the browser changed its mind. Asked at once, an
+        // unreachable gateway is the error that every page shows, with Retry.
+        networkMode: "always",
+        // What is shown is still read again when the browser says the
+        // network is back. (With "always" the library would no longer do it.)
+        refetchOnReconnect: true,
       },
       mutations: {
         retry: false,
