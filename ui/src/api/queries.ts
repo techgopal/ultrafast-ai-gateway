@@ -106,6 +106,13 @@ function isNotFound(error: unknown): boolean {
 }
 
 /**
+ * The queries that a mutation said are gone while a page still showed them:
+ * see `dropWhatIsGone`. It holds the query, not its key: a query that is
+ * made later for the same key, by a return to the page, is not among them.
+ */
+const goneButShown = new WeakSet<object>();
+
+/**
  * A detail that answers 404 when it is asked for again is gone, or hidden
  * from the caller. What was loaded of it before is dropped: who shows it has
  * the 404 and no data then, and says "not found"; a failure of another kind
@@ -115,10 +122,17 @@ function isNotFound(error: unknown): boolean {
  * Only for details. A 404 of `setup`, of `me` or of a list does not mean
  * this, and the app goes on with what it has of them. Every other failure of
  * a detail keeps what is shown.
+ *
+ * And not for what a mutation said is gone while its page still shows it.
+ * That page is on its way to another one. A read of it in that time, by the
+ * window getting the focus, by the network coming back or one that was on
+ * its way already, answers 404: dropping the data then would show "not
+ * found" for a moment before the page that follows. The query is dropped
+ * when the page has gone.
  */
 function forgetWhatIsHidden(error: unknown, query: Query<unknown, unknown>): void {
   if (!isNotFound(error) || !isDetailKey(query.queryKey)) return;
-  if (query.state.data === undefined) return;
+  if (query.state.data === undefined || goneButShown.has(query)) return;
   query.setState({ data: undefined, dataUpdatedAt: 0 });
 }
 
@@ -232,7 +246,13 @@ export const useAuditLog = (page: AuditPageRequest = {}) => useQuery(auditLogOpt
  * What nothing shows is removed at once. What a page still shows is left as
  * it is, and removed when the last that shows it has gone: removed under the
  * page, it would be asked for again by the page's next render, and the page
- * would show its skeleton and then "not found" on its way to the list.
+ * would show its skeleton and then "not found" on its way to the list. Until
+ * then a 404 of it changes nothing either (`goneButShown`).
+ *
+ * So `gone` is for a page that leaves. Who says `gone` for what a page shows
+ * must take the user away from that page at once: as long as the page stays,
+ * it goes on showing what no longer exists, and nothing corrects it. For a
+ * page that stays, say `stale`.
  *
  * Returns what is left for now, which must not be asked for again either.
  */
@@ -245,6 +265,7 @@ function dropWhatIsGone(cache: QueryCache, gone: readonly QueryKey[]): ReadonlyS
         continue;
       }
       shown.add(query);
+      goneButShown.add(query);
       const stop = cache.subscribe((event) => {
         if (event.query !== query) return;
         if (event.type === "removed") {

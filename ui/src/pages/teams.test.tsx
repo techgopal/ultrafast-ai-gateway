@@ -13,6 +13,7 @@ import { gate, startGateway } from "@/test/gateway";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import {
   aCallFindsTheSessionEnded,
+  aWayThatIsHeld,
   cached,
   clientThatKeepsDataFresh,
   counted,
@@ -29,6 +30,7 @@ import {
   SESSION_ENDED,
   settle,
   shown,
+  theWindowGetsTheFocus,
   toasts,
   watchTheDocument,
   watchTheWayFrom,
@@ -1473,6 +1475,49 @@ describe("removing a member", () => {
     expect(href(app)).toBe("/teams");
   });
 
+  test("a lead who leaves sees neither of them when the window gets the focus on the way", async () => {
+    startGateway({ signedIn: true, me: fixtures.me.arjun });
+    const state = keeps(fixtures.teamDetails.platform);
+    const way = aWayThatIsHeld(`/teams/${platform.id}`);
+    const app = await renderWithApp(null, { history: way.history });
+    const dialog = await askOf(arjun, "Remove");
+    // Afterwards the gateway hides the team from them.
+    override("delete", "/api/teams/{id}/members/{user_id}", () => {
+      state.hidden = true;
+      return noContent();
+    });
+    expect(state.reads).toBe(1);
+
+    const watch = watchTheWay();
+    await confirm(dialog, "Remove");
+    await waitFor(() => {
+      expect(way.pushes()).toBe(1);
+    });
+    // They left, and are still on the page of the team. They come back to the tab.
+    theWindowGetsTheFocus();
+    await waitFor(() => {
+      expect(state.reads).toBe(2);
+    });
+    await settle(60);
+    // The read answered 404, and the page shows what it showed.
+    expect(watch.seen()).toEqual([]);
+    expect(href(app)).toBe(`/teams/${platform.id}`);
+    expect(
+      screen.getByRole("heading", { level: 1, name: platform.name, hidden: true }),
+    ).toBeInTheDocument();
+
+    way.open();
+    await waitFor(() => {
+      expect(href(app)).toBe("/teams");
+    });
+    await table("Teams");
+    await settle(60);
+    expect(watch.seen()).toEqual([]);
+    expect(
+      app.queryClient.getQueryCache().find({ queryKey: queryKeys.teams.detail(platform.id) }),
+    ).toBeUndefined();
+  });
+
   test("an admin who removes themselves keeps the team and stays on the page", async () => {
     const state = keeps(platformWithMaya);
     const me = meIs(mayaInPlatform);
@@ -1609,6 +1654,110 @@ describe("deleting a team", () => {
     ).toBeUndefined();
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(screen.queryByRole("link", { name: platform.name })).toBeNull();
+  });
+
+  test("who deletes a team sees neither of them when the window gets the focus on the way", async () => {
+    startGateway({ signedIn: true, me: mayaInPlatform });
+    const state = keeps(platformWithMaya);
+    const way = aWayThatIsHeld(`/teams/${platform.id}`);
+    const app = await renderWithApp(null, { history: way.history });
+    const dialog = await ask("Delete", "Delete this team?");
+    override("delete", "/api/teams/{id}", () => {
+      state.hidden = true;
+      return noContent();
+    });
+    expect(state.reads).toBe(1);
+
+    const watch = watchTheWay();
+    await confirm(dialog, "Delete");
+    await waitFor(() => {
+      expect(way.pushes()).toBe(1);
+    });
+    // The team is deleted, and its page is still shown. The user comes back to the tab.
+    theWindowGetsTheFocus();
+    await waitFor(() => {
+      expect(state.reads).toBe(2);
+    });
+    await settle(60);
+    // The read answered 404, and the page shows what it showed.
+    expect(watch.seen()).toEqual([]);
+    expect(href(app)).toBe(`/teams/${platform.id}`);
+    expect(
+      screen.getByRole("heading", { level: 1, name: platform.name, hidden: true }),
+    ).toBeInTheDocument();
+
+    way.open();
+    await waitFor(() => {
+      expect(href(app)).toBe("/teams");
+    });
+    await table("Teams");
+    await waitFor(() => {
+      expect(toasts()).toEqual(["Team deleted."]);
+    });
+    await settle(60);
+    expect(watch.seen()).toEqual([]);
+    expect(
+      app.queryClient.getQueryCache().find({ queryKey: queryKeys.teams.detail(platform.id) }),
+    ).toBeUndefined();
+    expect(screen.queryByRole("link", { name: platform.name })).toBeNull();
+  });
+
+  test("who deletes a team sees neither of them when a read that was on its way answers 404 afterwards", async () => {
+    startGateway({ signedIn: true, me: mayaInPlatform });
+    const state = keeps(platformWithMaya);
+    const way = aWayThatIsHeld(`/teams/${platform.id}`);
+    const app = await renderWithApp(null, { history: way.history });
+    const dialog = await ask("Delete", "Delete this team?");
+
+    // A read of the team is on its way, and is answered after the delete.
+    const answer = gate();
+    const onItsWay = counted("get", "/api/teams/{id}", async () => {
+      await answer.opened;
+      return refuse(errors.not_found);
+    });
+    act(() => {
+      void app.queryClient.refetchQueries({ queryKey: queryKeys.teams.detail(platform.id) });
+    });
+    await waitFor(() => {
+      expect(onItsWay.calls).toBe(1);
+    });
+    override("delete", "/api/teams/{id}", () => {
+      state.hidden = true;
+      return noContent();
+    });
+
+    const watch = watchTheWay();
+    await confirm(dialog, "Delete");
+    await waitFor(() => {
+      expect(way.pushes()).toBe(1);
+    });
+    act(() => {
+      answer.open();
+    });
+    await waitFor(() => {
+      expect(
+        app.queryClient.getQueryState(queryKeys.teams.detail(platform.id))?.error,
+      ).toMatchObject({ status: 404 });
+    });
+    await settle(60);
+    expect(watch.seen()).toEqual([]);
+    expect(href(app)).toBe(`/teams/${platform.id}`);
+    expect(
+      screen.getByRole("heading", { level: 1, name: platform.name, hidden: true }),
+    ).toBeInTheDocument();
+    // The delete asked for nothing of the team.
+    expect(onItsWay.calls).toBe(1);
+
+    way.open();
+    await waitFor(() => {
+      expect(href(app)).toBe("/teams");
+    });
+    await table("Teams");
+    await settle(60);
+    expect(watch.seen()).toEqual([]);
+    expect(
+      app.queryClient.getQueryCache().find({ queryKey: queryKeys.teams.detail(platform.id) }),
+    ).toBeUndefined();
   });
 
   test("a refusal stays in the dialog", async () => {

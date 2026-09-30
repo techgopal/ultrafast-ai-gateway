@@ -2,12 +2,14 @@
 // scans for a secret, and the counting of calls.
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
+import { createMemoryHistory, type RouterHistory } from "@tanstack/react-router";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { expect, onTestFinished, vi } from "vitest";
 import { api, type Method, type PathFor } from "@/api/client";
 import { createQueryClient } from "@/api/queries";
 import { errors } from "./errors";
+import { gate } from "./gateway";
 import { override, refuse, type Call } from "./handlers";
 import { unauthenticated, type AppRenderResult } from "./render";
 
@@ -143,6 +145,48 @@ export function watchTheWayFrom(loading: string): { seen: () => string[] } {
       found.push(NOT_FOUND);
     }
     return found;
+  });
+}
+
+/**
+ * A history, for `renderWithApp`, whose way from the page at `route` to the
+ * next is held: what the app pushes is pushed when `open` is called. So a
+ * test can let happen, and look at, what falls between the success of a
+ * change and the page that follows it. `pushes` counts what the app pushed.
+ */
+export function aWayThatIsHeld(route: string): {
+  history: RouterHistory;
+  pushes: () => number;
+  open: () => void;
+} {
+  const door = gate();
+  const history = createMemoryHistory({ initialEntries: [route] });
+  const push = history.push.bind(history);
+  const pushed = vi.spyOn(history, "push").mockImplementation((...to) => {
+    void door.opened.then(() => {
+      push(...to);
+    });
+  });
+  return {
+    history,
+    pushes: () => pushed.mock.calls.length,
+    open: () => {
+      act(() => {
+        door.open();
+      });
+    },
+  };
+}
+
+/**
+ * The window gets the focus, as when the user comes back to the tab: the
+ * query library then reads again what is shown and stale. Call it inside a
+ * test, never in an `afterEach`: there it would start reads while the app is
+ * taken down.
+ */
+export function theWindowGetsTheFocus(): void {
+  act(() => {
+    window.dispatchEvent(new Event("visibilitychange"));
   });
 }
 
