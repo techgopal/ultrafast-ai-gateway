@@ -274,7 +274,7 @@ describe("the list of keys", () => {
       expect(listed()).toHaveLength(4);
     });
 
-    test("the status narrows, and revoked is a choice only while revoked keys are shown", async () => {
+    test("the status narrows", async () => {
       await page();
       await table();
       expect(await optionsOf(filter("Status"))).toEqual([
@@ -287,8 +287,13 @@ describe("the list of keys", () => {
       expect(listed()).toEqual([active.name, noOwner.name]);
       await choose(filter("Status"), "expired");
       expect(listed()).toEqual([expired.name]);
-
       await choose(filter("Status"), "All statuses");
+      expect(listed()).toHaveLength(4);
+    });
+
+    test("revoked is a choice only while revoked keys are shown", async () => {
+      await page();
+      await table();
       await userEvent.click(showRevoked());
       expect(await optionsOf(filter("Status"))).toEqual([
         "All statuses",
@@ -623,43 +628,61 @@ describe("creating a key", () => {
     expect(state.created).toEqual([{ name: "lena-ci", owner_id: lena.id, team_id: platform.id }]);
   });
 
-  test("team choices follow the owner", async () => {
-    const state = keeps();
-    await page();
-    const dialog = await openCreate();
-    // An admin chooses among the active users: not Sam, who is invited, nor Dana, who is disabled.
-    expect(field(dialog, "Owner")).toHaveTextContent(person(maya));
-    expect(await optionsOf(field(dialog, "Owner"))).toEqual(
-      [maya, arjun, lena, priya, tomas].map(person),
-    );
-    for (const user of [sam, dana]) {
-      expect(fixtures.userList).toContain(user);
-    }
-    // Maya is in no team.
-    expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
+  // One row of the brief, in four tests: each opens the dialog and makes a
+  // few choices, so that none of them is long on a busy machine.
+  describe("team choices follow the owner", () => {
+    test("an admin chooses among the active users, and starts as the owner", async () => {
+      await page();
+      const dialog = await openCreate();
+      // Not Sam, who is invited, nor Dana, who is disabled.
+      expect(field(dialog, "Owner")).toHaveTextContent(person(maya));
+      expect(await optionsOf(field(dialog, "Owner"))).toEqual(
+        [maya, arjun, lena, priya, tomas].map(person),
+      );
+      for (const user of [sam, dana]) {
+        expect(fixtures.userList).toContain(user);
+      }
+      // Maya is in no team.
+      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
+    });
 
-    await choose(field(dialog, "Owner"), person(arjun));
-    expect(field(dialog, "Team")).toHaveTextContent("No team");
-    expect(await optionsOf(field(dialog, "Team"))).toEqual([
-      "No team",
-      platform.name,
-      research.name,
-    ]);
-    await choose(field(dialog, "Team"), platform.name);
-    expect(field(dialog, "Team")).toHaveTextContent(platform.name);
+    test("the teams are those of the owner, and none", async () => {
+      await page();
+      const dialog = await openCreate();
+      await choose(field(dialog, "Owner"), person(arjun));
+      expect(field(dialog, "Team")).toHaveTextContent("No team");
+      expect(await optionsOf(field(dialog, "Team"))).toEqual([
+        "No team",
+        platform.name,
+        research.name,
+      ]);
+      await choose(field(dialog, "Team"), platform.name);
+      expect(field(dialog, "Team")).toHaveTextContent(platform.name);
+    });
 
-    // Another owner: the team is none again, and the choices are theirs.
-    await choose(field(dialog, "Owner"), person(tomas));
-    expect(field(dialog, "Team")).toHaveTextContent("No team");
-    expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
+    test("another owner: the team is none again, and the choices are theirs", async () => {
+      await page();
+      const dialog = await openCreate();
+      await choose(field(dialog, "Owner"), person(arjun));
+      await choose(field(dialog, "Team"), platform.name);
+      await choose(field(dialog, "Owner"), person(tomas));
+      expect(field(dialog, "Team")).toHaveTextContent("No team");
+      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
+    });
 
-    await choose(field(dialog, "Team"), research.name);
-    await named(dialog, "tomas-notebook");
-    await send(dialog);
-    await secretDialog();
-    expect(state.created).toEqual([
-      { name: "tomas-notebook", owner_id: tomas.id, team_id: research.id },
-    ]);
+    test("the owner and the team that are chosen are sent", async () => {
+      const state = keeps();
+      await page();
+      const dialog = await openCreate();
+      await choose(field(dialog, "Owner"), person(tomas));
+      await choose(field(dialog, "Team"), research.name);
+      await named(dialog, "tomas-notebook");
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([
+        { name: "tomas-notebook", owner_id: tomas.id, team_id: research.id },
+      ]);
+    });
   });
 
   test("an admin creates a key for another user without a team", async () => {

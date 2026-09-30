@@ -1286,7 +1286,7 @@ describe("editing a provider", () => {
     const dialog = await openEdit(withCredential);
     const url = within(dialog).getByLabelText("Base URL");
     await userEvent.clear(url);
-    await userEvent.type(url, `${OTHER_URL}?x=1`);
+    await enter(url, `${OTHER_URL}?x=1`);
     await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
     const key = within(dialog).getByLabelText("New API key");
     await enter(key, API_KEY);
@@ -1302,7 +1302,8 @@ describe("editing a provider", () => {
 
     // The address is corrected, and the form is sent with Enter.
     await userEvent.clear(url);
-    await userEvent.type(url, `${OTHER_URL}{Enter}`);
+    await enter(url, OTHER_URL);
+    await userEvent.keyboard("{Enter}");
     await closed();
     expect(state.patched.map((patch) => patch.body)).toEqual([
       { base_url: `${OTHER_URL}?x=1`, api_key: API_KEY },
@@ -1345,6 +1346,35 @@ describe("editing a provider", () => {
       expectNoKey(app);
       await mutationsAreForgotten(app);
       await expectEmptyAgain(app);
+    });
+
+    test.each([
+      ["Keep the current key", { base_url: OTHER_URL }],
+      ["Remove the key", { base_url: OTHER_URL, api_key: null }],
+    ])("when the choice changes from Replace to %s", async (choice, sent) => {
+      const state = keeps();
+      const app = await page();
+      const dialog = await openEdit(withCredential);
+      await typed(dialog);
+      await userEvent.click(within(dialog).getByRole("radio", { name: choice }));
+      // The field went, and the key with it: it is not kept behind the other choice.
+      expect(within(dialog).queryByLabelText("New API key")).toBeNull();
+      expectNoKey(app);
+      // Back at Replace, the field is empty.
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+      expect(within(dialog).getByLabelText("New API key")).toHaveValue("");
+      expectNoKey(app);
+
+      // And what is sent with the other choice has no key.
+      await userEvent.click(within(dialog).getByRole("radio", { name: choice }));
+      const url = within(dialog).getByLabelText("Base URL");
+      await userEvent.clear(url);
+      await enter(url, OTHER_URL);
+      await save(dialog);
+      await closed();
+      expect(state.patched.map((patch) => patch.body)).toEqual([sent]);
+      expect(JSON.stringify(state.patched)).not.toContain(API_KEY);
+      expectNoKey(app);
     });
 
     test.each(waysOut)("after %s", async (_, leave) => {
@@ -1426,7 +1456,7 @@ describe("editing a provider", () => {
     const dialog = await openEdit(withCredential);
     const url = within(dialog).getByLabelText("Base URL");
     await userEvent.clear(url);
-    await userEvent.type(url, OTHER_URL);
+    await enter(url, OTHER_URL);
     await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
     await enter(within(dialog).getByLabelText("New API key"), API_KEY);
     await save(dialog);
