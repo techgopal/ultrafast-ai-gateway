@@ -6,7 +6,7 @@ import { describe, expect, test, vi } from "vitest";
 import { api } from "@/api/client";
 import { Field } from "@/components/Field";
 import { ApiError, ConsoleRefusal, NetworkError, SessionOverError } from "@/api/errors";
-import { applyApiError, onField, onStatus, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, onField, onStatus, useFormFailure, useSubmit } from "@/components/form";
 import { FormError } from "@/components/FormError";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -594,7 +594,7 @@ describe("applyApiError", () => {
   });
 });
 
-/** A form that is sent with `submitOnce`, by the real client. */
+/** A form that is sent with `useSubmit`, by the real client. */
 function TeamForm() {
   const form = useForm({
     defaultValues: { name: "" },
@@ -609,9 +609,10 @@ function TeamForm() {
   const formRef = useRef<HTMLFormElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
+  const onSubmit = useSubmit(form);
   return (
     <main>
-      <form ref={formRef} aria-label="New team" noValidate onSubmit={submitOnce(form)}>
+      <form ref={formRef} aria-label="New team" noValidate onSubmit={onSubmit}>
         <FormError ref={errorRef} messages={failure.messages} />
         <form.Field name="name">
           {(field) => (
@@ -631,7 +632,7 @@ function TeamForm() {
   );
 }
 
-describe("submitOnce", () => {
+describe("useSubmit", () => {
   /** The form, filled, and its request, whose answer is held. */
   async function filled(answer: () => Response) {
     const door = gate();

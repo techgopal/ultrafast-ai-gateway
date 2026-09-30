@@ -5,7 +5,7 @@ import { useRef, useState } from "react";
 import { describe, expect, test } from "vitest";
 import { useCreateTeam } from "@/api/queries";
 import { Field } from "@/components/Field";
-import { applyApiError, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Button } from "@/components/ui/button";
@@ -18,8 +18,11 @@ import {
   besideTheDialog,
   counted,
   expectOneRequestWhileTheDialogStays,
+  expectTheDialogCanBeLeft,
   expectTheDialogStays,
   held,
+  LEAVE_AT_ONCE,
+  sendAndLeaveAtOnce,
   sendTwiceAtOnce,
   settle,
 } from "@/test/pages";
@@ -52,8 +55,9 @@ function TeamForm({ create, ready, onDone, onCancel }: TeamFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
+  const onSubmit = useSubmit(form);
   return (
-    <form ref={formRef} aria-label="New team" noValidate onSubmit={submitOnce(form)}>
+    <form ref={formRef} aria-label="New team" noValidate onSubmit={onSubmit}>
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">
         {(field) => (
@@ -220,6 +224,59 @@ describe("form dialog", () => {
     expect(name).toHaveValue("Growth");
     expect(posts.calls).toBe(1);
     expect(count("Left")).toBe("0");
+
+    act(() => {
+      door.open();
+    });
+    await closed();
+    await settle();
+    expect(posts.calls).toBe(1);
+    expect([count("Left"), count("Done")]).toEqual(["0", "1"]);
+  });
+
+  // The pending state of the mutation comes with a render, some time after
+  // the submit. From the submit on, not from that render, the dialog stays.
+  test.each(Object.keys(LEAVE_AT_ONCE) as (keyof typeof LEAVE_AT_ONCE)[])(
+    "%s in the tick of the submit does not leave it: it stays while the request runs; one request",
+    async (way) => {
+      const request = held("post", "/api/teams");
+      await renderWithApp(<Teams />);
+      const dialog = await openDialog();
+      const name = within(dialog).getByLabelText("Name");
+      await userEvent.type(name, "Growth");
+      sendAndLeaveAtOnce(dialog, way);
+      await settle();
+      expect(screen.queryByRole("dialog")).toBe(dialog);
+      expect(count("Left")).toBe("0");
+      expect(await within(dialog).findByRole("button", { name: "Creating the team" })).toBeDisabled();
+      expect(name).toHaveValue("Growth");
+      expect(request.calls).toBe(1);
+
+      // The refusal is said in the dialog, which can be left from then on.
+      request.answer();
+      expect(await within(dialog).findByText(errors.forbidden.body.error.message)).toBeInTheDocument();
+      await expectTheDialogCanBeLeft(dialog);
+      expect(request.calls).toBe(1);
+      expect([count("Left"), count("Done")]).toEqual(["1", "0"]);
+    },
+  );
+
+  test("Enter and Escape typed with no wait between them: it stays, one request, and the answer closes it", async () => {
+    const door = gate();
+    const posts = counted("post", "/api/teams", async () => {
+      await door.opened;
+      return ok("post", "/api/teams", 201, fixtures.teams.growth);
+    });
+    await renderWithApp(<Teams />);
+    const dialog = await openDialog();
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.type(name, "Growth");
+    await userEvent.type(name, "{Enter}{Escape}", { delay: null });
+    await settle();
+    expect(screen.queryByRole("dialog")).toBe(dialog);
+    expect(await within(dialog).findByRole("button", { name: "Creating the team" })).toBeDisabled();
+    expect(count("Left")).toBe("0");
+    expect(posts.calls).toBe(1);
 
     act(() => {
       door.open();

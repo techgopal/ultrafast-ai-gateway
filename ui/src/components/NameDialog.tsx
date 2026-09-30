@@ -2,7 +2,7 @@ import { useForm } from "@tanstack/react-form";
 import { useRef } from "react";
 import type { useUpdateUser } from "@/api/queries";
 import { Field } from "@/components/Field";
-import { applyApiError, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Input } from "@/components/ui/input";
@@ -33,6 +33,7 @@ function NameForm({ user, update, onDone, onCancel }: NameFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
+  const onSubmit = useSubmit(form);
 
   return (
     <form
@@ -40,7 +41,7 @@ function NameForm({ user, update, onDone, onCancel }: NameFormProps) {
       aria-label="Edit name"
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={submitOnce(form)}
+      onSubmit={onSubmit}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">

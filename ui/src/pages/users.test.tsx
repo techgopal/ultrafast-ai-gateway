@@ -24,6 +24,7 @@ import {
   expectOneH1,
   expectOneMain,
   expectSessionEndsOnPage,
+  expectTheDialogCanBeLeft,
   forbid,
   forgetToasts,
   held,
@@ -31,6 +32,7 @@ import {
   inside,
   installPointerCapture,
   NOT_FOUND,
+  sendAndLeaveAtOnce,
   SESSION_ENDED,
   settle,
   shown,
@@ -636,6 +638,52 @@ describe("while a request runs", () => {
     ]);
     // Nothing was made, so there is no link to show.
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(toasts()).toEqual([]);
+  });
+
+  test("the invite dialog: Enter and Escape pressed with no wait between them leave it open; one request, and the link is shown", async () => {
+    const door = gate();
+    const invited = counted("post", "/api/users", async () => {
+      await door.opened;
+      return ok("post", "/api/users", 201, { user: sam, invite_link: fixtures.newInviteLink });
+    });
+    await list();
+    await table();
+    const dialog = await openInvite();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Sam Carter");
+    const email = within(dialog).getByLabelText("Email");
+    await userEvent.type(email, "sam@example.test");
+    await userEvent.type(email, "{Enter}{Escape}", { delay: null });
+    await settle();
+    expect(screen.queryByRole("dialog")).toBe(dialog);
+    expect(await within(dialog).findByRole("button", { name: "Creating the link" })).toBeDisabled();
+    expect(invited.calls).toBe(1);
+
+    act(() => {
+      door.open();
+    });
+    const secret = await screen.findByRole("dialog", { name: "Invite link" });
+    expect(within(secret).getByLabelText("Invite link")).toHaveValue(LINK);
+    expect(invited.calls).toBe(1);
+  });
+
+  test("the invite dialog: a submit and Cancel in one tick leave it open; the refusal is said in it; one request", async () => {
+    const request = held("post", "/api/users");
+    await list();
+    await table();
+    const dialog = await openInvite();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "Sam Carter");
+    await userEvent.type(within(dialog).getByLabelText("Email"), "sam@example.test");
+    sendAndLeaveAtOnce(dialog, "Cancel");
+    await settle();
+    expect(screen.queryByRole("dialog")).toBe(dialog);
+    expect(await within(dialog).findByRole("button", { name: "Creating the link" })).toBeDisabled();
+    expect(request.calls).toBe(1);
+
+    request.answer();
+    expect(await within(dialog).findByText(errors.forbidden.body.error.message)).toBeInTheDocument();
+    await expectTheDialogCanBeLeft(dialog);
+    expect(request.calls).toBe(1);
     expect(toasts()).toEqual([]);
   });
 

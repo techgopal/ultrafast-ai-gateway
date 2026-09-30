@@ -8,7 +8,7 @@ import { useSession } from "@/auth/session";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
-import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, onField, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { PageHeader } from "@/components/PageHeader";
@@ -64,6 +64,7 @@ function TeamNameForm({
   const formRef = useRef<HTMLFormElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
+  const onSubmit = useSubmit(form);
 
   return (
     <form
@@ -71,7 +72,7 @@ function TeamNameForm({
       aria-label={label}
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={submitOnce(form)}
+      onSubmit={onSubmit}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">
