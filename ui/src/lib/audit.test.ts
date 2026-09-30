@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import * as fixtures from "@/test/fixtures";
-import { entriesMatching } from "./audit";
+import { entriesMatching, isFilter } from "./audit";
 
 const all = fixtures.auditEntries;
 
@@ -9,6 +9,18 @@ function ids(text: string): number[] {
 }
 
 describe("the filter of the audit log", () => {
+  test("a text is a filter when it is more than blanks: what leaves nothing out is none", () => {
+    expect(isFilter("")).toBe(false);
+    expect(isFilter("   ")).toBe(false);
+    expect(isFilter("\t\n")).toBe(false);
+    expect(isFilter("a")).toBe(true);
+    expect(isFilter(" key ")).toBe(true);
+    // It is said of the same texts that `entriesMatching` leaves nothing out for.
+    for (const text of ["", "  ", "lena@", " no such thing "]) {
+      expect(isFilter(text) || entriesMatching(all, text).length === all.length, text).toBe(true);
+    }
+  });
+
   test("no text leaves nothing out, and keeps the order", () => {
     expect(ids("")).toEqual([5, 4, 3, 2, 1]);
     expect(ids("   ")).toEqual([5, 4, 3, 2, 1]);

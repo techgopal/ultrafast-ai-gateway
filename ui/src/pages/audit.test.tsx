@@ -8,6 +8,7 @@ import { gate, startGateway } from "@/test/gateway";
 import { networkFailure, ok, override, refuse } from "@/test/handlers";
 import {
   counted,
+  descriptionOf,
   expectNotAvailable,
   expectOneMain,
   expectSessionEndsOnPage,
@@ -15,12 +16,16 @@ import {
   forgetToasts,
   settle,
   shown,
+  theBrowserIsOffline,
+  theWindowGetsTheFocus,
   toasts,
 } from "@/test/pages";
 import { renderWithApp, type AppRenderResult } from "@/test/render";
 
 const PAGE = 50;
 const LOAD_OLDER = "Load older";
+const REFRESH = "Refresh";
+const LOADED_ONLY = "Filtering the loaded entries only. Load older to look further.";
 
 afterEach(forgetToasts);
 
@@ -92,6 +97,23 @@ function loadOlder(): HTMLElement | null {
 
 function filter(): HTMLElement {
   return screen.getByRole("searchbox", { name: "Filter" });
+}
+
+function refresh(): HTMLElement | null {
+  return screen.queryByRole("button", { name: REFRESH });
+}
+
+/** Presses "Load older" and waits for this many rows. */
+async function older(count: number): Promise<void> {
+  await userEvent.click(screen.getByRole("button", { name: LOAD_OLDER }));
+  await waitFor(() => {
+    expect(rows()).toHaveLength(count);
+  });
+}
+
+/** Counts how often the app asks who is signed in: it does when it reads again what is stale. */
+function whoIsSignedIn() {
+  return counted("get", "/api/auth/me", () => ok("get", "/api/auth/me", 200, fixtures.me.maya));
 }
 
 describe("the audit log", () => {
@@ -313,6 +335,164 @@ describe("the audit log", () => {
     expect(loadOlder()).toBeInTheDocument();
   });
 
+  test("the window gets the focus with three pages loaded: the log is not read again", async () => {
+    const me = whoIsSignedIn();
+    const log = logIs(fixtures.auditEntriesFrom(120, 120));
+    await page();
+    await table();
+    await older(100);
+    await older(120);
+    expect(log.asked).toHaveLength(3);
+    const asked = me.calls;
+
+    theWindowGetsTheFocus();
+    // The focus was heard: what is read again at a focus was.
+    await waitFor(() => {
+      expect(me.calls).toBe(asked + 1);
+    });
+    await settle();
+    expect(log.asked).toHaveLength(3);
+    expect(rows()).toHaveLength(120);
+  });
+
+  test("the network comes back with three pages loaded: the log is not read again", async () => {
+    const me = whoIsSignedIn();
+    const log = logIs(fixtures.auditEntriesFrom(120, 120));
+    await page();
+    await table();
+    await older(100);
+    await older(120);
+    const asked = me.calls;
+
+    theBrowserIsOffline().back();
+    await waitFor(() => {
+      expect(me.calls).toBe(asked + 1);
+    });
+    await settle();
+    expect(log.asked).toHaveLength(3);
+    expect(rows()).toHaveLength(120);
+  });
+
+  test("Refresh starts again from the newest page: one request, the older pages are dropped, the filter stays", async () => {
+    const log = logIs(fixtures.auditEntriesFrom(120, 120));
+    await page();
+    await table();
+    await older(100);
+    await older(120);
+    await userEvent.type(filter(), "auth.login");
+    expect(rows()).toHaveLength(120);
+
+    // Three things happened since: the log has three entries more.
+    const grown = fixtures.auditEntriesFrom(123, 123);
+    log.entries = grown;
+    log.asked.length = 0;
+    await userEvent.click(screen.getByRole("button", { name: REFRESH }));
+    await waitFor(() => {
+      expect(times()[0]).toBe(grown[0]?.at);
+    });
+    await table();
+    // One request, for the newest page: nothing of what was loaded is asked for again.
+    expect(log.asked).toEqual([`?limit=${PAGE}`]);
+    expect(rows()).toHaveLength(50);
+    expect(times()).toEqual(grown.slice(0, 50).map((entry) => entry.at));
+    expect(loadOlder()).toBeInTheDocument();
+    expect(filter()).toHaveValue("auth.login");
+    expect(toasts()).toEqual([]);
+    await settle();
+    expect(log.asked).toHaveLength(1);
+
+    // Older entries are loaded from where the newest page ends now.
+    await older(100);
+    expect(log.asked).toEqual([`?limit=${PAGE}`, `?limit=${PAGE}&before=74`]);
+    expect(times()).toEqual(grown.slice(0, 100).map((entry) => entry.at));
+  });
+
+  test("while the log is read again the table says so, and Refresh stays where it is", async () => {
+    const door = gate();
+    let reads = 0;
+    override("get", "/api/audit", async () => {
+      reads += 1;
+      if (reads > 1) await door.opened;
+      return ok("get", "/api/audit", 200, { entries: fixtures.auditEntries });
+    });
+    await page();
+    await table();
+    const button = screen.getByRole("button", { name: REFRESH });
+    await userEvent.click(button);
+    await waitFor(() => {
+      expect(screen.getByRole("table", { name: "Audit log" })).toHaveAttribute("aria-busy", "true");
+    });
+    // It is the same button, and it keeps the focus: it is not disabled.
+    expect(refresh()).toBe(button);
+    expect(button).toBeEnabled();
+    expect(button).toHaveFocus();
+    expect(filter()).toBeInTheDocument();
+    expect(loadOlder()).toBeNull();
+    act(() => {
+      door.open();
+    });
+    await table();
+    expect(rows()).toHaveLength(5);
+    expect(reads).toBe(2);
+  });
+
+  test("a refresh that fails shows the error with Retry, and Retry reads the newest page", async () => {
+    const log = logIs(fixtures.auditEntriesFrom(80, 80));
+    await page();
+    await table();
+    await older(80);
+    override("get", "/api/audit", () => refuse(errors.internal_error));
+    await userEvent.click(screen.getByRole("button", { name: REFRESH }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      errors.internal_error.body.error.message,
+    );
+    expect(screen.queryByRole("table")).toBeNull();
+    // Retry is the way on: there is no second button that does the same.
+    expect(refresh()).toBeNull();
+    expect(toasts()).toEqual([]);
+
+    const again = logIs(fixtures.auditEntriesFrom(80, 80));
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await table();
+    expect(again.asked).toEqual([`?limit=${PAGE}`]);
+    expect(rows()).toHaveLength(50);
+    expect(refresh()).toBeInTheDocument();
+    expect(log.asked).toHaveLength(2);
+  });
+
+  test("Refresh is there for an empty log too, and reads it again", async () => {
+    const log = logIs([]);
+    await page();
+    expect(await screen.findByRole("heading", { name: "No audit entries" })).toBeInTheDocument();
+    log.entries = [...fixtures.auditEntries];
+    await userEvent.click(screen.getByRole("button", { name: REFRESH }));
+    await table();
+    expect(rows()).toHaveLength(5);
+    expect(log.asked).toEqual([`?limit=${PAGE}`, `?limit=${PAGE}`]);
+  });
+
+  test("Refresh is not there when the list call answers 403", async () => {
+    forbid("/api/audit");
+    await page();
+    await expectNotAvailable();
+    expect(refresh()).toBeNull();
+  });
+
+  test("Refresh is not there for who may not see the log", async () => {
+    await page({ user: fixtures.me.lena });
+    await expectNotAvailable();
+    expect(refresh()).toBeNull();
+  });
+
+  test("at width 390 Refresh is high enough to touch", async () => {
+    logIs(fixtures.auditEntries);
+    await page({ width: 390 });
+    await screen.findByRole("list", { name: "Audit log" });
+    expect(screen.getByRole("button", { name: REFRESH }).className.split(/\s+/)).toContain(
+      "min-h-11",
+    );
+  });
+
   test("audit filter", async () => {
     const log = logIs(fixtures.auditEntries);
     await page();
@@ -361,15 +541,89 @@ describe("the audit log", () => {
     await userEvent.type(filter(), "setup.create_admin");
     expect(await screen.findByRole("heading", { name: "No entries match" })).toBeInTheDocument();
     // It says where it looked, and older entries can still be loaded.
-    expect(
-      screen.getByText("Only the entries that are loaded are looked at. Load older entries to look further."),
-    ).toBeInTheDocument();
+    expect(screen.getByText(LOADED_ONLY)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: LOAD_OLDER }));
     await waitFor(() => {
       expect(summaries()).toEqual([setup.summary]);
     });
     expect(log.asked).toEqual([`?limit=${PAGE}`, `?limit=${PAGE}&before=12`]);
     expect(loadOlder()).toBeNull();
+  });
+
+  test("while older entries may exist the filter says that it looks at the loaded ones only, also when there are matches", async () => {
+    logIs(fixtures.auditEntriesFrom(120, 120));
+    await page();
+    await table();
+    // Without a filter there is nothing to say.
+    expect(screen.queryByText(LOADED_ONLY)).toBeNull();
+    expect(descriptionOf(filter())).toBe("");
+
+    await userEvent.type(filter(), "auth.login");
+    // Every loaded entry matches, and the notice is there all the same.
+    expect(rows()).toHaveLength(50);
+    const notice = screen.getByText(LOADED_ONLY);
+    expect(notice).toHaveAttribute("role", "status");
+    // It is under the filter, and describes it.
+    expect(filter().compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(
+      notice.compareDocumentPosition(screen.getByRole("table", { name: "Audit log" })) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(descriptionOf(filter())).toBe(LOADED_ONLY);
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // A second full page: older entries may still exist.
+    await older(100);
+    expect(screen.getByText(LOADED_ONLY)).toBeInTheDocument();
+    // The last page: the end was reached, everything is looked at.
+    await older(120);
+    expect(loadOlder()).toBeNull();
+    expect(screen.queryByText(LOADED_ONLY)).toBeNull();
+    expect(descriptionOf(filter())).toBe("");
+    expect(filter()).toHaveValue("auth.login");
+  });
+
+  test("the notice of the filter goes when the filter is emptied", async () => {
+    logIs(fixtures.auditEntriesFrom(120, 120));
+    await page();
+    await table();
+    await userEvent.type(filter(), "a");
+    expect(screen.getByText(LOADED_ONLY)).toBeInTheDocument();
+    await userEvent.clear(filter());
+    expect(screen.queryByText(LOADED_ONLY)).toBeNull();
+    // Blanks are no filter: every entry is shown.
+    await userEvent.type(filter(), "  ");
+    expect(rows()).toHaveLength(50);
+    expect(screen.queryByText(LOADED_ONLY)).toBeNull();
+  });
+
+  test("a log that is loaded to its end has no notice at its filter", async () => {
+    logIs(fixtures.auditEntries);
+    await page();
+    await table();
+    await userEvent.type(filter(), "user.");
+    expect(rows()).toHaveLength(2);
+    expect(screen.queryByText(LOADED_ONLY)).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    // Nothing matches: the filter is what to change.
+    await userEvent.clear(filter());
+    await userEvent.type(filter(), "no such thing");
+    expect(await screen.findByRole("heading", { name: "No entries match" })).toBeInTheDocument();
+    expect(screen.getByText("Change the filter to see more entries.")).toBeInTheDocument();
+    expect(screen.queryByText(LOADED_ONLY)).toBeNull();
+  });
+
+  test("nothing matches while older entries may exist: the notice says where it looked, once", async () => {
+    logIs(fixtures.auditEntriesFrom(120, 120));
+    await page();
+    await table();
+    await userEvent.type(filter(), "setup.create_admin");
+    expect(await screen.findByRole("heading", { name: "No entries match" })).toBeInTheDocument();
+    expect(screen.getAllByText(LOADED_ONLY)).toHaveLength(1);
+    expect(descriptionOf(filter())).toBe(LOADED_ONLY);
+    expect(loadOlder()).toBeInTheDocument();
+    // The words it had for this before are gone.
+    expect(screen.queryByText(/Only the entries that are loaded/)).toBeNull();
   });
 
   test("loading shows skeleton rows", async () => {

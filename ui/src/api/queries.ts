@@ -260,6 +260,11 @@ export const AUDIT_PAGE_SIZE = 50;
  * entries below it: an entry is in one page only, whatever was added to the
  * log meanwhile. When the log is read again, each page is asked for from
  * where the page before it ends now, so no entry shows twice or out of order.
+ *
+ * Reading it again is one request for every page that is loaded, one after
+ * the other. So it is not read again when the window gets the focus or the
+ * network comes back, as the other lists are: the user starts it again
+ * (`useAuditFromTheStart`), which is one request.
  */
 export const useAuditPages = () =>
   useInfiniteQuery({
@@ -272,7 +277,22 @@ export const useAuditPages = () =>
     initialPageParam: null as number | null,
     getNextPageParam: (last) =>
       last.entries.length < AUDIT_PAGE_SIZE ? undefined : last.entries.at(-1)?.id,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
+
+/**
+ * Starts the audit log again: the pages that were loaded are dropped, and
+ * the newest page is read as it is now. One request, however many pages
+ * there were. Until the answer is there the log is on its way, as when the
+ * page was opened.
+ */
+export function useAuditFromTheStart(): () => void {
+  const client = useQueryClient();
+  return () => {
+    void client.resetQueries({ queryKey: queryKeys.audit.pages(), exact: true });
+  };
+}
 
 // -------------------------------------------------------------- mutations
 

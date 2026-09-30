@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { describe, expect, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import { errors } from "@/test/errors";
+import { gate } from "@/test/gateway";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import { theBrowserIsOffline, theWindowGetsTheFocus } from "@/test/pages";
 import { renderWithApp } from "@/test/render";
@@ -143,6 +144,93 @@ describe("queries", () => {
     expect(result.current.data?.pages.flatMap((page) => page.entries)).toEqual(all);
     // The key holds no cursor: the pages are one entry of the cache.
     expect(q.queryKeys.audit.pages()).toEqual(["audit", "pages"]);
+  });
+
+  test("the audit log that is started again is read from its newest page: one request, and the older pages are dropped", async () => {
+    const all = fixtures.auditEntriesFrom(120, 120);
+    const asked: string[] = [];
+    // Open for the pages that are loaded first; the test closes it for what follows.
+    let door = gate();
+    door.open();
+    override("get", "/api/audit", async ({ request }) => {
+      const url = new URL(request.url);
+      asked.push(url.search);
+      await door.opened;
+      const before = url.searchParams.get("before");
+      const entries = all.filter((entry) => before === null || entry.id < Number(before));
+      return ok("get", "/api/audit", 200, { entries: entries.slice(0, 50) });
+    });
+    const { result } = renderHook(
+      () => {
+        // Read while it renders, as a page does: the hook tells of a change of what was read.
+        const { data, isSuccess, isPending, isFetching, hasNextPage, fetchNextPage } =
+          q.useAuditPages();
+        const lengths = data?.pages.map((page) => page.entries.length);
+        const startAgain = q.useAuditFromTheStart();
+        return { lengths, isSuccess, isPending, isFetching, hasNextPage, fetchNextPage, startAgain };
+      },
+      { wrapper: wrapperOf(appClient()) },
+    );
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+    for (const loaded of [[50, 50], [50, 50, 20]]) {
+      await act(async () => {
+        await result.current.fetchNextPage();
+      });
+      await waitFor(() => {
+        expect(result.current.lengths).toEqual(loaded);
+      });
+    }
+    expect(asked).toHaveLength(3);
+    expect(result.current.hasNextPage).toBe(false);
+
+    asked.length = 0;
+    door = gate();
+    act(() => {
+      result.current.startAgain();
+    });
+    // Until the answer is there the log is on its way, as when it was first read.
+    await waitFor(() => {
+      expect(result.current.isPending).toBe(true);
+    });
+    expect(result.current.lengths).toBeUndefined();
+    expect(asked).toEqual(["?limit=50"]);
+    act(() => {
+      door.open();
+    });
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+    expect(asked).toEqual(["?limit=50"]);
+    expect(result.current.lengths).toEqual([50]);
+    expect(result.current.hasNextPage).toBe(true);
+    expect(result.current.isFetching).toBe(false);
+  });
+
+  test("the pages of the audit log are not read again at a focus of the window or when the network is back; a list is", async () => {
+    const audit = counted("/api/audit");
+    const users = counted("/api/users");
+    const { result } = renderHook(() => ({ pages: q.useAuditPages(), users: q.useUsers() }), {
+      wrapper: wrapperOf(appClient()),
+    });
+    await waitFor(() => {
+      expect(result.current.pages.isSuccess && result.current.users.isSuccess).toBe(true);
+    });
+    expect([audit.calls, users.calls]).toEqual([1, 1]);
+
+    theWindowGetsTheFocus();
+    await waitFor(() => {
+      expect(users.calls).toBe(2);
+    });
+    theBrowserIsOffline().back();
+    await waitFor(() => {
+      expect(users.calls).toBe(3);
+    });
+    await waitFor(() => {
+      expect(result.current.users.isFetching).toBe(false);
+    });
+    expect(audit.calls).toBe(1);
   });
 
   test("the teams with their members are one call for each team", async () => {
@@ -1152,11 +1240,13 @@ describe("every mutation calls its operation", () => {
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
-  test("there are 20 of them, and 13 queries", () => {
+  // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
+  test("there are 20 of them, 13 queries, and the one that starts the audit log again", () => {
     expect(cases).toHaveLength(20);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(33);
+    expect(hooks).toHaveLength(34);
     expect(hooks).toContain("useAuditPages");
+    expect(hooks).toContain("useAuditFromTheStart");
     expect(hooks).toContain("useTeamDetails");
     expect(hooks).not.toContain("useLogout");
     expect(hooks).toEqual(expect.arrayContaining(cases.map(([name]) => name)));
