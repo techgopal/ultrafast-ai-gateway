@@ -1,15 +1,16 @@
 import { useForm } from "@tanstack/react-form";
-import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { useCreateProvider, useDeleteProvider, useProviders, useUpdateProvider } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
 import { useSession } from "@/auth/session";
+import { ApiKeyInput } from "@/components/ApiKeyInput";
+import { BaseUrlField } from "@/components/BaseUrlField";
 import { control, longText } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
-import { Field, type FieldWiring } from "@/components/Field";
+import { Field } from "@/components/Field";
 import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
@@ -28,7 +29,6 @@ type CreateProviderRequest = components["schemas"]["CreateProviderRequest"];
 type UpdateProviderRequest = components["schemas"]["UpdateProviderRequest"];
 
 export const NAME_HINT = "lowercase letters, digits, - and _";
-export const V1_HINT = "The base URL of an OpenAI-compatible provider usually ends in /v1.";
 export const DELETE_CONSEQUENCE = "Calls to models of this provider will fail at once.";
 
 export const DONE = {
@@ -56,63 +56,6 @@ const KNOWN = [
   { name: "OpenRouter", kind: "openai", base_url: "https://openrouter.ai/api/v1" },
   { name: "Ollama", kind: "openai", base_url: "http://localhost:11434/v1" },
 ] as const;
-
-interface ApiKeyInputProps {
-  wiring: FieldWiring;
-  value: string;
-  onChange: (value: string) => void;
-  onBlur: () => void;
-}
-
-/**
- * The field of an API key: what is typed is hidden unless the user asks to
- * see it, and the browser is asked not to remember it. The key is held by the
- * form, and by nothing else: it goes when the request succeeded, and with the
- * form when the dialog closes. After a request that was refused it is still
- * in its field, so that what is sent next is what the form shows.
- */
-function ApiKeyInput({ wiring, value, onChange, onBlur }: ApiKeyInputProps) {
-  const [shown, setShown] = useState(false);
-  return (
-    <div className="flex gap-2">
-      <Input
-        {...wiring}
-        type={shown ? "text" : "password"}
-        autoComplete="off"
-        spellCheck={false}
-        className={control}
-        value={value}
-        onBlur={onBlur}
-        onChange={(event) => {
-          onChange(event.target.value);
-        }}
-      />
-      <Button
-        type="button"
-        variant={shown ? "secondary" : "outline"}
-        className={control}
-        // One name, and whether it is pressed. A name that changed with it would say it twice.
-        aria-label="Show API key"
-        aria-pressed={shown}
-        onClick={() => {
-          setShown((now) => !now);
-        }}
-      >
-        {/*
-          The text is the same either way, and the fill of a pressed button
-          differs too little from the dialog to be seen by everyone: the icon
-          shows whether it is pressed. An open eye: the key is shown.
-        */}
-        {shown ? (
-          <EyeIcon data-icon="inline-start" aria-hidden="true" />
-        ) : (
-          <EyeOffIcon data-icon="inline-start" aria-hidden="true" />
-        )}
-        Show
-      </Button>
-    </div>
-  );
-}
 
 interface AddFormProps {
   create: ReturnType<typeof useCreateProvider>;
@@ -232,26 +175,14 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
         {(kind) => (
           <form.Field name="base_url">
             {(field) => (
-              <Field
-                label="Base URL"
+              <BaseUrlField
                 name={field.name}
-                required
-                hint={kind === "openai" ? V1_HINT : undefined}
+                kind={kind}
+                value={field.state.value}
+                onChange={field.handleChange}
+                onBlur={field.handleBlur}
                 error={failure.fieldError(field.name)}
-              >
-                <Input
-                  inputMode="url"
-                  autoComplete="off"
-                  autoCapitalize="none"
-                  spellCheck={false}
-                  className={control}
-                  value={field.state.value}
-                  onBlur={field.handleBlur}
-                  onChange={(event) => {
-                    field.handleChange(event.target.value);
-                  }}
-                />
-              </Field>
+              />
             )}
           </form.Field>
         )}
@@ -364,26 +295,14 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="base_url">
         {(field) => (
-          <Field
-            label="Base URL"
+          <BaseUrlField
             name={field.name}
-            required
-            hint={provider.kind === "openai" ? V1_HINT : undefined}
+            kind={provider.kind}
+            value={field.state.value}
+            onChange={field.handleChange}
+            onBlur={field.handleBlur}
             error={failure.fieldError(field.name)}
-          >
-            <Input
-              inputMode="url"
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              className={control}
-              value={field.state.value}
-              onBlur={field.handleBlur}
-              onChange={(event) => {
-                field.handleChange(event.target.value);
-              }}
-            />
-          </Field>
+          />
         )}
       </form.Field>
       <form.Field name="credential">
