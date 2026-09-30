@@ -98,6 +98,39 @@ describe("queries", () => {
     expect(search).toBe("?limit=20&before=3");
   });
 
+  test("the teams with their members are one call for each team", async () => {
+    const asked: string[] = [];
+    override("get", "/api/teams/{id}", ({ params }) => {
+      asked.push(params.id ?? "");
+      const detail = fixtures.teamDetailList.find((one) => String(one.team.id) === params.id);
+      return detail === undefined
+        ? refuse(errors.not_found)
+        : ok("get", "/api/teams/{id}", 200, detail);
+    });
+    const client = appClient();
+    const ids = [fixtures.teams.platform.id, fixtures.teams.research.id];
+    const { result, rerender } = renderHook(({ of }: { of: number[] }) => q.useTeamDetails(of), {
+      wrapper: wrapperOf(client),
+      initialProps: { of: ids },
+    });
+    await waitFor(() => {
+      expect(result.current.every((query) => query.isSuccess)).toBe(true);
+    });
+    expect(result.current.map((query) => query.data)).toEqual([
+      fixtures.teamDetails.platform,
+      fixtures.teamDetails.research,
+    ]);
+    expect(asked.sort()).toEqual(ids.map(String));
+    // They are the queries of the pages of the teams: a change of a team reaches them.
+    expect(client.getQueryData(q.queryKeys.teams.detail(ids[0] ?? 0))).toEqual(
+      fixtures.teamDetails.platform,
+    );
+    // No team, no call.
+    rerender({ of: [] });
+    expect(result.current).toEqual([]);
+    expect(asked).toHaveLength(2);
+  });
+
   test("a 404 is an ApiError of the query", async () => {
     const { result } = renderHook(() => q.useTeam(999), { wrapper: wrapperOf(appClient()) });
     await waitFor(() => {
@@ -259,6 +292,78 @@ describe("mutations invalidate", () => {
     // Only the team is in doubt.
     expect([teams.calls, me.calls]).toEqual([1, 1]);
   });
+
+  test.each([
+    [
+      "revoking a key",
+      "/api/keys",
+      (answer: () => Response) => {
+        override("delete", "/api/keys/{id}", answer);
+      },
+      () => q.useRevokeKey(),
+      { id: 999 },
+    ],
+    [
+      "changing a provider",
+      "/api/providers",
+      (answer: () => Response) => {
+        override("patch", "/api/providers/{id}", answer);
+      },
+      () => q.useUpdateProvider(),
+      { id: 999, body: { api_key: null } },
+    ],
+    [
+      "deleting a provider",
+      "/api/providers",
+      (answer: () => Response) => {
+        override("delete", "/api/providers/{id}", answer);
+      },
+      () => q.useDeleteProvider(),
+      { id: 999 },
+    ],
+  ] as const)(
+    "a 404 of %s asks for the list again; another refusal asks for nothing",
+    async (_, list, answerWith, useChange, variables) => {
+      let lists = 0;
+      override("get", list, () => {
+        lists += 1;
+        return list === "/api/keys"
+          ? ok("get", "/api/keys", 200, { keys: fixtures.keyList })
+          : ok("get", "/api/providers", 200, { providers: fixtures.providerList });
+      });
+      const audit = counted("/api/audit");
+      const { result } = renderHook(
+        () => ({
+          list: list === "/api/keys" ? q.useKeys() : q.useProviders(),
+          audit: q.useAuditLog(),
+          change: useChange(),
+        }),
+        { wrapper: wrapperOf(appClient()) },
+      );
+      await waitFor(() => {
+        expect(result.current.list.isSuccess && result.current.audit.isSuccess).toBe(true);
+      });
+      const change = () => result.current.change.mutateAsync(variables as never);
+
+      answerWith(() => refuse(errors.forbidden));
+      await act(async () => {
+        await expect(change()).rejects.toMatchObject({ status: 403 });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      expect([lists, audit.calls]).toEqual([1, 1]);
+
+      // It is gone, or hidden from the caller: what the list shows is in doubt.
+      answerWith(() => refuse(errors.not_found));
+      await act(async () => {
+        await expect(change()).rejects.toMatchObject({ status: 404 });
+      });
+      await waitFor(() => {
+        expect(lists).toBe(2);
+      });
+      // Nothing was changed: nothing was recorded.
+      expect(audit.calls).toBe(1);
+    },
+  );
 
   test("a change of a user refetches users, keys, teams and the caller", async () => {
     const users = counted("/api/users");
@@ -450,10 +555,11 @@ describe("every mutation calls its operation", () => {
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
-  test("there are 20 of them, and 11 queries", () => {
+  test("there are 20 of them, and 12 queries", () => {
     expect(cases).toHaveLength(20);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(31);
+    expect(hooks).toHaveLength(32);
+    expect(hooks).toContain("useTeamDetails");
     expect(hooks).not.toContain("useLogout");
     expect(hooks).toEqual(expect.arrayContaining(cases.map(([name]) => name)));
   });

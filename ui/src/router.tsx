@@ -17,8 +17,10 @@ import { Shell } from "@/components/Shell";
 import type { ShellUser } from "@/components/shell-context";
 import { Button } from "@/components/ui/button";
 import { AcceptInvite } from "@/pages/AcceptInvite";
+import { Keys } from "@/pages/Keys";
 import { PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
+import { Providers } from "@/pages/Providers";
 import { Setup } from "@/pages/Setup";
 import { TeamDetail } from "@/pages/TeamDetail";
 import { Teams } from "@/pages/Teams";
@@ -196,6 +198,20 @@ const auditRoute = createRoute({
   component: AuditPage,
 });
 
+const providersRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/providers",
+  staticData: { title: "Providers" },
+  component: Providers,
+});
+
+const keysRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/keys",
+  staticData: { title: "Virtual keys" },
+  component: Keys,
+});
+
 const usersRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/users",
@@ -269,8 +285,8 @@ const routeTree = rootRoute.addChildren([
   acceptInviteRoute,
   shellRoute.addChildren([
     page("/", "Overview"),
-    page("/providers", "Providers"),
-    page("/keys", "Virtual keys"),
+    providersRoute,
+    keysRoute,
     usersRoute,
     userRoute,
     teamsRoute,

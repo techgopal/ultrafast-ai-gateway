@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { alertDialogFit, dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit";
 import {
   AlertDialog,
@@ -77,6 +77,11 @@ interface SecretDialogProps {
   secret: string | null;
   /** The user closed the dialog: the opener forgets the secret. */
   onClose: () => void;
+  /**
+   * What the opener says about the use of the secret, shown under it: an
+   * example with a placeholder. It must not hold the secret.
+   */
+  children?: ReactNode;
 }
 
 /**
@@ -93,7 +98,13 @@ interface SecretDialogProps {
  * Closing (the buttons, Escape, a click beside the dialog) asks first, with
  * Keep open as the default.
  */
-export function SecretDialog({ title, description, secret, onClose }: SecretDialogProps) {
+export function SecretDialog({
+  title,
+  description,
+  secret,
+  onClose,
+  children,
+}: SecretDialogProps) {
   const open = secret !== null;
   const [asking, setAsking] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
@@ -165,6 +176,7 @@ export function SecretDialog({ title, description, secret, onClose }: SecretDial
         <p role="status" className="min-h-5 text-sm text-muted-foreground">
           {copied}
         </p>
+        {children}
         <DialogFooter>
           <Button
             type="button"

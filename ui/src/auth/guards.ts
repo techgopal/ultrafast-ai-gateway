@@ -26,7 +26,10 @@ export type ConsoleAction =
   | { type: "removeMember"; teamId: number }
   /** `teamId` is `null` for a key that belongs to no team. */
   | { type: "createKeyForSelf"; teamId: number | null }
+  /** For another user: only in a team the caller leads. */
   | { type: "createKeyForMember"; teamId: number }
+  /** For any user, in a team of theirs or in none: what only an admin may. */
+  | { type: "createKeyForAnyone" }
   | { type: "revokeKey"; ownerId: number | null; teamId: number | null }
   | { type: "manageProviders" }
   | { type: "viewAudit" };
@@ -58,6 +61,7 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "createTeam":
     case "deleteTeam":
     case "makeLead":
+    case "createKeyForAnyone":
     case "manageProviders":
     case "viewAudit":
       return false;

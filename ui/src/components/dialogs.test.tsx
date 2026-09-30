@@ -624,6 +624,51 @@ describe("secret dialog", () => {
     expectNoSecret(app);
   });
 
+  test("what the opener says about the use of the secret shows under it, and goes with it", async () => {
+    const NOTE = "Send it as a bearer token.";
+    function Page() {
+      const once = useSecretOnce(NO_MUTATION);
+      return (
+        <main>
+          <Button
+            type="button"
+            onClick={() => {
+              once.show(SECRET);
+            }}
+          >
+            Show
+          </Button>
+          <SecretDialog
+            title="Your new key"
+            description="Copy this key now. It is not shown again."
+            secret={once.secret}
+            onClose={once.clear}
+          >
+            <p>{NOTE}</p>
+          </SecretDialog>
+        </main>
+      );
+    }
+    await renderWithApp(<Page />);
+    expect(screen.queryByText(NOTE)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Show" }));
+    const dialog = await screen.findByRole("dialog", { name: "Your new key" });
+    const note = within(dialog).getByText(NOTE);
+    // After the secret, and before the button that closes the dialog.
+    const field = within(dialog).getByLabelText("Your new key");
+    const done = within(dialog).getByRole("button", { name: "Done" });
+    expect(field.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(note.compareDocumentPosition(done) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    await userEvent.click(done);
+    const question = await screen.findByRole("alertdialog");
+    await userEvent.click(within(question).getByRole("button", { name: "Close" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(screen.queryByText(NOTE)).toBeNull();
+  });
+
   test("the hook does not compile without the mutation", () => {
     function Page() {
       // @ts-expect-error The mutation is required: without it the secret would stay in its answer.
