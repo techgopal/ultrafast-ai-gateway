@@ -19,6 +19,7 @@ import * as fixtures from "@/test/fixtures";
 import { gate, PASSWORD, startGateway } from "@/test/gateway";
 import { errors } from "@/test/errors";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
+import { theBrowserIsOffline } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 import { useSession, useSessionControl, useSignOut } from "./session";
 
@@ -252,6 +253,27 @@ describe("guards of the routes", () => {
       expect(heading("Virtual keys")).toBeInTheDocument();
     });
     expect(href(app)).toBe("/keys");
+  });
+});
+
+// The gateway can be on the same machine: the browser's word that there is no
+// network does not keep the app from asking it.
+describe("while the browser says it is offline", () => {
+  test("the app opened then asks who is signed in: the gateway answers, and the page shows", async () => {
+    startGateway({ signedIn: true });
+    theBrowserIsOffline();
+    await renderWithApp(null, { route: "/keys" });
+    expect(await screen.findByRole("heading", { name: "Virtual keys", level: 1 })).toBeInTheDocument();
+  });
+
+  test("a gateway that cannot be reached is said, with Try again, and not by an endless Loading", async () => {
+    theBrowserIsOffline();
+    override("get", "/api/setup", networkFailure);
+    override("get", "/api/auth/me", networkFailure);
+    await renderWithApp(null, { route: "/keys" });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach the gateway.");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
   });
 });
 

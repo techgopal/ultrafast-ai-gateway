@@ -207,9 +207,9 @@ export function theWindowGetsTheFocus(): void {
 
 /**
  * The browser says that there is no network, until the test ends or `back`
- * is called. The query library then holds back what it is told to hold back
- * while offline; what the app sends all the same fails as the test's gateway
- * makes it fail.
+ * is called. The app asks and sends all the same (`networkMode: "always"`),
+ * and what it asks fails, or not, as the test's gateway makes it; `back`
+ * reads again what is shown, as the browser's return of the network does.
  */
 export function theBrowserIsOffline(): { back: () => void } {
   const back = () => {

@@ -36,6 +36,7 @@ import {
   SESSION_ENDED,
   settle,
   shown,
+  theBrowserIsOffline,
   theWindowGetsTheFocus,
   toasts,
   watchTheDocument,
@@ -289,6 +290,23 @@ describe("the list of users", () => {
     await list();
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach the gateway.");
     expect(button("Retry")).toBeInTheDocument();
+  });
+
+  test("while the browser says it is offline the list is asked for: a gateway that cannot be reached is an error with Retry", async () => {
+    const app = await renderWithApp(null, { route: "/teams" });
+    await screen.findByRole("table", { name: "Teams" });
+    theBrowserIsOffline();
+    const failing = counted("get", "/api/users", networkFailure);
+    await act(async () => {
+      await app.router.navigate({ to: "/users" });
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach the gateway.");
+    expect(failing.calls).toBe(1);
+    // Still offline: Retry asks again, and the list the gateway gives is shown.
+    const again = usersAre(fixtures.userList);
+    await userEvent.click(button("Retry"));
+    await table();
+    expect(again.calls).toBe(1);
   });
 
   test("at width 390 the rows are cards with their labels and the link", async () => {
