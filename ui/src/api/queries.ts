@@ -327,10 +327,12 @@ export const useRemoveTeamMember = () =>
   useApiMutation(
     ({ id, userId }: { id: number; userId: number; leaving?: boolean }) =>
       api.delete("/api/teams/{id}/members/{user_id}", { params: { id, user_id: userId } }),
-    // `leaving`: the caller removed themselves and sees the team no more.
-    ({ id, leaving = false }) => ({
-      stale: membersChanged,
-      gone: leaving ? [queryKeys.teams.detail(id)] : [],
+    // `leaving`: the caller removed themselves and sees the team no more. Its
+    // page still shows it then. Asked for again, the team would answer 404 to
+    // that page; dropped here, the page would ask for it. So the team is left
+    // as it is, and the page drops it when it has gone to the list.
+    ({ leaving = false }) => ({
+      stale: leaving ? [queryKeys.teams.list(), queryKeys.me(), audit] : membersChanged,
     }),
   );
 

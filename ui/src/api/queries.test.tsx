@@ -325,7 +325,7 @@ describe("mutations invalidate", () => {
     expect(client.getQueryData(q.queryKeys.teams.detail(fixtures.teams.growth.id))).toBeUndefined();
   });
 
-  test("a team the caller left is not asked for again; the team of another removal is", async () => {
+  test("a team the caller left is not asked for again, and is kept while its page shows it; the team of another removal is asked for again", async () => {
     let detail = 0;
     override("get", "/api/teams/{id}", () => {
       detail += 1;
@@ -335,21 +335,27 @@ describe("mutations invalidate", () => {
     const me = counted("/api/auth/me");
     const client = appClient();
     const id = fixtures.teams.platform.id;
+    // The team is shown, as on its page.
     const { result } = renderHook(
-      () => ({ teams: q.useTeams(), me: q.useMe(), remove: q.useRemoveTeamMember() }),
+      () => ({
+        team: q.useTeam(id),
+        teams: q.useTeams(),
+        me: q.useMe(),
+        remove: q.useRemoveTeamMember(),
+      }),
       { wrapper: wrapperOf(client) },
     );
-    await client.query(q.teamOptions(id));
     await waitFor(() => {
-      expect(result.current.teams.isSuccess && result.current.me.isSuccess).toBe(true);
+      expect(
+        result.current.team.isSuccess && result.current.teams.isSuccess && result.current.me.isSuccess,
+      ).toBe(true);
     });
     await act(async () => {
       await result.current.remove.mutateAsync({ id, userId: fixtures.users.lena.id });
     });
     await waitFor(() => {
-      expect([teams.calls, me.calls]).toEqual([2, 2]);
+      expect([detail, teams.calls, me.calls]).toEqual([2, 2, 2]);
     });
-    expect(client.getQueryData(q.queryKeys.teams.detail(id))).toBeDefined();
 
     await act(async () => {
       await result.current.remove.mutateAsync({
@@ -361,8 +367,15 @@ describe("mutations invalidate", () => {
     await waitFor(() => {
       expect([teams.calls, me.calls]).toEqual([3, 3]);
     });
-    expect(detail).toBe(1);
-    expect(client.getQueryData(q.queryKeys.teams.detail(id))).toBeUndefined();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    // Asked for again, the team would answer 404 to the page that still shows
+    // it; dropped, the page would ask for it. The page drops it when it has gone.
+    expect(detail).toBe(2);
+    expect(client.getQueryData(q.queryKeys.teams.detail(id))).toEqual(fixtures.teamDetails.platform);
+    expect(client.getQueryState(q.queryKeys.teams.detail(id))?.isInvalidated).toBe(false);
+    expect(result.current.team.data).toEqual(fixtures.teamDetails.platform);
   });
 
   // The session (`auth/session.tsx`) owns the CSRF token and the caches; its
