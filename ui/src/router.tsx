@@ -130,7 +130,10 @@ function Root() {
       </main>
     );
   }
-  if (needsSetup && pathname !== "/setup") return <GoTo path="/setup" />;
+  // The address changes at once, the matches of the router follow later. The
+  // setup page is rendered here, not through them: a stale match of the shell
+  // would send the visitor to the sign-in page, and from there back here.
+  if (needsSetup) return pathname === "/setup" ? <Setup /> : <GoTo path="/setup" />;
   return <Outlet />;
 }
 
@@ -248,11 +251,9 @@ const setupRoute = createRoute({
   path: "/setup",
   component: function SetupRoute() {
     const session = useSession();
-    const { needsSetup } = useSessionControl();
-    if (session.status === "signedIn") return <GoTo path="/" />;
-    // Setup is done: there is nothing to do here but to sign in.
-    if (!needsSetup) return <GoTo path="/sign-in" />;
-    return <Setup />;
+    // While setup is needed the root renders the setup page itself, so this
+    // is reached only when setup is done: there is nothing to do here.
+    return <GoTo path={session.status === "signedIn" ? "/" : "/sign-in"} />;
   },
 });
 

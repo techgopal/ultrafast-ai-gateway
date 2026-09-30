@@ -94,6 +94,25 @@ describe("guards of the routes", () => {
     }
   });
 
+  test("setup needed at / never goes by the sign-in page", async () => {
+    startGateway({ needsSetup: true });
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const replace = vi.spyOn(history, "replace");
+    const app = await renderWithApp(null, { history, user: null });
+    await waitFor(() => {
+      expect(heading("Set up the gateway")).toBeInTheDocument();
+    });
+    // Lets any effect that would still send the visitor on run out.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    const paths = replace.mock.calls.map(([path]) => path);
+    expect(paths.filter((path) => path.startsWith("/sign-in"))).toEqual([]);
+    expect(paths).toEqual(["/setup"]);
+    expect(href(app)).toBe("/setup");
+    expect(heading("Set up the gateway")).toBeInTheDocument();
+  });
+
   test("signed out visitor goes to sign-in with next", async () => {
     startGateway();
     const app = await renderWithApp(null, { route: "/keys" });
