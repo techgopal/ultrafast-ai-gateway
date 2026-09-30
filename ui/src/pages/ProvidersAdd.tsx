@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { kindName, KINDS } from "@/lib/providers";
+import { apiKeyOf, kindName, KINDS } from "@/lib/providers";
 
 type CreateProviderRequest = components["schemas"]["CreateProviderRequest"];
 
@@ -47,14 +47,15 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
   const form = useForm({
     defaultValues: { name: "", kind: "openai", base_url: "", api_key: "" },
     onSubmit: async ({ value }) => {
-      const body: CreateProviderRequest = {
-        name: value.name,
-        kind: value.kind,
-        base_url: value.base_url,
-      };
-      // No key is no field: an empty one the gateway refuses.
-      if (value.api_key.trim() !== "") body.api_key = value.api_key;
       try {
+        const body: CreateProviderRequest = {
+          name: value.name,
+          kind: value.kind,
+          base_url: value.base_url,
+        };
+        // No key is no field: an empty one the gateway refuses.
+        const key = apiKeyOf(value.api_key);
+        if (key !== "") body.api_key = key;
         const made = await mutateAsync(body);
         // The provider has the key now: the form holds it no longer.
         form.setFieldValue("api_key", "");

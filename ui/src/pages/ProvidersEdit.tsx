@@ -10,7 +10,7 @@ import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { kindName } from "@/lib/providers";
+import { apiKeyOf, kindName } from "@/lib/providers";
 
 type Provider = components["schemas"]["ProviderView"];
 type UpdateProviderRequest = components["schemas"]["UpdateProviderRequest"];
@@ -47,11 +47,11 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
         onCancel();
         return;
       }
-      // Keeping the key sends no `api_key` at all.
-      const body: UpdateProviderRequest = { base_url: value.base_url };
-      if (value.credential === "replace") body.api_key = value.api_key;
-      if (value.credential === "remove") body.api_key = null;
       try {
+        // Keeping the key sends no `api_key` at all.
+        const body: UpdateProviderRequest = { base_url: value.base_url };
+        if (value.credential === "replace") body.api_key = apiKeyOf(value.api_key);
+        if (value.credential === "remove") body.api_key = null;
         await mutateAsync({ id: provider.id, body });
         // The provider has the key now: the form holds it no longer.
         form.setFieldValue("api_key", "");
