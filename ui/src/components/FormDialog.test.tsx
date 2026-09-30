@@ -296,6 +296,19 @@ describe("form dialog", () => {
     expect(submit).toBeDisabled();
   });
 
+  test("below 768 px the X is large enough to touch, and the header leaves it room", async () => {
+    await renderWithApp(<Teams />, { width: 390 });
+    const dialog = await openDialog();
+    // The X and the header are children of the dialog: its classes reach them.
+    const close = within(dialog).getByRole("button", { name: "Close" });
+    expect(close.parentElement).toBe(dialog);
+    expect(close).toHaveAttribute("data-slot", "dialog-close");
+    expect(dialog.querySelector('[data-slot="dialog-header"]')?.parentElement).toBe(dialog);
+    // 44 px wide and high, and no text of the header under it.
+    expect(dialog).toHaveClass("max-md:*:data-[slot=dialog-close]:size-11");
+    expect(dialog).toHaveClass("max-md:*:data-[slot=dialog-header]:pr-10");
+  });
+
   test.each([390, 1280])("at width %s it fits the screen, and its controls are large enough to touch", async (width) => {
     await renderWithApp(<Teams />, { width });
     const dialog = await openDialog();
