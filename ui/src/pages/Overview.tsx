@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { ArrowRightIcon } from "lucide-react";
 import { useId, type ReactNode } from "react";
 import { useKeys, useProviders, useTeams, useUsers } from "@/api/queries";
-import { can, type Me } from "@/auth/guards";
+import { can, isAdmin, type Me } from "@/auth/guards";
 import { useSession } from "@/auth/session";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
@@ -12,6 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   countByStatus,
+  countTitles,
   exampleCall,
   firstSteps,
   KEY_STATUSES,
@@ -110,12 +111,13 @@ function ByStatus({ counts }: { counts: readonly StatusCount[] }) {
   );
 }
 
-// Users and teams are asked for only by who sees their tiles.
+// Users and teams are asked for only by who sees their tiles. The title says
+// whose they are: see `countTitles`.
 
-function UsersTile() {
+function UsersTile({ title }: { title: string }) {
   const users = useUsers();
   return (
-    <Tile title="Users" to="/users" read={users}>
+    <Tile title={title} to="/users" read={users}>
       {({ users: list }) => (
         <>
           <Count of={list.length} />
@@ -126,10 +128,10 @@ function UsersTile() {
   );
 }
 
-function TeamsTile() {
+function TeamsTile({ title }: { title: string }) {
   const teams = useTeams();
   return (
-    <Tile title="Teams" to="/teams" read={teams}>
+    <Tile title={title} to="/teams" read={teams}>
       {({ teams: list }) => <Count of={list.length} />}
     </Tile>
   );
@@ -211,6 +213,8 @@ function OverviewOf({ me }: { me: Me }) {
     providers.data === undefined || keys.data === undefined
       ? null
       : firstSteps(providers.data.providers.length, keys.data.keys.length);
+  // Wording, not a permission: an admin is listed everybody, a lead their own.
+  const titles = countTitles(isAdmin(me));
 
   return (
     <>
@@ -241,8 +245,8 @@ function OverviewOf({ me }: { me: Me }) {
         </Tile>
         {can(me, { type: "viewUserAndTeamCounts" }) ? (
           <>
-            <UsersTile />
-            <TeamsTile />
+            <UsersTile title={titles.users} />
+            <TeamsTile title={titles.teams} />
           </>
         ) : null}
       </div>

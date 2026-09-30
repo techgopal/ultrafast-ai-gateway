@@ -24,6 +24,9 @@ const NOTE = "Usage, spend and request logs arrive with a later release.";
 const NOT_TRACKED =
   "The console cannot tell yet whether a call was made, so this step is never marked done.";
 const TILE_NOT_AVAILABLE = "Not available to your account.";
+/** What the tiles of users and of teams are called for the lead of a team. */
+const LEAD_USERS = "Users in your teams";
+const LEAD_TEAMS = "Your teams";
 
 afterEach(forgetToasts);
 
@@ -210,12 +213,54 @@ describe("the overview", () => {
     const teams = teamsAre([platform, research]);
     keysAre([active, revoked, noOwner]);
     await page({ user: fixtures.me.arjun });
+    for (const name of ["Providers", "Virtual keys", LEAD_USERS, LEAD_TEAMS]) await loaded(name);
+    expect(tiles()).toEqual(["Providers", "Virtual keys", LEAD_USERS, LEAD_TEAMS]);
+    expect(figures("Virtual keys")).toEqual(["3", "2 active", "1 revoked"]);
+    expect(figures(LEAD_USERS)).toEqual(["2", "2 active"]);
+    expect(figures(LEAD_TEAMS)).toEqual(["2"]);
+    expect([users.calls, teams.calls]).toEqual([1, 1]);
+  });
+
+  test("for a lead the tiles say whose the users and the teams are", async () => {
+    await page({ user: fixtures.me.arjun });
+    for (const name of ["Providers", "Virtual keys", LEAD_USERS, LEAD_TEAMS]) await loaded(name);
+    // Not "Users" and "Teams": the numbers are not those of the gateway.
+    expect(queryTile("Users")).toBeNull();
+    expect(queryTile("Teams")).toBeNull();
+    expect([LEAD_USERS, LEAD_TEAMS]).toEqual(["Users in your teams", "Your teams"]);
+    // The heading of the tile is its link, to the same pages as for an admin.
+    for (const [name, to] of [
+      [LEAD_USERS, "/users"],
+      [LEAD_TEAMS, "/teams"],
+    ] as const) {
+      expect(within(tile(name)).getByRole("heading", { level: 2, name })).toBeInTheDocument();
+      expect(within(tile(name)).getByRole("link", { name })).toHaveAttribute("href", to);
+      expect(within(tile(name)).getAllByRole("link")).toHaveLength(1);
+    }
+    // The lists that everybody sees whole are called as they are for everybody.
+    expect(tiles().slice(0, 2)).toEqual(["Providers", "Virtual keys"]);
+    expectOneMain();
+  });
+
+  test("an admin who leads a team sees all users and teams, and the tiles are called so", async () => {
+    const admin = {
+      ...fixtures.me.arjun,
+      user: { ...fixtures.users.arjun, role: "admin" },
+    } satisfies fixtures.Me;
+    await page({ user: admin });
     for (const name of ["Providers", "Virtual keys", "Users", "Teams"]) await loaded(name);
     expect(tiles()).toEqual(["Providers", "Virtual keys", "Users", "Teams"]);
-    expect(figures("Virtual keys")).toEqual(["3", "2 active", "1 revoked"]);
-    expect(figures("Users")).toEqual(["2", "2 active"]);
-    expect(figures("Teams")).toEqual(["2"]);
-    expect([users.calls, teams.calls]).toEqual([1, 1]);
+    expect(figures("Users")).toEqual(["7", "5 active", "1 invited", "1 disabled"]);
+  });
+
+  test("a lead's list that failed is said in the tile that says whose it is", async () => {
+    override("get", "/api/users", () => refuse(errors.internal_error));
+    await page({ user: fixtures.me.arjun });
+    await loaded(LEAD_TEAMS);
+    expect(await within(tile(LEAD_USERS)).findByRole("alert")).toHaveTextContent(
+      errors.internal_error.body.error.message,
+    );
+    expect(within(tile(LEAD_USERS)).getByRole("button", { name: "Retry" })).toBeInTheDocument();
   });
 
   test("overview has no invented numbers", async () => {
@@ -389,12 +434,12 @@ describe("the overview", () => {
   });
 
   test.each([
-    ["an admin", fixtures.me.maya],
-    ["a lead", fixtures.me.arjun],
-  ])("%s makes the four list calls, once each, and no other", async (_, user) => {
+    ["an admin", fixtures.me.maya, ["Users", "Teams"]],
+    ["a lead", fixtures.me.arjun, [LEAD_USERS, LEAD_TEAMS]],
+  ])("%s makes the four list calls, once each, and no other", async (_, user, theirs) => {
     const made = requests();
     await page({ user });
-    for (const name of ["Providers", "Virtual keys", "Users", "Teams"]) await loaded(name);
+    for (const name of ["Providers", "Virtual keys", ...theirs]) await loaded(name);
     await settle();
     expect([...made].sort()).toEqual([
       "GET /api/auth/me",
