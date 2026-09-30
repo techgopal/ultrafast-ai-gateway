@@ -285,6 +285,46 @@ describe("mutations invalidate", () => {
     expect(client.getQueryData(q.queryKeys.teams.detail(fixtures.teams.growth.id))).toBeUndefined();
   });
 
+  test("a team the caller left is not asked for again; the team of another removal is", async () => {
+    let detail = 0;
+    override("get", "/api/teams/{id}", () => {
+      detail += 1;
+      return ok("get", "/api/teams/{id}", 200, fixtures.teamDetails.platform);
+    });
+    const teams = counted("/api/teams");
+    const me = counted("/api/auth/me");
+    const client = appClient();
+    const id = fixtures.teams.platform.id;
+    const { result } = renderHook(
+      () => ({ teams: q.useTeams(), me: q.useMe(), remove: q.useRemoveTeamMember() }),
+      { wrapper: wrapperOf(client) },
+    );
+    await client.query(q.teamOptions(id));
+    await waitFor(() => {
+      expect(result.current.teams.isSuccess && result.current.me.isSuccess).toBe(true);
+    });
+    await act(async () => {
+      await result.current.remove.mutateAsync({ id, userId: fixtures.users.lena.id });
+    });
+    await waitFor(() => {
+      expect([teams.calls, me.calls]).toEqual([2, 2]);
+    });
+    expect(client.getQueryData(q.queryKeys.teams.detail(id))).toBeDefined();
+
+    await act(async () => {
+      await result.current.remove.mutateAsync({
+        id,
+        userId: fixtures.users.arjun.id,
+        leaving: true,
+      });
+    });
+    await waitFor(() => {
+      expect([teams.calls, me.calls]).toEqual([3, 3]);
+    });
+    expect(detail).toBe(1);
+    expect(client.getQueryData(q.queryKeys.teams.detail(id))).toBeUndefined();
+  });
+
   // The session (`auth/session.tsx`) owns the CSRF token and the caches; its
   // tests say what a sign-in, a sign-out and `me` do to them.
   test("the hooks of the session are plain calls", async () => {

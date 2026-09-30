@@ -311,9 +311,13 @@ export const usePutTeamMember = () =>
 
 export const useRemoveTeamMember = () =>
   useApiMutation(
-    ({ id, userId }: { id: number; userId: number }) =>
+    ({ id, userId }: { id: number; userId: number; leaving?: boolean }) =>
       api.delete("/api/teams/{id}/members/{user_id}", { params: { id, user_id: userId } }),
-    () => ({ stale: membersChanged }),
+    // `leaving`: the caller removed themselves and sees the team no more.
+    ({ id, leaving = false }) => ({
+      stale: membersChanged,
+      gone: leaving ? [queryKeys.teams.detail(id)] : [],
+    }),
   );
 
 // keys
