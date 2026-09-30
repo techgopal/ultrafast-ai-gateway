@@ -723,6 +723,16 @@ describe("narrow screens and themes", () => {
     }
   });
 
+  test("below 768 px the X of the secret dialog is large enough to touch, as that of every dialog", async () => {
+    await renderWithApp(<Keys />, { width: 390 });
+    const dialog = await makeKey();
+    const close = within(dialog).getByRole("button", { name: "Close" });
+    expect(close.parentElement).toBe(dialog);
+    expect(close).toHaveAttribute("data-slot", "dialog-close");
+    expect(dialog).toHaveClass("max-md:*:data-[slot=dialog-close]:size-11");
+    expect(dialog).toHaveClass("max-md:*:data-[slot=dialog-header]:pr-10");
+  });
+
   test.each(["light", "dark"] as const)("the dialogs show their text in the %s theme", async (theme) => {
     await renderWithApp(<Keys />, { theme });
     expect(document.documentElement.classList.contains("dark")).toBe(theme === "dark");
