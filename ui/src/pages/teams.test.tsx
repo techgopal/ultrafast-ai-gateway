@@ -22,11 +22,12 @@ import {
   href,
   installPointerCapture,
   NOT_FOUND,
+  SESSION_ENDED,
   settle,
   shown,
   toasts,
 } from "@/test/pages";
-import { renderWithApp, type AppRenderResult } from "@/test/render";
+import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
 const { maya, arjun, lena, tomas, priya, sam, dana } = fixtures.users;
 const { platform, research, growth } = fixtures.teams;
@@ -781,13 +782,9 @@ describe("adding a member", () => {
     await detail(platform);
     const dialog = await open("Add member", "Add member");
     const group = await within(dialog).findByRole("radiogroup", { name: "User" });
-    const offered = within(group)
-      .getAllByRole("radio")
-      .map((radio) => radio.getAttribute("aria-label") ?? radio.id);
     // Not Arjun and Lena, who are in the team, and not Dana, who is disabled.
     const expected = [maya, tomas, priya, sam];
     expect(within(group).getAllByRole("radio")).toHaveLength(expected.length);
-    expect(offered).toHaveLength(expected.length);
     for (const user of expected) {
       expect(within(group).getByRole("radio", { name: new RegExp(user.name) })).toBeEnabled();
       expect(group).toHaveTextContent(user.email);
@@ -1001,6 +998,56 @@ describe("adding a member", () => {
     });
     expect(state.puts).toHaveLength(1);
     expect(toasts()).toEqual([]);
+  });
+
+  test("the session has ended when the member is added: signed out, and the form says nothing", async () => {
+    startGateway({ signedIn: true, me: fixtures.me.arjun });
+    const puts = counted("put", "/api/teams/{id}/members/{user_id}", unauthenticated);
+    const app = await detail(platform);
+    const dialog = await open("Add member", "Add member");
+    await userEvent.type(screen.getByLabelText("User ID"), String(priya.id));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await waitFor(() => {
+      expect(href(app)).toBe(`/sign-in?next=${encodeURIComponent(`/teams/${platform.id}`)}`);
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(SESSION_ENDED);
+    await settle();
+    expect(puts.calls).toBe(1);
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByLabelText("User ID")).toBeNull();
+    // No error of a field, none of a form, and not the answer of the gateway.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(NO_USER)).toBeNull();
+    expect(screen.queryByText(errors.unauthenticated.body.error.message)).toBeNull();
+    expect(toasts()).toEqual([]);
+    expect(app.queryClient.getQueryCache().getAll()).toEqual([]);
+    expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+  });
+
+  test("a member whose answer came for a session that is over says nothing", async () => {
+    startGateway({ signedIn: true, me: fixtures.me.arjun });
+    const door = gate();
+    const puts = counted("put", "/api/teams/{id}/members/{user_id}", async () => {
+      await door.opened;
+      return noContent();
+    });
+    const app = await detail(platform);
+    const dialog = await open("Add member", "Add member");
+    await userEvent.type(screen.getByLabelText("User ID"), String(priya.id));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await within(dialog).findByRole("button", { name: "Adding" });
+    await aCallFindsTheSessionEnded("/api/keys");
+    door.open();
+    await settle();
+    expect(puts.calls).toBe(1);
+    expect(href(app)).toBe(`/sign-in?next=${encodeURIComponent(`/teams/${platform.id}`)}`);
+    expect(screen.getByRole("status")).toHaveTextContent(SESSION_ENDED);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // The member was added for who was signed in: nobody is told now.
+    expect(toasts()).toEqual([]);
+    expect(app.queryClient.getQueryCache().getAll()).toEqual([]);
   });
 
   test("while the member is added the button is disabled and says so", async () => {
