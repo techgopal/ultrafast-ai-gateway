@@ -112,6 +112,28 @@ async function older(count: number): Promise<void> {
   });
 }
 
+/** Whether the entry is one of those `withTeams` makes: a team was made. */
+function isTeam(entry: fixtures.AuditEntry): boolean {
+  return entry.id % 10 === 3;
+}
+
+/**
+ * The entries, in which every entry whose id ends in 3 says that a team was
+ * made, and not a sign-in: a filter by "team" matches those only.
+ */
+function withTeams(entries: readonly fixtures.AuditEntry[]): fixtures.AuditEntry[] {
+  return entries.map((entry) =>
+    isTeam(entry)
+      ? {
+          ...entry,
+          action: "team.create",
+          target_type: "team",
+          summary: `${fixtures.users.maya.email} created the team Design`,
+        }
+      : entry,
+  );
+}
+
 /** Counts how often the app asks who is signed in: it does when it reads again what is stale. */
 function whoIsSignedIn() {
   return counted("get", "/api/auth/me", () => ok("get", "/api/auth/me", 200, fixtures.me.maya));
@@ -376,16 +398,21 @@ describe("the audit log", () => {
   });
 
   test("Refresh starts again from the newest page: one request, the older pages are dropped, the filter stays", async () => {
-    const log = logIs(fixtures.auditEntriesFrom(120, 120));
+    const log = logIs(withTeams(fixtures.auditEntriesFrom(120, 120)));
     await page();
     await table();
-    // The filter is set in one step: how it is typed is another test's.
-    fireEvent.change(filter(), { target: { value: "login" } });
-    await older(100);
-    expect(log.asked).toHaveLength(2);
+    // The filter is set in one step: how it is typed is another test's. It
+    // matches one entry in ten.
+    fireEvent.change(filter(), { target: { value: "team" } });
+    await older(10);
+    await older(12);
+    // The log is loaded to its end.
+    expect(log.asked).toHaveLength(3);
+    expect(loadOlder()).toBeNull();
 
-    // Three things happened since: the log has three entries more.
-    const grown = fixtures.auditEntriesFrom(123, 123);
+    // Three things happened since: the log has three entries more, the
+    // newest of which says that a team was made.
+    const grown = withTeams(fixtures.auditEntriesFrom(123, 123));
     log.entries = grown;
     log.asked.length = 0;
     await userEvent.click(screen.getByRole("button", { name: REFRESH }));
@@ -395,18 +422,46 @@ describe("the audit log", () => {
     await table();
     // One request, for the newest page: nothing of what was loaded is asked for again.
     expect(log.asked).toEqual([`?limit=${PAGE}`]);
-    expect(rows()).toHaveLength(50);
-    expect(times()).toEqual(grown.slice(0, 50).map((entry) => entry.at));
+    // The filter stays, and is applied: what shows are the entries of that page that match.
+    expect(filter()).toHaveValue("team");
+    expect(times()).toEqual(grown.slice(0, 50).filter(isTeam).map((entry) => entry.at));
+    expect(rows()).toHaveLength(5);
+    // The older pages were dropped: Load older is offered again.
     expect(loadOlder()).toBeInTheDocument();
-    expect(filter()).toHaveValue("login");
     expect(toasts()).toEqual([]);
     await settle();
     expect(log.asked).toHaveLength(1);
 
     // Older entries are loaded from where the newest page ends now.
-    await older(100);
+    await older(10);
     expect(log.asked).toEqual([`?limit=${PAGE}`, `?limit=${PAGE}&before=74`]);
-    expect(times()).toEqual(grown.slice(0, 100).map((entry) => entry.at));
+    expect(times()).toEqual(grown.slice(0, 100).filter(isTeam).map((entry) => entry.at));
+  });
+
+  test("the page opened again starts from the newest page: one request, the older pages are dropped", async () => {
+    const log = logIs(withTeams(fixtures.auditEntriesFrom(120, 120)));
+    const app = await page();
+    await table();
+    fireEvent.change(filter(), { target: { value: "team" } });
+    await older(10);
+    await older(12);
+    expect(log.asked).toHaveLength(3);
+
+    // Another page, and back, well within the time the cache keeps what is not shown.
+    await act(async () => {
+      await app.router.navigate({ to: "/teams" });
+    });
+    await screen.findByRole("table", { name: "Teams" });
+    log.asked.length = 0;
+    await act(async () => {
+      await app.router.navigate({ to: "/audit" });
+    });
+    await table();
+    await settle();
+    expect(log.asked).toEqual([`?limit=${PAGE}`]);
+    expect(filter()).toHaveValue("");
+    expect(rows()).toHaveLength(PAGE);
+    expect(loadOlder()).toBeInTheDocument();
   });
 
   test("while the log is read again the table says so, and Refresh stays where it is", async () => {

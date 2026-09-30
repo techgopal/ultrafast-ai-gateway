@@ -273,7 +273,9 @@ export const AUDIT_PAGE_SIZE = 50;
  * Reading it again is one request for every page that is loaded, one after
  * the other. So it is not read again when the window gets the focus or the
  * network comes back, as the other lists are: the user starts it again
- * (`useAuditFromTheStart`), which is one request.
+ * (`useAuditFromTheStart`), which is one request. Nor is it kept when the
+ * page that shows it is left (`gcTime: 0`): opened again, the log starts
+ * from its newest page, as when it was first opened.
  */
 export const useAuditPages = () =>
   useInfiniteQuery({
@@ -288,6 +290,7 @@ export const useAuditPages = () =>
       last.entries.length < AUDIT_PAGE_SIZE ? undefined : last.entries.at(-1)?.id,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
+    gcTime: 0,
   });
 
 /**
