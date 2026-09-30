@@ -1399,6 +1399,89 @@ describe("creating a key", () => {
     expect(posts.calls).toBe(1);
   });
 
+  describe("while the key is created the dialog stays", () => {
+    /** A member's dialog, sent, with the answer held. */
+    async function sending(answer: () => Response) {
+      const door = gate();
+      const posts = counted("post", "/api/keys", async () => {
+        await door.opened;
+        return answer();
+      });
+      const app = await page({ user: fixtures.me.lena });
+      const dialog = await openCreate(false);
+      const name = within(dialog).getByLabelText("Name");
+      await userEvent.type(name, "laptop");
+      await send(dialog);
+      await within(dialog).findByRole("button", { name: "Creating the key" });
+      return { app, dialog, name, posts, door };
+    }
+
+    function overlay(): Element {
+      const found = document.querySelector('[data-slot="dialog-overlay"]');
+      if (found === null) throw new Error("no overlay");
+      return found;
+    }
+
+    test("Escape, a click beside it, Cancel and a second submit do nothing; one request, and the key is shown once", async () => {
+      const { app, dialog, name, posts, door } = await sending(() =>
+        ok("post", "/api/keys", 201, { key: active, secret: SECRET }),
+      );
+      const open = () => screen.queryByRole("dialog", { name: "Create key" });
+
+      await userEvent.keyboard("{Escape}");
+      expect(open()).toBe(dialog);
+      await userEvent.click(overlay());
+      expect(open()).toBe(dialog);
+      // There is no button to leave by.
+      expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+      expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(open()).toBe(dialog);
+      // Nor is the form sent a second time: not by Enter, not by a submit of the form itself.
+      await userEvent.type(name, "{Enter}");
+      fireEvent.submit(within(dialog).getByRole("form", { name: "Create key" }));
+      await settle();
+      expect(open()).toBe(dialog);
+      expect(name).toHaveValue("laptop");
+      expect(posts.calls).toBe(1);
+
+      act(() => {
+        door.open();
+      });
+      const secret = await secretDialog();
+      expect(within(secret).getByLabelText("Your new key")).toHaveValue(SECRET);
+      expect(open()).toBeNull();
+      await closeSecret();
+      await settle();
+      // Once: no second dialog, no second request, and nothing keeps the key.
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(posts.calls).toBe(1);
+      expectNoSecret(app, SECRET);
+      await waitFor(() => {
+        expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+      });
+    });
+
+    test("after a refusal it can be left again", async () => {
+      const { dialog, posts, door } = await sending(() => refuse(errors.forbidden));
+      await userEvent.keyboard("{Escape}");
+      expect(screen.getByRole("dialog", { name: "Create key" })).toBe(dialog);
+      act(() => {
+        door.open();
+      });
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+        errors.forbidden.body.error.message,
+      );
+      await waitFor(() => {
+        expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
+      });
+      expect(within(dialog).getByRole("button", { name: "Close" })).toBeInTheDocument();
+      await userEvent.keyboard("{Escape}");
+      await closed();
+      expect(posts.calls).toBe(1);
+    });
+  });
+
   test("the session has ended when the key is created: signed out, and the form says nothing", async () => {
     startGateway({ signedIn: true, me: fixtures.me.lena });
     const posts = counted("post", "/api/keys", unauthenticated);
