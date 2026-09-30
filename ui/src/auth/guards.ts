@@ -16,6 +16,8 @@ export type ConsoleAction =
   /** Changes the name of the user: everybody their own, an admin every one. */
   | { type: "renameUser"; userId: number }
   | { type: "createTeam" }
+  /** Sees the team and its members: its members do, in any role. */
+  | { type: "viewTeam"; teamId: number }
   | { type: "renameTeam"; teamId: number }
   | { type: "deleteTeam"; teamId: number }
   /** Adds a user to the team as a member. */
@@ -66,6 +68,8 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "removeMember":
     case "createKeyForMember":
       return leads(me, action.teamId);
+    case "viewTeam":
+      return isIn(me, action.teamId);
     case "createKeyForSelf":
       return action.teamId === null || isIn(me, action.teamId);
     case "revokeKey":

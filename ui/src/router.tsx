@@ -20,6 +20,8 @@ import { AcceptInvite } from "@/pages/AcceptInvite";
 import { PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
 import { Setup } from "@/pages/Setup";
+import { TeamDetail } from "@/pages/TeamDetail";
+import { Teams } from "@/pages/Teams";
 import { UserDetail } from "@/pages/UserDetail";
 import { Users } from "@/pages/Users";
 import { SignIn } from "@/pages/SignIn";
@@ -209,6 +211,24 @@ const userRoute = createRoute({
   },
 });
 
+const teamsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/teams",
+  staticData: { title: "Teams" },
+  component: Teams,
+});
+
+const teamRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/teams/$id",
+  staticData: { title: "Team" },
+  component: function TeamRoute() {
+    const { id } = teamRoute.useParams();
+    // Another team is another page: its dialogs and its state do not carry over.
+    return <TeamDetail key={id} id={id} />;
+  },
+});
+
 const signInRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/sign-in",
@@ -252,7 +272,8 @@ const routeTree = rootRoute.addChildren([
     page("/keys", "Virtual keys"),
     usersRoute,
     userRoute,
-    page("/teams", "Teams"),
+    teamsRoute,
+    teamRoute,
     auditRoute,
     page("/account", "Account"),
   ]),
