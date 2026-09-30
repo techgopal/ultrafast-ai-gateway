@@ -86,12 +86,17 @@ function onUserId(message: string): ConsoleRefusal {
   return new ConsoleRefusal(message, "user_id");
 }
 
-/** The refusals of the gateway that are about the user who is added. */
-function aboutTheUser(error: unknown): unknown {
+/**
+ * The refusals of the gateway that are about the user who is added, said by
+ * the field. Each stays the answer of the gateway that it is.
+ */
+export function aboutTheUser(error: unknown): unknown {
   // The gateway says "not found"; the form says what was not found. It may be
   // the team as well: `usePutTeamMember` asks for the team again, and when it
   // is gone the page shows that in place of this form.
-  if (error instanceof ApiError && error.status === 404) return onUserId(NO_USER_WITH_ID);
+  if (error instanceof ApiError && error.status === 404) {
+    return onField(error, error.code, "user_id", NO_USER_WITH_ID);
+  }
   return onField(error, "user_disabled", "user_id");
 }
 

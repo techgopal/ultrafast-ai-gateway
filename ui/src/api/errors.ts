@@ -50,6 +50,10 @@ export class SessionOverError extends Error {
  * sent, or an answer that cannot be used. It is not an answer of the gateway,
  * and so has no status and no code; `ApiError` is only what the gateway said.
  * The message is a text of the console, written for the user.
+ *
+ * An answer of the gateway is never turned into one, also not where a form
+ * says it in words of its own: it stays an `ApiError`, and `onField` of
+ * `components/form.ts` gives the field its text.
  */
 export class ConsoleRefusal extends Error {
   override readonly name = "ConsoleRefusal";
