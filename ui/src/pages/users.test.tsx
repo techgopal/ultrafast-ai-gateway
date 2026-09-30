@@ -1,8 +1,9 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
+import { createMemoryHistory } from "@tanstack/react-router";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { ApiError, ConsoleRefusal } from "@/api/errors";
 import { queryKeys } from "@/api/queries";
 import { inviteUrl } from "@/pages/Users";
@@ -31,6 +32,7 @@ import {
   shown,
   toasts,
   watchTheDocument,
+  watchTheWayFrom,
 } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
@@ -1484,6 +1486,99 @@ describe("deleting a user", () => {
     expect(read.calls).toBe(0);
     expect(screen.queryByRole("heading", { name: NOT_FOUND })).toBeNull();
     expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  test("the watch of the way sees what shows for a moment", async () => {
+    const door = gate();
+    override("get", "/api/users/{id}", async () => {
+      await door.opened;
+      return refuse(errors.not_found);
+    });
+    const way = watchTheWayFrom("Loading the user");
+    await detail(lena);
+    expect(screen.getByRole("status", { name: "Loading the user" })).toBeInTheDocument();
+    act(() => {
+      door.open();
+    });
+    await screen.findByRole("heading", { name: NOT_FOUND });
+    // The skeleton is gone by now: it was seen on the way.
+    expect(screen.queryByRole("status", { name: "Loading the user" })).toBeNull();
+    expect(way.seen()).toEqual(["Loading the user", NOT_FOUND]);
+  });
+
+  test("who deletes a user sees neither the skeleton nor 'not found' on the way to the list", async () => {
+    const gateway = startGateway({ signedIn: true });
+    const read = counted("get", "/api/users/{id}", () => ok("get", "/api/users/{id}", 200, lena));
+    const rest = fixtures.userList.filter((user) => user.id !== lena.id);
+    // The way to the list is held open, so that everything that can happen on
+    // it does: the answer of `me` arrives while the page of the user is shown.
+    const door = gate();
+    const history = createMemoryHistory({ initialEntries: [`/users/${lena.id}`] });
+    const push = history.push.bind(history);
+    const pushed = vi.spyOn(history, "push").mockImplementation((...to) => {
+      void door.opened.then(() => {
+        push(...to);
+      });
+    });
+    const app = await renderWithApp(null, { history });
+    const dialog = await ask("Delete", "Delete this user?");
+    // Afterwards the user is gone, and the answer of `me` differs, so that the
+    // page renders once more.
+    const removed = counted("delete", "/api/users/{id}", () => {
+      override("get", "/api/users/{id}", () => {
+        read.calls += 1;
+        return refuse(errors.not_found);
+      });
+      override("get", "/api/auth/me", () => {
+        gateway.meCalls += 1;
+        return ok("get", "/api/auth/me", 200, {
+          ...fixtures.me.maya,
+          user: { ...maya, last_active_at: "2026-09-29 10:00:00" },
+        });
+      });
+      return noContent();
+    });
+    usersAre(rest);
+    const before = gateway.meCalls;
+    expect(read.calls).toBe(1);
+
+    const way = watchTheWayFrom("Loading the user");
+    await confirm(dialog, "Delete");
+    await waitFor(() => {
+      expect(pushed).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(gateway.meCalls).toBe(before + 1);
+    });
+    await settle(60);
+    // Still on the page of the user, which is what it shows.
+    expect(way.seen()).toEqual([]);
+    expect(href(app)).toBe(`/users/${lena.id}`);
+    expect(
+      screen.getByRole("heading", { level: 1, name: lena.name, hidden: true }),
+    ).toBeInTheDocument();
+    expect(read.calls).toBe(1);
+
+    act(() => {
+      door.open();
+    });
+    await waitFor(() => {
+      expect(href(app)).toBe("/users");
+    });
+    await table();
+    await waitFor(() => {
+      expect(toasts()).toEqual(["User deleted."]);
+    });
+    await settle(60);
+    expect(way.seen()).toEqual([]);
+    // The user who is gone was not asked for again, and is kept no longer.
+    expect(removed.calls).toBe(1);
+    expect(read.calls).toBe(1);
+    expect(
+      app.queryClient.getQueryCache().find({ queryKey: queryKeys.users.detail(lena.id) }),
+    ).toBeUndefined();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByRole("link", { name: lena.name })).toBeNull();
   });
 
   test("delete is not offered on the own page", async () => {

@@ -129,6 +129,23 @@ export function watchTheDocument(find: (scope: Element) => string[]): { seen: ()
   };
 }
 
+/**
+ * Watches for what must not show on the way from the page of a thing that is
+ * gone to its list, also when it shows only for a moment: the skeleton of the
+ * page, which `loading` names, and the heading of "not found". Gives the
+ * names of what it saw.
+ */
+export function watchTheWayFrom(loading: string): { seen: () => string[] } {
+  return watchTheDocument((scope) => {
+    const found: string[] = [];
+    if (inside(scope, `[role="status"][aria-label="${loading}"]`).length > 0) found.push(loading);
+    if (inside(scope, "h1, h2").some((heading) => heading.textContent === NOT_FOUND)) {
+      found.push(NOT_FOUND);
+    }
+    return found;
+  });
+}
+
 export interface Counted {
   calls: number;
   /** The bodies of the calls that had one. */
