@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { queryKeys } from "@/api/queries";
-import { errors, fieldMessages, validationFailed } from "@/test/errors";
+import { errors, fieldMessages, validationFailed, type GatewayError } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
 import { gate, startGateway } from "@/test/gateway";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
@@ -25,6 +25,7 @@ import {
   SESSION_ENDED,
   settle,
   shown,
+  stored,
   toasts,
 } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
@@ -37,7 +38,8 @@ const API_KEY = "sk-made-up-0123456789abcdef-works-nowhere";
 const NAME_HINT = "lowercase letters, digits, - and _";
 const V1_HINT = "The base URL of an OpenAI-compatible provider usually ends in /v1.";
 const DELETE = "Calls to models of this provider will fail at once.";
-const ENTER_AGAIN = "The API key was cleared. Enter it again.";
+const KEY_HINT = "Optional. The gateway stores it encrypted and never shows it.";
+const NEW_KEY_HINT = "The gateway stores it encrypted and never shows it.";
 
 /** The known base URLs of the brief, with the kind each one is of. */
 const KNOWN = [
@@ -97,6 +99,12 @@ function keeps(start: readonly fixtures.Provider[] = fixtures.providerList) {
   const state = {
     providers: [...start],
     lists: 0,
+    /** What the next attempts to add are refused with, in their order, before one is taken. */
+    refuseAdd: [] as GatewayError[],
+    /** The same for the next attempts to change a provider. */
+    refuseChange: [] as GatewayError[],
+    /** The body of every attempt to add, also of one that was refused. */
+    sent: [] as unknown[],
     created: [] as unknown[],
     patched: [] as { id: string | undefined; body: unknown }[],
     deleted: [] as (string | undefined)[],
@@ -107,6 +115,9 @@ function keeps(start: readonly fixtures.Provider[] = fixtures.providerList) {
   });
   override("post", "/api/providers", async ({ request }) => {
     const body: unknown = await request.json();
+    state.sent.push(body);
+    const refusal = state.refuseAdd.shift();
+    if (refusal !== undefined) return refuse(refusal);
     state.created.push(body);
     const provider: fixtures.Provider = {
       id: 9,
@@ -121,6 +132,8 @@ function keeps(start: readonly fixtures.Provider[] = fixtures.providerList) {
   override("patch", "/api/providers/{id}", async ({ request, params }) => {
     const body: unknown = await request.json();
     state.patched.push({ id: params.id, body });
+    const refusal = state.refuseChange.shift();
+    if (refusal !== undefined) return refuse(refusal);
     const was = state.providers.find((one) => String(one.id) === params.id);
     if (was === undefined) return refuse(errors.not_found);
     const url = read(body, "base_url");
@@ -193,6 +206,45 @@ function save(dialog: HTMLElement): Promise<void> {
 function expectNoKey(app: AppRenderResult): void {
   expectNoSecret(app, API_KEY);
 }
+
+/**
+ * The key is what `field` holds, and it is nowhere else: in no other field,
+ * in no text of the page, in neither cache, not in the router and not in
+ * what the browser keeps.
+ */
+function expectKeyInTheFieldOnly(app: AppRenderResult, field: HTMLElement): void {
+  expect(field).toHaveValue(API_KEY);
+  const holding = [...document.querySelectorAll("input, textarea")].filter(
+    (one) =>
+      (one instanceof HTMLInputElement || one instanceof HTMLTextAreaElement) &&
+      one.value.includes(API_KEY),
+  );
+  expect(holding).toEqual([field]);
+  expect(document.body.textContent).not.toContain(API_KEY);
+  expect(cached(app.queryClient)).not.toContain(API_KEY);
+  expect(JSON.stringify(app.router.state)).not.toContain(API_KEY);
+  expect(stored()).not.toContain(API_KEY);
+}
+
+/** No mutation is kept: not the one that was refused, with what it sent. */
+async function mutationsAreForgotten(app: AppRenderResult): Promise<void> {
+  await waitFor(() => {
+    expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+  });
+}
+
+/** The three ways out of a dialog that send nothing. */
+const WAYS_OUT = {
+  Cancel: (dialog: HTMLElement) =>
+    userEvent.click(within(dialog).getByRole("button", { name: "Cancel" })),
+  Escape: () => userEvent.keyboard("{Escape}"),
+  "a click beside the dialog": async () => {
+    const overlay = document.querySelector('[data-slot="dialog-overlay"]');
+    if (overlay === null) throw new Error("no overlay");
+    await userEvent.click(overlay);
+  },
+} as const;
+const waysOut = Object.entries(WAYS_OUT);
 
 describe("the list of providers", () => {
   test("the list shows the name, the kind, the base URL and whether a credential is set", async () => {
@@ -536,9 +588,119 @@ describe("adding a provider", () => {
       expectNoKey(app);
     });
 
-    test("after a submit that was refused: the field is empty, and says so", async () => {
+    test.each([
+      ["a name that is taken (409)", errors.provider_exists, errors.provider_exists.body.error.message],
+      [
+        "a name that is not valid (422)",
+        validationFailed({ name: fieldMessages.providerName }),
+        fieldMessages.providerName,
+      ],
+    ])(
+      "after a submit that was refused for %s the field still holds the key, and the corrected form sends it",
+      async (_, refusal, message) => {
+        const written = listenToConsole();
+        const state = keeps();
+        state.refuseAdd.push(refusal);
+        const app = await page();
+        await table();
+        const dialog = await openAdd();
+        const name = within(dialog).getByLabelText("Name");
+        await userEvent.type(name, "openai");
+        await known(dialog, "OpenAI");
+        const key = within(dialog).getByLabelText("API key");
+        await enter(key, API_KEY);
+        await add(dialog);
+        await within(dialog).findByText(message);
+        expect(read(state.sent[0], "api_key")).toBe(API_KEY);
+
+        // What is sent next is what the form shows: the key is still in its field.
+        expect(name).toHaveFocus();
+        expect(key).toHaveAttribute("type", "password");
+        expect(descriptionOf(key)).toBe(KEY_HINT);
+        expect(dialog).not.toHaveTextContent("The API key was cleared");
+        // And in the field only: the mutation that was refused is kept no longer.
+        await mutationsAreForgotten(app);
+        expectKeyInTheFieldOnly(app, key);
+        expect(toasts()).toEqual([]);
+
+        // The name is corrected, and the form is sent with Enter.
+        await userEvent.clear(name);
+        await userEvent.type(name, "openai-eu{Enter}");
+        await closed();
+        expect(state.sent).toHaveLength(2);
+        expect(state.created).toEqual([
+          {
+            name: "openai-eu",
+            kind: "openai",
+            base_url: "https://api.openai.com/v1",
+            api_key: API_KEY,
+          },
+        ]);
+        // The provider has its credential.
+        await waitFor(() => {
+          expect(rowOf("openai-eu")).toHaveTextContent("Set");
+        });
+        expect(await screen.findByRole("status")).toHaveTextContent("openai-eu/<model>");
+        expectNoKey(app);
+        await mutationsAreForgotten(app);
+        expect(toasts()).toEqual([]);
+        expect(written()).not.toContain(API_KEY);
+      },
+    );
+
+    test("after a refused submit the field says what it said before, with a key and without one", async () => {
       const posts = counted("post", "/api/providers", () => refuse(errors.provider_exists));
+      await page();
+      const dialog = await openAdd();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "openai");
+      await known(dialog, "OpenAI");
+      const key = within(dialog).getByLabelText("API key");
+      expect(descriptionOf(key)).toBe(KEY_HINT);
+      await add(dialog);
+      await within(dialog).findByText(errors.provider_exists.body.error.message);
+      expect(key).toHaveValue("");
+      expect(descriptionOf(key)).toBe(KEY_HINT);
+
+      await enter(key, API_KEY);
+      await add(dialog);
+      await waitFor(() => {
+        expect(posts.calls).toBe(2);
+      });
+      await within(dialog).findByText(errors.provider_exists.body.error.message);
+      expect(key).toHaveValue(API_KEY);
+      expect(descriptionOf(key)).toBe(KEY_HINT);
+      // The rest of the form is kept, too.
+      expect(within(dialog).getByLabelText("Name")).toHaveValue("openai");
+      expect(within(dialog).getByLabelText("Base URL")).toHaveValue("https://api.openai.com/v1");
+    });
+
+    test.each(waysOut.filter(([way]) => way !== "Cancel"))(
+      "after %s",
+      async (_, leave) => {
+        const state = keeps();
+        const app = await page();
+        await table();
+        const dialog = await openAdd();
+        await enter(within(dialog).getByLabelText("API key"), API_KEY);
+        await userEvent.click(within(dialog).getByRole("button", { name: /^Show/ }));
+        expect(shown()).toContain(API_KEY);
+        await leave(dialog);
+        await closed();
+        expectNoKey(app);
+        expect(state.sent).toEqual([]);
+        const again = await openAdd();
+        const key = within(again).getByLabelText("API key");
+        expect(key).toHaveValue("");
+        expect(key).toHaveAttribute("type", "password");
+        expectNoKey(app);
+      },
+    );
+
+    test.each(waysOut)("after a refused submit and %s", async (_, leave) => {
+      const state = keeps();
+      state.refuseAdd.push(errors.provider_exists);
       const app = await page();
+      await table();
       const dialog = await openAdd();
       await userEvent.type(within(dialog).getByLabelText("Name"), "openai");
       await known(dialog, "OpenAI");
@@ -546,29 +708,17 @@ describe("adding a provider", () => {
       await enter(key, API_KEY);
       await add(dialog);
       await within(dialog).findByText(errors.provider_exists.body.error.message);
-      expect(read(posts.bodies[0], "api_key")).toBe(API_KEY);
-      expect(key).toHaveValue("");
-      expect(descriptionOf(key)).toBe(ENTER_AGAIN);
-      // Neither the form nor the mutation that failed keeps it.
+      expect(key).toHaveValue(API_KEY);
+      await leave(dialog);
+      await closed();
+      // The key went with the form that held it.
       expectNoKey(app);
-      // The rest of the form is kept.
-      expect(within(dialog).getByLabelText("Name")).toHaveValue("openai");
-      expect(within(dialog).getByLabelText("Base URL")).toHaveValue("https://api.openai.com/v1");
-      // Typed again, the field says what it said before.
-      await enter(key, "sk");
-      expect(descriptionOf(key)).not.toContain(ENTER_AGAIN);
-      expect(descriptionOf(key)).not.toBe("");
-    });
-
-    test("after a refused submit without a key the field does not ask for one again", async () => {
-      override("post", "/api/providers", () => refuse(errors.provider_exists));
-      await page();
-      const dialog = await openAdd();
-      await userEvent.type(within(dialog).getByLabelText("Name"), "openai");
-      await known(dialog, "OpenAI");
-      await add(dialog);
-      await within(dialog).findByText(errors.provider_exists.body.error.message);
-      expect(descriptionOf(within(dialog).getByLabelText("API key"))).not.toContain(ENTER_AGAIN);
+      await mutationsAreForgotten(app);
+      const again = await openAdd();
+      expect(within(again).getByLabelText("API key")).toHaveValue("");
+      expect(within(again).getByLabelText("Name")).toHaveValue("");
+      expectNoKey(app);
+      expect(state.sent).toHaveLength(1);
     });
 
     test("after a submit that succeeded", async () => {
@@ -593,7 +743,7 @@ describe("adding a provider", () => {
     });
   });
 
-  test("while the request runs the key is in the request only, and nowhere after it", async () => {
+  test("while the request runs the key is in the request and the field, and after a refusal in the field only", async () => {
     const door = gate();
     override("post", "/api/providers", async () => {
       await door.opened;
@@ -603,7 +753,8 @@ describe("adding a provider", () => {
     const dialog = await openAdd();
     await userEvent.type(within(dialog).getByLabelText("Name"), "groq");
     await known(dialog, "Groq");
-    await enter(within(dialog).getByLabelText("API key"), API_KEY);
+    const key = within(dialog).getByLabelText("API key");
+    await enter(key, API_KEY);
     await add(dialog);
     await within(dialog).findByRole("button", { name: "Adding the provider" });
     act(() => {
@@ -612,9 +763,10 @@ describe("adding a provider", () => {
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       errors.internal_error.body.error.message,
     );
-    // The mutation that failed does not keep what it sent.
+    // The mutation that failed does not keep what it sent: the field has it, to send it again.
     expect(cached(app.queryClient)).not.toContain(API_KEY);
-    expectNoKey(app);
+    await mutationsAreForgotten(app);
+    expectKeyInTheFieldOnly(app, key);
   });
 
   test("provider errors", async () => {
@@ -907,7 +1059,7 @@ describe("editing a provider", () => {
     });
   });
 
-  test("the errors of the fields show on them, and the new key is cleared", async () => {
+  test("the errors of the fields show on them, and the new key stays in its field", async () => {
     const patches = counted("patch", "/api/providers/{id}", () =>
       refuse(validationFailed({ base_url: fieldMessages.baseUrlQuery, api_key: fieldMessages.apiKey })),
     );
@@ -923,12 +1075,118 @@ describe("editing a provider", () => {
       expect(descriptionOf(url)).toContain(fieldMessages.baseUrlQuery);
     });
     expect(url).toHaveFocus();
-    expect(descriptionOf(key)).toContain(fieldMessages.apiKey);
-    expect(key).toHaveValue("");
+    expect(descriptionOf(key)).toBe(`${fieldMessages.apiKey} ${NEW_KEY_HINT}`);
+    expect(dialog).not.toHaveTextContent("The API key was cleared");
     expect(dialog).toBeInTheDocument();
     expect(toasts()).toEqual([]);
     expect(patches.calls).toBe(1);
+    expect(read(patches.bodies[0], "api_key")).toBe(API_KEY);
+    // In its field, and nowhere else: the mutation that was refused is kept no longer.
+    await mutationsAreForgotten(app);
+    expectKeyInTheFieldOnly(app, key);
+  });
+
+  test("a refused replace keeps the new key, and the corrected form sends it", async () => {
+    const written = listenToConsole();
+    const state = keeps();
+    state.refuseChange.push(validationFailed({ base_url: fieldMessages.baseUrlQuery }));
+    const app = await page();
+    const dialog = await openEdit(withCredential);
+    const url = within(dialog).getByLabelText("Base URL");
+    await userEvent.clear(url);
+    await userEvent.type(url, `${OTHER_URL}?x=1`);
+    await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+    const key = within(dialog).getByLabelText("New API key");
+    await enter(key, API_KEY);
+    await save(dialog);
+    await waitFor(() => {
+      expect(descriptionOf(url)).toContain(fieldMessages.baseUrlQuery);
+    });
+    expect(url).toHaveFocus();
+    expect(within(dialog).getByRole("radio", { name: "Replace the key" })).toBeChecked();
+    expect(descriptionOf(key)).toBe(NEW_KEY_HINT);
+    await mutationsAreForgotten(app);
+    expectKeyInTheFieldOnly(app, key);
+
+    // The address is corrected, and the form is sent with Enter.
+    await userEvent.clear(url);
+    await userEvent.type(url, `${OTHER_URL}{Enter}`);
+    await closed();
+    expect(state.patched.map((patch) => patch.body)).toEqual([
+      { base_url: `${OTHER_URL}?x=1`, api_key: API_KEY },
+      { base_url: OTHER_URL, api_key: API_KEY },
+    ]);
+    expect(toasts()).toEqual(["Provider updated."]);
     expectNoKey(app);
+    await mutationsAreForgotten(app);
+    expect(written()).not.toContain(API_KEY);
+  });
+
+  describe("the new api key is cleared", () => {
+    async function typed(dialog: HTMLElement): Promise<HTMLElement> {
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+      const key = within(dialog).getByLabelText("New API key");
+      await enter(key, API_KEY);
+      return key;
+    }
+
+    /** Opened again, the form keeps the current key, and the field of a new one is empty. */
+    async function expectEmptyAgain(app: AppRenderResult): Promise<void> {
+      const again = await openEdit(withCredential);
+      expect(within(again).getByRole("radio", { name: "Keep the current key" })).toBeChecked();
+      expect(within(again).queryByLabelText("New API key")).toBeNull();
+      await userEvent.click(within(again).getByRole("radio", { name: "Replace the key" }));
+      const key = within(again).getByLabelText("New API key");
+      expect(key).toHaveValue("");
+      expect(key).toHaveAttribute("type", "password");
+      expectNoKey(app);
+    }
+
+    test("after a submit that succeeded", async () => {
+      const state = keeps();
+      const app = await page();
+      const dialog = await openEdit(withCredential);
+      await typed(dialog);
+      await save(dialog);
+      await closed();
+      expect(read(state.patched[0]?.body, "api_key")).toBe(API_KEY);
+      expectNoKey(app);
+      await mutationsAreForgotten(app);
+      await expectEmptyAgain(app);
+    });
+
+    test.each(waysOut)("after %s", async (_, leave) => {
+      const state = keeps();
+      const app = await page();
+      const dialog = await openEdit(withCredential);
+      await typed(dialog);
+      await userEvent.click(within(dialog).getByRole("button", { name: /^Show/ }));
+      expect(shown()).toContain(API_KEY);
+      await leave(dialog);
+      await closed();
+      expectNoKey(app);
+      expect(state.patched).toEqual([]);
+      await expectEmptyAgain(app);
+    });
+
+    test.each(waysOut)("after a refused submit and %s", async (_, leave) => {
+      const state = keeps();
+      state.refuseChange.push(validationFailed({ api_key: fieldMessages.apiKey }));
+      const app = await page();
+      const dialog = await openEdit(withCredential);
+      const key = await typed(dialog);
+      await save(dialog);
+      await waitFor(() => {
+        expect(descriptionOf(key)).toContain(fieldMessages.apiKey);
+      });
+      expect(key).toHaveValue(API_KEY);
+      await leave(dialog);
+      await closed();
+      expectNoKey(app);
+      await mutationsAreForgotten(app);
+      await expectEmptyAgain(app);
+      expect(state.patched).toHaveLength(1);
+    });
   });
 
   test("a provider that is gone: the form says so, and the list is asked for again", async () => {

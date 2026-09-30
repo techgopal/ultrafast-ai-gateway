@@ -35,7 +35,6 @@ type UpdateProviderRequest = components["schemas"]["UpdateProviderRequest"];
 
 export const NAME_HINT = "lowercase letters, digits, - and _";
 export const V1_HINT = "The base URL of an OpenAI-compatible provider usually ends in /v1.";
-export const KEY_CLEARED = "The API key was cleared. Enter it again.";
 export const DELETE_CONSEQUENCE = "Calls to models of this provider will fail at once.";
 
 export const DONE = {
@@ -76,7 +75,9 @@ interface ApiKeyInputProps {
 /**
  * The field of an API key: what is typed is hidden unless the user asks to
  * see it, and the browser is asked not to remember it. The key is held by the
- * form while it is typed and sent, and by nothing afterwards.
+ * form, and by nothing else: it goes when the request succeeded, and with the
+ * form when the dialog closes. After a request that was refused it is still
+ * in its field, so that what is sent next is what the form shows.
  */
 function ApiKeyInput({ wiring, value, onChange, onBlur }: ApiKeyInputProps) {
   const [shown, setShown] = useState(false);
@@ -121,8 +122,6 @@ interface AddFormProps {
 function AddForm({ create, onAdded, onCancel }: AddFormProps) {
   const { mutateAsync, reset } = create;
   const knownId = useId();
-  // The key went with a request that was refused: the field says so.
-  const [cleared, setCleared] = useState(false);
   const form = useForm({
     defaultValues: { name: "", kind: "openai", base_url: "", api_key: "" },
     onSubmit: async ({ value }) => {
@@ -135,11 +134,13 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
       if (value.api_key.trim() !== "") body.api_key = value.api_key;
       try {
         const made = await mutateAsync(body);
-        forgetKey();
+        // The provider has the key now: the form holds it no longer.
+        form.setFieldValue("api_key", "");
+        reset();
         onAdded(made.name);
       } catch (error) {
-        forgetKey();
-        setCleared(body.api_key !== undefined);
+        // The mutation does not keep what it sent. The field does: see `ApiKeyInput`.
+        reset();
         applyApiError(form, onField(error, "provider_exists", "name"));
       }
     },
@@ -147,12 +148,6 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
-
-  /** After the request the key is in no field and in no mutation. */
-  function forgetKey() {
-    form.setFieldValue("api_key", "");
-    reset();
-  }
 
   return (
     <form
@@ -267,9 +262,7 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
           <Field
             label="API key"
             name={field.name}
-            hint={
-              cleared ? KEY_CLEARED : "Optional. The gateway stores it encrypted and never shows it."
-            }
+            hint="Optional. The gateway stores it encrypted and never shows it."
             error={failure.fieldError(field.name)}
           >
             {(wiring) => (
@@ -277,10 +270,7 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
                 wiring={wiring}
                 value={field.state.value}
                 onBlur={field.handleBlur}
-                onChange={(value) => {
-                  setCleared(false);
-                  field.handleChange(value);
-                }}
+                onChange={field.handleChange}
               />
             )}
           </Field>
@@ -345,7 +335,6 @@ interface EditFormProps {
 // it is. The credential it has is not in the form: the API never returns it.
 function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
   const { mutateAsync, reset } = update;
-  const [cleared, setCleared] = useState(false);
   const form = useForm({
     defaultValues: { base_url: provider.base_url, credential: "keep", api_key: "" },
     onSubmit: async ({ value }) => {
@@ -355,11 +344,13 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
       if (value.credential === "remove") body.api_key = null;
       try {
         await mutateAsync({ id: provider.id, body });
-        forgetKey();
+        // The provider has the key now: the form holds it no longer.
+        form.setFieldValue("api_key", "");
+        reset();
         onDone();
       } catch (error) {
-        forgetKey();
-        setCleared(typeof body.api_key === "string" && body.api_key !== "");
+        // The mutation does not keep what it sent. The field does: see `ApiKeyInput`.
+        reset();
         applyApiError(form, error);
       }
     },
@@ -368,12 +359,6 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
   const choices = provider.has_credential ? WITH_A_KEY : WITHOUT_A_KEY;
-
-  /** After the request the key is in no field and in no mutation. */
-  function forgetKey() {
-    form.setFieldValue("api_key", "");
-    reset();
-  }
 
   return (
     <form
@@ -426,7 +411,6 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
                     field.handleChange(next);
                     // A key that was typed is not kept behind another choice.
                     form.setFieldValue("api_key", "");
-                    setCleared(false);
                   }}
                 >
                   {choices.map(([value, label]) => (
@@ -445,9 +429,7 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
                     label="New API key"
                     name={key.name}
                     required
-                    hint={
-                      cleared ? KEY_CLEARED : "The gateway stores it encrypted and never shows it."
-                    }
+                    hint="The gateway stores it encrypted and never shows it."
                     error={failure.fieldError(key.name)}
                   >
                     {(wiring) => (
@@ -455,10 +437,7 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
                         wiring={wiring}
                         value={key.state.value}
                         onBlur={key.handleBlur}
-                        onChange={(value) => {
-                          setCleared(false);
-                          key.handleChange(value);
-                        }}
+                        onChange={key.handleChange}
                       />
                     )}
                   </Field>
