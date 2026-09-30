@@ -686,6 +686,7 @@ describe("what a mutation says is gone", () => {
   const cases = [
     {
       what: "a deleted team",
+      path: "/api/teams/{id}",
       key: q.queryKeys.teams.detail(growth.id),
       load: (client: QueryClient) => client.query(q.teamOptions(growth.id)),
       read: () =>
@@ -698,6 +699,7 @@ describe("what a mutation says is gone", () => {
     },
     {
       what: "a deleted user",
+      path: "/api/users/{id}",
       key: q.queryKeys.users.detail(lena.id),
       load: (client: QueryClient) => client.query(q.userOptions(lena.id)),
       read: () => reads("/api/users/{id}", () => ok("get", "/api/users/{id}", 200, lena)),
@@ -709,6 +711,7 @@ describe("what a mutation says is gone", () => {
     },
     {
       what: "a team the caller left",
+      path: "/api/teams/{id}",
       key: q.queryKeys.teams.detail(platform.id),
       load: (client: QueryClient) => client.query(q.teamOptions(platform.id)),
       read: () =>
@@ -804,6 +807,138 @@ describe("what a mutation says is gone", () => {
     });
     expect(detail.calls).toBe(1);
   });
+
+  // Between the success of the change and the page that follows it, the page
+  // of what is gone is still shown. A read of it in that time answers 404. It
+  // must not take from the page what it shows: "not found" would show on the
+  // way to the list.
+  const answers404 = () => refuse(errors.not_found);
+
+  function theWindowGetsTheFocus(): void {
+    act(() => {
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+  }
+
+  test.each(cases)(
+    "$what that is still shown keeps what is shown when a read of it answers 404, and is dropped when the page goes",
+    async (one) => {
+      one.read();
+      const client = appClient();
+      const page = renderHook(() => one.useShown(), { wrapper: wrapperOf(client) });
+      const app = elsewhere(client, one);
+      await waitFor(() => {
+        expect(page.result.current.isSuccess && app.result.current.list.isSuccess).toBe(true);
+      });
+      const loaded: unknown = page.result.current.data;
+      expect(loaded).toBeDefined();
+      await act(async () => {
+        await app.result.current.change.mutateAsync(one.variables as never);
+      });
+
+      // The user comes back to the tab: what is shown is read again.
+      const again = reads(one.path, answers404);
+      theWindowGetsTheFocus();
+      await waitFor(() => {
+        expect(again.calls).toBe(1);
+      });
+      await waitFor(() => {
+        expect(page.result.current.error).toMatchObject({ status: 404 });
+      });
+      // The answer is there, and so is what the page shows.
+      expect(page.result.current.data).toEqual(loaded);
+      expect(client.getQueryData(one.key)).toEqual(loaded);
+
+      page.unmount();
+      expect(inCache(client, one)).toBeUndefined();
+      expect(client.getQueryData(one.key)).toBeUndefined();
+      expect(client.getQueryCache().hasListeners()).toBe(false);
+    },
+  );
+
+  test.each(cases)(
+    "$what whose read was on its way when it went keeps what is shown when that read answers 404",
+    async (one) => {
+      one.read();
+      const client = appClient();
+      const page = renderHook(() => one.useShown(), { wrapper: wrapperOf(client) });
+      const app = elsewhere(client, one);
+      await waitFor(() => {
+        expect(page.result.current.isSuccess && app.result.current.list.isSuccess).toBe(true);
+      });
+      const loaded: unknown = page.result.current.data;
+
+      // A read is on its way, and is answered only after the change succeeded.
+      let answer: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        answer = resolve;
+      });
+      const onItsWay = { calls: 0 };
+      override("get", one.path, async () => {
+        onItsWay.calls += 1;
+        await held;
+        return answers404();
+      });
+      act(() => {
+        void client.refetchQueries({ queryKey: one.key, exact: true });
+      });
+      await waitFor(() => {
+        expect(onItsWay.calls).toBe(1);
+      });
+      await act(async () => {
+        await app.result.current.change.mutateAsync(one.variables as never);
+      });
+      expect(page.result.current.data).toEqual(loaded);
+
+      act(() => {
+        answer();
+      });
+      await waitFor(() => {
+        expect(page.result.current.error).toMatchObject({ status: 404 });
+      });
+      expect(page.result.current.data).toEqual(loaded);
+      expect(client.getQueryData(one.key)).toEqual(loaded);
+      // The mutation asked for nothing of it.
+      expect(onItsWay.calls).toBe(1);
+
+      page.unmount();
+      expect(inCache(client, one)).toBeUndefined();
+      expect(client.getQueryCache().hasListeners()).toBe(false);
+    },
+  );
+
+  test.each(cases)(
+    "$what is kept for the page that showed it only: shown again under the same key, a 404 drops it as any detail",
+    async (one) => {
+      const first = one.read();
+      const client = appClient();
+      const page = renderHook(() => one.useShown(), { wrapper: wrapperOf(client) });
+      const app = elsewhere(client, one);
+      await waitFor(() => {
+        expect(page.result.current.isSuccess && app.result.current.list.isSuccess).toBe(true);
+      });
+      await act(async () => {
+        await app.result.current.change.mutateAsync(one.variables as never);
+      });
+      page.unmount();
+      expect(inCache(client, one)).toBeUndefined();
+
+      // Back on the page of the same id. The gateway shows it, as for a team
+      // that the caller was added to again; then it hides it.
+      const back = renderHook(() => one.useShown(), { wrapper: wrapperOf(client) });
+      await waitFor(() => {
+        expect(back.result.current.isSuccess).toBe(true);
+      });
+      expect(first.calls).toBe(2);
+      reads(one.path, answers404);
+      theWindowGetsTheFocus();
+      await waitFor(() => {
+        expect(back.result.current.error).toMatchObject({ status: 404 });
+      });
+      expect(back.result.current.data).toBeUndefined();
+      expect(client.getQueryData(one.key)).toBeUndefined();
+    },
+  );
 
   test("what two places show is dropped when the last of them goes", async () => {
     const [one] = cases;

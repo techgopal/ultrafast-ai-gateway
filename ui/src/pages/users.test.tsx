@@ -13,6 +13,7 @@ import { gate, startGateway } from "@/test/gateway";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import {
   aCallFindsTheSessionEnded,
+  aWayThatIsHeld,
   cached,
   clientThatKeepsDataFresh,
   counted,
@@ -30,6 +31,7 @@ import {
   SESSION_ENDED,
   settle,
   shown,
+  theWindowGetsTheFocus,
   toasts,
   watchTheDocument,
   watchTheWayFrom,
@@ -1581,6 +1583,56 @@ describe("deleting a user", () => {
     expect(screen.queryByRole("link", { name: lena.name })).toBeNull();
   });
 
+
+  test("who deletes a user sees neither of them when the window gets the focus on the way", async () => {
+    startGateway({ signedIn: true });
+    const read = counted("get", "/api/users/{id}", () => ok("get", "/api/users/{id}", 200, lena));
+    const way = aWayThatIsHeld(`/users/${lena.id}`);
+    const app = await renderWithApp(null, { history: way.history });
+    const dialog = await ask("Delete", "Delete this user?");
+    // Afterwards the user is gone.
+    override("delete", "/api/users/{id}", () => {
+      override("get", "/api/users/{id}", () => {
+        read.calls += 1;
+        return refuse(errors.not_found);
+      });
+      return noContent();
+    });
+    usersAre(fixtures.userList.filter((user) => user.id !== lena.id));
+    expect(read.calls).toBe(1);
+
+    const watch = watchTheWayFrom("Loading the user");
+    await confirm(dialog, "Delete");
+    await waitFor(() => {
+      expect(way.pushes()).toBe(1);
+    });
+    // The user is deleted, and their page is still shown. The admin comes back to the tab.
+    theWindowGetsTheFocus();
+    await waitFor(() => {
+      expect(read.calls).toBe(2);
+    });
+    await settle(60);
+    // The read answered 404, and the page shows what it showed.
+    expect(watch.seen()).toEqual([]);
+    expect(href(app)).toBe(`/users/${lena.id}`);
+    expect(
+      screen.getByRole("heading", { level: 1, name: lena.name, hidden: true }),
+    ).toBeInTheDocument();
+
+    way.open();
+    await waitFor(() => {
+      expect(href(app)).toBe("/users");
+    });
+    await table();
+    await waitFor(() => {
+      expect(toasts()).toEqual(["User deleted."]);
+    });
+    await settle(60);
+    expect(watch.seen()).toEqual([]);
+    expect(
+      app.queryClient.getQueryCache().find({ queryKey: queryKeys.users.detail(lena.id) }),
+    ).toBeUndefined();
+  });
   test("delete is not offered on the own page", async () => {
     await detail(maya);
     await screen.findByRole("heading", { level: 1, name: maya.name });
