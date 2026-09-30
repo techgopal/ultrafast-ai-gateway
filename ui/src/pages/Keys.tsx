@@ -17,6 +17,7 @@ import { DataTable, type Column } from "@/components/DataTable";
 import { dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState, messageOfError } from "@/components/ErrorState";
+import { ExpiryField } from "@/components/ExpiryField";
 import { Field } from "@/components/Field";
 import { applyApiError, useFormFailure } from "@/components/form";
 import { FormError } from "@/components/FormError";
@@ -39,7 +40,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Select,
   SelectContent,
@@ -48,7 +48,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { dayIn, endOfDay, today } from "@/lib/expiry";
+import { expiryOf, NO_EXPIRY, type Expiry } from "@/lib/expiry";
 import { idOf } from "@/lib/id";
 
 type Key = components["schemas"]["KeyView"];
@@ -62,7 +62,6 @@ export const SUSPENDED_HINT = "The owner is not active";
 export const REVOKE_CONSEQUENCE = "Apps using this key stop working at once. This cannot be undone.";
 export const KEY_REVOKED = "Key revoked.";
 export const CHOOSE_A_TEAM = "Choose a team.";
-export const CHOOSE_A_DATE = "Choose a date.";
 export const TEAMS_NOT_LOADED = "Some teams could not be loaded.";
 
 const NO_OWNER = "No owner";
@@ -253,45 +252,12 @@ interface OwnerChoice {
   retry: () => void;
 }
 
-const EXPIRY = [
-  ["never", "Never"],
-  ["30", "In 30 days"],
-  ["90", "In 90 days"],
-  ["date", "On a date"],
-] as const;
-
-const DAYS: Record<string, number> = { "30": 30, "90": 90 };
-
-/**
- * When the key expires, as the form holds it. It is one value of the form,
- * under the name the gateway has for it: what is said about `expires_at`,
- * by the gateway or by the console, is said about the choice and the day
- * together, and goes when either of them is changed.
- */
-interface Expiry {
-  /** One of `EXPIRY`. */
-  choice: string;
-  /** The day, when the key expires on a date. */
-  day: string;
-}
-
 interface KeyValues {
   name: string;
   owner_id: string;
   /** The id of a team, `WITHOUT_TEAM`, or nothing while a team has to be chosen. */
   team_id: string;
   expires_at: Expiry;
-}
-
-/** When the key stops working, as the gateway takes it; nothing for never. */
-function expiryOf({ choice, day }: Expiry): string | undefined {
-  if (choice === "date") {
-    const end = endOfDay(day);
-    if (end === null) throw new ConsoleRefusal(CHOOSE_A_DATE, "expires_at");
-    return end;
-  }
-  const days = DAYS[choice];
-  return days === undefined ? undefined : (endOfDay(dayIn(days)) ?? undefined);
 }
 
 /** The teams a key of one owner can belong to, and whether it can have none. */
@@ -365,7 +331,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
     name: "",
     owner_id: String(me.user.id),
     team_id: WITHOUT_TEAM,
-    expires_at: { choice: "never", day: "" },
+    expires_at: NO_EXPIRY,
   };
   const form = useForm({
     defaultValues: start,
@@ -542,50 +508,14 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
 
       <form.Field name="expires_at">
         {(field) => (
-          <Field
-            group
-            label="Expires"
+          <ExpiryField
             name={field.name}
-            hint="A key expires at the end of its day, in UTC."
+            value={field.state.value}
+            onChange={field.handleChange}
+            onBlur={field.handleBlur}
             error={failure.fieldError(field.name)}
-          >
-            {/* The label of the field names the group. The day has a name of its own. */}
-            {({ id, name, "aria-labelledby": labelledBy, ...described }) => (
-              <div className="flex flex-col gap-2">
-                <RadioGroup
-                  {...described}
-                  id={id}
-                  name={name}
-                  aria-labelledby={labelledBy}
-                  value={field.state.value.choice}
-                  onValueChange={(choice) => {
-                    field.handleChange({ ...field.state.value, choice });
-                  }}
-                >
-                  {EXPIRY.map(([value, label]) => (
-                    <div key={value} className="flex min-h-11 items-center gap-2 md:min-h-8">
-                      <RadioGroupItem id={`${id}-${value}`} value={value} />
-                      <Label htmlFor={`${id}-${value}`}>{label}</Label>
-                    </div>
-                  ))}
-                </RadioGroup>
-                {field.state.value.choice === "date" ? (
-                  <Input
-                    {...described}
-                    type="date"
-                    aria-label="Expiry date"
-                    min={today()}
-                    className={control}
-                    value={field.state.value.day}
-                    onBlur={field.handleBlur}
-                    onChange={(event) => {
-                      field.handleChange({ ...field.state.value, day: event.target.value });
-                    }}
-                  />
-                ) : null}
-              </div>
-            )}
-          </Field>
+            hint="A key expires at the end of its day, in UTC."
+          />
         )}
       </form.Field>
 

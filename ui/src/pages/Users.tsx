@@ -14,10 +14,10 @@ import { applyApiError, onField, useFormFailure } from "@/components/form";
 import { FormError } from "@/components/FormError";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
+import { ROLE_NAMES, RoleBadge } from "@/components/RoleBadge";
 import { SecretDialog, useSecretOnce } from "@/components/SecretDialog";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timestamp } from "@/components/Timestamp";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -37,8 +37,6 @@ type User = components["schemas"]["UserView"];
 export const INVITE_LINK_TITLE = "Invite link";
 export const INVITE_LINK_DESCRIPTION =
   "Send this link to the user. It works once and expires in 7 days.";
-
-const ROLE_NAMES: Record<string, string> = { admin: "Admin", member: "Member" };
 
 export const INVITE_LINK_UNUSABLE = "The gateway returned an invite link that cannot be used.";
 
@@ -61,11 +59,6 @@ export function inviteUrl(path: string): string {
   }
   if (url.origin !== origin) throw unusable;
   return url.href;
-}
-
-/** A role in a neutral badge. One the console does not know is shown as it is. */
-export function RoleBadge({ role }: { role: string }) {
-  return <Badge variant="outline">{ROLE_NAMES[role] ?? role}</Badge>;
 }
 
 interface InviteFormProps {

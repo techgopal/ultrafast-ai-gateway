@@ -698,6 +698,53 @@ describe("mutations invalidate", () => {
     expect(client.getQueryData(q.queryKeys.me())).toBeDefined();
   });
 
+  test("a changed password reads the access tokens again: the gateway revoked them all", async () => {
+    const tokens = { calls: 0 };
+    override("get", "/api/tokens", () => {
+      tokens.calls += 1;
+      return ok("get", "/api/tokens", 200, { tokens: fixtures.tokenList });
+    });
+    const audit = counted("/api/audit");
+    const me = counted("/api/auth/me");
+    const { result } = renderHook(
+      () => ({
+        tokens: q.useTokens(),
+        audit: q.useAuditLog(),
+        me: q.useMe(),
+        change: q.useChangePassword(),
+      }),
+      { wrapper: wrapperOf(appClient()) },
+    );
+    await waitFor(() => {
+      expect(result.current.tokens.isSuccess && result.current.audit.isSuccess).toBe(true);
+    });
+    await waitFor(() => {
+      expect(result.current.me.isSuccess).toBe(true);
+    });
+    expect([tokens.calls, audit.calls, me.calls]).toEqual([1, 1, 1]);
+
+    await act(async () => {
+      await result.current.change.mutateAsync({ current_password: "a", new_password: "b" });
+    });
+    await waitFor(() => {
+      expect([tokens.calls, audit.calls]).toEqual([2, 2]);
+    });
+    // The session of the caller goes on as it is: who is signed in is not asked again.
+    expect(me.calls).toBe(1);
+
+    // A password that was refused changed nothing.
+    override("post", "/api/auth/password", () => refuse(errors.invalid_credentials));
+    await act(async () => {
+      await result.current.change
+        .mutateAsync({ current_password: "a", new_password: "b" })
+        .catch(() => undefined);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect([tokens.calls, audit.calls, me.calls]).toEqual([2, 2, 1]);
+  });
+
   test("a wrong current password does not sign out", async () => {
     const handler = vi.fn();
     const unsubscribe = onUnauthenticated(handler);

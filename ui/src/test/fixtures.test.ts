@@ -244,6 +244,24 @@ describe("the fixtures have the forms of the gateway", () => {
     expect(fixtures.keys.noOwner.owner_email).toBeNull();
   });
 
+  test("the tokens: one of each state the gateway tells apart", () => {
+    // crates/gateway/src/store/sessions.rs: a token works while it is not revoked
+    // and its time, when it has one, has not come.
+    const at = now();
+    const tokens: Record<keyof typeof fixtures.tokens, fixtures.Token> = fixtures.tokens;
+    const { active, neverUsed, revoked, expired } = tokens;
+    expect(fixtures.tokenList).toEqual([active, neverUsed, revoked, expired]);
+    expect([active.revoked_at, active.expires_at]).toEqual([null, null]);
+    expect(neverUsed.revoked_at).toBeNull();
+    expect(neverUsed.expires_at !== null && neverUsed.expires_at > at).toBe(true);
+    expect(neverUsed.last_used_at).toBeNull();
+    expect(revoked.revoked_at).not.toBeNull();
+    expect(expired.revoked_at).toBeNull();
+    expect(expired.expires_at !== null && expired.expires_at <= at).toBe(true);
+    const ids = fixtures.tokenList.map((token) => token.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   test("keys refer to users and teams that exist", () => {
     for (const key of fixtures.keyList) {
       if (key.owner_id === null) {
