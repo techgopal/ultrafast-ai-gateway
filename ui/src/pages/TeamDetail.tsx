@@ -24,9 +24,9 @@ import { FormError } from "@/components/FormError";
 import { NotFoundContent } from "@/components/NotFoundContent";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
+import { TeamRoleBadge } from "@/components/RoleBadge";
 import { Timestamp } from "@/components/Timestamp";
 import { useToast } from "@/components/toast";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -71,13 +71,6 @@ export const DONE = {
 export const NO_USER_WITH_ID = "No user with that ID.";
 export const USER_ID_HINT = "Ask an admin for the user's ID.";
 export const CHOOSE_A_USER = "Choose a user.";
-
-const TEAM_ROLE_NAMES: Record<string, string> = { lead: "Lead", member: "Member" };
-
-/** A role in a team, in a neutral badge. One the console does not know is shown as it is. */
-function TeamRoleBadge({ role }: { role: string }) {
-  return <Badge variant="outline">{TEAM_ROLE_NAMES[role] ?? role}</Badge>;
-}
 
 const control = "min-h-11 md:min-h-8";
 

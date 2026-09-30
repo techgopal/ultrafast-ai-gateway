@@ -10,6 +10,7 @@ import {
   FormError,
   Notice,
   textOf,
+  TOO_MANY_ATTEMPTS,
   useFocusOnFailure,
 } from "@/components/AuthForm";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,7 @@ import { Button } from "@/components/ui/button";
 function messageOf(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 401) return "Email or password is incorrect.";
-    if (error.status === 429) return "Too many attempts. Try again in a few minutes.";
+    if (error.status === 429) return TOO_MANY_ATTEMPTS;
   }
   return error instanceof Error ? error.message : "Something went wrong.";
 }

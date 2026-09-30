@@ -244,6 +244,16 @@ export const tokens = {
     last_used_at: "2026-09-04 22:10:00",
     created_at: "2026-07-01 09:00:00",
   },
+  /** Its time has passed; it was not revoked. */
+  expired: {
+    id: 4,
+    name: "migration",
+    display: displayOf("uf-at-", "1f9b"),
+    expires_at: "2026-09-01 23:59:59",
+    revoked_at: null,
+    last_used_at: "2026-08-30 10:00:00",
+    created_at: "2026-08-01 09:00:00",
+  },
 } satisfies Record<string, Token>;
 
 export const tokenList: Token[] = Object.values(tokens);

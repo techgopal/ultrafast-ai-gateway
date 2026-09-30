@@ -1,36 +1,24 @@
-import { useForm } from "@tanstack/react-form";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useDeleteUser, useReinviteUser, useUpdateUser, useUser } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can, type Me } from "@/auth/guards";
 import { useSession, useSessionControl } from "@/auth/session";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit";
-import { Field } from "@/components/Field";
-import { applyApiError, useFormFailure } from "@/components/form";
-import { FormError } from "@/components/FormError";
+import { NameDialog } from "@/components/NameDialog";
 import { NotFoundContent } from "@/components/NotFoundContent";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
+import { RoleBadge } from "@/components/RoleBadge";
 import { SecretDialog, useSecretOnce } from "@/components/SecretDialog";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timestamp } from "@/components/Timestamp";
 import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { YouBadge } from "@/components/YouBadge";
 import { idOf } from "@/lib/id";
-import { INVITE_LINK_DESCRIPTION, INVITE_LINK_TITLE, inviteUrl, RoleBadge } from "@/pages/Users";
+import { INVITE_LINK_DESCRIPTION, INVITE_LINK_TITLE, inviteUrl } from "@/pages/Users";
 
 type User = components["schemas"]["UserView"];
 
@@ -63,91 +51,6 @@ export const DONE = {
 } as const;
 
 type Asking = "name" | "role" | "disable" | "enable" | "reinvite" | "delete";
-
-interface NameFormProps {
-  user: User;
-  update: ReturnType<typeof useUpdateUser>;
-  onDone: () => void;
-  onCancel: () => void;
-}
-
-// Mounted while the dialog is open: every opening starts with the name as it is.
-function NameForm({ user, update, onDone, onCancel }: NameFormProps) {
-  const { mutateAsync } = update;
-  const form = useForm({
-    defaultValues: { name: user.name },
-    onSubmit: async ({ value }) => {
-      try {
-        await mutateAsync({ id: user.id, body: { name: value.name } });
-        onDone();
-      } catch (error) {
-        applyApiError(form, error);
-      }
-    },
-  });
-  const formRef = useRef<HTMLFormElement>(null);
-  const errorRef = useRef<HTMLDivElement>(null);
-  const failure = useFormFailure(form, formRef, errorRef);
-
-  return (
-    <form
-      ref={formRef}
-      aria-label="Edit name"
-      noValidate
-      className="flex flex-col gap-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void form.handleSubmit();
-      }}
-    >
-      <FormError ref={errorRef} messages={failure.messages} />
-      <form.Field name="name">
-        {(field) => (
-          <Field label="Name" name={field.name} required error={failure.fieldError(field.name)}>
-            <Input
-              autoComplete="off"
-              className="min-h-11 md:min-h-8"
-              value={field.state.value}
-              onBlur={field.handleBlur}
-              onChange={(event) => {
-                field.handleChange(event.target.value);
-              }}
-            />
-          </Field>
-        )}
-      </form.Field>
-      <DialogFooter>
-        <Button type="button" variant="outline" className={dialogButton} onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" className={dialogButton} disabled={update.isPending}>
-          {update.isPending ? "Saving" : "Save"}
-        </Button>
-      </DialogFooter>
-    </form>
-  );
-}
-
-function NameDialog({ open, ...form }: NameFormProps & { open: boolean }) {
-  const returnFocus = useReturnFocus(open);
-  const { onCancel } = form;
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) onCancel();
-      }}
-    >
-      <DialogContent className={dialogFit} onCloseAutoFocus={returnFocus}>
-        <DialogHeader>
-          <DialogTitle>Edit name</DialogTitle>
-          <DialogDescription>The name is shown in the console and in the audit log.</DialogDescription>
-        </DialogHeader>
-        <NameForm {...form} />
-      </DialogContent>
-    </Dialog>
-  );
-}
 
 const control = "min-h-11 md:min-h-8";
 

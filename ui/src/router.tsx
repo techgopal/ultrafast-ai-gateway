@@ -11,11 +11,11 @@ import { useEffect, useMemo } from "react";
 import { safePath } from "@/auth/guards";
 import { useSession, useSessionControl, useSignOut } from "@/auth/session";
 import { FormError } from "@/components/AuthForm";
-import { PageHeader } from "@/components/PageHeader";
 import { Shell } from "@/components/Shell";
 import type { ShellUser } from "@/components/shell-context";
 import { Button } from "@/components/ui/button";
 import { AcceptInvite } from "@/pages/AcceptInvite";
+import { Account } from "@/pages/Account";
 import { Audit } from "@/pages/Audit";
 import { Keys } from "@/pages/Keys";
 import { PageProblem } from "@/pages/NotAvailable";
@@ -174,16 +174,6 @@ const shellRoute = createRoute({
   component: ShellLayout,
 });
 
-/** A page of the shell that a later task replaces with the real one. */
-function page<const TPath extends string>(path: TPath, title: string) {
-  return createRoute({
-    getParentRoute: () => shellRoute,
-    path,
-    staticData: { title },
-    component: () => <PageHeader title={title} />,
-  });
-}
-
 const overviewRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/",
@@ -196,6 +186,13 @@ const auditRoute = createRoute({
   path: "/audit",
   staticData: { title: "Audit log" },
   component: Audit,
+});
+
+const accountRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/account",
+  staticData: { title: "Account" },
+  component: Account,
 });
 
 const providersRoute = createRoute({
@@ -292,7 +289,7 @@ const routeTree = rootRoute.addChildren([
     teamsRoute,
     teamRoute,
     auditRoute,
-    page("/account", "Account"),
+    accountRoute,
   ]),
 ]);
 

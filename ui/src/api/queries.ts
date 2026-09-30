@@ -369,10 +369,12 @@ export const useAcceptInvite = () =>
     () => ({ stale: [] }),
   );
 
+// The gateway ends the other sessions of the caller and revokes all their
+// access tokens. The session the call was made in goes on as it is.
 export const useChangePassword = () =>
   useApiMutation(
     (body: BodyOf<"/api/auth/password", "post">) => api.post("/api/auth/password", { body }),
-    () => ({ stale: [audit] }),
+    () => ({ stale: [queryKeys.tokens.all(), audit] }),
   );
 
 // users

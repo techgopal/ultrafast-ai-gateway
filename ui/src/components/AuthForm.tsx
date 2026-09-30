@@ -10,6 +10,8 @@ export { FormError } from "@/components/FormError";
 
 export const PASSWORD_POLICY = "12 characters or more";
 export const PASSWORDS_DIFFER = "The passwords do not match.";
+/** For a 429 of the gateway, wherever a password is asked for. */
+export const TOO_MANY_ATTEMPTS = "Too many attempts. Try again in a few minutes.";
 
 interface AuthPageProps {
   title: string;
