@@ -1,13 +1,11 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRightIcon } from "lucide-react";
 import { useId, type ReactNode } from "react";
-import { ApiError } from "@/api/errors";
 import { useKeys, useProviders, useTeams, useUsers } from "@/api/queries";
 import { can, type Me } from "@/auth/guards";
 import { useSession } from "@/auth/session";
-import { ErrorState } from "@/components/ErrorState";
-import { NotAvailableNote } from "@/components/NotAvailableNote";
 import { PageHeader } from "@/components/PageHeader";
+import { QueryProblem } from "@/components/QueryProblem";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -65,11 +63,10 @@ function Tile<T>({ title, to, read, children }: TileProps<T>) {
         <Skeleton className="h-4 w-full" />
       </>
     );
-  } else if (error instanceof ApiError && error.status === 403) {
-    content = <NotAvailableNote />;
   } else {
     content = (
-      <ErrorState
+      <QueryProblem
+        part
         error={error}
         onRetry={() => {
           void read.refetch();
