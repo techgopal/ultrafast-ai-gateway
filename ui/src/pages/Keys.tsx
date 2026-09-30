@@ -294,24 +294,46 @@ function expiryOf({ choice, day }: Expiry): string | undefined {
   return days === undefined ? undefined : (endOfDay(dayIn(days)) ?? undefined);
 }
 
-/** The team that is chosen, when it is one of the choices; otherwise none is chosen. */
-function teamChosen(value: string, teams: readonly TeamChoice[]): string {
-  return value === WITHOUT_TEAM || teams.some((team) => String(team.id) === value) ? value : "";
+/** The teams a key of one owner can belong to, and whether it can have none. */
+interface TeamChoices {
+  teams: readonly TeamChoice[];
+  none: boolean;
 }
 
 /**
- * The request for the key. What cannot be sent is refused by the console
- * itself. `teams` are the teams that are offered for the owner: a team that
- * was chosen and is offered no more, because it is gone, is not sent.
+ * The owner that is chosen, as long as they are offered. The choices can
+ * change under the form, when a user or a team is gone since the dialog
+ * opened: an owner who is offered no more is not the owner any more, and the
+ * owner is the viewer again, as when the dialog opened.
  */
-function requestOf(values: KeyValues, me: Me, teams: readonly TeamChoice[]): CreateKeyRequest {
+function ownerOffered(value: string, me: Me, owners: Owners | null): string {
+  if (owners === null || owners.people.some((user) => String(user.id) === value)) return value;
+  return String(me.user.id);
+}
+
+/**
+ * The team that is chosen, as long as it is offered. A team that is offered
+ * no more is not chosen any more: the choice is no team again, or, where a
+ * key must have a team, the first team that is left. What was not chosen
+ * stays so. It is what the form shows and what is sent, so that a request
+ * never names a team that is not offered.
+ */
+function teamOffered(value: string, { teams, none }: TeamChoices): string {
+  if (value === "" || value === WITHOUT_TEAM) return value;
+  if (teams.some((team) => String(team.id) === value)) return value;
+  if (none) return WITHOUT_TEAM;
+  const [first] = teams;
+  return first === undefined ? "" : String(first.id);
+}
+
+/** The request for the key. What cannot be sent is refused by the console itself. */
+function requestOf(values: KeyValues, me: Me): CreateKeyRequest {
   const body: CreateKeyRequest = { name: values.name };
   // Without an owner the gateway takes the caller.
   const owner = idOf(values.owner_id);
   if (owner !== null && owner !== me.user.id) body.owner_id = owner;
-  const chosen = teamChosen(values.team_id, teams);
-  if (chosen !== WITHOUT_TEAM) {
-    const team = idOf(chosen);
+  if (values.team_id !== WITHOUT_TEAM) {
+    const team = idOf(values.team_id);
     if (team === null) throw new ConsoleRefusal(CHOOSE_A_TEAM, "team_id");
     body.team_id = team;
   }
@@ -349,7 +371,10 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
     defaultValues: start,
     onSubmit: async ({ value }) => {
       try {
-        const made = await mutateAsync(requestOf(value, me, teamsFor(value.owner_id).teams));
+        // What is sent is what the form shows: see `ownerOffered` and `teamOffered`.
+        const owner_id = ownerOffered(value.owner_id, me, owners);
+        const team_id = teamOffered(value.team_id, teamsFor(owner_id));
+        const made = await mutateAsync(requestOf({ ...value, owner_id, team_id }, me));
         onCreated(made.secret);
       } catch (error) {
         applyApiError(form, error);
@@ -361,7 +386,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
   const failure = useFormFailure(form, formRef, errorRef);
 
   /** The teams of a key of this owner, and whether it can have none. */
-  function teamsFor(ownerId: string): { teams: readonly TeamChoice[]; none: boolean } {
+  function teamsFor(ownerId: string): TeamChoices {
     const id = idOf(ownerId);
     if (owners === null || id === null) {
       return { teams: ownTeams(me), none: can(me, { type: "createKeyForSelf", teamId: null }) };
@@ -446,7 +471,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
               {({ id, name, ...described }) => (
                 <Select
                   name={name}
-                  value={field.state.value}
+                  value={ownerOffered(field.state.value, me, owners)}
                   onValueChange={(next) => {
                     field.handleChange(next);
                     // The team of the owner before is not one of this owner.
@@ -473,7 +498,8 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
       {waiting ? null : (
         <form.Subscribe selector={(state) => state.values.owner_id}>
           {(ownerId) => {
-            const { teams, none } = teamsFor(ownerId);
+            const offered = teamsFor(ownerOffered(ownerId, me, owners));
+            const { teams, none } = offered;
             return (
               <form.Field name="team_id">
                 {(field) => (
@@ -487,8 +513,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
                     {({ id, name, required, ...described }) => (
                       <Select
                         name={name}
-                        // A team that is offered no more is not chosen any more.
-                        value={teamChosen(field.state.value, teams)}
+                        value={teamOffered(field.state.value, offered)}
                         onValueChange={field.handleChange}
                         {...(required === true ? { required } : {})}
                       >

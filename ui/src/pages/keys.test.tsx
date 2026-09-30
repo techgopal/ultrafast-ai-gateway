@@ -32,7 +32,7 @@ import {
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
 const { maya, arjun, lena, tomas, priya, sam, dana } = fixtures.users;
-const { platform, research } = fixtures.teams;
+const { platform, research, growth } = fixtures.teams;
 const { active, suspended, expired, revoked, noOwner } = fixtures.keys;
 const SECRET = fixtures.newKeySecret;
 
@@ -1239,7 +1239,46 @@ describe("creating a key", () => {
       expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
     });
 
-    test("the team that was chosen is gone: the choice is empty, and nothing is sent until a team is chosen", async () => {
+    test("Retry does not ask again for a team that is gone", async () => {
+      // Research cannot be read; Growth is gone, though the list goes on naming it.
+      const asked: number[] = [];
+      counted("get", "/api/teams/{id}", ({ params }) => {
+        asked.push(Number(params.id));
+        if (params.id === String(research.id)) return fails();
+        if (params.id === String(growth.id)) return isGone();
+        return ok("get", "/api/teams/{id}", 200, fixtures.teamDetails.platform);
+      });
+      const lists = listIs(fixtures.teamList);
+      await page();
+      const dialog = await openCreate();
+      await waitFor(() => {
+        expect(lists.calls).toBe(2);
+      });
+      expect([...asked].sort()).toEqual([platform.id, research.id, growth.id]);
+
+      await userEvent.click(within(notice(dialog)).getByRole("button", { name: "Retry" }));
+      await waitFor(() => {
+        expect(asked).toHaveLength(4);
+      });
+      await settle();
+      // Only the team that could not be read: the one that is gone is not asked for again.
+      expect(asked.slice(3)).toEqual([research.id]);
+      notice(dialog);
+    });
+
+    /** The team answers 404 from now on, and the list of teams is without it. */
+    async function vanishes(app: AppRenderResult, team: fixtures.Team): Promise<void> {
+      teamsAnswer({ [team.id]: isGone });
+      const lists = listIs(fixtures.teamList.filter((one) => one.id !== team.id));
+      await act(async () => {
+        await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(team.id) });
+      });
+      await waitFor(() => {
+        expect(lists.calls).toBe(1);
+      });
+    }
+
+    test("the team that was chosen is gone: the choice is no team again, and the request has no team", async () => {
       const state = keeps();
       const app = await page();
       const dialog = await openCreate();
@@ -1248,28 +1287,93 @@ describe("creating a key", () => {
       await choose(field(dialog, "Team"), research.name);
       expect(field(dialog, "Team")).toHaveTextContent(research.name);
 
-      teamsAnswer({ [research.id]: isGone });
-      const lists = listIs(fixtures.teamList.filter((team) => team.id !== research.id));
+      await vanishes(app, research);
+      const team = field(dialog, "Team");
+      expect(team).toHaveTextContent("No team");
+      expect(team).not.toHaveTextContent(research.name);
+      expect(team).not.toHaveAttribute("aria-invalid");
+      expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
+      expect(await optionsOf(team)).toEqual(["No team"]);
+
+      await send(dialog);
+      await secretDialog();
+      // Never the team that is offered no more.
+      expect(state.created).toEqual([{ name: "notebook", owner_id: tomas.id }]);
+    });
+
+    test("where a key must have a team, the choice is the first team that is left", async () => {
+      // Arjun leads Platform and Research; Lena is in both.
+      const leadOfBoth: fixtures.Me = {
+        ...fixtures.me.arjun,
+        teams: fixtures.me.arjun.teams.map((team) => ({ ...team, role: "lead" })),
+      };
+      const researchWithLena: fixtures.TeamDetail = {
+        team: research,
+        members: [
+          ...fixtures.teamDetails.research.members,
+          { user_id: lena.id, email: lena.email, name: lena.name, role: "member" },
+        ],
+      };
+      const details = (but: Record<number, () => Response> = {}) =>
+        teamsAnswer({
+          [research.id]: () => ok("get", "/api/teams/{id}", 200, researchWithLena),
+          ...but,
+        });
+      const state = keeps();
+      details();
+      const app = await page({ user: leadOfBoth });
+      const dialog = await openCreate();
+      await named(dialog, "lena-ci");
+      await choose(field(dialog, "Owner"), person(lena));
+      expect(await optionsOf(field(dialog, "Team"))).toEqual([platform.name, research.name]);
+      await choose(field(dialog, "Team"), research.name);
+
+      details({ [research.id]: isGone });
+      const lists = listIs(fixtures.teamList.filter((one) => one.id !== research.id));
       await act(async () => {
         await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(research.id) });
       });
       await waitFor(() => {
         expect(lists.calls).toBe(1);
       });
-      const team = field(dialog, "Team");
-      expect(team).toHaveTextContent("Choose a team");
-      expect(team).not.toHaveTextContent(research.name);
-      await send(dialog);
-      await waitFor(() => {
-        expect(descriptionOf(team)).toContain("Choose a team.");
-      });
-      await settle();
-      expect(state.created).toEqual([]);
-
-      await choose(team, "No team");
+      // "No team" is no choice for a key of another user: the team that is left is chosen.
+      expect(field(dialog, "Owner")).toHaveTextContent(person(lena));
+      expect(field(dialog, "Team")).toHaveTextContent(platform.name);
+      expect(await optionsOf(field(dialog, "Team"))).toEqual([platform.name]);
       await send(dialog);
       await secretDialog();
-      expect(state.created).toEqual([{ name: "notebook", owner_id: tomas.id }]);
+      expect(state.created).toEqual([{ name: "lena-ci", owner_id: lena.id, team_id: platform.id }]);
+    });
+
+    test("the owner that was chosen is offered no more: the owner is the viewer again, with no team", async () => {
+      const state = keeps();
+      const app = await page();
+      const dialog = await openCreate();
+      await named(dialog, "notebook");
+      await choose(field(dialog, "Owner"), person(tomas));
+      await choose(field(dialog, "Team"), research.name);
+
+      // Tomas is deleted meanwhile, and the users are read again.
+      const users = counted("get", "/api/users", () =>
+        ok("get", "/api/users", 200, {
+          users: fixtures.userList.filter((user) => user.id !== tomas.id),
+        }),
+      );
+      await act(async () => {
+        await app.queryClient.invalidateQueries({ queryKey: queryKeys.users.list() });
+      });
+      expect(users.calls).toBe(1);
+      await waitFor(() => {
+        expect(field(dialog, "Owner")).toHaveTextContent(person(maya));
+      });
+      expect(await optionsOf(field(dialog, "Owner"))).toEqual(
+        [maya, arjun, lena, priya].map(person),
+      );
+      // Maya is in no team.
+      expect(field(dialog, "Team")).toHaveTextContent("No team");
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "notebook" }]);
     });
   });
 
