@@ -157,6 +157,8 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
       className="flex flex-col gap-4"
       onSubmit={(event) => {
         event.preventDefault();
+        // One request at a time: a form that is being sent is not sent again.
+        if (form.state.isSubmitting) return;
         void form.handleSubmit();
       }}
     >
@@ -277,7 +279,13 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
         )}
       </form.Field>
       <DialogFooter>
-        <Button type="button" variant="outline" className={dialogButton} onClick={onCancel}>
+        <Button
+          type="button"
+          variant="outline"
+          className={dialogButton}
+          disabled={create.isPending}
+          onClick={onCancel}
+        >
           Cancel
         </Button>
         <Button type="submit" className={dialogButton} disabled={create.isPending}>
@@ -288,17 +296,27 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
   );
 }
 
+// While the request of a form runs its dialog stays, as a dialog that asks
+// does while its call runs: it cannot be closed, and the form cannot be sent
+// a second time. A dialog that was closed could be opened again and send the
+// same once more, and the answer of the first would close it over what was typed.
+
 function AddDialog({ open, ...form }: AddFormProps & { open: boolean }) {
   const returnFocus = useReturnFocus(open);
-  const { onCancel } = form;
+  const { create, onCancel } = form;
+  const running = create.isPending;
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) onCancel();
+        if (!next && !running) onCancel();
       }}
     >
-      <DialogContent className={dialogFit} onCloseAutoFocus={returnFocus}>
+      <DialogContent
+        className={dialogFit}
+        showCloseButton={!running}
+        onCloseAutoFocus={returnFocus}
+      >
         <DialogHeader>
           <DialogTitle>Add provider</DialogTitle>
           <DialogDescription>
@@ -368,6 +386,8 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
       className="flex flex-col gap-4"
       onSubmit={(event) => {
         event.preventDefault();
+        // One request at a time: a form that is being sent is not sent again.
+        if (form.state.isSubmitting) return;
         void form.handleSubmit();
       }}
     >
@@ -448,7 +468,13 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
         )}
       </form.Field>
       <DialogFooter>
-        <Button type="button" variant="outline" className={dialogButton} onClick={onCancel}>
+        <Button
+          type="button"
+          variant="outline"
+          className={dialogButton}
+          disabled={update.isPending}
+          onClick={onCancel}
+        >
           Cancel
         </Button>
         <Button type="submit" className={dialogButton} disabled={update.isPending}>
@@ -467,15 +493,20 @@ interface EditDialogProps extends Omit<EditFormProps, "provider"> {
 
 function EditDialog({ open, provider, ...form }: EditDialogProps) {
   const returnFocus = useReturnFocus(open);
-  const { onCancel } = form;
+  const { update, onCancel } = form;
+  const running = update.isPending;
   return (
     <Dialog
       open={open && provider !== null}
       onOpenChange={(next) => {
-        if (!next) onCancel();
+        if (!next && !running) onCancel();
       }}
     >
-      <DialogContent className={dialogFit} onCloseAutoFocus={returnFocus}>
+      <DialogContent
+        className={dialogFit}
+        showCloseButton={!running}
+        onCloseAutoFocus={returnFocus}
+      >
         <DialogHeader>
           <DialogTitle>Edit provider</DialogTitle>
           <DialogDescription>

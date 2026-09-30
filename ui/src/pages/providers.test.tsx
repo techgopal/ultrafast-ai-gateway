@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
@@ -245,6 +245,29 @@ const WAYS_OUT = {
   },
 } as const;
 const waysOut = Object.entries(WAYS_OUT);
+
+/**
+ * While the request of the dialog runs: Escape, a click beside the dialog,
+ * Cancel and a second submit do nothing. `field` is a field of the form.
+ */
+async function expectTheDialogStays(dialog: HTMLElement, field: HTMLElement): Promise<void> {
+  const open = () => screen.queryByRole("dialog");
+
+  await userEvent.keyboard("{Escape}");
+  expect(open()).toBe(dialog);
+  await WAYS_OUT["a click beside the dialog"]();
+  expect(open()).toBe(dialog);
+  // There is no button to leave by.
+  expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+  expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+  await WAYS_OUT.Cancel(dialog);
+  expect(open()).toBe(dialog);
+  // Nor is the form sent a second time: not by Enter, not by a submit of the form itself.
+  await userEvent.type(field, "{Enter}");
+  fireEvent.submit(within(dialog).getByRole("form"));
+  await settle();
+  expect(open()).toBe(dialog);
+}
 
 describe("the list of providers", () => {
   test("the list shows the name, the kind, the base URL and whether a credential is set", async () => {
@@ -868,6 +891,63 @@ describe("adding a provider", () => {
     expect(posts.calls).toBe(1);
   });
 
+  test("while the provider is added the dialog cannot be left or sent again; one request, and the key is nowhere after it", async () => {
+    const door = gate();
+    const posts = counted("post", "/api/providers", async () => {
+      await door.opened;
+      return ok("post", "/api/providers", 201, { ...withCredential, id: 9, name: "groq" });
+    });
+    const app = await page();
+    const dialog = await openAdd();
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.type(name, "groq");
+    await known(dialog, "Groq");
+    await enter(within(dialog).getByLabelText("API key"), API_KEY);
+    await add(dialog);
+    await within(dialog).findByRole("button", { name: "Adding the provider" });
+
+    await expectTheDialogStays(dialog, name);
+    expect(name).toHaveValue("groq");
+    expect(within(dialog).getByLabelText("API key")).toHaveValue(API_KEY);
+    expect(posts.calls).toBe(1);
+
+    act(() => {
+      door.open();
+    });
+    await closed();
+    expect(await screen.findByRole("status")).toHaveTextContent("groq/<model>");
+    await settle();
+    expect(posts.calls).toBe(1);
+    expectNoKey(app);
+    await mutationsAreForgotten(app);
+  });
+
+  test("after a refusal the dialog can be left again", async () => {
+    const door = gate();
+    override("post", "/api/providers", async () => {
+      await door.opened;
+      return refuse(errors.provider_exists);
+    });
+    await page();
+    const dialog = await openAdd();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "openai");
+    await known(dialog, "OpenAI");
+    await add(dialog);
+    await within(dialog).findByRole("button", { name: "Adding the provider" });
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    act(() => {
+      door.open();
+    });
+    await within(dialog).findByText(errors.provider_exists.body.error.message);
+    await waitFor(() => {
+      expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
+    });
+    expect(within(dialog).getByRole("button", { name: "Close" })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    await closed();
+  });
+
   test("the session has ended when the provider is added: signed out, and the form says nothing", async () => {
     startGateway({ signedIn: true });
     const posts = counted("post", "/api/providers", unauthenticated);
@@ -1220,6 +1300,39 @@ describe("editing a provider", () => {
       door.open();
     });
     await closed();
+  });
+
+  test("while the provider is saved the dialog cannot be left or sent again; one request", async () => {
+    const door = gate();
+    const patches = counted("patch", "/api/providers/{id}", async () => {
+      await door.opened;
+      return ok("patch", "/api/providers/{id}", 200, { ...withCredential, base_url: OTHER_URL });
+    });
+    const app = await page();
+    const dialog = await openEdit(withCredential);
+    const url = within(dialog).getByLabelText("Base URL");
+    await userEvent.clear(url);
+    await userEvent.type(url, OTHER_URL);
+    await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+    await enter(within(dialog).getByLabelText("New API key"), API_KEY);
+    await save(dialog);
+    await within(dialog).findByRole("button", { name: "Saving" });
+
+    await expectTheDialogStays(dialog, url);
+    expect(url).toHaveValue(OTHER_URL);
+    expect(patches.calls).toBe(1);
+
+    act(() => {
+      door.open();
+    });
+    await closed();
+    await waitFor(() => {
+      expect(toasts()).toEqual(["Provider updated."]);
+    });
+    await settle();
+    expect(patches.calls).toBe(1);
+    expectNoKey(app);
+    await mutationsAreForgotten(app);
   });
 
   test("the session has ended when the provider is saved: signed out, and the form says nothing", async () => {

@@ -403,6 +403,8 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
       className="flex min-w-0 flex-col gap-4"
       onSubmit={(event) => {
         event.preventDefault();
+        // One request at a time: a form that is being sent is not sent again.
+        if (form.state.isSubmitting) return;
         void form.handleSubmit();
       }}
     >
@@ -586,7 +588,13 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
       </form.Field>
 
       <DialogFooter>
-        <Button type="button" variant="outline" className={dialogButton} onClick={onCancel}>
+        <Button
+          type="button"
+          variant="outline"
+          className={dialogButton}
+          disabled={create.isPending}
+          onClick={onCancel}
+        >
           Cancel
         </Button>
         <Button type="submit" className={dialogButton} disabled={create.isPending || waiting}>
@@ -694,9 +702,16 @@ interface CreateDialogProps extends Omit<KeyFormProps, "choice"> {
   open: boolean;
 }
 
+/**
+ * While the key is being made the dialog stays, as a dialog that asks does
+ * while its call runs: it cannot be closed, and the form cannot be sent a
+ * second time. A dialog that was closed could be opened again and send a
+ * second key, and the answer of the first would close it over what was typed.
+ */
 function CreateDialog({ open, ...form }: CreateDialogProps) {
   const returnFocus = useReturnFocus(open);
-  const { me, onCancel } = form;
+  const { me, create, onCancel } = form;
+  const running = create.isPending;
   // Who may make a key for somebody else chooses the owner.
   const chooses =
     can(me, { type: "createKeyForAnyone" }) ||
@@ -705,10 +720,14 @@ function CreateDialog({ open, ...form }: CreateDialogProps) {
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) onCancel();
+        if (!next && !running) onCancel();
       }}
     >
-      <DialogContent className={dialogFit} onCloseAutoFocus={returnFocus}>
+      <DialogContent
+        className={dialogFit}
+        showCloseButton={!running}
+        onCloseAutoFocus={returnFocus}
+      >
         <DialogHeader>
           <DialogTitle>Create key</DialogTitle>
           <DialogDescription>The key itself is shown once, when it is created.</DialogDescription>
