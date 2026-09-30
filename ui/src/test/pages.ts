@@ -1,7 +1,7 @@
 // What the tests of the pages share: the end of a session on a page, the
 // scans for a secret, the counting of calls, and what a dialog with a form
 // does while its request runs.
-import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { onlineManager, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryHistory, type RouterHistory } from "@tanstack/react-router";
 import userEvent from "@testing-library/user-event";
@@ -189,6 +189,25 @@ export function theWindowGetsTheFocus(): void {
   act(() => {
     window.dispatchEvent(new Event("visibilitychange"));
   });
+}
+
+/**
+ * The browser says that there is no network, until the test ends or `back`
+ * is called. The query library then holds back what it is told to hold back
+ * while offline; what the app sends all the same fails as the test's gateway
+ * makes it fail.
+ */
+export function theBrowserIsOffline(): { back: () => void } {
+  const back = () => {
+    act(() => {
+      onlineManager.setOnline(true);
+    });
+  };
+  act(() => {
+    onlineManager.setOnline(false);
+  });
+  onTestFinished(back);
+  return { back };
 }
 
 export interface Counted {

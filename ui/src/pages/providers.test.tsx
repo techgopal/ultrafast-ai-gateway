@@ -19,6 +19,7 @@ import {
   expectOneRequestWhileTheDialogStays,
   expectOneMain,
   expectSessionEndsOnPage,
+  expectTheDialogCanBeLeft,
   expectTheDialogStays,
   forbid,
   forgetToasts,
@@ -30,6 +31,7 @@ import {
   settle,
   shown,
   stored,
+  theBrowserIsOffline,
   toasts,
 } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
@@ -44,6 +46,8 @@ const V1_HINT = "The base URL of an OpenAI-compatible provider usually ends in /
 const DELETE = "Calls to models of this provider will fail at once.";
 const KEY_HINT = "Optional. The gateway stores it encrypted and never shows it.";
 const NEW_KEY_HINT = "The gateway stores it encrypted and never shows it.";
+/** What the console says of a request that got no answer. */
+const COULD_NOT_REACH = "Could not reach the gateway.";
 
 /** The known base URLs of the brief, with the kind each one is of. */
 const KNOWN = [
@@ -980,6 +984,34 @@ describe("adding a provider", () => {
     await closed();
   });
 
+  test("offline, the provider is sent all the same: the dialog says at once that the gateway cannot be reached, and can be left; nothing is kept", async () => {
+    const posts = counted("post", "/api/providers", networkFailure);
+    const app = await page();
+    const dialog = await openAdd();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "groq");
+    await known(dialog, "Groq");
+    const key = within(dialog).getByLabelText("API key");
+    await enter(key, API_KEY);
+    const offline = theBrowserIsOffline();
+    await add(dialog);
+
+    // Not "Adding the provider" until the network is back.
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(COULD_NOT_REACH);
+    expect(posts.calls).toBe(1);
+    expect(within(dialog).getByRole("button", { name: "Add provider" })).toBeEnabled();
+    expectKeyInTheFieldOnly(app, key);
+    await mutationsAreForgotten(app);
+
+    await expectTheDialogCanBeLeft(dialog);
+    expectNoKey(app);
+    // Nothing waits for the network: when it is back nothing is sent.
+    offline.back();
+    await settle();
+    expect(posts.calls).toBe(1);
+    expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+    expect(toasts()).toEqual([]);
+  });
+
   test("the session has ended when the provider is added: signed out, and the form says nothing", async () => {
     startGateway({ signedIn: true });
     const posts = counted("post", "/api/providers", unauthenticated);
@@ -1549,6 +1581,23 @@ describe("deleting a provider", () => {
     await waitFor(() => {
       expect(state.lists).toBe(2);
     });
+  });
+
+  test("offline, the deletion is sent all the same: the dialog says that the gateway cannot be reached, and can be left", async () => {
+    const deletes = counted("delete", "/api/providers/{id}", networkFailure);
+    const app = await page();
+    const dialog = await askToDelete(withCredential);
+    const offline = theBrowserIsOffline();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(COULD_NOT_REACH);
+    expect(deletes.calls).toBe(1);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await closed();
+    offline.back();
+    await settle();
+    expect(deletes.calls).toBe(1);
+    expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+    expect(toasts()).toEqual([]);
   });
 
   test("a deletion whose answer came for a session that is over says nothing", async () => {
