@@ -554,15 +554,20 @@ describe("the audit log", () => {
     logIs(fixtures.auditEntriesFrom(120, 120));
     await page();
     await table();
-    // Without a filter there is nothing to say.
+    // Without a filter there is nothing to say. The place of the notice is
+    // there before its text: what comes into a live region is announced.
     expect(screen.queryByText(LOADED_ONLY)).toBeNull();
     expect(descriptionOf(filter())).toBe("");
+    const place = screen.getByRole("status");
+    expect(place).toBeEmptyDOMElement();
 
     await userEvent.type(filter(), "auth.login");
     // Every loaded entry matches, and the notice is there all the same.
     expect(rows()).toHaveLength(50);
     const notice = screen.getByText(LOADED_ONLY);
-    expect(notice).toHaveAttribute("role", "status");
+    expect(screen.getByRole("status")).toBe(place);
+    expect(place).toContainElement(notice);
+    expect(place.textContent).toBe(LOADED_ONLY);
     // It is under the filter, and describes it.
     expect(filter().compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(
@@ -579,6 +584,8 @@ describe("the audit log", () => {
     await older(120);
     expect(loadOlder()).toBeNull();
     expect(screen.queryByText(LOADED_ONLY)).toBeNull();
+    expect(screen.getByRole("status")).toBe(place);
+    expect(place).toBeEmptyDOMElement();
     expect(descriptionOf(filter())).toBe("");
     expect(filter()).toHaveValue("auth.login");
   });
@@ -604,7 +611,7 @@ describe("the audit log", () => {
     await userEvent.type(filter(), "user.");
     expect(rows()).toHaveLength(2);
     expect(screen.queryByText(LOADED_ONLY)).toBeNull();
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
     // Nothing matches: the filter is what to change.
     await userEvent.clear(filter());
     await userEvent.type(filter(), "no such thing");

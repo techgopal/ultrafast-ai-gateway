@@ -95,7 +95,7 @@ function AuditLog() {
         }
       />
       {log.isPending || loaded.length > 0 ? (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col">
           <Input
             type="search"
             aria-label="Filter"
@@ -108,11 +108,18 @@ function AuditLog() {
               setSearch(event.target.value);
             }}
           />
-          {loadedOnly ? (
-            <p id={noticeId} role="status" className="text-sm text-muted-foreground">
-              {LOADED_ONLY}
-            </p>
-          ) : null}
+          {/*
+            The place of the notice is there before its text: what comes into
+            a live region is announced, a live region that comes with its text
+            often is not. It takes no room while it is empty.
+          */}
+          <div role="status" className="not-empty:mt-2">
+            {loadedOnly ? (
+              <p id={noticeId} className="text-sm text-muted-foreground">
+                {LOADED_ONLY}
+              </p>
+            ) : null}
+          </div>
         </div>
       ) : null}
       <DataTable
