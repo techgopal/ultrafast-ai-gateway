@@ -1,7 +1,9 @@
 // What the forms of the console share: how a form is sent, where the errors
 // of the API go, and where the focus goes after a submit that failed.
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useState,
@@ -19,15 +21,34 @@ export interface FormLike {
   };
 }
 
-/** What `submitOnce` needs of a form of TanStack Form. Every `useForm` gives it. */
+/** What `useSubmit` needs of a form of TanStack Form. Every `useForm` gives it. */
 interface Submittable {
   readonly state: { readonly isSubmitting: boolean };
   handleSubmit: () => Promise<unknown>;
 }
 
 /**
+ * How many submits of the form of a `FormDialog` run, each from the moment of
+ * the submit until its `handleSubmit()` has settled, which is after the
+ * answer of its request. `FormDialog` gives it, `useSubmit` counts in it, and
+ * the dialog asks it before it lets itself be left.
+ *
+ * The pending state of the mutation cannot say it: it comes with a render,
+ * some time after the submit (15 to 100 ms in a browser), and a dialog that
+ * was left before could be opened again and send once more.
+ */
+export const FormSending = createContext<RefObject<number> | null>(null);
+
+/** Whether the form of the dialog is being sent. Read it in a handler, never in a render. */
+export function isSending(sendingRef: RefObject<number> | null): boolean {
+  return sendingRef !== null && sendingRef.current > 0;
+}
+
+/**
  * The `onSubmit` of every `<form>` of TanStack Form: it sends the form,
- * unless the form is being sent. One request at a time.
+ * unless the form is being sent. One request at a time. Inside a
+ * `FormDialog` the dialog knows from that moment on that its form is being
+ * sent, and stays.
  *
  * The form library lets a second submit through while the first one runs.
  * A button that is disabled while the request runs does not stop it either:
@@ -35,11 +56,15 @@ interface Submittable {
  * from a script can come before that. The form itself knows at once that it
  * is being sent, so that is what is asked.
  */
-export function submitOnce(form: Submittable): (event: { preventDefault: () => void }) => void {
+export function useSubmit(form: Submittable): (event: { preventDefault: () => void }) => void {
+  const sendingRef = useContext(FormSending);
   return (event) => {
     event.preventDefault();
     if (form.state.isSubmitting) return;
-    void form.handleSubmit();
+    if (sendingRef !== null) sendingRef.current += 1;
+    void form.handleSubmit().finally(() => {
+      if (sendingRef !== null) sendingRef.current -= 1;
+    });
   };
 }
 

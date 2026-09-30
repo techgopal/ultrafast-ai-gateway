@@ -6,7 +6,7 @@ import { control, cutLongChoice, selectList } from "@/components/classes";
 import { ErrorState } from "@/components/ErrorState";
 import { ExpiryField } from "@/components/ExpiryField";
 import { Field } from "@/components/Field";
-import { applyApiError, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -98,6 +98,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
+  const onSubmit = useSubmit(form);
 
   /** The teams of a key of this owner, and whether it can have none. */
   function teamsFor(ownerId: string): TeamChoices {
@@ -129,7 +130,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
       noValidate
       // No wider than the dialog, whatever its fields hold.
       className="flex min-w-0 flex-col gap-4"
-      onSubmit={submitOnce(form)}
+      onSubmit={onSubmit}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">

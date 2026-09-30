@@ -6,7 +6,7 @@ import { ApiKeyInput } from "@/components/ApiKeyInput";
 import { BaseUrlField } from "@/components/BaseUrlField";
 import { control } from "@/components/classes";
 import { Field } from "@/components/Field";
-import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, onField, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Button } from "@/components/ui/button";
@@ -70,6 +70,7 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
+  const onSubmit = useSubmit(form);
 
   return (
     <form
@@ -77,7 +78,7 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
       aria-label="Add provider"
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={submitOnce(form)}
+      onSubmit={onSubmit}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">

@@ -5,7 +5,7 @@ import type { components } from "@/api/schema";
 import { ApiKeyInput } from "@/components/ApiKeyInput";
 import { BaseUrlField } from "@/components/BaseUrlField";
 import { Field } from "@/components/Field";
-import { applyApiError, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Label } from "@/components/ui/label";
@@ -67,6 +67,7 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
+  const onSubmit = useSubmit(form);
   const choices = provider.has_credential ? WITH_A_KEY : WITHOUT_A_KEY;
 
   return (
@@ -75,7 +76,7 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
       aria-label="Edit provider"
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={submitOnce(form)}
+      onSubmit={onSubmit}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="base_url">

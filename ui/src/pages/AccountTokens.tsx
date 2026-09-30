@@ -8,7 +8,7 @@ import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { ExpiryField } from "@/components/ExpiryField";
 import { Field } from "@/components/Field";
-import { applyApiError, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Part } from "@/components/Part";
@@ -61,6 +61,7 @@ function TokenForm({ create, onCreated, onCancel }: TokenFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
+  const onSubmit = useSubmit(form);
 
   return (
     <form
@@ -68,7 +69,7 @@ function TokenForm({ create, onCreated, onCancel }: TokenFormProps) {
       aria-label="Create token"
       noValidate
       className="flex min-w-0 flex-col gap-4"
-      onSubmit={submitOnce(form)}
+      onSubmit={onSubmit}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">

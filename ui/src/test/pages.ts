@@ -298,6 +298,40 @@ export function sendTwiceAtOnce(dialog: HTMLElement): void {
 }
 
 /**
+ * The ways out of a dialog with a form that send nothing, each done at once:
+ * as `fireEvent` does it, with no wait for anything.
+ */
+export const LEAVE_AT_ONCE = {
+  Escape: () => {
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape", code: "Escape" });
+  },
+  Cancel: (dialog: HTMLElement) => {
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  },
+  "the X": (dialog: HTMLElement) => {
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+  },
+  // The dialog is left on the click that follows the press, not on the press.
+  "a click beside the dialog": () => {
+    fireEvent.pointerDown(besideTheDialog());
+    fireEvent.click(besideTheDialog());
+  },
+} as const;
+
+/**
+ * Sends the form of the dialog and leaves the dialog by `way` in the same
+ * tick: nothing of the submit has been rendered when the dialog is left, as
+ * when a key is pressed right after Enter on a busy page.
+ */
+export function sendAndLeaveAtOnce(dialog: HTMLElement, way: keyof typeof LEAVE_AT_ONCE): void {
+  const form = within(dialog).getByRole("form");
+  act(() => {
+    fireEvent.submit(form);
+    LEAVE_AT_ONCE[way](dialog);
+  });
+}
+
+/**
  * While the request of the dialog runs: Escape, a click beside the dialog,
  * Cancel and a second submit do nothing, and there is no X. `field` is a
  * field of the form.

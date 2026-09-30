@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { useContext, useRef, type ReactNode } from "react";
 import { dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit";
+import { FormSending, isSending } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -26,8 +27,8 @@ interface FormDialogProps {
   description: ReactNode;
   /**
    * The form. It is mounted while the dialog is open, so every opening starts
-   * with a new form. Its `onSubmit` is `submitOnce(form)` of `components/form`,
-   * and its last child is a `FormDialogFooter`.
+   * with a new form. Its `onSubmit` is what `useSubmit(form)` of
+   * `components/form` returns, and its last child is a `FormDialogFooter`.
    */
   children: ReactNode;
 }
@@ -36,10 +37,14 @@ interface FormDialogProps {
  * The dialog of every form of the console.
  *
  * While the request of its form runs the dialog stays, as a dialog that asks
- * does while its call runs: Escape and a click beside it do nothing, and it
- * has no X. A dialog that was closed then could be opened again and send the
- * same once more, and the answer of the first request would close it over
- * what was typed. After a request that failed it can be left again.
+ * does while its call runs: Escape, a click beside it and Cancel do nothing,
+ * and it has no X. A dialog that was closed then could be opened again and
+ * send the same once more, and the answer of the first request would close it
+ * over what was typed. After a request that failed it can be left again.
+ *
+ * It stays from the moment of the submit, which its form tells it through
+ * `FormSending` (see `useSubmit`), and not only from the render that shows
+ * the request running: a close that comes in between does nothing either.
  *
  * When it closes, the focus goes back to what opened it.
  *
@@ -54,11 +59,12 @@ export function FormDialog({
   children,
 }: FormDialogProps) {
   const returnFocus = useReturnFocus(open);
+  const sendingRef = useRef(0);
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next && !running) onCancel();
+        if (!next && !running && !isSending(sendingRef)) onCancel();
       }}
     >
       <DialogContent
@@ -70,7 +76,7 @@ export function FormDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
-        {children}
+        <FormSending value={sendingRef}>{children}</FormSending>
       </DialogContent>
     </Dialog>
   );
@@ -85,7 +91,7 @@ interface FormDialogFooterProps {
   submitting: string;
   /** There is nothing to send yet: the submit button cannot be pressed. */
   disabled?: boolean;
-  /** The `onCancel` of the dialog. */
+  /** The `onCancel` of the dialog. It is not called while the form is being sent. */
   onCancel: () => void;
 }
 
@@ -97,6 +103,7 @@ export function FormDialogFooter({
   disabled = false,
   onCancel,
 }: FormDialogFooterProps) {
+  const sendingRef = useContext(FormSending);
   return (
     <DialogFooter>
       <Button
@@ -104,7 +111,9 @@ export function FormDialogFooter({
         variant="outline"
         className={dialogButton}
         disabled={running}
-        onClick={onCancel}
+        onClick={() => {
+          if (!isSending(sendingRef)) onCancel();
+        }}
       >
         Cancel
       </Button>

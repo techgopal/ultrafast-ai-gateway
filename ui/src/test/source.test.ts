@@ -184,10 +184,11 @@ describe("dialogs and forms", () => {
     ]);
   });
 
-  // `submitOnce` of `components/form.ts` sends a form, and refuses a second
-  // submit while the first one runs. A form that called `handleSubmit` itself
+  // `useSubmit` of `components/form.ts` sends a form, refuses a second
+  // submit while the first one runs, and keeps the dialog of the form from
+  // being left from the submit on. A form that called `handleSubmit` itself
   // would be without that.
-  test("a form is sent by submitOnce, and by nothing else", () => {
+  test("a form is sent by useSubmit, and by nothing else", () => {
     expect(
       findings(written(), sending).map((finding) => finding.replace(/:\d+: .*$/, "")),
     ).toEqual(["components/form.ts"]);

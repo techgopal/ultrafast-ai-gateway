@@ -7,7 +7,7 @@ import { PASSWORD_POLICY, PASSWORDS_DIFFER, TOO_MANY_ATTEMPTS } from "@/componen
 import { control } from "@/components/classes";
 import { messageOfError } from "@/components/ErrorState";
 import { Field } from "@/components/Field";
-import { applyApiError, onField, onStatus, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, onField, onStatus, useFormFailure, useSubmit } from "@/components/form";
 import { FormError } from "@/components/FormError";
 import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
@@ -109,7 +109,7 @@ export function PasswordForm({ email }: { email: string }) {
   const currentRef = useRef<HTMLInputElement>(null);
   const submitRef = useRef<HTMLButtonElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
-  const submit = submitOnce(form);
+  const submit = useSubmit(form);
 
   // All three fields are empty after a refusal: the user starts again at the
   // first, whichever field the refusal was about. This runs after the focus

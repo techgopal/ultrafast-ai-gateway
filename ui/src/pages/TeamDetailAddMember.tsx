@@ -5,7 +5,7 @@ import { useUsers, type usePutTeamMember } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { ErrorState } from "@/components/ErrorState";
 import { Field, type FieldWiring } from "@/components/Field";
-import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
+import { applyApiError, onField, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Input } from "@/components/ui/input";
@@ -159,6 +159,7 @@ function AddForm({ team, put, onDone, onCancel, choice }: AddFormProps & { choic
   const formRef = useRef<HTMLFormElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
+  const onSubmit = useSubmit(form);
 
   return (
     <form
@@ -166,7 +167,7 @@ function AddForm({ team, put, onDone, onCancel, choice }: AddFormProps & { choic
       aria-label="Add member"
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={submitOnce(form)}
+      onSubmit={onSubmit}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="user_id">
