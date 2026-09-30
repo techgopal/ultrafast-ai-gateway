@@ -3,6 +3,7 @@ import { useAuditFromTheStart, useAuditPages } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
 import { useSession } from "@/auth/session";
+import { control } from "@/components/classes";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
@@ -17,8 +18,6 @@ import { entriesMatching, isFilter } from "@/lib/audit";
 type AuditEntry = components["schemas"]["AuditRow"];
 
 export const LOADED_ONLY = "Filtering the loaded entries only. Load older to look further.";
-
-const control = "min-h-11 md:min-h-8";
 
 // No column sorts: the order of the log is the order of the table. The
 // summary and the action are texts of the gateway, and are shown as text.

@@ -142,14 +142,14 @@ describe("errors of the API", () => {
   });
 });
 
-describe("dialogs and forms", () => {
-  /** The sources of the app that are no test and no generated component. */
-  function written(): string[] {
-    return ours([".ts", ".tsx"]).filter(
-      (path) => !path.includes(".test.") && !path.startsWith("test/"),
-    );
-  }
+/** The sources of the app that are no test and no generated component. */
+function written(): string[] {
+  return ours([".ts", ".tsx"]).filter(
+    (path) => !path.includes(".test.") && !path.startsWith("test/"),
+  );
+}
 
+describe("dialogs and forms", () => {
   const sending = /\.handleSubmit\s*\(/;
 
   test("the scans see what they should", () => {
@@ -191,6 +191,29 @@ describe("dialogs and forms", () => {
     expect(
       findings(written(), sending).map((finding) => finding.replace(/:\d+: .*$/, "")),
     ).toEqual(["components/form.ts"]);
+  });
+});
+
+describe("class names that are shared", () => {
+  const declaring = /^(?:export\s+)?const\s+control\s*=/;
+
+  test("the scan sees what it should", () => {
+    const quote = '"';
+    expect(declaring.test(`const control = ${quote}min-h-11 md:min-h-8${quote};`)).toBe(true);
+    expect(declaring.test(`export const control = ${quote}min-h-11 w-full${quote};`)).toBe(true);
+    expect(declaring.test(`import { control } from ${quote}@/components/classes${quote};`)).toBe(
+      false,
+    );
+    expect(declaring.test("for (const control of [filter()]) {")).toBe(false);
+  });
+
+  // The class of a control that is high enough to touch is said once, in
+  // `components/classes.ts`. The pages before the sign-in have their own,
+  // which is as wide as their form.
+  test("no file declares the class of a control for itself", () => {
+    expect(
+      findings(written(), declaring).map((finding) => finding.replace(/:\d+: .*$/, "")),
+    ).toEqual(["components/AuthForm.tsx", "components/classes.ts"]);
   });
 });
 
