@@ -277,6 +277,24 @@ export function held<M extends Method>(
   });
 }
 
+/**
+ * The row of a table whose one cell says `name`, found through the elements:
+ * a query by role for a cell asks of every cell of the page whether it is
+ * hidden and what its name is, at every call. The text of a cell is taken as
+ * a query by role takes a name, with its spaces run together; exactly one
+ * cell of a table body may say it.
+ */
+export function rowWithCell(name: string): HTMLElement {
+  const cells = [...document.querySelectorAll("tbody td")].filter(
+    (cell) => cell.textContent.replace(/\s+/g, " ").trim() === name,
+  );
+  const row = cells.length === 1 ? cells[0]?.closest("tr") : null;
+  if (row === null || row === undefined) {
+    throw new Error(`${String(cells.length)} cells of a table say ${name}`);
+  }
+  return row;
+}
+
 /** What covers the page behind a dialog: a click on it is a click beside the dialog. */
 export function besideTheDialog(): Element {
   const overlay = document.querySelector('[data-slot="dialog-overlay"]');
@@ -551,14 +569,25 @@ export function installSelect(): void {
   }
 }
 
+// The list of a select is read as an element, `[role="listbox"]`, which is
+// how the select marks it: a query by role looks at every element of the
+// page, and the rest of the page is hidden while the list is open.
+function openList(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[role="listbox"]');
+}
+
 async function listOf(select: HTMLElement): Promise<HTMLElement> {
   await userEvent.click(select);
-  return screen.findByRole("listbox");
+  return waitFor(() => {
+    const list = openList();
+    if (list === null) throw new Error("the list of the select is not open");
+    return list;
+  });
 }
 
 async function listClosed(): Promise<void> {
   await waitFor(() => {
-    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(openList()).toBeNull();
   });
 }
 

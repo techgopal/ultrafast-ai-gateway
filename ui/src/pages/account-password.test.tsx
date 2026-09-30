@@ -13,6 +13,7 @@ import {
   field,
   fields,
   fill,
+  fillByTyping,
   formError,
   keeps,
   maya,
@@ -221,7 +222,8 @@ describe("the password", () => {
   test("a change that was sent from a field leaves the focus in that field", async () => {
     passwordIs(CURRENT);
     await page();
-    await fill(CURRENT, NEXT);
+    // This test of the form types for real; the others fill it at once.
+    await fillByTyping(CURRENT, NEXT);
     await userEvent.type(field("Confirm new password"), "{Enter}");
     await waitFor(() => {
       expect(toasts()).toEqual([PASSWORD_CHANGED]);

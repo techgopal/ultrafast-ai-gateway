@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { render, screen, waitFor, type RenderResult } from "@testing-library/react";
+import { render, waitFor, type RenderResult } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -110,8 +110,10 @@ export async function renderWithApp(
     await router.load();
   });
   if (result === undefined) throw new Error("render did not run");
+  // The "Loading" of the app (`router.tsx`), read as an element: a query by
+  // role looks at every element of the page at every look of `waitFor`.
   await waitFor(() => {
-    expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+    expect(document.querySelector('[role="status"][aria-label="Loading"]')).toBeNull();
   });
   return Object.assign(result, { router, queryClient });
 }
