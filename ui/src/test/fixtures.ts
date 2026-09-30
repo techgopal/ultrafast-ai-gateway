@@ -296,3 +296,24 @@ export const auditEntries: AuditEntry[] = [
     summary: `Created the first admin ${users.maya.email}`,
   },
 ];
+
+/**
+ * A stretch of the audit log as the gateway gives it: `count` sign-ins of the
+ * admin, newest first, with ids that fall by one from `newest`. Each is a
+ * minute after the one before it, so the time of an entry tells which it is.
+ */
+export function auditEntriesFrom(newest: number, count: number): AuditEntry[] {
+  const start = Date.UTC(2026, 8, 26);
+  return Array.from({ length: count }, (_, index) => {
+    const id = newest - index;
+    return {
+      id,
+      at: new Date(start + id * 60_000).toISOString().slice(0, 19).replace("T", " "),
+      actor_email: users.maya.email,
+      action: "auth.login",
+      target_type: "user",
+      target_id: users.maya.id,
+      summary: `${users.maya.email} signed in`,
+    };
+  });
+}

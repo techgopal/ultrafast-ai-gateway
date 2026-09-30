@@ -181,6 +181,32 @@ describe("the fixtures have the forms of the gateway", () => {
     expect(fixtures.auditEntries).toHaveLength(5);
   });
 
+  test("a stretch of the audit log that a test makes", () => {
+    const entries = fixtures.auditEntriesFrom(120, 50);
+    expect(entries).toHaveLength(50);
+    // Newest first, with ids that fall by one: what `before` cuts is exact.
+    expect(entries.map((entry) => entry.id)).toEqual(
+      Array.from({ length: 50 }, (_, index) => 120 - index),
+    );
+    const times = entries.map((entry) => entry.at);
+    expect(times).toEqual([...times].sort().reverse());
+    expect(new Set(times).size).toBe(50);
+    for (const entry of entries) {
+      expect(entry.at, String(entry.id)).toMatch(TIMESTAMP);
+      expect(entry.at < now(), String(entry.id)).toBe(true);
+      expect(entry.target_type).toBe(AUDIT_ACTIONS[entry.action]);
+      // crates/gateway/src/api/auth.rs, login
+      expect(entry).toMatchObject({
+        action: "auth.login",
+        actor_email: "maya@example.test",
+        target_id: fixtures.users.maya.id,
+        summary: "maya@example.test signed in",
+      });
+    }
+    // The ids of the gateway are positive.
+    expect(entries.every((entry) => entry.id > 0)).toBe(true);
+  });
+
   test("the status of keys", () => {
     const at = now();
     const byId = new Map(fixtures.userList.map((user) => [user.id, user]));
