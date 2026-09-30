@@ -1,3 +1,4 @@
+import type { QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
@@ -9,6 +10,7 @@ import { gate, startGateway } from "@/test/gateway";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import {
   aCallFindsTheSessionEnded,
+  clientThatKeepsDataFresh,
   counted,
   descriptionOf,
   expectNotAvailable,
@@ -49,7 +51,7 @@ const platformWithMaya: fixtures.TeamDetail = {
 beforeAll(installPointerCapture);
 afterEach(forgetToasts);
 
-type Options = { user?: fixtures.Me; width?: number };
+type Options = { user?: fixtures.Me; width?: number; queryClient?: QueryClient };
 
 function list(options: Options = {}): Promise<AppRenderResult> {
   return renderWithApp(null, { route: "/teams", ...options });
@@ -1037,8 +1039,14 @@ describe("removing a member", () => {
   test("lead removing themselves is warned", async () => {
     const gateway = startGateway({ signedIn: true, me: fixtures.me.arjun });
     const state = keeps(fixtures.teamDetails.platform);
-    const app = await detail(platform);
+    // The page is reached from the list, which is mounted again afterwards.
+    // Its data stays fresh: it is asked for again only because leaving
+    // marked it as stale.
+    const app = await list({ queryClient: clientThatKeepsDataFresh() });
+    await table("Teams");
+    await userEvent.click(screen.getByRole("link", { name: platform.name }));
     const dialog = await askOf(arjun, "Remove");
+    expect(state.lists).toBe(1);
     expect(dialog).toHaveAccessibleName(`Remove ${arjun.name}?`);
     expect(dialog).toHaveTextContent(LEAVE);
     expect(dialog).not.toHaveTextContent("They will");
@@ -1066,6 +1074,7 @@ describe("removing a member", () => {
     });
     expect(screen.getByRole("link", { name: research.name })).toBeInTheDocument();
     expect(left.calls).toBe(1);
+    expect(state.lists).toBe(2);
     await waitFor(() => {
       expect(gateway.meCalls).toBe(before + 1);
     });
@@ -1131,7 +1140,9 @@ describe("removing a member", () => {
 describe("deleting a team", () => {
   test("delete confirms with the consequence", async () => {
     const removed = counted("delete", "/api/teams/{id}", noContent);
-    const app = await list();
+    // The list is left and mounted again. Its data stays fresh, so that it is
+    // asked for again only because the delete marked it as stale.
+    const app = await list({ queryClient: clientThatKeepsDataFresh() });
     await table("Teams");
     await userEvent.click(screen.getByRole("link", { name: platform.name }));
     const dialog = await ask("Delete", "Delete this team?");

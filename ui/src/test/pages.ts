@@ -5,6 +5,7 @@ import { act, screen, waitFor } from "@testing-library/react";
 import { toast } from "sonner";
 import { expect } from "vitest";
 import { api, type Method, type PathFor } from "@/api/client";
+import { createQueryClient } from "@/api/queries";
 import { errors } from "./errors";
 import { override, refuse, type Call } from "./handlers";
 import { unauthenticated, type AppRenderResult } from "./render";
@@ -56,6 +57,21 @@ export function expectNoSecret(app: AppRenderResult, secret: string): void {
   expect(cached(app.queryClient)).not.toContain(secret);
   expect(JSON.stringify(app.router.state)).not.toContain(secret);
   expect(stored()).not.toContain(secret);
+}
+
+/**
+ * A client for `renderWithApp` whose data stays fresh for a minute. A test
+ * that leaves a list, changes something and comes back needs it to say
+ * anything about the invalidation: with the default, data is stale at once,
+ * the list that is mounted again asks again whatever the mutation did, and
+ * the test passes without any invalidation. With this client only what a
+ * mutation marked as stale is asked for again.
+ */
+export function clientThatKeepsDataFresh(): QueryClient {
+  const client = createQueryClient({ retry: false });
+  const defaults = client.getDefaultOptions();
+  client.setDefaultOptions({ ...defaults, queries: { ...defaults.queries, staleTime: 60_000 } });
+  return client;
 }
 
 export interface Counted {
