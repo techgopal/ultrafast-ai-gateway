@@ -319,6 +319,7 @@ function Details({ id }: { id: number }) {
       return (
         <QueryProblem
           notFound
+          title="Team"
           error={team.error}
           onRetry={() => {
             void team.refetch();

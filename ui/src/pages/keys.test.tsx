@@ -18,6 +18,7 @@ import {
   expectNoSecret,
   expectNotAvailable,
   expectOneRequestWhileTheDialogStays,
+  expectOneH1,
   expectOneMain,
   expectSessionEndsOnPage,
   forbid,
@@ -220,6 +221,7 @@ describe("the list of keys", () => {
     // The key itself is nowhere: the list has only what the gateway shows of it.
     expect(shown()).not.toContain(SECRET);
     expectOneMain();
+    expectOneH1();
   });
 
   test("revoked keys are hidden by default", async () => {
@@ -514,11 +516,20 @@ describe("the list of keys", () => {
     }
   });
 
+  test("a failed list call shows the error under the title of the page: one h1", async () => {
+    override("get", "/api/keys", () => refuse(errors.internal_error));
+    await page();
+    await screen.findByRole("alert");
+    expectOneH1("Virtual keys");
+    expectOneMain();
+  });
+
   test("the list call answers 403: not available", async () => {
     forbid("/api/keys");
     await page();
     await expectNotAvailable();
     expectOneMain();
+    expectOneH1();
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.queryByRole("button", { name: "Create key" })).toBeNull();
   });

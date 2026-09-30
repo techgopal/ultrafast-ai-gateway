@@ -9,15 +9,21 @@ import { renderWithApp } from "@/test/render";
 
 const PART_NOT_AVAILABLE = "Not available to your account.";
 
+/** The `h1` of the screen, as their texts. */
+function h1(): string[] {
+  return screen.queryAllByRole("heading", { level: 1 }).map((heading) => heading.textContent);
+}
+
 function errorOf(fixture: GatewayError): ApiError {
   return new ApiError(fixture.status, fixture.body.error.code, fixture.body.error.message);
 }
 
-/** The problem inside the one `main` of a page, as the shell has it. */
+/** The problem inside the one `main` of a page, as the shell has it. The page is called "Users". */
 function inPage(error: unknown, options: { notFound?: boolean; onRetry?: () => void } = {}) {
   return renderWithApp(
     <main>
       <QueryProblem
+        title="Users"
         error={error}
         onRetry={options.onRetry ?? (() => undefined)}
         {...(options.notFound === undefined ? {} : { notFound: options.notFound })}
@@ -68,6 +74,35 @@ describe("query problem", () => {
   test("an answer of a session that is over shows nothing", async () => {
     await inPage(new SessionOverError(), { notFound: true });
     expect(screen.getByRole("main")).toBeEmptyDOMElement();
+  });
+
+  // One `h1` in every state: the problem is all the page shows, so it brings the heading.
+  test.each([
+    ["a 500", errorOf(errors.internal_error)],
+    ["a 404 of a list", errorOf(errors.not_found)],
+    ["a network error", new NetworkError()],
+    ["what is no error of the API", new Error("whatever")],
+  ])("%s is shown under the title of the page, which is the one h1", async (_, error) => {
+    await inPage(error);
+    expect(h1()).toEqual(["Users"]);
+    expect(screen.getAllByRole("heading")).toHaveLength(1);
+    // The heading comes first.
+    const alert = screen.getByRole("alert");
+    expect(
+      screen.getByRole("heading").compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+  });
+
+  test("not available takes the place of the page: its heading is the one h1, the title is not shown", async () => {
+    await inPage(errorOf(errors.forbidden), { notFound: true });
+    expect(h1()).toEqual(["Not available"]);
+    expect(screen.queryByRole("heading", { name: "Users" })).toBeNull();
+  });
+
+  test("not found takes the place of the page: its heading is the one h1, the title is not shown", async () => {
+    await inPage(errorOf(errors.not_found), { notFound: true });
+    expect(h1()).toEqual([NOT_FOUND]);
+    expect(screen.queryByRole("heading", { name: "Users" })).toBeNull();
   });
 });
 
@@ -128,5 +163,13 @@ describe("query problem of a part of a page", () => {
     const part = screen.getByRole("region", { name: "Access tokens" });
     expect(part.textContent).toBe("Access tokens");
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test.each([
+    ["a 403", errorOf(errors.forbidden)],
+    ["a 500", errorOf(errors.internal_error)],
+  ])("%s of a part brings no h1: the page has its own", async (_, error) => {
+    await inPart(error);
+    expect(h1()).toEqual(["Account"]);
   });
 });

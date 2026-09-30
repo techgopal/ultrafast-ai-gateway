@@ -137,44 +137,47 @@ export function Providers() {
   const failed = providers.error !== null && providers.data === undefined;
   return (
     <>
-      {/* One child of the page: the place of the notice takes no room while it is empty. */}
-      <div className="flex flex-col">
-        <PageHeader title="Providers" actions={failed ? undefined : addButton} />
-        {/*
-          Where the page says how a provider that was added is called. The
-          place is there before the text: what comes into a live region is
-          announced, a live region that comes with its text often is not.
-        */}
-        <div role="status" className="not-empty:mt-6">
-          {added === null ? null : (
-            // The announcement is that of the place: the alert is none of its own.
-            <Alert role="presentation">
-              <AlertTitle>Provider added</AlertTitle>
-              <AlertDescription>
-                <p>
-                  Call its models as{" "}
-                  <code className="font-mono break-words">{`${added}/<model>`}</code>: the name of
-                  the provider, a slash, and the name of the model.
-                </p>
-              </AlertDescription>
-              <AlertAction>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className={control}
-                  onClick={() => {
-                    setAdded(null);
-                  }}
-                >
-                  Dismiss
-                </Button>
-              </AlertAction>
-            </Alert>
-          )}
+      {failed ? null : (
+        // One child of the page: the place of the notice takes no room while it is empty.
+        <div className="flex flex-col">
+          <PageHeader title="Providers" actions={addButton} />
+          {/*
+            Where the page says how a provider that was added is called. The
+            place is there before the text: what comes into a live region is
+            announced, a live region that comes with its text often is not.
+          */}
+          <div role="status" className="not-empty:mt-6">
+            {added === null ? null : (
+              // The announcement is that of the place: the alert is none of its own.
+              <Alert role="presentation">
+                <AlertTitle>Provider added</AlertTitle>
+                <AlertDescription>
+                  <p>
+                    Call its models as{" "}
+                    <code className="font-mono break-words">{`${added}/<model>`}</code>: the name
+                    of the provider, a slash, and the name of the model.
+                  </p>
+                </AlertDescription>
+                <AlertAction>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className={control}
+                    onClick={() => {
+                      setAdded(null);
+                    }}
+                  >
+                    Dismiss
+                  </Button>
+                </AlertAction>
+              </Alert>
+            )}
+          </div>
         </div>
-      </div>
+      )}
       {failed ? (
         <QueryProblem
+          title="Providers"
           error={providers.error}
           onRetry={() => {
             void providers.refetch();

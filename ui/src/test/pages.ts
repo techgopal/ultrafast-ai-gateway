@@ -374,6 +374,19 @@ export function expectOneMain(): void {
 }
 
 /**
+ * The screen has exactly one `h1`, which says what the screen is: the title
+ * of the page, or the heading of what is shown in its place ("Not available",
+ * "Page not found"). Never two, as a page title above a heading of that
+ * kind would be, and never none. With `name`, that is what it says.
+ */
+export function expectOneH1(name?: string): void {
+  const headings = [...document.querySelectorAll("h1")].map((heading) => heading.textContent);
+  expect(headings).toHaveLength(1);
+  expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+  if (name !== undefined) expect(headings).toEqual([name]);
+}
+
+/**
  * Waits a fixed time, so that what is on its way can arrive. An assertion
  * that something did NOT happen, made after it, proves only that it did not
  * happen within that time: it catches what follows an answer of MSW at once,
@@ -459,10 +472,14 @@ export function forbid(path: PathFor<"get">): Counted {
   return counted("get", path, () => refuse(errors.forbidden));
 }
 
-/** The "not available" screen: not an error, and not a toast. */
+/**
+ * The "not available" screen: not an error, and not a toast. It is shown in
+ * the place of the page, so its heading is the one `h1` of the screen.
+ */
 export async function expectNotAvailable(): Promise<void> {
   expect(await screen.findByText(NOT_AVAILABLE)).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Not available" })).toBeInTheDocument();
+  expectOneH1("Not available");
   expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByText(errors.forbidden.body.error.message)).toBeNull();
   expect(toasts()).toEqual([]);
