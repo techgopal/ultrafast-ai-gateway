@@ -5,6 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import { errors } from "@/test/errors";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
+import { renderWithApp } from "@/test/render";
 import { api, onUnauthenticated } from "./client";
 import { ApiError, NetworkError } from "./errors";
 import * as q from "./queries";
@@ -1117,7 +1118,6 @@ describe("secrets stay out of the caches", () => {
 
 describe("the render helper", () => {
   test("every render has a query client of its own, which does not retry", async () => {
-    const { renderWithApp } = await import("@/test/render");
     let calls = 0;
     override("get", "/api/teams", () => {
       calls += 1;

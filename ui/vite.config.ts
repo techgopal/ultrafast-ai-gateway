@@ -71,5 +71,10 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
     css: false,
+    // The page tests drive dialogs step by step, and every file imports the
+    // whole app. On a busy machine a test that takes a second alone can take
+    // more than the 5 seconds a test has by default, and a timeout then says
+    // nothing about the code. One value, here: no test file sets its own.
+    testTimeout: 15_000,
   },
 });
