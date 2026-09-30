@@ -10,8 +10,7 @@ import {
   useSyncExternalStore,
   type RefObject,
 } from "react";
-import { ApiError, ConsoleRefusal } from "@/api/errors";
-import { messageOfError } from "@/components/ErrorState";
+import { ApiError, ConsoleRefusal, messageOfError } from "@/api/errors";
 
 /** What this file needs of a form of TanStack Form. Every `useForm` gives it. */
 export interface FormLike {

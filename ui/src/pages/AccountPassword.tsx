@@ -1,11 +1,10 @@
 import { useForm } from "@tanstack/react-form";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, ConsoleRefusal } from "@/api/errors";
+import { ApiError, ConsoleRefusal, messageOfError } from "@/api/errors";
 import { useChangePassword } from "@/api/queries";
 import { useSessionControl } from "@/auth/session";
 import { PASSWORD_POLICY, PASSWORDS_DIFFER, TOO_MANY_ATTEMPTS } from "@/components/AuthForm";
 import { control } from "@/components/classes";
-import { messageOfError } from "@/components/ErrorState";
 import { Field } from "@/components/Field";
 import { applyApiError, onField, onStatus, useFormFailure, useSubmit } from "@/components/form";
 import { FormError } from "@/components/FormError";

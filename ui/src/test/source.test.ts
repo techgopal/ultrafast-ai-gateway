@@ -260,6 +260,32 @@ function belowAFolderOfPages(paths: string[]): string[] {
 }
 
 describe("what depends on what", () => {
+  // An import of `components/` or `pages/`, by the alias or by a path that goes up.
+  const ofComponentsOrPages =
+    /(?:\bfrom\s*|\bimport\s*\(?\s*)["'](?:@\/|(?:\.\.\/)+)(?:components|pages)(?:\/[^"']*)?["']/;
+
+  test("the scan of lib sees what it should", () => {
+    const quote = '"';
+    const from = (path: string) => `import { x } from ${quote}${path}${quote};`;
+    expect(ofComponentsOrPages.test(from("@/components/ErrorState"))).toBe(true);
+    expect(ofComponentsOrPages.test(from("../components/ErrorState"))).toBe(true);
+    expect(ofComponentsOrPages.test(from("@/pages/Keys"))).toBe(true);
+    expect(ofComponentsOrPages.test(`const page = import(${quote}../pages/Keys${quote});`)).toBe(true);
+    expect(ofComponentsOrPages.test(`export { x } from ${quote}@/components/form${quote};`)).toBe(true);
+    expect(ofComponentsOrPages.test(from("@/api/errors"))).toBe(false);
+    expect(ofComponentsOrPages.test(from("@/lib/id"))).toBe(false);
+    expect(ofComponentsOrPages.test(from("./expiry"))).toBe(false);
+    expect(ofComponentsOrPages.test(from("@/components-extra"))).toBe(false);
+  });
+
+  // `lib/` holds rules that are pure functions. What they need of the errors
+  // is in `api/errors.ts`; a component, with its markup, is no part of them.
+  test("no file of lib imports from components or pages", () => {
+    const lib = written().filter((path) => path.startsWith("lib/"));
+    expect(lib.length).toBeGreaterThan(5);
+    expect(findings(lib, ofComponentsOrPages)).toEqual([]);
+  });
+
   test("no shared component imports a page", () => {
     const shared = allSources().filter(
       (path) => path.startsWith("components/") && !path.includes(".test."),

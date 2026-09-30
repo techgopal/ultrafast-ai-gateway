@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { messageOfError } from "@/api/errors";
 import { alertDialogFit, dialogButton, useReturnFocus } from "@/components/dialog-fit";
-import { messageOfError } from "@/components/ErrorState";
 import {
   AlertDialog,
   AlertDialogAction,

@@ -1,5 +1,5 @@
-import { ApiError } from "@/api/errors";
-import { ErrorState, messageOfError } from "@/components/ErrorState";
+import { ApiError, messageOfError } from "@/api/errors";
+import { ErrorState } from "@/components/ErrorState";
 import { NotAvailableContent } from "@/components/NotAvailableContent";
 import { NotAvailableNote } from "@/components/NotAvailableNote";
 import { NotFoundContent } from "@/components/NotFoundContent";

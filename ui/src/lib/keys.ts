@@ -3,10 +3,9 @@
 // the form, the request that is made of the form, and what is known of a
 // team that was asked for. Pure functions: the form of `pages/KeysCreate`
 // asks them, and the gateway decides.
-import { ApiError, ConsoleRefusal } from "@/api/errors";
+import { ApiError, ConsoleRefusal, messageOfError } from "@/api/errors";
 import type { components } from "@/api/schema";
 import { can, type Me } from "@/auth/guards";
-import { messageOfError } from "@/components/ErrorState";
 import { expiryOf, type Expiry } from "@/lib/expiry";
 import { idOf } from "@/lib/id";
 
