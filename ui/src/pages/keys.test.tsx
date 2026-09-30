@@ -2,7 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
-import { queryKeys } from "@/api/queries";
+import { queryKeys, teamsOptions } from "@/api/queries";
 import { errors, fieldMessages, validationFailed } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
 import { gate, startGateway } from "@/test/gateway";
@@ -11,6 +11,7 @@ import {
   aCallFindsTheSessionEnded,
   cached,
   choose,
+  clientThatKeepsDataFresh,
   counted,
   descriptionOf,
   expectNoSecret,
@@ -1024,71 +1025,252 @@ describe("creating a key", () => {
     expect(within(dialog).queryByRole("alert")).toBeNull();
   });
 
-  test("the members of a team that cannot be read: failed with Retry", async () => {
-    const failing = counted("get", "/api/teams/{id}", ({ params }) =>
-      params.id === String(research.id)
-        ? refuse(errors.internal_error)
-        : ok("get", "/api/teams/{id}", 200, fixtures.teamDetails.platform),
-    );
-    await page();
-    const dialog = await openCreate(false);
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      errors.internal_error.body.error.message,
-    );
-    expect(failing.calls).toBe(fixtures.teamList.length);
-    const again = counted("get", "/api/teams/{id}", ({ params }) => {
-      const detail = fixtures.teamDetailList.find((one) => String(one.team.id) === params.id);
-      return detail === undefined
-        ? refuse(errors.not_found)
-        : ok("get", "/api/teams/{id}", 200, detail);
+  describe("teams that cannot be read", () => {
+    const NOT_LOADED = "Some teams could not be loaded.";
+
+    /** Every team answers as the fixtures have it, but for these. */
+    function teamsAnswer(but: Record<number, () => Response | Promise<Response>> = {}) {
+      return counted("get", "/api/teams/{id}", ({ params }) => {
+        const id = Number(params.id);
+        const other = but[id];
+        if (other !== undefined) return other();
+        const detail = fixtures.teamDetailList.find((one) => one.team.id === id);
+        return detail === undefined
+          ? refuse(errors.not_found)
+          : ok("get", "/api/teams/{id}", 200, detail);
+      });
+    }
+
+    function listIs(teams: readonly fixtures.Team[]) {
+      return counted("get", "/api/teams", () => ok("get", "/api/teams", 200, { teams: [...teams] }));
+    }
+
+    const fails = () => refuse(errors.internal_error);
+    const isGone = () => refuse(errors.not_found);
+
+    /** The notice about the teams, which names no error of the gateway. */
+    function notice(dialog: HTMLElement): HTMLElement {
+      const found = within(dialog).getByRole("alert");
+      expect(found).toHaveTextContent(NOT_LOADED);
+      expect(found).not.toHaveTextContent(errors.internal_error.body.error.message);
+      return found;
+    }
+
+    test("one team of three that cannot be read: the dialog says so, and a key of one's own with no team is created", async () => {
+      const state = keeps();
+      const reads = teamsAnswer({ [research.id]: fails });
+      await page();
+      const dialog = await openCreate();
+      expect(reads.calls).toBe(fixtures.teamList.length);
+      expect(fixtures.teamList).toHaveLength(3);
+      expect(within(notice(dialog)).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+      expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
+      expect(field(dialog, "Team")).toHaveTextContent("No team");
+      expect(within(dialog).getByRole("button", { name: "Create key" })).toBeEnabled();
+
+      await named(dialog, "laptop");
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "laptop" }]);
     });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
-    expect(await within(dialog).findByRole("combobox", { name: "Owner" })).toBeInTheDocument();
-    // Only what failed was asked for again.
-    expect(again.calls).toBe(1);
-  });
 
-  test("a team that is gone while the dialog is open is offered no more: failed with Retry, and Retry asks the list", async () => {
-    const app = await page();
-    const dialog = await openCreate();
-    await choose(field(dialog, "Owner"), person(tomas));
-    expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
-
-    // Research is deleted meanwhile. Asked for again, it answers 404.
-    const details = counted("get", "/api/teams/{id}", ({ params }) => {
-      const detail = fixtures.teamDetailList.find(
-        (one) => String(one.team.id) === params.id && one.team.id !== research.id,
+    test("the teams that were read stay usable, for every owner", async () => {
+      teamsAnswer({ [research.id]: fails });
+      await page();
+      const dialog = await openCreate();
+      notice(dialog);
+      // An admin still chooses among all active users.
+      expect(await optionsOf(field(dialog, "Owner"))).toEqual(
+        [maya, arjun, lena, priya, tomas].map(person),
       );
-      return detail === undefined
-        ? refuse(errors.not_found)
-        : ok("get", "/api/teams/{id}", 200, detail);
+      // Arjun is in Platform and in Research: Platform was read.
+      await choose(field(dialog, "Owner"), person(arjun));
+      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", platform.name]);
     });
-    const teams = counted("get", "/api/teams", () =>
-      ok("get", "/api/teams", 200, {
-        teams: fixtures.teamList.filter((team) => team.id !== research.id),
-      }),
-    );
-    const key = queryKeys.teams.detail(research.id);
-    await act(async () => {
-      await app.queryClient.invalidateQueries({ queryKey: key });
-    });
-    // What was loaded of the team is dropped, so nothing is offered from it.
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      errors.not_found.body.error.message,
-    );
-    expect(app.queryClient.getQueryData(key)).toBeUndefined();
-    expect(within(dialog).queryByRole("combobox")).toBeNull();
-    expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
-    expect([details.calls, teams.calls]).toEqual([1, 0]);
 
-    // The list says which teams there are: the one that is gone is not asked for again.
-    await userEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
-    expect(await within(dialog).findByRole("combobox", { name: "Owner" })).toBeInTheDocument();
-    expect(teams.calls).toBe(1);
-    expect(within(dialog).queryByRole("alert")).toBeNull();
-    expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
-    expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
-    expect(within(dialog).getByRole("button", { name: "Create key" })).toBeEnabled();
+    test("Retry reads what failed again, and the teams are offered", async () => {
+      teamsAnswer({ [research.id]: fails });
+      await page();
+      const dialog = await openCreate();
+      await named(dialog, "notebook");
+      await choose(field(dialog, "Owner"), person(tomas));
+      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
+
+      const again = teamsAnswer();
+      await userEvent.click(within(notice(dialog)).getByRole("button", { name: "Retry" }));
+      await waitFor(() => {
+        expect(within(dialog).queryByRole("alert")).toBeNull();
+      });
+      // Only what failed was asked for again, and the form is as it was.
+      expect(again.calls).toBe(1);
+      expect(within(dialog).getByLabelText("Name")).toHaveValue("notebook");
+      expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
+      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
+    });
+
+    test("while it is read again the form stays, and a second failure says the same", async () => {
+      teamsAnswer({ [research.id]: fails });
+      await page();
+      const dialog = await openCreate();
+      const door = gate();
+      const again = teamsAnswer({
+        [research.id]: async () => {
+          await door.opened;
+          return fails();
+        },
+      });
+      await userEvent.click(within(notice(dialog)).getByRole("button", { name: "Retry" }));
+      await waitFor(() => {
+        expect(again.calls).toBe(1);
+      });
+      // No skeleton in place of the form, and the key can be made meanwhile.
+      expect(within(dialog).queryByRole("status")).toBeNull();
+      expect(field(dialog, "Owner")).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Create key" })).toBeEnabled();
+      notice(dialog);
+      act(() => {
+        door.open();
+      });
+      await settle();
+      notice(dialog);
+      expect(field(dialog, "Owner")).toBeInTheDocument();
+    });
+
+    test("a lead whose team cannot be read still makes a key of their own in it", async () => {
+      const state = keeps();
+      const reads = teamsAnswer({ [platform.id]: fails });
+      await page({ user: fixtures.me.arjun });
+      const dialog = await openCreate();
+      expect(reads.calls).toBe(1);
+      notice(dialog);
+      // The members of the team are not known: only the lead is offered as the owner.
+      expect(await optionsOf(field(dialog, "Owner"))).toEqual([person(arjun)]);
+      // Their own teams are known without the read.
+      expect(await optionsOf(field(dialog, "Team"))).toEqual([
+        "No team",
+        platform.name,
+        research.name,
+      ]);
+      await named(dialog, "ci");
+      await choose(field(dialog, "Team"), platform.name);
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "ci", team_id: platform.id }]);
+    });
+
+    test("a team that is gone when the dialog opens is not offered: no error, and the list is read again by itself", async () => {
+      // The list was read before the team was deleted.
+      const app = await page({ queryClient: clientThatKeepsDataFresh() });
+      await act(async () => {
+        await app.queryClient.query(teamsOptions());
+      });
+      const reads = teamsAnswer({ [research.id]: isGone });
+      const lists = listIs(fixtures.teamList.filter((team) => team.id !== research.id));
+      const dialog = await openCreate();
+      await waitFor(() => {
+        expect(lists.calls).toBe(1);
+      });
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      expect(dialog).not.toHaveTextContent(errors.not_found.body.error.message);
+      await choose(field(dialog, "Owner"), person(tomas));
+      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
+      expect(within(dialog).getByRole("button", { name: "Create key" })).toBeEnabled();
+      await settle();
+      // The team that is gone was asked for once, and the list once.
+      expect(reads.calls).toBe(fixtures.teamList.length);
+      expect(lists.calls).toBe(1);
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+    });
+
+    test("a team that is gone while the dialog is open is offered no more: no error, and the list is read again by itself", async () => {
+      const app = await page();
+      const dialog = await openCreate();
+      await named(dialog, "notebook");
+      await choose(field(dialog, "Owner"), person(tomas));
+      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
+
+      // Research is deleted meanwhile. Asked for again, it answers 404.
+      const reads = teamsAnswer({ [research.id]: isGone });
+      const lists = listIs(fixtures.teamList.filter((team) => team.id !== research.id));
+      const key = queryKeys.teams.detail(research.id);
+      await act(async () => {
+        await app.queryClient.invalidateQueries({ queryKey: key });
+      });
+      // What was loaded of the team is dropped, and the list says which teams there are.
+      await waitFor(() => {
+        expect(lists.calls).toBe(1);
+      });
+      expect(app.queryClient.getQueryData(key)).toBeUndefined();
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      expect(dialog).not.toHaveTextContent(errors.not_found.body.error.message);
+      expect(within(dialog).queryByRole("status")).toBeNull();
+      // The form is as it was, without the team.
+      expect(within(dialog).getByLabelText("Name")).toHaveValue("notebook");
+      expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
+      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
+      expect(within(dialog).getByRole("button", { name: "Create key" })).toBeEnabled();
+      await settle();
+      expect([reads.calls, lists.calls]).toEqual([1, 1]);
+    });
+
+    test("a team that answers 404 though the list still names it is not offered, and the list is read again once", async () => {
+      const app = await page();
+      const dialog = await openCreate();
+      const reads = teamsAnswer({ [research.id]: isGone });
+      const lists = listIs(fixtures.teamList);
+      await act(async () => {
+        await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(research.id) });
+      });
+      await waitFor(() => {
+        expect(lists.calls).toBe(1);
+      });
+      await settle(60);
+      // Not again and again, also not when the dialog has something new to show.
+      act(() => {
+        app.queryClient.setQueryData(queryKeys.teams.detail(platform.id), {
+          team: platform,
+          members: [],
+        });
+      });
+      await settle(60);
+      expect([reads.calls, lists.calls]).toEqual([1, 1]);
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      await choose(field(dialog, "Owner"), person(tomas));
+      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
+    });
+
+    test("the team that was chosen is gone: the choice is empty, and nothing is sent until a team is chosen", async () => {
+      const state = keeps();
+      const app = await page();
+      const dialog = await openCreate();
+      await named(dialog, "notebook");
+      await choose(field(dialog, "Owner"), person(tomas));
+      await choose(field(dialog, "Team"), research.name);
+      expect(field(dialog, "Team")).toHaveTextContent(research.name);
+
+      teamsAnswer({ [research.id]: isGone });
+      const lists = listIs(fixtures.teamList.filter((team) => team.id !== research.id));
+      await act(async () => {
+        await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(research.id) });
+      });
+      await waitFor(() => {
+        expect(lists.calls).toBe(1);
+      });
+      const team = field(dialog, "Team");
+      expect(team).toHaveTextContent("Choose a team");
+      expect(team).not.toHaveTextContent(research.name);
+      await send(dialog);
+      await waitFor(() => {
+        expect(descriptionOf(team)).toContain("Choose a team.");
+      });
+      await settle();
+      expect(state.created).toEqual([]);
+
+      await choose(team, "No team");
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "notebook", owner_id: tomas.id }]);
+    });
   });
 
   test("while the key is created the button is disabled and says so", async () => {
