@@ -13,6 +13,7 @@ import {
 import type { components } from "@/api/schema";
 import { can, type Me } from "@/auth/guards";
 import { useSession } from "@/auth/session";
+import { control } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
@@ -63,8 +64,6 @@ export const DONE = {
 export const NO_USER_WITH_ID = "No user with that ID.";
 export const USER_ID_HINT = "Ask an admin for the user's ID.";
 export const CHOOSE_A_USER = "Choose a user.";
-
-const control = "min-h-11 md:min-h-8";
 
 /** What the console says about the one field of the form. It is no answer of the gateway. */
 function onUserId(message: string): ConsoleRefusal {

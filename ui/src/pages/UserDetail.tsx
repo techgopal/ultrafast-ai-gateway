@@ -4,6 +4,7 @@ import { useDeleteUser, useReinviteUser, useUpdateUser, useUser } from "@/api/qu
 import type { components } from "@/api/schema";
 import { can, type Me } from "@/auth/guards";
 import { useSession, useSessionControl } from "@/auth/session";
+import { control } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { NameDialog } from "@/components/NameDialog";
 import { NotFoundContent } from "@/components/NotFoundContent";
@@ -51,8 +52,6 @@ export const DONE = {
 } as const;
 
 type Asking = "name" | "role" | "disable" | "enable" | "reinvite" | "delete";
-
-const control = "min-h-11 md:min-h-8";
 
 function Controls({ me, user }: { me: Me; user: User }) {
   const navigate = useNavigate();
