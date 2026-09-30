@@ -1,6 +1,7 @@
-// Errors of the API client, and what the console refuses itself. None keeps
-// the request, the response body or a header: an error may be logged or shown
-// by an error boundary, and requests can hold passwords and provider API keys.
+// Errors of the API client, what the console refuses itself, and what the
+// user is told of an error. None keeps the request, the response body or a
+// header: an error may be logged or shown by an error boundary, and requests
+// can hold passwords and provider API keys.
 
 /** The gateway answered, and the answer was not a success. */
 export class ApiError extends Error {
@@ -64,4 +65,25 @@ export class ConsoleRefusal extends Error {
     super(message);
     this.field = field;
   }
+}
+
+export const SOMETHING_WENT_WRONG = "Something went wrong.";
+
+/**
+ * What to tell the user about a failure, or `null` when there is nothing to
+ * tell: an answer of a session that is over says nothing to who is signed in
+ * now. Only the message of the gateway, the message of the network error and
+ * what the console itself refuses are shown; whatever else was thrown may
+ * hold what is not for the user.
+ */
+export function messageOfError(error: unknown): string | null {
+  if (error instanceof SessionOverError) return null;
+  if (
+    error instanceof ApiError ||
+    error instanceof NetworkError ||
+    error instanceof ConsoleRefusal
+  ) {
+    return error.message;
+  }
+  return SOMETHING_WENT_WRONG;
 }
