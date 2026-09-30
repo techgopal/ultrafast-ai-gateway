@@ -99,6 +99,51 @@ describe("queries", () => {
     expect(search).toBe("?limit=20&before=3");
   });
 
+  test("the pages of the audit log have 50 entries, and each is asked for from where the one before ended", async () => {
+    const all = fixtures.auditEntriesFrom(70, 70);
+    const asked: string[] = [];
+    override("get", "/api/audit", ({ request }) => {
+      const url = new URL(request.url);
+      asked.push(url.search);
+      const before = url.searchParams.get("before");
+      const entries = all.filter((entry) => before === null || entry.id < Number(before));
+      return ok("get", "/api/audit", 200, { entries: entries.slice(0, 50) });
+    });
+    const client = appClient();
+    const { result } = renderHook(() => q.useAuditPages(), { wrapper: wrapperOf(client) });
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+    expect(q.AUDIT_PAGE_SIZE).toBe(50);
+    expect(asked).toEqual(["?limit=50"]);
+    expect(result.current.hasNextPage).toBe(true);
+
+    await act(async () => {
+      await result.current.fetchNextPage();
+    });
+    // `before` is the id of the last entry of the page before.
+    expect(asked).toEqual(["?limit=50", "?limit=50&before=21"]);
+    await waitFor(() => {
+      expect(result.current.data?.pages.map((page) => page.entries.length)).toEqual([50, 20]);
+    });
+    expect(result.current.data?.pages.flatMap((page) => page.entries)).toEqual(all);
+    // A page with fewer than 50 entries is the last.
+    expect(result.current.hasNextPage).toBe(false);
+
+    // What marks the audit log as stale reads the pages again, in their order.
+    asked.length = 0;
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: q.queryKeys.audit.all() });
+    });
+    expect(asked).toEqual(["?limit=50", "?limit=50&before=21"]);
+    await waitFor(() => {
+      expect(result.current.isFetching).toBe(false);
+    });
+    expect(result.current.data?.pages.flatMap((page) => page.entries)).toEqual(all);
+    // The key holds no cursor: the pages are one entry of the cache.
+    expect(q.queryKeys.audit.pages()).toEqual(["audit", "pages"]);
+  });
+
   test("the teams with their members are one call for each team", async () => {
     const asked: string[] = [];
     override("get", "/api/teams/{id}", ({ params }) => {
@@ -1012,10 +1057,11 @@ describe("every mutation calls its operation", () => {
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
-  test("there are 20 of them, and 12 queries", () => {
+  test("there are 20 of them, and 13 queries", () => {
     expect(cases).toHaveLength(20);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(32);
+    expect(hooks).toHaveLength(33);
+    expect(hooks).toContain("useAuditPages");
     expect(hooks).toContain("useTeamDetails");
     expect(hooks).not.toContain("useLogout");
     expect(hooks).toEqual(expect.arrayContaining(cases.map(([name]) => name)));
@@ -1109,6 +1155,7 @@ describe("secrets stay out of the caches", () => {
       q.queryKeys.providers.list(),
       q.queryKeys.tokens.list(),
       q.queryKeys.audit.list({ limit: 10, before: 5 }),
+      q.queryKeys.audit.pages(),
     ];
     expect(new Set(keys.map((key) => JSON.stringify(key))).size).toBe(keys.length);
     expect(q.queryKeys.users.detail(1).slice(0, 1)).toEqual(q.queryKeys.users.all());

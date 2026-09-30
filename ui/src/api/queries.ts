@@ -1,5 +1,6 @@
 // The query keys and the hooks the pages use: one hook for each operation of
-// the admin API, and one for the members of several teams.
+// the admin API, one for the members of several teams, and one for the audit
+// log as the pages it is read in.
 //
 // Two rules hold for everything here. A query key holds ids and page numbers,
 // never a secret. And a mutation is dropped from the mutation cache as soon as
@@ -13,6 +14,7 @@ import {
   QueryCache,
   QueryClient,
   queryOptions,
+  useInfiniteQuery,
   useMutation,
   useQueries,
   useQuery,
@@ -81,6 +83,8 @@ export const queryKeys = {
     all: () => ["audit"] as const,
     list: (page: AuditPageRequest = {}) =>
       ["audit", "list", { limit: page.limit ?? null, before: page.before ?? null }] as const,
+    /** The log as it is read page by page: one entry of the cache for all its pages. */
+    pages: () => ["audit", "pages"] as const,
   },
 };
 
@@ -236,6 +240,29 @@ export const useKey = (id: number) => useQuery(keyOptions(id));
 export const useProviders = () => useQuery(providersOptions());
 export const useTokens = () => useQuery(tokensOptions());
 export const useAuditLog = (page: AuditPageRequest = {}) => useQuery(auditLogOptions(page));
+
+/** How many entries a page of the audit log has. A page with fewer is the last. */
+export const AUDIT_PAGE_SIZE = 50;
+
+/**
+ * The audit log, newest first, read page by page. The gateway takes the id
+ * of the last entry of the page before as `before` and answers with the
+ * entries below it: an entry is in one page only, whatever was added to the
+ * log meanwhile. When the log is read again, each page is asked for from
+ * where the page before it ends now, so no entry shows twice or out of order.
+ */
+export const useAuditPages = () =>
+  useInfiniteQuery({
+    queryKey: queryKeys.audit.pages(),
+    queryFn: ({ pageParam, signal }) =>
+      api.get("/api/audit", {
+        query: { limit: AUDIT_PAGE_SIZE, ...(pageParam === null ? {} : { before: pageParam }) },
+        signal,
+      }),
+    initialPageParam: null as number | null,
+    getNextPageParam: (last) =>
+      last.entries.length < AUDIT_PAGE_SIZE ? undefined : last.entries.at(-1)?.id,
+  });
 
 // -------------------------------------------------------------- mutations
 
