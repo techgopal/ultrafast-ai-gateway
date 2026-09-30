@@ -1,6 +1,6 @@
-// Errors of the API client. Neither keeps the request, the response body or a
-// header: an error may be logged or shown by an error boundary, and requests
-// can hold passwords and provider API keys.
+// Errors of the API client, and what the console refuses itself. None keeps
+// the request, the response body or a header: an error may be logged or shown
+// by an error boundary, and requests can hold passwords and provider API keys.
 
 /** The gateway answered, and the answer was not a success. */
 export class ApiError extends Error {
@@ -42,5 +42,22 @@ export class SessionOverError extends Error {
 
   constructor() {
     super("The session this request was made in is over.");
+  }
+}
+
+/**
+ * The console itself refuses something: a form that holds what cannot be
+ * sent, or an answer that cannot be used. It is not an answer of the gateway,
+ * and so has no status and no code; `ApiError` is only what the gateway said.
+ * The message is a text of the console, written for the user.
+ */
+export class ConsoleRefusal extends Error {
+  override readonly name = "ConsoleRefusal";
+  /** The field of the form the refusal is about, when it is about one. */
+  readonly field: string | undefined;
+
+  constructor(message: string, field?: string) {
+    super(message);
+    this.field = field;
   }
 }

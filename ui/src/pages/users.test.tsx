@@ -2,7 +2,9 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { ApiError, ConsoleRefusal } from "@/api/errors";
 import { queryKeys } from "@/api/queries";
+import { inviteUrl } from "@/pages/Users";
 import { errors, fieldMessages, validationFailed } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
 import { gate, startGateway } from "@/test/gateway";
@@ -523,6 +525,20 @@ describe("an invite link that cannot be used", () => {
     expect(screen.queryByRole("dialog", { name: "Invite link" })).toBeNull();
     expectNoSecret(app, TOKEN);
     expect(shown()).not.toContain("other.example.test");
+  });
+
+  test.each(paths)("for %j the console refuses itself: no answer of the gateway is made up", (path) => {
+    let thrown: unknown;
+    try {
+      inviteUrl(path);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ConsoleRefusal);
+    expect(thrown).not.toBeInstanceOf(ApiError);
+    expect(thrown).toMatchObject({ message: UNUSABLE });
+    expect(thrown).not.toHaveProperty("status");
+    expect(thrown).not.toHaveProperty("code");
   });
 
   test("a usable path keeps its query string", async () => {

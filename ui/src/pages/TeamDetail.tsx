@@ -1,7 +1,7 @@
 import { useForm } from "@tanstack/react-form";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
-import { ApiError } from "@/api/errors";
+import { ApiError, ConsoleRefusal } from "@/api/errors";
 import {
   useDeleteTeam,
   usePutTeamMember,
@@ -81,16 +81,15 @@ function TeamRoleBadge({ role }: { role: string }) {
 
 const control = "min-h-11 md:min-h-8";
 
-/** What is wrong with the one field of the form, said as the gateway says it. */
-function onUserId(status: number, code: string, message: string): ApiError {
-  return new ApiError(status, code, message, { user_id: message });
+/** What the console says about the one field of the form. It is no answer of the gateway. */
+function onUserId(message: string): ConsoleRefusal {
+  return new ConsoleRefusal(message, "user_id");
 }
 
 /** The refusals of the gateway that are about the user who is added. */
 function aboutTheUser(error: unknown): unknown {
-  if (error instanceof ApiError && error.status === 404) {
-    return onUserId(error.status, error.code, NO_USER_WITH_ID);
-  }
+  // The gateway says "not found"; the form says what was not found.
+  if (error instanceof ApiError && error.status === 404) return onUserId(NO_USER_WITH_ID);
   return onField(error, "user_disabled", "user_id");
 }
 
@@ -201,11 +200,8 @@ function AddForm({ team, put, onDone, onCancel, choice }: AddFormProps & { choic
     onSubmit: async ({ value }) => {
       try {
         const userId = idOf(value.user_id.trim());
-        if (userId === null) {
-          throw fromList
-            ? onUserId(422, "validation_failed", CHOOSE_A_USER)
-            : onUserId(404, "not_found", NO_USER_WITH_ID);
-        }
+        // Nothing is sent for what is no id: the console refuses it itself.
+        if (userId === null) throw onUserId(fromList ? CHOOSE_A_USER : NO_USER_WITH_ID);
         await mutateAsync({ id: team.id, userId, body: { role: "member" } });
         onDone();
       } catch (error) {

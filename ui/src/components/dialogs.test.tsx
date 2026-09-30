@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "@/api/client";
-import { NetworkError, SessionOverError } from "@/api/errors";
+import { ConsoleRefusal, NetworkError, SessionOverError } from "@/api/errors";
 import { useCreateKey, useDeleteUser } from "@/api/queries";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SecretDialog, useSecretOnce } from "@/components/SecretDialog";
@@ -134,6 +134,17 @@ describe("confirm dialog", () => {
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "Could not reach the gateway.",
     );
+  });
+
+  test("confirm shows what the console itself refuses", async () => {
+    const refusing = () => Promise.reject(new ConsoleRefusal("The link cannot be used."));
+    await renderWithApp(<Users onConfirm={refusing} />);
+    const dialog = await openConfirm();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent("The link cannot be used.");
+    expect(alert).not.toHaveTextContent("Something went wrong.");
+    expect(dialog).toBeInTheDocument();
   });
 
   test("confirm shows nothing of an error that is not of the API", async () => {

@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type RefObject,
 } from "react";
-import { ApiError } from "@/api/errors";
+import { ApiError, ConsoleRefusal } from "@/api/errors";
 import { messageOfError } from "@/components/ErrorState";
 
 /** What this file needs of a form of TanStack Form. Every `useForm` gives it. */
@@ -120,6 +120,15 @@ function named(field: string, message: string): string {
   return message.startsWith(field) ? message : `${field}: ${message}`;
 }
 
+/** What the error says about single fields: the name of each, and the text. */
+function aboutFields(error: unknown): [name: string, text: string][] {
+  if (error instanceof ApiError) return Object.entries(error.fields);
+  if (error instanceof ConsoleRefusal && error.field !== undefined) {
+    return [[error.field, error.message]];
+  }
+  return [];
+}
+
 /**
  * Puts what a submit failed with onto the form: each key of `error.fields`
  * that is a field of the form becomes the error of that field; the other
@@ -139,6 +148,9 @@ function named(field: string, message: string): string {
  * The error of a field goes for good when the field is changed, also when the
  * old value is typed again; all errors go when the next submit starts.
  *
+ * What the console refuses itself (`ConsoleRefusal`) goes the same way: with
+ * a `field` it is the error of that field, without one the error of the form.
+ *
  * An answer of a session that is over (`SessionOverError`) puts nothing on
  * the form and moves no focus: it says nothing to who is signed in now.
  */
@@ -148,11 +160,9 @@ export function applyApiError(form: FormLike, error: unknown): void {
   const values = valuesOf(form);
   const fields = new Map<string, { message: string; value: unknown }>();
   const messages: string[] = [];
-  if (error instanceof ApiError) {
-    for (const [name, text] of Object.entries(error.fields)) {
-      if (values.has(name)) fields.set(name, { message: text, value: values.get(name) });
-      else messages.push(named(name, text));
-    }
+  for (const [name, text] of aboutFields(error)) {
+    if (values.has(name)) fields.set(name, { message: text, value: values.get(name) });
+    else messages.push(named(name, text));
   }
   if (fields.size === 0 && messages.length === 0) messages.push(message);
   storeOf(form).set({ attempt: form.state.submissionAttempts, fields, messages }, form);

@@ -1,7 +1,7 @@
 import { useForm } from "@tanstack/react-form";
 import { Link } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
-import { ApiError } from "@/api/errors";
+import { ConsoleRefusal } from "@/api/errors";
 import { useInviteUser, useUsers } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
@@ -44,12 +44,12 @@ export const INVITE_LINK_UNUSABLE = "The gateway returned an invite link that ca
 /**
  * The invite link as the user can open it. The API gives a path of the
  * console, which starts with one `/`; anything else could name another
- * host, and is refused with an error that the dialog shows as it shows a
- * refusal of the gateway.
+ * host, and is refused by the console itself: the dialog shows the message
+ * where it shows a refusal of the gateway, which this is not.
  */
 export function inviteUrl(path: string): string {
   const { origin } = window.location;
-  const unusable = new ApiError(502, "invite_link_unusable", INVITE_LINK_UNUSABLE);
+  const unusable = new ConsoleRefusal(INVITE_LINK_UNUSABLE);
   // A browser reads a backslash as a slash.
   if (!/^\/[^/\\]/.test(path)) throw unusable;
   let url: URL;
