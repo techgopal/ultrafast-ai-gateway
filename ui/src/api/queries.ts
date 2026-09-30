@@ -1,5 +1,5 @@
 // The query keys and the hooks the pages use: one hook for each operation of
-// the admin API.
+// the admin API, and one for the members of several teams.
 //
 // Two rules hold for everything here. A query key holds ids and page numbers,
 // never a secret. And a mutation is dropped from the mutation cache as soon as
@@ -13,6 +13,7 @@ import {
   QueryClient,
   queryOptions,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
   type QueryKey,
@@ -165,6 +166,13 @@ export const useUsers = () => useQuery(usersOptions());
 export const useUser = (id: number) => useQuery(userOptions(id));
 export const useTeams = () => useQuery(teamsOptions());
 export const useTeam = (id: number) => useQuery(teamOptions(id));
+/**
+ * The teams with their members: one call for each team, in the order of the
+ * ids. The API has no operation that gives the teams of a user; who is in
+ * which team is read from the teams.
+ */
+export const useTeamDetails = (ids: readonly number[]) =>
+  useQueries({ queries: ids.map((id) => teamOptions(id)) });
 export const useKeys = () => useQuery(keysOptions());
 export const useKey = (id: number) => useQuery(keyOptions(id));
 export const useProviders = () => useQuery(providersOptions());
@@ -349,6 +357,8 @@ export const useRevokeKey = () =>
   useApiMutation(
     ({ id }: { id: number }) => api.delete("/api/keys/{id}", { params: { id } }),
     () => ({ stale: [queryKeys.keys.all(), audit] }),
+    // The key is not the caller's to see any more: the list shows what is not so.
+    (error) => (isNotFound(error) ? [queryKeys.keys.all()] : []),
   );
 
 // providers
@@ -359,17 +369,22 @@ export const useCreateProvider = () =>
     () => ({ stale: [queryKeys.providers.all(), audit] }),
   );
 
+// The provider was deleted meanwhile: the list still shows it.
+const providerIsGone = (error: unknown) => (isNotFound(error) ? [queryKeys.providers.all()] : []);
+
 export const useUpdateProvider = () =>
   useApiMutation(
     ({ id, body }: { id: number; body: BodyOf<"/api/providers/{id}", "patch"> }) =>
       api.patch("/api/providers/{id}", { params: { id }, body }),
     () => ({ stale: [queryKeys.providers.all(), audit] }),
+    providerIsGone,
   );
 
 export const useDeleteProvider = () =>
   useApiMutation(
     ({ id }: { id: number }) => api.delete("/api/providers/{id}", { params: { id } }),
     () => ({ stale: [queryKeys.providers.all(), audit] }),
+    providerIsGone,
   );
 
 // tokens

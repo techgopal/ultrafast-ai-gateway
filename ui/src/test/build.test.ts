@@ -59,6 +59,16 @@ const allowedUrls: AllowedUrl[] = [
   // with `new URL(path, origin)`. No request: it is only parsed, and a page
   // served by the gateway always has its own origin.
   { text: "http://localhost", match: "exact" },
+  // pages/Providers.tsx: the known base URLs of providers. They are choices of
+  // a form: choosing one fills the "Base URL" field with this text, which the
+  // admin then sends to the gateway as a value. No request: the console never
+  // asks any of them for anything; it is the gateway that calls a provider.
+  { text: "https://api.openai.com/v1", match: "exact" },
+  { text: "https://api.anthropic.com", match: "exact" },
+  { text: "https://api.groq.com/openai/v1", match: "exact" },
+  { text: "https://api.mistral.ai/v1", match: "exact" },
+  { text: "https://openrouter.ai/api/v1", match: "exact" },
+  { text: "http://localhost:11434/v1", match: "exact" },
 ];
 
 // What may follow a `prefix` entry: characters of a path and a query, nothing else.
@@ -84,6 +94,15 @@ describe("the allow-list of the URL scan", () => {
     "https://react.dev/link/x",
     "http://react.dev/errors/1",
     "https://example.com/?u=https://react.dev/errors/",
+    // The known base URLs of providers are allowed as they are written, and no other address of their hosts.
+    "https://api.openai.com/v1/models",
+    "https://api.openai.com",
+    "https://api.anthropic.com/v1",
+    "https://api.groq.com",
+    "https://api.mistral.ai/v1/chat",
+    "https://openrouter.ai",
+    "http://localhost:11434",
+    "http://localhost:11434/v1/models",
   ])("does not allow %s", (url) => {
     expect(allowedEntry(url)).toBeUndefined();
   });
@@ -92,6 +111,17 @@ describe("the allow-list of the URL scan", () => {
     expect(allowedEntry("http://localhost")?.text).toBe("http://localhost");
     expect(allowedEntry("https://react.dev/errors/")?.match).toBe("prefix");
     expect(allowedEntry("https://react.dev/errors/418")?.match).toBe("prefix");
+    for (const url of [
+      "https://api.openai.com/v1",
+      "https://api.anthropic.com",
+      "https://api.groq.com/openai/v1",
+      "https://api.mistral.ai/v1",
+      "https://openrouter.ai/api/v1",
+      "http://localhost:11434/v1",
+    ]) {
+      expect(allowedEntry(url)).toEqual({ text: url, match: "exact" });
+    }
+    expect(allowedUrls).toHaveLength(8);
   });
 });
 

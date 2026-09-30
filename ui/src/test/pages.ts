@@ -1,9 +1,10 @@
 // What the tests of the pages share: the end of a session on a page, the
 // scans for a secret, and the counting of calls.
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-import { expect } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
 import { api, type Method, type PathFor } from "@/api/client";
 import { createQueryClient } from "@/api/queries";
 import { errors } from "./errors";
@@ -57,6 +58,26 @@ export function expectNoSecret(app: AppRenderResult, secret: string): void {
   expect(cached(app.queryClient)).not.toContain(secret);
   expect(JSON.stringify(app.router.state)).not.toContain(secret);
   expect(stored()).not.toContain(secret);
+}
+
+/**
+ * Records what is written to the console from now on, until the test ends.
+ * Returns what was written so far, as one text: a secret must not be in it.
+ * It is still written, so that a warning stays visible, unless `quiet`.
+ */
+export function listenToConsole(quiet = false): () => string {
+  const lines: string[] = [];
+  for (const method of ["log", "info", "warn", "error", "debug"] as const) {
+    const write = console[method].bind(console);
+    const spy = vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+      lines.push(args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
+      if (!quiet) write(...args);
+    });
+    onTestFinished(() => {
+      spy.mockRestore();
+    });
+  }
+  return () => lines.join("\n");
 }
 
 /**
@@ -209,6 +230,55 @@ export function installPointerCapture(): void {
       value: () => undefined,
     });
   }
+}
+
+/**
+ * jsdom has no layout: the list of a select asks whether it holds the
+ * pointer, and scrolls to its chosen option. For `beforeAll`, with
+ * `installPointerCapture`.
+ */
+export function installSelect(): void {
+  installPointerCapture();
+  for (const [name, answer] of [
+    ["hasPointerCapture", false],
+    ["scrollIntoView", undefined],
+  ] as const) {
+    if (Reflect.has(Element.prototype, name)) continue;
+    Object.defineProperty(Element.prototype, name, {
+      configurable: true,
+      writable: true,
+      value: () => answer,
+    });
+  }
+}
+
+async function listOf(select: HTMLElement): Promise<HTMLElement> {
+  await userEvent.click(select);
+  return screen.findByRole("listbox");
+}
+
+async function listClosed(): Promise<void> {
+  await waitFor(() => {
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+}
+
+/** Opens the select and chooses the option of this name. */
+export async function choose(select: HTMLElement, option: string | RegExp): Promise<void> {
+  const list = await listOf(select);
+  await userEvent.click(within(list).getByRole("option", { name: option }));
+  await listClosed();
+}
+
+/** The options the select offers, as their texts. It is closed again. */
+export async function optionsOf(select: HTMLElement): Promise<string[]> {
+  const list = await listOf(select);
+  const options = within(list)
+    .getAllByRole("option")
+    .map((option) => option.textContent);
+  await userEvent.keyboard("{Escape}");
+  await listClosed();
+  return options;
 }
 
 /** What describes the control: its error and its hint. */
