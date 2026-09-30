@@ -32,7 +32,14 @@ export type ConsoleAction =
   | { type: "createKeyForAnyone" }
   | { type: "revokeKey"; ownerId: number | null; teamId: number | null }
   | { type: "manageProviders" }
-  | { type: "viewAudit" };
+  | { type: "viewAudit" }
+  /**
+   * Sees how many users and teams there are, on the overview: who manages
+   * some, which is an admin and the lead of a team. The gateway lists users
+   * and teams for everybody, as far as they are theirs to see; to a member
+   * that is themselves and their own teams, which is nothing to count.
+   */
+  | { type: "viewUserAndTeamCounts" };
 
 export function isAdmin(me: Me): boolean {
   return me.user.role === "admin";
@@ -72,6 +79,8 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "removeMember":
     case "createKeyForMember":
       return leads(me, action.teamId);
+    case "viewUserAndTeamCounts":
+      return ledTeamIds(me).length > 0;
     case "viewTeam":
       return isIn(me, action.teamId);
     case "createKeyForSelf":

@@ -91,6 +91,8 @@ describe("guards", () => {
     ["revoke a key whose owner is gone", { type: "revokeKey", ownerId: null, teamId: null }, [true, false, false, false]],
     ["manage providers", { type: "manageProviders" }, [true, false, false, false]],
     ["view audit", { type: "viewAudit" }, [true, false, false, false]],
+    // The overview counts users and teams for who manages some: admins, and leads.
+    ["view the counts of users and teams", { type: "viewUserAndTeamCounts" }, [true, true, false, false]],
   ];
 
   test.each(table)("%s", (_, action, expected) => {
@@ -117,6 +119,7 @@ describe("guards", () => {
       revokeKey: true,
       manageProviders: true,
       viewAudit: true,
+      viewUserAndTeamCounts: true,
     };
     expect([...seen].sort()).toEqual(Object.keys(all).sort());
   });

@@ -257,7 +257,8 @@ export async function aCallFindsTheSessionEnded(path: ListPath): Promise<void> {
  * asks nothing afterwards.
  *
  * `path` is the operation of the page's query, `queryKey` its key, `at` the
- * address of the page.
+ * address of the page. The overview, at `/`, is where a sign-in leads anyway:
+ * the app is then at the sign-in page without `next`.
  */
 export async function expectSessionEndsOnPage(
   app: AppRenderResult,
@@ -268,8 +269,9 @@ export async function expectSessionEndsOnPage(
   await act(async () => {
     await app.queryClient.invalidateQueries({ queryKey: page.queryKey });
   });
+  const signIn = page.at === "/" ? "/sign-in" : `/sign-in?next=${encodeURIComponent(page.at)}`;
   await waitFor(() => {
-    expect(href(app)).toBe(`/sign-in?next=${encodeURIComponent(page.at)}`);
+    expect(href(app)).toBe(signIn);
   });
   expect(asked.calls).toBe(1);
   expect(screen.getByRole("status")).toHaveTextContent(SESSION_ENDED);

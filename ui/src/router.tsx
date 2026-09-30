@@ -20,6 +20,7 @@ import { Audit } from "@/pages/Audit";
 import { Keys } from "@/pages/Keys";
 import { PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
+import { Overview } from "@/pages/Overview";
 import { Providers } from "@/pages/Providers";
 import { Setup } from "@/pages/Setup";
 import { TeamDetail } from "@/pages/TeamDetail";
@@ -183,6 +184,13 @@ function page<const TPath extends string>(path: TPath, title: string) {
   });
 }
 
+const overviewRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/",
+  staticData: { title: "Overview" },
+  component: Overview,
+});
+
 const auditRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/audit",
@@ -276,7 +284,7 @@ const routeTree = rootRoute.addChildren([
   setupRoute,
   acceptInviteRoute,
   shellRoute.addChildren([
-    page("/", "Overview"),
+    overviewRoute,
     providersRoute,
     keysRoute,
     usersRoute,
