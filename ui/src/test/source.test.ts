@@ -150,7 +150,8 @@ function written(): string[] {
 }
 
 describe("dialogs and forms", () => {
-  const sending = /\.handleSubmit\s*\(/;
+  // Any use of it: called, taken apart from the form, called if it is there, handed on.
+  const sending = /\bhandleSubmit\b/;
 
   test("the scans see what they should", () => {
     const quote = '"';
@@ -162,7 +163,14 @@ describe("dialogs and forms", () => {
     );
     expect(importOf("@/components/ui/dialog").test(from("@/components/FormDialog"))).toBe(false);
     expect(sending.test("void form" + ".handleSubmit();")).toBe(true);
+    // Also taken apart, called if it is there, or handed on.
+    expect(sending.test("const { handle" + "Submit } = form;")).toBe(true);
+    expect(sending.test("handle" + "Submit();")).toBe(true);
+    expect(sending.test("form.handle" + "Submit?.();")).toBe(true);
+    expect(sending.test("onClick={form.handle" + "Submit}")).toBe(true);
     expect(sending.test("onSubmit={submitOnce(form)}")).toBe(false);
+    expect(sending.test("const onSubmit = useSubmit(form);")).toBe(false);
+    expect(sending.test("const handleSubmitted = done;")).toBe(false);
     expect(written()).toContain("pages/Users.tsx");
     expect(written()).toContain("components/FormDialog.tsx");
     expect(written().some((path) => path.includes(".test."))).toBe(false);
@@ -189,9 +197,8 @@ describe("dialogs and forms", () => {
   // being left from the submit on. A form that called `handleSubmit` itself
   // would be without that.
   test("a form is sent by useSubmit, and by nothing else", () => {
-    expect(
-      findings(written(), sending).map((finding) => finding.replace(/:\d+: .*$/, "")),
-    ).toEqual(["components/form.ts"]);
+    const where = findings(written(), sending).map((finding) => finding.replace(/:\d+: .*$/, ""));
+    expect([...new Set(where)]).toEqual(["components/form.ts"]);
   });
 });
 
@@ -233,14 +240,17 @@ function pageFiles(): string[] {
  * a part of a page has the name of that page and then a name of its own,
  * which begins with a capital letter: `KeysCreate` and `KeysFilters` are
  * parts of `Keys`, `TeamDetailAddMember` is one of `TeamDetail`. A part is of
- * the area of its page. `files` are the page files there are.
+ * the area of its page, also a part of a part. `files` are the page files
+ * there are.
  */
 function areaOf(page: string, files: readonly string[] = pageFiles()): string {
   const [whole = page] = files
     .filter((other) => page.startsWith(other) && /^[A-Z]/.test(page.slice(other.length)))
     // Of two pages it begins with, the longer one is its page.
     .sort((a, b) => b.length - a.length);
-  return whole.replace(/Detail$/, "").replace(/s$/, "");
+  // That page can be a part itself: `KeysCreateOwner` is a part of `KeysCreate`.
+  if (whole !== page) return areaOf(whole, files);
+  return page.replace(/Detail$/, "").replace(/s$/, "");
 }
 
 /**
@@ -336,6 +346,12 @@ describe("what depends on what", () => {
     expect(areaOf("TeamDetailAddMember", files)).toBe(areaOf("TeamDetail", files));
     expect(areaOf("TeamDetailAddMember", files)).toBe(areaOf("Teams", files));
     expect(areaOf("KeysCreate", files)).not.toBe(areaOf("TeamDetailAddMember", files));
+    // A part of a part is of the area of the page as well.
+    const deeper = [...files, "KeysCreateOwner", "TeamDetailAddMemberList"];
+    expect(areaOf("KeysCreateOwner", deeper)).toBe(areaOf("KeysCreate", deeper));
+    expect(areaOf("KeysCreateOwner", deeper)).toBe(areaOf("Keys", deeper));
+    expect(areaOf("TeamDetailAddMemberList", deeper)).toBe(areaOf("Teams", deeper));
+    expect(areaOf("KeysCreateOwner", deeper)).not.toBe(areaOf("TeamDetailAddMemberList", deeper));
     // Only of a page that is there, and only when its own name follows with a capital letter.
     expect(areaOf("KeysCreate", ["Teams", "KeysCreate"])).not.toBe(areaOf("Keys", ["Teams"]));
     expect(areaOf("Keyseeker", files)).not.toBe(areaOf("Keys", files));
