@@ -220,6 +220,46 @@ describe("mutations invalidate", () => {
     expect(teams.calls).toBe(1);
   });
 
+  test("a 404 of a change of a member asks for the team again; another refusal asks for nothing", async () => {
+    let detail = 0;
+    override("get", "/api/teams/{id}", () => {
+      detail += 1;
+      return ok("get", "/api/teams/{id}", 200, fixtures.teamDetails.platform);
+    });
+    const teams = counted("/api/teams");
+    const me = counted("/api/auth/me");
+    const id = fixtures.teams.platform.id;
+    const { result } = renderHook(
+      () => ({ team: q.useTeam(id), teams: q.useTeams(), me: q.useMe(), put: q.usePutTeamMember() }),
+      { wrapper: wrapperOf(appClient()) },
+    );
+    await waitFor(() => {
+      expect(
+        result.current.team.isSuccess && result.current.teams.isSuccess && result.current.me.isSuccess,
+      ).toBe(true);
+    });
+    const add = () =>
+      result.current.put.mutateAsync({ id, userId: 999, body: { role: "member" } });
+
+    override("put", "/api/teams/{id}/members/{user_id}", () => refuse(errors.forbidden));
+    await act(async () => {
+      await expect(add()).rejects.toMatchObject({ status: 403 });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect([detail, teams.calls, me.calls]).toEqual([1, 1, 1]);
+
+    // The gateway answers 404 for a team it does not show as for a user it does not know.
+    override("put", "/api/teams/{id}/members/{user_id}", () => refuse(errors.not_found));
+    await act(async () => {
+      await expect(add()).rejects.toMatchObject({ status: 404 });
+    });
+    await waitFor(() => {
+      expect(detail).toBe(2);
+    });
+    // Only the team is in doubt.
+    expect([teams.calls, me.calls]).toEqual([1, 1]);
+  });
+
   test("a change of a user refetches users, keys, teams and the caller", async () => {
     const users = counted("/api/users");
     const keys = counted("/api/keys");

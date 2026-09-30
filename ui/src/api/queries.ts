@@ -177,10 +177,14 @@ export const useAuditLog = (page: AuditPageRequest = {}) => useQuery(auditLogOpt
  * A mutation that, after it succeeded, marks what it affects as stale, so
  * that what is on the screen is fetched again. It does not wait for that.
  * `gone` is what no longer exists: it is dropped, not fetched again.
+ *
+ * A mutation that failed changed nothing, and marks nothing as stale, but
+ * for what its failure puts in doubt (`doubts`): that is fetched again.
  */
 function useApiMutation<TVariables, TData>(
   mutationFn: (variables: TVariables) => Promise<TData>,
   affects: (variables: TVariables) => { stale: readonly QueryKey[]; gone?: readonly QueryKey[] },
+  doubts: (error: unknown, variables: TVariables) => readonly QueryKey[] = () => [],
 ) {
   const client = useQueryClient();
   return useMutation({
@@ -192,7 +196,14 @@ function useApiMutation<TVariables, TData>(
       for (const queryKey of gone) client.removeQueries({ queryKey });
       for (const queryKey of stale) void client.invalidateQueries({ queryKey });
     },
+    onError: (error, variables) => {
+      for (const queryKey of doubts(error, variables)) void client.invalidateQueries({ queryKey });
+    },
   });
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
 }
 
 const audit = queryKeys.audit.all();
@@ -307,6 +318,9 @@ export const usePutTeamMember = () =>
     }) =>
       api.put("/api/teams/{id}/members/{user_id}", { params: { id, user_id: userId }, body }),
     () => ({ stale: membersChanged }),
+    // The gateway answers 404 for a team it does not show before it looks at
+    // the user. The team is asked for again: its page then shows which it was.
+    (error, { id }) => (isNotFound(error) ? [queryKeys.teams.detail(id)] : []),
   );
 
 export const useRemoveTeamMember = () =>

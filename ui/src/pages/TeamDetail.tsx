@@ -88,7 +88,9 @@ function onUserId(message: string): ConsoleRefusal {
 
 /** The refusals of the gateway that are about the user who is added. */
 function aboutTheUser(error: unknown): unknown {
-  // The gateway says "not found"; the form says what was not found.
+  // The gateway says "not found"; the form says what was not found. It may be
+  // the team as well: `usePutTeamMember` asks for the team again, and when it
+  // is gone the page shows that in place of this form.
   if (error instanceof ApiError && error.status === 404) return onUserId(NO_USER_WITH_ID);
   return onField(error, "user_disabled", "user_id");
 }
@@ -560,7 +562,11 @@ function Details({ id }: { id: number }) {
   const team = useTeam(id);
 
   if (session.status !== "signedIn") return null;
-  if (team.data === undefined) {
+  // A team the gateway does not show any more is not shown here either, though
+  // it was loaded before: the 404 of asking again wins over what is shown.
+  // Every other failure of asking again keeps it.
+  const hidden = team.error instanceof ApiError && team.error.status === 404;
+  if (team.data === undefined || hidden) {
     if (team.error !== null) {
       return (
         <QueryProblem
