@@ -1,6 +1,6 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeAll, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { api } from "@/api/client";
 import { ApiError, ConsoleRefusal, NetworkError, SessionOverError } from "@/api/errors";
 import { EmptyState } from "@/components/EmptyState";
@@ -11,7 +11,11 @@ import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
 import { errors } from "@/test/errors";
 import { override, refuse } from "@/test/handlers";
+import { forgetToasts } from "@/test/pages";
 import { renderWithApp } from "@/test/render";
+
+// A toast of one test would show in the next one, whichever runs next.
+afterEach(forgetToasts);
 
 async function failureOf(call: Promise<unknown>): Promise<unknown> {
   return call.then(
