@@ -29,6 +29,7 @@ import {
   installSelect,
   listenToConsole,
   optionsOf,
+  rowWithCell,
   SESSION_ENDED,
   settle,
   shown,
@@ -69,19 +70,19 @@ async function table(): Promise<HTMLElement> {
 }
 
 function rowOf(name: string): HTMLElement {
-  const row = screen.getByRole("cell", { name }).closest("tr");
-  if (row === null) throw new Error(`no row for ${name}`);
-  return row;
+  return rowWithCell(name);
 }
 
-/** The names of the keys that are listed, in their order. */
+/**
+ * The names of the keys that are listed, in their order. The rows and cells
+ * are read through the elements: see `rowWithCell`.
+ */
 function listed(): string[] {
   const found = screen.queryByRole("table", { name: "Virtual keys" });
   if (found === null) return [];
-  return within(found)
-    .getAllByRole("row")
-    .slice(1)
-    .map((row) => within(row).getAllByRole("cell")[0]?.textContent ?? "");
+  return [...found.querySelectorAll("tbody tr")].map(
+    (row) => row.querySelector("td")?.textContent ?? "",
+  );
 }
 
 function showRevoked(): HTMLElement {
@@ -141,8 +142,14 @@ function field(dialog: HTMLElement, name: "Owner" | "Team"): HTMLElement {
   return within(dialog).getByRole("combobox", { name });
 }
 
+/**
+ * Puts the name into the field at once, as a paste does: how the field takes
+ * what is typed is not what the tests that call it look at. The first test
+ * of the dialog types it for real.
+ */
 async function named(dialog: HTMLElement, name: string): Promise<void> {
-  await userEvent.type(within(dialog).getByLabelText("Name"), name);
+  await userEvent.click(within(dialog).getByLabelText("Name"));
+  await userEvent.paste(name);
 }
 
 function send(dialog: HTMLElement): Promise<void> {
@@ -241,16 +248,18 @@ describe("the list of keys", () => {
   });
 
   describe("filters", () => {
+    /** Puts the text into the search at once, as a paste does. */
     async function searchFor(text: string): Promise<void> {
       const search = screen.getByRole("searchbox", { name: "Search" });
       await userEvent.clear(search);
-      if (text !== "") await userEvent.type(search, text);
+      if (text !== "") await userEvent.paste(text);
     }
 
     test("the text narrows by the name, the owner and what is shown of the key", async () => {
       await page();
       await table();
-      await searchFor("platform");
+      // Typed for real once; the other texts are put in at once.
+      await userEvent.type(screen.getByRole("searchbox", { name: "Search" }), "platform");
       expect(listed()).toEqual([active.name, noOwner.name]);
       await searchFor("TOMAS@");
       expect(listed()).toEqual([expired.name]);
@@ -565,7 +574,8 @@ describe("creating a key", () => {
     expect(field(dialog, "Team")).toHaveTextContent("No team");
     expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", platform.name]);
 
-    await named(dialog, "laptop");
+    // This test of the dialog types the name for real; the others put it in at once.
+    await userEvent.type(within(dialog).getByLabelText("Name"), "laptop");
     await send(dialog);
     await secretDialog();
     // No `owner_id`: the gateway takes the caller.

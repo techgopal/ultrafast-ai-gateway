@@ -7,7 +7,7 @@ import { expect } from "vitest";
 import { errors, fieldMessages, validationFailed } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
 import { noContent, ok, override, refuse } from "@/test/handlers";
-import { counted } from "@/test/pages";
+import { counted, rowWithCell } from "@/test/pages";
 import { renderWithApp, type AppRenderResult } from "@/test/render";
 
 export const { maya, arjun } = fixtures.users;
@@ -114,12 +114,32 @@ export function fields(): HTMLElement[] {
   return [field("Current password"), field("New password"), field("Confirm new password")];
 }
 
+const PASSWORD_FIELDS = ["Current password", "New password", "Confirm new password"] as const;
+
+/**
+ * Fills the three fields of the password form, each at once, as a paste
+ * does: how a field takes what is typed is not what the tests that call it
+ * look at, and typing every key of three passwords takes long. A test that
+ * types for real calls `fillByTyping`.
+ */
 export async function fill(current: string, next: string, confirm: string = next): Promise<void> {
-  for (const [name, text] of [
-    ["Current password", current],
-    ["New password", next],
-    ["Confirm new password", confirm],
-  ] as const) {
+  for (const [index, text] of [current, next, confirm].entries()) {
+    const name = PASSWORD_FIELDS[index];
+    if (name === undefined) continue;
+    await userEvent.clear(field(name));
+    if (text !== "") await userEvent.paste(text);
+  }
+}
+
+/** Fills the three fields of the password form key by key, as a person types. */
+export async function fillByTyping(
+  current: string,
+  next: string,
+  confirm: string = next,
+): Promise<void> {
+  for (const [index, text] of [current, next, confirm].entries()) {
+    const name = PASSWORD_FIELDS[index];
+    if (name === undefined) continue;
     await userEvent.clear(field(name));
     if (text !== "") await userEvent.type(field(name), text);
   }
@@ -222,16 +242,12 @@ export async function table(): Promise<HTMLElement> {
 }
 
 export function rowOf(name: string): HTMLElement {
-  const row = screen.getByRole("cell", { name }).closest("tr");
-  if (row === null) throw new Error(`no row for ${name}`);
-  return row;
+  return rowWithCell(name);
 }
 
-/** The cells of the row of the token, as their texts. */
+/** The cells of the row of the token, as their texts, read through the elements. */
 export function cellsOf(name: string): string[] {
-  return within(rowOf(name))
-    .getAllByRole("cell")
-    .map((cell) => cell.textContent);
+  return [...rowOf(name).querySelectorAll("td")].map((cell) => cell.textContent);
 }
 
 export async function openCreate(): Promise<HTMLElement> {

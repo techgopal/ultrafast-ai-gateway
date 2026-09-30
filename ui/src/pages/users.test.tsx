@@ -108,9 +108,16 @@ async function openInvite(): Promise<HTMLElement> {
   return screen.findByRole("dialog", { name: "Invite user" });
 }
 
+/**
+ * Fills the invite form and sends it. Each field takes its text at once, as a
+ * paste does: how a field takes what is typed is not what the tests that call
+ * it look at. "invite errors: fields that are not valid" types for real.
+ */
 async function fillInvite(name = "Sam Carter", email = "sam@example.test"): Promise<void> {
-  await userEvent.type(screen.getByLabelText("Name"), name);
-  await userEvent.type(screen.getByLabelText("Email"), email);
+  await userEvent.click(screen.getByLabelText("Name"));
+  await userEvent.paste(name);
+  await userEvent.click(screen.getByLabelText("Email"));
+  await userEvent.paste(email);
   await userEvent.click(button("Create invite link"));
 }
 
@@ -467,9 +474,12 @@ describe("inviting", () => {
     await list();
     await table();
     const dialog = await openInvite();
-    await fillInvite("x", "not-an-email");
     const name = screen.getByLabelText("Name");
     const email = screen.getByLabelText("Email");
+    // This test of the form types for real; the others fill it at once.
+    await userEvent.type(name, "x");
+    await userEvent.type(email, "not-an-email");
+    await userEvent.click(button("Create invite link"));
     await waitFor(() => {
       expect(descriptionOf(name)).toBe(fieldMessages.name);
     });
@@ -677,9 +687,11 @@ describe("while a request runs", () => {
     await list();
     await table();
     const dialog = await openInvite();
-    await userEvent.type(within(dialog).getByLabelText("Name"), "Sam Carter");
+    await userEvent.click(within(dialog).getByLabelText("Name"));
+    await userEvent.paste("Sam Carter");
     const email = within(dialog).getByLabelText("Email");
-    await userEvent.type(email, "sam@example.test");
+    await userEvent.click(email);
+    await userEvent.paste("sam@example.test");
     await userEvent.type(email, "{Enter}{Escape}", { delay: null });
     await settle();
     expect(screen.queryByRole("dialog")).toBe(dialog);
@@ -699,8 +711,10 @@ describe("while a request runs", () => {
     await list();
     await table();
     const dialog = await openInvite();
-    await userEvent.type(within(dialog).getByLabelText("Name"), "Sam Carter");
-    await userEvent.type(within(dialog).getByLabelText("Email"), "sam@example.test");
+    await userEvent.click(within(dialog).getByLabelText("Name"));
+    await userEvent.paste("Sam Carter");
+    await userEvent.click(within(dialog).getByLabelText("Email"));
+    await userEvent.paste("sam@example.test");
     sendAndLeaveAtOnce(dialog, "Cancel");
     await settle();
     expect(screen.queryByRole("dialog")).toBe(dialog);

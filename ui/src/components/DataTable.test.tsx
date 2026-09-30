@@ -164,8 +164,11 @@ describe("data table", () => {
     // Measured in the test environment (jsdom): see the report. The bound is
     // far above it, and says only that the render does not hang.
     expect(took).toBeLessThan(20_000);
-    // Queries by role take seconds on 500 rows in jsdom: the rows are read from the table.
-    const table = screen.getByRole("table", { name: "Virtual keys" });
+    // Queries by role take seconds on 500 rows in jsdom: the table and its
+    // rows are read through the elements, and the name of the one table is asked.
+    const table = document.querySelector("table");
+    if (table === null) throw new Error("no table");
+    expect(table).toHaveAccessibleName("Virtual keys");
     const head = table.querySelector("thead");
     if (head === null) throw new Error("the table has no head");
     const shown = () =>
