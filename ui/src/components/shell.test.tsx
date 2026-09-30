@@ -163,7 +163,8 @@ describe("narrow screens", () => {
     const { router } = await renderWithApp(null, { width: 390 });
 
     expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Virtual keys" })).toBeNull();
+    // A link that only the sidebar has: the overview links to the virtual keys itself.
+    expect(screen.queryByRole("link", { name: "Account" })).toBeNull();
     // The top bar shows the page title.
     const banner = screen.getByRole("banner");
     expect(within(banner).getByText("Overview")).toBeInTheDocument();
