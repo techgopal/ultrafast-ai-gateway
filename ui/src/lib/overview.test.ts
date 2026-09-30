@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import {
   countByStatus,
+  countTitles,
   exampleCall,
   firstSteps,
   KEY_STATUSES,
@@ -69,6 +70,16 @@ describe("counting by status", () => {
       { status: "constructor", count: 2 },
       { status: "toString", count: 1 },
     ]);
+  });
+});
+
+describe("what the counts of users and teams are called", () => {
+  test("who is listed all of them reads what they are", () => {
+    expect(countTitles(true)).toEqual({ users: "Users", teams: "Teams" });
+  });
+
+  test("who is listed their own reads whose they are", () => {
+    expect(countTitles(false)).toEqual({ users: "Users in your teams", teams: "Your teams" });
   });
 });
 

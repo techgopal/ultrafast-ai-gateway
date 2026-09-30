@@ -29,6 +29,20 @@ export function countByStatus(
   });
 }
 
+/**
+ * What the counts of users and of teams are called. The gateway lists to an
+ * admin every user and every team, and to the lead of a team the people of
+ * the teams they lead and the teams they are in: the same two lists, which
+ * are not the same thing. `all` says that the viewer is listed all of them;
+ * otherwise the title says whose they are, so that nobody reads a number of
+ * their own teams as the number of the gateway.
+ */
+export function countTitles(all: boolean): { users: string; teams: string } {
+  return all
+    ? { users: "Users", teams: "Teams" }
+    : { users: "Users in your teams", teams: "Your teams" };
+}
+
 /** How many of the providers have a credential. */
 export function withCredential(providers: readonly { has_credential: boolean }[]): number {
   return providers.filter((provider) => provider.has_credential).length;
