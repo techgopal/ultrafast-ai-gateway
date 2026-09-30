@@ -1,3 +1,4 @@
+import type { QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
@@ -11,6 +12,7 @@ import { gate, startGateway } from "@/test/gateway";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import {
   aCallFindsTheSessionEnded,
+  clientThatKeepsDataFresh,
   counted,
   descriptionOf,
   expectNoSecret,
@@ -48,7 +50,9 @@ function usersAre(list: readonly fixtures.User[]) {
   return counted("get", "/api/users", () => ok("get", "/api/users", 200, { users: [...list] }));
 }
 
-function list(options: { user?: fixtures.Me; width?: number } = {}): Promise<AppRenderResult> {
+function list(
+  options: { user?: fixtures.Me; width?: number; queryClient?: QueryClient } = {},
+): Promise<AppRenderResult> {
   return renderWithApp(null, { route: "/users", ...options });
 }
 
@@ -640,8 +644,10 @@ describe("the list after a change", () => {
     return { state, listed };
   }
 
+  // The list is left and mounted again. Its data stays fresh, so that it is
+  // asked for again only because the change marked it as stale.
   async function fromTheListTo(user: fixtures.User): Promise<AppRenderResult> {
-    const app = await list();
+    const app = await list({ queryClient: clientThatKeepsDataFresh() });
     await table();
     await userEvent.click(screen.getByRole("link", { name: user.name }));
     await screen.findByRole("heading", { level: 1, name: user.name });
@@ -1302,7 +1308,8 @@ describe("deleting a user", () => {
     const removed = counted("delete", "/api/users/{id}", noContent);
     const read = counted("get", "/api/users/{id}", () => refuse(errors.not_found));
     const rest = fixtures.userList.filter((user) => user.id !== lena.id);
-    const app = await renderWithApp(null, { route: "/users" });
+    // The list stays fresh: it is asked for again only because the delete marked it as stale.
+    const app = await list({ queryClient: clientThatKeepsDataFresh() });
     await table();
     // The page of the user is reached from the list, whose data is then in the cache.
     override("get", "/api/users/{id}", () => ok("get", "/api/users/{id}", 200, lena));
