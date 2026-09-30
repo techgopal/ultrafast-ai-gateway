@@ -12,6 +12,7 @@ import { gate, startGateway } from "@/test/gateway";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import {
   aCallFindsTheSessionEnded,
+  cached,
   clientThatKeepsDataFresh,
   counted,
   descriptionOf,
@@ -22,12 +23,14 @@ import {
   forbid,
   forgetToasts,
   href,
+  inside,
   installPointerCapture,
   NOT_FOUND,
   SESSION_ENDED,
   settle,
   shown,
   toasts,
+  watchTheDocument,
 } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
@@ -117,6 +120,20 @@ async function ask(action: string, title: string): Promise<HTMLElement> {
 
 function confirm(dialog: HTMLElement, label: string): Promise<void> {
   return userEvent.click(within(dialog).getByRole("button", { name: label }));
+}
+
+/**
+ * What shows of Lena, a user of the fixtures: the heading, the email, the
+ * controls. For `watchTheDocument`.
+ */
+function ofLena(scope: Element): string[] {
+  const found: string[] = [];
+  if (inside(scope, "h1").some((heading) => heading.textContent === lena.name)) {
+    found.push("the heading");
+  }
+  if (scope.textContent.includes(lena.email)) found.push("the email");
+  if (inside(scope, '[role="group"][aria-label="Actions"]').length > 0) found.push("the controls");
+  return found;
 }
 
 describe("the list of users", () => {
@@ -842,6 +859,126 @@ describe("the page of a user", () => {
     await detail(lena);
     await expectNotAvailable();
     expectOneMain();
+  });
+
+  /** Lena's page is open; then she is deleted, and her page asks for her again. */
+  async function lenaIsGone(): Promise<{ app: AppRenderResult; asked: { calls: number } }> {
+    const app = await detail(lena);
+    await screen.findByRole("heading", { level: 1, name: lena.name });
+    const asked = counted("get", "/api/users/{id}", () => refuse(errors.not_found));
+    await act(async () => {
+      await app.queryClient.invalidateQueries({ queryKey: queryKeys.users.detail(lena.id) });
+    });
+    return { app, asked };
+  }
+
+  test("a user who is gone when they are asked for again is not found, though they were shown", async () => {
+    const { asked } = await lenaIsGone();
+    expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
+    expect(asked.calls).toBe(1);
+    expectOneMain();
+    expect(screen.queryByRole("heading", { name: lena.name })).toBeNull();
+    expect(shown()).not.toContain(lena.email);
+    expect(actions()).toEqual([]);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("nothing of a user who is gone when they are asked for again is kept", async () => {
+    const app = await detail(lena);
+    await screen.findByRole("heading", { level: 1, name: lena.name });
+    const key = queryKeys.users.detail(lena.id);
+    expect(app.queryClient.getQueryData(key)).toEqual(lena);
+    expect(cached(app.queryClient)).toContain(lena.email);
+    override("get", "/api/users/{id}", () => refuse(errors.not_found));
+    await act(async () => {
+      await app.queryClient.invalidateQueries({ queryKey: key });
+    });
+    await waitFor(() => {
+      expect(app.queryClient.getQueryState(key)?.error).toMatchObject({ status: 404 });
+    });
+    expect(app.queryClient.getQueryData(key)).toBeUndefined();
+    expect(cached(app.queryClient)).not.toContain(lena.email);
+  });
+
+  test.each([
+    [
+      "an error of the gateway",
+      () => refuse(errors.internal_error),
+      errors.internal_error.body.error.message,
+    ],
+    ["a gateway that cannot be reached", networkFailure, "Could not reach the gateway."],
+  ])(
+    "a user who was gone does not come back when asking again fails with %s",
+    async (_, answer, message) => {
+      const { app } = await lenaIsGone();
+      expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
+
+      // Asked for again, as the app does when the window gets the focus.
+      const way = watchTheDocument(ofLena);
+      const again = counted("get", "/api/users/{id}", answer);
+      await act(async () => {
+        await app.queryClient.invalidateQueries({ queryKey: queryKeys.users.detail(lena.id) });
+      });
+      expect(again.calls).toBe(1);
+      await settle();
+      // The failure is what shows, with Retry, and not what was loaded once.
+      expect(way.seen()).toEqual([]);
+      expect(await screen.findByRole("alert")).toHaveTextContent(message);
+      expect(button("Retry")).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: lena.name })).toBeNull();
+      expect(shown()).not.toContain(lena.email);
+      expect(actions()).toEqual([]);
+      expectOneMain();
+    },
+  );
+
+  test("a user who was gone does not come back on a return to their page while the gateway cannot be reached", async () => {
+    usersAre(fixtures.userList.filter((user) => user.id !== lena.id));
+    const { app } = await lenaIsGone();
+    expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
+
+    // To the list, and back while nothing answers.
+    await userEvent.click(screen.getByRole("link", { name: "Users" }));
+    await table();
+    expect(screen.queryByRole("link", { name: lena.name })).toBeNull();
+    const again = counted("get", "/api/users/{id}", networkFailure);
+    const way = watchTheDocument(ofLena);
+    await act(async () => {
+      await app.router.navigate({ to: `/users/${lena.id}` });
+    });
+    await waitFor(() => {
+      expect(again.calls).toBe(1);
+    });
+    await settle();
+    expect(href(app)).toBe(`/users/${lena.id}`);
+    expect(way.seen()).toEqual([]);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach the gateway.");
+    expect(screen.queryByRole("heading", { name: lena.name })).toBeNull();
+    expect(shown()).not.toContain(lena.email);
+    expect(actions()).toEqual([]);
+  });
+
+  test("asking again that fails with something else keeps what is shown", async () => {
+    const app = await detail(lena);
+    await screen.findByRole("heading", { level: 1, name: lena.name });
+    const again = counted("get", "/api/users/{id}", () => refuse(errors.internal_error));
+    await act(async () => {
+      await app.queryClient.invalidateQueries({ queryKey: queryKeys.users.detail(lena.id) });
+    });
+    expect(again.calls).toBe(1);
+    await settle();
+    expect(screen.getByRole("heading", { level: 1, name: lena.name })).toBeInTheDocument();
+    expect(screen.getByLabelText("Details")).toHaveTextContent(lena.email);
+    expect(actions()).toEqual(["Edit name", "Make admin", "Disable", "Delete"]);
+    expect(screen.queryByRole("heading", { name: NOT_FOUND })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("the watch of the user sees what shows of them", async () => {
+    const way = watchTheDocument(ofLena);
+    await detail(lena);
+    await screen.findByRole("heading", { level: 1, name: lena.name });
+    expect(way.seen()).toEqual(["the controls", "the email", "the heading"]);
   });
 
   test("the session ends while the page of a user is open", async () => {

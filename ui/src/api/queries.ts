@@ -10,12 +10,14 @@
 // it closes. No mutation has a `mutationKey`, and nothing reads the state of
 // a mutation from elsewhere.
 import {
+  QueryCache,
   QueryClient,
   queryOptions,
   useMutation,
   useQueries,
   useQuery,
   useQueryClient,
+  type Query,
   type QueryKey,
 } from "@tanstack/react-query";
 import { api, type BodyOf, type QueryOf } from "./client";
@@ -29,23 +31,43 @@ declare module "@tanstack/react-query" {
 
 export type AuditPageRequest = QueryOf<"/api/audit", "get">;
 
+/** What the key of a detail has after its area. */
+const DETAIL = "detail";
+
+/**
+ * The key of one thing of an area, which is read by its id: a team, a user,
+ * a key. Every such key is built here, and `isDetailKey` knows it by what is
+ * put into it here. So the rule for what the gateway hides
+ * (`forgetWhatIsHidden`) holds for a detail that is added later, without a
+ * list of names anywhere.
+ */
+const detailOf =
+  <Area extends string>(area: Area) =>
+  (id: number) =>
+    [area, DETAIL, id] as const;
+
+/** Whether the key is the key of a detail: one that `detailOf` built. */
+export function isDetailKey(key: QueryKey): boolean {
+  return key[1] === DETAIL;
+}
+
 export const queryKeys = {
   setup: () => ["setup"] as const,
   me: () => ["me"] as const,
   users: {
     all: () => ["users"] as const,
     list: () => ["users", "list"] as const,
-    detail: (id: number) => ["users", "detail", id] as const,
+    detail: detailOf("users"),
   },
   teams: {
     all: () => ["teams"] as const,
     list: () => ["teams", "list"] as const,
-    detail: (id: number) => ["teams", "detail", id] as const,
+    detail: detailOf("teams"),
   },
   keys: {
     all: () => ["keys"] as const,
     list: () => ["keys", "list"] as const,
-    detail: (id: number) => ["keys", "detail", id] as const,
+    detail: detailOf("keys"),
   },
   providers: {
     all: () => ["providers"] as const,
@@ -79,9 +101,31 @@ export interface QueryClientSettings {
   mutationGcTime?: number;
 }
 
+function isNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
+}
+
+/**
+ * A detail that answers 404 when it is asked for again is gone, or hidden
+ * from the caller. What was loaded of it before is dropped: who shows it has
+ * the 404 and no data then, and says "not found"; a failure of another kind
+ * that follows cannot bring it back to the screen; and nothing of it is left
+ * in the cache.
+ *
+ * Only for details. A 404 of `setup`, of `me` or of a list does not mean
+ * this, and the app goes on with what it has of them. Every other failure of
+ * a detail keeps what is shown.
+ */
+function forgetWhatIsHidden(error: unknown, query: Query<unknown, unknown>): void {
+  if (!isNotFound(error) || !isDetailKey(query.queryKey)) return;
+  if (query.state.data === undefined) return;
+  query.setState({ data: undefined, dataUpdatedAt: 0 });
+}
+
 /** A query client with the rules of the app. The app has one; each test makes its own. */
 export function createQueryClient(settings: QueryClientSettings = {}): QueryClient {
   return new QueryClient({
+    queryCache: new QueryCache({ onError: forgetWhatIsHidden }),
     defaultOptions: {
       queries: {
         retry: settings.retry ?? retryQuery,
@@ -208,10 +252,6 @@ function useApiMutation<TVariables, TData>(
       for (const queryKey of doubts(error, variables)) void client.invalidateQueries({ queryKey });
     },
   });
-}
-
-function isNotFound(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 404;
 }
 
 const audit = queryKeys.audit.all();

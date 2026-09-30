@@ -569,11 +569,7 @@ function Details({ id }: { id: number }) {
   const team = useTeam(id);
 
   if (session.status !== "signedIn") return null;
-  // A team the gateway does not show any more is not shown here either, though
-  // it was loaded before: the 404 of asking again wins over what is shown.
-  // Every other failure of asking again keeps it.
-  const hidden = team.error instanceof ApiError && team.error.status === 404;
-  if (team.data === undefined || hidden) {
+  if (team.data === undefined) {
     if (team.error !== null) {
       return (
         <QueryProblem

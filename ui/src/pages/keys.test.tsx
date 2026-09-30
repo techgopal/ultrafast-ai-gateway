@@ -964,6 +964,49 @@ describe("creating a key", () => {
     expect(again.calls).toBe(1);
   });
 
+  test("a team that is gone while the dialog is open is offered no more: failed with Retry, and Retry asks the list", async () => {
+    const app = await page();
+    const dialog = await openCreate();
+    await choose(field(dialog, "Owner"), person(tomas));
+    expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
+
+    // Research is deleted meanwhile. Asked for again, it answers 404.
+    const details = counted("get", "/api/teams/{id}", ({ params }) => {
+      const detail = fixtures.teamDetailList.find(
+        (one) => String(one.team.id) === params.id && one.team.id !== research.id,
+      );
+      return detail === undefined
+        ? refuse(errors.not_found)
+        : ok("get", "/api/teams/{id}", 200, detail);
+    });
+    const teams = counted("get", "/api/teams", () =>
+      ok("get", "/api/teams", 200, {
+        teams: fixtures.teamList.filter((team) => team.id !== research.id),
+      }),
+    );
+    const key = queryKeys.teams.detail(research.id);
+    await act(async () => {
+      await app.queryClient.invalidateQueries({ queryKey: key });
+    });
+    // What was loaded of the team is dropped, so nothing is offered from it.
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      errors.not_found.body.error.message,
+    );
+    expect(app.queryClient.getQueryData(key)).toBeUndefined();
+    expect(within(dialog).queryByRole("combobox")).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
+    expect([details.calls, teams.calls]).toEqual([1, 0]);
+
+    // The list says which teams there are: the one that is gone is not asked for again.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    expect(await within(dialog).findByRole("combobox", { name: "Owner" })).toBeInTheDocument();
+    expect(teams.calls).toBe(1);
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
+    expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
+    expect(within(dialog).getByRole("button", { name: "Create key" })).toBeEnabled();
+  });
+
   test("while the key is created the button is disabled and says so", async () => {
     const door = gate();
     const posts = counted("post", "/api/keys", async () => {

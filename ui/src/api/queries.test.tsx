@@ -1,4 +1,4 @@
-import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
+import { QueryClientProvider, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, test, vi } from "vitest";
@@ -199,6 +199,146 @@ describe("retries", () => {
       );
     });
     expect(calls).toBe(1);
+  });
+});
+
+describe("what the gateway hides is dropped", () => {
+  const details = [
+    [
+      "a team",
+      "/api/teams/{id}",
+      () => q.useTeam(fixtures.teams.platform.id),
+      q.queryKeys.teams.detail(fixtures.teams.platform.id),
+    ],
+    [
+      "a user",
+      "/api/users/{id}",
+      () => q.useUser(fixtures.users.lena.id),
+      q.queryKeys.users.detail(fixtures.users.lena.id),
+    ],
+    [
+      "a key",
+      "/api/keys/{id}",
+      () => q.useKey(fixtures.keys.expired.id),
+      q.queryKeys.keys.detail(fixtures.keys.expired.id),
+    ],
+  ] as const;
+
+  const others = [
+    ["setup", "/api/setup", () => q.useSetupStatus(), q.queryKeys.setup()],
+    ["the caller", "/api/auth/me", () => q.useMe(), q.queryKeys.me()],
+    ["the list of users", "/api/users", () => q.useUsers(), q.queryKeys.users.list()],
+    ["the list of teams", "/api/teams", () => q.useTeams(), q.queryKeys.teams.list()],
+    ["the list of keys", "/api/keys", () => q.useKeys(), q.queryKeys.keys.list()],
+    ["the list of providers", "/api/providers", () => q.useProviders(), q.queryKeys.providers.list()],
+    ["the list of tokens", "/api/tokens", () => q.useTokens(), q.queryKeys.tokens.list()],
+    ["the audit log", "/api/audit", () => q.useAuditLog(), q.queryKeys.audit.list()],
+  ] as const;
+
+  /** Asks for it again, and waits for the answer. */
+  async function askAgain(client: QueryClient, queryKey: QueryKey): Promise<void> {
+    await act(async () => {
+      await client.invalidateQueries({ queryKey, exact: true });
+    });
+  }
+
+  test.each(details)(
+    "%s that answers 404 when asked for again is kept no longer",
+    async (_, path, useOne, queryKey) => {
+      const client = appClient();
+      const { result } = renderHook(() => useOne(), { wrapper: wrapperOf(client) });
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+      expect(client.getQueryData(queryKey)).toBeDefined();
+
+      override("get", path, () => refuse(errors.not_found));
+      await askAgain(client, queryKey);
+      await waitFor(() => {
+        expect(result.current.isError).toBe(true);
+      });
+      // Who shows it has nothing to show but the answer.
+      expect(result.current.data).toBeUndefined();
+      expect(result.current.error).toMatchObject({ status: 404 });
+      // And the cache holds nothing of it.
+      expect(client.getQueryData(queryKey)).toBeUndefined();
+      expect(client.getQueryState(queryKey)).toMatchObject({ status: "error", dataUpdatedAt: 0 });
+    },
+  );
+
+  test.each(details)(
+    "%s is kept when asking again fails with something else",
+    async (_, path, useOne, queryKey) => {
+      const client = appClient();
+      const { result } = renderHook(() => useOne(), { wrapper: wrapperOf(client) });
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
+      const loaded: unknown = result.current.data;
+      expect(loaded).toBeDefined();
+
+      for (const [answer, kind] of [
+        [() => refuse(errors.internal_error), ApiError],
+        [() => refuse(errors.forbidden), ApiError],
+        [networkFailure, NetworkError],
+      ] as const) {
+        override("get", path, answer);
+        await askAgain(client, queryKey);
+        await waitFor(() => {
+          expect(result.current.error).toBeInstanceOf(kind);
+        });
+        expect(result.current.data).toEqual(loaded);
+        expect(client.getQueryData(queryKey)).toEqual(loaded);
+      }
+    },
+  );
+
+  // The rule is for what is one thing with an id. The app goes on with who is
+  // signed in and with its lists, whatever a 404 of them would mean.
+  test.each(others)("a 404 of %s drops nothing", async (_, path, useOne, queryKey) => {
+    const client = appClient();
+    const { result } = renderHook(() => useOne(), { wrapper: wrapperOf(client) });
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+    const loaded: unknown = result.current.data;
+    expect(loaded).toBeDefined();
+
+    override("get", path, () => refuse(errors.not_found));
+    await askAgain(client, queryKey);
+    await waitFor(() => {
+      expect(result.current.error).toMatchObject({ status: 404 });
+    });
+    expect(result.current.data).toEqual(loaded);
+    expect(client.getQueryData(queryKey)).toEqual(loaded);
+  });
+
+  test("a key is one of a detail by how it is built, not by its name", () => {
+    // Every area that has a `detail`, also one that is added later.
+    const built = Object.entries(q.queryKeys).flatMap(([area, keys]) =>
+      "detail" in keys ? [[area, keys.detail(7)] as const] : [],
+    );
+    expect(built.map(([area]) => area)).toEqual(expect.arrayContaining(["users", "teams", "keys"]));
+    for (const [area, key] of built) expect([area, q.isDetailKey(key)]).toEqual([area, true]);
+
+    for (const key of [
+      q.queryKeys.setup(),
+      q.queryKeys.me(),
+      q.queryKeys.users.all(),
+      q.queryKeys.users.list(),
+      q.queryKeys.teams.all(),
+      q.queryKeys.teams.list(),
+      q.queryKeys.keys.all(),
+      q.queryKeys.keys.list(),
+      q.queryKeys.providers.all(),
+      q.queryKeys.providers.list(),
+      q.queryKeys.tokens.all(),
+      q.queryKeys.tokens.list(),
+      q.queryKeys.audit.all(),
+      q.queryKeys.audit.list({ limit: 10, before: 5 }),
+    ]) {
+      expect([key, q.isDetailKey(key)]).toEqual([key, false]);
+    }
   });
 });
 
