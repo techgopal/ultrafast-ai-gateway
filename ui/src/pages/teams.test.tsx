@@ -744,9 +744,14 @@ describe("adding a member", () => {
     const state = keeps(fixtures.teamDetails.platform);
     await detail(platform);
     const dialog = await open("Add member", "Add member");
-    await within(dialog).findByRole("radiogroup", { name: "User" });
+    const group = await within(dialog).findByRole("radiogroup", { name: "User" });
     await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("Choose a user.");
+    // The list says it, and nothing else does.
+    expect(descriptionOf(group)).toBe("Choose a user.");
+    expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
+    expect(toasts()).toEqual([]);
+    await settle();
     expect(state.puts).toEqual([]);
   });
 
@@ -855,6 +860,8 @@ describe("adding a member", () => {
       await waitFor(() => {
         expect(descriptionOf(id)).toBe(`${NO_USER} ${ID_HINT}`);
       });
+      expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
+      await settle();
       expect(state.puts).toEqual([]);
     },
   );

@@ -2,9 +2,9 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { api } from "@/api/client";
-import { ApiError, NetworkError, SessionOverError } from "@/api/errors";
+import { ApiError, ConsoleRefusal, NetworkError, SessionOverError } from "@/api/errors";
 import { EmptyState } from "@/components/EmptyState";
-import { ErrorState } from "@/components/ErrorState";
+import { ErrorState, messageOfError } from "@/components/ErrorState";
 import { StatusBadge } from "@/components/StatusBadge";
 import { formatTimestamp, Timestamp } from "@/components/Timestamp";
 import { useToast } from "@/components/toast";
@@ -63,6 +63,20 @@ describe("error state", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("At least one active admin is required.");
     expect(document.body.innerHTML).not.toContain("ApiError");
     expect(document.body.innerHTML).not.toContain(".ts");
+  });
+
+  test("what the console itself refuses is told by its message", () => {
+    expect(messageOfError(new ConsoleRefusal("Choose a user.", "user_id"))).toBe("Choose a user.");
+    expect(messageOfError(new ConsoleRefusal("The link cannot be used."))).toBe(
+      "The link cannot be used.",
+    );
+    // The others, as before.
+    expect(messageOfError(new ApiError(409, "last_admin", "One admin is required."))).toBe(
+      "One admin is required.",
+    );
+    expect(messageOfError(new NetworkError())).toBe("Could not reach the gateway.");
+    expect(messageOfError(new SessionOverError())).toBeNull();
+    expect(messageOfError(new Error("internal-detail"))).toBe("Something went wrong.");
   });
 
   test("an answer of a session that is over shows nothing", async () => {

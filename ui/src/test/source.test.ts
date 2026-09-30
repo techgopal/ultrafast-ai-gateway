@@ -123,6 +123,25 @@ describe("source rules", () => {
   });
 });
 
+describe("errors of the API", () => {
+  const making = /\bnew\s+ApiError\b/;
+
+  test("the scan sees what it should", () => {
+    expect(making.test("throw new ApiError" + "(502, x, y)")).toBe(true);
+    expect(making.test("if (error instanceof ApiError) return")).toBe(false);
+  });
+
+  // An `ApiError` is what the gateway answered. What the console refuses
+  // itself is a `ConsoleRefusal`.
+  test("no page makes one", () => {
+    const pages = allSources().filter(
+      (path) => path.startsWith("pages/") && !path.includes(".test."),
+    );
+    expect(pages.length).toBeGreaterThan(5);
+    expect(findings(pages, making)).toEqual([]);
+  });
+});
+
 describe("what depends on what", () => {
   test("no shared component imports a page", () => {
     const shared = allSources().filter(

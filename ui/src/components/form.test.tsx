@@ -5,7 +5,7 @@ import { useRef, useState } from "react";
 import { describe, expect, test, vi } from "vitest";
 import { api } from "@/api/client";
 import { Field } from "@/components/Field";
-import { ApiError, NetworkError, SessionOverError } from "@/api/errors";
+import { ApiError, ConsoleRefusal, NetworkError, SessionOverError } from "@/api/errors";
 import { applyApiError, onField, useFormFailure } from "@/components/form";
 import { FormError } from "@/components/FormError";
 import { Button } from "@/components/ui/button";
@@ -505,5 +505,98 @@ describe("onField", () => {
     expect(onField(network, "user_exists", "email")).toBe(network);
     const over = new SessionOverError();
     expect(onField(over, "user_exists", "email")).toBe(over);
+    const refusal = new ConsoleRefusal("Choose a user.", "user_id");
+    expect(onField(refusal, "user_exists", "email")).toBe(refusal);
+  });
+});
+
+describe("what the console itself refuses", () => {
+  const CHOOSE = "Choose a user.";
+  const UNUSABLE = "The gateway returned an invite link that cannot be used.";
+
+  test("it is no answer of the gateway: no status, no code", () => {
+    const about = new ConsoleRefusal(CHOOSE, "user_id");
+    expect(about).toBeInstanceOf(Error);
+    expect(about).not.toBeInstanceOf(ApiError);
+    expect(about.name).toBe("ConsoleRefusal");
+    expect(about.message).toBe(CHOOSE);
+    expect(about.field).toBe("user_id");
+    expect(Reflect.has(about, "status")).toBe(false);
+    expect(Reflect.has(about, "code")).toBe(false);
+    expect(Reflect.has(about, "fields")).toBe(false);
+    expect(new ConsoleRefusal(UNUSABLE).field).toBeUndefined();
+  });
+
+  function Page() {
+    const form = useForm({ defaultValues: { user_id: "" } });
+    const formRef = useRef<HTMLFormElement>(null);
+    const errorRef = useRef<HTMLDivElement>(null);
+    const failure = useFormFailure(form, formRef, errorRef);
+    const apply = (error: unknown) => () => {
+      applyApiError(form, error);
+    };
+    return (
+      <form ref={formRef} aria-label="Test">
+        <FormError ref={errorRef} messages={failure.messages} />
+        <form.Field name="user_id">
+          {(field) => (
+            <Field label="User ID" name={field.name} error={failure.fieldError(field.name)}>
+              <Input
+                value={field.state.value}
+                onChange={(event) => {
+                  field.handleChange(event.target.value);
+                }}
+              />
+            </Field>
+          )}
+        </form.Field>
+        <Button type="button" onClick={apply(new ConsoleRefusal(CHOOSE, "user_id"))}>
+          About the field
+        </Button>
+        <Button type="button" onClick={apply(new ConsoleRefusal(UNUSABLE))}>
+          About no field
+        </Button>
+        <Button type="button" onClick={apply(new ConsoleRefusal("is not known", "team_id"))}>
+          About a field the form does not have
+        </Button>
+      </form>
+    );
+  }
+
+  test("with a field it is the error of that field, which takes the focus", async () => {
+    await renderWithApp(<Page />);
+    const field = screen.getByLabelText("User ID");
+    await userEvent.click(screen.getByRole("button", { name: "About the field" }));
+    await waitFor(() => {
+      expect(field).toHaveAttribute("aria-invalid", "true");
+    });
+    expect(descriptionOf(field)).toBe(CHOOSE);
+    // The field says it, and the form says nothing beside it.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(field).toHaveFocus();
+    // As every error of a field, it goes when the field is changed.
+    await userEvent.type(field, "7");
+    expect(field).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("without a field it is the error of the form, which takes the focus", async () => {
+    await renderWithApp(<Page />);
+    await userEvent.click(screen.getByRole("button", { name: "About no field" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(UNUSABLE);
+    expect(screen.getByLabelText("User ID")).not.toHaveAttribute("aria-invalid");
+    await waitFor(() => {
+      expect(alert).toHaveFocus();
+    });
+  });
+
+  test("about a field the form does not have it is said by the form, with the name of the field", async () => {
+    await renderWithApp(<Page />);
+    await userEvent.click(
+      screen.getByRole("button", { name: "About a field the form does not have" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("team_id: is not known");
+    expect(screen.getByLabelText("User ID")).not.toHaveAttribute("aria-invalid");
   });
 });
