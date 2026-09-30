@@ -142,6 +142,20 @@ describe("errors of the API", () => {
   });
 });
 
+/**
+ * The area of a page file: the list and the page of one thing are one area,
+ * as `Teams` and `TeamDetail`, `Users` and `UserDetail`.
+ */
+function areaOf(page: string): string {
+  return page.replace(/Detail$/, "").replace(/s$/, "");
+}
+
+/** The page files that a source imports, by their names without the extension. */
+function pagesImportedBy(source: string): string[] {
+  const imports = /(?:\bfrom\s*|\bimport\s*\(?\s*)["'](?:@\/pages|\.|\.\.\/pages)\/([A-Za-z]+)["']/g;
+  return [...source.matchAll(imports)].flatMap(([, name]) => (name === undefined ? [] : [name]));
+}
+
 describe("what depends on what", () => {
   test("no shared component imports a page", () => {
     const shared = allSources().filter(
@@ -149,5 +163,44 @@ describe("what depends on what", () => {
     );
     expect(shared.length).toBeGreaterThan(10);
     expect(findings(shared, importOf("@/pages"))).toEqual([]);
+  });
+
+  test("the scan of the pages sees what it should", () => {
+    const quote = '"';
+    const from = (path: string) => `import { x } from ${quote}${path}${quote};`;
+    expect(pagesImportedBy(from("@/pages/Users"))).toEqual(["Users"]);
+    expect(pagesImportedBy(from("./UserDetail"))).toEqual(["UserDetail"]);
+    expect(pagesImportedBy(from("../pages/Teams"))).toEqual(["Teams"]);
+    expect(pagesImportedBy(`const page = import(${quote}@/pages/Keys${quote});`)).toEqual(["Keys"]);
+    expect(pagesImportedBy(from("@/components/YouBadge"))).toEqual([]);
+    expect(pagesImportedBy(from("@/lib/id"))).toEqual([]);
+    expect(areaOf("Teams")).toBe(areaOf("TeamDetail"));
+    expect(areaOf("Users")).toBe(areaOf("UserDetail"));
+    expect(areaOf("Keys")).toBe(areaOf("KeyDetail"));
+    expect(areaOf("Users")).not.toBe(areaOf("TeamDetail"));
+    expect(areaOf("UserDetail")).not.toBe(areaOf("TeamDetail"));
+  });
+
+  // What two areas share is in `components/` or `lib/`, so that the pages do
+  // not grow into each other.
+  test("a page imports another page only of its own area", () => {
+    const pages = allSources().filter(
+      (path) => /^pages\/[^/]+\.tsx?$/.test(path) && !path.includes(".test."),
+    );
+    expect(pages.length).toBeGreaterThan(5);
+    const across = pages.flatMap((path) => {
+      const name = path.replace(/^pages\//, "").replace(/\.tsx?$/, "");
+      return pagesImportedBy(readFileSync(join(src, path), "utf8"))
+        .filter((imported) => areaOf(imported) !== areaOf(name))
+        .map((imported) => `${path} imports pages/${imported}`);
+    });
+    expect(across).toEqual([]);
+    // Within an area it is allowed, and used.
+    expect(pagesImportedBy(readFileSync(join(src, "pages/UserDetail.tsx"), "utf8"))).toContain(
+      "Users",
+    );
+    expect(pagesImportedBy(readFileSync(join(src, "pages/TeamDetail.tsx"), "utf8"))).toContain(
+      "Teams",
+    );
   });
 });

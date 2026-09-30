@@ -30,6 +30,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { YouBadge } from "@/components/YouBadge";
 
 type User = components["schemas"]["UserView"];
 
@@ -65,11 +66,6 @@ export function inviteUrl(path: string): string {
 /** A role in a neutral badge. One the console does not know is shown as it is. */
 export function RoleBadge({ role }: { role: string }) {
   return <Badge variant="outline">{ROLE_NAMES[role] ?? role}</Badge>;
-}
-
-/** Marks what is the signed-in user's own. */
-export function YouBadge() {
-  return <Badge variant="secondary">You</Badge>;
 }
 
 interface InviteFormProps {
