@@ -525,6 +525,31 @@ describe("adding a provider", () => {
     });
   });
 
+  test("an API key of spaces only is refused on its field and sent nowhere; the spaces around a key are not sent", async () => {
+    const state = keeps();
+    await page();
+    const dialog = await openAdd();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "groq");
+    await known(dialog, "Groq");
+    const key = within(dialog).getByLabelText("API key");
+    await enter(key, "   ");
+    await add(dialog);
+    await waitFor(() => {
+      expect(descriptionOf(key)).toContain("Enter an API key.");
+    });
+    expect(key).toHaveAttribute("aria-invalid", "true");
+    expect(state.created).toEqual([]);
+    expect(toasts()).toEqual([]);
+
+    // A key with spaces around it, as a copy can bring them.
+    await enter(key, `${API_KEY} `);
+    await add(dialog);
+    await closed();
+    expect(state.created).toEqual([
+      { name: "groq", kind: "openai", base_url: "https://api.groq.com/openai/v1", api_key: API_KEY },
+    ]);
+  });
+
   test("an Anthropic provider is sent with its kind", async () => {
     const state = keeps();
     await page();
@@ -1216,6 +1241,31 @@ describe("editing a provider", () => {
       await waitFor(() => {
         expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
       });
+    });
+
+    test("a new key of spaces only is refused on its field and sent nowhere; the spaces around a key are not sent", async () => {
+      const state = keeps();
+      await page();
+      const dialog = await openEdit(withCredential);
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+      const key = within(dialog).getByLabelText("New API key");
+      await enter(key, "   ");
+      await save(dialog);
+      await waitFor(() => {
+        expect(descriptionOf(key)).toContain("Enter an API key.");
+      });
+      expect(key).toHaveAttribute("aria-invalid", "true");
+      expect(state.patched).toEqual([]);
+
+      await enter(key, `${API_KEY} `);
+      await save(dialog);
+      await closed();
+      expect(state.patched).toEqual([
+        {
+          id: String(withCredential.id),
+          body: { base_url: withCredential.base_url, api_key: API_KEY },
+        },
+      ]);
     });
 
     test("remove sends null", async () => {
