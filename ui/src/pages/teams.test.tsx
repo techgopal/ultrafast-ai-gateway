@@ -4,7 +4,9 @@ import { createMemoryHistory } from "@tanstack/react-router";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { ApiError, ConsoleRefusal, NetworkError } from "@/api/errors";
 import { queryKeys } from "@/api/queries";
+import { aboutTheUser } from "@/pages/TeamDetail";
 import { errors, fieldMessages, validationFailed } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
 import { gate, startGateway } from "@/test/gateway";
@@ -1072,6 +1074,31 @@ describe("adding a member", () => {
     expect(document.querySelectorAll("main")).toHaveLength(1);
     expect(toasts()).toEqual([]);
     expect(href(app)).toBe(`/teams/${platform.id}`);
+  });
+
+  test("a 404 stays the answer of the gateway: the field says what was not found, and no refusal of the console is made of it", () => {
+    const answerOf = ({ status, body }: (typeof errors)[keyof typeof errors]) =>
+      new ApiError(status, body.error.code, body.error.message);
+    const said = aboutTheUser(answerOf(errors.not_found));
+    expect(said).toBeInstanceOf(ApiError);
+    expect(said).not.toBeInstanceOf(ConsoleRefusal);
+    expect(said).toMatchObject({
+      status: 404,
+      code: "not_found",
+      message: errors.not_found.body.error.message,
+      fields: { user_id: NO_USER },
+    });
+    // A user who is disabled: the field says it in the words of the gateway.
+    expect(aboutTheUser(answerOf(errors.user_disabled))).toMatchObject({
+      status: errors.user_disabled.status,
+      code: "user_disabled",
+      fields: { user_id: errors.user_disabled.body.error.message },
+    });
+    // What is about no user is passed on as it is.
+    const forbidden = answerOf(errors.forbidden);
+    expect(aboutTheUser(forbidden)).toBe(forbidden);
+    const network = new NetworkError();
+    expect(aboutTheUser(network)).toBe(network);
   });
 
   test("a lead adds a disabled user: the refusal is on the field", async () => {

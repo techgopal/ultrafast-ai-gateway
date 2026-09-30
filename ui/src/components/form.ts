@@ -172,10 +172,18 @@ export function applyApiError(form: FormLike, error: unknown): void {
  * The error, said by a field of the form: a refusal such as `user_exists` is
  * about what one field holds, and the gateway sends it without `fields`. An
  * error of another code is returned as it is.
+ *
+ * `text` is what the field says, where the message of the gateway does not
+ * say what the form knows: "Not found." is, in a form that asks for the id
+ * of a user, "No user with that ID.". Without it the field says the message
+ * of the gateway. Either way the error stays what the gateway answered, with
+ * its status, its code and its message; only a field is named.
  */
-export function onField(error: unknown, code: string, field: string): unknown {
+export function onField(error: unknown, code: string, field: string, text?: string): unknown {
   if (!(error instanceof ApiError) || error.code !== code) return error;
-  return new ApiError(error.status, error.code, error.message, { [field]: error.message });
+  return new ApiError(error.status, error.code, error.message, {
+    [field]: text ?? error.message,
+  });
 }
 
 function focusOnFailure(form: HTMLFormElement | null, message: HTMLElement | null): void {

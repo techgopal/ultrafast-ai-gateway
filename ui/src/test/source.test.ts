@@ -150,10 +150,20 @@ function areaOf(page: string): string {
   return page.replace(/Detail$/, "").replace(/s$/, "");
 }
 
-/** The page files that a source imports, by their names without the extension. */
+/**
+ * The page files that a source imports, by what follows `pages/` in the
+ * path. For a file directly in `pages/` that is its name. A path that goes
+ * deeper or has an extension is given as it is written: it is the name of no
+ * area, so the rule of the areas reports it and does not pass it by.
+ */
 function pagesImportedBy(source: string): string[] {
-  const imports = /(?:\bfrom\s*|\bimport\s*\(?\s*)["'](?:@\/pages|\.|\.\.\/pages)\/([A-Za-z]+)["']/g;
+  const imports = /(?:\bfrom\s*|\bimport\s*\(?\s*)["'](?:@\/pages|\.|\.\.\/pages)\/([\w./-]+)["']/g;
   return [...source.matchAll(imports)].flatMap(([, name]) => (name === undefined ? [] : [name]));
+}
+
+/** The sources that lie below a folder of `pages/`. Tests are none. */
+function belowAFolderOfPages(paths: string[]): string[] {
+  return paths.filter((path) => /^pages\/[^/]+\//.test(path) && !path.includes(".test."));
 }
 
 describe("what depends on what", () => {
@@ -174,11 +184,39 @@ describe("what depends on what", () => {
     expect(pagesImportedBy(`const page = import(${quote}@/pages/Keys${quote});`)).toEqual(["Keys"]);
     expect(pagesImportedBy(from("@/components/YouBadge"))).toEqual([]);
     expect(pagesImportedBy(from("@/lib/id"))).toEqual([]);
+    // A path that goes deeper, or is written in another way, is seen as well.
+    // It is the name of no area, so the rule reports it.
+    expect(pagesImportedBy(from("@/pages/teams/AddMember"))).toEqual(["teams/AddMember"]);
+    expect(pagesImportedBy(from("./team-parts/AddMember"))).toEqual(["team-parts/AddMember"]);
+    expect(pagesImportedBy(from("../pages/teams/index"))).toEqual(["teams/index"]);
+    expect(pagesImportedBy(from("./Users.tsx"))).toEqual(["Users.tsx"]);
+    expect(pagesImportedBy(from("./team_detail-2"))).toEqual(["team_detail-2"]);
+    expect(areaOf("teams/AddMember")).not.toBe(areaOf("TeamDetail"));
+    expect(areaOf("teams/Teams")).not.toBe(areaOf("TeamDetail"));
+    expect(areaOf("Users.tsx")).not.toBe(areaOf("UserDetail"));
+    expect(
+      belowAFolderOfPages([
+        "pages/Teams.tsx",
+        "pages/teams.test.tsx",
+        "pages/teams/AddMember.tsx",
+        "pages/teams/parts/names.ts",
+        "pages/teams/add.test.tsx",
+        "components/ui/button.tsx",
+        "lib/id.ts",
+      ]),
+    ).toEqual(["pages/teams/AddMember.tsx", "pages/teams/parts/names.ts"]);
     expect(areaOf("Teams")).toBe(areaOf("TeamDetail"));
     expect(areaOf("Users")).toBe(areaOf("UserDetail"));
     expect(areaOf("Keys")).toBe(areaOf("KeyDetail"));
     expect(areaOf("Users")).not.toBe(areaOf("TeamDetail"));
     expect(areaOf("UserDetail")).not.toBe(areaOf("TeamDetail"));
+  });
+
+  // The rule of the areas reads the files directly in `pages/`, and takes the
+  // name of a file for its area. Teach it folders before adding one: a page
+  // below a folder would be read by nothing.
+  test("no page lies below a folder of pages", () => {
+    expect(belowAFolderOfPages(allSources())).toEqual([]);
   });
 
   // What two areas share is in `components/` or `lib/`, so that the pages do

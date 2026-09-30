@@ -499,6 +499,22 @@ describe("onField", () => {
     });
   });
 
+  test("with a text the field says it in the words of the console, and the error stays the answer of the gateway", () => {
+    const gone = errors.not_found;
+    const answer = new ApiError(gone.status, gone.body.error.code, gone.body.error.message);
+    const said = onField(answer, "not_found", "user_id", "No user with that ID.");
+    expect(said).toBeInstanceOf(ApiError);
+    expect(said).not.toBeInstanceOf(ConsoleRefusal);
+    expect(said).toMatchObject({
+      status: 404,
+      code: "not_found",
+      message: gone.body.error.message,
+      fields: { user_id: "No user with that ID." },
+    });
+    // An error of another code is not given the text either.
+    expect(onField(error, "not_found", "user_id", "No user with that ID.")).toBe(error);
+  });
+
   test("every other error is returned as it is", () => {
     expect(onField(error, "team_exists", "name")).toBe(error);
     const network = new NetworkError();
