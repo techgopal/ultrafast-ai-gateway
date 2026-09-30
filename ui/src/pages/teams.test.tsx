@@ -20,6 +20,7 @@ import {
   descriptionOf,
   expectNotAvailable,
   expectOneRequestWhileTheDialogStays,
+  expectOneH1,
   expectOneMain,
   expectSessionEndsOnPage,
   forbid,
@@ -242,6 +243,7 @@ describe("the list of teams", () => {
       expect(within(row).getByText(/2026/).tagName).toBe("TIME");
     }
     expectOneMain();
+    expectOneH1();
   });
 
   test("new team is for admins", async () => {
@@ -448,11 +450,20 @@ describe("the list of teams", () => {
     expect(button("New team").className.split(/\s+/)).toContain("min-h-11");
   });
 
+  test("a failed list call shows the error under the title of the page: one h1", async () => {
+    override("get", "/api/teams", () => refuse(errors.internal_error));
+    await list();
+    await screen.findByRole("alert");
+    expectOneH1("Teams");
+    expectOneMain();
+  });
+
   test("the list call answers 403: not available", async () => {
     forbid("/api/teams");
     await list();
     await expectNotAvailable();
     expectOneMain();
+    expectOneH1();
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.queryByRole("button", { name: "New team" })).toBeNull();
   });
@@ -487,6 +498,7 @@ describe("the page of a team", () => {
     expect(rowOf(lena.name)).toHaveTextContent("Member");
     expect(screen.getByRole("link", { name: "Back to teams" })).toHaveAttribute("href", "/teams");
     expectOneMain();
+    expectOneH1();
   });
 
   test("the own row is marked", async () => {
@@ -615,6 +627,7 @@ describe("the page of a team", () => {
     expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
     expect(asked.calls).toBe(1);
     expectOneMain();
+    expectOneH1();
     expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByText(research.name)).toBeNull();
@@ -630,6 +643,7 @@ describe("the page of a team", () => {
       await settle();
       expect(asked.calls).toBe(0);
       expectOneMain();
+      expectOneH1();
       expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
     },
   );
@@ -649,11 +663,27 @@ describe("the page of a team", () => {
     expect(again.calls).toBe(1);
   });
 
+  test("a failed call shows the error under a heading that says what the page is: one h1", async () => {
+    override("get", "/api/teams/{id}", () => refuse(errors.internal_error));
+    await detail(platform);
+    await screen.findByRole("alert");
+    expectOneH1("Team");
+    expectOneMain();
+    // Loaded, the page is called by the name of the team.
+    override("get", "/api/teams/{id}", () =>
+      ok("get", "/api/teams/{id}", 200, fixtures.teamDetails.platform),
+    );
+    await userEvent.click(button("Retry"));
+    expect(await screen.findByRole("heading", { level: 1, name: platform.name })).toBeVisible();
+    expectOneH1(platform.name);
+  });
+
   test("the call answers 403: not available", async () => {
     forbid("/api/teams/{id}");
     await detail(platform);
     await expectNotAvailable();
     expectOneMain();
+    expectOneH1();
   });
 
   test("a team that is hidden when it is asked for again is not found, though it was shown", async () => {
@@ -667,6 +697,7 @@ describe("the page of a team", () => {
     expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
     expect(state.reads).toBe(2);
     expectOneMain();
+    expectOneH1();
     expect(screen.queryByRole("heading", { name: platform.name })).toBeNull();
     expect(shown()).not.toContain(lena.email);
     expect(actions()).toEqual([]);
@@ -726,6 +757,7 @@ describe("the page of a team", () => {
       expect(shown()).not.toContain(lena.email);
       expect(actions()).toEqual([]);
       expectOneMain();
+      expectOneH1();
     },
   );
 
@@ -1090,6 +1122,7 @@ describe("adding a member", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
     expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
     expectOneMain();
+    expectOneH1();
     expect(puts.calls).toBe(1);
     expect(state.reads).toBe(2);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -1434,6 +1467,7 @@ describe("removing a member", () => {
     });
     expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
     expectOneMain();
+    expectOneH1();
   });
 
   test("the watch of the way sees what shows for a moment", async () => {

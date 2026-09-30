@@ -10,6 +10,7 @@ import {
   counted,
   descriptionOf,
   expectNotAvailable,
+  expectOneH1,
   expectOneMain,
   expectSessionEndsOnPage,
   forbid,
@@ -150,6 +151,7 @@ describe("the audit log", () => {
     // No column sorts: the order is the order of the log.
     expect(within(entries).queryByRole("button")).toBeNull();
     expectOneMain();
+    expectOneH1();
   });
 
   test("a summary is shown as the text it is, never as markup", async () => {
@@ -714,11 +716,20 @@ describe("the audit log", () => {
     expect(filter().className.split(/\s+/)).toContain("w-full");
   });
 
+  test("a failed list call shows the error under the title of the page: one h1", async () => {
+    override("get", "/api/audit", () => refuse(errors.internal_error));
+    await page();
+    await screen.findByRole("alert");
+    expectOneH1("Audit log");
+    expectOneMain();
+  });
+
   test("the list call answers 403: not available", async () => {
     forbid("/api/audit");
     await page();
     await expectNotAvailable();
     expectOneMain();
+    expectOneH1();
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.queryByRole("searchbox")).toBeNull();
   });
@@ -732,6 +743,7 @@ describe("the audit log", () => {
     await page({ user });
     await expectNotAvailable();
     expectOneMain();
+    expectOneH1();
     expect(screen.queryByRole("heading", { name: "Audit log" })).toBeNull();
     await settle();
     expect(asked.calls).toBe(0);

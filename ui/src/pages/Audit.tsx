@@ -57,15 +57,13 @@ function AuditLog() {
 
   if (log.error !== null && log.data === undefined) {
     return (
-      <>
-        <PageHeader title="Audit log" />
-        <QueryProblem
-          error={log.error}
-          onRetry={() => {
-            void log.refetch();
-          }}
-        />
-      </>
+      <QueryProblem
+        title="Audit log"
+        error={log.error}
+        onRetry={() => {
+          void log.refetch();
+        }}
+      />
     );
   }
 

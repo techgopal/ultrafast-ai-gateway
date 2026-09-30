@@ -21,6 +21,7 @@ import {
   expectNoSecret,
   expectNotAvailable,
   expectOneRequestWhileTheDialogStays,
+  expectOneH1,
   expectOneMain,
   expectSessionEndsOnPage,
   forbid,
@@ -169,6 +170,7 @@ describe("the list of users", () => {
     expect(within(rowOf(maya.name)).getByText(/2026/).tagName).toBe("TIME");
     expect(button("Invite user")).toBeInTheDocument();
     expectOneMain();
+    expectOneH1();
   });
 
   test("member sees only what the API returns and no invite button", async () => {
@@ -314,11 +316,20 @@ describe("the list of users", () => {
     expect(button("Invite user").className.split(/\s+/)).toContain("min-h-11");
   });
 
+  test("a failed list call shows the error under the title of the page: one h1", async () => {
+    override("get", "/api/users", () => refuse(errors.internal_error));
+    await list();
+    await screen.findByRole("alert");
+    expectOneH1("Users");
+    expectOneMain();
+  });
+
   test("the list call answers 403: not available", async () => {
     forbid("/api/users");
     await list();
     await expectNotAvailable();
     expectOneMain();
+    expectOneH1();
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.queryByRole("button", { name: "Invite user" })).toBeNull();
   });
@@ -341,6 +352,7 @@ describe("screens without a page", () => {
     await renderWithApp(null, { route: "/users/3/keys" });
     expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
     expectOneMain();
+    expectOneH1();
     expect(screen.getByRole("link", { name: "Back to Overview" })).toHaveAttribute("href", "/");
   });
 
@@ -348,6 +360,7 @@ describe("screens without a page", () => {
     await renderWithApp(null, { route: "/audit", user: fixtures.me.tomas });
     await expectNotAvailable();
     expectOneMain();
+    expectOneH1();
   });
 });
 
@@ -780,6 +793,7 @@ describe("the page of a user", () => {
     expect(screen.getByRole("link", { name: "Back to users" })).toHaveAttribute("href", "/users");
     expect(screen.queryByText("You")).toBeNull();
     expectOneMain();
+    expectOneH1();
   });
 
   test("the own page is marked", async () => {
@@ -861,6 +875,7 @@ describe("the page of a user", () => {
     expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
     expect(asked.calls).toBe(1);
     expectOneMain();
+    expectOneH1();
     // It is inside the shell, which is still there.
     expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
@@ -877,6 +892,7 @@ describe("the page of a user", () => {
       await settle();
       expect(asked.calls).toBe(0);
       expectOneMain();
+      expectOneH1();
     },
   );
 
@@ -892,11 +908,25 @@ describe("the page of a user", () => {
     expect(again.calls).toBe(1);
   });
 
+  test("a failed call shows the error under a heading that says what the page is: one h1", async () => {
+    override("get", "/api/users/{id}", () => refuse(errors.internal_error));
+    await detail(lena);
+    await screen.findByRole("alert");
+    expectOneH1("User");
+    expectOneMain();
+    // Loaded, the page is called by the name of the user.
+    override("get", "/api/users/{id}", () => ok("get", "/api/users/{id}", 200, lena));
+    await userEvent.click(button("Retry"));
+    expect(await screen.findByRole("heading", { level: 1, name: lena.name })).toBeInTheDocument();
+    expectOneH1(lena.name);
+  });
+
   test("the call answers 403: not available", async () => {
     forbid("/api/users/{id}");
     await detail(lena);
     await expectNotAvailable();
     expectOneMain();
+    expectOneH1();
   });
 
   /** Lena's page is open; then she is deleted, and her page asks for her again. */
@@ -915,6 +945,7 @@ describe("the page of a user", () => {
     expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
     expect(asked.calls).toBe(1);
     expectOneMain();
+    expectOneH1();
     expect(screen.queryByRole("heading", { name: lena.name })).toBeNull();
     expect(shown()).not.toContain(lena.email);
     expect(actions()).toEqual([]);
@@ -967,6 +998,7 @@ describe("the page of a user", () => {
       expect(shown()).not.toContain(lena.email);
       expect(actions()).toEqual([]);
       expectOneMain();
+      expectOneH1();
     },
   );
 

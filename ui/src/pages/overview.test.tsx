@@ -9,6 +9,7 @@ import { gate, startGateway } from "@/test/gateway";
 import { networkFailure, ok, override, refuse, server } from "@/test/handlers";
 import {
   counted,
+  expectOneH1,
   expectOneMain,
   expectSessionEndsOnPage,
   forgetToasts,
@@ -194,6 +195,7 @@ describe("the overview", () => {
     expect(queryGetStarted()).toBeNull();
     expect(toasts()).toEqual([]);
     expectOneMain();
+    expectOneH1();
   });
 
   test("the link of a tile leads to its page", async () => {
@@ -240,6 +242,7 @@ describe("the overview", () => {
     // The lists that everybody sees whole are called as they are for everybody.
     expect(tiles().slice(0, 2)).toEqual(["Providers", "Virtual keys"]);
     expectOneMain();
+    expectOneH1();
   });
 
   test("an admin who leads a team sees all users and teams, and the tiles are called so", async () => {
@@ -330,6 +333,7 @@ describe("the overview", () => {
     expect(within(call).queryByText("To do")).toBeNull();
     expect(figures("Providers")).toEqual(["0"]);
     expectOneMain();
+    expectOneH1();
 
     // A provider exists now.
     providersAre([fixtures.providers.withCredential]);
@@ -420,6 +424,7 @@ describe("the overview", () => {
     expect(screen.queryByText(errors.forbidden.body.error.message)).toBeNull();
     expect(toasts()).toEqual([]);
     expectOneMain();
+    expectOneH1();
   });
 
   test("somebody in no team sees keys and providers only", async () => {
@@ -527,6 +532,7 @@ describe("the overview", () => {
     // Whether there is a key is not known: nothing is said about getting started.
     expect(queryGetStarted()).toBeNull();
     expectOneMain();
+    expectOneH1();
 
     const again = keysAre(fixtures.keyList);
     const others = [providersAre(fixtures.providerList), usersAre(fixtures.userList)];
@@ -555,6 +561,7 @@ describe("the overview", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Overview" })).toBeInTheDocument();
     expect(within(main()).getByText(NOTE)).toBeInTheDocument();
     expectOneMain();
+    expectOneH1();
   });
 
   test("a list call answers 403: its tile says that it is not available, not an error and not a toast", async () => {
@@ -574,6 +581,7 @@ describe("the overview", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Overview" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Not available" })).toBeNull();
     expectOneMain();
+    expectOneH1();
   });
 
   test("a status the console does not know is counted under its own text, in a neutral pill", async () => {
@@ -638,6 +646,7 @@ describe("the overview", () => {
       expect.arrayContaining(["whitespace-pre-wrap", "wrap-anywhere", "min-w-0"]),
     );
     expectOneMain();
+    expectOneH1();
   });
 
   test("the session ends while the overview is open", async () => {

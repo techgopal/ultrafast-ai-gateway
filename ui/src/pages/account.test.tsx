@@ -15,6 +15,7 @@ import {
   expectLabelsNameControls,
   expectNoSecret,
   expectOneRequestWhileTheDialogStays,
+  expectOneH1,
   expectOneMain,
   expectSessionEndsOnPage,
   forgetToasts,
@@ -304,6 +305,7 @@ describe("the account page", () => {
       part("Access tokens"),
     ]);
     expectOneMain();
+    expectOneH1();
     expect(toasts()).toEqual([]);
   });
 
@@ -334,6 +336,7 @@ describe("the account page", () => {
     // The fields are as wide as the page at most.
     for (const one of fields()) expect(one.className.split(/\s+/)).toContain("w-full");
     expectOneMain();
+    expectOneH1();
   });
 });
 
@@ -1154,6 +1157,7 @@ describe("the access tokens", () => {
     expect(said("Email")).toHaveTextContent(maya.email);
     expect(changeButton()).toBeInTheDocument();
     expectOneMain();
+    expectOneH1();
   });
 
   test("at width 390 the rows are cards with their labels and actions", async () => {

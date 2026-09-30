@@ -17,6 +17,7 @@ import {
   expectNoSecret,
   expectNotAvailable,
   expectOneRequestWhileTheDialogStays,
+  expectOneH1,
   expectOneMain,
   expectSessionEndsOnPage,
   expectTheDialogCanBeLeft,
@@ -286,6 +287,7 @@ describe("the list of providers", () => {
       "None",
     ]);
     expectOneMain();
+    expectOneH1();
   });
 
   test("providers list hides admin controls from others", async () => {
@@ -422,11 +424,20 @@ describe("the list of providers", () => {
     }
   });
 
+  test("a failed list call shows the error under the title of the page: one h1", async () => {
+    override("get", "/api/providers", () => refuse(errors.internal_error));
+    await page();
+    await screen.findByRole("alert");
+    expectOneH1("Providers");
+    expectOneMain();
+  });
+
   test("the list call answers 403: not available", async () => {
     forbid("/api/providers");
     await page();
     await expectNotAvailable();
     expectOneMain();
+    expectOneH1();
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.queryByRole("button", { name: "Add provider" })).toBeNull();
   });

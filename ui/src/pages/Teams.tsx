@@ -179,9 +179,10 @@ export function Teams() {
   const failed = teams.error !== null && teams.data === undefined;
   return (
     <>
-      <PageHeader title="Teams" actions={failed ? undefined : newButton} />
+      {failed ? null : <PageHeader title="Teams" actions={newButton} />}
       {failed ? (
         <QueryProblem
+          title="Teams"
           error={teams.error}
           onRetry={() => {
             void teams.refetch();

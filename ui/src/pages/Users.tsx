@@ -249,9 +249,10 @@ export function Users() {
   const failed = users.error !== null && users.data === undefined;
   return (
     <>
-      <PageHeader title="Users" actions={failed ? undefined : inviteButton} />
+      {failed ? null : <PageHeader title="Users" actions={inviteButton} />}
       {failed ? (
         <QueryProblem
+          title="Users"
           error={users.error}
           onRetry={() => {
             void users.refetch();

@@ -202,9 +202,10 @@ function KeyList({ me }: { me: Me }) {
 
   return (
     <>
-      <PageHeader title="Virtual keys" actions={failed ? undefined : createButton} />
+      {failed ? null : <PageHeader title="Virtual keys" actions={createButton} />}
       {failed ? (
         <QueryProblem
+          title="Virtual keys"
           error={keys.error}
           onRetry={() => {
             void keys.refetch();
