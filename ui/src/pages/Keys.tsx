@@ -1,4 +1,4 @@
-import { useForm } from "@tanstack/react-form";
+import { useForm, useSelector } from "@tanstack/react-form";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ApiError, ConsoleRefusal } from "@/api/errors";
 import {
@@ -193,9 +193,21 @@ function byName(a: { name: string }, b: { name: string }): number {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
-/** The teams a key of the viewer's own can belong to: those they are in, in any role. */
-function ownTeams(me: Me): TeamChoice[] {
+/** Whether a team is there, as far as the form knows: see `ChoosingKeyForm`. */
+type IsThere = (teamId: number) => boolean;
+
+/** Without a list of teams to ask, every team the viewer is in is taken to be there. */
+const everyTeam: IsThere = () => true;
+
+/**
+ * The teams a key of the viewer's own can belong to: those they are in, in
+ * any role. They come from what the session knows of the viewer, which can
+ * be older than what the gateway says of the teams now: a team that is there
+ * no more is not among them.
+ */
+function ownTeams(me: Me, isThere: IsThere = everyTeam): TeamChoice[] {
   return me.teams
+    .filter((team) => isThere(team.team_id))
     .filter((team) => can(me, { type: "createKeyForSelf", teamId: team.team_id }))
     .map((team) => ({ id: team.team_id, name: team.name }));
 }
@@ -206,11 +218,17 @@ function ownTeams(me: Me): TeamChoice[] {
  * belongs to a team the viewer may make keys in, and that the owner is a
  * member of; only who may make keys for anyone may leave out the team.
  * `users` is what the gateway lists for the viewer; `open` are the teams in
- * which the viewer may make a key for another member, with their members.
+ * which the viewer may make a key for another member, with their members;
+ * `isThere` says which of the viewer's own teams are there.
  */
-function ownersFor(me: Me, users: readonly User[], open: readonly TeamDetail[]): Owners {
+function ownersFor(
+  me: Me,
+  users: readonly User[],
+  open: readonly TeamDetail[],
+  isThere: IsThere,
+): Owners {
   const anyone = can(me, { type: "createKeyForAnyone" });
-  const own = ownTeams(me);
+  const own = ownTeams(me, isThere);
   const teamsOf = (ownerId: number): TeamChoice[] =>
     ownerId === me.user.id
       ? own
@@ -284,6 +302,36 @@ function teamOffered(value: string, { teams, none }: TeamChoices): string {
   return first === undefined ? "" : String(first.id);
 }
 
+/** The owner and the team of the key, as the form holds them. */
+interface Chosen {
+  owner_id: string;
+  team_id: string;
+}
+
+/** The team of a key whose owner was just chosen: none where that can be, otherwise none is chosen yet. */
+function teamOfNewOwner({ none }: TeamChoices): string {
+  return none ? WITHOUT_TEAM : "";
+}
+
+/**
+ * The choice as it is offered now: what the form shows, what it sends, and
+ * what it holds (`KeyForm` writes it back). When the owner is the owner no
+ * more, the team goes with them, as when the owner is changed by hand: it was
+ * chosen for a key of theirs, and nobody chose it for a key of the viewer's.
+ */
+function choiceOffered(
+  chosen: Chosen,
+  me: Me,
+  owners: Owners | null,
+  teamsFor: (ownerId: string) => TeamChoices,
+): Chosen {
+  const owner_id = ownerOffered(chosen.owner_id, me, owners);
+  if (owner_id !== chosen.owner_id) {
+    return { owner_id, team_id: teamOfNewOwner(teamsFor(owner_id)) };
+  }
+  return { owner_id, team_id: teamOffered(chosen.team_id, teamsFor(owner_id)) };
+}
+
 /** The request for the key. What cannot be sent is refused by the console itself. */
 function requestOf(values: KeyValues, me: Me): CreateKeyRequest {
   const body: CreateKeyRequest = { name: values.name };
@@ -329,10 +377,9 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
     defaultValues: start,
     onSubmit: async ({ value }) => {
       try {
-        // What is sent is what the form shows: see `ownerOffered` and `teamOffered`.
-        const owner_id = ownerOffered(value.owner_id, me, owners);
-        const team_id = teamOffered(value.team_id, teamsFor(owner_id));
-        const made = await mutateAsync(requestOf({ ...value, owner_id, team_id }, me));
+        // What is sent is what the form shows: see `choiceOffered`.
+        const choice = choiceOffered(value, me, owners, teamsFor);
+        const made = await mutateAsync(requestOf({ ...value, ...choice }, me));
         onCreated(made.secret);
       } catch (error) {
         applyApiError(form, error);
@@ -351,6 +398,20 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
     }
     return { teams: owners.teamsOf(id), none: owners.withoutTeam(id) };
   }
+
+  // The choices can change under the form. What it shows then is the choice
+  // as it is offered now, and that is written back into the form: the form
+  // holds one value, the one it shows. So an error of the gateway about a
+  // choice goes when the choice does, and a team or an owner that comes back
+  // does not bring back a choice that the form showed no more.
+  const ownerHeld = useSelector(form.store, (state) => state.values.owner_id);
+  const teamHeld = useSelector(form.store, (state) => state.values.team_id);
+  const shown = choiceOffered({ owner_id: ownerHeld, team_id: teamHeld }, me, owners, teamsFor);
+  const offered = teamsFor(shown.owner_id);
+  useEffect(() => {
+    if (shown.owner_id !== ownerHeld) form.setFieldValue("owner_id", shown.owner_id);
+    if (shown.team_id !== teamHeld) form.setFieldValue("team_id", shown.team_id);
+  }, [form, shown.owner_id, shown.team_id, ownerHeld, teamHeld]);
 
   return (
     <form
@@ -426,12 +487,11 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
               {({ id, name, ...described }) => (
                 <Select
                   name={name}
-                  value={ownerOffered(field.state.value, me, owners)}
+                  value={shown.owner_id}
                   onValueChange={(next) => {
                     field.handleChange(next);
                     // The team of the owner before is not one of this owner.
-                    const none = teamsFor(next).none;
-                    form.setFieldValue("team_id", none ? WITHOUT_TEAM : "");
+                    form.setFieldValue("team_id", teamOfNewOwner(teamsFor(next)));
                   }}
                 >
                   <SelectTrigger id={id} {...described} className={selectTrigger}>
@@ -451,46 +511,38 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
         </form.Field>
       ) : null}
       {waiting ? null : (
-        <form.Subscribe selector={(state) => state.values.owner_id}>
-          {(ownerId) => {
-            const offered = teamsFor(ownerOffered(ownerId, me, owners));
-            const { teams, none } = offered;
-            return (
-              <form.Field name="team_id">
-                {(field) => (
-                  <Field
-                    label="Team"
-                    name={field.name}
-                    required={!none}
-                    hint={none ? undefined : "A key for another user belongs to a team you lead."}
-                    error={failure.fieldError(field.name)}
-                  >
-                    {({ id, name, required, ...described }) => (
-                      <Select
-                        name={name}
-                        value={teamOffered(field.state.value, offered)}
-                        onValueChange={field.handleChange}
-                        {...(required === true ? { required } : {})}
-                      >
-                        <SelectTrigger id={id} {...described} className={selectTrigger}>
-                          <SelectValue placeholder="Choose a team" />
-                        </SelectTrigger>
-                        <SelectContent className={selectList}>
-                          {none ? <SelectItem value={WITHOUT_TEAM}>{NO_TEAM}</SelectItem> : null}
-                          {teams.map((team) => (
-                            <SelectItem key={team.id} value={String(team.id)}>
-                              {team.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                  </Field>
-                )}
-              </form.Field>
-            );
-          }}
-        </form.Subscribe>
+        <form.Field name="team_id">
+          {(field) => (
+            <Field
+              label="Team"
+              name={field.name}
+              required={!offered.none}
+              hint={offered.none ? undefined : "A key for another user belongs to a team you lead."}
+              error={failure.fieldError(field.name)}
+            >
+              {({ id, name, required, ...described }) => (
+                <Select
+                  name={name}
+                  value={shown.team_id}
+                  onValueChange={field.handleChange}
+                  {...(required === true ? { required } : {})}
+                >
+                  <SelectTrigger id={id} {...described} className={selectTrigger}>
+                    <SelectValue placeholder="Choose a team" />
+                  </SelectTrigger>
+                  <SelectContent className={selectList}>
+                    {offered.none ? <SelectItem value={WITHOUT_TEAM}>{NO_TEAM}</SelectItem> : null}
+                    {offered.teams.map((team) => (
+                      <SelectItem key={team.id} value={String(team.id)}>
+                        {team.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </Field>
+          )}
+        </form.Field>
       )}
 
       <form.Field name="expires_at">
@@ -536,13 +588,42 @@ function isFirstRead(read: TeamRead): boolean {
 }
 
 /**
+ * The team is asked for again after a failure, and has not answered yet. For
+ * that time the read says nothing of how it failed: whether the team was gone
+ * is known only to who remembers it (`goneAmong`).
+ */
+function isAskedAgain(read: TeamRead): boolean {
+  return read.data === undefined && read.error === null && read.errorUpdateCount > 0;
+}
+
+/**
  * The team could not be read, or is asked for again after that. A team that
- * is gone is not among them: there is nothing to read. Nor is one whose
- * answer came for a session that is over, which says nothing.
+ * is gone is not among them: there is nothing to read, and a 404 is no read
+ * that failed. Nor is one whose answer came for a session that is over, which
+ * says nothing.
  */
 function isMissing(read: TeamRead): boolean {
   if (read.data !== undefined || isGone(read) || isFirstRead(read)) return false;
   return read.error === null || messageOfError(read.error) !== null;
+}
+
+/**
+ * The teams of `ids` that are gone: those that answer 404, and those that
+ * did when they were last heard of (`before`) and are asked for again. Such a
+ * team stays gone until it answers: while it is asked for, at every return to
+ * the window, it is neither offered for that moment nor a team that could not
+ * be loaded.
+ */
+function goneAmong(
+  ids: readonly number[],
+  reads: readonly TeamRead[],
+  before: readonly number[],
+): number[] {
+  return ids.filter((id, index) => {
+    const read = reads[index];
+    if (read === undefined) return false;
+    return isGone(read) || (isAskedAgain(read) && before.includes(id));
+  });
 }
 
 /**
@@ -551,8 +632,9 @@ function isMissing(read: TeamRead): boolean {
  *
  * A team that cannot be read does not keep a key from being made: the form
  * goes on without it and says so, with Retry. A team that answers 404 is
- * gone since the list was read: it is offered no more, nothing is said, and
- * the list is read again, which says which teams there are.
+ * gone since the list was read: it is offered no more, for a key of another
+ * user and for a key of the viewer's own, nothing is said, and the list is
+ * read again, which says which teams there are.
  */
 function ChoosingKeyForm(props: Omit<KeyFormProps, "choice">) {
   const { me } = props;
@@ -568,25 +650,34 @@ function ChoosingKeyForm(props: Omit<KeyFormProps, "choice">) {
   );
   const details = useTeamDetails(ids);
 
-  // The teams that are gone, as one text: the list is read again when it
-  // changes, and so once for a team, also when the list still names it.
-  const gone = ids
-    .filter((_, index) => {
-      const detail = details[index];
-      return detail !== undefined && isGone(detail);
-    })
-    .join(" ");
+  // The teams that are gone. They are remembered from one render to the
+  // next, since a team that is asked for again says nothing until it answers.
+  const [goneBefore, setGoneBefore] = useState<readonly number[]>([]);
+  const gone = goneAmong(ids, details, goneBefore);
+  // As one text: the list is read again when it changes, and so once for a
+  // team, also when the list still names it and the team is asked for again.
+  const goneText = gone.join(" ");
+  if (goneText !== goneBefore.join(" ")) setGoneBefore(gone);
   const { refetch: readTeams } = teams;
   useEffect(() => {
-    if (gone !== "") void readTeams();
-  }, [gone, readTeams]);
+    if (goneText !== "") void readTeams();
+  }, [goneText, readTeams]);
 
   let owners: Owners | null = null;
   if (users.data !== undefined && teams.data !== undefined && !details.some(isFirstRead)) {
     const known = details.flatMap((detail) => (detail.data === undefined ? [] : [detail.data]));
-    owners = ownersFor(me, users.data.users, known);
+    // A team is there when the list names it, and it did not answer 404.
+    const listed = new Set(teams.data.teams.map((team) => team.id));
+    owners = ownersFor(
+      me,
+      users.data.users,
+      known,
+      (teamId) => listed.has(teamId) && !gone.includes(teamId),
+    );
   }
-  const missing = details.filter(isMissing);
+  const missing = details.filter(
+    (detail, index) => isMissing(detail) && !gone.some((id) => id === ids[index]),
+  );
   const error =
     (users.data === undefined ? users.error : null) ??
     (teams.data === undefined ? teams.error : null) ??

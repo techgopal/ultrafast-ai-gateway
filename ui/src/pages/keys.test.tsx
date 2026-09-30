@@ -24,13 +24,16 @@ import {
   forgetToasts,
   held,
   href,
+  inside,
   installSelect,
   listenToConsole,
   optionsOf,
   SESSION_ENDED,
   settle,
   shown,
+  theWindowGetsTheFocus,
   toasts,
+  watchTheDocument,
 } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
@@ -1411,6 +1414,263 @@ describe("creating a key", () => {
       await send(dialog);
       await secretDialog();
       expect(state.created).toEqual([{ name: "notebook" }]);
+    });
+
+    describe("one choice, never a stale one", () => {
+      /** The users the gateway lists are these from now on, and they are read again. */
+      async function usersAre(app: AppRenderResult, users: readonly fixtures.User[]) {
+        const reads = counted("get", "/api/users", () =>
+          ok("get", "/api/users", 200, { users: [...users] }),
+        );
+        await act(async () => {
+          await app.queryClient.invalidateQueries({ queryKey: queryKeys.users.list() });
+        });
+        expect(reads.calls).toBe(1);
+      }
+
+      test("a team of the viewer's own that is gone is offered for their own key no more, and is not sent", async () => {
+        // Arjun leads Platform and is a member of Research.
+        const state = keeps();
+        const app = await page({ user: fixtures.me.arjun });
+        const dialog = await openCreate();
+        await named(dialog, "ci");
+        await choose(field(dialog, "Team"), platform.name);
+        expect(field(dialog, "Team")).toHaveTextContent(platform.name);
+
+        await vanishes(app, platform);
+        const team = field(dialog, "Team");
+        await waitFor(() => {
+          expect(team).toHaveTextContent("No team");
+        });
+        expect(field(dialog, "Owner")).toHaveTextContent(person(arjun));
+        expect(await optionsOf(team)).toEqual(["No team", research.name]);
+        expect(within(dialog).queryByRole("alert")).toBeNull();
+
+        await send(dialog);
+        await secretDialog();
+        expect(state.created).toEqual([{ name: "ci" }]);
+      });
+
+      test("the same while the list of teams still names the team that answers 404", async () => {
+        const state = keeps();
+        const app = await page({ user: fixtures.me.arjun });
+        const dialog = await openCreate();
+        await named(dialog, "ci");
+        await choose(field(dialog, "Team"), platform.name);
+
+        teamsAnswer({ [platform.id]: isGone });
+        const lists = listIs(fixtures.teamList);
+        await act(async () => {
+          await app.queryClient.invalidateQueries({
+            queryKey: queryKeys.teams.detail(platform.id),
+          });
+        });
+        await waitFor(() => {
+          expect(lists.calls).toBe(1);
+        });
+        const team = field(dialog, "Team");
+        await waitFor(() => {
+          expect(team).toHaveTextContent("No team");
+        });
+        expect(await optionsOf(team)).toEqual(["No team", research.name]);
+        await send(dialog);
+        await secretDialog();
+        expect(state.created).toEqual([{ name: "ci" }]);
+      });
+
+      test("a team of the viewer's own that is gone when the dialog opens is not offered", async () => {
+        teamsAnswer({ [platform.id]: isGone });
+        listIs(fixtures.teamList);
+        await page({ user: fixtures.me.arjun });
+        const dialog = await openCreate();
+        expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
+        expect(within(dialog).queryByRole("alert")).toBeNull();
+      });
+
+      test("the team of another owner is gone, and with it the owner: the owner is the viewer again, with no team, though the viewer was in that team", async () => {
+        const state = keeps();
+        const app = await page({ user: fixtures.me.arjun });
+        const dialog = await openCreate();
+        await named(dialog, "lena-ci");
+        await choose(field(dialog, "Owner"), person(lena));
+        await choose(field(dialog, "Team"), platform.name);
+
+        // Platform was the one team in which Arjun could make a key for Lena.
+        await vanishes(app, platform);
+        await waitFor(() => {
+          expect(field(dialog, "Owner")).toHaveTextContent(person(arjun));
+        });
+        expect(field(dialog, "Team")).toHaveTextContent("No team");
+        expect(await optionsOf(field(dialog, "Owner"))).toEqual([person(arjun)]);
+        expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
+        await send(dialog);
+        await secretDialog();
+        expect(state.created).toEqual([{ name: "lena-ci" }]);
+      });
+
+      test("the owner that was chosen is offered no more, and the viewer is in the team that was chosen for them: the team is reset as when the owner is changed by hand", async () => {
+        const state = keeps();
+        const app = await page({ user: fixtures.me.arjun });
+        const dialog = await openCreate();
+        await named(dialog, "lena-ci");
+        await choose(field(dialog, "Owner"), person(lena));
+        await choose(field(dialog, "Team"), platform.name);
+        expect(field(dialog, "Team")).toHaveTextContent(platform.name);
+
+        // Lena is deleted meanwhile. Arjun is in Platform himself.
+        await usersAre(
+          app,
+          fixtures.userList.filter((user) => user.id !== lena.id),
+        );
+        await waitFor(() => {
+          expect(field(dialog, "Owner")).toHaveTextContent(person(arjun));
+        });
+        // Not Platform, which nobody chose for a key of Arjun's.
+        const team = field(dialog, "Team");
+        expect(team).toHaveTextContent("No team");
+        expect(team).not.toHaveTextContent(platform.name);
+        // Platform is still his to choose.
+        expect(await optionsOf(team)).toEqual(["No team", platform.name, research.name]);
+        await send(dialog);
+        await secretDialog();
+        expect(state.created).toEqual([{ name: "lena-ci" }]);
+      });
+
+      test("what the gateway said of a team goes when that team is the choice no more", async () => {
+        const posts = counted("post", "/api/keys", () =>
+          refuse(validationFailed({ team_id: fieldMessages.teamIdOwner })),
+        );
+        const app = await page();
+        const dialog = await openCreate();
+        await named(dialog, "notebook");
+        await choose(field(dialog, "Owner"), person(tomas));
+        await choose(field(dialog, "Team"), research.name);
+        await send(dialog);
+        const team = field(dialog, "Team");
+        await waitFor(() => {
+          expect(descriptionOf(team)).toBe(fieldMessages.teamIdOwner);
+        });
+        expect(team).toHaveAttribute("aria-invalid", "true");
+
+        await vanishes(app, research);
+        await waitFor(() => {
+          expect(team).toHaveTextContent("No team");
+        });
+        // The error was about Research. The form shows another choice now, and holds it.
+        await waitFor(() => {
+          expect(team).not.toHaveAttribute("aria-invalid");
+        });
+        expect(descriptionOf(team)).toBe("");
+        expect(within(dialog).queryByRole("alert")).toBeNull();
+        expect(dialog).not.toHaveTextContent(fieldMessages.teamIdOwner);
+        expect(posts.calls).toBe(1);
+      });
+
+      test("a team that comes back is offered again, and the choice stays what the form showed", async () => {
+        const state = keeps();
+        const app = await page();
+        const dialog = await openCreate();
+        await named(dialog, "notebook");
+        await choose(field(dialog, "Owner"), person(tomas));
+        await choose(field(dialog, "Team"), research.name);
+        await vanishes(app, research);
+        await waitFor(() => {
+          expect(field(dialog, "Team")).toHaveTextContent("No team");
+        });
+
+        // The team is there again: the list names it, and it answers.
+        const reads = teamsAnswer();
+        listIs(fixtures.teamList);
+        await act(async () => {
+          await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.list() });
+        });
+        await waitFor(() => {
+          expect(reads.calls).toBeGreaterThan(0);
+        });
+        await settle(60);
+        const team = field(dialog, "Team");
+        // Not Research, which the form showed no more, and not an empty choice.
+        expect(team).toHaveTextContent("No team");
+        expect(team).not.toHaveTextContent("Choose a team");
+        expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
+        expect(await optionsOf(team)).toEqual(["No team", research.name]);
+        await send(dialog);
+        await secretDialog();
+        expect(within(dialog).queryByText("Choose a team.")).toBeNull();
+        expect(state.created).toEqual([{ name: "notebook", owner_id: tomas.id }]);
+      });
+
+      test("an owner who comes back is offered again, and the owner stays the viewer", async () => {
+        const state = keeps();
+        const app = await page();
+        const dialog = await openCreate();
+        await named(dialog, "notebook");
+        await choose(field(dialog, "Owner"), person(tomas));
+        await usersAre(
+          app,
+          fixtures.userList.filter((user) => user.id !== tomas.id),
+        );
+        await waitFor(() => {
+          expect(field(dialog, "Owner")).toHaveTextContent(person(maya));
+        });
+
+        await usersAre(app, fixtures.userList);
+        await settle(60);
+        expect(field(dialog, "Owner")).toHaveTextContent(person(maya));
+        expect(field(dialog, "Team")).toHaveTextContent("No team");
+        expect(await optionsOf(field(dialog, "Owner"))).toEqual(
+          [maya, arjun, lena, priya, tomas].map(person),
+        );
+        await send(dialog);
+        await secretDialog();
+        expect(state.created).toEqual([{ name: "notebook" }]);
+      });
+
+      test("a team that is gone though the list names it says nothing when the window gets the focus, and the list is not read again for it", async () => {
+        const app = await page();
+        const dialog = await openCreate();
+        teamsAnswer({ [research.id]: isGone });
+        listIs(fixtures.teamList);
+        await act(async () => {
+          await app.queryClient.invalidateQueries({
+            queryKey: queryKeys.teams.detail(research.id),
+          });
+        });
+        await settle(60);
+        expect(within(dialog).queryByRole("alert")).toBeNull();
+
+        // The user comes back to the tab: everything that is shown is read
+        // again, the team that is gone as well. Its answer is held.
+        const door = gate();
+        const reads = teamsAnswer({
+          [research.id]: async () => {
+            await door.opened;
+            return isGone();
+          },
+        });
+        const lists = listIs(fixtures.teamList);
+        const watch = watchTheDocument((scope) =>
+          inside(scope, '[role="alert"]').some((alert) => alert.textContent.includes(NOT_LOADED))
+            ? [NOT_LOADED]
+            : [],
+        );
+        theWindowGetsTheFocus();
+        await waitFor(() => {
+          expect([reads.calls, lists.calls]).toEqual([fixtures.teamList.length, 1]);
+        });
+        await settle(60);
+        // While it is asked for again it is not a team that could not be loaded.
+        expect(within(dialog).queryByRole("alert")).toBeNull();
+        act(() => {
+          door.open();
+        });
+        await settle(60);
+        expect(watch.seen()).toEqual([]);
+        // The list was read by the focus, once, and not again for the team that is still gone.
+        expect(lists.calls).toBe(1);
+        await choose(field(dialog, "Owner"), person(tomas));
+        expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
+      });
     });
   });
 
