@@ -5,6 +5,7 @@ import { useCreateProvider, useDeleteProvider, useProviders, useUpdateProvider }
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
 import { useSession } from "@/auth/session";
+import { control, longText } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
@@ -55,8 +56,6 @@ const KNOWN = [
   { name: "OpenRouter", kind: "openai", base_url: "https://openrouter.ai/api/v1" },
   { name: "Ollama", kind: "openai", base_url: "http://localhost:11434/v1" },
 ] as const;
-
-const control = "min-h-11 md:min-h-8";
 
 interface ApiKeyInputProps {
   wiring: FieldWiring;
@@ -475,13 +474,6 @@ function EditDialog({ open, provider, ...form }: EditDialogProps) {
     </FormDialog>
   );
 }
-
-/**
- * In the table a cell is one line. A name or an address that is longer than
- * most wraps in its cell, so that it does not make the table much wider than
- * the page; what is shorter stays on its line. On a card the text wraps anyway.
- */
-const longText = "md:block md:w-max md:whitespace-normal";
 
 const columns: Column<Provider>[] = [
   {

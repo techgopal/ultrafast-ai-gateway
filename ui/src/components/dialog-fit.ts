@@ -1,6 +1,7 @@
 // What the dialogs of the console share: how they fit a narrow screen, and
 // where the focus goes when they close.
 import { useCallback, useLayoutEffect, useRef } from "react";
+import { control } from "@/components/classes";
 
 /**
  * The X of a dialog is a child of the dialog, made by the dialog primitive,
@@ -22,7 +23,7 @@ export const alertDialogFit =
   "max-h-[calc(100svh-2rem)] overflow-y-auto data-[size=default]:max-w-[calc(100%-2rem)] data-[size=default]:sm:max-w-[calc(100%-2rem)] data-[size=default]:md:max-w-sm";
 
 /** A button of a dialog: high enough to touch on a narrow screen. */
-export const dialogButton = "min-h-11 md:min-h-8";
+export const dialogButton = control;
 
 /**
  * A dialog that is opened by its `open` prop has no trigger to give the focus
