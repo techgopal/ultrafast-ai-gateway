@@ -97,15 +97,17 @@ function ApiKeyInput({ wiring, value, onChange, onBlur }: ApiKeyInputProps) {
       />
       <Button
         type="button"
-        variant="outline"
+        // The text is the same either way: the button itself shows that it is pressed.
+        variant={shown ? "secondary" : "outline"}
         className={control}
-        aria-label={shown ? "Hide the API key" : "Show the API key"}
+        // One name, and whether it is pressed. A name that changed with it would say it twice.
+        aria-label="Show API key"
         aria-pressed={shown}
         onClick={() => {
           setShown((now) => !now);
         }}
       >
-        {shown ? "Hide" : "Show"}
+        Show
       </Button>
     </div>
   );
@@ -210,13 +212,12 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
       </div>
       <form.Field name="kind">
         {(field) => (
-          <Field label="Kind" name={field.name} error={failure.fieldError(field.name)}>
+          <Field group label="Kind" name={field.name} error={failure.fieldError(field.name)}>
             {({ id, name, ...described }) => (
               <RadioGroup
                 {...described}
                 id={id}
                 name={name}
-                aria-label="Kind"
                 value={field.state.value}
                 onValueChange={field.handleChange}
               >
@@ -356,6 +357,11 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
   const form = useForm({
     defaultValues: { base_url: provider.base_url, credential: "keep", api_key: "" },
     onSubmit: async ({ value }) => {
+      // Nothing was changed: nothing is sent, and nothing is reported as updated.
+      if (value.credential === "keep" && value.base_url === provider.base_url) {
+        onCancel();
+        return;
+      }
       // Keeping the key sends no `api_key` at all.
       const body: UpdateProviderRequest = { base_url: value.base_url };
       if (value.credential === "replace") body.api_key = value.api_key;
@@ -419,13 +425,17 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
       <form.Field name="credential">
         {(field) => (
           <>
-            <Field label="API key" name={field.name} error={failure.fieldError(field.name)}>
+            <Field
+              group
+              label="API key"
+              name={field.name}
+              error={failure.fieldError(field.name)}
+            >
               {({ id, name, ...described }) => (
                 <RadioGroup
                   {...described}
                   id={id}
                   name={name}
-                  aria-label="API key"
                   value={field.state.value}
                   onValueChange={(next) => {
                     field.handleChange(next);
@@ -639,30 +649,42 @@ export function Providers() {
   const failed = providers.error !== null && providers.data === undefined;
   return (
     <>
-      <PageHeader title="Providers" actions={failed ? undefined : addButton} />
-      {added === null ? null : (
-        <Alert role="status">
-          <AlertTitle>Provider added</AlertTitle>
-          <AlertDescription>
-            <p>
-              Call its models as <code className="font-mono break-words">{`${added}/<model>`}</code>:
-              the name of the provider, a slash, and the name of the model.
-            </p>
-          </AlertDescription>
-          <AlertAction>
-            <Button
-              type="button"
-              variant="outline"
-              className={control}
-              onClick={() => {
-                setAdded(null);
-              }}
-            >
-              Dismiss
-            </Button>
-          </AlertAction>
-        </Alert>
-      )}
+      {/* One child of the page: the place of the notice takes no room while it is empty. */}
+      <div className="flex flex-col">
+        <PageHeader title="Providers" actions={failed ? undefined : addButton} />
+        {/*
+          Where the page says how a provider that was added is called. The
+          place is there before the text: what comes into a live region is
+          announced, a live region that comes with its text often is not.
+        */}
+        <div role="status" className="not-empty:mt-6">
+          {added === null ? null : (
+            // The announcement is that of the place: the alert is none of its own.
+            <Alert role="presentation">
+              <AlertTitle>Provider added</AlertTitle>
+              <AlertDescription>
+                <p>
+                  Call its models as{" "}
+                  <code className="font-mono break-words">{`${added}/<model>`}</code>: the name of
+                  the provider, a slash, and the name of the model.
+                </p>
+              </AlertDescription>
+              <AlertAction>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className={control}
+                  onClick={() => {
+                    setAdded(null);
+                  }}
+                >
+                  Dismiss
+                </Button>
+              </AlertAction>
+            </Alert>
+          )}
+        </div>
+      </div>
       {failed ? (
         <QueryProblem
           error={providers.error}

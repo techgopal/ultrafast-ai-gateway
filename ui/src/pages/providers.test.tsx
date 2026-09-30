@@ -13,6 +13,7 @@ import {
   cached,
   counted,
   descriptionOf,
+  expectLabelsNameControls,
   expectNoSecret,
   expectNotAvailable,
   expectOneMain,
@@ -176,6 +177,15 @@ async function askToDelete(provider: fixtures.Provider): Promise<HTMLElement> {
   await table();
   await userEvent.click(within(rowOf(provider.name)).getByRole("button", { name: "Delete" }));
   return screen.findByRole("alertdialog", { name: `Delete ${provider.name}?` });
+}
+
+/**
+ * Where the page says how a provider that was added is called. It is there
+ * before it has something to say, so that what comes into it is announced.
+ */
+function notice(behindADialog = false): HTMLElement {
+  // Behind an open dialog the page is hidden from the accessibility tree.
+  return screen.getByRole("status", { hidden: behindADialog });
 }
 
 function known(dialog: HTMLElement, name: string): Promise<void> {
@@ -460,7 +470,9 @@ describe("adding a provider", () => {
     const state = keeps();
     const app = await page();
     await table();
-    expect(screen.queryByRole("status")).toBeNull();
+    // The place of the notice is there, and empty.
+    const said = notice();
+    expect(said).toBeEmptyDOMElement();
     const dialog = await openAdd();
     await userEvent.type(within(dialog).getByLabelText("Name"), "groq");
     await known(dialog, "Groq");
@@ -476,10 +488,16 @@ describe("adding a provider", () => {
       },
     ]);
 
-    // Model names are `<provider name>/<model>`.
-    const notice = await screen.findByRole("status");
-    expect(notice).toHaveTextContent("Provider added");
-    expect(notice).toHaveTextContent("groq/<model>");
+    // Model names are `<provider name>/<model>`. It is said in the place that was there before.
+    await waitFor(() => {
+      expect(said).toHaveTextContent("Provider added");
+    });
+    expect(said).toHaveTextContent("groq/<model>");
+    expect(notice()).toBe(said);
+    expect(said).toBeVisible();
+    // One announcement: nothing in it is a live region of its own.
+    expect(within(said).queryByRole("alert")).toBeNull();
+    expect(said.querySelectorAll("[role=status], [role=alert], [aria-live]")).toHaveLength(0);
     expect(toasts()).toEqual([]);
     // The list was asked for again, and has the provider.
     await waitFor(() => {
@@ -491,8 +509,9 @@ describe("adding a provider", () => {
       expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
     });
 
-    await userEvent.click(within(notice).getByRole("button", { name: "Dismiss" }));
-    expect(screen.queryByRole("status")).toBeNull();
+    await userEvent.click(within(said).getByRole("button", { name: "Dismiss" }));
+    expect(notice()).toBe(said);
+    expect(said).toBeEmptyDOMElement();
     // Nothing was written to the console about the key.
     expect(written()).not.toContain(API_KEY);
   });
@@ -558,6 +577,15 @@ describe("adding a provider", () => {
     expect(url).toHaveValue("http://llm.internal.example.test/v1");
   });
 
+  test("the labels of the form name controls, and the group of kinds is named once", async () => {
+    await page();
+    const dialog = await openAdd();
+    expectLabelsNameControls(dialog);
+    expect(within(dialog).getByRole("radiogroup", { name: "Kind" })).toBeInTheDocument();
+    // The visible label of the group is still there, once.
+    expect(within(dialog).getAllByText("Kind")).toHaveLength(1);
+  });
+
   test("the hints of the form", async () => {
     await page();
     const dialog = await openAdd();
@@ -581,16 +609,25 @@ describe("adding a provider", () => {
       expect(key).toHaveAttribute("autocomplete", "off");
       await enter(key, API_KEY);
       expect(key).toHaveValue(API_KEY);
-      const show = within(dialog).getByRole("button", { name: "Show the API key" });
+      // One name, and whether it is pressed: not a name that changes as well.
+      const show = within(dialog).getByRole("button", { name: "Show API key" });
       expect(show).toHaveAttribute("aria-pressed", "false");
+      expect(show).toHaveTextContent(/^Show$/);
+      expect(show).toHaveAttribute("data-variant", "outline");
       await userEvent.click(show);
       expect(key).toHaveAttribute("type", "text");
       expect(key).toHaveAttribute("autocomplete", "off");
       expect(key).toHaveValue(API_KEY);
-      const hide = within(dialog).getByRole("button", { name: "Hide the API key" });
-      expect(hide).toHaveAttribute("aria-pressed", "true");
-      await userEvent.click(hide);
+      expect(within(dialog).getByRole("button", { name: "Show API key" })).toBe(show);
+      expect(show).toHaveAttribute("aria-pressed", "true");
+      expect(show).toHaveTextContent(/^Show$/);
+      // The text says "Show" either way, so the button itself shows that it is pressed.
+      expect(show).toHaveAttribute("data-variant", "secondary");
+      expect(within(dialog).queryByRole("button", { name: /hide/i })).toBeNull();
+      await userEvent.click(show);
       expect(key).toHaveAttribute("type", "password");
+      expect(show).toHaveAttribute("aria-pressed", "false");
+      expect(show).toHaveAccessibleName("Show API key");
     });
 
     test("after cancel", async () => {
@@ -598,7 +635,7 @@ describe("adding a provider", () => {
       await table();
       const dialog = await openAdd();
       await enter(within(dialog).getByLabelText("API key"), API_KEY);
-      await userEvent.click(within(dialog).getByRole("button", { name: "Show the API key" }));
+      await userEvent.click(within(dialog).getByRole("button", { name: "Show API key" }));
       expect(shown()).toContain(API_KEY);
       await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
       await closed();
@@ -663,7 +700,9 @@ describe("adding a provider", () => {
         await waitFor(() => {
           expect(rowOf("openai-eu")).toHaveTextContent("Set");
         });
-        expect(await screen.findByRole("status")).toHaveTextContent("openai-eu/<model>");
+        await waitFor(() => {
+          expect(notice()).toHaveTextContent("openai-eu/<model>");
+        });
         expectNoKey(app);
         await mutationsAreForgotten(app);
         expect(toasts()).toEqual([]);
@@ -705,7 +744,7 @@ describe("adding a provider", () => {
         await table();
         const dialog = await openAdd();
         await enter(within(dialog).getByLabelText("API key"), API_KEY);
-        await userEvent.click(within(dialog).getByRole("button", { name: /^Show/ }));
+        await userEvent.click(within(dialog).getByRole("button", { name: "Show API key" }));
         expect(shown()).toContain(API_KEY);
         await leave(dialog);
         await closed();
@@ -810,7 +849,7 @@ describe("adding a provider", () => {
     expect(dialog).toBeInTheDocument();
     expect(name).toHaveValue(withCredential.name);
     expect(toasts()).toEqual([]);
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(notice(true)).toBeEmptyDOMElement();
 
     // 422: each field says what is wrong with it.
     override("post", "/api/providers", () =>
@@ -915,7 +954,9 @@ describe("adding a provider", () => {
       door.open();
     });
     await closed();
-    expect(await screen.findByRole("status")).toHaveTextContent("groq/<model>");
+    await waitFor(() => {
+      expect(notice()).toHaveTextContent("groq/<model>");
+    });
     await settle();
     expect(posts.calls).toBe(1);
     expectNoKey(app);
@@ -1003,7 +1044,7 @@ describe("adding a provider", () => {
       within(dialog).getByLabelText("Base URL"),
       within(dialog).getByLabelText("API key"),
       ...within(dialog).getAllByRole("button", {
-        name: /Add provider|Cancel|Show the API key|Groq|Ollama/,
+        name: /Add provider|Cancel|Show API key|Groq|Ollama/,
       }),
     ]) {
       expect(control.className.split(/\s+/)).toContain("min-h-11");
@@ -1018,6 +1059,18 @@ describe("editing a provider", () => {
   function credential(dialog: HTMLElement): HTMLElement {
     return within(dialog).getByRole("radiogroup", { name: "API key" });
   }
+
+  test("the labels of the form name controls, and the group of choices is named once", async () => {
+    await page();
+    const dialog = await openEdit(withCredential);
+    expectLabelsNameControls(dialog);
+    expect(credential(dialog)).toBeInTheDocument();
+    expect(within(dialog).getAllByText("API key")).toHaveLength(1);
+    await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+    expectLabelsNameControls(dialog);
+    // The field of the new key keeps its own name.
+    expect(within(dialog).getByLabelText("New API key")).toHaveAccessibleName("New API key");
+  });
 
   test("the form has the base URL, and never the credential", async () => {
     await page();
@@ -1109,6 +1162,65 @@ describe("editing a provider", () => {
       await waitFor(() => {
         expect(rowOf(withCredential.name)).toHaveTextContent("None");
       });
+    });
+  });
+
+  describe("nothing changed, nothing sent", () => {
+    test.each([
+      ["a provider with a key", withCredential],
+      ["a provider without a key", withoutCredential],
+    ])("%s, saved as it is: no request, no toast, and the dialog closes", async (_, provider) => {
+      const state = keeps();
+      const app = await page();
+      const dialog = await openEdit(provider);
+      await save(dialog);
+      await closed();
+      await settle();
+      expect(state.patched).toEqual([]);
+      expect(toasts()).toEqual([]);
+      // Nothing was read again either.
+      expect(state.lists).toBe(1);
+      await mutationsAreForgotten(app);
+      expect(within(rowOf(provider.name)).getByRole("button", { name: "Edit" })).toHaveFocus();
+    });
+
+    test("an address that was changed and changed back is not sent", async () => {
+      const state = keeps();
+      await page();
+      const dialog = await openEdit(withCredential);
+      const url = within(dialog).getByLabelText("Base URL");
+      await userEvent.type(url, "x");
+      await userEvent.type(url, "{Backspace}{Enter}");
+      await closed();
+      await settle();
+      expect(state.patched).toEqual([]);
+      expect(toasts()).toEqual([]);
+    });
+
+    test("a choice that was made and taken back is not sent, nor the key that was typed", async () => {
+      const state = keeps();
+      const app = await page();
+      const dialog = await openEdit(withCredential);
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+      await enter(within(dialog).getByLabelText("New API key"), API_KEY);
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Keep the current key" }));
+      await save(dialog);
+      await closed();
+      await settle();
+      expect(state.patched).toEqual([]);
+      expect(toasts()).toEqual([]);
+      expectNoKey(app);
+    });
+
+    test("the same address with another choice is sent", async () => {
+      const state = keeps();
+      await page();
+      const dialog = await openEdit(withCredential);
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Remove the key" }));
+      await save(dialog);
+      await closed();
+      expect(state.patched).toHaveLength(1);
+      expect(toasts()).toEqual(["Provider updated."]);
     });
   });
 
@@ -1240,7 +1352,7 @@ describe("editing a provider", () => {
       const app = await page();
       const dialog = await openEdit(withCredential);
       await typed(dialog);
-      await userEvent.click(within(dialog).getByRole("button", { name: /^Show/ }));
+      await userEvent.click(within(dialog).getByRole("button", { name: "Show API key" }));
       expect(shown()).toContain(API_KEY);
       await leave(dialog);
       await closed();
@@ -1273,6 +1385,7 @@ describe("editing a provider", () => {
     const state = keeps();
     await page();
     const dialog = await openEdit(withCredential);
+    await userEvent.type(within(dialog).getByLabelText("Base URL"), "/beta");
     state.providers = [withoutCredential];
     await save(dialog);
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
@@ -1292,6 +1405,7 @@ describe("editing a provider", () => {
     });
     await page();
     const dialog = await openEdit(withCredential);
+    await userEvent.type(within(dialog).getByLabelText("Base URL"), "/beta");
     await save(dialog);
     expect(await within(dialog).findByRole("button", { name: "Saving" })).toBeDisabled();
     await userEvent.type(within(dialog).getByLabelText("Base URL"), "{Enter}");

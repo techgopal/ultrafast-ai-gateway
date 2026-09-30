@@ -543,18 +543,20 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
       <form.Field name="expires_at">
         {(field) => (
           <Field
+            group
             label="Expires"
             name={field.name}
             hint="A key expires at the end of its day, in UTC."
             error={failure.fieldError(field.name)}
           >
-            {({ id, name, ...described }) => (
+            {/* The label of the field names the group. The day has a name of its own. */}
+            {({ id, name, "aria-labelledby": labelledBy, ...described }) => (
               <div className="flex flex-col gap-2">
                 <RadioGroup
                   {...described}
                   id={id}
                   name={name}
-                  aria-label="Expires"
+                  aria-labelledby={labelledBy}
                   value={field.state.value.choice}
                   onValueChange={(choice) => {
                     field.handleChange({ ...field.state.value, choice });
