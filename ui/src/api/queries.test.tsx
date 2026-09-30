@@ -5,6 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import { errors } from "@/test/errors";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
+import { theBrowserIsOffline } from "@/test/pages";
 import { renderWithApp } from "@/test/render";
 import { api, onUnauthenticated } from "./client";
 import { ApiError, NetworkError } from "./errors";
@@ -243,6 +244,59 @@ describe("retries", () => {
       await expect(result.current.mutateAsync({ name: "Growth" })).rejects.toBeInstanceOf(
         NetworkError,
       );
+    });
+    expect(calls).toBe(1);
+  });
+});
+
+describe("mutations are sent, not held back", () => {
+  test("while the browser says it is offline a mutation is sent at once, and fails as the network does", async () => {
+    let calls = 0;
+    override("post", "/api/teams", () => {
+      calls += 1;
+      return networkFailure();
+    });
+    const { result } = renderHook(() => q.useCreateTeam(), { wrapper: wrapperOf(appClient()) });
+    theBrowserIsOffline();
+    act(() => {
+      result.current.mutate({ name: "Growth" });
+    });
+    // Not paused until the network is back: whoever waits for it is told now.
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+    expect(result.current.error).toBeInstanceOf(NetworkError);
+    expect(result.current.isPaused).toBe(false);
+    expect(calls).toBe(1);
+  });
+
+  test("offline or not, a mutation that the gateway answers succeeds", async () => {
+    const { result } = renderHook(() => q.useCreateTeam(), { wrapper: wrapperOf(appClient()) });
+    theBrowserIsOffline();
+    await act(async () => {
+      await expect(result.current.mutateAsync({ name: "Growth" })).resolves.toEqual(
+        fixtures.teams.growth,
+      );
+    });
+  });
+
+  test("when the network is back nothing is sent a second time", async () => {
+    let calls = 0;
+    override("post", "/api/teams", () => {
+      calls += 1;
+      return networkFailure();
+    });
+    const { result } = renderHook(() => q.useCreateTeam(), { wrapper: wrapperOf(appClient()) });
+    const offline = theBrowserIsOffline();
+    act(() => {
+      result.current.mutate({ name: "Growth" });
+    });
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+    offline.back();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
     });
     expect(calls).toBe(1);
   });

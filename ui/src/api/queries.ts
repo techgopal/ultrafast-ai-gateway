@@ -149,7 +149,17 @@ export function createQueryClient(settings: QueryClientSettings = {}): QueryClie
         retry: settings.retry ?? retryQuery,
         ...(settings.retryDelay === undefined ? {} : { retryDelay: settings.retryDelay }),
       },
-      mutations: { retry: false, gcTime: settings.mutationGcTime ?? 0 },
+      mutations: {
+        retry: false,
+        gcTime: settings.mutationGcTime ?? 0,
+        // A mutation is sent whatever the browser says about the network.
+        // By default the library holds it back while the browser is offline
+        // and sends it when the network is back: the dialog that waits for it
+        // would say "Saving" and could not be left until then. Sent at once,
+        // it fails at once, and its dialog says that the gateway cannot be
+        // reached.
+        networkMode: "always",
+      },
     },
   });
 }
