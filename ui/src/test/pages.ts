@@ -1,14 +1,15 @@
 // What the tests of the pages share: the end of a session on a page, the
-// scans for a secret, and the counting of calls.
+// scans for a secret, the counting of calls, and what a dialog with a form
+// does while its request runs.
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryHistory, type RouterHistory } from "@tanstack/react-router";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { expect, onTestFinished, vi } from "vitest";
 import { api, type Method, type PathFor } from "@/api/client";
 import { createQueryClient } from "@/api/queries";
-import { errors } from "./errors";
+import { errors, type GatewayError } from "./errors";
 import { gate } from "./gateway";
 import { override, refuse, type Call } from "./handlers";
 import { unauthenticated, type AppRenderResult } from "./render";
@@ -211,6 +212,123 @@ export function counted<M extends Method>(
     return resolver(call);
   });
   return count;
+}
+
+/** An operation whose answer is held: see `held`. */
+export interface Held extends Counted {
+  /** Lets the answer of every call through, those made so far and those that follow. */
+  answer: () => void;
+}
+
+/**
+ * Counts the calls of the operation and holds their answer, a refusal of the
+ * gateway, until `answer` is called: the request of a form runs for as long
+ * as the test wants to look at its dialog.
+ */
+export function held<M extends Method>(
+  method: M,
+  path: PathFor<M>,
+  refusal: GatewayError = errors.forbidden,
+): Held {
+  const door = gate();
+  const count = counted(method, path, async () => {
+    await door.opened;
+    return refuse(refusal);
+  });
+  return Object.assign(count, {
+    answer: () => {
+      act(() => {
+        door.open();
+      });
+    },
+  });
+}
+
+/** What covers the page behind a dialog: a click on it is a click beside the dialog. */
+export function besideTheDialog(): Element {
+  const overlay = document.querySelector('[data-slot="dialog-overlay"]');
+  if (overlay === null) throw new Error("no overlay");
+  return overlay;
+}
+
+/**
+ * Sends the form of the dialog twice in one tick, as a double press does
+ * before anything on the screen could be disabled: nothing of the first
+ * submit has been rendered when the second one comes.
+ */
+export function sendTwiceAtOnce(dialog: HTMLElement): void {
+  const form = within(dialog).getByRole("form");
+  act(() => {
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+  });
+}
+
+/**
+ * While the request of the dialog runs: Escape, a click beside the dialog,
+ * Cancel and a second submit do nothing, and there is no X. `field` is a
+ * field of the form.
+ */
+export async function expectTheDialogStays(dialog: HTMLElement, field: HTMLElement): Promise<void> {
+  const open = () => screen.queryByRole("dialog");
+
+  await userEvent.keyboard("{Escape}");
+  expect(open()).toBe(dialog);
+  await userEvent.click(besideTheDialog());
+  expect(open()).toBe(dialog);
+  // There is no button to leave by.
+  expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+  expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+  await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(open()).toBe(dialog);
+  // Nor is the form sent a second time: not by Enter, pressed twice, not by a
+  // submit of the form itself.
+  await userEvent.type(field, "{Enter}{Enter}");
+  fireEvent.submit(within(dialog).getByRole("form"));
+  await settle();
+  expect(open()).toBe(dialog);
+}
+
+/**
+ * After its request failed the dialog can be left again: Cancel can be
+ * pressed, and the X is back. The X is pressed, and the dialog is gone.
+ */
+export async function expectTheDialogCanBeLeft(dialog: HTMLElement): Promise<void> {
+  await waitFor(() => {
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
+  });
+  await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+}
+
+/**
+ * What every dialog with a form does, from the submit to the refusal. The
+ * form of `dialog` is filled and can be sent; `request` is its operation,
+ * held (`held`). The form is sent twice in one tick. While the request runs
+ * the submit button says `running` and is disabled, and the dialog stays
+ * (`expectTheDialogStays`). One request was made in all. When the gateway
+ * refuses it, the dialog says so and can be left (`expectTheDialogCanBeLeft`).
+ */
+export async function expectOneRequestWhileTheDialogStays(
+  dialog: HTMLElement,
+  field: HTMLElement,
+  running: string,
+  request: Held,
+  refusal: GatewayError = errors.forbidden,
+): Promise<void> {
+  sendTwiceAtOnce(dialog);
+  expect(await within(dialog).findByRole("button", { name: running })).toBeDisabled();
+  await expectTheDialogStays(dialog, field);
+  expect(request.calls).toBe(1);
+
+  request.answer();
+  expect(await within(dialog).findByText(refusal.body.error.message)).toBeInTheDocument();
+  await settle();
+  expect(request.calls).toBe(1);
+  await expectTheDialogCanBeLeft(dialog);
+  expect(request.calls).toBe(1);
 }
 
 /**

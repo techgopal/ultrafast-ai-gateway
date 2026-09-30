@@ -19,10 +19,12 @@ import {
   counted,
   descriptionOf,
   expectNotAvailable,
+  expectOneRequestWhileTheDialogStays,
   expectOneMain,
   expectSessionEndsOnPage,
   forbid,
   forgetToasts,
+  held,
   href,
   inside,
   installPointerCapture,
@@ -57,6 +59,9 @@ const platformWithMaya: fixtures.TeamDetail = {
     { user_id: maya.id, email: maya.email, name: maya.name, role: "lead" },
   ],
 };
+
+const HOLDS =
+  "two submits at once are one request, it stays while the request runs, and after a refusal it can be left";
 
 beforeAll(installPointerCapture);
 afterEach(forgetToasts);
@@ -335,6 +340,18 @@ describe("the list of teams", () => {
     });
     await closed();
     expect(created.calls).toBe(1);
+  });
+
+  test(`the dialog of a new team: ${HOLDS}`, async () => {
+    const request = held("post", "/api/teams");
+    await list();
+    await table("Teams");
+    const dialog = await open("New team", "New team");
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.type(name, "Design");
+    await expectOneRequestWhileTheDialogStays(dialog, name, "Creating the team", request);
+    expect(request.bodies).toEqual([{ name: "Design" }]);
+    expect(toasts()).toEqual([]);
   });
 
   test("a team whose answer came for a session that is over says nothing", async () => {
@@ -868,7 +885,43 @@ describe("renaming a team", () => {
   });
 });
 
+describe("renaming a team: the dialog while its request runs", () => {
+  test(`the dialog: ${HOLDS}`, async () => {
+    const request = held("patch", "/api/teams/{id}");
+    await detail(platform);
+    const dialog = await open("Rename", "Rename team");
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.type(name, " 2");
+    await expectOneRequestWhileTheDialogStays(dialog, name, "Saving", request);
+    expect(request.bodies).toEqual([{ name: `${platform.name} 2` }]);
+    expect(toasts()).toEqual([]);
+  });
+});
+
 describe("adding a member", () => {
+  test(`the dialog of who chooses from the list: ${HOLDS}`, async () => {
+    const request = held("put", "/api/teams/{id}/members/{user_id}");
+    await detail(platform);
+    const dialog = await open("Add member", "Add member");
+    const group = await within(dialog).findByRole("radiogroup", { name: "User" });
+    const user = within(group).getByRole("radio", { name: new RegExp(priya.name) });
+    await userEvent.click(user);
+    await expectOneRequestWhileTheDialogStays(dialog, user, "Adding", request);
+    expect(request.bodies).toEqual([{ role: "member" }]);
+    expect(toasts()).toEqual([]);
+  });
+
+  test(`the dialog of who adds by id: ${HOLDS}`, async () => {
+    const request = held("put", "/api/teams/{id}/members/{user_id}");
+    await detail(platform, { user: fixtures.me.arjun });
+    const dialog = await open("Add member", "Add member");
+    const id = within(dialog).getByLabelText("User ID");
+    await userEvent.type(id, String(priya.id));
+    await expectOneRequestWhileTheDialogStays(dialog, id, "Adding", request);
+    expect(request.bodies).toEqual([{ role: "member" }]);
+    expect(toasts()).toEqual([]);
+  });
+
   test("admin picks a user from a list", async () => {
     const state = keeps(fixtures.teamDetails.platform);
     await detail(platform);

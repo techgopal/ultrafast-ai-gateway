@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -16,10 +16,13 @@ import {
   expectLabelsNameControls,
   expectNoSecret,
   expectNotAvailable,
+  expectOneRequestWhileTheDialogStays,
   expectOneMain,
   expectSessionEndsOnPage,
+  expectTheDialogStays,
   forbid,
   forgetToasts,
+  held,
   href,
   installPointerCapture,
   listenToConsole,
@@ -251,29 +254,6 @@ const WAYS_OUT = {
   },
 } as const;
 const waysOut = Object.entries(WAYS_OUT);
-
-/**
- * While the request of the dialog runs: Escape, a click beside the dialog,
- * Cancel and a second submit do nothing. `field` is a field of the form.
- */
-async function expectTheDialogStays(dialog: HTMLElement, field: HTMLElement): Promise<void> {
-  const open = () => screen.queryByRole("dialog");
-
-  await userEvent.keyboard("{Escape}");
-  expect(open()).toBe(dialog);
-  await WAYS_OUT["a click beside the dialog"]();
-  expect(open()).toBe(dialog);
-  // There is no button to leave by.
-  expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
-  expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
-  await WAYS_OUT.Cancel(dialog);
-  expect(open()).toBe(dialog);
-  // Nor is the form sent a second time: not by Enter, not by a submit of the form itself.
-  await userEvent.type(field, "{Enter}");
-  fireEvent.submit(within(dialog).getByRole("form"));
-  await settle();
-  expect(open()).toBe(dialog);
-}
 
 describe("the list of providers", () => {
   test("the list shows the name, the kind, the base URL and whether a credential is set", async () => {
@@ -959,6 +939,21 @@ describe("adding a provider", () => {
     await mutationsAreForgotten(app);
   });
 
+  test("two submits at once are one request, and after the refusal the X leaves the dialog; the key is nowhere", async () => {
+    const request = held("post", "/api/providers");
+    const app = await page();
+    const dialog = await openAdd();
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.type(name, "groq");
+    await known(dialog, "Groq");
+    await enter(within(dialog).getByLabelText("API key"), API_KEY);
+    await expectOneRequestWhileTheDialogStays(dialog, name, "Adding the provider", request);
+    expect(request.bodies).toHaveLength(1);
+    expect(read(request.bodies[0], "api_key")).toBe(API_KEY);
+    expectNoKey(app);
+    await mutationsAreForgotten(app);
+  });
+
   test("after a refusal the dialog can be left again", async () => {
     const door = gate();
     override("post", "/api/providers", async () => {
@@ -1471,6 +1466,19 @@ describe("editing a provider", () => {
     });
     await settle();
     expect(patches.calls).toBe(1);
+    expectNoKey(app);
+    await mutationsAreForgotten(app);
+  });
+
+  test("two submits at once are one request, and after the refusal the X leaves the dialog; the key is nowhere", async () => {
+    const request = held("patch", "/api/providers/{id}");
+    const app = await page();
+    const dialog = await openEdit(withCredential);
+    const url = within(dialog).getByLabelText("Base URL");
+    await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+    await enter(within(dialog).getByLabelText("New API key"), API_KEY);
+    await expectOneRequestWhileTheDialogStays(dialog, url, "Saving", request);
+    expect(request.bodies).toEqual([{ base_url: withCredential.base_url, api_key: API_KEY }]);
     expectNoKey(app);
     await mutationsAreForgotten(app);
   });

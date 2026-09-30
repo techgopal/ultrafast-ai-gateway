@@ -14,9 +14,11 @@ import {
   descriptionOf,
   expectLabelsNameControls,
   expectNoSecret,
+  expectOneRequestWhileTheDialogStays,
   expectOneMain,
   expectSessionEndsOnPage,
   forgetToasts,
+  held,
   href,
   installSelect,
   listenToConsole,
@@ -482,6 +484,17 @@ describe("the profile", () => {
     expect(patches.calls).toBe(1);
   });
 
+  test("the name dialog: two submits at once are one request, and after the refusal the X leaves the dialog", async () => {
+    const request = held("patch", "/api/users/{id}");
+    await page();
+    const dialog = await openName();
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.type(name, " O");
+    await expectOneRequestWhileTheDialogStays(dialog, name, "Saving", request);
+    expect(request.bodies).toEqual([{ name: `${maya.name} O` }]);
+    expect(toasts()).toEqual([]);
+  });
+
   test("the session has ended when the name is saved: signed out, and the form says nothing", async () => {
     startGateway({ signedIn: true });
     const patches = counted("patch", "/api/users/{id}", unauthenticated);
@@ -582,6 +595,31 @@ describe("the password", () => {
     await send(dialog);
     expect(await secretDialog()).toBeInTheDocument();
     expect(tokens.csrf).toEqual([fixtures.csrfToken]);
+  });
+
+  test("two submits of the password form at once are one request", async () => {
+    const door = gate();
+    const posts = counted("post", "/api/auth/password", async () => {
+      await door.opened;
+      return noContent();
+    });
+    await page();
+    await fill(CURRENT, NEXT);
+    const form = within(part("Password")).getByRole("form", { name: "Change password" });
+    act(() => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    await within(part("Password")).findByRole("button", { name: "Changing the password" });
+    await settle();
+    expect(posts.calls).toBe(1);
+    act(() => {
+      door.open();
+    });
+    await waitFor(() => {
+      expect(toasts()).toEqual([PASSWORD_CHANGED]);
+    });
+    expect(posts.calls).toBe(1);
   });
 
   test("while the password is changed the button is disabled and says so; one request", async () => {
@@ -1301,6 +1339,17 @@ describe("creating a token", () => {
       await waitFor(() => {
         expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
       });
+    });
+
+    test("two submits at once are one request, and after the refusal the X leaves the dialog", async () => {
+      const request = held("post", "/api/tokens");
+      await page();
+      await table();
+      const dialog = await openCreate();
+      const name = within(dialog).getByLabelText("Name");
+      await userEvent.type(name, "deploy");
+      await expectOneRequestWhileTheDialogStays(dialog, name, "Creating the token", request);
+      expect(request.bodies).toEqual([{ name: "deploy" }]);
     });
 
     test("after a refusal it can be left again", async () => {

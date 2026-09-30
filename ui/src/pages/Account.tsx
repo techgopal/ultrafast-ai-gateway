@@ -14,12 +14,12 @@ import { useSession, useSessionControl } from "@/auth/session";
 import { PASSWORD_POLICY, PASSWORDS_DIFFER, TOO_MANY_ATTEMPTS } from "@/components/AuthForm";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
-import { dialogButton, dialogFit, useReturnFocus } from "@/components/dialog-fit";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState, messageOfError } from "@/components/ErrorState";
 import { ExpiryField } from "@/components/ExpiryField";
 import { Field } from "@/components/Field";
-import { applyApiError, onField, useFormFailure } from "@/components/form";
+import { applyApiError, onField, submitOnce, useFormFailure } from "@/components/form";
+import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { NameDialog } from "@/components/NameDialog";
 import { NotAvailableNote } from "@/components/NotAvailableNote";
@@ -30,14 +30,6 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Timestamp } from "@/components/Timestamp";
 import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { expiryOf, NO_EXPIRY } from "@/lib/expiry";
 import { tokenStatus } from "@/lib/token-status";
@@ -245,6 +237,7 @@ function PasswordForm({ email }: { email: string }) {
   const currentRef = useRef<HTMLInputElement>(null);
   const submitRef = useRef<HTMLButtonElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
+  const submit = submitOnce(form);
 
   // All three fields are empty after a refusal: the user starts again at the
   // first, whichever field the refusal was about. This runs after the focus
@@ -267,12 +260,12 @@ function PasswordForm({ email }: { email: string }) {
       aria-label="Change password"
       className="flex max-w-md flex-col gap-4"
       onSubmit={(event) => {
-        event.preventDefault();
-        // One request at a time: a form that is being sent is not sent again.
-        if (form.state.isSubmitting) return;
         // A form with an empty field is not sent, however it was submitted.
-        if (PASSWORD_FIELDS.some((name) => form.state.values[name] === "")) return;
-        void form.handleSubmit();
+        if (PASSWORD_FIELDS.some((name) => form.state.values[name] === "")) {
+          event.preventDefault();
+          return;
+        }
+        submit(event);
       }}
     >
       <FormError ref={errorRef} messages={failure.messages} />
@@ -391,12 +384,7 @@ function TokenForm({ create, onCreated, onCancel }: TokenFormProps) {
       aria-label="Create token"
       noValidate
       className="flex min-w-0 flex-col gap-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        // One request at a time: a form that is being sent is not sent again.
-        if (form.state.isSubmitting) return;
-        void form.handleSubmit();
-      }}
+      onSubmit={submitOnce(form)}
     >
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">
@@ -426,54 +414,27 @@ function TokenForm({ create, onCreated, onCancel }: TokenFormProps) {
           />
         )}
       </form.Field>
-      <DialogFooter>
-        <Button
-          type="button"
-          variant="outline"
-          className={dialogButton}
-          disabled={create.isPending}
-          onClick={onCancel}
-        >
-          Cancel
-        </Button>
-        <Button type="submit" className={dialogButton} disabled={create.isPending}>
-          {create.isPending ? "Creating the token" : "Create token"}
-        </Button>
-      </DialogFooter>
+      <FormDialogFooter
+        running={create.isPending}
+        submit="Create token"
+        submitting="Creating the token"
+        onCancel={onCancel}
+      />
     </form>
   );
 }
 
-/**
- * While the token is being made the dialog stays: it cannot be closed, and
- * the form cannot be sent a second time. A dialog that was closed could be
- * opened again and make a second token.
- */
 function CreateDialog({ open, ...form }: TokenFormProps & { open: boolean }) {
-  const returnFocus = useReturnFocus(open);
-  const { create, onCancel } = form;
-  const running = create.isPending;
   return (
-    <Dialog
+    <FormDialog
       open={open}
-      onOpenChange={(next) => {
-        if (!next && !running) onCancel();
-      }}
+      running={form.create.isPending}
+      title="Create token"
+      description="The token itself is shown once, when it is created."
+      onCancel={form.onCancel}
     >
-      <DialogContent
-        className={dialogFit}
-        showCloseButton={!running}
-        onCloseAutoFocus={returnFocus}
-      >
-        <DialogHeader>
-          <DialogTitle>Create token</DialogTitle>
-          <DialogDescription>
-            The token itself is shown once, when it is created.
-          </DialogDescription>
-        </DialogHeader>
-        <TokenForm {...form} />
-      </DialogContent>
-    </Dialog>
+      <TokenForm {...form} />
+    </FormDialog>
   );
 }
 
