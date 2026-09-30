@@ -15,6 +15,22 @@ export type Token = Schemas["TokenView"];
 export type AuditEntry = Schemas["AuditRow"];
 export type Me = Schemas["MeResponse"];
 
+/**
+ * The time of the fixtures: what they call past (the expired key and token,
+ * every `created_at`) lies before it, and so before every day the tests run
+ * on. A test whose result depends on the time pins the clock to it
+ * (`theClockIs` in `pages.ts`).
+ */
+export const now = "2026-09-30T12:00:00Z";
+
+/**
+ * A time that has not come, whenever the tests run: the one the tests of the
+ * gateway use. A fixture that must not be past its time has this one. A
+ * nearer time would hold only until its day, and then fail every test that
+ * reads it through the clock of the machine.
+ */
+export const farFuture = "2999-01-01 00:00:00";
+
 /** The CSRF token of the session in the tests: 64 hex characters, as the gateway makes it. */
 export const csrfToken = "c5".repeat(32);
 
@@ -226,11 +242,12 @@ export const tokens = {
     last_used_at: "2026-09-28 08:00:00",
     created_at: "2026-08-10 09:00:00",
   },
+  /** Has an expiry, which has not come. */
   neverUsed: {
     id: 2,
     name: "backup-script",
     display: displayOf("uf-at-", "5a1e"),
-    expires_at: "2027-01-01 00:00:00",
+    expires_at: farFuture,
     revoked_at: null,
     last_used_at: null,
     created_at: "2026-09-15 09:00:00",

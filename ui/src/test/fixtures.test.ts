@@ -1,8 +1,18 @@
 // The fixtures imitate what the gateway produces. These tests pin the forms,
 // each read from the gateway source named beside it, so that a fixture
 // cannot drift away from them.
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as fixtures from "./fixtures";
+
+// What is past and what is to come is said of the time of the fixtures, not
+// of the day the tests run on.
+beforeEach(() => {
+  vi.setSystemTime(new Date(fixtures.now));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 // crates/gateway/src/secrets.rs, generate_secret: prefix + 32 random bytes as hex.
 const SECRET = /^uf-(sk|at|inv)-[0-9a-f]{64}$/;
@@ -49,9 +59,31 @@ const AUDIT_ACTIONS: Readonly<Record<string, string>> = {
 // crates/gateway/src/api/keys.rs, key_status.
 const KEY_STATUSES = ["active", "suspended", "expired", "revoked"];
 
-/** The current UTC time in the form of the gateway, which compares timestamps as text. */
+/** The time in UTC in the form of the gateway, which compares timestamps as text. */
+function utc(time: Date): string {
+  return time.toISOString().slice(0, 19).replace("T", " ");
+}
+
+/** The time it is, which is the time of the fixtures: the clock is pinned. */
 function now(): string {
-  return new Date().toISOString().slice(0, 19).replace("T", " ");
+  return utc(new Date());
+}
+
+/** Every timestamp of the fixtures, with where it is. */
+function timestamps(): [string, unknown][] {
+  return timestampsIn(
+    {
+      users: fixtures.userList,
+      teams: fixtures.teamList,
+      teamDetails: fixtures.teamDetailList,
+      me: fixtures.me,
+      keys: fixtures.keyList,
+      providers: fixtures.providerList,
+      tokens: fixtures.tokenList,
+      audit: fixtures.auditEntries,
+    },
+    "fixtures",
+  );
 }
 
 /** Every value of a field whose name ends in `_at` or is `at`, anywhere in the value. */
@@ -112,25 +144,42 @@ describe("the fixtures have the forms of the gateway", () => {
   });
 
   test("every timestamp", () => {
-    const found = timestampsIn(
-      {
-        users: fixtures.userList,
-        teams: fixtures.teamList,
-        teamDetails: fixtures.teamDetailList,
-        me: fixtures.me,
-        keys: fixtures.keyList,
-        providers: fixtures.providerList,
-        tokens: fixtures.tokenList,
-        audit: fixtures.auditEntries,
-      },
-      "fixtures",
-    );
+    const found = timestamps();
     expect(found.length).toBeGreaterThan(30);
     for (const [path, value] of found) {
       expect(value, path).toEqual(expect.stringMatching(TIMESTAMP));
       // A real date and time.
       const asDate = new Date(`${String(value).replace(" ", "T")}Z`);
       expect(asDate.toISOString().slice(0, 19).replace("T", " "), path).toBe(value);
+    }
+  });
+
+  test("the clock of these tests is the time of the fixtures", () => {
+    expect(fixtures.now).toBe("2026-09-30T12:00:00Z");
+    expect(now()).toBe("2026-09-30 12:00:00");
+  });
+
+  // A time that is to come on the day a fixture is written, and near, is past
+  // some day: a test that reads it through the clock of the machine then
+  // fails by the calendar. What must not have come yet is far away, as in the
+  // tests of the gateway (2999-01-01), and everything else is past already.
+  test("a time that has not come is a hundred years away at least", () => {
+    const at = now();
+    const inAHundredYears = utc(new Date(Date.parse(fixtures.now) + 100 * 365.25 * 86_400_000));
+    expect(inAHundredYears.slice(0, 4)).toBe("2126");
+    const toCome = timestamps().filter(([, value]) => typeof value === "string" && value > at);
+    // The one there is: the token that has an expiry and is not expired.
+    expect(toCome.map(([path]) => path)).toEqual(["fixtures.tokens[1].expires_at"]);
+    for (const [path, value] of toCome) {
+      expect(typeof value === "string" && value >= inAHundredYears, `${path}: ${String(value)}`).toBe(
+        true,
+      );
+    }
+    expect(fixtures.farFuture >= inAHundredYears).toBe(true);
+    expect(fixtures.farFuture).toMatch(TIMESTAMP);
+    // The stretches of the audit log that the tests make are past as well.
+    for (const entry of fixtures.auditEntriesFrom(2000, 3)) {
+      expect(entry.at < at, String(entry.id)).toBe(true);
     }
   });
 
