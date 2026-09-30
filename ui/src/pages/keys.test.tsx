@@ -753,6 +753,90 @@ describe("creating a key", () => {
     });
   });
 
+  describe("an error of the expiry goes when the expiry is changed", () => {
+    const HINT = "A key expires at the end of its day, in UTC.";
+
+    /** A member's form, with "On a date" chosen. */
+    async function onADate() {
+      await page({ user: fixtures.me.lena });
+      const dialog = await openCreate(false);
+      await named(dialog, "laptop");
+      const expires = within(dialog).getByRole("radiogroup", { name: "Expires" });
+      await userEvent.click(within(expires).getByRole("radio", { name: "On a date" }));
+      return { dialog, expires, day: within(dialog).getByLabelText("Expiry date") };
+    }
+
+    /** The same, sent with a day that is past, which the gateway refuses. */
+    async function refusedForThePast() {
+      const posts = counted("post", "/api/keys", () =>
+        refuse(validationFailed({ expires_at: fieldMessages.expiresAtPast })),
+      );
+      const form = await onADate();
+      fireEvent.change(form.day, { target: { value: "2001-01-01" } });
+      await send(form.dialog);
+      await waitFor(() => {
+        expect(descriptionOf(form.expires)).toBe(`${fieldMessages.expiresAtPast} ${HINT}`);
+      });
+      expect(posts.bodies).toEqual([{ name: "laptop", expires_at: "2001-01-01 23:59:59" }]);
+      expect(form.expires).toHaveAttribute("aria-invalid", "true");
+      expect(form.day).toHaveAttribute("aria-invalid", "true");
+      return form;
+    }
+
+    function expectNoError({ dialog, expires }: { dialog: HTMLElement; expires: HTMLElement }) {
+      expect(descriptionOf(expires)).toBe(HINT);
+      expect(expires).not.toHaveAttribute("aria-invalid");
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      expect(within(dialog).queryByText(fieldMessages.expiresAtPast)).toBeNull();
+    }
+
+    test("what the gateway said of a past day goes when another day is chosen", async () => {
+      const form = await refusedForThePast();
+      fireEvent.change(form.day, { target: { value: "2027-01-31" } });
+      expectNoError(form);
+      expect(form.day).not.toHaveAttribute("aria-invalid");
+      expect(descriptionOf(form.day)).toBe(HINT);
+    });
+
+    test("what the gateway said of a past day goes when another choice is made", async () => {
+      const form = await refusedForThePast();
+      await userEvent.click(within(form.expires).getByRole("radio", { name: "In 30 days" }));
+      expectNoError(form);
+      // It does not come back with the choice it was about.
+      await userEvent.click(within(form.expires).getByRole("radio", { name: "On a date" }));
+      expectNoError(form);
+      expect(within(form.dialog).getByLabelText("Expiry date")).toHaveValue("2001-01-01");
+    });
+
+    test("it stays while another field is changed", async () => {
+      const form = await refusedForThePast();
+      await named(form.dialog, "-2");
+      expect(descriptionOf(form.expires)).toBe(`${fieldMessages.expiresAtPast} ${HINT}`);
+      expect(form.day).toHaveAttribute("aria-invalid", "true");
+    });
+
+    test("'Choose a date.' goes when a day is chosen, and when another choice is made", async () => {
+      const state = keeps();
+      const form = await onADate();
+      await send(form.dialog);
+      await waitFor(() => {
+        expect(descriptionOf(form.expires)).toBe(`Choose a date. ${HINT}`);
+      });
+      fireEvent.change(form.day, { target: { value: "2027-01-31" } });
+      expectNoError(form);
+
+      fireEvent.change(form.day, { target: { value: "" } });
+      await send(form.dialog);
+      await waitFor(() => {
+        expect(descriptionOf(form.expires)).toBe(`Choose a date. ${HINT}`);
+      });
+      await userEvent.click(within(form.expires).getByRole("radio", { name: "Never" }));
+      expectNoError(form);
+      await settle();
+      expect(state.created).toEqual([]);
+    });
+  });
+
   test("new key is shown once", async () => {
     const written = listenToConsole();
     const state = keeps();

@@ -254,25 +254,35 @@ const EXPIRY = [
 
 const DAYS: Record<string, number> = { "30": 30, "90": 90 };
 
+/**
+ * When the key expires, as the form holds it. It is one value of the form,
+ * under the name the gateway has for it: what is said about `expires_at`,
+ * by the gateway or by the console, is said about the choice and the day
+ * together, and goes when either of them is changed.
+ */
+interface Expiry {
+  /** One of `EXPIRY`. */
+  choice: string;
+  /** The day, when the key expires on a date. */
+  day: string;
+}
+
 interface KeyValues {
   name: string;
   owner_id: string;
   /** The id of a team, `WITHOUT_TEAM`, or nothing while a team has to be chosen. */
   team_id: string;
-  /** One of `EXPIRY`. */
-  expires_at: string;
-  /** The day, when the key expires on a date. */
-  expires_on: string;
+  expires_at: Expiry;
 }
 
 /** When the key stops working, as the gateway takes it; nothing for never. */
-function expiryOf(values: KeyValues): string | undefined {
-  if (values.expires_at === "date") {
-    const end = endOfDay(values.expires_on);
-    if (end === null) throw new ConsoleRefusal(CHOOSE_A_DATE, "expires_on");
+function expiryOf({ choice, day }: Expiry): string | undefined {
+  if (choice === "date") {
+    const end = endOfDay(day);
+    if (end === null) throw new ConsoleRefusal(CHOOSE_A_DATE, "expires_at");
     return end;
   }
-  const days = DAYS[values.expires_at];
+  const days = DAYS[choice];
   return days === undefined ? undefined : (endOfDay(dayIn(days)) ?? undefined);
 }
 
@@ -287,7 +297,7 @@ function requestOf(values: KeyValues, me: Me): CreateKeyRequest {
     if (team === null) throw new ConsoleRefusal(CHOOSE_A_TEAM, "team_id");
     body.team_id = team;
   }
-  const expires = expiryOf(values);
+  const expires = expiryOf(values.expires_at);
   if (expires !== undefined) body.expires_at = expires;
   return body;
 }
@@ -315,8 +325,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
     name: "",
     owner_id: String(me.user.id),
     team_id: WITHOUT_TEAM,
-    expires_at: "never",
-    expires_on: "",
+    expires_at: { choice: "never", day: "" },
   };
   const form = useForm({
     defaultValues: start,
@@ -476,7 +485,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
             label="Expires"
             name={field.name}
             hint="A key expires at the end of its day, in UTC."
-            error={failure.fieldError(field.name) ?? failure.fieldError("expires_on")}
+            error={failure.fieldError(field.name)}
           >
             {({ id, name, ...described }) => (
               <div className="flex flex-col gap-2">
@@ -485,8 +494,10 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
                   id={id}
                   name={name}
                   aria-label="Expires"
-                  value={field.state.value}
-                  onValueChange={field.handleChange}
+                  value={field.state.value.choice}
+                  onValueChange={(choice) => {
+                    field.handleChange({ ...field.state.value, choice });
+                  }}
                 >
                   {EXPIRY.map(([value, label]) => (
                     <div key={value} className="flex min-h-11 items-center gap-2 md:min-h-8">
@@ -495,23 +506,19 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
                     </div>
                   ))}
                 </RadioGroup>
-                {field.state.value === "date" ? (
-                  <form.Field name="expires_on">
-                    {(day) => (
-                      <Input
-                        {...described}
-                        type="date"
-                        aria-label="Expiry date"
-                        min={today()}
-                        className={control}
-                        value={day.state.value}
-                        onBlur={day.handleBlur}
-                        onChange={(event) => {
-                          day.handleChange(event.target.value);
-                        }}
-                      />
-                    )}
-                  </form.Field>
+                {field.state.value.choice === "date" ? (
+                  <Input
+                    {...described}
+                    type="date"
+                    aria-label="Expiry date"
+                    min={today()}
+                    className={control}
+                    value={field.state.value.day}
+                    onBlur={field.handleBlur}
+                    onChange={(event) => {
+                      field.handleChange({ ...field.state.value, day: event.target.value });
+                    }}
+                  />
                 ) : null}
               </div>
             )}
