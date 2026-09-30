@@ -25,6 +25,7 @@ import {
   SESSION_ENDED,
   settle,
   shown,
+  theClockIs,
   toasts,
 } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
@@ -937,6 +938,8 @@ describe("the password", () => {
 
 describe("the access tokens", () => {
   test("the list: name, what is shown of the token, expiry, last use and status", async () => {
+    // The status is worked out with the clock.
+    theClockIs(fixtures.now);
     await page();
     const tokens = await table();
     expect(within(tokens).getAllByRole("columnheader").map((th) => th.textContent)).toEqual([
@@ -965,7 +968,8 @@ describe("the access tokens", () => {
     // Times are times; what never was says so.
     expect(cellsOf(active.name)[2]).toBe("Never");
     expect(cellsOf(neverUsed.name)[3]).toBe("Never");
-    expect(within(rowOf(neverUsed.name)).getByText(/2027|2026/).tagName).toBe("TIME");
+    // Its expiry is far away: the first day of 2999 in UTC, the day before west of it.
+    expect(within(rowOf(neverUsed.name)).getByText(/2999|2998/).tagName).toBe("TIME");
     expect(rowOf(active.name).querySelector("time")).toHaveAttribute(
       "title",
       `${active.last_used_at} UTC`,
@@ -1457,6 +1461,8 @@ describe("creating a token", () => {
 
 describe("revoking a token", () => {
   test("token revoke", async () => {
+    // The status of the other tokens is worked out with the clock.
+    theClockIs(fixtures.now);
     const state = keeps();
     await page();
     await table();

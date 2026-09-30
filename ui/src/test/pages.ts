@@ -180,6 +180,20 @@ export function aWayThatIsHeld(route: string): {
 }
 
 /**
+ * The clock says this time from now on, until the test ends: `fixtures.now`
+ * for the time of the fixtures. Only what reads the clock is changed; timers
+ * run as they do. A test whose result depends on the time (a status worked
+ * out from an expiry, a day counted from today) calls it, so that it passes
+ * on every day and not only until one.
+ */
+export function theClockIs(at: string): void {
+  vi.setSystemTime(new Date(at));
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+}
+
+/**
  * The window gets the focus, as when the user comes back to the tab: the
  * query library then reads again what is shown and stale. Call it inside a
  * test, never in an `afterEach`: there it would start reads while the app is
