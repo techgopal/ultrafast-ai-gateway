@@ -4,6 +4,7 @@ import * as fixtures from "@/test/fixtures";
 import { NO_EXPIRY } from "./expiry";
 import {
   choiceOffered,
+  choiceShown,
   CHOOSE_A_TEAM,
   goneAmong,
   isAskedAgain,
@@ -235,6 +236,25 @@ describe("the choice as it is offered", () => {
         own,
       ),
     ).toEqual({ owner_id: String(tomas.id), team_id: WITHOUT_TEAM });
+  });
+});
+
+describe("the choice the form shows and holds", () => {
+  // Without the owners, the teams of an owner are the viewer's own.
+  const own = (): TeamChoices => ({ teams: [PLATFORM], none: true });
+  const chosen = { owner_id: String(tomas.id), team_id: String(research.id) };
+
+  test("while the owners are read for who chooses them, it is the choice as it is: a team of another owner is not judged by the viewer's own teams", () => {
+    expect(choiceShown(chosen, fixtures.me.maya, null, own, true)).toEqual(chosen);
+  });
+
+  test("otherwise it is the choice as it is offered", () => {
+    expect(choiceShown(chosen, fixtures.me.maya, null, own, false)).toEqual({
+      owner_id: String(tomas.id),
+      team_id: WITHOUT_TEAM,
+    });
+    const owners = adminOwners();
+    expect(choiceShown(chosen, fixtures.me.maya, owners, teamsFor(owners), false)).toEqual(chosen);
   });
 });
 

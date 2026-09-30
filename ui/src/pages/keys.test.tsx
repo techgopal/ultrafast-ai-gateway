@@ -1682,6 +1682,96 @@ describe("creating a key", () => {
         await choose(field(dialog, "Owner"), person(tomas));
         expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
       });
+
+      test("while a new team is read for the first time the owners are not known: the team chosen for another owner stays, and is sent", async () => {
+        const state = keeps();
+        const app = await page();
+        const dialog = await openCreate();
+        await named(dialog, "notebook");
+        await choose(field(dialog, "Owner"), person(tomas));
+        await choose(field(dialog, "Team"), research.name);
+
+        // Somebody makes a team, which the list names when it is read again.
+        // Its first read is held: for that time the owners are not known.
+        const design: fixtures.Team = {
+          id: 4,
+          name: "Design",
+          member_count: 0,
+          created_at: "2026-09-30 09:00:00",
+        };
+        const door = gate();
+        listIs([...fixtures.teamList, design]);
+        teamsAnswer({
+          [design.id]: async () => {
+            await door.opened;
+            return ok("get", "/api/teams/{id}", 200, { team: design, members: [] });
+          },
+        });
+        await act(async () => {
+          await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.list() });
+        });
+        const loading = await within(dialog).findByRole("status", {
+          name: "Loading the users and teams",
+        });
+        act(() => {
+          door.open();
+        });
+        await waitFor(() => {
+          expect(loading).not.toBeInTheDocument();
+        });
+        expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
+        expect(field(dialog, "Team")).toHaveTextContent(research.name);
+        await send(dialog);
+        await secretDialog();
+        expect(state.created).toEqual([{ name: "notebook", owner_id: tomas.id, team_id: research.id }]);
+      });
+
+      test("while the owners are not known nothing is sent, also not by a submit of the form itself", async () => {
+        const door = gate();
+        counted("get", "/api/users", async () => {
+          await door.opened;
+          return ok("get", "/api/users", 200, { users: fixtures.userList });
+        });
+        const posts = counted("post", "/api/keys", () =>
+          ok("post", "/api/keys", 201, { key: active, secret: SECRET }),
+        );
+        await page();
+        const dialog = await openCreate(false);
+        await named(dialog, "notebook");
+        expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
+        fireEvent.submit(within(dialog).getByRole("form"));
+        await settle();
+        expect(posts.calls).toBe(0);
+        act(() => {
+          door.open();
+        });
+        await within(dialog).findByRole("combobox", { name: "Owner" });
+        expect(posts.calls).toBe(0);
+      });
+
+      test("while the list of teams cannot be read again, a team of the viewer's own that it does not name is offered: the list may be older than the session", async () => {
+        const state = keeps();
+        // Arjun leads Platform and is a member of Research. The list that is
+        // kept was read when he was in Platform only; it is read again when
+        // the dialog opens, and that fails.
+        const app = await page({ user: fixtures.me.arjun });
+        await table();
+        app.queryClient.setQueryData(queryKeys.teams.list(), { teams: [platform] });
+        const lists = counted("get", "/api/teams", fails);
+        const dialog = await openCreate();
+        await waitFor(() => {
+          expect(app.queryClient.getQueryState(queryKeys.teams.list())?.error).not.toBeNull();
+        });
+        await settle();
+        expect(lists.calls).toBe(1);
+        const team = field(dialog, "Team");
+        expect(await optionsOf(team)).toEqual(["No team", platform.name, research.name]);
+        await choose(team, research.name);
+        await named(dialog, "ci");
+        await send(dialog);
+        await secretDialog();
+        expect(state.created).toEqual([{ name: "ci", team_id: research.id }]);
+      });
     });
   });
 
