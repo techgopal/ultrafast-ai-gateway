@@ -812,7 +812,9 @@ describe("the password", () => {
     await userEvent.type(field("New password"), "{Enter}");
     fireEvent.submit(within(part("Password")).getByRole("form", { name: "Change password" }));
     await settle();
-    // Every attempt counts against the limit of the gateway: none is made for nothing.
+    // An attempt with a wrong current password counts against the limit of the
+    // gateway, and an empty one is wrong: none is made for nothing. (A 422, a
+    // 429 and a 401 without a session do not count.)
     expect(posts.calls).toBe(0);
     expect(toasts()).toEqual([]);
   });

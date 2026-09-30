@@ -12,6 +12,7 @@ import type { components } from "@/api/schema";
 import { can, type Me } from "@/auth/guards";
 import { useSession, useSessionControl } from "@/auth/session";
 import { PASSWORD_POLICY, PASSWORDS_DIFFER, TOO_MANY_ATTEMPTS } from "@/components/AuthForm";
+import { control } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
@@ -49,8 +50,6 @@ export const DONE = {
   name: "Name changed.",
   revoke: "Token revoked.",
 } as const;
-
-const control = "min-h-11 md:min-h-8";
 
 interface PartProps {
   title: string;
@@ -188,8 +187,14 @@ function inTheWordsOfTheForm(error: unknown): unknown {
  * The passwords are held by the form while they are typed, and by nothing
  * after an answer: the three fields are emptied after a success and after a
  * refusal, and the mutation is reset. An empty form is never sent, so what
- * was refused cannot be sent again by a second press; every attempt that
- * fails counts against the limit of the gateway.
+ * was refused cannot be sent again by a second press.
+ *
+ * That matters for the limit of the gateway, which is the one of the
+ * sign-in: an attempt with a wrong current password counts against it, and
+ * an empty current password is a wrong one. These do not count: a new
+ * password the gateway does not take (a 422, which comes after the current
+ * password was found right), a refusal for too many attempts (a 429), and
+ * a 401 of a call without a session.
  */
 function PasswordForm({ email }: { email: string }) {
   const change = useChangePassword();
