@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useAuditPages } from "@/api/queries";
+import { useId, useMemo, useState } from "react";
+import { useAuditFromTheStart, useAuditPages } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
 import { useSession } from "@/auth/session";
@@ -12,12 +12,11 @@ import { QueryProblem } from "@/components/QueryProblem";
 import { Timestamp } from "@/components/Timestamp";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { entriesMatching } from "@/lib/audit";
+import { entriesMatching, isFilter } from "@/lib/audit";
 
 type AuditEntry = components["schemas"]["AuditRow"];
 
-export const ONLY_LOADED =
-  "Only the entries that are loaded are looked at. Load older entries to look further.";
+export const LOADED_ONLY = "Filtering the loaded entries only. Load older to look further.";
 
 const control = "min-h-11 md:min-h-8";
 
@@ -50,7 +49,9 @@ const columns: Column<AuditEntry>[] = [
 
 function AuditLog() {
   const log = useAuditPages();
+  const startAgain = useAuditFromTheStart();
   const [search, setSearch] = useState("");
+  const noticeId = useId();
   const loaded = useMemo(() => log.data?.pages.flatMap((page) => page.entries) ?? [], [log.data]);
   const rows = useMemo(() => entriesMatching(loaded, search), [loaded, search]);
 
@@ -75,27 +76,44 @@ function AuditLog() {
     loaded.length === 0 ? (
       <EmptyState title="No audit entries" description="Nothing has been recorded yet." />
     ) : (
-      <EmptyState
-        title="No entries match"
-        description={log.hasNextPage ? ONLY_LOADED : "Change the filter to see more entries."}
-      />
+      <EmptyState title="No entries match" description="Change the filter to see more entries." />
     );
+  // The filter looks at what is loaded. While there may be older entries,
+  // what it shows is not all there is, whether it shows something or nothing.
+  const loadedOnly = isFilter(search) && log.hasNextPage;
 
   return (
     <>
-      <PageHeader title="Audit log" />
+      <PageHeader
+        title="Audit log"
+        actions={
+          // It is not disabled while the log is read: it keeps the focus, and
+          // a second press starts the log again as the first did.
+          <Button type="button" variant="outline" className={control} onClick={startAgain}>
+            Refresh
+          </Button>
+        }
+      />
       {log.isPending || loaded.length > 0 ? (
-        <Input
-          type="search"
-          aria-label="Filter"
-          placeholder="Filter by actor, action or summary"
-          autoComplete="off"
-          className={`${control} w-full sm:w-80`}
-          value={search}
-          onChange={(event) => {
-            setSearch(event.target.value);
-          }}
-        />
+        <div className="flex flex-col gap-2">
+          <Input
+            type="search"
+            aria-label="Filter"
+            aria-describedby={loadedOnly ? noticeId : undefined}
+            placeholder="Filter by actor, action or summary"
+            autoComplete="off"
+            className={`${control} w-full sm:w-80`}
+            value={search}
+            onChange={(event) => {
+              setSearch(event.target.value);
+            }}
+          />
+          {loadedOnly ? (
+            <p id={noticeId} role="status" className="text-sm text-muted-foreground">
+              {LOADED_ONLY}
+            </p>
+          ) : null}
+        </div>
       ) : null}
       <DataTable
         caption="Audit log"
