@@ -610,6 +610,44 @@ describe("adding a provider", () => {
       expect(show).toHaveAccessibleName("Show API key");
     });
 
+    test("Show says whether it is pressed by its icon, not by its fill alone", async () => {
+      await page();
+      const dialog = await openAdd();
+      const show = within(dialog).getByRole("button", { name: "Show API key" });
+      /** The one icon of the button, which no screen reader is told of. */
+      const icon = () => {
+        const icons = show.querySelectorAll("svg");
+        expect(icons).toHaveLength(1);
+        expect(icons[0]).toHaveAttribute("aria-hidden", "true");
+        return icons[0];
+      };
+      // The field is empty: nothing in it shows whether it would hide a key.
+      expect(within(dialog).getByLabelText("API key")).toHaveValue("");
+      expect(show).toHaveAttribute("aria-pressed", "false");
+      expect(icon()).toHaveClass("lucide-eye-off");
+      await userEvent.click(show);
+      expect(show).toHaveAttribute("aria-pressed", "true");
+      expect(icon()).toHaveClass("lucide-eye");
+      expect(icon()).not.toHaveClass("lucide-eye-off");
+      // The name and the text are what they were.
+      expect(show).toHaveAccessibleName("Show API key");
+      expect(show).toHaveTextContent(/^Show$/);
+      await userEvent.click(show);
+      expect(show).toHaveAttribute("aria-pressed", "false");
+      expect(icon()).toHaveClass("lucide-eye-off");
+    });
+
+    test("the Show of a new key, in the form that edits a provider, has the same icon", async () => {
+      await page();
+      const dialog = await openEdit(withCredential);
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+      const show = within(dialog).getByRole("button", { name: "Show API key" });
+      expect(show.querySelector("svg")).toHaveClass("lucide-eye-off");
+      await userEvent.click(show);
+      expect(show).toHaveAttribute("aria-pressed", "true");
+      expect(show.querySelector("svg")).toHaveClass("lucide-eye");
+    });
+
     test("after cancel", async () => {
       const app = await page();
       await table();

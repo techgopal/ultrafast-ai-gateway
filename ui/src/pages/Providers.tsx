@@ -1,4 +1,5 @@
 import { useForm } from "@tanstack/react-form";
+import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { useCreateProvider, useDeleteProvider, useProviders, useUpdateProvider } from "@/api/queries";
 import type { components } from "@/api/schema";
@@ -89,7 +90,6 @@ function ApiKeyInput({ wiring, value, onChange, onBlur }: ApiKeyInputProps) {
       />
       <Button
         type="button"
-        // The text is the same either way: the button itself shows that it is pressed.
         variant={shown ? "secondary" : "outline"}
         className={control}
         // One name, and whether it is pressed. A name that changed with it would say it twice.
@@ -99,6 +99,16 @@ function ApiKeyInput({ wiring, value, onChange, onBlur }: ApiKeyInputProps) {
           setShown((now) => !now);
         }}
       >
+        {/*
+          The text is the same either way, and the fill of a pressed button
+          differs too little from the dialog to be seen by everyone: the icon
+          shows whether it is pressed. An open eye: the key is shown.
+        */}
+        {shown ? (
+          <EyeIcon data-icon="inline-start" aria-hidden="true" />
+        ) : (
+          <EyeOffIcon data-icon="inline-start" aria-hidden="true" />
+        )}
         Show
       </Button>
     </div>
