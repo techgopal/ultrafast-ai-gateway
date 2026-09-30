@@ -41,10 +41,6 @@ const SUSPENDED_HINT = "The owner is not active";
 const SHOWN_ONCE = "Copy this key now. It is not shown again.";
 const REVOKE = "Apps using this key stop working at once. This cannot be undone.";
 
-// The tests drive dialogs and selects step by step. On a busy machine one can
-// take longer than the 5 seconds a test has by default.
-vi.setConfig({ testTimeout: 20_000 });
-
 beforeAll(installSelect);
 afterEach(forgetToasts);
 

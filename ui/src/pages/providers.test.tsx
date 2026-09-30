@@ -2,7 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
-import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { queryKeys } from "@/api/queries";
 import { errors, fieldMessages, validationFailed, type GatewayError } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
@@ -51,10 +51,6 @@ const KNOWN = [
   ["OpenRouter", "https://openrouter.ai/api/v1", "OpenAI-compatible"],
   ["Ollama", "http://localhost:11434/v1", "OpenAI-compatible"],
 ] as const;
-
-// The tests drive dialogs step by step. On a busy machine one can take longer
-// than the 5 seconds a test has by default.
-vi.setConfig({ testTimeout: 20_000 });
 
 beforeAll(installPointerCapture);
 afterEach(forgetToasts);
