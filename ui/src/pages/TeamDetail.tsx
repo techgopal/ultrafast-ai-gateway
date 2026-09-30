@@ -1,8 +1,10 @@
 import { useForm } from "@tanstack/react-form";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import { ApiError, ConsoleRefusal } from "@/api/errors";
 import {
+  queryKeys,
   useDeleteTeam,
   usePutTeamMember,
   useRemoveTeamMember,
@@ -329,6 +331,7 @@ const memberColumns = (ownId: number): Column<Member>[] => [
 
 function Team({ me, team, members }: { me: Me; team: Team; members: readonly Member[] }) {
   const navigate = useNavigate();
+  const client = useQueryClient();
   const toast = useToast();
   const rename = useRenameTeam();
   const remove = useDeleteTeam();
@@ -520,7 +523,11 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
             await removeMember.mutateAsync({ id, userId: member.user_id, leaving: losesAccess });
             if (losesAccess) {
               toast(DONE.leave);
+              // First to the list, then the team is dropped. Dropped while
+              // this page shows it, the team would be asked for again, and
+              // the page would show its skeleton and then "not found".
               await navigate({ to: "/teams" });
+              client.removeQueries({ queryKey: queryKeys.teams.detail(id) });
             } else {
               toast(DONE.remove);
             }

@@ -1,8 +1,9 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
+import { createMemoryHistory } from "@tanstack/react-router";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
 import { queryKeys } from "@/api/queries";
 import { errors, fieldMessages, validationFailed } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
@@ -179,6 +180,38 @@ function keeps(start: fixtures.TeamDetail) {
     return noContent();
   });
   return state;
+}
+
+/**
+ * Watches what comes into the document from now on, also what is there only
+ * for a moment, and gives the names of what must not show on the way: the
+ * skeleton of the page of a team, and the heading of "not found".
+ */
+function watchTheWay(): { seen: () => string[] } {
+  const seen = new Set<string>();
+  function look(node: Node): void {
+    if (!(node instanceof Element)) return;
+    const loading = '[role="status"][aria-label="Loading the team"]';
+    if (node.matches(loading) || node.querySelector(loading) !== null) seen.add("Loading the team");
+    const headings = [...(node.matches("h1, h2") ? [node] : []), ...node.querySelectorAll("h1, h2")];
+    if (headings.some((heading) => heading.textContent === NOT_FOUND)) seen.add(NOT_FOUND);
+  }
+  function read(records: MutationRecord[]): void {
+    // What was added, also when it is gone again by now.
+    for (const record of records) record.addedNodes.forEach(look);
+    look(document.body);
+  }
+  const observer = new MutationObserver(read);
+  observer.observe(document.body, { childList: true, subtree: true });
+  onTestFinished(() => {
+    observer.disconnect();
+  });
+  return {
+    seen: () => {
+      read(observer.takeRecords());
+      return [...seen].sort();
+    },
+  };
 }
 
 function meIs(me: fixtures.Me) {
@@ -1184,6 +1217,98 @@ describe("removing a member", () => {
     });
     expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
     expectOneMain();
+  });
+
+  test("the watch of the way sees what shows for a moment", async () => {
+    const door = gate();
+    override("get", "/api/teams/{id}", async () => {
+      await door.opened;
+      return refuse(errors.not_found);
+    });
+    const way = watchTheWay();
+    await detail(platform);
+    expect(screen.getByRole("status", { name: "Loading the team" })).toBeInTheDocument();
+    act(() => {
+      door.open();
+    });
+    await screen.findByRole("heading", { name: NOT_FOUND });
+    // The skeleton is gone by now: it was seen on the way.
+    expect(screen.queryByRole("status", { name: "Loading the team" })).toBeNull();
+    expect(way.seen()).toEqual(["Loading the team", NOT_FOUND]);
+
+    // And it sees nothing where nothing of the two shows.
+    const calm = watchTheWay();
+    await userEvent.click(screen.getByRole("link", { name: "Teams" }));
+    await table("Teams");
+    expect(calm.seen()).toEqual([]);
+  });
+
+  test("a lead who leaves sees neither the skeleton nor 'not found' on the way to the list", async () => {
+    const gateway = startGateway({ signedIn: true, me: fixtures.me.arjun });
+    const state = keeps(fixtures.teamDetails.platform);
+    // The way to the list is held open, so that everything that can happen on
+    // it does: the answer of `me` arrives while the page of the team is shown.
+    const door = gate();
+    const history = createMemoryHistory({ initialEntries: [`/teams/${platform.id}`] });
+    const push = history.push.bind(history);
+    const pushed = vi.spyOn(history, "push").mockImplementation((...to) => {
+      void door.opened.then(() => {
+        push(...to);
+      });
+    });
+    const app = await renderWithApp(null, { history });
+    const dialog = await askOf(arjun, "Remove");
+    // Afterwards the gateway hides the team from them.
+    override("delete", "/api/teams/{id}/members/{user_id}", () => {
+      state.hidden = true;
+      override("get", "/api/auth/me", () => {
+        gateway.meCalls += 1;
+        return ok("get", "/api/auth/me", 200, {
+          ...fixtures.me.arjun,
+          teams: fixtures.me.arjun.teams.filter((team) => team.team_id !== platform.id),
+        });
+      });
+      return noContent();
+    });
+    const before = gateway.meCalls;
+    expect(state.reads).toBe(1);
+
+    const way = watchTheWay();
+    await confirm(dialog, "Remove");
+    await waitFor(() => {
+      expect(pushed).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(gateway.meCalls).toBe(before + 1);
+    });
+    await settle(60);
+    // Still on the page of the team, which is what it shows.
+    expect(way.seen()).toEqual([]);
+    expect(href(app)).toBe(`/teams/${platform.id}`);
+    expect(
+      screen.getByRole("heading", { level: 1, name: platform.name, hidden: true }),
+    ).toBeInTheDocument();
+    expect(state.reads).toBe(1);
+
+    act(() => {
+      door.open();
+    });
+    await waitFor(() => {
+      expect(href(app)).toBe("/teams");
+    });
+    await table("Teams");
+    await waitFor(() => {
+      expect(toasts()).toEqual(["You left the team."]);
+    });
+    await settle(60);
+    expect(way.seen()).toEqual([]);
+    // The team they left was not asked for again, and is kept no longer.
+    expect(state.reads).toBe(1);
+    expect(
+      app.queryClient.getQueryCache().find({ queryKey: queryKeys.teams.detail(platform.id) }),
+    ).toBeUndefined();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(href(app)).toBe("/teams");
   });
 
   test("an admin who removes themselves keeps the team and stays on the page", async () => {
