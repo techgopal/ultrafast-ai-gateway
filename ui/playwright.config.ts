@@ -4,9 +4,14 @@ import { defineConfig } from "@playwright/test";
 // must be built first:
 //   pnpm --dir ui build && cargo build --release -p ultrafast-gateway
 //
-// The report holds no test account and no secret of the gateway: no traces,
-// screenshots or videos, which would show what is typed and shown; and no
-// snapshot of the page with a failure, which would show the text of fields.
+// What a failure writes may hold the test's credentials: an error message can
+// show a value, and Playwright writes a snapshot of the page, with the text of
+// its fields, into `test-results` (`PLAYWRIGHT_NO_COPY_PROMPT` stops only one
+// of its snapshots). Those credentials are random, made for the one test, and
+// die with its gateway. So the output stays on the machine that ran the tests:
+// the only reporter is the list, which CI keeps in the job's log, and CI
+// uploads neither an HTML report nor `test-results`. There are no traces,
+// screenshots or videos, which would show what is typed and shown.
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1";
 
 const CI = process.env.CI !== undefined && process.env.CI !== "";
@@ -21,7 +26,7 @@ export default defineConfig({
   workers: CI ? 2 : 3,
   timeout: 60_000,
   expect: { timeout: 10_000 },
-  reporter: CI ? [["list"], ["html", { open: "never" }]] : [["list"]],
+  reporter: [["list"]],
   use: {
     browserName: "chromium",
     trace: "off",

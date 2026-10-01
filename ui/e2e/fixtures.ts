@@ -3,9 +3,11 @@
 // to another origin, a request of the app outside `/api` or an answer 5xx,
 // and the steps the flows share.
 //
-// Test accounts are made here for each test and are never printed: they are
-// typed into the page by `typeSecret`, whose step in the report does not show
-// the text, and the gateway logs warnings only.
+// Test accounts are made here for each test: random, and gone with the
+// gateway of the test. They are typed into the page by `typeSecret`, whose
+// step does not show the text, and the gateway logs warnings only; but what a
+// failure writes (its message, the snapshot of the page in `test-results`)
+// may show them. That output is not uploaded anywhere (playwright.config.ts).
 import {
   expect,
   test as base,
