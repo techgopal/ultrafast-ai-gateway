@@ -690,6 +690,11 @@ export interface components {
              * @description 5 to 3 600.
              */
             breaker_window_s: number;
+            /**
+             * @description Every user may use the route. It cannot be combined with teams.
+             *     Without it and without teams only admins may use the route.
+             */
+            everyone: boolean;
             /** @description Model ids, tried in this order when the primaries fail. */
             fallbacks: number[];
             /**
@@ -709,7 +714,7 @@ export interface components {
              * @description 0 to 5.
              */
             retries: number;
-            /** @description Teams that may use the route. Empty: everyone may. */
+            /** @description Teams that may use the route. */
             team_ids: number[];
             /**
              * Format: int64
@@ -718,8 +723,9 @@ export interface components {
             total_timeout_ms: number;
         };
         /**
-         * @description A route. For a caller who is not an admin the settings and `team_ids`
-         *     are zero or empty, and only the names and flags of the targets are set.
+         * @description A route. For a caller who is not an admin, `model_id`, `weight`, every
+         *     setting, `everyone` and `team_ids` are hidden: they read as 0, false or
+         *     empty whatever they are. Only the names and flags of the targets are real.
          */
         RouteView: {
             /** Format: int64 */
@@ -731,6 +737,8 @@ export interface components {
             /** @description No target of the route is enabled, so it cannot serve a request. */
             broken: boolean;
             created_at: string;
+            /** @description Every user may use the route. Hidden (false) for a non-admin. */
+            everyone: boolean;
             fallbacks: components["schemas"]["FallbackView"][];
             /** Format: int64 */
             first_token_timeout_ms: number;
@@ -740,6 +748,7 @@ export interface components {
             primaries: components["schemas"]["PrimaryView"][];
             /** Format: int64 */
             retries: number;
+            /** @description Hidden (empty) for a non-admin. */
             team_ids: number[];
             /** Format: int64 */
             total_timeout_ms: number;

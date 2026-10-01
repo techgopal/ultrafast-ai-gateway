@@ -23,6 +23,8 @@ pub struct RouteRow {
     pub id: i64,
     pub name: String,
     pub settings: RouteSettings,
+    /// Every user may use the route. Otherwise only its teams, and admins.
+    pub everyone: bool,
     pub created_at: String,
 }
 
@@ -58,6 +60,7 @@ fn route_from(r: &SqliteRow) -> RouteRow {
             breaker_window_s: r.get("breaker_window_s"),
             breaker_open_s: r.get("breaker_open_s"),
         },
+        everyone: r.get::<i64, _>("everyone") != 0,
         created_at: r.get("created_at"),
     }
 }
@@ -75,7 +78,7 @@ fn target_from(r: &SqliteRow) -> TargetRow {
 }
 
 const ROUTE_COLUMNS: &str = "id, name, retries, first_token_timeout_ms, total_timeout_ms,
-            breaker_failures, breaker_window_s, breaker_open_s, created_at";
+            breaker_failures, breaker_window_s, breaker_open_s, everyone, created_at";
 
 const TARGET_SELECT: &str = "SELECT t.route_id, t.model_id, t.tier, t.weight,
             p.name AS provider_name, m.name AS model_name, m.enabled
@@ -83,13 +86,28 @@ const TARGET_SELECT: &str = "SELECT t.route_id, t.model_id, t.tier, t.weight,
      JOIN models m ON m.id = t.model_id
      JOIN providers p ON p.id = m.provider_id";
 
+/// Whether a write failed because a model or team it names no longer
+/// exists.
+pub fn is_missing_reference(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<sqlx::Error>(),
+        Some(sqlx::Error::Database(db)) if db.is_foreign_key_violation()
+    )
+}
+
 impl Tx<'_> {
     /// A taken name is `StoreError::Duplicate`.
-    pub async fn insert_route(&mut self, name: &str, s: &RouteSettings) -> Result<i64> {
+    pub async fn insert_route(
+        &mut self,
+        name: &str,
+        s: &RouteSettings,
+        everyone: bool,
+    ) -> Result<i64> {
         let r = sqlx::query(
             "INSERT INTO routes (org_id, name, retries, first_token_timeout_ms,
-                total_timeout_ms, breaker_failures, breaker_window_s, breaker_open_s)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                total_timeout_ms, breaker_failures, breaker_window_s, breaker_open_s,
+                everyone)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(DEFAULT_ORG)
         .bind(name)
@@ -99,6 +117,7 @@ impl Tx<'_> {
         .bind(s.breaker_failures)
         .bind(s.breaker_window_s)
         .bind(s.breaker_open_s)
+        .bind(everyone)
         .execute(self.conn())
         .await
         .map_err(write_error)?;
@@ -107,11 +126,17 @@ impl Tx<'_> {
 
     /// Returns `false` if there is no such route. A taken name is
     /// `StoreError::Duplicate`.
-    pub async fn update_route(&mut self, id: i64, name: &str, s: &RouteSettings) -> Result<bool> {
+    pub async fn update_route(
+        &mut self,
+        id: i64,
+        name: &str,
+        s: &RouteSettings,
+        everyone: bool,
+    ) -> Result<bool> {
         let r = sqlx::query(
             "UPDATE routes SET name = ?, retries = ?, first_token_timeout_ms = ?,
                 total_timeout_ms = ?, breaker_failures = ?, breaker_window_s = ?,
-                breaker_open_s = ?
+                breaker_open_s = ?, everyone = ?
              WHERE id = ? AND org_id = ?",
         )
         .bind(name)
@@ -121,6 +146,7 @@ impl Tx<'_> {
         .bind(s.breaker_failures)
         .bind(s.breaker_window_s)
         .bind(s.breaker_open_s)
+        .bind(everyone)
         .bind(id)
         .bind(DEFAULT_ORG)
         .execute(self.conn())
@@ -273,6 +299,49 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn migration_closes_routes_that_had_grants() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let team = tx.insert_team("t").await.unwrap();
+        let open = tx.insert_route("open", &DEFAULTS, true).await.unwrap();
+        let granted = tx.insert_route("granted", &DEFAULTS, true).await.unwrap();
+        tx.replace_route_grants(granted, &[team]).await.unwrap();
+        tx.commit().await.unwrap();
+        // The data statement of the migration, on rows as 0004 left them.
+        let sql = include_str!("../../migrations/0005_route_everyone.sql");
+        let update = sql
+            .split(';')
+            .find(|st| st.contains("UPDATE routes"))
+            .expect("the migration updates routes");
+        sqlx::query(sqlx::AssertSqlSafe(update.to_string()))
+            .execute(s.pool())
+            .await
+            .unwrap();
+        assert!(s.route_by_id(open).await.unwrap().unwrap().everyone);
+        assert!(!s.route_by_id(granted).await.unwrap().unwrap().everyone);
+    }
+
+    #[tokio::test]
+    async fn a_missing_model_or_team_is_a_foreign_key_failure() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let r = tx.insert_route("r", &DEFAULTS, true).await.unwrap();
+        let e = tx
+            .replace_targets(
+                r,
+                &TargetsInput {
+                    primaries: vec![(999, 1)],
+                    fallbacks: vec![],
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(is_missing_reference(&e));
+        let e = tx.replace_route_grants(r, &[999]).await.unwrap_err();
+        assert!(is_missing_reference(&e));
+    }
+
+    #[tokio::test]
     async fn routes_round_trip_and_cascade() {
         let s = Store::open_in_memory().await.unwrap();
         let p = s
@@ -283,8 +352,8 @@ mod tests {
         let m1 = tx.insert_model(p, "m1").await.unwrap();
         let m2 = tx.insert_model(p, "m2").await.unwrap();
         let team = tx.insert_team("t").await.unwrap();
-        let r = tx.insert_route("r", &DEFAULTS).await.unwrap();
-        let dup = tx.insert_route("r", &DEFAULTS).await.unwrap_err();
+        let r = tx.insert_route("r", &DEFAULTS, true).await.unwrap();
+        let dup = tx.insert_route("r", &DEFAULTS, true).await.unwrap_err();
         assert!(matches!(
             dup.downcast_ref::<StoreError>(),
             Some(StoreError::Duplicate)

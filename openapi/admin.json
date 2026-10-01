@@ -4681,6 +4681,7 @@
           "breaker_failures",
           "breaker_window_s",
           "breaker_open_s",
+          "everyone",
           "team_ids"
         ],
         "properties": {
@@ -4698,6 +4699,10 @@
             "type": "integer",
             "format": "int64",
             "description": "5 to 3 600."
+          },
+          "everyone": {
+            "type": "boolean",
+            "description": "Every user may use the route. It cannot be combined with teams.\nWithout it and without teams only admins may use the route."
           },
           "fallbacks": {
             "type": "array",
@@ -4734,7 +4739,7 @@
               "type": "integer",
               "format": "int64"
             },
-            "description": "Teams that may use the route. Empty: everyone may."
+            "description": "Teams that may use the route."
           },
           "total_timeout_ms": {
             "type": "integer",
@@ -4746,7 +4751,7 @@
       },
       "RouteView": {
         "type": "object",
-        "description": "A route. For a caller who is not an admin the settings and `team_ids`\nare zero or empty, and only the names and flags of the targets are set.",
+        "description": "A route. For a caller who is not an admin, `model_id`, `weight`, every\nsetting, `everyone` and `team_ids` are hidden: they read as 0, false or\nempty whatever they are. Only the names and flags of the targets are real.",
         "required": [
           "id",
           "name",
@@ -4758,6 +4763,7 @@
           "breaker_failures",
           "breaker_window_s",
           "breaker_open_s",
+          "everyone",
           "team_ids",
           "broken",
           "created_at"
@@ -4781,6 +4787,10 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "everyone": {
+            "type": "boolean",
+            "description": "Every user may use the route. Hidden (false) for a non-admin."
           },
           "fallbacks": {
             "type": "array",
@@ -4814,7 +4824,8 @@
             "items": {
               "type": "integer",
               "format": "int64"
-            }
+            },
+            "description": "Hidden (empty) for a non-admin."
           },
           "total_timeout_ms": {
             "type": "integer",

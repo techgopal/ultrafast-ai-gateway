@@ -35,6 +35,7 @@ fn body(name: &str, primaries: &[(i64, i64)], fallbacks: &[i64], teams: &[i64]) 
         "breaker_failures": 5,
         "breaker_window_s": 60,
         "breaker_open_s": 30,
+        "everyone": teams.is_empty(),
         "team_ids": teams,
     })
 }
@@ -440,12 +441,13 @@ async fn non_admin_sees_only_usable_routes() {
 }
 
 #[tokio::test]
-async fn team_delete_drops_the_grant() {
+async fn team_delete_closes_a_restricted_route_instead_of_opening_it() {
     let org = org().await;
     let maya = org.sign_in("maya").await;
     let m = seed_models(&org, "openai", &["a"], true).await;
     let (_, v) = create(&org, &maya, body("r", &[(m[0], 1)], &[], &[org.research])).await;
     let id = v["id"].as_i64().unwrap();
+    assert_eq!(v["everyone"], false);
     let (s, _) = org
         .call(
             Some(&maya),
@@ -459,4 +461,121 @@ async fn team_delete_drops_the_grant() {
         .call(Some(&maya), "GET", &format!("/api/routes/{id}"), None)
         .await;
     assert_eq!(v["team_ids"], json!([]));
+    assert_eq!(v["everyone"], false);
+    for who in ["tomas", "lena", "priya"] {
+        let signed = org.sign_in(who).await;
+        assert!(routes(&org, &signed).await.is_empty(), "{who}");
+        let (s, _) = org
+            .call(Some(&signed), "GET", &format!("/api/routes/{id}"), None)
+            .await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{who}");
+    }
+    assert_eq!(routes(&org, &maya).await.len(), 1);
+}
+
+#[tokio::test]
+async fn everyone_cannot_be_combined_with_teams() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let m = seed_models(&org, "openai", &["a"], true).await;
+    let mut b = body("r", &[(m[0], 1)], &[], &[org.platform]);
+    b["everyone"] = json!(true);
+    let (s, e) = create(&org, &maya, b).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        e["error"]["fields"]["everyone"],
+        "must not be combined with teams or users"
+    );
+    // everyone is required.
+    let mut b = body("r", &[(m[0], 1)], &[], &[]);
+    b.as_object_mut().unwrap().remove("everyone");
+    let (s, _) = create(&org, &maya, b).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // Closed to everybody but admins is allowed.
+    let mut b = body("closed", &[(m[0], 1)], &[], &[]);
+    b["everyone"] = json!(false);
+    let (s, v) = create(&org, &maya, b).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let lena = org.sign_in("lena").await;
+    assert!(routes(&org, &lena).await.is_empty());
+}
+
+#[tokio::test]
+async fn refused_put_leaves_targets_and_grants_unchanged() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let m = seed_models(&org, "openai", &["a", "b", "c"], true).await;
+    let (_, v) = create(
+        &org,
+        &maya,
+        body("keep", &[(m[0], 3)], &[m[1], m[2]], &[org.platform]),
+    )
+    .await;
+    let id = v["id"].as_i64().unwrap();
+    let (_, _) = create(&org, &maya, body("taken", &[(m[0], 1)], &[], &[])).await;
+    let put = |b: Value| {
+        let (org, maya) = (&org, &maya);
+        async move {
+            org.call(Some(maya), "PUT", &format!("/api/routes/{id}"), Some(b))
+                .await
+        }
+    };
+    let (s, _) = put(body("taken", &[(m[2], 9)], &[], &[org.research])).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = put(body("new", &[(m[2], 9)], &[], &[9999])).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = put(body("new", &[(9999, 9)], &[], &[org.research])).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (_, after) = org
+        .call(Some(&maya), "GET", &format!("/api/routes/{id}"), None)
+        .await;
+    assert_eq!(after, v);
+}
+
+#[tokio::test]
+async fn provider_delete_removes_targets_and_breaks_the_route() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let gone = seed_models(&org, "gone", &["a"], true).await;
+    let kept = seed_models(&org, "kept", &["b", "c", "d"], true).await;
+    let (_, v) = create(
+        &org,
+        &maya,
+        body("r", &[(gone[0], 1)], &[kept[0], kept[1], kept[2]], &[]),
+    )
+    .await;
+    let id = v["id"].as_i64().unwrap();
+    // Fallback order survives deleting a model in the middle.
+    let (s, _) = org
+        .call(
+            Some(&maya),
+            "DELETE",
+            &format!("/api/models/{}", kept[1]),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, v) = org
+        .call(Some(&maya), "GET", &format!("/api/routes/{id}"), None)
+        .await;
+    assert_eq!(v["fallbacks"][0]["model"], "kept/b");
+    assert_eq!(v["fallbacks"][1]["model"], "kept/d");
+
+    let p = org.api.store.list_providers().await.unwrap();
+    let gone_id = p.iter().find(|p| p.name == "gone").unwrap().id;
+    let (s, _) = org
+        .call(
+            Some(&maya),
+            "DELETE",
+            &format!("/api/providers/{gone_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, v) = org
+        .call(Some(&maya), "GET", &format!("/api/routes/{id}"), None)
+        .await;
+    assert_eq!(v["primaries"], json!([]));
+    assert_eq!(v["fallbacks"].as_array().unwrap().len(), 2);
+    assert_eq!(v["broken"], false);
 }

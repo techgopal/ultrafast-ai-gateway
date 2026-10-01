@@ -27,7 +27,7 @@ pub use audit::{AuditEntry, AuditRow};
 pub use keys::{KeyRow, LiveKey};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use providers::ProviderRow;
-pub use routes::{RouteRow, RouteSettings, TargetRow, TargetsInput};
+pub use routes::{is_missing_reference, RouteRow, RouteSettings, TargetRow, TargetsInput};
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
 pub use teams::{MemberDetail, MemberRow, TeamRow, TeamSummary, UserTeam};
 pub use users::{InviteRow, NewUser, UserRow};

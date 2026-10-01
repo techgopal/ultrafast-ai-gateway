@@ -144,6 +144,7 @@ async fn world() -> World {
                 breaker_window_s: 60,
                 breaker_open_s: 30,
             },
+            true,
         )
         .await
         .unwrap();
@@ -389,6 +390,7 @@ fn route_body(name: &str) -> Value {
         "breaker_failures": 5,
         "breaker_window_s": 60,
         "breaker_open_s": 30,
+        "everyone": true,
         "team_ids": [],
     })
 }

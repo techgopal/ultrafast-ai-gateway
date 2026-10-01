@@ -14,7 +14,10 @@ use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::Action;
 use crate::identity::Principal;
-use crate::store::{AuditEntry, RouteRow, RouteSettings, StoreError, TargetRow, TargetsInput, Tx};
+use crate::store::{
+    is_missing_reference, AuditEntry, RouteRow, RouteSettings, StoreError, TargetRow, TargetsInput,
+    Tx,
+};
 
 const MAX_NAME_CHARS: usize = 64;
 
@@ -48,7 +51,10 @@ pub struct RouteRequest {
     pub breaker_window_s: i64,
     /// 5 to 3 600.
     pub breaker_open_s: i64,
-    /// Teams that may use the route. Empty: everyone may.
+    /// Every user may use the route. It cannot be combined with teams.
+    /// Without it and without teams only admins may use the route.
+    pub everyone: bool,
+    /// Teams that may use the route.
     pub team_ids: Vec<i64>,
 }
 
@@ -73,8 +79,9 @@ pub struct FallbackView {
     pub enabled: bool,
 }
 
-/// A route. For a caller who is not an admin the settings and `team_ids`
-/// are zero or empty, and only the names and flags of the targets are set.
+/// A route. For a caller who is not an admin, `model_id`, `weight`, every
+/// setting, `everyone` and `team_ids` are hidden: they read as 0, false or
+/// empty whatever they are. Only the names and flags of the targets are real.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RouteView {
     pub id: i64,
@@ -87,6 +94,9 @@ pub struct RouteView {
     pub breaker_failures: i64,
     pub breaker_window_s: i64,
     pub breaker_open_s: i64,
+    /// Every user may use the route. Hidden (false) for a non-admin.
+    pub everyone: bool,
+    /// Hidden (empty) for a non-admin.
     pub team_ids: Vec<i64>,
     /// No target of the route is enabled, so it cannot serve a request.
     pub broken: bool,
@@ -143,15 +153,16 @@ fn view_of(row: RouteRow, targets: Vec<TargetRow>, team_ids: Vec<i64>, admin: bo
         breaker_failures: s.breaker_failures,
         breaker_window_s: s.breaker_window_s,
         breaker_open_s: s.breaker_open_s,
+        everyone: admin && row.everyone,
         team_ids: if admin { team_ids } else { Vec::new() },
         broken,
         created_at: row.created_at,
     }
 }
 
-/// A route with no grants is for everyone, otherwise for its teams.
-fn may_use(p: &Principal, team_ids: &[i64]) -> bool {
-    team_ids.is_empty()
+/// A route is for everyone, or for its teams.
+fn may_use(p: &Principal, everyone: bool, team_ids: &[i64]) -> bool {
+    everyone
         || team_ids
             .iter()
             .any(|t| p.teams.iter().any(|(id, _)| id == t))
@@ -163,7 +174,7 @@ async fn load(state: &AppState, me: &Principal, id: i64) -> Result<Option<RouteV
         return Ok(None);
     };
     let team_ids = state.store.route_team_ids(id).await?;
-    if !me.is_admin() && !may_use(me, &team_ids) {
+    if !me.is_admin() && !may_use(me, row.everyone, &team_ids) {
         return Ok(None);
     }
     let targets = state.store.route_targets_of(id).await?;
@@ -264,6 +275,12 @@ fn check(req: &RouteRequest) -> BTreeMap<String, String> {
         &mut fields,
     );
     in_range("breaker_open_s", req.breaker_open_s, 5, 3_600, &mut fields);
+    if req.everyone && !req.team_ids.is_empty() {
+        fields.insert(
+            "everyone".to_string(),
+            "must not be combined with teams or users".to_string(),
+        );
+    }
     fields
 }
 
@@ -350,7 +367,7 @@ pub async fn list(
         .into_iter()
         .filter_map(|r| {
             let teams = grants.remove(&r.id).unwrap_or_default();
-            if !me.is_admin() && !may_use(me, &teams) {
+            if !me.is_admin() && !may_use(me, r.everyone, &teams) {
                 return None;
             }
             let t = targets.remove(&r.id).unwrap_or_default();
@@ -423,7 +440,10 @@ pub async fn create(
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
-    let id = match tx.insert_route(&req.name, &settings_of(&req)).await {
+    let id = match tx
+        .insert_route(&req.name, &settings_of(&req), req.everyone)
+        .await
+    {
         Ok(id) => id,
         Err(e) => {
             return Err(match e.downcast_ref::<StoreError>() {
@@ -464,8 +484,23 @@ async fn write_parts(
             .collect(),
         fallbacks: req.fallbacks.clone(),
     };
-    tx.replace_targets(id, &targets).await?;
-    tx.replace_route_grants(id, team_ids).await?;
+    // A model or team deleted since it was checked is the caller's
+    // mistake, not ours.
+    let gone = |e: anyhow::Error, field: &str| {
+        if is_missing_reference(&e) {
+            let fields =
+                BTreeMap::from([(field.to_string(), "does not exist any more".to_string())]);
+            ApiError::validation(fields)
+        } else {
+            e.into()
+        }
+    };
+    tx.replace_targets(id, &targets)
+        .await
+        .map_err(|e| gone(e, "primaries"))?;
+    tx.replace_route_grants(id, team_ids)
+        .await
+        .map_err(|e| gone(e, "team_ids"))?;
     Ok(())
 }
 
@@ -509,7 +544,10 @@ pub async fn update(
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
-    match tx.update_route(id, &req.name, &settings_of(&req)).await {
+    match tx
+        .update_route(id, &req.name, &settings_of(&req), req.everyone)
+        .await
+    {
         Ok(true) => {}
         Ok(false) => return Err(ApiError::not_found()),
         Err(e) => {
