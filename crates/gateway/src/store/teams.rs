@@ -141,32 +141,8 @@ impl Store {
     /// is ordered by team name; a user in no team has no entry.
     pub async fn teams_of_users(&self, user_ids: &[i64]) -> Result<HashMap<i64, Vec<UserTeam>>> {
         self.teams_of_users_calls.fetch_add(1, Ordering::Relaxed);
-        if user_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let marks = vec!["?"; user_ids.len()].join(", ");
-        let sql = format!(
-            "SELECT m.user_id, m.team_id, t.name, m.role
-             FROM team_members m
-             JOIN teams t ON t.id = m.team_id AND t.org_id = m.org_id
-             WHERE m.org_id = ? AND m.user_id IN ({marks})
-             ORDER BY t.name, t.id"
-        );
-        let mut query = sqlx::query(AssertSqlSafe(sql)).bind(DEFAULT_ORG);
-        for id in user_ids {
-            query = query.bind(id);
-        }
-        let mut teams: HashMap<i64, Vec<UserTeam>> = HashMap::new();
-        for r in query.fetch_all(self.pool()).await? {
-            let role: String = r.get("role");
-            teams.entry(r.get("user_id")).or_default().push(UserTeam {
-                team_id: r.get("team_id"),
-                name: r.get("name"),
-                role: TeamRole::parse(&role)
-                    .ok_or_else(|| anyhow!("stored team role is not known"))?,
-            });
-        }
-        Ok(teams)
+        let mut conn = self.pool().acquire().await?;
+        teams_of_users_in(&mut conn, user_ids).await
     }
 
     /// The members of a team with their email and name, ordered by email.
@@ -308,6 +284,37 @@ impl Tx<'_> {
         .await?;
         Ok(r.rows_affected() == 1)
     }
+}
+
+pub(crate) async fn teams_of_users_in(
+    conn: &mut sqlx::SqliteConnection,
+    user_ids: &[i64],
+) -> Result<HashMap<i64, Vec<UserTeam>>> {
+    if user_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let marks = vec!["?"; user_ids.len()].join(", ");
+    let sql = format!(
+        "SELECT m.user_id, m.team_id, t.name, m.role
+         FROM team_members m
+         JOIN teams t ON t.id = m.team_id AND t.org_id = m.org_id
+         WHERE m.org_id = ? AND m.user_id IN ({marks})
+         ORDER BY t.name, t.id"
+    );
+    let mut query = sqlx::query(AssertSqlSafe(sql)).bind(DEFAULT_ORG);
+    for id in user_ids {
+        query = query.bind(id);
+    }
+    let mut teams: HashMap<i64, Vec<UserTeam>> = HashMap::new();
+    for r in query.fetch_all(&mut *conn).await? {
+        let role: String = r.get("role");
+        teams.entry(r.get("user_id")).or_default().push(UserTeam {
+            team_id: r.get("team_id"),
+            name: r.get("name"),
+            role: TeamRole::parse(&role).ok_or_else(|| anyhow!("stored team role is not known"))?,
+        });
+    }
+    Ok(teams)
 }
 
 #[cfg(test)]

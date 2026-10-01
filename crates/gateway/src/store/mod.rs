@@ -96,6 +96,19 @@ impl Tx<'_> {
     }
 }
 
+/// Everything the snapshot is built from, read at one moment.
+pub struct SnapshotRows {
+    pub keys: Vec<LiveKey>,
+    pub providers: Vec<ProviderRow>,
+    pub models: Vec<ModelRow>,
+    pub model_grants: Vec<GrantRow>,
+    pub routes: Vec<RouteRow>,
+    pub route_targets: Vec<TargetRow>,
+    pub route_grants: Vec<(i64, i64)>,
+    pub users: Vec<UserRow>,
+    pub teams: std::collections::HashMap<i64, Vec<UserTeam>>,
+}
+
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -132,6 +145,35 @@ impl Store {
         Ok(Self {
             pool,
             teams_of_users_calls: Arc::default(),
+        })
+    }
+
+    /// Reads every table the snapshot needs inside one read transaction, so
+    /// the rows never mix two moments.
+    pub async fn snapshot_rows(&self) -> Result<SnapshotRows> {
+        let mut tx = self.pool.begin().await?;
+        let conn: &mut SqliteConnection = &mut tx;
+        let keys = keys::live_keys_in(conn).await?;
+        let providers = providers::list_providers_in(conn).await?;
+        let models = models::list_models_in(conn).await?;
+        let model_grants = models::list_model_grants_in(conn).await?;
+        let routes = routes::list_routes_in(conn).await?;
+        let route_targets = routes::list_route_targets_in(conn).await?;
+        let route_grants = routes::list_route_grants_in(conn).await?;
+        let users = users::list_users_in(conn).await?;
+        let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
+        let teams = teams::teams_of_users_in(conn, &ids).await?;
+        tx.commit().await?;
+        Ok(SnapshotRows {
+            keys,
+            providers,
+            models,
+            model_grants,
+            routes,
+            route_targets,
+            route_grants,
+            users,
+            teams,
         })
     }
 

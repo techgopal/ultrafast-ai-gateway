@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::sync::Arc;
 
 use anyhow::Result;
 use ultrafast_translate::provider::ProviderKind;
@@ -98,7 +99,7 @@ impl fmt::Debug for SnapProvider {
 /// It holds credentials, so it has no `Debug` and no `Serialize`.
 pub struct Snapshot {
     /// By the hash of the key.
-    keys: HashMap<String, SnapKey>,
+    keys: HashMap<String, Arc<SnapKey>>,
     /// By name.
     providers: HashMap<String, SnapProvider>,
     /// By provider name and model name.
@@ -113,9 +114,10 @@ impl Snapshot {
     /// Reads the keys that can work and every usable provider. A provider
     /// that cannot be used is logged and left out; it does not fail the load.
     pub async fn load(store: &Store, cipher: &Cipher) -> Result<Snapshot> {
-        let keys = store
-            .live_keys()
-            .await?
+        // One read transaction: the tables are never read at different moments.
+        let rows = store.snapshot_rows().await?;
+        let keys = rows
+            .keys
             .into_iter()
             .map(|k| {
                 let key = SnapKey {
@@ -126,12 +128,12 @@ impl Snapshot {
                     expires_at: k.expires_at,
                     allowed: k.allowed.map(|names| names.into_iter().collect()),
                 };
-                (k.hash, key)
+                (k.hash, Arc::new(key))
             })
             .collect();
 
         let mut providers = HashMap::new();
-        for p in store.list_providers().await? {
+        for p in rows.providers {
             let Some(kind) = ProviderKind::parse(&p.kind) else {
                 tracing::error!(provider = %p.name, "provider left out: unknown kind");
                 continue;
@@ -162,7 +164,7 @@ impl Snapshot {
 
         let mut models: HashMap<(String, String), SnapModel> = HashMap::new();
         let mut by_id: HashMap<i64, (String, String)> = HashMap::new();
-        for m in store.list_models().await? {
+        for m in rows.models {
             // A model of a provider that cannot be used is not there.
             if !providers.contains_key(&m.provider_name) {
                 continue;
@@ -179,7 +181,7 @@ impl Snapshot {
             };
             models.insert((m.provider_name, m.name), model);
         }
-        for g in store.list_model_grants().await? {
+        for g in rows.model_grants {
             let Some(name) = by_id.get(&g.model_id) else {
                 continue;
             };
@@ -199,7 +201,7 @@ impl Snapshot {
 
         let mut routes: HashMap<String, SnapRoute> = HashMap::new();
         let mut route_names: HashMap<i64, String> = HashMap::new();
-        for r in store.list_routes().await? {
+        for r in rows.routes {
             route_names.insert(r.id, r.name.clone());
             routes.insert(
                 r.name.clone(),
@@ -213,12 +215,12 @@ impl Snapshot {
                 },
             );
         }
-        for (route_id, team_id) in store.list_route_grants().await? {
+        for (route_id, team_id) in rows.route_grants {
             if let Some(route) = route_names.get(&route_id).and_then(|n| routes.get_mut(n)) {
                 route.team_ids.insert(team_id);
             }
         }
-        for t in store.list_route_targets().await? {
+        for t in rows.route_targets {
             let key = (t.provider_name, t.model_name);
             if !models.contains_key(&key) {
                 continue;
@@ -233,14 +235,12 @@ impl Snapshot {
             }
         }
 
-        let active: Vec<_> = store
-            .list_users()
-            .await?
+        let active: Vec<_> = rows
+            .users
             .into_iter()
             .filter(|u| u.status == UserStatus::Active)
             .collect();
-        let ids: Vec<i64> = active.iter().map(|u| u.id).collect();
-        let mut teams = store.teams_of_users(&ids).await?;
+        let mut teams = rows.teams;
         let users = active
             .into_iter()
             .map(|u| {
@@ -270,7 +270,7 @@ impl Snapshot {
 
     /// The key for this hash, unless it has expired as of `now` (UTC,
     /// `YYYY-MM-DD HH:MM:SS`). A key stops working at `expires_at`.
-    pub fn key(&self, hash: &str, now: &str) -> Option<&SnapKey> {
+    pub fn key(&self, hash: &str, now: &str) -> Option<&Arc<SnapKey>> {
         self.keys
             .get(hash)
             .filter(|k| k.expires_at.as_deref().is_none_or(|at| at > now))

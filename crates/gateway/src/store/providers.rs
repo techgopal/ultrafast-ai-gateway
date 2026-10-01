@@ -155,13 +155,20 @@ impl Store {
 
     /// Ordered by name.
     pub async fn list_providers(&self) -> Result<Vec<ProviderRow>> {
-        let sql = format!("{PROVIDER_SELECT} WHERE org_id = ? ORDER BY name");
-        let rows = sqlx::query(AssertSqlSafe(sql))
-            .bind(DEFAULT_ORG)
-            .fetch_all(self.pool())
-            .await?;
-        Ok(rows.iter().map(provider_from).collect())
+        let mut conn = self.pool().acquire().await?;
+        list_providers_in(&mut conn).await
     }
+}
+
+pub(crate) async fn list_providers_in(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Vec<ProviderRow>> {
+    let sql = format!("{PROVIDER_SELECT} WHERE org_id = ? ORDER BY name");
+    let rows = sqlx::query(AssertSqlSafe(sql))
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows.iter().map(provider_from).collect())
 }
 
 #[cfg(test)]

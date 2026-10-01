@@ -107,7 +107,7 @@ pub struct UpdateModelRequest {
 }
 
 /// Whether the principal may call a model granted like this.
-fn may_call(p: &Principal, grants: &Grants) -> bool {
+pub(super) fn may_call(p: &Principal, grants: &Grants) -> bool {
     grants.everyone
         || grants.user_ids.contains(&p.user_id)
         || grants
@@ -116,7 +116,7 @@ fn may_call(p: &Principal, grants: &Grants) -> bool {
             .any(|t| p.teams.iter().any(|(id, _)| id == t))
 }
 
-fn grouped(rows: Vec<GrantRow>) -> HashMap<i64, Grants> {
+pub(super) fn grouped(rows: Vec<GrantRow>) -> HashMap<i64, Grants> {
     let mut by_model: HashMap<i64, Vec<GrantRow>> = HashMap::new();
     for row in rows {
         by_model.entry(row.model_id).or_default().push(row);

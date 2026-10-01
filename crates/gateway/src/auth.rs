@@ -5,6 +5,8 @@ use axum::response::Response;
 
 use crate::errors::error_response;
 use crate::secrets::{hash_key, KEY_PREFIX};
+use std::sync::Arc;
+
 use crate::snapshot::{SnapKey, Snapshot};
 use crate::store::now;
 
@@ -18,7 +20,7 @@ fn unauthorized() -> Response {
 
 // The error is the finished answer; boxing it would change the interface.
 #[allow(clippy::result_large_err)]
-pub fn authenticate(snapshot: &Snapshot, headers: &HeaderMap) -> Result<SnapKey, Response> {
+pub fn authenticate(snapshot: &Snapshot, headers: &HeaderMap) -> Result<Arc<SnapKey>, Response> {
     let key = headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -30,6 +32,6 @@ pub fn authenticate(snapshot: &Snapshot, headers: &HeaderMap) -> Result<SnapKey,
         .ok_or_else(unauthorized)?;
     snapshot
         .key(&hash_key(key), &now())
-        .cloned()
+        .map(Arc::clone)
         .ok_or_else(unauthorized)
 }

@@ -121,12 +121,8 @@ impl Store {
 
     /// Ordered by email.
     pub async fn list_users(&self) -> Result<Vec<UserRow>> {
-        let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE org_id = ? ORDER BY email");
-        let rows = sqlx::query(AssertSqlSafe(sql))
-            .bind(DEFAULT_ORG)
-            .fetch_all(self.pool())
-            .await?;
-        rows.iter().map(user_from).collect()
+        let mut conn = self.pool().acquire().await?;
+        list_users_in(&mut conn).await
     }
 
     /// The users who belong to any of the teams, and the user `own_id`.
@@ -363,6 +359,15 @@ impl Tx<'_> {
             .await?;
         Ok(())
     }
+}
+
+pub(crate) async fn list_users_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<UserRow>> {
+    let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE org_id = ? ORDER BY email");
+    let rows = sqlx::query(AssertSqlSafe(sql))
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
+    rows.iter().map(user_from).collect()
 }
 
 #[cfg(test)]

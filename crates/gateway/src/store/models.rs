@@ -181,12 +181,8 @@ pub fn grants_of_rows(rows: impl Iterator<Item = GrantRow>) -> Grants {
 impl Store {
     /// Every model, ordered by provider name and then name.
     pub async fn list_models(&self) -> Result<Vec<ModelRow>> {
-        let sql = format!("{MODEL_SELECT} WHERE m.org_id = ? ORDER BY p.name, m.name");
-        let rows = sqlx::query(AssertSqlSafe(sql))
-            .bind(DEFAULT_ORG)
-            .fetch_all(self.pool())
-            .await?;
-        Ok(rows.iter().map(model_from).collect())
+        let mut conn = self.pool().acquire().await?;
+        list_models_in(&mut conn).await
     }
 
     pub async fn model_by_id(&self, id: i64) -> Result<Option<ModelRow>> {
@@ -201,13 +197,8 @@ impl Store {
 
     /// Every grant of every model, ordered by id.
     pub async fn list_model_grants(&self) -> Result<Vec<GrantRow>> {
-        let rows = sqlx::query(
-            "SELECT model_id, team_id, user_id FROM model_grants WHERE org_id = ? ORDER BY id",
-        )
-        .bind(DEFAULT_ORG)
-        .fetch_all(self.pool())
-        .await?;
-        Ok(rows.iter().map(grant_from).collect())
+        let mut conn = self.pool().acquire().await?;
+        list_model_grants_in(&mut conn).await
     }
 
     pub async fn grants_of(&self, model_id: i64) -> Result<Grants> {
@@ -221,6 +212,27 @@ impl Store {
         .await?;
         Ok(grants_of_rows(rows.iter().map(grant_from)))
     }
+}
+
+pub(crate) async fn list_models_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<ModelRow>> {
+    let sql = format!("{MODEL_SELECT} WHERE m.org_id = ? ORDER BY p.name, m.name");
+    let rows = sqlx::query(AssertSqlSafe(sql))
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows.iter().map(model_from).collect())
+}
+
+pub(crate) async fn list_model_grants_in(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Vec<GrantRow>> {
+    let rows = sqlx::query(
+        "SELECT model_id, team_id, user_id FROM model_grants WHERE org_id = ? ORDER BY id",
+    )
+    .bind(DEFAULT_ORG)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.iter().map(grant_from).collect())
 }
 
 #[cfg(test)]

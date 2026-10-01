@@ -8,7 +8,7 @@
 //! owner; the model is still checked for enabled and granted.
 
 use crate::identity::Role;
-use crate::snapshot::{SnapKey, SnapModel, SnapProvider, SnapRoute, Snapshot};
+use crate::snapshot::{SnapKey, SnapModel, SnapProvider, SnapRoute, SnapUser, Snapshot};
 
 pub enum Resolved<'a> {
     Model(&'a SnapModel),
@@ -34,6 +34,25 @@ fn allowlisted(key: &SnapKey, name: &str) -> bool {
         .is_none_or(|names| names.contains(name))
 }
 
+/// Who a key acts for.
+enum Owner<'a> {
+    /// The key has no owner (made by the CLI).
+    Nobody,
+    Known(i64, &'a SnapUser),
+    /// The key names an owner the snapshot does not hold. It acts for no
+    /// one: it may call nothing.
+    Missing,
+}
+
+fn owner<'a>(snapshot: &'a Snapshot, key: &SnapKey) -> Owner<'a> {
+    match key.user_id {
+        None => Owner::Nobody,
+        Some(id) => snapshot
+            .user(id)
+            .map_or(Owner::Missing, |user| Owner::Known(id, user)),
+    }
+}
+
 /// Whether the model is enabled and granted to the owner of the key. The
 /// allowlist is not looked at: the caller checks it, by the model name for
 /// a direct call and by the route name for a call through a route.
@@ -41,28 +60,28 @@ pub fn may_call_model(snapshot: &Snapshot, key: &SnapKey, model: &SnapModel) -> 
     if !model.enabled {
         return false;
     }
-    if model.everyone {
-        return true;
+    match owner(snapshot, key) {
+        Owner::Missing => false,
+        Owner::Nobody => model.everyone,
+        Owner::Known(id, user) => {
+            model.everyone
+                || user.role == Role::Admin
+                || model.user_ids.contains(&id)
+                || user.team_ids.iter().any(|t| model.team_ids.contains(t))
+        }
     }
-    let Some(owner) = key.user_id else {
-        return false;
-    };
-    let Some(user) = snapshot.user(owner) else {
-        return false;
-    };
-    user.role == Role::Admin
-        || model.user_ids.contains(&owner)
-        || user.team_ids.iter().any(|t| model.team_ids.contains(t))
 }
 
 fn may_use_route(snapshot: &Snapshot, key: &SnapKey, route: &SnapRoute) -> bool {
-    if route.everyone {
-        return true;
+    match owner(snapshot, key) {
+        Owner::Missing => false,
+        Owner::Nobody => route.everyone,
+        Owner::Known(_, user) => {
+            route.everyone
+                || user.role == Role::Admin
+                || user.team_ids.iter().any(|t| route.team_ids.contains(t))
+        }
     }
-    let Some(user) = key.user_id.and_then(|id| snapshot.user(id)) else {
-        return false;
-    };
-    user.role == Role::Admin || user.team_ids.iter().any(|t| route.team_ids.contains(t))
 }
 
 /// The targets of a route that this key may call, in order: primaries,
@@ -141,7 +160,12 @@ pub fn callable_names(snapshot: &Snapshot, key: &SnapKey) -> Vec<(String, String
         .map(|r| (r.name.clone(), "ultrafast-route".to_string()));
     let mut names: Vec<(String, String)> = models
         .chain(routes)
-        .filter(|(id, _)| resolve(snapshot, key, id).is_ok())
+        .filter(|(id, _)| match resolve(snapshot, key, id) {
+            // A route with no target left would answer 503: it is not listed.
+            Ok(Resolved::Route(route)) => !route.targets.is_empty(),
+            Ok(Resolved::Model(_)) => true,
+            Err(_) => false,
+        })
         .collect();
     names.sort();
     names

@@ -224,12 +224,8 @@ impl Tx<'_> {
 impl Store {
     /// Every route, ordered by name.
     pub async fn list_routes(&self) -> Result<Vec<RouteRow>> {
-        let sql = format!("SELECT {ROUTE_COLUMNS} FROM routes WHERE org_id = ? ORDER BY name");
-        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(DEFAULT_ORG)
-            .fetch_all(self.pool())
-            .await?;
-        Ok(rows.iter().map(route_from).collect())
+        let mut conn = self.pool().acquire().await?;
+        list_routes_in(&mut conn).await
     }
 
     pub async fn route_by_id(&self, id: i64) -> Result<Option<RouteRow>> {
@@ -245,11 +241,8 @@ impl Store {
     /// Every target of every route, primaries before fallbacks, each in
     /// its stored order.
     pub async fn list_route_targets(&self) -> Result<Vec<TargetRow>> {
-        let sql = format!("{TARGET_SELECT} ORDER BY t.route_id, t.position");
-        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
-            .fetch_all(self.pool())
-            .await?;
-        Ok(rows.iter().map(target_from).collect())
+        let mut conn = self.pool().acquire().await?;
+        list_route_targets_in(&mut conn).await
     }
 
     pub async fn route_targets_of(&self, route_id: i64) -> Result<Vec<TargetRow>> {
@@ -263,13 +256,8 @@ impl Store {
 
     /// `(route_id, team_id)` for every grant.
     pub async fn list_route_grants(&self) -> Result<Vec<(i64, i64)>> {
-        let rows = sqlx::query("SELECT route_id, team_id FROM route_grants ORDER BY rowid")
-            .fetch_all(self.pool())
-            .await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get("route_id"), r.get("team_id")))
-            .collect())
+        let mut conn = self.pool().acquire().await?;
+        list_route_grants_in(&mut conn).await
     }
 
     pub async fn route_team_ids(&self, route_id: i64) -> Result<Vec<i64>> {
@@ -282,6 +270,37 @@ impl Store {
             .await?,
         )
     }
+}
+
+pub(crate) async fn list_routes_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<RouteRow>> {
+    let sql = format!("SELECT {ROUTE_COLUMNS} FROM routes WHERE org_id = ? ORDER BY name");
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows.iter().map(route_from).collect())
+}
+
+pub(crate) async fn list_route_targets_in(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Vec<TargetRow>> {
+    let sql = format!("{TARGET_SELECT} ORDER BY t.route_id, t.position");
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows.iter().map(target_from).collect())
+}
+
+pub(crate) async fn list_route_grants_in(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Vec<(i64, i64)>> {
+    let rows = sqlx::query("SELECT route_id, team_id FROM route_grants ORDER BY rowid")
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get("route_id"), r.get("team_id")))
+        .collect())
 }
 
 #[cfg(test)]

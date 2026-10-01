@@ -626,3 +626,132 @@ async fn a_disabled_owner_is_still_refused_before_access() {
     w.refresh().await;
     assert_eq!(w.status(&key, "p/m1").await, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn a_key_whose_owner_is_missing_calls_nothing() {
+    use ultrafast_gateway::access::{callable_names, resolve, Denied};
+    use ultrafast_gateway::snapshot::{SnapKey, Snapshot};
+
+    let w = world().await;
+    let open = w.model("open", true, Grant::Everyone).await;
+    w.route("everyone", &[open], &[], None).await;
+    let snapshot = Snapshot::load(&w.org.api.store, &w.org.api.state.cipher)
+        .await
+        .unwrap();
+    let key = |user_id| SnapKey {
+        id: 1,
+        name: "k".into(),
+        user_id,
+        team_id: None,
+        expires_at: None,
+        allowed: None,
+    };
+
+    // No owner at all: only what is for everyone.
+    let cli = key(None);
+    assert!(resolve(&snapshot, &cli, "p/open").is_ok());
+    assert!(resolve(&snapshot, &cli, "everyone").is_ok());
+    assert_eq!(callable_names(&snapshot, &cli).len(), 2);
+
+    // An owner the snapshot does not know is not "no owner".
+    let ghost = key(Some(999_999));
+    assert_eq!(
+        resolve(&snapshot, &ghost, "p/open").err(),
+        Some(Denied::Forbidden)
+    );
+    assert_eq!(
+        resolve(&snapshot, &ghost, "everyone").err(),
+        Some(Denied::Forbidden)
+    );
+    assert!(callable_names(&snapshot, &ghost).is_empty());
+}
+
+#[tokio::test]
+async fn v1_models_leaves_out_a_route_with_no_targets() {
+    let w = world().await;
+    let m1 = w.model("m1", true, Grant::Everyone).await;
+    let m2 = w.model("m2", true, Grant::Everyone).await;
+    w.route("broken", &[m1], &[], None).await;
+    w.route("fine", &[m2], &[], None).await;
+    let key = w.key(Some(w.org.lena), None).await;
+    w.refresh().await;
+    assert_eq!(w.listed_ids(&key).await, ["broken", "fine", "p/m1", "p/m2"]);
+    let mut tx = w.org.api.store.begin().await.unwrap();
+    assert!(tx.delete_model(m1).await.unwrap());
+    tx.commit().await.unwrap();
+    w.refresh().await;
+    assert_eq!(w.listed_ids(&key).await, ["fine", "p/m2"]);
+    assert_eq!(
+        w.status(&key, "broken").await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+#[tokio::test]
+async fn allowlist_errors_do_not_reveal_hidden_routes() {
+    let w = world().await;
+    let m1 = w.model("m1", true, Grant::Everyone).await;
+    w.model("hidden-model", true, Grant::Nobody).await;
+    w.route("admins-only", &[m1], &[], Some(&[])).await;
+    let org = &w.org;
+    let maya = org.sign_in("maya").await;
+    let lena = org.sign_in("lena").await;
+
+    let (status, hidden) = message(&w, &lena, "admins-only").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (_, missing) = message(&w, &lena, "no-such-route").await;
+    let (_, hidden_model) = message(&w, &lena, "p/hidden-model").await;
+    let (_, missing_model) = message(&w, &lena, "p/nothing").await;
+    // The same words, whatever the name.
+    let words = |v: &Value, name: &str| v.as_str().unwrap().replace(name, "X");
+    assert_eq!(
+        words(&hidden, "admins-only"),
+        words(&missing, "no-such-route")
+    );
+    assert_eq!(
+        words(&hidden_model, "p/hidden-model"),
+        words(&missing_model, "p/nothing")
+    );
+    assert_eq!(
+        words(&hidden, "admins-only"),
+        words(&hidden_model, "p/hidden-model")
+    );
+    assert!(hidden.as_str().unwrap().contains("you can use"));
+
+    // Admins keep the precise message, and may name a route of admins.
+    let (_, precise) = message(&w, &maya, "no-such-route").await;
+    assert!(precise.as_str().unwrap().contains("exists"));
+    let (status, _) = org
+        .call(
+            Some(&maya),
+            "POST",
+            "/api/keys",
+            Some(json!({ "name": "k", "allowed": ["admins-only"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // What a member can use is accepted.
+    let (status, _) = org
+        .call(
+            Some(&lena),
+            "POST",
+            "/api/keys",
+            Some(json!({ "name": "k", "allowed": ["p/m1"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+/// The `fields.allowed` answer to creating a key with this one name.
+async fn message(w: &World, who: &common::Signed, name: &str) -> (StatusCode, Value) {
+    let (status, body) = w
+        .org
+        .call(
+            Some(who),
+            "POST",
+            "/api/keys",
+            Some(json!({ "name": "k", "allowed": [name] })),
+        )
+        .await;
+    (status, body["error"]["fields"]["allowed"].clone())
+}

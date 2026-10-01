@@ -77,29 +77,8 @@ impl Store {
     /// The keys that are not revoked and whose owner, if there is one, is
     /// active. Expired keys are included: expiry is checked at use.
     pub async fn live_keys(&self) -> Result<Vec<LiveKey>> {
-        let rows = sqlx::query(
-            "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at, k.allowed
-             FROM virtual_keys k
-             LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
-             WHERE k.org_id = ?
-               AND k.revoked_at IS NULL
-               AND (k.user_id IS NULL OR u.status = 'active')",
-        )
-        .bind(DEFAULT_ORG)
-        .fetch_all(self.pool())
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| LiveKey {
-                hash: r.get("key_hash"),
-                id: r.get("id"),
-                name: r.get("name"),
-                user_id: r.get("user_id"),
-                team_id: r.get("team_id"),
-                expires_at: r.get("expires_at"),
-                allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
-            })
-            .collect())
+        let mut conn = self.pool().acquire().await?;
+        live_keys_in(&mut conn).await
     }
 
     /// `expires_at` must be UTC in the form `YYYY-MM-DD HH:MM:SS`.
@@ -268,6 +247,32 @@ impl Tx<'_> {
         .await?;
         Ok(r.rows_affected() == 1)
     }
+}
+
+pub(crate) async fn live_keys_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<LiveKey>> {
+    let rows = sqlx::query(
+        "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at, k.allowed
+         FROM virtual_keys k
+         LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
+         WHERE k.org_id = ?
+           AND k.revoked_at IS NULL
+           AND (k.user_id IS NULL OR u.status = 'active')",
+    )
+    .bind(DEFAULT_ORG)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| LiveKey {
+            hash: r.get("key_hash"),
+            id: r.get("id"),
+            name: r.get("name"),
+            user_id: r.get("user_id"),
+            team_id: r.get("team_id"),
+            expires_at: r.get("expires_at"),
+            allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
+        })
+        .collect())
 }
 
 #[cfg(test)]

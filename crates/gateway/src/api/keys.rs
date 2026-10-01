@@ -14,7 +14,7 @@ use serde_json::json;
 use super::{name_and_expiry, path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
-use crate::identity::UserStatus;
+use crate::identity::{Principal, UserStatus};
 use crate::secrets::generate_key;
 use crate::store::{now, AuditEntry, KeyRow, Store};
 
@@ -36,7 +36,11 @@ const MAX_ALLOWED_NAME_BYTES: usize = 300;
 
 /// The allowlist as it is stored: without repeats, in the order given. The
 /// error is the message for `fields.allowed`.
-async fn checked_allowed(store: &Store, asked: &[String]) -> Result<Vec<String>, String> {
+async fn checked_allowed(
+    store: &Store,
+    me: &Principal,
+    asked: &[String],
+) -> Result<Vec<String>, String> {
     if asked.is_empty() {
         return Err("must name at least one model or route; leave it out for no limit".into());
     }
@@ -52,18 +56,36 @@ async fn checked_allowed(store: &Store, asked: &[String]) -> Result<Vec<String>,
             names.push(name.clone());
         }
     }
+    let failed = |_| "could not be checked".to_string();
+    // Admins see every name. Anyone else may name only what they can call
+    // or use themselves, and is told the same for a name that is hidden as
+    // for one that does not exist.
+    let admin = me.is_admin();
+    let mut grants = super::models::grouped(store.list_model_grants().await.map_err(failed)?);
     let models: HashSet<String> = store
         .list_models()
         .await
-        .map_err(|_| "could not be checked".to_string())?
+        .map_err(failed)?
         .into_iter()
+        .filter(|m| {
+            let g = grants.remove(&m.id).unwrap_or_default();
+            admin || (m.enabled && super::models::may_call(me, &g))
+        })
         .map(|m| format!("{}/{}", m.provider_name, m.name))
         .collect();
+    let mut route_teams: std::collections::HashMap<i64, Vec<i64>> = Default::default();
+    for (route, team) in store.list_route_grants().await.map_err(failed)? {
+        route_teams.entry(route).or_default().push(team);
+    }
     let routes: HashSet<String> = store
         .list_routes()
         .await
-        .map_err(|_| "could not be checked".to_string())?
+        .map_err(failed)?
         .into_iter()
+        .filter(|r| {
+            let teams = route_teams.remove(&r.id).unwrap_or_default();
+            admin || super::routes::may_use(me, r.everyone, &teams)
+        })
         .map(|r| r.name)
         .collect();
     for name in &names {
@@ -74,7 +96,11 @@ async fn checked_allowed(store: &Store, asked: &[String]) -> Result<Vec<String>,
             routes.contains(name)
         };
         if !known {
-            return Err(format!("'{name}' is not a model or route that exists"));
+            return Err(if admin {
+                format!("'{name}' is not a model or route that exists")
+            } else {
+                format!("'{name}' is not a model or route you can use")
+            });
         }
     }
     Ok(names)
@@ -226,7 +252,7 @@ pub async fn create(
     let store = &state.store;
     // Before the transaction: it holds the connection the checks read with.
     let allowed = match &req.allowed {
-        Some(asked) => Some(checked_allowed(store, asked).await),
+        Some(asked) => Some(checked_allowed(store, me, asked).await),
         None => None,
     };
     let mut tx = store.begin().await?;

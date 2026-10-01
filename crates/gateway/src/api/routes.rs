@@ -161,7 +161,7 @@ fn view_of(row: RouteRow, targets: Vec<TargetRow>, team_ids: Vec<i64>, admin: bo
 }
 
 /// A route is for everyone, or for its teams.
-fn may_use(p: &Principal, everyone: bool, team_ids: &[i64]) -> bool {
+pub(super) fn may_use(p: &Principal, everyone: bool, team_ids: &[i64]) -> bool {
     everyone
         || team_ids
             .iter()
