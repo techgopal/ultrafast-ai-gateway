@@ -376,6 +376,49 @@ async fn api_responses_are_not_cached_or_sniffed() {
 
 #[tokio::test]
 #[ignore = "needs a console build"]
+async fn built_assets_are_sent_gzipped_to_who_accepts_it() {
+    use std::io::Read;
+    needs_build();
+    let app = app().await;
+    let page = get(&app, "/").await;
+    let paths = asset_paths(&page.text());
+    assert!(!paths.is_empty());
+    for path in paths {
+        let plain = get(&app, &path).await;
+        assert!(plain.headers.get("content-encoding").is_none(), "{path}");
+        assert_eq!(plain.header("vary"), "accept-encoding");
+
+        let packed = request(
+            &app,
+            "GET",
+            &path,
+            &[("accept-encoding", "gzip, deflate, br, zstd")],
+        )
+        .await;
+        assert_eq!(packed.status, StatusCode::OK, "{path}");
+        assert_eq!(packed.header("content-encoding"), "gzip", "{path}");
+        assert_eq!(packed.header("vary"), "accept-encoding");
+        assert_eq!(
+            packed.header("content-length"),
+            packed.body.len().to_string()
+        );
+        assert!(packed.body.len() < plain.body.len() / 2, "{path}");
+        assert_ne!(packed.header("etag"), plain.header("etag"));
+        assert_eq!(
+            packed.header("cache-control"),
+            plain.header("cache-control")
+        );
+        assert_eq!(packed.header("content-type"), plain.header("content-type"));
+        let mut unpacked = Vec::new();
+        flate2::read::GzDecoder::new(&packed.body[..])
+            .read_to_end(&mut unpacked)
+            .expect("the body is gzip");
+        assert_eq!(unpacked, plain.body, "{path}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a console build"]
 async fn built_root_files_are_served() {
     needs_build();
     let app = app().await;
