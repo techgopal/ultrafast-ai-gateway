@@ -73,19 +73,24 @@ test("the page has the policy and the security headers; files are cached and sen
     expect(headers.vary, pathname).toBe("accept-encoding");
   }
 
-  // Asked for without gzip, the script comes as it is, with a tag of its own.
+  // Asked for without gzip, the script comes as it is, with a tag of its own;
+  // in gzip it is the same script.
   const script = assets.find((response) => new URL(response.url()).pathname.endsWith(".js"));
   expect(script).toBeDefined();
   if (script !== undefined) {
     const plain = await page.request.get(script.url(), {
       headers: { "accept-encoding": "identity" },
     });
-    expect(plain.status()).toBe(200);
+    const packed = await page.request.get(script.url(), { headers: { "accept-encoding": "gzip" } });
+    expect([plain.status(), packed.status()]).toEqual([200, 200]);
     expect(plain.headers()["content-encoding"]).toBeUndefined();
+    expect(packed.headers()["content-encoding"]).toBe("gzip");
     expect(plain.headers().vary).toBe("accept-encoding");
-    expect(plain.headers().etag).not.toBe(script.headers().etag);
     expect(plain.headers()["cache-control"]).toBe(IMMUTABLE);
-    expect((await plain.body()).equals(await script.body())).toBe(true);
+    expect(plain.headers().etag).not.toBe(packed.headers().etag);
+    expect(packed.headers().etag).toBe(script.headers().etag);
+    // The request context unpacks what it gets.
+    expect((await plain.body()).equals(await packed.body())).toBe(true);
   }
 
   // The theme script is at the root of the build: it is checked each time, not kept.
