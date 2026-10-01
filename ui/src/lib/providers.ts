@@ -23,3 +23,14 @@ export function apiKeyOf(typed: string): string {
   if (key === "" && typed !== "") throw new ConsoleRefusal(ENTER_AN_API_KEY, "api_key");
   return key;
 }
+
+/**
+ * The new key of "Replace the key": as `apiKeyOf`, and it must be there. A
+ * field left empty is refused as one of spaces is: the admin chose to
+ * replace the key, and nothing is no key to replace it with.
+ */
+export function newApiKeyOf(typed: string): string {
+  const key = apiKeyOf(typed);
+  if (key === "") throw new ConsoleRefusal(ENTER_AN_API_KEY, "api_key");
+  return key;
+}
