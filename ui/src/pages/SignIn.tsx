@@ -1,5 +1,5 @@
 import { useRef, useState, type SyntheticEvent } from "react";
-import { ApiError } from "@/api/errors";
+import { ApiError, messageOfError } from "@/api/errors";
 import { useLogin } from "@/api/queries";
 import { useSessionControl } from "@/auth/session";
 import {
@@ -18,12 +18,12 @@ import { Button } from "@/components/ui/button";
 export const SESSION_NOT_KEPT =
   "Signed in, but this browser did not keep the session. Open the console over HTTPS, or start the gateway with --insecure-cookies on a trusted network.";
 
-function messageOf(error: unknown): string {
+function messageOf(error: unknown): string | null {
   if (error instanceof ApiError) {
     if (error.status === 401) return "Email or password is incorrect.";
     if (error.status === 429) return TOO_MANY_ATTEMPTS;
   }
-  return error instanceof Error ? error.message : "Something went wrong.";
+  return messageOfError(error);
 }
 
 /**
@@ -57,8 +57,11 @@ export function SignIn() {
         failed();
       }
     } catch (reason) {
-      setMessage(messageOf(reason));
-      failed();
+      const said = messageOf(reason);
+      if (said !== null) {
+        setMessage(said);
+        failed();
+      }
     } finally {
       running.current = false;
       if (password.current !== null) password.current.value = "";
