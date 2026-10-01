@@ -23,6 +23,7 @@ import {
 import { api, onUnauthenticated, setCsrfToken } from "@/api/client";
 import { ApiError, NetworkError } from "@/api/errors";
 import { meOptions, queryKeys, setupStatusOptions } from "@/api/queries";
+import type { components } from "@/api/schema";
 import { dismissAll } from "@/components/toast";
 import type { Me } from "./guards";
 
@@ -39,6 +40,7 @@ export type Ending = "expired" | "left";
 export const SESSION_ENDED_NOTICE = "Your session ended. Sign in again.";
 export const GATEWAY_NOT_TOLD_NOTICE =
   "You are signed out here, but the gateway could not be reached, so your session there may still be active.";
+export const OTHER_ACCOUNT_NOTICE = "You signed in with another account in another window.";
 
 export interface SessionControl {
   /** True while the gateway has no user yet. */
@@ -105,20 +107,41 @@ type Actions = Pick<
   | "dropInvite"
 >;
 
+/** What `/api/auth/me` answers: the user, their teams, the token of the session. */
+type MeAnswer = components["schemas"]["MeResponse"];
+
 /** The session while it is not known to have ended: asks the gateway. */
-function LiveSession({ actions, children }: { actions: Actions; children: ReactNode }) {
+function LiveSession({
+  actions,
+  onOtherUser,
+  children,
+}: {
+  actions: Actions;
+  /** `me` answered for another user than the one this tab shows. */
+  onOtherUser: (me: MeAnswer) => void;
+  children: ReactNode;
+}) {
   const client = useQueryClient();
   const setup = useQuery(setupStatusOptions());
   const me = useQuery(meOptions());
   const { end } = actions;
 
   // The token of the session comes from `me`: after a reload, and whenever it
-  // is asked again. Only what the cache holds now counts.
+  // is asked again. Only what the cache holds now counts. An answer for
+  // another user than the one shown means that they signed in in another
+  // window: the session of this tab is theirs now.
   useEffect(() => {
     const key = meOptions().queryKey;
+    let shown = client.getQueryData(key)?.user.id ?? null;
     const take = () => {
-      const token = client.getQueryData(key)?.csrf_token;
-      if (typeof token === "string") setCsrfToken(token);
+      const answer = client.getQueryData(key);
+      if (answer === undefined) return;
+      if (shown !== null && answer.user.id !== shown) {
+        onOtherUser(answer);
+        return;
+      }
+      shown = answer.user.id;
+      if (typeof answer.csrf_token === "string") setCsrfToken(answer.csrf_token);
     };
     take();
     return client.getQueryCache().subscribe((event) => {
@@ -126,7 +149,7 @@ function LiveSession({ actions, children }: { actions: Actions; children: ReactN
       if (client.getQueryCache().find({ queryKey: key, exact: true }) !== event.query) return;
       take();
     });
-  }, [client]);
+  }, [client, onOtherUser]);
 
   // `me` is asked again now and then. A 401 then says that the session ended.
   const expired = me.data !== undefined && isUnauthorized(me.error);
@@ -212,6 +235,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [client],
   );
 
+  // Another user signed in, in another window: the session cookie of the
+  // browser is theirs now. What this tab holds is of the user before, so it
+  // starts again, as a reload does: every query and mutation is dropped, the
+  // toasts go, and what is below is mounted anew. The token that `me` gave
+  // is the new session's; with it the answers of what is still on its way
+  // are of a session that is over. Without one (`me` gives none to an access
+  // token, which a browser does not use), the tab can do nothing but sign in.
+  const [generation, setGeneration] = useState(0);
+  const otherUser = useCallback(
+    (me: MeAnswer) => {
+      if (me.csrf_token === null) {
+        end("left", OTHER_ACCOUNT_NOTICE);
+        return;
+      }
+      setCsrfToken(me.csrf_token);
+      client.clear();
+      dismissAll();
+      setNotice(null);
+      setGeneration((count) => count + 1);
+    },
+    [client, end],
+  );
+
   const markSetUp = useCallback(() => {
     client.setQueryData(setupStatusOptions().queryKey, { needs_setup: false });
   }, [client]);
@@ -259,7 +305,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     );
   }
   return (
-    <LiveSession key="live" actions={actions}>
+    <LiveSession key={`live-${String(generation)}`} actions={actions} onOtherUser={otherUser}>
       {children}
     </LiveSession>
   );
