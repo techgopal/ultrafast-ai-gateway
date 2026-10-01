@@ -98,13 +98,13 @@ function Candidates({
       onValueChange={onChange}
     >
       {candidates.map((user) => (
-        <div key={user.id} className="flex min-h-11 items-center gap-2">
+        <Label key={user.id} htmlFor={`${id}-${String(user.id)}`} className="min-h-11">
           <RadioGroupItem id={`${id}-${String(user.id)}`} value={String(user.id)} />
-          <Label htmlFor={`${id}-${String(user.id)}`} className="min-w-0 flex-wrap gap-x-2">
+          <span className="flex min-w-0 flex-wrap gap-x-2">
             <span>{user.name}</span>
             <span className="font-normal break-all text-muted-foreground">{user.email}</span>
-          </Label>
-        </div>
+          </span>
+        </Label>
       ))}
     </RadioGroup>
   );

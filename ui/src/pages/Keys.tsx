@@ -228,7 +228,7 @@ function KeyList({ me }: { me: Me }) {
               />
               <FilterSelect label="Team" value={team} choices={teams} onChange={setTeam} />
               <FilterSelect label="Status" value={status} choices={statuses} onChange={setStatus} />
-              <div className="flex min-h-11 items-center gap-2 md:min-h-8">
+              <Label htmlFor={showRevokedId} className={control}>
                 <Checkbox
                   id={showRevokedId}
                   checked={showRevoked}
@@ -236,8 +236,8 @@ function KeyList({ me }: { me: Me }) {
                     setShowRevoked(checked === true);
                   }}
                 />
-                <Label htmlFor={showRevokedId}>Show revoked</Label>
-              </div>
+                Show revoked
+              </Label>
             </div>
           ) : null}
           <DataTable

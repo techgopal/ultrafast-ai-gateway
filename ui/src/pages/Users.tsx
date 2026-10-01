@@ -6,6 +6,7 @@ import { useInviteUser, useUsers } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
 import { useSession } from "@/auth/session";
+import { control } from "@/components/classes";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
@@ -138,10 +139,10 @@ function InviteForm({ invite, onInvited, onCancel }: InviteFormProps) {
                 onValueChange={field.handleChange}
               >
                 {(["member", "admin"] as const).map((role) => (
-                  <div key={role} className="flex min-h-11 items-center gap-2 md:min-h-8">
+                  <Label key={role} htmlFor={`${id}-${role}`} className={control}>
                     <RadioGroupItem id={`${id}-${role}`} value={role} />
-                    <Label htmlFor={`${id}-${role}`}>{ROLE_NAMES[role]}</Label>
-                  </div>
+                    {ROLE_NAMES[role]}
+                  </Label>
                 ))}
               </RadioGroup>
             )}

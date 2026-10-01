@@ -139,10 +139,10 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
                 onValueChange={field.handleChange}
               >
                 {KINDS.map((kind) => (
-                  <div key={kind} className="flex min-h-11 items-center gap-2 md:min-h-8">
+                  <Label key={kind} htmlFor={`${id}-${kind}`} className={control}>
                     <RadioGroupItem id={`${id}-${kind}`} value={kind} />
-                    <Label htmlFor={`${id}-${kind}`}>{kindName(kind)}</Label>
-                  </div>
+                    {kindName(kind)}
+                  </Label>
                 ))}
               </RadioGroup>
             )}
