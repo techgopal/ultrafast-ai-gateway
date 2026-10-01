@@ -11,6 +11,12 @@ export type Me = Pick<MeResponse, "user" | "teams">;
 
 export type ConsoleAction =
   | { type: "inviteUser" }
+  /**
+   * Reads the list of every user, to choose one from (as when a member is
+   * added to a team). The gateway lists every user to an admin only: a
+   * lead gets the users of the teams they lead, anybody else themselves.
+   */
+  | { type: "listAllUsers" }
   | { type: "editUserRoleOrStatus" }
   | { type: "deleteUser" }
   /** Changes the name of the user: everybody their own, an admin every one. */
@@ -63,6 +69,7 @@ export function can(me: Me, action: ConsoleAction): boolean {
   if (isAdmin(me)) return true;
   switch (action.type) {
     case "inviteUser":
+    case "listAllUsers":
     case "editUserRoleOrStatus":
     case "deleteUser":
     case "createTeam":
