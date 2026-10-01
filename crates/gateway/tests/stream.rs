@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{harness, post_chat};
+use common::{allow_model, harness, post_chat};
 use futures::StreamExt;
 use serde_json::Value;
 use wiremock::matchers::{body_partial_json, method, path};
@@ -259,6 +259,7 @@ async fn caller_disconnect_drops_the_upstream_request() {
         .insert_provider("hang", "openai", &uri, None)
         .await
         .unwrap();
+    allow_model(&h.store, "hang", "m").await;
     // `/v1` reads the snapshot, so the row written above must be loaded.
     h.state.refresh().await.unwrap();
     let body = r#"{"model":"hang/m","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;

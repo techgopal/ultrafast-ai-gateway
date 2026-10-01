@@ -13,7 +13,7 @@ use ultrafast_gateway::app::{
 use ultrafast_gateway::identity::password::{hash_password, warm_up};
 use ultrafast_gateway::identity::{Role, TeamRole, UserStatus};
 use ultrafast_gateway::secrets::{generate_key, Cipher};
-use ultrafast_gateway::store::{NewUser, Store};
+use ultrafast_gateway::store::{Grants, NewUser, Store};
 use wiremock::MockServer;
 
 pub struct Harness {
@@ -53,6 +53,9 @@ async fn harness_with_limits(
         .insert_provider("p", kind, &upstream.uri(), Some(&credential))
         .await
         .unwrap();
+    for model in HARNESS_MODELS {
+        allow_model(&store, "p", model).await;
+    }
     let key = generate_key();
     store
         .insert_key("test", &key.hash, &key.display, None)
@@ -71,6 +74,35 @@ async fn harness_with_limits(
         key: key.full,
         store,
     }
+}
+
+/// The models of provider "p" that the harness enables for everyone.
+pub const HARNESS_MODELS: [&str; 3] = ["gpt-4o", "m", "claude-sonnet-5"];
+
+/// Adds a model of an existing provider, enabled and granted to everyone,
+/// and returns its id. Call `state.refresh()` afterwards: `/v1` reads the
+/// snapshot.
+pub async fn allow_model(store: &Store, provider: &str, model: &str) -> i64 {
+    let provider_id = store
+        .provider_by_name(provider)
+        .await
+        .unwrap()
+        .expect("the provider exists")
+        .id;
+    let mut tx = store.begin().await.unwrap();
+    let id = tx.insert_model(provider_id, model).await.unwrap();
+    assert!(tx.set_model_enabled(id, true).await.unwrap());
+    tx.replace_grants(
+        id,
+        &Grants {
+            everyone: true,
+            ..Grants::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    id
 }
 
 pub async fn post_chat(app: &Router, key: Option<&str>, body: &str) -> (StatusCode, String) {

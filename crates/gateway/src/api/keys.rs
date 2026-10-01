@@ -1,6 +1,6 @@
 //! Virtual keys.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -25,6 +25,59 @@ pub struct CreateKeyRequest {
     team_id: Option<i64>,
     owner_id: Option<i64>,
     expires_at: Option<String>,
+    /// The names the key may call: `provider/model` of a model in the
+    /// catalog, or the name of a route. Left out, the key has no allowlist.
+    allowed: Option<Vec<String>>,
+}
+
+/// Most names an allowlist may hold, and the longest of them.
+const MAX_ALLOWED: usize = 500;
+const MAX_ALLOWED_NAME_BYTES: usize = 300;
+
+/// The allowlist as it is stored: without repeats, in the order given. The
+/// error is the message for `fields.allowed`.
+async fn checked_allowed(store: &Store, asked: &[String]) -> Result<Vec<String>, String> {
+    if asked.is_empty() {
+        return Err("must name at least one model or route; leave it out for no limit".into());
+    }
+    if asked.len() > MAX_ALLOWED {
+        return Err(format!("must have at most {MAX_ALLOWED} names"));
+    }
+    let mut names: Vec<String> = Vec::new();
+    for name in asked {
+        if name.is_empty() || name.len() > MAX_ALLOWED_NAME_BYTES {
+            return Err("every name must be 1 to 300 bytes".into());
+        }
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    let models: HashSet<String> = store
+        .list_models()
+        .await
+        .map_err(|_| "could not be checked".to_string())?
+        .into_iter()
+        .map(|m| format!("{}/{}", m.provider_name, m.name))
+        .collect();
+    let routes: HashSet<String> = store
+        .list_routes()
+        .await
+        .map_err(|_| "could not be checked".to_string())?
+        .into_iter()
+        .map(|r| r.name)
+        .collect();
+    for name in &names {
+        // A route name has no `/`; a model name always has one.
+        let known = if name.contains('/') {
+            models.contains(name)
+        } else {
+            routes.contains(name)
+        };
+        if !known {
+            return Err(format!("'{name}' is not a model or route that exists"));
+        }
+    }
+    Ok(names)
 }
 
 /// A key as `/api` shows it. It has no field for the key or its hash.
@@ -46,6 +99,9 @@ pub struct KeyView {
     #[schema(required)]
     pub revoked_at: Option<String>,
     pub created_at: String,
+    /// The models and routes the key may call; `null` is no limit.
+    #[schema(required)]
+    pub allowed: Option<Vec<String>>,
     /// `revoked`, `expired`, `suspended` or `active`, the first that
     /// applies. `suspended`: the owner of the key is not active, so the key
     /// does not work until they are. Only an `active` key works.
@@ -73,6 +129,7 @@ impl KeyView {
             expires_at: k.expires_at,
             revoked_at: k.revoked_at,
             created_at: k.created_at,
+            allowed: k.allowed,
             status,
         }
     }
@@ -167,8 +224,21 @@ pub async fn create(
     let (name, expires_at) = name_and_expiry(&req.name, req.expires_at.as_deref())?;
 
     let store = &state.store;
+    // Before the transaction: it holds the connection the checks read with.
+    let allowed = match &req.allowed {
+        Some(asked) => Some(checked_allowed(store, asked).await),
+        None => None,
+    };
     let mut tx = store.begin().await?;
     let mut fields = BTreeMap::new();
+    let allowed = match allowed {
+        Some(Ok(names)) => Some(names),
+        Some(Err(message)) => {
+            fields.insert("allowed".to_string(), message);
+            None
+        }
+        None => None,
+    };
     let owner = tx
         .user_by_id(owner_id)
         .await?
@@ -207,6 +277,9 @@ pub async fn create(
             team.as_ref().map(|t| t.id),
         )
         .await?;
+    if let Some(names) = &allowed {
+        tx.set_key_allowed(id, Some(names)).await?;
+    }
     let summary = match &team {
         Some(team) => format!(
             "Created key {name} ({}) for {} in team {}",

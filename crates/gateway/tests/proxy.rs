@@ -2,7 +2,7 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{harness, harness_with_limit, harness_with_response_limit, post_chat};
+use common::{allow_model, harness, harness_with_limit, harness_with_response_limit, post_chat};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 use wiremock::matchers::{body_partial_json, header, method, path};
@@ -247,6 +247,7 @@ async fn unreachable_provider_gets_502() {
         .insert_provider("dead", "openai", "http://127.0.0.1:1", None)
         .await
         .unwrap();
+    allow_model(&h.store, "dead", "m").await;
     // `/v1` reads the snapshot, so the row written above must be loaded.
     h.state.refresh().await.unwrap();
     let body = r#"{"model":"dead/m","messages":[{"role":"user","content":"x"}]}"#;

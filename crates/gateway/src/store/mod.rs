@@ -24,7 +24,7 @@ use time::macros::format_description;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 pub use audit::{AuditEntry, AuditRow};
-pub use keys::{KeyRow, LiveKey};
+pub use keys::{parse_allowed, KeyRow, LiveKey};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use providers::ProviderRow;
 pub use routes::{is_missing_reference, RouteRow, RouteSettings, TargetRow, TargetsInput};

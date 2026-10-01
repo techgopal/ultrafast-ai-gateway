@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{error_code, org, post_chat, Org, Signed};
+use common::{allow_model, error_code, org, post_chat, Org, Signed};
 use serde_json::{json, Value};
 use ultrafast_gateway::secrets::{generate_key, hash_key};
 use wiremock::matchers::{header, method, path};
@@ -142,6 +142,7 @@ async fn admin_lists_all_keys() {
     assert_eq!(
         fields,
         [
+            "allowed",
             "created_at",
             "display",
             "expires_at",
@@ -244,6 +245,8 @@ async fn creating_a_key_returns_the_secret_once() {
         .call(Some(&maya), "POST", "/api/providers", Some(provider))
         .await;
     assert_eq!(status, StatusCode::CREATED);
+    allow_model(&org.api.store, "p", "gpt-4o").await;
+    org.api.state.refresh().await.unwrap();
 
     let chat = r#"{"model":"p/gpt-4o","messages":[{"role":"user","content":"hi"}]}"#;
     let (status, answer) = post_chat(&org.api.app, Some(&secret), chat).await;

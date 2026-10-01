@@ -472,6 +472,11 @@ export interface components {
             new_password: string;
         };
         CreateKeyRequest: {
+            /**
+             * @description The names the key may call: `provider/model` of a model in the
+             *     catalog, or the name of a route. Left out, the key has no allowlist.
+             */
+            allowed?: string[] | null;
             expires_at?: string | null;
             name: string;
             /** Format: int64 */
@@ -552,6 +557,8 @@ export interface components {
         };
         /** @description A key as `/api` shows it. It has no field for the key or its hash. */
         KeyView: {
+            /** @description The models and routes the key may call; `null` is no limit. */
+            allowed: string[] | null;
             created_at: string;
             display: string;
             expires_at: string | null;

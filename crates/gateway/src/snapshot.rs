@@ -4,14 +4,15 @@
 //! to keys, providers or users builds a new one that replaces it, so a
 //! model call never waits for the database.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use anyhow::Result;
 use ultrafast_translate::provider::ProviderKind;
 
+use crate::identity::{Role, UserStatus};
 use crate::secrets::Cipher;
-use crate::store::Store;
+use crate::store::{RouteSettings, Store};
 
 #[derive(Debug, Clone)]
 pub struct SnapKey {
@@ -20,6 +21,50 @@ pub struct SnapKey {
     pub user_id: Option<i64>,
     pub team_id: Option<i64>,
     pub expires_at: Option<String>,
+    /// The names (`provider/model` or a route) the key may call; `None` is
+    /// no allowlist.
+    pub allowed: Option<HashSet<String>>,
+}
+
+/// A catalog model of a provider that is in the snapshot.
+#[derive(Debug, Clone)]
+pub struct SnapModel {
+    pub id: i64,
+    pub provider: String,
+    pub name: String,
+    pub enabled: bool,
+    pub everyone: bool,
+    pub team_ids: HashSet<i64>,
+    pub user_ids: HashSet<i64>,
+}
+
+/// One target of a route, by the names of its model.
+#[derive(Debug, Clone)]
+pub struct SnapTarget {
+    pub provider: String,
+    pub model: String,
+    pub primary: bool,
+    pub weight: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapRoute {
+    pub id: i64,
+    pub name: String,
+    pub settings: RouteSettings,
+    /// Every user may use the route. Otherwise its teams and admins.
+    pub everyone: bool,
+    pub team_ids: HashSet<i64>,
+    /// Primaries in order, then fallbacks in order. Targets whose model is
+    /// gone from the catalog or whose provider cannot be used are left out.
+    pub targets: Vec<SnapTarget>,
+}
+
+/// An active user, as far as access goes.
+#[derive(Debug, Clone)]
+pub struct SnapUser {
+    pub role: Role,
+    pub team_ids: HashSet<i64>,
 }
 
 /// A provider with its credential in the clear. It is never serialized.
@@ -56,6 +101,12 @@ pub struct Snapshot {
     keys: HashMap<String, SnapKey>,
     /// By name.
     providers: HashMap<String, SnapProvider>,
+    /// By provider name and model name.
+    models: HashMap<(String, String), SnapModel>,
+    /// By name.
+    routes: HashMap<String, SnapRoute>,
+    /// Active users, by id.
+    users: HashMap<i64, SnapUser>,
 }
 
 impl Snapshot {
@@ -73,6 +124,7 @@ impl Snapshot {
                     user_id: k.user_id,
                     team_id: k.team_id,
                     expires_at: k.expires_at,
+                    allowed: k.allowed.map(|names| names.into_iter().collect()),
                 };
                 (k.hash, key)
             })
@@ -107,7 +159,113 @@ impl Snapshot {
             };
             providers.insert(p.name, provider);
         }
-        Ok(Snapshot { keys, providers })
+
+        let mut models: HashMap<(String, String), SnapModel> = HashMap::new();
+        let mut by_id: HashMap<i64, (String, String)> = HashMap::new();
+        for m in store.list_models().await? {
+            // A model of a provider that cannot be used is not there.
+            if !providers.contains_key(&m.provider_name) {
+                continue;
+            }
+            by_id.insert(m.id, (m.provider_name.clone(), m.name.clone()));
+            let model = SnapModel {
+                id: m.id,
+                provider: m.provider_name.clone(),
+                name: m.name.clone(),
+                enabled: m.enabled,
+                everyone: false,
+                team_ids: HashSet::new(),
+                user_ids: HashSet::new(),
+            };
+            models.insert((m.provider_name, m.name), model);
+        }
+        for g in store.list_model_grants().await? {
+            let Some(name) = by_id.get(&g.model_id) else {
+                continue;
+            };
+            let Some(model) = models.get_mut(name) else {
+                continue;
+            };
+            match (g.team_id, g.user_id) {
+                (Some(team), _) => {
+                    model.team_ids.insert(team);
+                }
+                (None, Some(user)) => {
+                    model.user_ids.insert(user);
+                }
+                (None, None) => model.everyone = true,
+            }
+        }
+
+        let mut routes: HashMap<String, SnapRoute> = HashMap::new();
+        let mut route_names: HashMap<i64, String> = HashMap::new();
+        for r in store.list_routes().await? {
+            route_names.insert(r.id, r.name.clone());
+            routes.insert(
+                r.name.clone(),
+                SnapRoute {
+                    id: r.id,
+                    name: r.name,
+                    settings: r.settings,
+                    everyone: r.everyone,
+                    team_ids: HashSet::new(),
+                    targets: Vec::new(),
+                },
+            );
+        }
+        for (route_id, team_id) in store.list_route_grants().await? {
+            if let Some(route) = route_names.get(&route_id).and_then(|n| routes.get_mut(n)) {
+                route.team_ids.insert(team_id);
+            }
+        }
+        for t in store.list_route_targets().await? {
+            let key = (t.provider_name, t.model_name);
+            if !models.contains_key(&key) {
+                continue;
+            }
+            if let Some(route) = route_names.get(&t.route_id).and_then(|n| routes.get_mut(n)) {
+                route.targets.push(SnapTarget {
+                    provider: key.0,
+                    model: key.1,
+                    primary: t.primary,
+                    weight: t.weight,
+                });
+            }
+        }
+
+        let active: Vec<_> = store
+            .list_users()
+            .await?
+            .into_iter()
+            .filter(|u| u.status == UserStatus::Active)
+            .collect();
+        let ids: Vec<i64> = active.iter().map(|u| u.id).collect();
+        let mut teams = store.teams_of_users(&ids).await?;
+        let users = active
+            .into_iter()
+            .map(|u| {
+                let team_ids = teams
+                    .remove(&u.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| t.team_id)
+                    .collect();
+                (
+                    u.id,
+                    SnapUser {
+                        role: u.role,
+                        team_ids,
+                    },
+                )
+            })
+            .collect();
+        Ok(Snapshot {
+            keys,
+            providers,
+            models,
+            routes,
+            users,
+        })
     }
 
     /// The key for this hash, unless it has expired as of `now` (UTC,
@@ -120,6 +278,27 @@ impl Snapshot {
 
     pub fn provider(&self, name: &str) -> Option<&SnapProvider> {
         self.providers.get(name)
+    }
+
+    pub fn model(&self, provider: &str, name: &str) -> Option<&SnapModel> {
+        self.models.get(&(provider.to_string(), name.to_string()))
+    }
+
+    pub fn models(&self) -> impl Iterator<Item = &SnapModel> {
+        self.models.values()
+    }
+
+    pub fn route(&self, name: &str) -> Option<&SnapRoute> {
+        self.routes.get(name)
+    }
+
+    pub fn routes(&self) -> impl Iterator<Item = &SnapRoute> {
+        self.routes.values()
+    }
+
+    /// An active user.
+    pub fn user(&self, id: i64) -> Option<&SnapUser> {
+        self.users.get(&id)
     }
 
     /// How many keys are held, expired ones included.

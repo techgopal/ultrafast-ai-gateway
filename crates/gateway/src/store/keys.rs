@@ -24,11 +24,19 @@ pub struct KeyRow {
     /// Whether the key has an owner who is not active. Such a key does not
     /// work on `/v1`.
     pub owner_inactive: bool,
+    /// The names the key may call; `None` is no allowlist.
+    pub allowed: Option<Vec<String>>,
+}
+
+/// Reads the stored allowlist. A value that cannot be read is an empty
+/// allowlist, so a damaged row can only take access away.
+pub fn parse_allowed(raw: Option<&str>) -> Option<Vec<String>> {
+    raw.map(|text| serde_json::from_str(text).unwrap_or_default())
 }
 
 /// Every key query reads through this, so the hash is never selected.
 const KEY_SELECT: &str = "SELECT k.id, k.name, k.display, k.user_id, k.team_id,
-            k.expires_at, k.revoked_at, k.created_at,
+            k.expires_at, k.revoked_at, k.created_at, k.allowed,
             u.email AS owner_email, t.name AS team_name,
             (u.id IS NOT NULL AND u.status <> 'active') AS owner_inactive
      FROM virtual_keys k
@@ -50,6 +58,7 @@ fn key_from(r: &SqliteRow) -> KeyRow {
         owner_email: r.get("owner_email"),
         team_name: r.get("team_name"),
         owner_inactive: r.get("owner_inactive"),
+        allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
     }
 }
 
@@ -61,6 +70,7 @@ pub struct LiveKey {
     pub user_id: Option<i64>,
     pub team_id: Option<i64>,
     pub expires_at: Option<String>,
+    pub allowed: Option<Vec<String>>,
 }
 
 impl Store {
@@ -68,7 +78,7 @@ impl Store {
     /// active. Expired keys are included: expiry is checked at use.
     pub async fn live_keys(&self) -> Result<Vec<LiveKey>> {
         let rows = sqlx::query(
-            "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at
+            "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at, k.allowed
              FROM virtual_keys k
              LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
              WHERE k.org_id = ?
@@ -87,6 +97,7 @@ impl Store {
                 user_id: r.get("user_id"),
                 team_id: r.get("team_id"),
                 expires_at: r.get("expires_at"),
+                allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
             })
             .collect())
     }
@@ -204,6 +215,18 @@ impl Tx<'_> {
         .await
         .map_err(write_error)?;
         Ok(r.last_insert_rowid())
+    }
+
+    /// Sets the names the key may call. `None` removes the allowlist.
+    pub async fn set_key_allowed(&mut self, id: i64, allowed: Option<&[String]>) -> Result<()> {
+        let json = allowed.map(serde_json::to_string).transpose()?;
+        sqlx::query("UPDATE virtual_keys SET allowed = ? WHERE id = ? AND org_id = ?")
+            .bind(json)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
+        Ok(())
     }
 
     /// Revokes every key of the user that is not revoked yet. Returns how many.

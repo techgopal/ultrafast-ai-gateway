@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use common::{
-    api_on, call, error_code, harness, org, post_chat, seed_user, sign_in, Api, Org, Signed,
+    allow_model, api_on, call, error_code, harness, org, post_chat, seed_user, sign_in, Api, Org,
+    Signed,
 };
 use serde_json::{json, Value};
 use ultrafast_gateway::api::refresh_snapshot;
@@ -75,6 +76,8 @@ async fn world() -> World {
     let maya = org.sign_in("maya").await;
     let upstream = upstream().await;
     let provider_id = add_provider(&org, &maya, "p", &upstream.uri(), "provider-secret").await;
+    allow_model(&org.api.store, "p", "gpt-4o").await;
+    org.api.state.refresh().await.unwrap();
     World {
         org,
         maya,
@@ -251,7 +254,37 @@ async fn a_new_provider_works_at_once() {
         StatusCode::NOT_FOUND
     );
     add_provider(&w.org, &w.maya, "fresh", &w.upstream.uri(), "sk-1").await;
+    allow_model(&w.org.api.store, "fresh", "m").await;
+    w.org.api.state.refresh().await.unwrap();
     assert_eq!(w.chat(&secret, &chat_for("fresh")).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn model_switches_and_grants_work_at_once() {
+    let w = world().await;
+    let (_, secret) = w.key_for(w.org.lena).await;
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::OK);
+    let model_id = w.org.api.store.list_models().await.unwrap()[0].id;
+
+    let model = format!("/api/models/{model_id}");
+    let off = json!({ "enabled": false });
+    assert_eq!(w.admin("PATCH", &model, Some(off)).await, StatusCode::OK);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::FORBIDDEN);
+    let on = json!({ "enabled": true });
+    assert_eq!(w.admin("PATCH", &model, Some(on)).await, StatusCode::OK);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::OK);
+
+    // Granted to Research only: Lena is in Platform.
+    let grants = format!("{model}/grants");
+    let research = json!({
+        "everyone": false, "team_ids": [w.org.research], "user_ids": []
+    });
+    let status = w.admin("PUT", &grants, Some(research)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::FORBIDDEN);
+    let hers = json!({ "everyone": false, "team_ids": [], "user_ids": [w.org.lena] });
+    assert_eq!(w.admin("PUT", &grants, Some(hers)).await, StatusCode::OK);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -272,6 +305,8 @@ async fn a_changed_credential_is_used_at_once() {
         .mount(&server)
         .await;
     let provider_id = add_provider(&org, &maya, "p", &server.uri(), "old-secret").await;
+    allow_model(&org.api.store, "p", "gpt-4o").await;
+    org.api.state.refresh().await.unwrap();
     let w = World {
         org,
         maya,
@@ -324,6 +359,9 @@ async fn an_undecryptable_provider_is_skipped() {
         .insert_provider("open", "openai", &url, None)
         .await
         .unwrap();
+    for name in ["garbage", "nottext", "oddkind", "open"] {
+        allow_model(&api.store, name, "m").await;
+    }
 
     api.state.refresh().await.unwrap();
 
@@ -445,6 +483,7 @@ async fn the_background_task_picks_up_direct_changes_and_stops() {
         .insert_provider("p", "openai", &server.uri(), None)
         .await
         .unwrap();
+    allow_model(&store, "p", "gpt-4o").await;
 
     let mut status = StatusCode::UNAUTHORIZED;
     for _ in 0..100 {
@@ -799,6 +838,7 @@ async fn a_failed_refresh_is_500_and_the_change_stays() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
+    allow_model(&api.store, "p", "gpt-4o").await;
     let new_key = json!({ "name": "k" });
     let (status, _, body) = call(&api.app, "POST", "/api/keys", Some(&maya), Some(new_key)).await;
     assert_eq!(status, StatusCode::CREATED);

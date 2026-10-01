@@ -21,6 +21,7 @@ use ultrafast_translate::provider::{
 };
 use ultrafast_translate::types::StreamEvent;
 
+use crate::access::{self, Denied};
 use crate::app::AppState;
 use crate::auth::authenticate;
 use crate::errors::{caller_message, error_response, translate_error_response};
@@ -36,8 +37,34 @@ fn not_found(model: &str) -> Response {
     error_response(
         StatusCode::NOT_FOUND,
         "not_found_error",
-        &format!("Unknown model '{model}'. Use the form provider/model."),
+        &format!("Unknown model '{model}'."),
     )
+}
+
+fn forbidden(model: &str) -> Response {
+    error_response(
+        StatusCode::FORBIDDEN,
+        "permission_error",
+        &format!("You do not have access to model '{model}'."),
+    )
+}
+
+/// `GET /v1/models`: what the key can call, models and routes.
+pub async fn list_models(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let snapshot = state.snapshot.load_full();
+    let key = match authenticate(&snapshot, request.headers()) {
+        Ok(key) => key,
+        Err(resp) => return resp,
+    };
+    let data: Vec<_> = access::callable_names(&snapshot, &key)
+        .into_iter()
+        .map(|(id, owned_by)| {
+            serde_json::json!({
+                "id": id, "object": "model", "created": 0, "owned_by": owned_by
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "object": "list", "data": data })).into_response()
 }
 
 pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Request) -> Response {
@@ -45,9 +72,10 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Reque
     let (parts, body) = request.into_parts();
     // One snapshot serves the whole request.
     let snapshot = state.snapshot.load_full();
-    if let Err(resp) = authenticate(&snapshot, &parts.headers) {
-        return resp;
-    }
+    let key = match authenticate(&snapshot, &parts.headers) {
+        Ok(key) => key,
+        Err(resp) => return resp,
+    };
 
     // 2. Read and parse the body.
     let body = match axum::body::to_bytes(body, state.max_body_bytes).await {
@@ -74,22 +102,28 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Reque
         Err(e) => return translate_error_response(&e),
     };
 
-    // 3. Resolve provider/model.
-    let Some((provider_name, model)) = req.model.split_once('/') else {
-        return not_found(&req.model);
+    // 3. Resolve the name to something this key may call.
+    let resolved = match access::resolve(&snapshot, &key, &req.model) {
+        Ok(r) => r,
+        Err(Denied::Unknown) => return not_found(&req.model),
+        Err(Denied::Forbidden) => return forbidden(&req.model),
     };
-    if provider_name.is_empty() || model.is_empty() {
-        return not_found(&req.model);
-    }
-    let Some(provider) = snapshot.provider(provider_name) else {
-        return not_found(&req.model);
+    // Until the routing engine, the first target is called, with no retry.
+    let targets = access::callable_targets(&snapshot, &key, &resolved);
+    let Some(first) = targets.first() else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "upstream_error",
+            "No model is available for this request.",
+        );
     };
+    let provider = first.provider;
     let kind = provider.kind;
     let target = Target {
         kind,
         base_url: provider.base_url.clone(),
         api_key: provider.api_key.clone(),
-        model: model.to_string(),
+        model: first.model.to_string(),
     };
 
     // 4. Call the provider.

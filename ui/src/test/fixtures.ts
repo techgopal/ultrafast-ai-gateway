@@ -203,6 +203,7 @@ function key(
     expires_at: dates.expires_at ?? null,
     revoked_at: dates.revoked_at ?? null,
     created_at: "2026-08-01 09:00:00",
+    allowed: null,
   };
 }
 

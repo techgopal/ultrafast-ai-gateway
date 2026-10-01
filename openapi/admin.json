@@ -4099,6 +4099,16 @@
           "name"
         ],
         "properties": {
+          "allowed": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The names the key may call: `provider/model` of a model in the\ncatalog, or the name of a route. Left out, the key has no allowlist."
+          },
           "expires_at": {
             "type": [
               "string",
@@ -4336,9 +4346,20 @@
           "expires_at",
           "revoked_at",
           "created_at",
+          "allowed",
           "status"
         ],
         "properties": {
+          "allowed": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The models and routes the key may call; `null` is no limit."
+          },
           "created_at": {
             "type": "string"
           },
