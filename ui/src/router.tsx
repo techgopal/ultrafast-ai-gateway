@@ -9,7 +9,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
 import { messageOfError, SOMETHING_WENT_WRONG } from "@/api/errors";
-import { safePath } from "@/auth/guards";
+import { can, safePath } from "@/auth/guards";
 import { useSession, useSessionControl, useSignOut } from "@/auth/session";
 import { FormError } from "@/components/AuthForm";
 import { Shell } from "@/components/Shell";
@@ -155,7 +155,14 @@ function ShellLayout() {
   const me = session.status === "signedIn" ? session.me : null;
   const user = useMemo(
     (): ShellUser | null =>
-      me === null ? null : { name: me.user.name, role: me.user.role, teams: me.teams },
+      me === null
+        ? null
+        : {
+            name: me.user.name,
+            role: me.user.role,
+            teams: me.teams,
+            mayViewAudit: can(me, { type: "viewAudit" }),
+          },
     [me],
   );
 

@@ -134,7 +134,9 @@ describe("sidebar", () => {
     await renderWithApp(null, { user: memberUser });
     const nav = sidebar();
     expect(within(nav).getByText("Mel Member")).toBeInTheDocument();
-    expect(within(nav).getByText("member")).toBeInTheDocument();
+    // The role as the badges of the console name it.
+    expect(within(nav).getByText("Member")).toBeInTheDocument();
+    expect(within(nav).queryByText("member")).toBeNull();
     await userEvent.click(within(nav).getByRole("button", { name: "Sign out" }));
     await waitFor(() => {
       expect(signedOut).toBe(1);
@@ -142,6 +144,16 @@ describe("sidebar", () => {
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
     });
+  });
+});
+
+describe("the role in the footer", () => {
+  test("an admin is named as the badges name the role", async () => {
+    await renderWithApp(null, { user: adminUser });
+    const nav = sidebar();
+    expect(within(nav).getByText("Ada Admin")).toBeInTheDocument();
+    expect(within(nav).getByText("Admin")).toBeInTheDocument();
+    expect(within(nav).queryByText("admin")).toBeNull();
   });
 });
 
