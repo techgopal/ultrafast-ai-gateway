@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
-import { libraryEdit, type LibraryEditOptions } from "./build/library-edit";
+import { libraryEdit, type LibraryEditOptions } from "./build/library-edit.ts";
 
 function editedLibrary(name: string, options: LibraryEditOptions): Plugin {
   const edit = libraryEdit(options);
@@ -52,6 +52,11 @@ export default defineConfig({
   build: {
     outDir: "dist",
     sourcemap: false,
+    // The console is one bundle (730 kB, 220 kB in gzip), embedded in the
+    // binary and sent in gzip; splitting it by route is for later. Past
+    // 900 kB the warning comes back, and a build that warns fails
+    // `src/test/build.test.ts`.
+    chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
         entryFileNames: "assets/[name]-[hash].js",
