@@ -569,3 +569,19 @@ async fn sqlx_count(org: &Org, table: &str) -> i64 {
     let all = org.api.store.list_model_grants().await.unwrap();
     all.len() as i64
 }
+
+#[tokio::test]
+async fn sync_adds_at_most_ten_thousand_names() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let listed: Vec<String> = (0..10_050).map(|i| format!("m{i}")).collect();
+    let refs: Vec<&str> = listed.iter().map(String::as_str).collect();
+    let server = openai_lists(&refs).await;
+    let id = seed_provider(&org, "big", "openai", &server.uri()).await;
+    let (status, body) = sync(&org, &maya, id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["added"].as_array().unwrap().len(), 10_000);
+    assert_eq!(body["existing"], 0);
+    assert_eq!(body["added"][0], "m0");
+    assert_eq!(models(&org, &maya).await.len(), 10_000);
+}

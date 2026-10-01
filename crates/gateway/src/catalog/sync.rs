@@ -10,6 +10,8 @@ use crate::snapshot::SnapProvider;
 
 /// How long one request to a provider may take.
 pub const SYNC_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the whole list may take, every page of it.
+pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 /// The most a provider's answer may hold.
 pub const MAX_LIST_BYTES: usize = 4 * 1024 * 1024;
 /// The most pages of a paged list that are followed.
@@ -28,11 +30,31 @@ pub enum SyncError {
     Malformed,
     #[error("the provider's answer is too large")]
     TooLarge,
+    #[error("the provider took too long")]
+    Timeout,
 }
 
 /// The ids of the models the provider offers, in the order it gives them.
 /// The credential goes only into the request.
 pub async fn fetch_model_names(
+    http: &reqwest::Client,
+    provider: &SnapProvider,
+) -> Result<Vec<String>, SyncError> {
+    fetch_model_names_within(http, provider, TOTAL_TIMEOUT).await
+}
+
+/// Like [`fetch_model_names`], with its own limit for the whole list.
+pub async fn fetch_model_names_within(
+    http: &reqwest::Client,
+    provider: &SnapProvider,
+    total: Duration,
+) -> Result<Vec<String>, SyncError> {
+    tokio::time::timeout(total, fetch_pages(http, provider))
+        .await
+        .map_err(|_| SyncError::Timeout)?
+}
+
+async fn fetch_pages(
     http: &reqwest::Client,
     provider: &SnapProvider,
 ) -> Result<Vec<String>, SyncError> {
@@ -127,6 +149,97 @@ fn percent_encode(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn provider(kind: ProviderKind, base_url: String) -> SnapProvider {
+        SnapProvider {
+            id: 1,
+            name: "p".into(),
+            kind,
+            base_url,
+            api_key: Some("k".into()),
+        }
+    }
+
+    /// Valid JSON of exactly `size` bytes.
+    fn list_of_size(size: usize) -> String {
+        let fixed = r#"{"data":[{"id":""}]}"#.len();
+        format!(r#"{{"data":[{{"id":"{}"}}]}}"#, "a".repeat(size - fixed))
+    }
+
+    #[tokio::test]
+    async fn an_answer_over_the_cap_is_refused_even_when_valid() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(list_of_size(MAX_LIST_BYTES + 1)),
+            )
+            .mount(&server)
+            .await;
+        let p = provider(ProviderKind::OpenAi, server.uri());
+        let err = fetch_model_names(&reqwest::Client::new(), &p)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SyncError::TooLarge), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn an_answer_at_the_cap_is_read() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(list_of_size(MAX_LIST_BYTES)))
+            .mount(&server)
+            .await;
+        let p = provider(ProviderKind::OpenAi, server.uri());
+        let names = fetch_model_names(&reqwest::Client::new(), &p)
+            .await
+            .unwrap();
+        assert_eq!(names.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_list_that_never_ends_stops_at_ten_pages() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{ "id": "m" }], "has_more": true, "last_id": "m",
+            })))
+            .expect(10)
+            .mount(&server)
+            .await;
+        let p = provider(ProviderKind::Anthropic, server.uri());
+        let names = fetch_model_names(&reqwest::Client::new(), &p)
+            .await
+            .unwrap();
+        assert_eq!(names.len(), MAX_PAGES);
+        // `expect(10)` is checked when the server drops.
+    }
+
+    #[tokio::test]
+    async fn the_whole_list_has_one_time_limit() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(150))
+                    .set_body_json(serde_json::json!({
+                        "data": [{ "id": "m" }], "has_more": true, "last_id": "m",
+                    })),
+            )
+            .mount(&server)
+            .await;
+        let p = provider(ProviderKind::Anthropic, server.uri());
+        // Each page is quick enough; ten of them are not.
+        let err = fetch_model_names_within(&reqwest::Client::new(), &p, Duration::from_millis(500))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SyncError::Timeout), "{err:?}");
+    }
 
     #[test]
     fn query_values_are_escaped() {

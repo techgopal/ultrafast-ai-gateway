@@ -287,15 +287,12 @@ mod tests {
         let mut tx = s.begin().await.unwrap();
         let m = tx.insert_model(p, "m").await.unwrap();
         tx.commit().await.unwrap();
-        for _ in 0..2 {
-            let r = sqlx::query("INSERT INTO model_grants (model_id) VALUES (?)")
+        let insert = || {
+            sqlx::query("INSERT INTO model_grants (model_id) VALUES (?)")
                 .bind(m)
                 .execute(s.pool())
-                .await;
-            if r.is_err() {
-                return;
-            }
-        }
-        panic!("the unique index let two grants for everyone in");
+        };
+        insert().await.unwrap();
+        assert!(insert().await.is_err(), "a second grant for everyone");
     }
 }
