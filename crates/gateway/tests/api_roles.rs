@@ -56,6 +56,8 @@ struct World {
     syncable: i64,
     /// A model of `provider`.
     model: i64,
+    /// A route over `model`, open to everyone.
+    route: i64,
     /// Keeps `syncable` answering.
     _upstream: MockServer,
     /// Owned by lena, in Platform.
@@ -131,6 +133,29 @@ async fn world() -> World {
         .unwrap();
     let mut tx = store.begin().await.unwrap();
     let model = tx.insert_model(provider, "gpt-4o").await.unwrap();
+    let route = tx
+        .insert_route(
+            "main-route",
+            &ultrafast_gateway::store::RouteSettings {
+                retries: 2,
+                first_token_timeout_ms: 30_000,
+                total_timeout_ms: 300_000,
+                breaker_failures: 5,
+                breaker_window_s: 60,
+                breaker_open_s: 30,
+            },
+        )
+        .await
+        .unwrap();
+    tx.replace_targets(
+        route,
+        &ultrafast_gateway::store::TargetsInput {
+            primaries: vec![(model, 1)],
+            fallbacks: vec![],
+        },
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     org.api.state.refresh().await.unwrap();
 
@@ -145,6 +170,7 @@ async fn world() -> World {
         provider,
         syncable,
         model,
+        route,
         _upstream: upstream,
         lena_key,
         tomas_key,
@@ -336,7 +362,35 @@ fn table() -> Vec<Row> {
         row(40, "POST", "/api/providers/{id}/sync", "a provider that answers",
             |w, _| format!("/api/providers/{}/sync", w.syncable), no_body,
             [200, 403, 403, 401]),
+        row(41, "GET", "/api/routes", "", |_, _| "/api/routes".into(), no_body, [200, 200, 200, 401]),
+        row(42, "POST", "/api/routes", "", |_, _| "/api/routes".into(),
+            || Some(route_body("new-route")),
+            [201, 403, 403, 401]),
+        row(43, "GET", "/api/routes/{id}", "", |w, _| format!("/api/routes/{}", w.route), no_body,
+            [200, 200, 200, 401]),
+        row(44, "PUT", "/api/routes/{id}", "", |w, _| format!("/api/routes/{}", w.route),
+            || Some(route_body("renamed")),
+            [200, 403, 403, 401]),
+        row(45, "DELETE", "/api/routes/{id}", "", |w, _| format!("/api/routes/{}", w.route), no_body,
+            [204, 403, 403, 401]),
     ]
+}
+
+/// A valid route over the first model of every world. Models are made
+/// before the table is read, so its id is known.
+fn route_body(name: &str) -> Value {
+    json!({
+        "name": name,
+        "primaries": [{ "model_id": 1, "weight": 1 }],
+        "fallbacks": [],
+        "retries": 2,
+        "first_token_timeout_ms": 30000,
+        "total_timeout_ms": 300000,
+        "breaker_failures": 5,
+        "breaker_window_s": 60,
+        "breaker_open_s": 30,
+        "team_ids": [],
+    })
 }
 
 /// The status and, for an error, the code a cell must give.
@@ -384,7 +438,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=40).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=45).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -510,7 +564,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 39);
+    assert_eq!(operations, 44);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

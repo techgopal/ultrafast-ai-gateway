@@ -142,6 +142,7 @@ pub struct AuditPage {
         (name = "keys", description = "Virtual keys for /v1."),
         (name = "providers", description = "Upstream providers."),
         (name = "models", description = "The model catalog and who may call each model."),
+        (name = "routes", description = "Routes: named sets of models with fallbacks and limits."),
         (name = "tokens", description = "The caller's access tokens for /api."),
         (name = "audit", description = "The audit log."),
     )
@@ -223,9 +224,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 39. Its fallbacks are not
+    /// Every route of `api::router`, which has 44. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 39] = [
+    const ROUTES: [(&str, &str); 44] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -261,6 +262,11 @@ mod tests {
         ("PATCH", "/api/models/{id}"),
         ("DELETE", "/api/models/{id}"),
         ("PUT", "/api/models/{id}/grants"),
+        ("GET", "/api/routes"),
+        ("POST", "/api/routes"),
+        ("GET", "/api/routes/{id}"),
+        ("PUT", "/api/routes/{id}"),
+        ("DELETE", "/api/routes/{id}"),
         ("GET", "/api/tokens"),
         ("POST", "/api/tokens"),
         ("DELETE", "/api/tokens/{id}"),
@@ -356,7 +362,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 39);
+        assert_eq!(routes.len(), 44);
         assert_eq!(documented, routes);
     }
 
@@ -378,7 +384,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 39);
+        assert_eq!(ids.len(), 44);
     }
 
     #[test]

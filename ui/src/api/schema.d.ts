@@ -232,6 +232,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["routes_list"];
+        put?: never;
+        post: operations["routes_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/routes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["routes_view"];
+        put: operations["routes_update"];
+        post?: never;
+        delete: operations["routes_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/setup": {
         parameters: {
             query?: never;
@@ -479,6 +511,16 @@ export interface components {
             secret: string;
             token: components["schemas"]["TokenView"];
         };
+        FallbackView: {
+            enabled: boolean;
+            /** @description `provider_name/model_name`. */
+            model: string;
+            /**
+             * Format: int64
+             * @description Zero for a caller who is not an admin.
+             */
+            model_id: number;
+        };
         /**
          * @description Who may call a model. For everyone who is not an admin it is always
          *     empty.
@@ -577,6 +619,31 @@ export interface components {
             provider_id: number;
             provider_name: string;
         };
+        PrimaryRequest: {
+            /** Format: int64 */
+            model_id: number;
+            /**
+             * Format: int64
+             * @description Share of the traffic among the primaries, 1 to 1000.
+             */
+            weight: number;
+        };
+        PrimaryView: {
+            /** @description Whether the model is enabled. */
+            enabled: boolean;
+            /** @description `provider_name/model_name`. */
+            model: string;
+            /**
+             * Format: int64
+             * @description Zero for a caller who is not an admin.
+             */
+            model_id: number;
+            /**
+             * Format: int64
+             * @description Zero for a caller who is not an admin.
+             */
+            weight: number;
+        };
         ProviderList: {
             providers: components["schemas"]["ProviderView"][];
         };
@@ -604,6 +671,79 @@ export interface components {
          * @enum {string}
          */
         Role: "admin" | "member";
+        RouteList: {
+            routes: components["schemas"]["RouteView"][];
+        };
+        RouteRequest: {
+            /**
+             * Format: int64
+             * @description 1 to 100.
+             */
+            breaker_failures: number;
+            /**
+             * Format: int64
+             * @description 5 to 3 600.
+             */
+            breaker_open_s: number;
+            /**
+             * Format: int64
+             * @description 5 to 3 600.
+             */
+            breaker_window_s: number;
+            /** @description Model ids, tried in this order when the primaries fail. */
+            fallbacks: number[];
+            /**
+             * Format: int64
+             * @description 1 000 to 300 000.
+             */
+            first_token_timeout_ms: number;
+            /**
+             * @description 1 to 64 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting with a
+             *     letter or digit. No `/`, so a route never reads as `provider/model`.
+             */
+            name: string;
+            /** @description At least one. A model appears at most once in the route. */
+            primaries: components["schemas"]["PrimaryRequest"][];
+            /**
+             * Format: int64
+             * @description 0 to 5.
+             */
+            retries: number;
+            /** @description Teams that may use the route. Empty: everyone may. */
+            team_ids: number[];
+            /**
+             * Format: int64
+             * @description 1 000 to 3 600 000, not below the first token timeout.
+             */
+            total_timeout_ms: number;
+        };
+        /**
+         * @description A route. For a caller who is not an admin the settings and `team_ids`
+         *     are zero or empty, and only the names and flags of the targets are set.
+         */
+        RouteView: {
+            /** Format: int64 */
+            breaker_failures: number;
+            /** Format: int64 */
+            breaker_open_s: number;
+            /** Format: int64 */
+            breaker_window_s: number;
+            /** @description No target of the route is enabled, so it cannot serve a request. */
+            broken: boolean;
+            created_at: string;
+            fallbacks: components["schemas"]["FallbackView"][];
+            /** Format: int64 */
+            first_token_timeout_ms: number;
+            /** Format: int64 */
+            id: number;
+            name: string;
+            primaries: components["schemas"]["PrimaryView"][];
+            /** Format: int64 */
+            retries: number;
+            team_ids: number[];
+            /** Format: int64 */
+            total_timeout_ms: number;
+        };
         SetupRequest: {
             email: string;
             name: string;
@@ -2043,6 +2183,346 @@ export interface operations {
             };
             /** @description `sync_failed`: the provider did not return its models. */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    routes_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An admin gets every route in full. Everyone else gets the routes they may use, with the names and flags of their targets only. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouteList"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    routes_create: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RouteRequest"];
+            };
+        };
+        responses: {
+            /** @description The new route. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouteView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `route_exists`: a route of this name exists. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    routes_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id of the route. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The route as this caller sees it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouteView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    routes_update: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the route. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RouteRequest"];
+            };
+        };
+        responses: {
+            /** @description The route after the change. Everything is replaced. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RouteView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `route_exists`: another route has this name. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    routes_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the route. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The route, its targets and its grants are deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

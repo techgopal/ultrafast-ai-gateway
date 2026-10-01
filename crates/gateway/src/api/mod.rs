@@ -7,6 +7,7 @@ pub mod keys;
 pub mod models;
 pub mod openapi;
 pub mod providers;
+pub mod routes;
 pub mod teams;
 pub mod tokens;
 pub mod users;
@@ -76,6 +77,8 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(models::list, models::create))
         .routes(routes!(models::update, models::delete))
         .routes(routes!(models::put_grants))
+        .routes(routes!(routes::list, routes::create))
+        .routes(routes!(routes::view, routes::update, routes::delete))
         .routes(routes!(tokens::list, tokens::create))
         .routes(routes!(tokens::revoke))
         .routes(routes!(audit::list))

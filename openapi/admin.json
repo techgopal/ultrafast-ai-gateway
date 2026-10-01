@@ -1767,6 +1767,458 @@
         ]
       }
     },
+    "/api/routes": {
+      "get": {
+        "tags": [
+          "routes"
+        ],
+        "operationId": "routes_list",
+        "responses": {
+          "200": {
+            "description": "An admin gets every route in full. Everyone else gets the routes they may use, with the names and flags of their targets only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "routes"
+        ],
+        "operationId": "routes_create",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`route_exists`: a route of this name exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/routes/{id}": {
+      "get": {
+        "tags": [
+          "routes"
+        ],
+        "operationId": "routes_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the route.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The route as this caller sees it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "routes"
+        ],
+        "operationId": "routes_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the route.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The route after the change. Everything is replaced.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RouteView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`route_exists`: another route has this name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "routes"
+        ],
+        "operationId": "routes_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the route.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The route, its targets and its grants are deleted."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/setup": {
       "get": {
         "tags": [
@@ -3768,6 +4220,28 @@
           }
         }
       },
+      "FallbackView": {
+        "type": "object",
+        "required": [
+          "model_id",
+          "model",
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string",
+            "description": "`provider_name/model_name`."
+          },
+          "model_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zero for a caller who is not an admin."
+          }
+        }
+      },
       "GrantsView": {
         "type": "object",
         "description": "Who may call a model. For everyone who is not an admin it is always\nempty.",
@@ -4070,6 +4544,54 @@
           }
         }
       },
+      "PrimaryRequest": {
+        "type": "object",
+        "required": [
+          "model_id",
+          "weight"
+        ],
+        "properties": {
+          "model_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "weight": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Share of the traffic among the primaries, 1 to 1000."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PrimaryView": {
+        "type": "object",
+        "required": [
+          "model_id",
+          "model",
+          "weight",
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the model is enabled."
+          },
+          "model": {
+            "type": "string",
+            "description": "`provider_name/model_name`."
+          },
+          "model_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zero for a caller who is not an admin."
+          },
+          "weight": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zero for a caller who is not an admin."
+          }
+        }
+      },
       "ProviderList": {
         "type": "object",
         "required": [
@@ -4132,6 +4654,173 @@
           "admin",
           "member"
         ]
+      },
+      "RouteList": {
+        "type": "object",
+        "required": [
+          "routes"
+        ],
+        "properties": {
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteView"
+            }
+          }
+        }
+      },
+      "RouteRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "primaries",
+          "fallbacks",
+          "retries",
+          "first_token_timeout_ms",
+          "total_timeout_ms",
+          "breaker_failures",
+          "breaker_window_s",
+          "breaker_open_s",
+          "team_ids"
+        ],
+        "properties": {
+          "breaker_failures": {
+            "type": "integer",
+            "format": "int64",
+            "description": "1 to 100."
+          },
+          "breaker_open_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "5 to 3 600."
+          },
+          "breaker_window_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "5 to 3 600."
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Model ids, tried in this order when the primaries fail."
+          },
+          "first_token_timeout_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "1 000 to 300 000."
+          },
+          "name": {
+            "type": "string",
+            "description": "1 to 64 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting with a\nletter or digit. No `/`, so a route never reads as `provider/model`."
+          },
+          "primaries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PrimaryRequest"
+            },
+            "description": "At least one. A model appears at most once in the route."
+          },
+          "retries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "0 to 5."
+          },
+          "team_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Teams that may use the route. Empty: everyone may."
+          },
+          "total_timeout_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "1 000 to 3 600 000, not below the first token timeout."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RouteView": {
+        "type": "object",
+        "description": "A route. For a caller who is not an admin the settings and `team_ids`\nare zero or empty, and only the names and flags of the targets are set.",
+        "required": [
+          "id",
+          "name",
+          "primaries",
+          "fallbacks",
+          "retries",
+          "first_token_timeout_ms",
+          "total_timeout_ms",
+          "breaker_failures",
+          "breaker_window_s",
+          "breaker_open_s",
+          "team_ids",
+          "broken",
+          "created_at"
+        ],
+        "properties": {
+          "breaker_failures": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "breaker_open_s": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "breaker_window_s": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "broken": {
+            "type": "boolean",
+            "description": "No target of the route is enabled, so it cannot serve a request."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FallbackView"
+            }
+          },
+          "first_token_timeout_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "primaries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PrimaryView"
+            }
+          },
+          "retries": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "team_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "total_timeout_ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
       },
       "SetupRequest": {
         "type": "object",
@@ -4527,6 +5216,10 @@
     {
       "name": "models",
       "description": "The model catalog and who may call each model."
+    },
+    {
+      "name": "routes",
+      "description": "Routes: named sets of models with fallbacks and limits."
     },
     {
       "name": "tokens",

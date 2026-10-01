@@ -70,6 +70,9 @@ pub enum Action {
     // models
     ListModels,
     ManageModels,
+    // routes
+    ListRoutes,
+    ManageRoutes,
     // audit
     ViewAudit,
 }
@@ -112,12 +115,14 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ListKeys
         | Action::ManageOwnTokens
         | Action::ListProviders
-        | Action::ListModels => Allow,
+        | Action::ListModels
+        | Action::ListRoutes => Allow,
 
         Action::InviteUser { role: _ }
         | Action::CreateTeam
         | Action::ManageProviders
         | Action::ManageModels
+        | Action::ManageRoutes
         | Action::ViewAudit => Forbidden,
 
         Action::ViewUser {
@@ -961,6 +966,22 @@ mod tests {
                 Action::ManageModels,
                 Forbidden,
             ),
+            ("list_routes: lead", lead, Action::ListRoutes, Allow),
+            ("list_routes: member", member, Action::ListRoutes, Allow),
+            ("list_routes: loner", loner, Action::ListRoutes, Allow),
+            ("manage_routes: lead", lead, Action::ManageRoutes, Forbidden),
+            (
+                "manage_routes: member",
+                member,
+                Action::ManageRoutes,
+                Forbidden,
+            ),
+            (
+                "manage_routes: loner",
+                loner,
+                Action::ManageRoutes,
+                Forbidden,
+            ),
             ("view_audit: lead", lead, Action::ViewAudit, Forbidden),
             ("view_audit: member", member, Action::ViewAudit, Forbidden),
             ("view_audit: loner", loner, Action::ViewAudit, Forbidden),
@@ -1019,6 +1040,7 @@ mod tests {
             for action in [
                 Action::ManageProviders,
                 Action::ManageModels,
+                Action::ManageRoutes,
                 Action::ViewAudit,
                 Action::InviteUser { role: Role::Member },
                 Action::InviteUser { role: Role::Admin },
