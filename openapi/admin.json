@@ -2219,6 +2219,65 @@
         ]
       }
     },
+    "/api/routing/health": {
+      "get": {
+        "tags": [
+          "routing"
+        ],
+        "summary": "Every target that has been called since the gateway started, with the\nstate of its circuit breaker. It is kept in memory: a restart clears it.",
+        "operationId": "routing_health",
+        "responses": {
+          "200": {
+            "description": "The state of the circuit breaker of each target that was called.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingHealth"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/setup": {
       "get": {
         "tags": [
@@ -4854,6 +4913,20 @@
           }
         }
       },
+      "RoutingHealth": {
+        "type": "object",
+        "required": [
+          "targets"
+        ],
+        "properties": {
+          "targets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TargetHealth"
+            }
+          }
+        }
+      },
       "SetupRequest": {
         "type": "object",
         "required": [
@@ -4908,6 +4981,66 @@
             "minimum": 0
           }
         }
+      },
+      "TargetHealth": {
+        "type": "object",
+        "description": "The health of one target, as `GET /api/routing/health` shows it.",
+        "required": [
+          "provider",
+          "model",
+          "state",
+          "successes",
+          "failures",
+          "last_failure_at",
+          "last_status"
+        ],
+        "properties": {
+          "failures": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Retryable failures. A request the provider rejected is not one.",
+            "minimum": 0
+          },
+          "last_failure_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the last of those happened (UTC, `YYYY-MM-DD HH:MM:SS`)."
+          },
+          "last_status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "What the provider answered to the last of them; none when it did not\nanswer.",
+            "minimum": 0
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/TargetState"
+          },
+          "successes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TargetState": {
+        "type": "string",
+        "description": "What the breaker of a target allows now.",
+        "enum": [
+          "closed",
+          "open",
+          "half_open"
+        ]
       },
       "TeamDetail": {
         "type": "object",
@@ -5260,6 +5393,10 @@
     {
       "name": "audit",
       "description": "The audit log."
+    },
+    {
+      "name": "routing",
+      "description": "How calls are routed to providers."
     }
   ]
 }

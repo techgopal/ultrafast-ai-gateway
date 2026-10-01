@@ -23,12 +23,15 @@ impl BreakerSettings {
 
 use std::collections::VecDeque;
 
+use serde::Serialize;
 use tokio::time::Instant;
+use utoipa::ToSchema;
 
 use crate::store;
 
 /// What the breaker of a target allows now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum TargetState {
     /// Calls pass.
     Closed,

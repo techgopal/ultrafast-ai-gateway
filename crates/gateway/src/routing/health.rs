@@ -6,13 +6,15 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use serde::Serialize;
 use tokio::time::Instant;
+use utoipa::ToSchema;
 
 use super::breaker::{Breaker, BreakerSettings, TargetState};
 use super::TargetRef;
 
 /// The health of one target, as `GET /api/routing/health` shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TargetHealth {
     pub provider: String,
     pub model: String,
@@ -21,9 +23,11 @@ pub struct TargetHealth {
     /// Retryable failures. A request the provider rejected is not one.
     pub failures: u64,
     /// When the last of those happened (UTC, `YYYY-MM-DD HH:MM:SS`).
+    #[schema(required)]
     pub last_failure_at: Option<String>,
     /// What the provider answered to the last of them; none when it did not
     /// answer.
+    #[schema(required)]
     pub last_status: Option<u16>,
 }
 

@@ -75,6 +75,8 @@ pub enum Action {
     ManageRoutes,
     // audit
     ViewAudit,
+    // routing
+    ViewRoutingHealth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,7 +125,8 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ManageProviders
         | Action::ManageModels
         | Action::ManageRoutes
-        | Action::ViewAudit => Forbidden,
+        | Action::ViewAudit
+        | Action::ViewRoutingHealth => Forbidden,
 
         Action::ViewUser {
             user_id,
@@ -985,6 +988,24 @@ mod tests {
             ("view_audit: lead", lead, Action::ViewAudit, Forbidden),
             ("view_audit: member", member, Action::ViewAudit, Forbidden),
             ("view_audit: loner", loner, Action::ViewAudit, Forbidden),
+            (
+                "view_routing_health: lead",
+                lead,
+                Action::ViewRoutingHealth,
+                Forbidden,
+            ),
+            (
+                "view_routing_health: member",
+                member,
+                Action::ViewRoutingHealth,
+                Forbidden,
+            ),
+            (
+                "view_routing_health: loner",
+                loner,
+                Action::ViewRoutingHealth,
+                Forbidden,
+            ),
         ];
         cases.extend(key_cases(f, true, |owner_id, team_id| Action::ViewKey {
             owner_id,
@@ -1042,6 +1063,7 @@ mod tests {
                 Action::ManageModels,
                 Action::ManageRoutes,
                 Action::ViewAudit,
+                Action::ViewRoutingHealth,
                 Action::InviteUser { role: Role::Member },
                 Action::InviteUser { role: Role::Admin },
                 Action::CreateTeam,

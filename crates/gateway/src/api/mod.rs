@@ -3,6 +3,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod health;
 pub mod keys;
 pub mod models;
 pub mod openapi;
@@ -82,6 +83,7 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(tokens::list, tokens::create))
         .routes(routes!(tokens::revoke))
         .routes(routes!(audit::list))
+        .routes(routes!(health::routing_health))
 }
 
 pub fn router() -> Router<Arc<AppState>> {

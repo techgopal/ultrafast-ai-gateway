@@ -18,6 +18,7 @@ use super::keys::KeyView;
 use super::providers::ProviderView;
 use super::tokens::TokenView;
 use super::{CSRF_HEADER, SESSION_COOKIE};
+use crate::routing::TargetHealth;
 use crate::store::{AuditRow, MemberDetail, TeamSummary};
 
 /// Every error of `/api` has this shape.
@@ -129,6 +130,11 @@ pub struct AuditPage {
     pub entries: Vec<AuditRow>,
 }
 
+#[derive(ToSchema)]
+pub struct RoutingHealth {
+    pub targets: Vec<TargetHealth>,
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -145,6 +151,7 @@ pub struct AuditPage {
         (name = "routes", description = "Routes: named sets of models with fallbacks and limits."),
         (name = "tokens", description = "The caller's access tokens for /api."),
         (name = "audit", description = "The audit log."),
+        (name = "routing", description = "How calls are routed to providers."),
     )
 )]
 struct AdminApi;
@@ -224,9 +231,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 44. Its fallbacks are not
+    /// Every route of `api::router`, which has 45. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 44] = [
+    const ROUTES: [(&str, &str); 45] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -271,6 +278,7 @@ mod tests {
         ("POST", "/api/tokens"),
         ("DELETE", "/api/tokens/{id}"),
         ("GET", "/api/audit"),
+        ("GET", "/api/routing/health"),
     ];
 
     const SECRET_REQUEST_FIELDS: [&str; 5] = [
@@ -362,7 +370,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 44);
+        assert_eq!(routes.len(), 45);
         assert_eq!(documented, routes);
     }
 
@@ -384,7 +392,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 44);
+        assert_eq!(ids.len(), 45);
     }
 
     #[test]

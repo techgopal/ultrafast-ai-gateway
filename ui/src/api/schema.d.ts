@@ -264,6 +264,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/routing/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every target that has been called since the gateway started, with the
+         *     state of its circuit breaker. It is kept in memory: a restart clears it.
+         */
+        get: operations["routing_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/setup": {
         parameters: {
             query?: never;
@@ -760,6 +780,9 @@ export interface components {
             /** Format: int64 */
             total_timeout_ms: number;
         };
+        RoutingHealth: {
+            targets: components["schemas"]["TargetHealth"][];
+        };
         SetupRequest: {
             email: string;
             name: string;
@@ -778,6 +801,32 @@ export interface components {
              */
             existing: number;
         };
+        /** @description The health of one target, as `GET /api/routing/health` shows it. */
+        TargetHealth: {
+            /**
+             * Format: int64
+             * @description Retryable failures. A request the provider rejected is not one.
+             */
+            failures: number;
+            /** @description When the last of those happened (UTC, `YYYY-MM-DD HH:MM:SS`). */
+            last_failure_at: string | null;
+            /**
+             * Format: int32
+             * @description What the provider answered to the last of them; none when it did not
+             *     answer.
+             */
+            last_status: number | null;
+            model: string;
+            provider: string;
+            state: components["schemas"]["TargetState"];
+            /** Format: int64 */
+            successes: number;
+        };
+        /**
+         * @description What the breaker of a target allows now.
+         * @enum {string}
+         */
+        TargetState: "closed" | "open" | "half_open";
         TeamDetail: {
             members: components["schemas"]["MemberDetail"][];
             team: components["schemas"]["TeamSummary"];
@@ -2530,6 +2579,53 @@ export interface operations {
             };
             /** @description It does not exist, or it is hidden from the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    routing_health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The state of the circuit breaker of each target that was called. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutingHealth"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

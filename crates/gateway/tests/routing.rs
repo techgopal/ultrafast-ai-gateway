@@ -777,3 +777,88 @@ async fn direct_calls_use_the_engine_with_default_settings() {
     assert_eq!(s, StatusCode::OK, "{body}");
     assert_eq!(hits(&h.upstream).await, 2);
 }
+
+mod health_endpoint {
+    use super::*;
+    use common::org;
+
+    #[tokio::test]
+    async fn health_endpoint() {
+        let org = org().await;
+        let maya = org.sign_in("maya").await;
+        let (status, body) = org
+            .call(Some(&maya), "GET", "/api/routing/health", None)
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!({ "targets": [] }), "nothing was called yet");
+
+        let s = BreakerSettings {
+            failures: 2,
+            ..BreakerSettings::DEFAULT
+        };
+        let health = &org.api.state.health;
+        let now = tokio::time::Instant::now();
+        health.report(&target("b"), true, false, Some(200), now, &s);
+        for _ in 0..2 {
+            health.report(&target("a"), false, true, Some(503), now, &s);
+        }
+        let (_, body) = org
+            .call(Some(&maya), "GET", "/api/routing/health", None)
+            .await;
+        let targets = body["targets"].as_array().unwrap();
+        assert_eq!(targets.len(), 2);
+        let a = &targets[0];
+        assert_eq!(
+            (a["provider"].as_str(), a["model"].as_str()),
+            (Some("a"), Some("m"))
+        );
+        assert_eq!(a["state"], "open");
+        assert_eq!(
+            (a["successes"].as_u64(), a["failures"].as_u64()),
+            (Some(0), Some(2))
+        );
+        assert_eq!(a["last_status"], 503);
+        let at = a["last_failure_at"].as_str().unwrap();
+        assert_eq!(at.len(), 19, "{at}");
+        let b = &targets[1];
+        assert_eq!(b["provider"], "b");
+        assert_eq!(b["state"], "closed");
+        assert_eq!(b["successes"], 1);
+        assert!(b["last_failure_at"].is_null());
+        assert!(b["last_status"].is_null());
+        // Nothing but health: no keys, credentials or URLs.
+        let dump = body.to_string();
+        assert!(!dump.contains("http") && !dump.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn only_an_admin_may_read_it() {
+        let org = org().await;
+        for name in ["arjun", "lena"] {
+            let who = org.sign_in(name).await;
+            let (status, _) = org
+                .call(Some(&who), "GET", "/api/routing/health", None)
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{name}");
+        }
+        let (status, _) = org.call(None, "GET", "/api/routing/health", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn calls_through_the_proxy_show_up() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(ok("x"))
+            .mount(&h.upstream)
+            .await;
+        post_chat(&h.app, Some(&h.key), &chat("p/gpt-4o", false)).await;
+        let view = h.state.health.view();
+        assert_eq!(view.len(), 1);
+        assert_eq!(
+            (view[0].provider.as_str(), view[0].model.as_str()),
+            ("p", "gpt-4o")
+        );
+        assert_eq!(view[0].successes, 1);
+    }
+}
