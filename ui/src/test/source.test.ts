@@ -168,7 +168,7 @@ describe("dialogs and forms", () => {
     expect(sending.test("handle" + "Submit();")).toBe(true);
     expect(sending.test("form.handle" + "Submit?.();")).toBe(true);
     expect(sending.test("onClick={form.handle" + "Submit}")).toBe(true);
-    expect(sending.test("onSubmit={submitOnce(form)}")).toBe(false);
+    expect(sending.test("<form onSubmit={onSubmit}>")).toBe(false);
     expect(sending.test("const onSubmit = useSubmit(form);")).toBe(false);
     expect(sending.test("const handleSubmitted = done;")).toBe(false);
     expect(written()).toContain("pages/Users.tsx");
@@ -190,6 +190,8 @@ describe("dialogs and forms", () => {
       "components/ConfirmDialog.tsx",
       "components/SecretDialog.tsx",
     ]);
+    // The primitives are also in the package itself: only the field takes one from there.
+    expect(users("radix-ui")).toEqual(["components/Field.tsx"]);
   });
 
   // `useSubmit` of `components/form.ts` sends a form, refuses a second
