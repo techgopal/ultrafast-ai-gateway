@@ -101,6 +101,13 @@ describe("source rules", () => {
     expect(findings(ours([".tsx"]), inlineStyle)).toEqual([]);
   });
 
+  // Tailwind makes a class of every word that names one in the files it
+  // reads; the browser tests are no part of the console.
+  test("the stylesheet is made without the browser tests", () => {
+    const css = readFileSync(join(src, "styles/globals.css"), "utf8");
+    expect(css).toMatch(/^@source not "\.\.\/\.\.\/e2e";$/m);
+  });
+
   test("no raw html in our code", () => {
     expect(findings(ours([".tsx"]), /dangerouslySetInnerHTML/)).toEqual([]);
   });
