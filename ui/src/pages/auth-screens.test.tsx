@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createBrowserHistory } from "@tanstack/react-router";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -282,6 +282,9 @@ async function expectTheFlowIsOver(app: AppRenderResult): Promise<void> {
 
 describe("accept invite", () => {
   afterEach(() => {
+    // The app, which follows the address of the browser, goes first: a change
+    // of the address while it is mounted would update it after the test.
+    cleanup();
     window.history.replaceState(null, "", "/");
   });
 
