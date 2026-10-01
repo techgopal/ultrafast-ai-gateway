@@ -828,3 +828,73 @@ async fn user_view_lists_teams() {
     let (_, body) = org.call(Some(&arjun), "GET", "/api/auth/me", None).await;
     assert_eq!(body["user"]["teams"], arjun_teams);
 }
+
+/// lena is in Platform, Growth and Research; arjun leads Platform and is a
+/// member of Research.
+#[tokio::test]
+async fn user_view_teams_are_only_those_the_caller_may_see() {
+    let org = org().await;
+    let mut tx = org.api.store.begin().await.unwrap();
+    use ultrafast_gateway::identity::TeamRole;
+    tx.put_member(org.growth, org.lena, TeamRole::Member)
+        .await
+        .unwrap();
+    tx.put_member(org.research, org.lena, TeamRole::Member)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let name_list = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let list_of = |body: &Value, email: &str| {
+        let u = body["users"].as_array().unwrap();
+        name_list(&u.iter().find(|u| u["email"] == email).unwrap()["teams"])
+    };
+
+    // The lead: Platform and Research, never Growth.
+    let arjun = org.sign_in("arjun").await;
+    let (_, body) = org
+        .call(Some(&arjun), "GET", &user_path(org.lena), None)
+        .await;
+    assert_eq!(name_list(&body["teams"]), ["Platform", "Research"]);
+    let (_, body) = org.call(Some(&arjun), "GET", "/api/users", None).await;
+    assert_eq!(list_of(&body, "lena@example.com"), ["Platform", "Research"]);
+    assert!(!body.to_string().contains("Growth"));
+
+    // The admin sees all; the user sees all of their own.
+    let maya = org.sign_in("maya").await;
+    let (_, body) = org
+        .call(Some(&maya), "GET", &user_path(org.lena), None)
+        .await;
+    assert_eq!(
+        name_list(&body["teams"]),
+        ["Growth", "Platform", "Research"]
+    );
+    let (_, body) = org.call(Some(&maya), "GET", "/api/users", None).await;
+    assert_eq!(list_of(&body, "lena@example.com").len(), 3);
+    let lena = org.sign_in("lena").await;
+    let (_, body) = org
+        .call(Some(&lena), "GET", &user_path(org.lena), None)
+        .await;
+    assert_eq!(
+        name_list(&body["teams"]),
+        ["Growth", "Platform", "Research"]
+    );
+    let (_, body) = org.call(Some(&lena), "GET", "/api/auth/me", None).await;
+    assert_eq!(name_list(&body["user"]["teams"]).len(), 3);
+}
+
+#[tokio::test]
+async fn the_user_list_asks_the_store_for_teams_once() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let before = org.api.store.teams_of_users_calls();
+    let (status, body) = org.call(Some(&maya), "GET", "/api/users", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["users"].as_array().unwrap().len() >= 5);
+    assert_eq!(org.api.store.teams_of_users_calls() - before, 1);
+}

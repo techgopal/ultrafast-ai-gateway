@@ -25,7 +25,7 @@ use crate::identity::password::{
     check_password_policy, hash_password, verify_dummy, verify_password,
 };
 use crate::identity::policy::Action;
-use crate::identity::{normalize_email, Role, TeamRole, UserStatus};
+use crate::identity::{normalize_email, Principal, Role, TeamRole, UserStatus};
 use crate::secrets::{hash_key, INVITE_PREFIX};
 use crate::store::{AuditEntry, NewUser, Store, UserRow, UserTeam, SESSION_SECONDS};
 
@@ -62,7 +62,32 @@ impl UserView {
     }
 }
 
-/// The view of a single user, with their teams.
+/// The teams of `user_id` that `viewer` may see: all of them for an admin
+/// and for the user themself, otherwise only those the viewer belongs to.
+/// A team the viewer cannot open stays hidden here too.
+pub fn teams_visible_to(viewer: &Principal, user_id: i64, teams: Vec<UserTeam>) -> Vec<UserTeam> {
+    if viewer.is_admin() || viewer.user_id == user_id {
+        return teams;
+    }
+    teams
+        .into_iter()
+        .filter(|t| viewer.team_role(t.team_id).is_some())
+        .collect()
+}
+
+/// The view of a user as `viewer` may see them.
+pub async fn user_view_for(
+    store: &Store,
+    viewer: &Principal,
+    user: UserRow,
+) -> anyhow::Result<UserView> {
+    let mut teams = store.teams_of_users(&[user.id]).await?;
+    let teams = teams_visible_to(viewer, user.id, teams.remove(&user.id).unwrap_or_default());
+    Ok(UserView::new(user, teams))
+}
+
+/// The view of a single user, with all their teams: for the user
+/// themself, and for answers only an admin gets.
 pub async fn user_view(store: &Store, user: UserRow) -> anyhow::Result<UserView> {
     let mut teams = store.teams_of_users(&[user.id]).await?;
     let teams = teams.remove(&user.id).unwrap_or_default();

@@ -1,6 +1,7 @@
 //! Teams and their members.
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 
 use anyhow::{anyhow, Result};
 use sqlx::sqlite::SqliteRow;
@@ -139,6 +140,7 @@ impl Store {
     /// The teams of each of the users, in any role, in one query. Each list
     /// is ordered by team name; a user in no team has no entry.
     pub async fn teams_of_users(&self, user_ids: &[i64]) -> Result<HashMap<i64, Vec<UserTeam>>> {
+        self.teams_of_users_calls.fetch_add(1, Ordering::Relaxed);
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }

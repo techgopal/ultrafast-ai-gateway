@@ -10,6 +10,8 @@ mod users;
 
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use sqlx::sqlite::{
@@ -95,6 +97,9 @@ impl Tx<'_> {
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
+    /// How many times `teams_of_users` was called, so a test can see that
+    /// a list asks once and not once per row.
+    teams_of_users_calls: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -122,7 +127,15 @@ impl Store {
     async fn connect(opts: SqliteConnectOptions, pool: SqlitePoolOptions) -> Result<Self> {
         let pool = pool.connect_with(opts).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            teams_of_users_calls: Arc::default(),
+        })
+    }
+
+    /// How many times `teams_of_users` has been called on this store.
+    pub fn teams_of_users_calls(&self) -> u64 {
+        self.teams_of_users_calls.load(Ordering::Relaxed)
     }
 
     pub async fn begin(&self) -> Result<Tx<'_>> {

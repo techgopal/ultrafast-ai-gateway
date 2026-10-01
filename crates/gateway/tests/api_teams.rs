@@ -720,3 +720,18 @@ async fn audit_is_admin_only_and_paged() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["entries"].as_array().unwrap().len(), 5);
 }
+
+#[tokio::test]
+async fn an_outsider_does_not_open_a_write_transaction() {
+    // Authorisation comes before the write: a refused remove changes and
+    // records nothing, and answers like a missing team.
+    let org = org().await;
+    let lena = org.sign_in("lena").await;
+    let (s1, _) = remove(&org, &lena, org.research, org.tomas).await;
+    let (s2, _) = remove(&org, &lena, 999, org.tomas).await;
+    assert_eq!((s1, s2), (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND));
+    assert_eq!(
+        role_in(&org, org.research, org.tomas).await,
+        Some(TeamRole::Member)
+    );
+}

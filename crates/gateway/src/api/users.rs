@@ -11,7 +11,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::auth::{user_view, UserView};
+use super::auth::{teams_visible_to, user_view_for, UserView};
 use super::{path_id, refresh_snapshot, require, trimmed_name, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
@@ -103,7 +103,7 @@ pub async fn list(
     let users: Vec<UserView> = users
         .into_iter()
         .map(|u| {
-            let teams = teams.remove(&u.id).unwrap_or_default();
+            let teams = teams_visible_to(me, u.id, teams.remove(&u.id).unwrap_or_default());
             UserView::new(u, teams)
         })
         .collect();
@@ -195,7 +195,7 @@ pub async fn invite(
         .user_by_id(id)
         .await?
         .ok_or_else(|| anyhow!("the invited user is missing"))?;
-    let body = json!({ "user": user_view(store, user).await?, "invite_link": invite_link });
+    let body = json!({ "user": user_view_for(store, me, user).await?, "invite_link": invite_link });
     Ok((StatusCode::CREATED, Json(body)).into_response())
 }
 
@@ -290,7 +290,7 @@ pub async fn view(
             shares_led_team,
         },
     )?;
-    Ok(Json(user_view(store, target).await?).into_response())
+    Ok(Json(user_view_for(store, me, target).await?).into_response())
 }
 
 #[utoipa::path(
@@ -406,7 +406,7 @@ pub async fn update(
         if req.status.is_some() {
             refresh_snapshot(&state).await?;
         }
-        return Ok(Json(user_view(store, was).await?).into_response());
+        return Ok(Json(user_view_for(store, me, was).await?).into_response());
     }
     keep_an_admin(&mut tx, &was).await?;
 
@@ -438,7 +438,7 @@ pub async fn update(
         .user_by_id(was.id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    Ok(Json(user_view(store, user).await?).into_response())
+    Ok(Json(user_view_for(store, me, user).await?).into_response())
 }
 
 /// For example `Changed role of lena@example.com from member to admin`.

@@ -47,7 +47,9 @@ enum Command {
         /// A network (CIDR) of reverse proxies whose `CF-Connecting-IP` and
         /// `X-Forwarded-For` headers are believed, to find the client's
         /// address. Repeat the flag, or separate with commas in
-        /// UF_TRUSTED_PROXIES. Never list a network that clients can reach
+        /// UF_TRUSTED_PROXIES. Each of these proxies must set or overwrite
+        /// `CF-Connecting-IP` and `X-Forwarded-For` itself, never pass on what
+        /// the client sent, or the client can choose its own address. Never list a network that clients can reach
         /// directly.
         #[arg(
             long = "trusted-proxy",

@@ -360,6 +360,9 @@ pub struct ClientAddr(pub IpAddr);
 
 /// The client address for a request from `peer` with these headers.
 pub fn client_addr(peer: IpAddr, headers: &HeaderMap, trusted: &[IpNet]) -> IpAddr {
+    // A dual-stack listener shows an IPv4 peer as ::ffff:a.b.c.d, which an
+    // IPv4 network does not contain; compare and return the plain form.
+    let peer = peer.to_canonical();
     let is_trusted = |addr: &IpAddr| trusted.iter().any(|net| net.contains(addr));
     if !is_trusted(&peer) {
         return peer;
@@ -373,6 +376,7 @@ pub fn client_addr(peer: IpAddr, headers: &HeaderMap, trusted: &[IpNet]) -> IpAd
     if let Some(addr) = forwarded("cf-connecting-ip")
         .next()
         .and_then(|value| value.trim().parse::<IpAddr>().ok())
+        .map(|addr| addr.to_canonical())
     {
         return addr;
     }
@@ -383,7 +387,7 @@ pub fn client_addr(peer: IpAddr, headers: &HeaderMap, trusted: &[IpNet]) -> IpAd
         .flat_map(|value| value.split(','))
         .collect();
     for entry in chain.into_iter().rev() {
-        match entry.trim().parse::<IpAddr>() {
+        match entry.trim().parse::<IpAddr>().map(|a| a.to_canonical()) {
             Ok(addr) if is_trusted(&addr) => continue,
             Ok(addr) => return addr,
             // A hop that is not an address cannot name the client.
@@ -752,6 +756,31 @@ mod tests {
                 &[("x-forwarded-for", "198.51.100.1, junk, 10.0.0.2")]
             ),
             ip("10.0.0.1")
+        );
+    }
+
+    #[test]
+    fn client_address_sees_through_ipv4_mapped_addresses() {
+        let trusted: Vec<IpNet> = vec!["10.0.0.0/8".parse().unwrap()];
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // A dual-stack listener reports an IPv4 peer as ::ffff:a.b.c.d.
+        let chain = headers(&[(
+            "x-forwarded-for",
+            "9.9.9.9, ::ffff:198.51.100.1, ::ffff:10.0.0.2",
+        )]);
+        assert_eq!(
+            client_addr(ip("::ffff:10.0.0.1"), &chain, &trusted),
+            ip("198.51.100.1")
+        );
+        // An untrusted mapped peer is returned in its plain form.
+        assert_eq!(
+            client_addr(ip("::ffff:198.51.100.7"), &chain, &trusted),
+            ip("198.51.100.7")
+        );
+        let cf = headers(&[("cf-connecting-ip", "::ffff:203.0.113.9")]);
+        assert_eq!(
+            client_addr(ip("::ffff:10.0.0.1"), &cf, &trusted),
+            ip("203.0.113.9")
         );
     }
 

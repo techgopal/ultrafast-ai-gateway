@@ -481,22 +481,28 @@ pub async fn remove_member(
     let team = team_of(store, &raw_team).await?;
     let user_id = path_id(&raw_user)?;
 
+    // Decided on a plain read first, so a caller who may not do this never
+    // takes the write lock; decided again inside the transaction, on what is
+    // actually removed.
+    let role_now = store
+        .memberships_of(user_id)
+        .await?
+        .into_iter()
+        .find(|m| m.team_id == team.id)
+        .map(|m| m.role);
+    let action = |target_role| Action::RemoveMember {
+        team_id: team.id,
+        target_user_id: user_id,
+        target_role,
+    };
+    require(me, &action(role_now))?;
+
     let mut tx = store.begin().await?;
     let team = tx
         .team_by_id(team.id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    // The role is read inside the transaction, so the decision is made on
-    // what is removed.
-    let target_role = tx.member_role(team.id, user_id).await?;
-    require(
-        me,
-        &Action::RemoveMember {
-            team_id: team.id,
-            target_user_id: user_id,
-            target_role,
-        },
-    )?;
+    require(me, &action(tx.member_role(team.id, user_id).await?))?;
     let user = tx
         .user_by_id(user_id)
         .await?
