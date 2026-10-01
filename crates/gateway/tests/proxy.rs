@@ -415,3 +415,145 @@ async fn provider_response_within_the_limit_is_returned() {
     let (s, _) = post_chat(&h.app, Some(&h.key), BODY).await;
     assert_eq!(s, StatusCode::OK);
 }
+
+mod records {
+    use super::*;
+    use ultrafast_gateway::telemetry::AttemptOutcome;
+
+    #[tokio::test]
+    async fn a_success_is_recorded_with_usage_and_one_attempt() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(openai_ok())
+            .mount(&h.upstream)
+            .await;
+        let (status, body) = post_chat(&h.app, Some(&h.key), BODY).await;
+        assert_eq!(status, StatusCode::OK);
+        let records = h.sink.records();
+        assert_eq!(records.len(), 1);
+        let r = &records[0];
+        assert_eq!(r.requested, "p/gpt-4o");
+        assert_eq!(r.endpoint, "chat");
+        assert!(!r.stream);
+        assert_eq!(r.status, 200);
+        let usage = r.usage.expect("usage");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (1, 2));
+        assert_eq!(r.attempts.len(), 1);
+        let a = &r.attempts[0];
+        assert_eq!((a.provider.as_str(), a.model.as_str()), ("p", "gpt-4o"));
+        assert_eq!(a.outcome, AttemptOutcome::Ok);
+        assert_eq!(a.status, Some(200));
+        assert!(r.started_at.len() >= 19);
+        // No prompt, answer or credential in the record.
+        let dump = format!("{r:?}");
+        for secret in ["hello", "provider-secret", h.key.as_str(), "\"hi\""] {
+            assert!(!dump.contains(secret), "{secret} leaked into {dump}");
+        }
+        assert!(body.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn an_upstream_error_is_recorded() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("down"))
+            .mount(&h.upstream)
+            .await;
+        let (status, _) = post_chat(&h.app, Some(&h.key), BODY).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        let r = &h.sink.records()[0];
+        assert_eq!(r.status, 502);
+        assert!(r.usage.is_none());
+        assert_eq!(r.attempts[0].outcome, AttemptOutcome::Retryable);
+        assert_eq!(r.attempts[0].status, Some(503));
+    }
+
+    #[tokio::test]
+    async fn a_rejection_by_the_provider_is_fatal() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("bad"))
+            .mount(&h.upstream)
+            .await;
+        post_chat(&h.app, Some(&h.key), BODY).await;
+        let r = &h.sink.records()[0];
+        assert_eq!(r.attempts[0].outcome, AttemptOutcome::Fatal);
+    }
+
+    #[tokio::test]
+    async fn refused_calls_are_recorded_without_attempts_and_unauthenticated_ones_are_not() {
+        let h = harness("openai").await;
+        post_chat(&h.app, None, BODY).await;
+        post_chat(&h.app, Some("uf-wrong"), BODY).await;
+        assert!(h.sink.records().is_empty());
+        let missing = r#"{"model":"p/nope","messages":[{"role":"user","content":"hi"}]}"#;
+        let (status, _) = post_chat(&h.app, Some(&h.key), missing).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        post_chat(&h.app, Some(&h.key), "{").await;
+        let records = h.sink.records();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].status, 404);
+        assert_eq!(records[0].requested, "p/nope");
+        assert!(records[0].attempts.is_empty());
+        assert_eq!(records[1].status, 400);
+    }
+
+    #[tokio::test]
+    async fn the_targets_of_a_route_not_tried_are_recorded_as_skipped() {
+        use ultrafast_gateway::store::{RouteSettings, TargetsInput};
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(openai_ok())
+            .mount(&h.upstream)
+            .await;
+        let models = h.store.list_models().await.unwrap();
+        let id_of = |name: &str| models.iter().find(|m| m.name == name).unwrap().id;
+        let (m1, m2) = (id_of("gpt-4o"), id_of("m"));
+        let mut tx = h.store.begin().await.unwrap();
+        let id = tx
+            .insert_route(
+                "r",
+                &RouteSettings {
+                    retries: 2,
+                    first_token_timeout_ms: 30_000,
+                    total_timeout_ms: 300_000,
+                    breaker_failures: 5,
+                    breaker_window_s: 60,
+                    breaker_open_s: 30,
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        tx.replace_targets(
+            id,
+            &TargetsInput {
+                primaries: vec![(m1, 1)],
+                fallbacks: vec![m2],
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        h.state.refresh().await.unwrap();
+        let body = r#"{"model":"r","messages":[{"role":"user","content":"hi"}]}"#;
+        let (status, _) = post_chat(&h.app, Some(&h.key), body).await;
+        assert_eq!(status, StatusCode::OK);
+        let r = &h.sink.records()[0];
+        assert_eq!(r.requested, "r");
+        let seen: Vec<_> = r
+            .attempts
+            .iter()
+            .map(|a| (a.model.as_str(), a.outcome))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("gpt-4o", AttemptOutcome::Ok),
+                ("m", AttemptOutcome::Skipped)
+            ]
+        );
+        assert_eq!(r.attempts[1].status, None);
+        assert_eq!(r.attempts[1].duration_ms, 0);
+    }
+}

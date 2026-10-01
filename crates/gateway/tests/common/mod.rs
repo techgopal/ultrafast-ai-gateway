@@ -14,10 +14,41 @@ use ultrafast_gateway::identity::password::{hash_password, warm_up};
 use ultrafast_gateway::identity::{Role, TeamRole, UserStatus};
 use ultrafast_gateway::secrets::{generate_key, Cipher};
 use ultrafast_gateway::store::{Grants, NewUser, Store};
+use ultrafast_gateway::telemetry::{RequestRecord, RequestSink};
 use wiremock::MockServer;
+
+/// A sink that keeps every record, for tests.
+#[derive(Default)]
+pub struct MemorySink(pub Mutex<Vec<RequestRecord>>);
+
+impl RequestSink for MemorySink {
+    fn record(&self, record: RequestRecord) {
+        self.0.lock().unwrap().push(record);
+    }
+}
+
+impl MemorySink {
+    pub fn records(&self) -> Vec<RequestRecord> {
+        self.0.lock().unwrap().clone()
+    }
+
+    /// Waits until `n` records exist (a stream's record comes after its body).
+    pub async fn wait_for(&self, n: usize) -> Vec<RequestRecord> {
+        for _ in 0..200 {
+            let records = self.records();
+            if records.len() >= n {
+                return records;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("expected {n} records, have {}", self.records().len());
+    }
+}
 
 pub struct Harness {
     pub app: Router,
+    /// Every request record the gateway made.
+    pub sink: Arc<MemorySink>,
     pub upstream: MockServer,
     pub key: String,
     pub store: Store,
@@ -66,8 +97,11 @@ async fn harness_with_limits(
     let mut state = AppState::new(store.clone(), cipher).await.unwrap();
     state.max_body_bytes = max_body_bytes;
     state.max_provider_response_bytes = max_provider_response_bytes;
+    let sink = Arc::new(MemorySink::default());
+    state.sink = sink.clone();
     let state = Arc::new(state);
     Harness {
+        sink,
         app: router(state.clone()),
         state,
         upstream,

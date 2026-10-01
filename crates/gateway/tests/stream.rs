@@ -376,3 +376,93 @@ async fn other_error_inside_stream_shows_only_the_provider_message() {
     );
     assert_stream_error("anthropic", anthropic, "Overloaded").await;
 }
+
+mod records {
+    use super::*;
+    use ultrafast_gateway::telemetry::AttemptOutcome;
+
+    #[tokio::test]
+    async fn a_finished_stream_is_recorded_with_its_usage() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(sse(concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"one\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n",
+                "data: [DONE]\n\n"
+            )))
+            .mount(&h.upstream)
+            .await;
+        let body =
+            r#"{"model":"p/gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+        let (status, _) = post_chat(&h.app, Some(&h.key), body).await;
+        assert_eq!(status, StatusCode::OK);
+        let records = h.sink.wait_for(1).await;
+        assert_eq!(records.len(), 1);
+        let r = &records[0];
+        assert!(r.stream);
+        assert_eq!(r.status, 200);
+        let usage = r.usage.expect("usage from the final event");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (3, 4));
+        assert_eq!(r.attempts.len(), 1);
+        assert_eq!(r.attempts[0].outcome, AttemptOutcome::Ok);
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_fails_midway_is_recorded_once_as_failed() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(sse(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"one\"},\"finish_reason\":null}]}\n\n",
+            ))
+            .mount(&h.upstream)
+            .await;
+        let body =
+            r#"{"model":"p/gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+        post_chat(&h.app, Some(&h.key), body).await;
+        let records = h.sink.wait_for(1).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(h.sink.records().len(), 1);
+        assert!(records[0].usage.is_none());
+        assert_eq!(records[0].attempts[0].outcome, AttemptOutcome::Retryable);
+    }
+
+    #[tokio::test]
+    async fn a_caller_that_drops_the_stream_is_recorded() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let h = harness("openai").await;
+        let (uri, closed) = hanging_upstream().await;
+        h.store
+            .insert_provider("hang", "openai", &uri, None)
+            .await
+            .unwrap();
+        allow_model(&h.store, "hang", "m").await;
+        h.state.refresh().await.unwrap();
+        let body =
+            r#"{"model":"hang/m","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+        let resp = h
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("authorization", format!("Bearer {}", h.key))
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut stream = resp.into_body().into_data_stream();
+        stream.next().await.unwrap().unwrap();
+        assert!(h.sink.records().is_empty(), "not recorded while running");
+        drop(stream);
+        let _ = closed.await;
+        let records = h.sink.wait_for(1).await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].requested, "hang/m");
+        assert_eq!(records[0].status, 499);
+        assert!(records[0].stream);
+    }
+}

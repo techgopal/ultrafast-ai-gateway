@@ -23,6 +23,7 @@ use crate::proxy;
 use crate::secrets::Cipher;
 use crate::snapshot::Snapshot;
 use crate::store::Store;
+use crate::telemetry::{NoopSink, RequestSink};
 use crate::web;
 
 /// How many passwords may be hashed at the same time.
@@ -53,6 +54,8 @@ pub struct AppState {
     /// Networks whose peers may name the client in `CF-Connecting-IP` or
     /// `X-Forwarded-For`. Empty: those headers are never read.
     pub trusted_proxies: Vec<IpNet>,
+    /// Receives one record per authenticated `/v1` call.
+    pub sink: Arc<dyn RequestSink>,
     /// How many snapshots have been swapped in since the start.
     refreshes: AtomicU64,
     /// Held while a snapshot is loaded and swapped in, so an older one
@@ -69,6 +72,7 @@ impl AppState {
             snapshot: ArcSwap::from_pointee(snapshot),
             refresh_interval: DEFAULT_REFRESH_INTERVAL,
             trusted_proxies: Vec::new(),
+            sink: Arc::new(NoopSink),
             refreshes: AtomicU64::new(0),
             refreshing: Mutex::new(()),
             store,
