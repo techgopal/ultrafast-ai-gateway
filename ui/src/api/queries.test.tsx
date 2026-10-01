@@ -1,4 +1,9 @@
-import { QueryClientProvider, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import {
+  QueryClientProvider,
+  useQuery,
+  type QueryClient,
+  type QueryKey,
+} from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, test, vi } from "vitest";
@@ -17,6 +22,9 @@ function wrapperOf(client: QueryClient) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   };
 }
+
+/** `me` as the session reads it (`auth/session.tsx`): the app has no hook of its own for it. */
+const useMe = () => useQuery(q.meOptions());
 
 /** A client with the app's rules, and no wait between the tries. */
 const appClient = () => q.createQueryClient({ retryDelay: 0 });
@@ -57,16 +65,15 @@ describe("queries", () => {
     const { result } = renderHook(
       () => ({
         setup: q.useSetupStatus(),
-        me: q.useMe(),
+        me: useMe(),
         users: q.useUsers(),
         user: q.useUser(fixtures.users.arjun.id),
         teams: q.useTeams(),
         team: q.useTeam(fixtures.teams.platform.id),
         keys: q.useKeys(),
-        key: q.useKey(fixtures.keys.expired.id),
         providers: q.useProviders(),
         tokens: q.useTokens(),
-        audit: q.useAuditLog(),
+        audit: q.useAuditPages(),
       }),
       { wrapper },
     );
@@ -80,25 +87,9 @@ describe("queries", () => {
     expect(result.current.teams.data).toEqual({ teams: fixtures.teamList });
     expect(result.current.team.data).toEqual(fixtures.teamDetails.platform);
     expect(result.current.keys.data).toEqual({ keys: fixtures.keyList });
-    expect(result.current.key.data).toEqual(fixtures.keys.expired);
     expect(result.current.providers.data).toEqual({ providers: fixtures.providerList });
     expect(result.current.tokens.data).toEqual({ tokens: fixtures.tokenList });
-    expect(result.current.audit.data).toEqual({ entries: fixtures.auditEntries });
-  });
-
-  test("the audit log asks for the page", async () => {
-    let search = "";
-    override("get", "/api/audit", ({ request }) => {
-      search = new URL(request.url).search;
-      return ok("get", "/api/audit", 200, { entries: [] });
-    });
-    const { result } = renderHook(() => q.useAuditLog({ limit: 20, before: 3 }), {
-      wrapper: wrapperOf(appClient()),
-    });
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBe(true);
-    });
-    expect(search).toBe("?limit=20&before=3");
+    expect(result.current.audit.data?.pages).toEqual([{ entries: fixtures.auditEntries }]);
   });
 
   test("the pages of the audit log have 50 entries, and each is asked for from where the one before ended", async () => {
@@ -404,23 +395,17 @@ describe("what the gateway hides is dropped", () => {
       () => q.useUser(fixtures.users.lena.id),
       q.queryKeys.users.detail(fixtures.users.lena.id),
     ],
-    [
-      "a key",
-      "/api/keys/{id}",
-      () => q.useKey(fixtures.keys.expired.id),
-      q.queryKeys.keys.detail(fixtures.keys.expired.id),
-    ],
   ] as const;
 
   const others = [
     ["setup", "/api/setup", () => q.useSetupStatus(), q.queryKeys.setup()],
-    ["the caller", "/api/auth/me", () => q.useMe(), q.queryKeys.me()],
+    ["the caller", "/api/auth/me", () => useMe(), q.queryKeys.me()],
     ["the list of users", "/api/users", () => q.useUsers(), q.queryKeys.users.list()],
     ["the list of teams", "/api/teams", () => q.useTeams(), q.queryKeys.teams.list()],
     ["the list of keys", "/api/keys", () => q.useKeys(), q.queryKeys.keys.list()],
     ["the list of providers", "/api/providers", () => q.useProviders(), q.queryKeys.providers.list()],
     ["the list of tokens", "/api/tokens", () => q.useTokens(), q.queryKeys.tokens.list()],
-    ["the audit log", "/api/audit", () => q.useAuditLog(), q.queryKeys.audit.list()],
+    ["the audit log", "/api/audit", () => q.useAuditPages(), q.queryKeys.audit.pages()],
   ] as const;
 
   /** Asks for it again, and waits for the answer. */
@@ -506,7 +491,7 @@ describe("what the gateway hides is dropped", () => {
     const built = Object.entries(q.queryKeys).flatMap(([area, keys]) =>
       "detail" in keys ? [[area, keys.detail(7)] as const] : [],
     );
-    expect(built.map(([area]) => area)).toEqual(expect.arrayContaining(["users", "teams", "keys"]));
+    expect(built.map(([area]) => area)).toEqual(expect.arrayContaining(["users", "teams"]));
     for (const [area, key] of built) expect([area, q.isDetailKey(key)]).toEqual([area, true]);
 
     for (const key of [
@@ -523,7 +508,7 @@ describe("what the gateway hides is dropped", () => {
       q.queryKeys.tokens.all(),
       q.queryKeys.tokens.list(),
       q.queryKeys.audit.all(),
-      q.queryKeys.audit.list({ limit: 10, before: 5 }),
+      q.queryKeys.audit.pages(),
     ]) {
       expect([key, q.isDetailKey(key)]).toEqual([key, false]);
     }
@@ -538,7 +523,7 @@ describe("mutations invalidate", () => {
     const { result } = renderHook(
       () => ({
         teams: q.useTeams(),
-        audit: q.useAuditLog(),
+        audit: q.useAuditPages(),
         users: q.useUsers(),
         create: q.useCreateTeam(),
       }),
@@ -591,7 +576,7 @@ describe("mutations invalidate", () => {
     const me = counted("/api/auth/me");
     const id = fixtures.teams.platform.id;
     const { result } = renderHook(
-      () => ({ team: q.useTeam(id), teams: q.useTeams(), me: q.useMe(), put: q.usePutTeamMember() }),
+      () => ({ team: q.useTeam(id), teams: q.useTeams(), me: useMe(), put: q.usePutTeamMember() }),
       { wrapper: wrapperOf(appClient()) },
     );
     await waitFor(() => {
@@ -663,7 +648,7 @@ describe("mutations invalidate", () => {
       const { result } = renderHook(
         () => ({
           list: list === "/api/keys" ? q.useKeys() : q.useProviders(),
-          audit: q.useAuditLog(),
+          audit: q.useAuditPages(),
           change: useChange(),
         }),
         { wrapper: wrapperOf(appClient()) },
@@ -709,7 +694,7 @@ describe("mutations invalidate", () => {
         user: q.useUser(fixtures.users.dana.id),
         keys: q.useKeys(),
         teams: q.useTeams(),
-        me: q.useMe(),
+        me: useMe(),
         update: q.useUpdateUser(),
       }),
       { wrapper: wrapperOf(appClient()) },
@@ -773,7 +758,7 @@ describe("mutations invalidate", () => {
       () => ({
         team: q.useTeam(id),
         teams: q.useTeams(),
-        me: q.useMe(),
+        me: useMe(),
         remove: q.useRemoveTeamMember(),
       }),
       { wrapper: wrapperOf(client) },
@@ -816,7 +801,7 @@ describe("mutations invalidate", () => {
   test("the hooks of the session are plain calls", async () => {
     const client = appClient();
     const { result } = renderHook(
-      () => ({ me: q.useMe(), login: q.useLogin() }),
+      () => ({ me: useMe(), login: q.useLogin() }),
       { wrapper: wrapperOf(client) },
     );
     await waitFor(() => {
@@ -851,8 +836,8 @@ describe("mutations invalidate", () => {
     const { result } = renderHook(
       () => ({
         tokens: q.useTokens(),
-        audit: q.useAuditLog(),
-        me: q.useMe(),
+        audit: q.useAuditPages(),
+        me: useMe(),
         change: q.useChangePassword(),
       }),
       { wrapper: wrapperOf(appClient()) },
@@ -1241,10 +1226,17 @@ describe("every mutation calls its operation", () => {
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 20 of them, 13 queries, and the one that starts the audit log again", () => {
+  test("there are 20 of them, 10 queries, and the one that starts the audit log again", () => {
     expect(cases).toHaveLength(20);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(34);
+    expect(hooks).toHaveLength(31);
+    // What only tests used is not kept: a key read by its id, the audit log
+    // read as one page, and `me`, which the session reads itself.
+    for (const gone of ["useKey", "keyOptions", "useAuditLog", "auditLogOptions", "useMe"]) {
+      expect(Object.keys(q)).not.toContain(gone);
+    }
+    expect(Object.keys(q.queryKeys.keys)).not.toContain("detail");
+    expect(Object.keys(q.queryKeys.audit)).not.toContain("list");
     expect(hooks).toContain("useAuditPages");
     expect(hooks).toContain("useAuditFromTheStart");
     expect(hooks).toContain("useTeamDetails");
@@ -1336,10 +1328,8 @@ describe("secrets stay out of the caches", () => {
       q.queryKeys.teams.list(),
       q.queryKeys.teams.detail(1),
       q.queryKeys.keys.list(),
-      q.queryKeys.keys.detail(1),
       q.queryKeys.providers.list(),
       q.queryKeys.tokens.list(),
-      q.queryKeys.audit.list({ limit: 10, before: 5 }),
       q.queryKeys.audit.pages(),
     ];
     expect(new Set(keys.map((key) => JSON.stringify(key))).size).toBe(keys.length);

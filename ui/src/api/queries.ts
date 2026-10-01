@@ -1,9 +1,10 @@
 // The query keys and the hooks the pages use: one hook for each operation of
-// the admin API, one for the members of several teams, and one for the audit
-// log as the pages it is read in.
+// the admin API that a page calls, one for the members of several teams, and
+// one for the audit log as the pages it is read in. `me` is read by the
+// session (`auth/session.tsx`) with `meOptions`, and by no page.
 //
-// Two rules hold for everything here. A query key holds ids and page numbers,
-// never a secret. And a mutation is dropped from the mutation cache as soon as
+// Two rules hold for everything here. A query key holds names and ids, never
+// a secret. And a mutation is dropped from the mutation cache as soon as
 // nothing observes it (`gcTime: 0`), because its variables can hold a password
 // or a provider API key and its answer can hold a secret that is shown once.
 // While a component observes a mutation, the hook gives it the variables and
@@ -22,7 +23,7 @@ import {
   type Query,
   type QueryKey,
 } from "@tanstack/react-query";
-import { api, type BodyOf, type QueryOf } from "./client";
+import { api, type BodyOf } from "./client";
 import { ApiError, NetworkError, type SessionOverError } from "./errors";
 
 declare module "@tanstack/react-query" {
@@ -31,14 +32,12 @@ declare module "@tanstack/react-query" {
   }
 }
 
-export type AuditPageRequest = QueryOf<"/api/audit", "get">;
-
 /** What the key of a detail has after its area. */
 const DETAIL = "detail";
 
 /**
- * The key of one thing of an area, which is read by its id: a team, a user,
- * a key. Every such key is built here, and `isDetailKey` knows it by what is
+ * The key of one thing of an area, which is read by its id: a team, a user.
+ * Every such key is built here, and `isDetailKey` knows it by what is
  * put into it here. So the rule for what the gateway hides
  * (`forgetWhatIsHidden`) holds for a detail that is added later, without a
  * list of names anywhere.
@@ -69,7 +68,6 @@ export const queryKeys = {
   keys: {
     all: () => ["keys"] as const,
     list: () => ["keys", "list"] as const,
-    detail: detailOf("keys"),
   },
   providers: {
     all: () => ["providers"] as const,
@@ -81,8 +79,6 @@ export const queryKeys = {
   },
   audit: {
     all: () => ["audit"] as const,
-    list: (page: AuditPageRequest = {}) =>
-      ["audit", "list", { limit: page.limit ?? null, before: page.before ?? null }] as const,
     /** The log as it is read page by page: one entry of the cache for all its pages. */
     pages: () => ["audit", "pages"] as const,
   },
@@ -217,12 +213,6 @@ export const keysOptions = () =>
     queryFn: ({ signal }) => api.get("/api/keys", { signal }),
   });
 
-export const keyOptions = (id: number) =>
-  queryOptions({
-    queryKey: queryKeys.keys.detail(id),
-    queryFn: ({ signal }) => api.get("/api/keys/{id}", { params: { id }, signal }),
-  });
-
 export const providersOptions = () =>
   queryOptions({
     queryKey: queryKeys.providers.list(),
@@ -235,14 +225,7 @@ export const tokensOptions = () =>
     queryFn: ({ signal }) => api.get("/api/tokens", { signal }),
   });
 
-export const auditLogOptions = (page: AuditPageRequest = {}) =>
-  queryOptions({
-    queryKey: queryKeys.audit.list(page),
-    queryFn: ({ signal }) => api.get("/api/audit", { query: page, signal }),
-  });
-
 export const useSetupStatus = () => useQuery(setupStatusOptions());
-export const useMe = () => useQuery(meOptions());
 export const useUsers = () => useQuery(usersOptions());
 export const useUser = (id: number) => useQuery(userOptions(id));
 export const useTeams = () => useQuery(teamsOptions());
@@ -255,10 +238,8 @@ export const useTeam = (id: number) => useQuery(teamOptions(id));
 export const useTeamDetails = (ids: readonly number[]) =>
   useQueries({ queries: ids.map((id) => teamOptions(id)) });
 export const useKeys = () => useQuery(keysOptions());
-export const useKey = (id: number) => useQuery(keyOptions(id));
 export const useProviders = () => useQuery(providersOptions());
 export const useTokens = () => useQuery(tokensOptions());
-export const useAuditLog = (page: AuditPageRequest = {}) => useQuery(auditLogOptions(page));
 
 /** How many entries a page of the audit log has. A page with fewer is the last. */
 export const AUDIT_PAGE_SIZE = 50;
@@ -393,7 +374,7 @@ export const useSetup = () =>
     () => ({ stale: [queryKeys.setup()] }),
   );
 
-// `useMe` and `useLogin` are the plain calls. What a sign-in and the answer
+// `meOptions` and `useLogin` are the plain calls. What a sign-in and the answer
 // of `me` mean for the CSRF token and the caches is decided in one place,
 // `auth/session.tsx`. Signing out has no hook here: it is `useSignOut` there,
 // which also forgets the session.
