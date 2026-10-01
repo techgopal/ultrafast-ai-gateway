@@ -92,8 +92,7 @@ fn route_targets<'a>(
     route: &'a SnapRoute,
 ) -> impl Iterator<Item = &'a SnapModel> {
     route
-        .targets
-        .iter()
+        .targets()
         .filter_map(|t| snapshot.model(&t.provider, &t.model))
         .filter(|m| may_call_model(snapshot, key, m))
 }
@@ -120,7 +119,7 @@ pub fn resolve<'a>(
     }
     // A route whose models are all gone is not the caller's to be refused:
     // the call fails as unavailable.
-    if route.targets.is_empty() || route_targets(snapshot, key, route).next().is_some() {
+    if !route.has_targets() || route_targets(snapshot, key, route).next().is_some() {
         Ok(Resolved::Route(route))
     } else {
         Err(Denied::Forbidden)
@@ -162,7 +161,7 @@ pub fn callable_names(snapshot: &Snapshot, key: &SnapKey) -> Vec<(String, String
         .chain(routes)
         .filter(|(id, _)| match resolve(snapshot, key, id) {
             // A route with no target left would answer 503: it is not listed.
-            Ok(Resolved::Route(route)) => !route.targets.is_empty(),
+            Ok(Resolved::Route(route)) => route.has_targets(),
             Ok(Resolved::Model(_)) => true,
             Err(_) => false,
         })

@@ -7,13 +7,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use ultrafast_translate::provider::ProviderKind;
 
 use crate::identity::{Role, UserStatus};
+use crate::routing::{BreakerSettings, TargetRef};
 use crate::secrets::Cipher;
-use crate::store::{RouteSettings, Store};
+use crate::store::Store;
 
 #[derive(Debug, Clone)]
 pub struct SnapKey {
@@ -39,26 +41,36 @@ pub struct SnapModel {
     pub user_ids: HashSet<i64>,
 }
 
-/// One target of a route, by the names of its model.
-#[derive(Debug, Clone)]
-pub struct SnapTarget {
-    pub provider: String,
-    pub model: String,
-    pub primary: bool,
-    pub weight: i64,
-}
-
 #[derive(Debug, Clone)]
 pub struct SnapRoute {
     pub id: i64,
     pub name: String,
-    pub settings: RouteSettings,
     /// Every user may use the route. Otherwise its teams and admins.
     pub everyone: bool,
     pub team_ids: HashSet<i64>,
-    /// Primaries in order, then fallbacks in order. Targets whose model is
+    /// The primaries in order, with their weights. Targets whose model is
     /// gone from the catalog or whose provider cannot be used are left out.
-    pub targets: Vec<SnapTarget>,
+    pub primaries: Vec<(TargetRef, u32)>,
+    /// The fallbacks in order, tried after every primary.
+    pub fallbacks: Vec<TargetRef>,
+    pub retries: u32,
+    pub first_token_timeout: Duration,
+    pub total_timeout: Duration,
+    pub breaker: BreakerSettings,
+}
+
+impl SnapRoute {
+    /// Primaries in order, then fallbacks in order.
+    pub fn targets(&self) -> impl Iterator<Item = &TargetRef> {
+        self.primaries
+            .iter()
+            .map(|(t, _)| t)
+            .chain(self.fallbacks.iter())
+    }
+
+    pub fn has_targets(&self) -> bool {
+        !self.primaries.is_empty() || !self.fallbacks.is_empty()
+    }
 }
 
 /// An active user, as far as access goes.
@@ -203,15 +215,26 @@ impl Snapshot {
         let mut route_names: HashMap<i64, String> = HashMap::new();
         for r in rows.routes {
             route_names.insert(r.id, r.name.clone());
+            let st = r.settings;
+            // Stored values are validated; a stray negative one is read as 0.
+            let secs = |n: i64| u64::try_from(n).unwrap_or(0);
             routes.insert(
                 r.name.clone(),
                 SnapRoute {
                     id: r.id,
                     name: r.name,
-                    settings: r.settings,
                     everyone: r.everyone,
                     team_ids: HashSet::new(),
-                    targets: Vec::new(),
+                    primaries: Vec::new(),
+                    fallbacks: Vec::new(),
+                    retries: u32::try_from(st.retries).unwrap_or(0),
+                    first_token_timeout: Duration::from_millis(secs(st.first_token_timeout_ms)),
+                    total_timeout: Duration::from_millis(secs(st.total_timeout_ms)),
+                    breaker: BreakerSettings {
+                        failures: u32::try_from(st.breaker_failures).unwrap_or(0).max(1),
+                        window: Duration::from_secs(secs(st.breaker_window_s)),
+                        open: Duration::from_secs(secs(st.breaker_open_s)),
+                    },
                 },
             );
         }
@@ -222,16 +245,21 @@ impl Snapshot {
         }
         for t in rows.route_targets {
             let key = (t.provider_name, t.model_name);
-            if !models.contains_key(&key) {
+            let Some(model) = models.get(&key) else {
                 continue;
-            }
+            };
+            let target = TargetRef {
+                provider: key.0,
+                model: key.1,
+                model_id: model.id,
+            };
             if let Some(route) = route_names.get(&t.route_id).and_then(|n| routes.get_mut(n)) {
-                route.targets.push(SnapTarget {
-                    provider: key.0,
-                    model: key.1,
-                    primary: t.primary,
-                    weight: t.weight,
-                });
+                if t.primary {
+                    let weight = u32::try_from(t.weight).unwrap_or(0);
+                    route.primaries.push((target, weight));
+                } else {
+                    route.fallbacks.push(target);
+                }
             }
         }
 
