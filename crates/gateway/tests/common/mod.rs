@@ -159,6 +159,34 @@ pub async fn post_chat(app: &Router, key: Option<&str>, body: &str) -> (StatusCo
     (status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
+/// A POST to any path with the given headers; returns the answer's headers too.
+pub async fn post_to(
+    app: &Router,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (StatusCode, HeaderMap, String) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let resp = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let (parts, body) = resp.into_parts();
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    (
+        parts.status,
+        parts.headers,
+        String::from_utf8(bytes.to_vec()).unwrap(),
+    )
+}
+
 /// A gateway for `/api` tests.
 pub struct Api {
     pub app: Router,

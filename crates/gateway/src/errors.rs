@@ -1,10 +1,38 @@
-//! Error responses for `/v1`, in the OpenAI error shape.
+//! Error responses for `/v1`, in the shape of the endpoint's API: OpenAI's,
+//! or Anthropic's for `/v1/messages`.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use ultrafast_translate::error::TranslateError;
+use ultrafast_translate::ingress::anthropic;
 use ultrafast_translate::ingress::openai::render_error;
+
+/// Which API's error body a caller expects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    OpenAi,
+    Anthropic,
+}
+
+impl Shape {
+    pub fn error(self, status: StatusCode, kind: &str, message: &str) -> Response {
+        match self {
+            Shape::OpenAi => error_response(status, kind, message),
+            // Anthropic's error type follows the status, not the gateway's kind.
+            Shape::Anthropic => (
+                status,
+                Json(anthropic::render_error(status.as_u16(), message)),
+            )
+                .into_response(),
+        }
+    }
+
+    pub fn translate_error(self, e: &TranslateError) -> Response {
+        let (status, kind, message) = caller_message(e);
+        self.error(status, kind, &message)
+    }
+}
 
 pub fn error_response(status: StatusCode, kind: &str, message: &str) -> Response {
     (status, Json(render_error(kind, message))).into_response()
@@ -39,11 +67,6 @@ pub fn caller_message(e: &TranslateError) -> (StatusCode, &'static str, String) 
         }
         TranslateError::Malformed(m) => (StatusCode::BAD_GATEWAY, "upstream_error", m.clone()),
     }
-}
-
-pub fn translate_error_response(e: &TranslateError) -> Response {
-    let (status, kind, message) = caller_message(e);
-    error_response(status, kind, &message)
 }
 
 #[cfg(test)]
@@ -110,7 +133,27 @@ mod tests {
 
     #[test]
     fn response_uses_the_same_policy() {
-        let resp = translate_error_response(&provider(403, "bad key sk-abc"));
+        let resp = Shape::OpenAi.translate_error(&provider(403, "bad key sk-abc"));
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn the_anthropic_shape_types_errors_by_status() {
+        for (status, kind) in [
+            (StatusCode::UNAUTHORIZED, "authentication_error"),
+            (StatusCode::FORBIDDEN, "permission_error"),
+            (StatusCode::NOT_FOUND, "not_found_error"),
+            (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error"),
+            (StatusCode::SERVICE_UNAVAILABLE, "overloaded_error"),
+            (StatusCode::BAD_GATEWAY, "api_error"),
+        ] {
+            let resp = Shape::Anthropic.error(status, "upstream_error", "m");
+            assert_eq!(resp.status(), status);
+            let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+            let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(v["type"], "error");
+            assert_eq!(v["error"]["type"], kind);
+            assert_eq!(v["error"]["message"], "m");
+        }
     }
 }

@@ -143,6 +143,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(|| async { Json(json!({ "status": "ok" })) }))
         .route("/v1/chat/completions", post(proxy::chat_completions))
+        .route("/v1/messages", post(proxy::messages))
+        .route("/v1/embeddings", post(proxy::embeddings))
         .route("/v1/models", get(proxy::list_models))
         // Every other path under `/v1` is answered here, so the console's
         // pages never stand in for a model API that does not exist.

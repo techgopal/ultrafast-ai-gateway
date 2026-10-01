@@ -1,4 +1,6 @@
-//! The `/v1/chat/completions` handler.
+//! The `/v1` call handlers: chat completions, Anthropic messages and
+//! embeddings. They share authentication, body reading, resolution, the
+//! routing engine and recording; only the caller's format differs.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -17,10 +19,11 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use http_body_util::LengthLimitError;
 use rand::rngs::StdRng;
-use ultrafast_translate::error::TranslateError;
-use ultrafast_translate::ingress::openai::{
-    parse_request, render_response, render_stream_error, render_stream_event,
+use ultrafast_translate::embeddings::{
+    self, EmbeddingsRequest, EmbeddingsResponse, NOT_SUPPORTED as EMBEDDINGS_NOT_SUPPORTED,
 };
+use ultrafast_translate::error::TranslateError;
+use ultrafast_translate::ingress::{anthropic, openai};
 use ultrafast_translate::provider::{
     build_request, parse_response, HttpRequest, StreamDecoder, Target,
 };
@@ -29,7 +32,7 @@ use ultrafast_translate::types::{ChatRequest, ChatResponse, StreamEvent, Usage};
 use crate::access::{self, Denied, Resolved};
 use crate::app::AppState;
 use crate::auth::authenticate;
-use crate::errors::{caller_message, error_response, translate_error_response};
+use crate::errors::{caller_message, Shape};
 use crate::routing::{
     self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
 };
@@ -43,16 +46,16 @@ pub(crate) fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn not_found(model: &str) -> Response {
-    error_response(
+fn not_found(shape: Shape, model: &str) -> Response {
+    shape.error(
         StatusCode::NOT_FOUND,
         "not_found_error",
         &format!("Unknown model '{model}'."),
     )
 }
 
-fn forbidden(model: &str) -> Response {
-    error_response(
+fn forbidden(shape: Shape, model: &str) -> Response {
+    shape.error(
         StatusCode::FORBIDDEN,
         "permission_error",
         &format!("You do not have access to model '{model}'."),
@@ -62,7 +65,7 @@ fn forbidden(model: &str) -> Response {
 /// `GET /v1/models`: what the key can call, models and routes.
 pub async fn list_models(State(state): State<Arc<AppState>>, request: Request) -> Response {
     let snapshot = state.snapshot.load_full();
-    let key = match authenticate(&snapshot, request.headers()) {
+    let key = match authenticate(&snapshot, request.headers(), Shape::OpenAi) {
         Ok(key) => key,
         Err(resp) => return resp,
     };
@@ -81,12 +84,85 @@ const NO_PROVIDER: &str = "No provider could serve this request.";
 const NO_MODEL: &str = "No model is available for this request.";
 const TIMED_OUT: &str = "The request timed out.";
 
-pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Request) -> Response {
+/// The three calls of `/v1` that reach a provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Endpoint {
+    Chat,
+    Messages,
+    Embeddings,
+}
+
+impl Endpoint {
+    /// What records call it.
+    fn name(self) -> &'static str {
+        match self {
+            Endpoint::Chat => "chat",
+            Endpoint::Messages => "messages",
+            Endpoint::Embeddings => "embeddings",
+        }
+    }
+
+    fn shape(self) -> Shape {
+        match self {
+            Endpoint::Messages => Shape::Anthropic,
+            Endpoint::Chat | Endpoint::Embeddings => Shape::OpenAi,
+        }
+    }
+
+    fn parse(self, body: &[u8]) -> Result<Call, TranslateError> {
+        match self {
+            Endpoint::Chat => openai::parse_request(body).map(Call::Chat),
+            Endpoint::Messages => anthropic::parse_request(body).map(Call::Chat),
+            Endpoint::Embeddings => embeddings::parse_request(body).map(Call::Embed),
+        }
+    }
+}
+
+/// What the caller asked for, in the common form.
+enum Call {
+    Chat(ChatRequest),
+    Embed(EmbeddingsRequest),
+}
+
+impl Call {
+    fn model(&self) -> &str {
+        match self {
+            Call::Chat(r) => &r.model,
+            Call::Embed(r) => &r.model,
+        }
+    }
+
+    fn stream(&self) -> bool {
+        matches!(self, Call::Chat(r) if r.stream)
+    }
+
+    /// Whether a provider of this kind can serve it.
+    fn served_by(&self, kind: ultrafast_translate::provider::ProviderKind) -> bool {
+        match self {
+            Call::Chat(_) => true,
+            Call::Embed(_) => kind.supports_embeddings(),
+        }
+    }
+}
+
+pub async fn chat_completions(state: State<Arc<AppState>>, request: Request) -> Response {
+    handle(state.0, request, Endpoint::Chat).await
+}
+
+pub async fn messages(state: State<Arc<AppState>>, request: Request) -> Response {
+    handle(state.0, request, Endpoint::Messages).await
+}
+
+pub async fn embeddings(state: State<Arc<AppState>>, request: Request) -> Response {
+    handle(state.0, request, Endpoint::Embeddings).await
+}
+
+async fn handle(state: Arc<AppState>, request: Request, endpoint: Endpoint) -> Response {
     // 1. Authenticate on the headers alone. The body has not been read yet.
     let (parts, body) = request.into_parts();
     // One snapshot serves the whole request.
     let snapshot = state.snapshot.load_full();
-    let key = match authenticate(&snapshot, &parts.headers) {
+    let key = match authenticate(&snapshot, &parts.headers, endpoint.shape()) {
         Ok(key) => key,
         Err(resp) => return resp,
     };
@@ -97,9 +173,9 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Reque
         key.id,
         key.user_id,
         key.team_id,
-        "chat",
+        endpoint.name(),
     ));
-    let response = dispatch(&state, &snapshot, &key, body, &mut scope).await;
+    let response = dispatch(&state, &snapshot, &key, body, endpoint, &mut scope).await;
     // A stream took the scope with it and records itself.
     if let Some(scope) = scope {
         scope.finish(response.status().as_u16());
@@ -111,6 +187,7 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Reque
 fn plan_of(
     snapshot: &Snapshot,
     key: &SnapKey,
+    call: &Call,
     resolved: &Resolved<'_>,
     rng: &mut StdRng,
 ) -> (Vec<Candidate>, Settings) {
@@ -136,7 +213,9 @@ fn plan_of(
     let candidates = order
         .into_iter()
         .map(|target| {
-            let callable = snapshot.provider(&target.provider).is_some()
+            let callable = snapshot
+                .provider(&target.provider)
+                .is_some_and(|p| call.served_by(p.kind))
                 && snapshot
                     .model(&target.provider, &target.model)
                     .is_some_and(|m| access::may_call_model(snapshot, key, m));
@@ -146,13 +225,30 @@ fn plan_of(
     (candidates, settings)
 }
 
+/// Whether the key may call some target of the plan, and a provider of that
+/// target cannot serve this call: nothing is wrong with the key or the
+/// providers, the model is of the wrong kind.
+fn wrong_kind(snapshot: &Snapshot, key: &SnapKey, call: &Call, candidates: &[Candidate]) -> bool {
+    let reachable = |c: &&Candidate| {
+        snapshot.provider(&c.target.provider).is_some()
+            && snapshot
+                .model(&c.target.provider, &c.target.model)
+                .is_some_and(|m| access::may_call_model(snapshot, key, m))
+    };
+    candidates.iter().any(|c| reachable(&c))
+        && !candidates.iter().any(|c| c.callable)
+        && !matches!(call, Call::Chat(_))
+}
+
 async fn dispatch(
     state: &AppState,
     snapshot: &Snapshot,
     key: &SnapKey,
     body: Body,
+    endpoint: Endpoint,
     scope: &mut Option<Scope>,
 ) -> Response {
+    let shape = endpoint.shape();
     let record = scope.as_mut().expect("the scope is taken only by a stream");
 
     // 2. Read and parse the body.
@@ -161,13 +257,13 @@ async fn dispatch(
         Err(e) => {
             let too_large = e.into_inner().is::<LengthLimitError>();
             return if too_large {
-                error_response(
+                shape.error(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     "invalid_request_error",
                     "Request body is too large.",
                 )
             } else {
-                error_response(
+                shape.error(
                     StatusCode::BAD_REQUEST,
                     "invalid_request_error",
                     "Request body could not be read.",
@@ -175,20 +271,20 @@ async fn dispatch(
             };
         }
     };
-    let req = match parse_request(&body) {
-        Ok(r) => r,
-        Err(e) => return translate_error_response(&e),
+    let call = match endpoint.parse(&body) {
+        Ok(c) => c,
+        Err(e) => return shape.translate_error(&e),
     };
-    record.requested(&req.model, req.stream);
+    record.requested(call.model(), call.stream());
 
     // 3. Resolve the name to something this key may call.
-    let resolved = match access::resolve(snapshot, key, &req.model) {
+    let resolved = match access::resolve(snapshot, key, call.model()) {
         Ok(r) => r,
-        Err(Denied::Unknown) => return not_found(&req.model),
-        Err(Denied::Forbidden) => return forbidden(&req.model),
+        Err(Denied::Unknown) => return not_found(shape, call.model()),
+        Err(Denied::Forbidden) => return forbidden(shape, call.model()),
     };
     let mut rng: StdRng = rand::make_rng();
-    let (candidates, settings) = plan_of(snapshot, key, &resolved, &mut rng);
+    let (candidates, settings) = plan_of(snapshot, key, &call, &resolved, &mut rng);
     record.targets(
         candidates
             .iter()
@@ -196,7 +292,7 @@ async fn dispatch(
             .collect(),
     );
     if candidates.is_empty() {
-        return error_response(StatusCode::SERVICE_UNAVAILABLE, "upstream_error", NO_MODEL);
+        return shape.error(StatusCode::SERVICE_UNAVAILABLE, "upstream_error", NO_MODEL);
     }
 
     // 4. Try the targets in order.
@@ -211,7 +307,7 @@ async fn dispatch(
             let provider = snapshot.provider(&target.provider);
             try_target(
                 &state.http,
-                &req,
+                &call,
                 provider,
                 target,
                 limits,
@@ -226,7 +322,20 @@ async fn dispatch(
                 .as_mut()
                 .expect("a whole answer keeps the scope")
                 .usage(response.usage);
-            Json(render_response(&response, now_secs())).into_response()
+            match endpoint {
+                Endpoint::Messages => Json(anthropic::render_response(&response)).into_response(),
+                _ => Json(openai::render_response(&response, now_secs())).into_response(),
+            }
+        }
+        Ok(Served::Embeddings(response)) => {
+            scope
+                .as_mut()
+                .expect("a whole answer keeps the scope")
+                .usage(Some(Usage {
+                    input_tokens: response.prompt_tokens,
+                    output_tokens: 0,
+                }));
+            Json(embeddings::render_response(&response)).into_response()
         }
         Ok(Served::Stream(committed)) => {
             let guard = StreamRecord {
@@ -236,10 +345,15 @@ async fn dispatch(
                 target: committed.target.clone(),
                 breaker: settings.breaker,
             };
-            stream_to_caller(*committed, guard)
+            stream_to_caller(*committed, guard, endpoint)
         }
-        Err(Stop::Fatal(e)) => e.into_response(),
-        Err(Stop::Exhausted(ex)) => exhausted_response(ex),
+        Err(Stop::Fatal(e)) => e.into_response(shape),
+        Err(Stop::Exhausted(_)) if wrong_kind(snapshot, key, &call, &candidates) => shape.error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            EMBEDDINGS_NOT_SUPPORTED,
+        ),
+        Err(Stop::Exhausted(ex)) => exhausted_response(shape, ex),
     }
 }
 
@@ -249,13 +363,13 @@ const RETRY_AFTER_CAP: Duration = Duration::from_secs(60);
 /// What the caller is told when no target served the call: the masked
 /// credential error when every try was refused, 429 when every try was a 429,
 /// otherwise 503.
-fn exhausted_response(ex: Exhausted<CallError>) -> Response {
+fn exhausted_response(shape: Shape, ex: Exhausted<CallError>) -> Response {
     if let Some(refused) = ex.refused {
-        return refused.into_response();
+        return refused.into_response(shape);
     }
     let seconds = |d: Duration| d.min(RETRY_AFTER_CAP).as_secs_f64().ceil() as u64;
     let response = if ex.attempts > 0 && ex.rate_limited == ex.attempts {
-        let mut r = error_response(
+        let mut r = shape.error(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limit_error",
             "The provider is rate limiting this request. Try again later.",
@@ -265,7 +379,7 @@ fn exhausted_response(ex: Exhausted<CallError>) -> Response {
         r.headers_mut().insert(RETRY_AFTER, wait.into());
         r
     } else {
-        let mut r = error_response(
+        let mut r = shape.error(
             StatusCode::SERVICE_UNAVAILABLE,
             "upstream_error",
             NO_PROVIDER,
@@ -303,20 +417,20 @@ enum CallError {
 }
 
 impl CallError {
-    fn into_response(self) -> Response {
+    fn into_response(self, shape: Shape) -> Response {
         match self {
-            CallError::Translate(e) => translate_error_response(&e),
-            CallError::Redirect(provider) => error_response(
+            CallError::Translate(e) => shape.translate_error(&e),
+            CallError::Redirect(provider) => shape.error(
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",
                 &format!("Provider '{provider}' answered with a redirect."),
             ),
-            CallError::TooLarge => error_response(
+            CallError::TooLarge => shape.error(
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",
                 "The provider response was too large.",
             ),
-            CallError::Lost => error_response(
+            CallError::Lost => shape.error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "upstream_error",
                 NO_PROVIDER,
@@ -328,6 +442,7 @@ impl CallError {
 /// What a target gave.
 enum Served {
     Whole(ChatResponse),
+    Embeddings(EmbeddingsResponse),
     Stream(Box<Committed>),
 }
 
@@ -413,7 +528,7 @@ fn outcome_of_error(e: &TranslateError) -> AttemptOutcome {
 /// the deadline of the request.
 async fn try_target(
     http: &reqwest::Client,
-    req: &ChatRequest,
+    call: &Call,
     provider: Option<&SnapProvider>,
     target: TargetRef,
     limits: Limits,
@@ -431,7 +546,11 @@ async fn try_target(
         model: target.model.clone(),
         api_version: provider.api_version.clone(),
     };
-    let out = build_request(&wire, req).map_err(|e| Failure::Fatal {
+    let built = match call {
+        Call::Chat(req) => build_request(&wire, req),
+        Call::Embed(req) => embeddings::build_request(&wire, req),
+    };
+    let out = built.map_err(|e| Failure::Fatal {
         error: CallError::Translate(e),
         status: None,
     })?;
@@ -458,7 +577,7 @@ async fn try_target(
             status: Some(status),
         });
     }
-    if req.stream && status < 400 {
+    if call.stream() && status < 400 {
         return first_event(
             upstream,
             provider,
@@ -489,9 +608,15 @@ async fn try_target(
             return Err(retryable(CallError::Lost, Some(status)));
         }
     };
-    match parse_response(provider.kind, status, &bytes) {
-        Ok(r) => Ok(Success {
-            value: Served::Whole(r),
+    let parsed = match call {
+        Call::Chat(_) => parse_response(provider.kind, status, &bytes).map(Served::Whole),
+        Call::Embed(_) => {
+            embeddings::parse_response(provider.kind, status, &bytes).map(Served::Embeddings)
+        }
+    };
+    match parsed {
+        Ok(value) => Ok(Success {
+            value,
             status: Some(status),
         }),
         Err(e) => Err(failure_of(e, Some(status), retry_after)),
@@ -610,10 +735,51 @@ async fn send(
     rb.body(out.body).send().await
 }
 
-fn stream_id() -> String {
+fn stream_id(prefix: &str) -> String {
     let mut bytes = [0u8; 12];
     crate::secrets::fill_random(&mut bytes);
-    format!("chatcmpl-{}", hex::encode(bytes))
+    format!("{prefix}-{}", hex::encode(bytes))
+}
+
+/// Renders a stream in the caller's format.
+enum StreamFormat {
+    OpenAi {
+        id: String,
+        model: String,
+        created: u64,
+    },
+    Anthropic(anthropic::StreamRenderer),
+}
+
+impl StreamFormat {
+    fn new(endpoint: Endpoint, model: &str) -> Self {
+        match endpoint {
+            Endpoint::Messages => {
+                StreamFormat::Anthropic(anthropic::StreamRenderer::new(&stream_id("msg"), model))
+            }
+            _ => StreamFormat::OpenAi {
+                id: stream_id("chatcmpl"),
+                model: model.to_string(),
+                created: now_secs(),
+            },
+        }
+    }
+
+    fn event(&mut self, ev: &StreamEvent) -> String {
+        match self {
+            StreamFormat::OpenAi { id, model, created } => {
+                openai::render_stream_event(ev, id, model, *created)
+            }
+            StreamFormat::Anthropic(r) => r.render(ev),
+        }
+    }
+
+    fn error(&self, message: &str) -> String {
+        match self {
+            StreamFormat::OpenAi { .. } => openai::render_stream_error(message),
+            StreamFormat::Anthropic(_) => anthropic::render_stream_error(message),
+        }
+    }
 }
 
 /// Logs a stream failure. The provider's text about a rejected credential
@@ -635,10 +801,10 @@ fn log_stream_error(provider: &str, e: &TranslateError) {
 }
 
 /// Logs a stream failure and renders the error event the caller may see.
-fn stream_failure(provider: &str, e: &TranslateError) -> String {
+fn stream_failure(format: &StreamFormat, provider: &str, e: &TranslateError) -> String {
     log_stream_error(provider, e);
     let (_, _, message) = caller_message(e);
-    render_stream_error(&message)
+    format.error(&message)
 }
 
 /// Holds a stream's record until the stream ends. Dropping it, which is what
@@ -700,9 +866,7 @@ impl Drop for StreamRecord {
 ///
 /// The body owns the upstream response, so when the caller disconnects and the
 /// body is dropped, the provider request is dropped with it.
-fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
-    let created = now_secs();
-    let id = stream_id();
+fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoint) -> Response {
     let body = async_stream::stream! {
         let record = record;
         let Committed {
@@ -715,7 +879,7 @@ fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
             error,
         } = committed;
         let provider = target.provider.clone();
-        let model = target.model.clone();
+        let mut format = StreamFormat::new(endpoint, &target.model);
         let mut pending = Some((events, error));
         loop {
             let (events, error) = match pending.take() {
@@ -725,7 +889,7 @@ fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
                         Err(_) => {
                             tracing::warn!(provider = %provider, "request ran out of time during the stream");
                             record.end_out_of_time();
-                            yield Ok::<String, Infallible>(render_stream_error(TIMED_OUT));
+                            yield Ok::<String, Infallible>(format.error(TIMED_OUT));
                             return;
                         }
                         Ok(None) => {
@@ -733,7 +897,7 @@ fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
                             if tail.is_empty() {
                                 record.end(AttemptOutcome::Retryable, None);
                                 tracing::warn!(provider = %provider, "provider stream ended before completion");
-                                yield Ok(render_stream_error("The provider stream ended before completion."));
+                                yield Ok(format.error("The provider stream ended before completion."));
                                 return;
                             }
                             // The closing event the provider held back.
@@ -744,7 +908,7 @@ fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
                             let e = e.without_url();
                             tracing::warn!(provider = %provider, error = %e, "provider stream was lost");
                             record.end(AttemptOutcome::Retryable, None);
-                            yield Ok(render_stream_error(
+                            yield Ok(format.error(
                                 "The connection to the provider was lost.",
                             ));
                             return;
@@ -762,7 +926,7 @@ fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
                     StreamEvent::Done { usage, .. } => Some(*usage),
                     _ => None,
                 };
-                let rendered = render_stream_event(&ev, &id, &model, created);
+                let rendered = format.event(&ev);
                 if let Some(usage) = usage {
                     // Recorded before the last event is handed over, so a
                     // caller that leaves right after it is not a lost call.
@@ -775,7 +939,7 @@ fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
             // An error that ended the stream, after the events before it.
             if let Some(e) = error {
                 record.end(outcome_of_error(&e), None);
-                yield Ok(stream_failure(&provider, &e));
+                yield Ok(stream_failure(&format, &provider, &e));
                 return;
             }
         }
