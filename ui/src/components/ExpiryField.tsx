@@ -1,3 +1,4 @@
+import { control } from "@/components/classes";
 import { Field } from "@/components/Field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,10 +39,10 @@ export function ExpiryField({ name, value, onChange, onBlur, error, hint }: Expi
             }}
           >
             {EXPIRY_CHOICES.map(([choice, label]) => (
-              <div key={choice} className="flex min-h-11 items-center gap-2 md:min-h-8">
+              <Label key={choice} htmlFor={`${id}-${choice}`} className={control}>
                 <RadioGroupItem id={`${id}-${choice}`} value={choice} />
-                <Label htmlFor={`${id}-${choice}`}>{label}</Label>
-              </div>
+                {label}
+              </Label>
             ))}
           </RadioGroup>
           {value.choice === "date" ? (

@@ -225,6 +225,55 @@ describe("class names that are shared", () => {
   });
 });
 
+/**
+ * The checkboxes and radios of a source that are not inside a `<Label` whose
+ * class makes it high enough to touch, by their lines. The opening tag of the
+ * label is on one line.
+ */
+function choicesOutsideTheirLabel(source: string): number[] {
+  const lineOf = (index: number) => source.slice(0, index).split("\n").length;
+  return [...source.matchAll(/<(?:Checkbox|RadioGroupItem)\b/g)].flatMap((match) => {
+    const before = source.slice(0, match.index);
+    const open = before.lastIndexOf("<Label");
+    const inside = open > before.lastIndexOf("</Label>");
+    const tag = source.slice(open, source.indexOf("\n", open));
+    const high = /className=\{control\}|className="min-h-11[ "]/.test(tag);
+    return inside && high ? [] : [lineOf(match.index)];
+  });
+}
+
+describe("checkboxes and radios", () => {
+  test("the scan sees what it should", () => {
+    const row = (label: string) => `${label}\n  <RadioGroupItem id="a" value="a" />\n  A\n</Label>`;
+    expect(choicesOutsideTheirLabel(row('<Label htmlFor="a" className={control}>'))).toEqual([]);
+    expect(choicesOutsideTheirLabel(row('<Label htmlFor="a" className="min-h-11">'))).toEqual([]);
+    expect(choicesOutsideTheirLabel(row('<Label htmlFor="a">'))).toEqual([2]);
+    expect(choicesOutsideTheirLabel(row('<Label htmlFor="a" className="min-h-11x">'))).toEqual([2]);
+    expect(
+      choicesOutsideTheirLabel('<div className={control}>\n  <Checkbox id="b" />\n  <Label htmlFor="b">B</Label>\n</div>'),
+    ).toEqual([2]);
+    expect(
+      choicesOutsideTheirLabel('<Label className={control}>A</Label>\n<RadioGroupItem value="b" />'),
+    ).toEqual([2]);
+  });
+
+  // On a narrow screen the box of a checkbox or a radio is 16 px, and the
+  // text beside it 14 px high: what is touched is the label, which holds its
+  // control and is 44 px high (`control`). A row around them that is 44 px
+  // high is no target: a touch beside the text does nothing.
+  test("each is inside its label, which is high enough to touch", () => {
+    const loose = written().flatMap((path) =>
+      choicesOutsideTheirLabel(readFileSync(join(src, path), "utf8")).map((line) => `${path}:${String(line)}`),
+    );
+    expect(loose).toEqual([]);
+    // The rule has something to look at.
+    const choices = written().filter((path) =>
+      /<(?:Checkbox|RadioGroupItem)\b/.test(readFileSync(join(src, path), "utf8")),
+    );
+    expect(choices.length).toBeGreaterThanOrEqual(6);
+  });
+});
+
 /** The files directly in `pages/` that are no tests, by their names without the extension. */
 function pageFiles(): string[] {
   return allSources()

@@ -4,6 +4,7 @@ import type { useUpdateProvider } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { ApiKeyInput } from "@/components/ApiKeyInput";
 import { BaseUrlField } from "@/components/BaseUrlField";
+import { control } from "@/components/classes";
 import { Field } from "@/components/Field";
 import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
@@ -113,10 +114,10 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
                   }}
                 >
                   {choices.map(([value, label]) => (
-                    <div key={value} className="flex min-h-11 items-center gap-2 md:min-h-8">
+                    <Label key={value} htmlFor={`${id}-${value}`} className={control}>
                       <RadioGroupItem id={`${id}-${value}`} value={value} />
-                      <Label htmlFor={`${id}-${value}`}>{label}</Label>
-                    </div>
+                      {label}
+                    </Label>
                   ))}
                 </RadioGroup>
               )}
