@@ -15,6 +15,9 @@ import {
 } from "@/components/AuthForm";
 import { Button } from "@/components/ui/button";
 
+export const SESSION_NOT_KEPT =
+  "Signed in, but this browser did not keep the session. Open the console over HTTPS, or start the gateway with --insecure-cookies on a trusted network.";
+
 function messageOf(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 401) return "Email or password is incorrect.";
@@ -47,7 +50,12 @@ export function SignIn() {
         email: textOf(data, "email"),
         password: textOf(data, "password"),
       });
-      begin(session.csrf_token);
+      // The session cookie is `Secure` unless the gateway was started with
+      // `--insecure-cookies`; over plain HTTP the browser drops it.
+      if (!(await begin(session.csrf_token))) {
+        setMessage(SESSION_NOT_KEPT);
+        failed();
+      }
     } catch (reason) {
       setMessage(messageOf(reason));
       failed();

@@ -51,8 +51,14 @@ export interface SessionControl {
   notice: string | null;
   /** `null` when no session ended since the app loaded or since the last sign-in. */
   ending: Ending | null;
-  /** A sign-in succeeded: the token of the new session. */
-  begin: (csrfToken: string) => void;
+  /**
+   * A sign-in succeeded: the token of the new session. Asks `me` for the
+   * user of the session and resolves `true` when it answered with them;
+   * `false` when it answered 401, which says that the browser did not keep
+   * the session cookie (a `Secure` cookie over plain HTTP). Until then the
+   * page that signs in stays as it is. Rejects when `me` could not be read.
+   */
+  begin: (csrfToken: string) => Promise<boolean>;
   /**
    * The session is over. Forgets the token and everything that was loaded.
    * `notice` is for a sign-out; a session that expired has its own.
@@ -183,14 +189,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const begin = useCallback(
-    (csrfToken: string) => {
+    async (csrfToken: string): Promise<boolean> => {
       setCsrfToken(csrfToken);
-      setEnding(null);
       setNotice(null);
       // When this sign-in replaces a session, no session ended: its toasts go here.
       dismissAll();
-      // Nobody was signed in a moment ago; now `me` has an answer.
-      void client.resetQueries({ queryKey: queryKeys.me() });
+      const key = queryKeys.me();
+      // A read of `me` from before the sign-in would answer for nobody.
+      await client.cancelQueries({ queryKey: key, exact: true });
+      // Asked here, not through the query: while the answer is on its way the
+      // query keeps what it has, so the sign-in page is not taken down for a
+      // "Loading" and stays as it is when the answer is a 401.
+      try {
+        client.setQueryData(key, await api.get("/api/auth/me"));
+      } catch (error) {
+        if (isUnauthorized(error)) return false;
+        throw error;
+      }
+      setEnding(null);
+      return true;
     },
     [client],
   );

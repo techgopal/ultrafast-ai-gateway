@@ -334,6 +334,77 @@ describe("sign-in", () => {
     stop();
   });
 
+  const NOT_KEPT =
+    "Signed in, but this browser did not keep the session. Open the console over HTTPS, or start the gateway with --insecure-cookies on a trusted network.";
+
+  /**
+   * The gateway takes the password, but the browser does not keep the session
+   * cookie (a `Secure` cookie over plain HTTP): `me` still answers 401.
+   */
+  function theBrowserKeepsNoCookie(): void {
+    override("post", "/api/auth/login", () =>
+      ok("post", "/api/auth/login", 200, {
+        user: fixtures.users.maya,
+        csrf_token: fixtures.csrfToken,
+      }),
+    );
+    override("get", "/api/auth/me", unauthenticated);
+  }
+
+  test("a sign-in whose session the browser did not keep says so, and the form is as after a refusal", async () => {
+    startGateway();
+    theBrowserKeepsNoCookie();
+    const ended = vi.fn();
+    const stop = onUnauthenticated(ended);
+    const app = await renderWithApp(null, { route: "/sign-in?next=%2Fkeys" });
+    await signIn();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(NOT_KEPT);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByLabelText("Password")).toHaveValue("");
+    expect(screen.getByLabelText("Email")).toHaveValue("maya@example.test");
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
+    await waitFor(() => {
+      expect(alert).toHaveFocus();
+    });
+    expect(href(app)).toBe("/sign-in?next=%2Fkeys");
+    expect(heading("Sign in")).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
+    expect(ended).not.toHaveBeenCalled();
+    stop();
+  });
+
+  test("after a sign-out, a sign-in whose session the browser did not keep says so as well", async () => {
+    startGateway({ signedIn: true });
+    const app = await renderWithApp(null, { route: "/keys" });
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in");
+    });
+    theBrowserKeepsNoCookie();
+    await signIn();
+    expect(await screen.findByRole("alert")).toHaveTextContent(NOT_KEPT);
+    expect(screen.getByLabelText("Email")).toHaveValue("maya@example.test");
+    expect(href(app)).toBe("/sign-in");
+  });
+
+  test("the message of a session that was not kept goes with the next attempt, which goes on when it is kept", async () => {
+    startGateway();
+    theBrowserKeepsNoCookie();
+    const app = await renderWithApp(null, { route: "/sign-in?next=%2Fkeys" });
+    await signIn();
+    expect(await screen.findByRole("alert")).toHaveTextContent(NOT_KEPT);
+    // The console is opened over HTTPS, say: the browser keeps the cookie now.
+    startGateway();
+    await signIn();
+    await waitFor(() => {
+      expect(heading("Virtual keys")).toBeInTheDocument();
+    });
+    expect(href(app)).toBe("/keys");
+    expect(screen.queryByText(NOT_KEPT)).toBeNull();
+    expect(await tokenOfAWrite()).toBe(fixtures.csrfToken);
+  });
+
   test("the message of a failure goes when the next attempt starts", async () => {
     startGateway();
     await renderWithApp(null, { route: "/sign-in" });
@@ -767,7 +838,7 @@ describe("answers of a session that is over", () => {
               void api
                 .post("/api/auth/login", { body: { email: "lena@example.test", password: PASSWORD } })
                 .then((answer) => {
-                  begin(answer.csrf_token);
+                  void begin(answer.csrf_token);
                 });
             }}
           >

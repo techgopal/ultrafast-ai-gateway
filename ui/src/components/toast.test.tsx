@@ -26,7 +26,7 @@ function Page() {
     void api
       .post("/api/auth/login", { body: { email: "lena@example.test", password: PASSWORD } })
       .then((answer) => {
-        begin(answer.csrf_token);
+        void begin(answer.csrf_token);
       });
   }
 

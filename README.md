@@ -81,6 +81,10 @@ pnpm --dir ui test:e2e
 
 Known limits:
 
+- The console needs HTTPS, except on localhost: the session cookie is
+  `Secure`, so over plain HTTP at any other address the browser drops it and
+  the sign-in page says so. On a trusted network, start the gateway with
+  `--insecure-cookies` instead.
 - A team lead adds a member by user ID, because the API does not let a lead
   find users outside their teams. The project owner has an open decision on
   adding members by email; when the API changes, the console's add-member
