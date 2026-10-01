@@ -1,5 +1,6 @@
 //! Shared state and the route table.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,6 +11,7 @@ use axum::middleware::map_response;
 use axum::response::Response;
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
+use ipnet::IpNet;
 use serde_json::json;
 use tokio::sync::{watch, Mutex, Semaphore};
 use tokio::task::JoinHandle;
@@ -48,6 +50,11 @@ pub struct AppState {
     pub snapshot: ArcSwap<Snapshot>,
     /// How long the background task waits between refreshes.
     pub refresh_interval: Duration,
+    /// Networks whose peers may name the client in `CF-Connecting-IP` or
+    /// `X-Forwarded-For`. Empty: those headers are never read.
+    pub trusted_proxies: Vec<IpNet>,
+    /// How many snapshots have been swapped in since the start.
+    refreshes: AtomicU64,
     /// Held while a snapshot is loaded and swapped in, so an older one
     /// can never replace a newer one.
     refreshing: Mutex<()>,
@@ -61,6 +68,8 @@ impl AppState {
         Ok(Self {
             snapshot: ArcSwap::from_pointee(snapshot),
             refresh_interval: DEFAULT_REFRESH_INTERVAL,
+            trusted_proxies: Vec::new(),
+            refreshes: AtomicU64::new(0),
             refreshing: Mutex::new(()),
             store,
             cipher,
@@ -79,7 +88,14 @@ impl AppState {
         let _guard = self.refreshing.lock().await;
         let snapshot = Snapshot::load(&self.store, &self.cipher).await?;
         self.snapshot.store(Arc::new(snapshot));
+        self.refreshes.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// How many snapshots have been swapped in since the start. A test
+    /// watches it to see that a change was published.
+    pub fn refresh_count(&self) -> u64 {
+        self.refreshes.load(Ordering::Relaxed)
     }
 }
 

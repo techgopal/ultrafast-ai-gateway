@@ -217,6 +217,18 @@ impl Tx<'_> {
         row.as_ref().map(user_from).transpose()
     }
 
+    /// The user with this email as the transaction sees them. `email` must
+    /// already be normalized.
+    pub async fn user_by_email(&mut self, email: &str) -> Result<Option<UserRow>> {
+        let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE email = ? AND org_id = ?");
+        let row = sqlx::query(AssertSqlSafe(sql))
+            .bind(email)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(self.conn())
+            .await?;
+        row.as_ref().map(user_from).transpose()
+    }
+
     /// Counts inside the transaction, so it sees the transaction's own changes.
     pub async fn count_users(&mut self) -> Result<i64> {
         let n = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE org_id = ?")

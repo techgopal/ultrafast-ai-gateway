@@ -135,7 +135,8 @@ async fn creating_a_token() {
             "id",
             "last_used_at",
             "name",
-            "revoked_at"
+            "revoked_at",
+            "status"
         ]
     );
 }
@@ -333,4 +334,52 @@ async fn token_secret_is_shown_once() {
         assert_eq!(row.target_type, "token");
         assert_eq!(row.target_id, Some(id));
     }
+}
+
+#[tokio::test]
+async fn token_status() {
+    let org = org().await;
+    let lena = org.sign_in("lena").await;
+    let (live, _) = create(&org, &lena, "live").await;
+    let (revoked, _) = create(&org, &lena, "revoked").await;
+    let (status, _) = org
+        .call(Some(&lena), "DELETE", &token_path(revoked), None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let old = generate_secret(TOKEN_PREFIX);
+    let mut tx = org.api.store.begin().await.unwrap();
+    let expired = tx
+        .insert_token(org.lena, "expired", &old.hash, &old.display, Some(PAST))
+        .await
+        .unwrap();
+    // Revoked and past its expiry: revoked wins.
+    let both = generate_secret(TOKEN_PREFIX);
+    let both_id = tx
+        .insert_token(org.lena, "both", &both.hash, &both.display, Some(PAST))
+        .await
+        .unwrap();
+    assert!(tx.revoke_token(both_id).await.unwrap());
+    tx.commit().await.unwrap();
+
+    let (status, body) = org.call(Some(&lena), "GET", "/api/tokens", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let status_of = |id: i64| {
+        let tokens = body["tokens"].as_array().unwrap();
+        let t = tokens.iter().find(|t| t["id"] == id).unwrap();
+        t["status"].as_str().unwrap().to_string()
+    };
+    assert_eq!(status_of(live), "active");
+    assert_eq!(status_of(revoked), "revoked");
+    assert_eq!(status_of(expired), "expired");
+    assert_eq!(status_of(both_id), "revoked");
+
+    let (_, created) = org
+        .call(
+            Some(&lena),
+            "POST",
+            "/api/tokens",
+            Some(json!({ "name": "new", "expires_at": FUTURE })),
+        )
+        .await;
+    assert_eq!(created["token"]["status"], "active");
 }

@@ -9,7 +9,8 @@ use ultrafast_gateway::api::openapi::spec;
 use ultrafast_gateway::api::trimmed_name;
 use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
 use ultrafast_gateway::config::{
-    db_path, load_master_key, restrict_permissions, validate_base_url, validate_provider_name,
+    db_path, load_master_key, parse_trusted_proxies, restrict_permissions, validate_base_url,
+    validate_provider_name,
 };
 use ultrafast_gateway::identity::password;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
@@ -43,6 +44,18 @@ enum Command {
         /// development. Never use this on a public address.
         #[arg(long, env = "UF_INSECURE_COOKIES")]
         insecure_cookies: bool,
+        /// A network (CIDR) of reverse proxies whose `CF-Connecting-IP` and
+        /// `X-Forwarded-For` headers are believed, to find the client's
+        /// address. Repeat the flag, or separate with commas in
+        /// UF_TRUSTED_PROXIES. Never list a network that clients can reach
+        /// directly.
+        #[arg(
+            long = "trusted-proxy",
+            env = "UF_TRUSTED_PROXIES",
+            value_name = "CIDR",
+            value_delimiter = ','
+        )]
+        trusted_proxies: Vec<String>,
     },
     /// Manage providers.
     Provider {
@@ -103,8 +116,14 @@ fn env_value(name: &str) -> Result<Option<String>> {
 /// Checks every argument of the command, and trims what is stored trimmed.
 fn validate(command: &mut Command) -> Result<()> {
     match command {
-        Command::Serve { host, port, .. } => {
+        Command::Serve {
+            host,
+            port,
+            trusted_proxies,
+            ..
+        } => {
             serve_address(host, *port)?;
+            parse_trusted_proxies(trusted_proxies)?;
         }
         Command::Provider {
             command:
@@ -168,6 +187,7 @@ async fn main() -> Result<()> {
             host,
             port,
             insecure_cookies,
+            trusted_proxies,
         } => {
             let addr = serve_address(&host, port)?;
             tokio::task::spawn_blocking(password::warm_up)
@@ -180,6 +200,13 @@ async fn main() -> Result<()> {
             tracing::debug!(expired, "removed expired sessions");
             let mut state = AppState::new(store, cipher).await?;
             state.cookie_secure = !insecure_cookies;
+            state.trusted_proxies = parse_trusted_proxies(&trusted_proxies)?;
+            if !state.trusted_proxies.is_empty() {
+                tracing::info!(
+                    count = state.trusted_proxies.len(),
+                    "trusting forwarding headers from proxies"
+                );
+            }
             if insecure_cookies {
                 tracing::warn!("session cookies are sent without Secure");
             }

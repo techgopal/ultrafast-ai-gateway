@@ -242,7 +242,7 @@ fn table() -> Vec<Row> {
         row(15, "PUT", "/api/teams/{id}/members/{user_id}", "platform, priya as member",
             |w, _| format!("/api/teams/{}/members/{}", w.org.platform, w.org.priya),
             || Some(json!({ "role": "member" })),
-            [204, 204, 403, 401]),
+            [204, 403, 403, 401]),
         row(16, "PUT", "/api/teams/{id}/members/{user_id}", "platform, priya as lead",
             |w, _| format!("/api/teams/{}/members/{}", w.org.platform, w.org.priya),
             || Some(json!({ "role": "lead" })),
@@ -288,6 +288,10 @@ fn table() -> Vec<Row> {
         row(33, "DELETE", "/api/tokens/{id}", "the caller's own token",
             |w, caller| format!("/api/tokens/{}", w.token_of(caller).id), no_body,
             [204, 204, 204, 401]),
+        row(34, "POST", "/api/teams/{id}/members", "platform, priya by email",
+            |w, _| format!("/api/teams/{}/members", w.org.platform),
+            || Some(json!({ "email": "priya@example.com" })),
+            [201, 201, 403, 401]),
     ]
 }
 
@@ -336,7 +340,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=33).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=34).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -462,7 +466,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 32);
+    assert_eq!(operations, 33);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

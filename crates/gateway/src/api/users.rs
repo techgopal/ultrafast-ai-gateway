@@ -11,7 +11,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::auth::UserView;
+use super::auth::{user_view, UserView};
 use super::{path_id, refresh_snapshot, require, trimmed_name, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
@@ -97,7 +97,16 @@ pub async fn list(
         } => store.list_users_in_teams(&team_ids, own_user_id).await?,
         Scope::Own { user_id } => store.list_users_in_teams(&[], user_id).await?,
     };
-    let users: Vec<UserView> = users.into_iter().map(UserView::from).collect();
+    // One query for the teams of everyone listed.
+    let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
+    let mut teams = store.teams_of_users(&ids).await?;
+    let users: Vec<UserView> = users
+        .into_iter()
+        .map(|u| {
+            let teams = teams.remove(&u.id).unwrap_or_default();
+            UserView::new(u, teams)
+        })
+        .collect();
     Ok(Json(json!({ "users": users })).into_response())
 }
 
@@ -186,7 +195,7 @@ pub async fn invite(
         .user_by_id(id)
         .await?
         .ok_or_else(|| anyhow!("the invited user is missing"))?;
-    let body = json!({ "user": UserView::from(user), "invite_link": invite_link });
+    let body = json!({ "user": user_view(store, user).await?, "invite_link": invite_link });
     Ok((StatusCode::CREATED, Json(body)).into_response())
 }
 
@@ -281,7 +290,7 @@ pub async fn view(
             shares_led_team,
         },
     )?;
-    Ok(Json(UserView::from(target)).into_response())
+    Ok(Json(user_view(store, target).await?).into_response())
 }
 
 #[utoipa::path(
@@ -397,7 +406,7 @@ pub async fn update(
         if req.status.is_some() {
             refresh_snapshot(&state).await?;
         }
-        return Ok(Json(UserView::from(was)).into_response());
+        return Ok(Json(user_view(store, was).await?).into_response());
     }
     keep_an_admin(&mut tx, &was).await?;
 
@@ -429,7 +438,7 @@ pub async fn update(
         .user_by_id(was.id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    Ok(Json(UserView::from(user)).into_response())
+    Ok(Json(user_view(store, user).await?).into_response())
 }
 
 /// For example `Changed role of lena@example.com from member to admin`.

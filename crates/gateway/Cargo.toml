@@ -24,6 +24,7 @@ clap.workspace = true
 flate2.workspace = true
 futures.workspace = true
 hex.workspace = true
+ipnet.workspace = true
 http-body-util.workspace = true
 mime_guess.workspace = true
 rand.workspace = true

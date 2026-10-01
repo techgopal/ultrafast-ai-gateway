@@ -56,6 +56,7 @@ export const users = {
     status: "active",
     created_at: "2026-06-01 09:00:00",
     last_active_at: "2026-09-28 16:20:00",
+    teams: [],
   },
   /** Lead of Platform, member of Research. */
   arjun: {
@@ -66,6 +67,10 @@ export const users = {
     status: "active",
     created_at: "2026-06-03 10:00:00",
     last_active_at: "2026-09-27 11:05:00",
+    teams: [
+      { team_id: 1, name: "Platform", role: "lead" },
+      { team_id: 2, name: "Research", role: "member" },
+    ],
   },
   /** Member of Platform. */
   lena: {
@@ -76,6 +81,7 @@ export const users = {
     status: "active",
     created_at: "2026-06-10 08:30:00",
     last_active_at: "2026-09-26 09:45:00",
+    teams: [{ team_id: 1, name: "Platform", role: "member" }],
   },
   /** Member of Research. */
   tomas: {
@@ -86,6 +92,7 @@ export const users = {
     status: "active",
     created_at: "2026-07-01 12:00:00",
     last_active_at: "2026-09-20 14:00:00",
+    teams: [{ team_id: 2, name: "Research", role: "member" }],
   },
   /** In no team. */
   priya: {
@@ -96,6 +103,7 @@ export const users = {
     status: "active",
     created_at: "2026-07-15 12:00:00",
     last_active_at: null,
+    teams: [],
   },
   /** Invited, has not set a password yet. */
   sam: {
@@ -106,6 +114,7 @@ export const users = {
     status: "invited",
     created_at: "2026-09-25 15:00:00",
     last_active_at: null,
+    teams: [],
   },
   /** Disabled. Owns a key, which is suspended. */
   dana: {
@@ -116,6 +125,7 @@ export const users = {
     status: "disabled",
     created_at: "2026-06-20 10:00:00",
     last_active_at: "2026-08-01 10:00:00",
+    teams: [],
   },
 } as const satisfies Record<string, User>;
 
@@ -241,6 +251,7 @@ export const tokens = {
     revoked_at: null,
     last_used_at: "2026-09-28 08:00:00",
     created_at: "2026-08-10 09:00:00",
+    status: "active",
   },
   /** Has an expiry, which has not come. */
   neverUsed: {
@@ -251,6 +262,7 @@ export const tokens = {
     revoked_at: null,
     last_used_at: null,
     created_at: "2026-09-15 09:00:00",
+    status: "active",
   },
   revoked: {
     id: 3,
@@ -260,6 +272,7 @@ export const tokens = {
     revoked_at: "2026-09-05 09:00:00",
     last_used_at: "2026-09-04 22:10:00",
     created_at: "2026-07-01 09:00:00",
+    status: "revoked",
   },
   /** Its time has passed; it was not revoked. */
   expired: {
@@ -270,6 +283,7 @@ export const tokens = {
     revoked_at: null,
     last_used_at: "2026-08-30 10:00:00",
     created_at: "2026-08-01 09:00:00",
+    status: "expired",
   },
 } satisfies Record<string, Token>;
 

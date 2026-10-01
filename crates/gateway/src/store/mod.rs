@@ -23,7 +23,7 @@ pub use audit::{AuditEntry, AuditRow};
 pub use keys::{KeyRow, LiveKey};
 pub use providers::ProviderRow;
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
-pub use teams::{MemberDetail, MemberRow, TeamRow, TeamSummary};
+pub use teams::{MemberDetail, MemberRow, TeamRow, TeamSummary, UserTeam};
 pub use users::{InviteRow, NewUser, UserRow};
 
 /// The only organisation until multi-tenancy arrives. Every query filters by it.

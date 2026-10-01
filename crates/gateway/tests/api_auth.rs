@@ -1,11 +1,16 @@
 mod common;
 
-use axum::http::StatusCode;
+use std::net::SocketAddr;
+
+use axum::body::Body;
+use axum::extract::ConnectInfo;
+use axum::http::{Request, StatusCode};
 use common::{
-    api, api_on, call, call_with_token, cookie_pair, harness, post_chat, seed_team, seed_user,
-    send, sign_in, Api, Signed,
+    api, api_behind, api_on, call, call_with_token, cookie_pair, harness, post_chat, seed_team,
+    seed_user, send, sign_in, Api, Signed,
 };
 use serde_json::{json, Value};
+use tower::ServiceExt;
 use ultrafast_gateway::identity::{Role, TeamRole, UserStatus};
 use ultrafast_gateway::secrets::{generate_secret, INVITE_PREFIX, TOKEN_PREFIX};
 use ultrafast_gateway::store::{after, NewUser, Store};
@@ -107,7 +112,8 @@ async fn setup_creates_the_first_admin_once() {
     let text = body.to_string();
     assert!(!text.contains("password"));
     assert!(!text.contains("argon2"));
-    assert_eq!(body.as_object().unwrap().len(), 7);
+    assert_eq!(body.as_object().unwrap().len(), 8);
+    assert_eq!(body["teams"], json!([]));
 
     let (_, _, body) = call(&api.app, "GET", "/api/setup", None, None).await;
     assert_eq!(body, json!({ "needs_setup": false }));
@@ -954,5 +960,65 @@ async fn v1_still_works() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!({ "needs_setup": true }));
     let (status, _, _) = call_with_token(&h.app, "GET", "/api/auth/me", &h.key, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// A failed sign-in as seen from `peer`, with extra headers.
+async fn login_from(api: &Api, peer: &str, headers: &[(&str, &str)], email: &str) -> StatusCode {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    let body = json!({ "email": email, "password": "wrong horse battery" });
+    let mut req = req.body(Body::from(body.to_string())).unwrap();
+    let peer: SocketAddr = format!("{peer}:4000").parse().unwrap();
+    req.extensions_mut().insert(ConnectInfo(peer));
+    api.app.clone().oneshot(req).await.unwrap().status()
+}
+
+/// Uses up the 20 failures an address may have, each for another email.
+async fn use_up_address(api: &Api, peer: &str, headers: &[(&str, &str)]) {
+    for n in 0..20 {
+        let status = login_from(api, peer, headers, &format!("user{n}@example.com")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {n}");
+    }
+}
+
+#[tokio::test]
+async fn trusted_proxy_uses_forwarded_address() {
+    let store = Store::open_in_memory().await.unwrap();
+    let api = api_behind(store, false, &["10.0.0.0/8"]).await;
+    let cf = |ip| [("cf-connecting-ip", ip)];
+
+    // A trusted peer: the limiter is keyed on the Cloudflare address.
+    use_up_address(&api, "10.0.0.1", &cf("203.0.113.9")).await;
+    let status = login_from(&api, "10.0.0.1", &cf("203.0.113.9"), "more@example.com").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    // Another client behind the same proxy, and the proxy itself, are fresh.
+    let status = login_from(&api, "10.0.0.1", &cf("203.0.113.10"), "more@example.com").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let status = login_from(&api, "10.0.0.1", &[], "more@example.com").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // A header that is not an address is not used.
+    let status = login_from(&api, "10.0.0.1", &cf("nonsense"), "more@example.com").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // An untrusted peer: the header is ignored, so the peer's own address
+    // is what runs out, however the header changes.
+    use_up_address(&api, "198.51.100.7", &[]).await;
+    let status = login_from(&api, "198.51.100.7", &cf("203.0.113.77"), "x@example.com").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    // A forwarded chain: the last address that is not trusted is the client.
+    let chain = [("x-forwarded-for", "1.1.1.1, 198.51.100.1, 10.0.0.2")];
+    use_up_address(&api, "10.0.0.1", &chain).await;
+    let spoofed = [("x-forwarded-for", "2.2.2.2, 198.51.100.1, 10.0.0.2")];
+    let status = login_from(&api, "10.0.0.1", &spoofed, "more@example.com").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let other = [("x-forwarded-for", "198.51.100.2, 10.0.0.2")];
+    let status = login_from(&api, "10.0.0.1", &other, "more@example.com").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

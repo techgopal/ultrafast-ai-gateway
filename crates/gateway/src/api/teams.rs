@@ -10,11 +10,11 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{path_id, require, ApiError, ApiJson, Authed};
+use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
-use crate::identity::{TeamRole, UserStatus};
-use crate::store::{AuditEntry, Store, StoreError, TeamRow, TeamSummary};
+use crate::identity::{normalize_email, TeamRole, UserStatus};
+use crate::store::{AuditEntry, MemberDetail, Store, StoreError, TeamRow, TeamSummary};
 
 /// Longest accepted team name, in characters.
 const MAX_TEAM_NAME_CHARS: usize = 60;
@@ -29,6 +29,12 @@ pub struct TeamNameRequest {
 #[serde(deny_unknown_fields)]
 pub struct MemberRequest {
     role: String,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AddMemberRequest {
+    email: String,
 }
 
 fn team_name(raw: &str) -> Result<&str, ApiError> {
@@ -278,7 +284,85 @@ pub async fn delete(
     })
     .await?;
     tx.commit().await?;
+    // Its keys are detached from it.
+    refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[utoipa::path(
+    post,
+    path = "/teams/{id}/members",
+    tag = "teams",
+    operation_id = "teams_member_add",
+    params(
+        ("id" = i64, Path, description = "The id of the team."),
+    ),
+    request_body = AddMemberRequest,
+    responses(
+        (status = 201, description = "The user is now a member of the team.", body = MemberDetail),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "The team does not exist or is hidden from the caller, or `user_not_found`: no active user has that email.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`already_member`: the user is in the team already, in any role. Nothing is changed.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+pub async fn add_member(
+    State(state): State<Arc<AppState>>,
+    Path(raw_team): Path<String>,
+    authed: Authed,
+    ApiJson(req): ApiJson<AddMemberRequest>,
+) -> Result<Response, ApiError> {
+    let me = &authed.principal;
+    let store = &state.store;
+    let team = team_of(store, &raw_team).await?;
+    require(me, &Action::AddMember { team_id: team.id })?;
+    let email = normalize_email(&req.email).map_err(|m| ApiError::invalid_field("email", m))?;
+
+    let mut tx = store.begin().await?;
+    let team = tx
+        .team_by_id(team.id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    // The same answer for a user who does not exist and for one who is not
+    // active, so a lead cannot find out which accounts are disabled.
+    let user = tx
+        .user_by_email(&email)
+        .await?
+        .filter(|u| u.status == UserStatus::Active)
+        .ok_or_else(|| {
+            ApiError::not_found_with("user_not_found", "No active user with that email.")
+        })?;
+    if tx.member_role(team.id, user.id).await?.is_some() {
+        return Err(ApiError::conflict(
+            "already_member",
+            "Already in this team.",
+        ));
+    }
+    tx.put_member(team.id, user.id, TeamRole::Member).await?;
+    tx.audit(AuditEntry {
+        actor_user_id: Some(me.user_id),
+        actor_email: &me.email,
+        action: "team.member_add",
+        target_type: "team",
+        target_id: Some(team.id),
+        summary: &format!("Added {} to team {} as member", user.email, team.name),
+    })
+    .await?;
+    tx.commit().await?;
+    refresh_snapshot(&state).await?;
+
+    let member = MemberDetail {
+        user_id: user.id,
+        email: user.email,
+        name: user.name,
+        role: TeamRole::Member,
+    };
+    Ok((StatusCode::CREATED, Json(member)).into_response())
 }
 
 #[utoipa::path(
@@ -295,7 +379,7 @@ pub async fn delete(
         (status = 204, description = "The user is a member of the team with this role."),
         (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
-        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not an admin, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
         (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
         (status = 409, description = "`user_disabled`: a disabled user cannot be added.", body = super::openapi::ApiErrorBody),
         (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
@@ -313,19 +397,11 @@ pub async fn put_member(
     let me = &authed.principal;
     let store = &state.store;
     let team = team_of(store, &raw_team).await?;
-    let role = TeamRole::parse(&req.role);
-    // A role that does not exist is judged as the one that needs the most,
-    // so only a caller who may set any role learns that it is not valid.
-    require(
-        me,
-        &Action::PutMember {
-            team_id: team.id,
-            role: role.unwrap_or(TeamRole::Lead),
-        },
-    )?;
+    // Admins only, so only an admin learns that a role is not valid.
+    require(me, &Action::PutMember { team_id: team.id })?;
     let user_id = path_id(&raw_user)?;
-    let role =
-        role.ok_or_else(|| ApiError::invalid_field("role", "role must be lead or member"))?;
+    let role = TeamRole::parse(&req.role)
+        .ok_or_else(|| ApiError::invalid_field("role", "role must be lead or member"))?;
 
     let mut tx = store.begin().await?;
     let team = tx
@@ -373,6 +449,7 @@ pub async fn put_member(
     })
     .await?;
     tx.commit().await?;
+    refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -388,7 +465,7 @@ pub async fn put_member(
     responses(
         (status = 204, description = "The user is no longer a member of the team."),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
-        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this (a lead of the team may remove members and themselves, not another lead), or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
         (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
@@ -402,7 +479,6 @@ pub async fn remove_member(
     let me = &authed.principal;
     let store = &state.store;
     let team = team_of(store, &raw_team).await?;
-    require(me, &Action::RemoveMember { team_id: team.id })?;
     let user_id = path_id(&raw_user)?;
 
     let mut tx = store.begin().await?;
@@ -410,6 +486,17 @@ pub async fn remove_member(
         .team_by_id(team.id)
         .await?
         .ok_or_else(ApiError::not_found)?;
+    // The role is read inside the transaction, so the decision is made on
+    // what is removed.
+    let target_role = tx.member_role(team.id, user_id).await?;
+    require(
+        me,
+        &Action::RemoveMember {
+            team_id: team.id,
+            target_user_id: user_id,
+            target_role,
+        },
+    )?;
     let user = tx
         .user_by_id(user_id)
         .await?
@@ -427,6 +514,7 @@ pub async fn remove_member(
     })
     .await?;
     tx.commit().await?;
+    refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

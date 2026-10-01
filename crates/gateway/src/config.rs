@@ -148,10 +148,45 @@ fn write_owner_only(path: &Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents).with_context(|| format!("could not create {}", path.display()))
 }
 
+/// The networks of `--trusted-proxy` / `UF_TRUSTED_PROXIES`, in CIDR
+/// notation; a bare address counts as a network of one. Blank entries are
+/// skipped. The error names the value that is not valid.
+pub fn parse_trusted_proxies(values: &[String]) -> Result<Vec<ipnet::IpNet>> {
+    values
+        .iter()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(|v| {
+            v.parse::<ipnet::IpNet>()
+                .or_else(|_| v.parse::<std::net::IpAddr>().map(ipnet::IpNet::from))
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "trusted proxy '{v}' is not a network in CIDR notation, such as 10.0.0.0/8"
+                    )
+                })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::secrets::Cipher;
+
+    #[test]
+    fn trusted_proxies_are_networks_and_errors_name_the_value() {
+        let list =
+            |items: &[&str]| -> Vec<String> { items.iter().map(|s| s.to_string()).collect() };
+        let nets =
+            parse_trusted_proxies(&list(&["10.0.0.0/8", " fd00::/8 ", "", "192.0.2.1"])).unwrap();
+        let nets: Vec<String> = nets.iter().map(|n| n.to_string()).collect();
+        assert_eq!(nets, ["10.0.0.0/8", "fd00::/8", "192.0.2.1/32"]);
+        assert!(parse_trusted_proxies(&[]).unwrap().is_empty());
+        for bad in ["10.0.0.0/33", "nope", "10.0.0/8", "10.0.0.0/8/9"] {
+            let err = parse_trusted_proxies(&list(&["10.0.0.0/8", bad])).unwrap_err();
+            assert!(err.to_string().contains(&format!("'{bad}'")), "{err}");
+        }
+    }
 
     #[test]
     fn env_value_wins_and_nothing_is_written() {

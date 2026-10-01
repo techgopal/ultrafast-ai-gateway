@@ -77,7 +77,7 @@ async fn admin_lists_everyone() {
     let text = body.to_string();
     assert!(!text.contains("password"));
     assert!(!text.contains("argon2"));
-    assert_eq!(body["users"][0].as_object().unwrap().len(), 7);
+    assert_eq!(body["users"][0].as_object().unwrap().len(), 8);
 }
 
 #[tokio::test]
@@ -307,7 +307,7 @@ async fn viewing_users_hides_outsiders() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["email"], "lena@example.com");
-    assert_eq!(body.as_object().unwrap().len(), 7);
+    assert_eq!(body.as_object().unwrap().len(), 8);
     assert!(!body.to_string().contains("password"));
 
     // tomas shares Research with arjun, but arjun does not lead it.
@@ -787,4 +787,44 @@ async fn reinvite_hides_existence_from_non_admins() {
     // The refused calls replaced nothing.
     assert_eq!(status(&paths[0]).await.0, StatusCode::CREATED);
     assert_eq!(accept(&org, &token).await, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn user_view_lists_teams() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let arjun_teams = json!([
+        { "team_id": org.platform, "name": "Platform", "role": "lead" },
+        { "team_id": org.research, "name": "Research", "role": "member" },
+    ]);
+
+    // The list: every user with their own teams, ordered by name.
+    let (status, body) = org.call(Some(&maya), "GET", "/api/users", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let teams_of = |email: &str| {
+        let users = body["users"].as_array().unwrap();
+        users.iter().find(|u| u["email"] == email).unwrap()["teams"].clone()
+    };
+    assert_eq!(teams_of("arjun@example.com"), arjun_teams);
+    assert_eq!(
+        teams_of("lena@example.com"),
+        json!([{ "team_id": org.platform, "name": "Platform", "role": "member" }])
+    );
+    assert_eq!(teams_of("priya@example.com"), json!([]));
+    assert_eq!(teams_of("maya@example.com"), json!([]));
+
+    let (_, body) = org
+        .call(Some(&maya), "GET", &user_path(org.arjun), None)
+        .await;
+    assert_eq!(body["teams"], arjun_teams);
+
+    // The update answers with them too.
+    let path = user_path(org.arjun);
+    let patch = Some(json!({ "name": "Arjun K" }));
+    let (_, body) = org.call(Some(&maya), "PATCH", &path, patch).await;
+    assert_eq!(body["teams"], arjun_teams);
+
+    let arjun = org.sign_in("arjun").await;
+    let (_, body) = org.call(Some(&arjun), "GET", "/api/auth/me", None).await;
+    assert_eq!(body["user"]["teams"], arjun_teams);
 }

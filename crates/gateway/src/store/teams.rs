@@ -1,5 +1,7 @@
 //! Teams and their members.
 
+use std::collections::HashMap;
+
 use anyhow::{anyhow, Result};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{AssertSqlSafe, Row};
@@ -35,6 +37,14 @@ pub struct TeamSummary {
 pub struct MemberDetail {
     pub user_id: i64,
     pub email: String,
+    pub name: String,
+    pub role: TeamRole,
+}
+
+/// A team of a user, with their role in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserTeam {
+    pub team_id: i64,
     pub name: String,
     pub role: TeamRole,
 }
@@ -124,6 +134,37 @@ impl Store {
             .fetch_all(self.pool())
             .await?;
         Ok(rows.iter().map(summary_from).collect())
+    }
+
+    /// The teams of each of the users, in any role, in one query. Each list
+    /// is ordered by team name; a user in no team has no entry.
+    pub async fn teams_of_users(&self, user_ids: &[i64]) -> Result<HashMap<i64, Vec<UserTeam>>> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let marks = vec!["?"; user_ids.len()].join(", ");
+        let sql = format!(
+            "SELECT m.user_id, m.team_id, t.name, m.role
+             FROM team_members m
+             JOIN teams t ON t.id = m.team_id AND t.org_id = m.org_id
+             WHERE m.org_id = ? AND m.user_id IN ({marks})
+             ORDER BY t.name, t.id"
+        );
+        let mut query = sqlx::query(AssertSqlSafe(sql)).bind(DEFAULT_ORG);
+        for id in user_ids {
+            query = query.bind(id);
+        }
+        let mut teams: HashMap<i64, Vec<UserTeam>> = HashMap::new();
+        for r in query.fetch_all(self.pool()).await? {
+            let role: String = r.get("role");
+            teams.entry(r.get("user_id")).or_default().push(UserTeam {
+                team_id: r.get("team_id"),
+                name: r.get("name"),
+                role: TeamRole::parse(&role)
+                    .ok_or_else(|| anyhow!("stored team role is not known"))?,
+            });
+        }
+        Ok(teams)
     }
 
     /// The members of a team with their email and name, ordered by email.
@@ -281,6 +322,39 @@ mod tests {
             status: UserStatus::Active,
             password_hash: None,
         }
+    }
+
+    #[tokio::test]
+    async fn teams_of_users_come_in_one_call_ordered_by_name() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let a = tx.insert_user(member("a@example.com")).await.unwrap();
+        let b = tx.insert_user(member("b@example.com")).await.unwrap();
+        let c = tx.insert_user(member("c@example.com")).await.unwrap();
+        let zed = tx.insert_team("Zed").await.unwrap();
+        let alpha = tx.insert_team("Alpha").await.unwrap();
+        tx.put_member(zed, a, TeamRole::Lead).await.unwrap();
+        tx.put_member(alpha, a, TeamRole::Member).await.unwrap();
+        tx.put_member(zed, b, TeamRole::Member).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let teams = s.teams_of_users(&[a, b, c]).await.unwrap();
+        let team = |team_id, name: &str, role| UserTeam {
+            team_id,
+            name: name.into(),
+            role,
+        };
+        assert_eq!(
+            teams[&a],
+            [
+                team(alpha, "Alpha", TeamRole::Member),
+                team(zed, "Zed", TeamRole::Lead)
+            ]
+        );
+        assert_eq!(teams[&b], [team(zed, "Zed", TeamRole::Member)]);
+        assert!(!teams.contains_key(&c));
+        assert!(s.teams_of_users(&[]).await.unwrap().is_empty());
+        assert_eq!(s.teams_of_users(&[b]).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

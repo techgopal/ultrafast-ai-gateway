@@ -21,6 +21,7 @@ use axum::http::request::Parts;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
+use ipnet::IpNet;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use utoipa_axum::router::OpenApiRouter;
@@ -64,6 +65,7 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(users::reinvite))
         .routes(routes!(teams::list, teams::create))
         .routes(routes!(teams::view, teams::rename, teams::delete))
+        .routes(routes!(teams::add_member))
         .routes(routes!(teams::put_member, teams::remove_member))
         .routes(routes!(keys::list, keys::create))
         .routes(routes!(keys::view, keys::revoke))
@@ -158,6 +160,12 @@ impl ApiError {
 
     pub fn not_found() -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", "Not found.")
+    }
+
+    /// A 404 with a code of its own, for a thing the caller named that is
+    /// not there.
+    pub fn not_found_with(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_FOUND, code, message)
     }
 
     pub fn method_not_allowed() -> Self {
@@ -337,20 +345,65 @@ fn json_error(rejection: &JsonRejection) -> ApiError {
     )
 }
 
-/// The address of the client, from the TCP connection. Forwarding headers
-/// are not trusted. Without connection information, as in tests that call
-/// the router directly, it is 127.0.0.1.
+/// The address of the client. It is the TCP peer, unless the peer is inside
+/// one of `AppState::trusted_proxies`: then it is the `CF-Connecting-IP`
+/// header if that holds an address, else the last address of
+/// `X-Forwarded-For` that is not itself trusted. The headers of any other
+/// peer are ignored. Without connection information, as in tests that call
+/// the router directly, the peer is 127.0.0.1.
 pub struct ClientAddr(pub IpAddr);
 
-impl<S: Send + Sync> FromRequestParts<S> for ClientAddr {
+/// The client address for a request from `peer` with these headers.
+pub fn client_addr(peer: IpAddr, headers: &HeaderMap, trusted: &[IpNet]) -> IpAddr {
+    let is_trusted = |addr: &IpAddr| trusted.iter().any(|net| net.contains(addr));
+    if !is_trusted(&peer) {
+        return peer;
+    }
+    let forwarded = |name: &str| {
+        headers
+            .get_all(name)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+    };
+    if let Some(addr) = forwarded("cf-connecting-ip")
+        .next()
+        .and_then(|value| value.trim().parse::<IpAddr>().ok())
+    {
+        return addr;
+    }
+    // Each proxy appends the address it saw, so the chain is read from the
+    // end: what is left of the last trusted hop is the client. Anything
+    // further left was written by the client and can be anything.
+    let chain: Vec<&str> = forwarded("x-forwarded-for")
+        .flat_map(|value| value.split(','))
+        .collect();
+    for entry in chain.into_iter().rev() {
+        match entry.trim().parse::<IpAddr>() {
+            Ok(addr) if is_trusted(&addr) => continue,
+            Ok(addr) => return addr,
+            // A hop that is not an address cannot name the client.
+            Err(_) => break,
+        }
+    }
+    peer
+}
+
+impl FromRequestParts<Arc<AppState>> for ClientAddr {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
-        let addr = parts
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        let peer = parts
             .extensions
             .get::<ConnectInfo<SocketAddr>>()
             .map_or(IpAddr::V4(Ipv4Addr::LOCALHOST), |info| info.0.ip());
-        Ok(Self(addr))
+        Ok(Self(client_addr(
+            peer,
+            &parts.headers,
+            &state.trusted_proxies,
+        )))
     }
 }
 
@@ -625,6 +678,76 @@ mod tests {
         assert_eq!(bearer_token(&value("Basic uf-at-1")), None);
         assert_eq!(bearer_token(&value("Bearer")), None);
         assert_eq!(bearer_token(&value("")), None);
+    }
+
+    fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.append(*name, value.parse().unwrap());
+        }
+        map
+    }
+
+    #[test]
+    fn client_address_follows_trusted_proxies_only() {
+        let trusted: Vec<IpNet> = vec!["10.0.0.0/8".parse().unwrap(), "fd00::/8".parse().unwrap()];
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let via = |peer: &str, pairs: &[(&'static str, &str)]| {
+            client_addr(ip(peer), &headers(pairs), &trusted)
+        };
+
+        // No trusted proxy configured: nothing is read.
+        let cf = headers(&[("cf-connecting-ip", "203.0.113.9")]);
+        assert_eq!(client_addr(ip("10.0.0.1"), &cf, &[]), ip("10.0.0.1"));
+
+        // An untrusted peer's headers are ignored.
+        let spoof = [
+            ("cf-connecting-ip", "1.1.1.1"),
+            ("x-forwarded-for", "2.2.2.2"),
+        ];
+        assert_eq!(via("198.51.100.7", &spoof), ip("198.51.100.7"));
+
+        // A trusted peer: Cloudflare's header first.
+        assert_eq!(via("10.0.0.1", &spoof), ip("1.1.1.1"));
+        assert_eq!(
+            via("fd00::1", &[("cf-connecting-ip", " 2001:db8::5 ")]),
+            ip("2001:db8::5")
+        );
+        // Not an address: it falls through to the chain, then to the peer.
+        let bad = [
+            ("cf-connecting-ip", "nonsense"),
+            ("x-forwarded-for", "2.2.2.2"),
+        ];
+        assert_eq!(via("10.0.0.1", &bad), ip("2.2.2.2"));
+        assert_eq!(
+            via("10.0.0.1", &[("cf-connecting-ip", "x")]),
+            ip("10.0.0.1")
+        );
+        assert_eq!(via("10.0.0.1", &[]), ip("10.0.0.1"));
+
+        // The chain: the last address that is not trusted, whatever the
+        // client wrote before it, over one header or several.
+        let chain = [("x-forwarded-for", "9.9.9.9, 198.51.100.1, 10.0.0.2")];
+        assert_eq!(via("10.0.0.1", &chain), ip("198.51.100.1"));
+        let split = [
+            ("x-forwarded-for", "9.9.9.9, 198.51.100.1"),
+            ("x-forwarded-for", "10.0.0.2"),
+        ];
+        assert_eq!(via("10.0.0.1", &split), ip("198.51.100.1"));
+        let two = [("x-forwarded-for", "198.51.100.1, 203.0.113.3")];
+        assert_eq!(via("10.0.0.1", &two), ip("203.0.113.3"));
+        // Every hop trusted, or a hop that is not an address: the peer.
+        assert_eq!(
+            via("10.0.0.1", &[("x-forwarded-for", "10.0.0.3, 10.0.0.2")]),
+            ip("10.0.0.1")
+        );
+        assert_eq!(
+            via(
+                "10.0.0.1",
+                &[("x-forwarded-for", "198.51.100.1, junk, 10.0.0.2")]
+            ),
+            ip("10.0.0.1")
+        );
     }
 
     #[test]

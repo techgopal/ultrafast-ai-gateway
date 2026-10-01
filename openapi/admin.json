@@ -1735,6 +1735,145 @@
         ]
       }
     },
+    "/api/teams/{id}/members": {
+      "post": {
+        "tags": [
+          "teams"
+        ],
+        "operationId": "teams_member_add",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the team.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddMemberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The user is now a member of the team.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The team does not exist or is hidden from the caller, or `user_not_found`: no active user has that email.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`already_member`: the user is in the team already, in any role. Nothing is changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/teams/{id}/members/{user_id}": {
       "put": {
         "tags": [
@@ -1807,7 +1946,7 @@
             }
           },
           "403": {
-            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "description": "The caller is not an admin, or the CSRF token is missing or does not match.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1927,7 +2066,7 @@
             }
           },
           "403": {
-            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "description": "The caller is not allowed to do this (a lead of the team may remove members and themselves, not another lead), or the CSRF token is missing or does not match.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2787,6 +2926,18 @@
         },
         "additionalProperties": false
       },
+      "AddMemberRequest": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "ApiErrorBody": {
         "type": "object",
         "description": "Every error of `/api` has this shape.",
@@ -3182,7 +3333,7 @@
           "teams": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/TeamView"
+              "$ref": "#/components/schemas/UserTeamView"
             }
           },
           "user": {
@@ -3401,27 +3552,6 @@
           }
         }
       },
-      "TeamView": {
-        "type": "object",
-        "description": "A team of the caller, with their role in it.",
-        "required": [
-          "team_id",
-          "name",
-          "role"
-        ],
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "role": {
-            "$ref": "#/components/schemas/TeamRole"
-          },
-          "team_id": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      },
       "TokenList": {
         "type": "object",
         "required": [
@@ -3436,6 +3566,15 @@
           }
         }
       },
+      "TokenStatus": {
+        "type": "string",
+        "description": "Whether a token can still be used, as of the moment of the answer.",
+        "enum": [
+          "active",
+          "expired",
+          "revoked"
+        ]
+      },
       "TokenView": {
         "type": "object",
         "description": "A token as `/api` shows it. It has no field for the token or its hash.",
@@ -3446,7 +3585,8 @@
           "expires_at",
           "revoked_at",
           "last_used_at",
-          "created_at"
+          "created_at",
+          "status"
         ],
         "properties": {
           "created_at": {
@@ -3479,6 +3619,10 @@
               "string",
               "null"
             ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/TokenStatus",
+            "description": "Worked out when the answer is made."
           }
         }
       },
@@ -3549,6 +3693,27 @@
           "disabled"
         ]
       },
+      "UserTeamView": {
+        "type": "object",
+        "description": "A team of a user, with their role in it.",
+        "required": [
+          "team_id",
+          "name",
+          "role"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/TeamRole"
+          },
+          "team_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "UserView": {
         "type": "object",
         "description": "A user as `/api` shows it. It has no field for the password hash.",
@@ -3559,7 +3724,8 @@
           "role",
           "status",
           "created_at",
-          "last_active_at"
+          "last_active_at",
+          "teams"
         ],
         "properties": {
           "created_at": {
@@ -3586,6 +3752,13 @@
           },
           "status": {
             "$ref": "#/components/schemas/UserStatus"
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserTeamView"
+            },
+            "description": "The user's teams, ordered by name."
           }
         }
       }

@@ -27,7 +27,7 @@ use crate::identity::password::{
 use crate::identity::policy::Action;
 use crate::identity::{normalize_email, Role, TeamRole, UserStatus};
 use crate::secrets::{hash_key, INVITE_PREFIX};
-use crate::store::{AuditEntry, NewUser, Store, UserRow, SESSION_SECONDS};
+use crate::store::{AuditEntry, NewUser, Store, UserRow, UserTeam, SESSION_SECONDS};
 
 /// The name of an admin created from the environment at startup.
 const BOOTSTRAP_NAME: &str = "Admin";
@@ -43,10 +43,12 @@ pub struct UserView {
     pub created_at: String,
     #[schema(required)]
     pub last_active_at: Option<String>,
+    /// The user's teams, ordered by name.
+    pub teams: Vec<UserTeamView>,
 }
 
-impl From<UserRow> for UserView {
-    fn from(u: UserRow) -> Self {
+impl UserView {
+    pub fn new(u: UserRow, teams: Vec<UserTeam>) -> Self {
         Self {
             id: u.id,
             email: u.email,
@@ -55,8 +57,16 @@ impl From<UserRow> for UserView {
             status: u.status,
             created_at: u.created_at,
             last_active_at: u.last_active_at,
+            teams: teams.into_iter().map(UserTeamView::from).collect(),
         }
     }
+}
+
+/// The view of a single user, with their teams.
+pub async fn user_view(store: &Store, user: UserRow) -> anyhow::Result<UserView> {
+    let mut teams = store.teams_of_users(&[user.id]).await?;
+    let teams = teams.remove(&user.id).unwrap_or_default();
+    Ok(UserView::new(user, teams))
 }
 
 // Request types have no `Debug`: most of them hold a password or a token.
@@ -97,12 +107,22 @@ pub struct ChangePasswordRequest {
     new_password: String,
 }
 
-/// A team of the caller, with their role in it.
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct TeamView {
+/// A team of a user, with their role in it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct UserTeamView {
     team_id: i64,
     name: String,
     role: TeamRole,
+}
+
+impl From<UserTeam> for UserTeamView {
+    fn from(t: UserTeam) -> Self {
+        Self {
+            team_id: t.team_id,
+            name: t.name,
+            role: t.role,
+        }
+    }
 }
 
 /// Runs `work` on a blocking thread while holding one permit of `hashing`.
@@ -287,7 +307,11 @@ pub async fn setup(
         .user_by_id(id)
         .await?
         .ok_or_else(|| anyhow!("the new admin is missing"))?;
-    Ok((StatusCode::CREATED, Json(UserView::from(user))).into_response())
+    Ok((
+        StatusCode::CREATED,
+        Json(user_view(&state.store, user).await?),
+    )
+        .into_response())
 }
 
 /// The limiter's name for whatever was sent as the email. It has a bounded
@@ -368,7 +392,8 @@ pub async fn login(
     attempt_succeeded(&state, &key, addr);
 
     let cookie = cookie_header(&session.id, SESSION_SECONDS, state.cookie_secure)?;
-    let body = json!({ "user": UserView::from(user), "csrf_token": session.csrf_token });
+    let user = user_view(&state.store, user).await?;
+    let body = json!({ "user": user, "csrf_token": session.csrf_token });
     Ok(([(SET_COOKIE, cookie)], Json(body)).into_response())
 }
 
@@ -454,7 +479,7 @@ pub async fn me(State(state): State<Arc<AppState>>, authed: Authed) -> Result<Re
     for (team_id, role) in &me.teams {
         // A team deleted since the principal was built is left out.
         if let Some(team) = store.team_by_id(*team_id).await? {
-            teams.push(TeamView {
+            teams.push(UserTeamView {
                 team_id: team.id,
                 name: team.name,
                 role: *role,
@@ -466,7 +491,7 @@ pub async fn me(State(state): State<Arc<AppState>>, authed: Authed) -> Result<Re
         AuthVia::Token { .. } => None,
     };
     let body = json!({
-        "user": UserView::from(user),
+        "user": user_view(store, user).await?,
         "teams": teams,
         "csrf_token": csrf_token,
     });
@@ -763,16 +788,19 @@ mod tests {
 
     #[test]
     fn user_view_has_no_password_hash() {
-        let view = UserView::from(UserRow {
-            id: 1,
-            email: "maya@example.com".into(),
-            name: "Maya".into(),
-            role: Role::Admin,
-            status: UserStatus::Active,
-            password_hash: Some("$argon2id$secret-hash".into()),
-            created_at: "2026-01-01 00:00:00".into(),
-            last_active_at: None,
-        });
+        let view = UserView::new(
+            UserRow {
+                id: 1,
+                email: "maya@example.com".into(),
+                name: "Maya".into(),
+                role: Role::Admin,
+                status: UserStatus::Active,
+                password_hash: Some("$argon2id$secret-hash".into()),
+                created_at: "2026-01-01 00:00:00".into(),
+                last_active_at: None,
+            },
+            vec![],
+        );
         let text = serde_json::to_string(&view).unwrap();
         assert!(!text.contains("argon2"));
         assert!(!text.contains("password"));

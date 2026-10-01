@@ -33,12 +33,20 @@ pub enum Action {
     DeleteTeam {
         team_id: i64,
     },
+    /// Adds a user to a team as a member, by email.
+    AddMember {
+        team_id: i64,
+    },
+    /// Adds a user or sets their role. Only an admin may.
     PutMember {
         team_id: i64,
-        role: TeamRole,
     },
+    /// `target_role` is the role the target has in the team, `None` when
+    /// they are not in it.
     RemoveMember {
         team_id: i64,
+        target_user_id: i64,
+        target_role: Option<TeamRole>,
     },
     // virtual keys
     ListKeys,
@@ -142,14 +150,22 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         Action::ViewTeam { team_id } => by_team_role(p, *team_id, Allow, Allow),
         Action::RenameTeam { team_id } => by_team_role(p, *team_id, Allow, Forbidden),
         Action::DeleteTeam { team_id } => by_team_role(p, *team_id, Forbidden, Forbidden),
-        Action::PutMember { team_id, role } => {
-            let as_lead = match role {
-                TeamRole::Member => Allow,
-                TeamRole::Lead => Forbidden,
+        Action::AddMember { team_id } => by_team_role(p, *team_id, Allow, Forbidden),
+        // Role changes are the admin's: nobody else may make a lead.
+        Action::PutMember { team_id } => by_team_role(p, *team_id, Forbidden, Forbidden),
+        Action::RemoveMember {
+            team_id,
+            target_user_id,
+            target_role,
+        } => {
+            // A lead removes members and may leave, never remove another lead.
+            let lead = if *target_role == Some(TeamRole::Lead) && *target_user_id != p.user_id {
+                Forbidden
+            } else {
+                Allow
             };
-            by_team_role(p, *team_id, as_lead, Forbidden)
+            by_team_role(p, *team_id, lead, Forbidden)
         }
-        Action::RemoveMember { team_id } => by_team_role(p, *team_id, Allow, Forbidden),
 
         Action::CreateKey { owner_id, team_id } => {
             let allowed = if *owner_id == p.user_id {
@@ -393,7 +409,13 @@ mod tests {
             user_id,
             changes_role_or_status,
         };
-        let put = |team_id, role| Action::PutMember { team_id, role };
+        let put = |team_id| Action::PutMember { team_id };
+        let add = |team_id| Action::AddMember { team_id };
+        let remove = |team_id, target_user_id, target_role| Action::RemoveMember {
+            team_id,
+            target_user_id,
+            target_role,
+        };
         let create_key = |owner_id, team_id| Action::CreateKey { owner_id, team_id };
 
         let mut cases: Vec<Case<'_>> = vec![
@@ -692,102 +714,99 @@ mod tests {
                 Action::DeleteTeam { team_id: 10 },
                 Hidden,
             ),
-            // PutMember
+            // AddMember
+            ("add_member: lead, led team", lead, add(10), Allow),
             (
-                "put_member: lead, led team, adding a member",
+                "add_member: lead, team they only belong to",
                 lead,
-                put(10, TeamRole::Member),
-                Allow,
-            ),
-            (
-                "put_member: lead, led team, adding a lead",
-                lead,
-                put(10, TeamRole::Lead),
+                add(20),
                 Forbidden,
             ),
+            ("add_member: lead, unrelated team", lead, add(30), Hidden),
+            ("add_member: member, own team", member, add(10), Forbidden),
             (
-                "put_member: lead, team they only belong to, adding a member",
-                lead,
-                put(20, TeamRole::Member),
-                Forbidden,
-            ),
-            (
-                "put_member: lead, team they only belong to, adding a lead",
-                lead,
-                put(20, TeamRole::Lead),
-                Forbidden,
-            ),
-            (
-                "put_member: lead, unrelated team, adding a member",
-                lead,
-                put(30, TeamRole::Member),
+                "add_member: member, unrelated team",
+                member,
+                add(30),
                 Hidden,
             ),
+            ("add_member: loner", loner, add(10), Hidden),
+            // PutMember: admins only
+            ("put_member: lead, led team", lead, put(10), Forbidden),
             (
-                "put_member: lead, unrelated team, adding a lead",
+                "put_member: lead, team they only belong to",
                 lead,
-                put(30, TeamRole::Lead),
-                Hidden,
-            ),
-            (
-                "put_member: member, own team, adding a member",
-                member,
-                put(10, TeamRole::Member),
+                put(20),
                 Forbidden,
             ),
-            (
-                "put_member: member, own team, adding a lead",
-                member,
-                put(10, TeamRole::Lead),
-                Forbidden,
-            ),
+            ("put_member: lead, unrelated team", lead, put(30), Hidden),
+            ("put_member: member, own team", member, put(10), Forbidden),
             (
                 "put_member: member, unrelated team",
                 member,
-                put(30, TeamRole::Member),
+                put(30),
                 Hidden,
             ),
-            (
-                "put_member: loner",
-                loner,
-                put(10, TeamRole::Member),
-                Hidden,
-            ),
+            ("put_member: loner", loner, put(10), Hidden),
             // RemoveMember
             (
-                "remove_member: lead, led team",
+                "remove_member: lead, a member of the led team",
                 lead,
-                Action::RemoveMember { team_id: 10 },
+                remove(10, 3, Some(TeamRole::Member)),
+                Allow,
+            ),
+            (
+                "remove_member: lead, another lead of the led team",
+                lead,
+                remove(10, 9, Some(TeamRole::Lead)),
+                Forbidden,
+            ),
+            (
+                "remove_member: lead, themselves as lead",
+                lead,
+                remove(10, 2, Some(TeamRole::Lead)),
+                Allow,
+            ),
+            (
+                "remove_member: lead, someone who is not in the team",
+                lead,
+                remove(10, 9, None),
                 Allow,
             ),
             (
                 "remove_member: lead, team they only belong to",
                 lead,
-                Action::RemoveMember { team_id: 20 },
+                remove(20, 3, Some(TeamRole::Member)),
                 Forbidden,
             ),
             (
                 "remove_member: lead, unrelated team",
                 lead,
-                Action::RemoveMember { team_id: 30 },
+                remove(30, 3, Some(TeamRole::Member)),
                 Hidden,
             ),
             (
-                "remove_member: member, own team",
+                "remove_member: member, own team, another member",
                 member,
-                Action::RemoveMember { team_id: 10 },
+                remove(10, 5, Some(TeamRole::Member)),
+                Forbidden,
+            ),
+            (
+                "remove_member: member, own team, themselves",
+                member,
+                remove(10, 3, Some(TeamRole::Member)),
                 Forbidden,
             ),
             (
                 "remove_member: member, unrelated team",
                 member,
-                Action::RemoveMember { team_id: 30 },
+                remove(30, 5, Some(TeamRole::Member)),
                 Hidden,
             ),
             (
                 "remove_member: loner",
                 loner,
-                Action::RemoveMember { team_id: 10 },
+                remove(10, 3, Some(TeamRole::Member)),
                 Hidden,
             ),
             // ListKeys

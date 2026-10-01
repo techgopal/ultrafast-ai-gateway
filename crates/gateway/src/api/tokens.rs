@@ -14,13 +14,34 @@ use super::{name_and_expiry, path_id, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::Action;
 use crate::secrets::{generate_secret, TOKEN_PREFIX};
-use crate::store::{AuditEntry, TokenRow};
+use crate::store::{now, AuditEntry, TokenRow};
 
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTokenRequest {
     name: String,
     expires_at: Option<String>,
+}
+
+/// Whether a token can still be used, as of the moment of the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenStatus {
+    Active,
+    Expired,
+    Revoked,
+}
+
+/// Revoked beats expired; a token with no expiry never expires. `now` is
+/// `YYYY-MM-DD HH:MM:SS` in UTC, like the stored times.
+fn status_of(t: &TokenRow, now: &str) -> TokenStatus {
+    if t.revoked_at.is_some() {
+        TokenStatus::Revoked
+    } else if t.expires_at.as_deref().is_some_and(|at| at <= now) {
+        TokenStatus::Expired
+    } else {
+        TokenStatus::Active
+    }
 }
 
 /// A token as `/api` shows it. It has no field for the token or its hash.
@@ -36,11 +57,15 @@ pub struct TokenView {
     #[schema(required)]
     pub last_used_at: Option<String>,
     pub created_at: String,
+    /// Worked out when the answer is made.
+    pub status: TokenStatus,
 }
 
 impl From<TokenRow> for TokenView {
     fn from(t: TokenRow) -> Self {
+        let status = status_of(&t, &now());
         Self {
+            status,
             id: t.id,
             name: t.name,
             display: t.display,
@@ -178,4 +203,50 @@ pub async fn revoke(
     .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(expires_at: Option<&str>, revoked_at: Option<&str>) -> TokenRow {
+        TokenRow {
+            id: 1,
+            user_id: 1,
+            name: "ci".into(),
+            display: "uf-at-…abcd".into(),
+            expires_at: expires_at.map(String::from),
+            revoked_at: revoked_at.map(String::from),
+            last_used_at: None,
+            created_at: "2000-01-01 00:00:00".into(),
+        }
+    }
+
+    #[test]
+    fn status_is_revoked_then_expired_then_active() {
+        let now = "2026-06-01 12:00:00";
+        let status = |e, r| status_of(&row(e, r), now);
+        assert_eq!(status(None, None), TokenStatus::Active);
+        assert_eq!(
+            status(Some("2026-06-01 12:00:01"), None),
+            TokenStatus::Active
+        );
+        // It stops working at the expiry time itself.
+        assert_eq!(
+            status(Some("2026-06-01 12:00:00"), None),
+            TokenStatus::Expired
+        );
+        assert_eq!(
+            status(Some("2000-01-01 00:00:00"), None),
+            TokenStatus::Expired
+        );
+        assert_eq!(
+            status(None, Some("2026-01-01 00:00:00")),
+            TokenStatus::Revoked
+        );
+        assert_eq!(
+            status(Some("2000-01-01 00:00:00"), Some("2026-01-01 00:00:00")),
+            TokenStatus::Revoked
+        );
+    }
 }

@@ -115,10 +115,17 @@ pub async fn api() -> Api {
 
 /// A gateway over the given store.
 pub async fn api_on(store: Store, cookie_secure: bool) -> Api {
+    api_behind(store, cookie_secure, &[]).await
+}
+
+/// A gateway that trusts forwarding headers from peers in these networks
+/// (CIDR notation).
+pub async fn api_behind(store: Store, cookie_secure: bool, trusted: &[&str]) -> Api {
     warm_up().unwrap();
     let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
     let mut state = AppState::new(store.clone(), cipher).await.unwrap();
     state.cookie_secure = cookie_secure;
+    state.trusted_proxies = trusted.iter().map(|c| c.parse().unwrap()).collect();
     let state = Arc::new(state);
     Api {
         app: router(state.clone()),

@@ -216,6 +216,22 @@ export interface paths {
         patch: operations["teams_rename"];
         trace?: never;
     };
+    "/api/teams/{id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["teams_member_add"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/members/{user_id}": {
         parameters: {
             query?: never;
@@ -320,6 +336,9 @@ export interface components {
             password: string;
             /** @description The token of the invite link. */
             token: string;
+        };
+        AddMemberRequest: {
+            email: string;
         };
         /** @description Every error of `/api` has this shape. */
         ApiErrorBody: {
@@ -446,7 +465,7 @@ export interface components {
              *     token.
              */
             csrf_token: string | null;
-            teams: components["schemas"]["TeamView"][];
+            teams: components["schemas"]["UserTeamView"][];
             user: components["schemas"]["UserView"];
         };
         /** @description A member of a team, with what names them. */
@@ -520,16 +539,14 @@ export interface components {
             member_count: number;
             name: string;
         };
-        /** @description A team of the caller, with their role in it. */
-        TeamView: {
-            name: string;
-            role: components["schemas"]["TeamRole"];
-            /** Format: int64 */
-            team_id: number;
-        };
         TokenList: {
             tokens: components["schemas"]["TokenView"][];
         };
+        /**
+         * @description Whether a token can still be used, as of the moment of the answer.
+         * @enum {string}
+         */
+        TokenStatus: "active" | "expired" | "revoked";
         /** @description A token as `/api` shows it. It has no field for the token or its hash. */
         TokenView: {
             created_at: string;
@@ -540,6 +557,8 @@ export interface components {
             last_used_at: string | null;
             name: string;
             revoked_at: string | null;
+            /** @description Worked out when the answer is made. */
+            status: components["schemas"]["TokenStatus"];
         };
         UpdateProviderRequest: {
             /** @description Absent leaves the key, `null` removes it, a string replaces it. */
@@ -559,6 +578,13 @@ export interface components {
          * @enum {string}
          */
         UserStatus: "active" | "invited" | "disabled";
+        /** @description A team of a user, with their role in it. */
+        UserTeamView: {
+            name: string;
+            role: components["schemas"]["TeamRole"];
+            /** Format: int64 */
+            team_id: number;
+        };
         /** @description A user as `/api` shows it. It has no field for the password hash. */
         UserView: {
             created_at: string;
@@ -569,6 +595,8 @@ export interface components {
             name: string;
             role: components["schemas"]["Role"];
             status: components["schemas"]["UserStatus"];
+            /** @description The user's teams, ordered by name. */
+            teams: components["schemas"]["UserTeamView"][];
         };
     };
     responses: never;
@@ -1916,6 +1944,108 @@ export interface operations {
             };
         };
     };
+    teams_member_add: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the team. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddMemberRequest"];
+            };
+        };
+        responses: {
+            /** @description The user is now a member of the team. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberDetail"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The team does not exist or is hidden from the caller, or `user_not_found`: no active user has that email. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `already_member`: the user is in the team already, in any role. Nothing is changed. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     teams_member_put: {
         parameters: {
             query?: never;
@@ -1962,7 +2092,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            /** @description The caller is not an admin, or the CSRF token is missing or does not match. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2051,7 +2181,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            /** @description The caller is not allowed to do this (a lead of the team may remove members and themselves, not another lead), or the CSRF token is missing or does not match. */
             403: {
                 headers: {
                     [name: string]: unknown;

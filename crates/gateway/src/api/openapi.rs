@@ -13,7 +13,7 @@ use utoipa::openapi::Required;
 use utoipa::{Modify, OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 
-use super::auth::{TeamView, UserView};
+use super::auth::{UserTeamView, UserView};
 use super::keys::KeyView;
 use super::providers::ProviderView;
 use super::tokens::TokenView;
@@ -55,7 +55,7 @@ pub struct LoginResponse {
 #[derive(ToSchema)]
 pub struct MeResponse {
     pub user: UserView,
-    pub teams: Vec<TeamView>,
+    pub teams: Vec<UserTeamView>,
     /// The CSRF token of the session. `null` for a caller with an access
     /// token.
     #[schema(required)]
@@ -222,9 +222,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 32. Its fallbacks are not
+    /// Every route of `api::router`, which has 33. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 32] = [
+    const ROUTES: [(&str, &str); 33] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -243,6 +243,7 @@ mod tests {
         ("GET", "/api/teams/{id}"),
         ("PATCH", "/api/teams/{id}"),
         ("DELETE", "/api/teams/{id}"),
+        ("POST", "/api/teams/{id}/members"),
         ("PUT", "/api/teams/{id}/members/{user_id}"),
         ("DELETE", "/api/teams/{id}/members/{user_id}"),
         ("GET", "/api/keys"),
@@ -348,7 +349,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 32);
+        assert_eq!(routes.len(), 33);
         assert_eq!(documented, routes);
     }
 
@@ -370,7 +371,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 32);
+        assert_eq!(ids.len(), 33);
     }
 
     #[test]
