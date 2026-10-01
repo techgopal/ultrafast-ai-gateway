@@ -29,10 +29,9 @@ async function settled(page: Page): Promise<void> {
 }
 
 /**
- * The controls in `scope` that are less than 44 px high to touch, or less
- * than 44 px wide when they show no text (an icon button): the width of a
- * link or a button with text is that of its text. A control inside its label
- * is touched through the label as well: its target is the label.
+ * The controls in `scope` that are less than 44 x 44 px to touch, whatever
+ * they show: a short text makes a narrow link. A control inside its label is
+ * touched through the label as well: its target is the label.
  */
 async function smallTargets(scope: Locator): Promise<string[]> {
   await settled(scope.page());
@@ -48,7 +47,7 @@ async function smallTargets(scope: Locator): Promise<string[]> {
       const target = control.closest("label") ?? control;
       const { width, height } = target.getBoundingClientRect();
       const text = target.textContent.trim();
-      if (height >= 44 && (width >= 44 || text !== "")) continue;
+      if (height >= 44 && width >= 44) continue;
       const role = control.getAttribute("role") ?? control.tagName.toLowerCase();
       const labels = control instanceof HTMLButtonElement ? [...control.labels] : [];
       const label = labels.map((one) => one.textContent.trim()).join(" ");
@@ -157,7 +156,7 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
   expect(await scrollsSideways(page), "the dialog").toBe(false);
 });
 
-test("every control of the pages and their dialogs is 44 px to touch", async ({
+test("every control of the pages and their dialogs is 44 x 44 px to touch", async ({
   page,
   admin,
   apiAs,
@@ -213,6 +212,16 @@ test("every control of the pages and their dialogs is 44 px to touch", async ({
     if (title === "Account") await measureDialog("Create token");
   }
 
+  // The page of a team, with the dialog that adds a member from the list of users.
+  await goTo(page, "Teams");
+  await page.getByRole("link", { name: "Platform infrastructure and developer experience" }).click();
+  await expect(heading(page, "Platform infrastructure and developer experience")).toBeVisible();
+  await measure(page.locator("body"), "a team");
+  await measureDialog("Add member");
+
+  // Every place is named before a touch is tried.
+  expect(found).toEqual([]);
+
   // A touch at the edge of a label, away from its text and its box, chooses.
   await goTo(page, "Virtual keys");
   const showRevoked = page.locator("label").filter({ hasText: "Show revoked" });
@@ -227,13 +236,4 @@ test("every control of the pages and their dialogs is 44 px to touch", async ({
   await expect(inDays).toBeChecked();
   await page.keyboard.press("Escape");
   await expect(create).toBeHidden();
-
-  // The page of a team, with the dialog that adds a member from the list of users.
-  await goTo(page, "Teams");
-  await page.getByRole("link", { name: "Platform infrastructure and developer experience" }).click();
-  await expect(heading(page, "Platform infrastructure and developer experience")).toBeVisible();
-  await measure(page.locator("body"), "a team");
-  await measureDialog("Add member");
-
-  expect(found).toEqual([]);
 });
