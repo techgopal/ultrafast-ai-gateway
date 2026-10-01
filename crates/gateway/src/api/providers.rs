@@ -10,11 +10,11 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
-use ultrafast_translate::provider::ProviderKind;
+use ultrafast_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
 
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
-use crate::config::{validate_base_url, validate_provider_name};
+use crate::config::{validate_api_version, validate_base_url, validate_provider_name};
 use crate::identity::policy::Action;
 use crate::secrets::Cipher;
 use crate::store::{AuditEntry, ProviderRow, Store, StoreError};
@@ -30,12 +30,16 @@ pub struct CreateProviderRequest {
     base_url: String,
     #[schema(write_only)]
     api_key: Option<String>,
+    /// Azure OpenAI only; `2024-10-21` when left out.
+    api_version: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateProviderRequest {
     base_url: Option<String>,
+    /// Azure OpenAI only.
+    api_version: Option<String>,
     /// Absent leaves the key, `null` removes it, a string replaces it.
     #[serde(default, deserialize_with = "present")]
     #[schema(value_type = Option<String>, write_only)]
@@ -59,6 +63,8 @@ pub struct ProviderView {
     pub kind: String,
     pub base_url: String,
     pub has_credential: bool,
+    /// Set for Azure OpenAI providers.
+    pub api_version: Option<String>,
 }
 
 impl ProviderView {
@@ -70,6 +76,7 @@ impl ProviderView {
             kind: p.kind.clone(),
             base_url: p.base_url.clone(),
             has_credential: p.credential.is_some(),
+            api_version: p.api_version.clone(),
         }
     }
 }
@@ -79,6 +86,25 @@ fn checked(field: &str, result: anyhow::Result<()>, fields: &mut BTreeMap<String
     if let Err(e) = result {
         fields.insert(field.to_string(), e.to_string());
     }
+}
+
+/// Only Azure OpenAI has an API version. For Azure a missing one is the
+/// default; the result is what is stored.
+fn check_api_version(
+    kind: &str,
+    api_version: Option<&str>,
+    fields: &mut BTreeMap<String, String>,
+) -> Option<String> {
+    if ProviderKind::parse(kind) != Some(ProviderKind::Azure) {
+        if api_version.is_some() {
+            let message = "only Azure OpenAI providers have an API version";
+            fields.insert("api_version".to_string(), message.to_string());
+        }
+        return None;
+    }
+    let version = api_version.unwrap_or(DEFAULT_AZURE_API_VERSION);
+    checked("api_version", validate_api_version(version), fields);
+    Some(version.to_string())
 }
 
 /// Refuses an API key that is empty or only whitespace.
@@ -153,11 +179,12 @@ pub async fn create(
     let mut fields = BTreeMap::new();
     checked("name", validate_provider_name(&req.name), &mut fields);
     if ProviderKind::parse(&req.kind).is_none() {
-        let message = "kind must be openai or anthropic";
+        let message = "kind must be openai, anthropic, gemini or azure";
         fields.insert("kind".to_string(), message.to_string());
     }
     checked("base_url", validate_base_url(&req.base_url), &mut fields);
     check_api_key(req.api_key.as_deref(), &mut fields);
+    let api_version = check_api_version(&req.kind, req.api_version.as_deref(), &mut fields);
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
@@ -166,6 +193,7 @@ pub async fn create(
         kind,
         base_url,
         api_key,
+        ..
     } = req;
     // From here on only the encrypted form exists.
     let credential = api_key.map(|key| encrypted(&state.cipher, &key));
@@ -173,7 +201,13 @@ pub async fn create(
     let store = &state.store;
     let mut tx = store.begin().await?;
     let inserted = tx
-        .insert_provider(&name, &kind, &base_url, credential.as_deref())
+        .insert_provider_versioned(
+            &name,
+            &kind,
+            &base_url,
+            credential.as_deref(),
+            api_version.as_deref(),
+        )
         .await;
     let id = match inserted {
         Ok(id) => id,
@@ -244,9 +278,9 @@ pub async fn update(
     // id is looked at: a refusal is the same for every id.
     require(me, &Action::ManageProviders)?;
     let target = provider_of(store, &raw_id).await?;
-    if req.base_url.is_none() && req.api_key.is_none() {
+    if req.base_url.is_none() && req.api_key.is_none() && req.api_version.is_none() {
         return Err(ApiError::bad_request(
-            "Send at least one of base_url and api_key.",
+            "Send at least one of base_url, api_key and api_version.",
         ));
     }
 
@@ -255,10 +289,17 @@ pub async fn update(
         checked("base_url", validate_base_url(base_url), &mut fields);
     }
     check_api_key(req.api_key.as_ref().and_then(|k| k.as_deref()), &mut fields);
+    if req.api_version.is_some() {
+        check_api_version(&target.kind, req.api_version.as_deref(), &mut fields);
+    }
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
-    let UpdateProviderRequest { base_url, api_key } = req;
+    let UpdateProviderRequest {
+        base_url,
+        api_key,
+        api_version,
+    } = req;
     // From here on only the encrypted form exists.
     let credential: Option<Option<Vec<u8>>> =
         api_key.map(|key| key.map(|key| encrypted(&state.cipher, &key)));
@@ -270,6 +311,7 @@ pub async fn update(
         .await?
         .ok_or_else(ApiError::not_found)?;
     let base_url = base_url.filter(|url| *url != was.base_url);
+    let api_version = api_version.filter(|v| was.api_version.as_deref() != Some(v.as_str()));
     let credential_change = match (&credential, was.credential.is_some()) {
         (None, _) | (Some(None), false) => None,
         (Some(None), true) => Some("credential removed"),
@@ -279,6 +321,9 @@ pub async fn update(
     let mut changes = Vec::new();
     if base_url.is_some() {
         changes.push("base URL changed");
+    }
+    if api_version.is_some() {
+        changes.push("API version changed");
     }
     changes.extend(credential_change);
     if changes.is_empty() {
@@ -299,6 +344,9 @@ pub async fn update(
         .await?;
     if !updated {
         return Err(ApiError::not_found());
+    }
+    if let Some(version) = &api_version {
+        tx.set_provider_api_version(was.id, Some(version)).await?;
     }
     tx.audit(AuditEntry {
         actor_user_id: Some(me.user_id),
@@ -423,6 +471,7 @@ mod tests {
             kind: "openai".into(),
             base_url: "https://api.openai.com/v1".into(),
             credential: Some(b"ciphertext".to_vec()),
+            api_version: None,
         };
         let shown = serde_json::to_string(&ProviderView::of(&row)).unwrap();
         assert!(shown.contains(r#""has_credential":true"#));

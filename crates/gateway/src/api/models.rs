@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
+use ultrafast_translate::provider::ProviderKind;
+
 use crate::catalog::sync::{fetch_model_names, SyncError};
 use crate::catalog::validate_model_name;
 use crate::identity::policy::Action;
@@ -454,6 +456,15 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+fn sync_unsupported() -> ApiError {
+    ApiError {
+        status: StatusCode::UNPROCESSABLE_ENTITY,
+        code: "sync_unsupported",
+        message: "Add Azure deployments as models by name.".to_string(),
+        fields: None,
+    }
+}
+
 fn sync_failed() -> ApiError {
     ApiError {
         status: StatusCode::BAD_GATEWAY,
@@ -477,6 +488,7 @@ fn sync_failed() -> ApiError {
         (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
         (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "`sync_unsupported`: the provider has no list of models to read (Azure OpenAI).", body = super::openapi::ApiErrorBody),
         (status = 502, description = "`sync_failed`: the provider did not return its models.", body = super::openapi::ApiErrorBody),
     ),
     security(("session" = []), ("token" = [])),
@@ -494,6 +506,10 @@ pub async fn sync(
         .provider_by_id(id)
         .await?
         .ok_or_else(ApiError::not_found)?;
+
+    if ProviderKind::parse(&row.kind) == Some(ProviderKind::Azure) {
+        return Err(sync_unsupported());
+    }
 
     // The snapshot is the one place credentials are decrypted.
     let provider = state

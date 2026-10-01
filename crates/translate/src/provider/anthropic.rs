@@ -198,6 +198,7 @@ mod tests {
             base_url: "https://api.anthropic.com".into(),
             api_key: Some("sk-ant".into()),
             model: "claude-sonnet-5".into(),
+            api_version: None,
         }
     }
 

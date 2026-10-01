@@ -1,6 +1,8 @@
 //! Outbound side: turning a common request into a provider call and back.
 
 mod anthropic;
+mod azure;
+mod gemini;
 mod openai;
 
 use std::fmt;
@@ -16,6 +18,10 @@ pub enum ProviderKind {
     /// OpenAI and every OpenAI-compatible API (Groq, Mistral, OpenRouter, Ollama).
     OpenAi,
     Anthropic,
+    /// Google's Gemini API (`generativelanguage`).
+    Gemini,
+    /// Azure OpenAI: OpenAI's format on a deployment URL.
+    Azure,
 }
 
 impl ProviderKind {
@@ -23,6 +29,8 @@ impl ProviderKind {
         match s {
             "openai" => Some(ProviderKind::OpenAi),
             "anthropic" => Some(ProviderKind::Anthropic),
+            "gemini" => Some(ProviderKind::Gemini),
+            "azure" => Some(ProviderKind::Azure),
             _ => None,
         }
     }
@@ -31,9 +39,28 @@ impl ProviderKind {
         match self {
             ProviderKind::OpenAi => "openai",
             ProviderKind::Anthropic => "anthropic",
+            ProviderKind::Gemini => "gemini",
+            ProviderKind::Azure => "azure",
         }
     }
 }
+
+/// Escapes everything but the characters that are safe in a URL path segment.
+pub(crate) fn path_segment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(char::from(b));
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// The Azure OpenAI API version used when a provider has none.
+pub const DEFAULT_AZURE_API_VERSION: &str = "2024-10-21";
 
 const REDACTED: &str = "[redacted]";
 
@@ -48,6 +75,8 @@ pub struct Target {
     pub base_url: String,
     pub api_key: Option<String>,
     pub model: String,
+    /// Azure OpenAI only; the other kinds ignore it.
+    pub api_version: Option<String>,
 }
 
 /// Never prints the API key.
@@ -58,6 +87,7 @@ impl fmt::Debug for Target {
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| REDACTED))
             .field("model", &self.model)
+            .field("api_version", &self.api_version)
             .finish()
     }
 }
@@ -77,8 +107,9 @@ impl fmt::Debug for HttpRequest {
             .headers
             .iter()
             .map(|(k, v)| {
-                let secret =
-                    k.eq_ignore_ascii_case("authorization") || k.eq_ignore_ascii_case("x-api-key");
+                let secret = ["authorization", "x-api-key", "api-key", "x-goog-api-key"]
+                    .iter()
+                    .any(|name| k.eq_ignore_ascii_case(name));
                 (k.as_str(), if secret { REDACTED } else { v.as_str() })
             })
             .collect();
@@ -95,6 +126,8 @@ pub fn build_request(target: &Target, req: &ChatRequest) -> Result<HttpRequest, 
     match target.kind {
         ProviderKind::OpenAi => openai::build(target, req),
         ProviderKind::Anthropic => anthropic::build(target, req),
+        ProviderKind::Gemini => gemini::build(target, req),
+        ProviderKind::Azure => azure::build(target, req),
     }
 }
 
@@ -107,8 +140,9 @@ pub fn parse_response(
         return Err(provider_error(status, body));
     }
     match kind {
-        ProviderKind::OpenAi => openai::parse(body),
+        ProviderKind::OpenAi | ProviderKind::Azure => openai::parse(body),
         ProviderKind::Anthropic => anthropic::parse(body),
+        ProviderKind::Gemini => gemini::parse(body),
     }
 }
 
@@ -192,8 +226,11 @@ impl StreamDecoder {
             // A failed decode must not leave partial output behind.
             let produced = out.len();
             let result = match self.kind {
-                ProviderKind::OpenAi => openai::decode(&mut self.state, &ev, &mut out),
+                ProviderKind::OpenAi | ProviderKind::Azure => {
+                    openai::decode(&mut self.state, &ev, &mut out)
+                }
                 ProviderKind::Anthropic => anthropic::decode(&mut self.state, &ev, &mut out),
+                ProviderKind::Gemini => gemini::decode(&mut self.state, &ev, &mut out),
             };
             if let Err(e) = result {
                 self.failed = true;
@@ -234,6 +271,7 @@ mod tests {
             base_url: "https://api.anthropic.com".into(),
             api_key: Some("sk-secret-value".into()),
             model: "m".into(),
+            api_version: None,
         };
         let s = format!("{t:?}");
         assert!(!s.contains("sk-secret-value"), "{s}");
@@ -264,7 +302,7 @@ mod tests {
 
     #[test]
     fn events_with_empty_data_are_skipped_for_every_provider() {
-        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic] {
+        for kind in ALL_KINDS {
             let mut d = StreamDecoder::new(kind);
             let got = d
                 .feed(b"event: keepalive\n\ndata:\n\ndata:   \n\nevent: ping\ndata: \n\n")
@@ -273,14 +311,50 @@ mod tests {
         }
     }
 
+    const ALL_KINDS: [ProviderKind; 4] = [
+        ProviderKind::OpenAi,
+        ProviderKind::Anthropic,
+        ProviderKind::Gemini,
+        ProviderKind::Azure,
+    ];
+
+    #[test]
+    fn kinds_round_trip_through_their_names() {
+        for kind in ALL_KINDS {
+            assert_eq!(ProviderKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(ProviderKind::parse("Gemini"), None);
+        assert_eq!(ProviderKind::parse("palm"), None);
+    }
+
+    #[test]
+    fn http_request_debug_hides_every_credential_header() {
+        let r = HttpRequest {
+            method: "POST",
+            url: "https://x".into(),
+            headers: vec![
+                ("api-key".into(), "sk-secret-value".into()),
+                ("x-goog-api-key".into(), "sk-secret-value".into()),
+            ],
+            body: vec![],
+        };
+        assert!(!format!("{r:?}").contains("sk-secret-value"));
+    }
+
     /// Two deltas, then an error event, then one more delta.
     fn stream_with_error(kind: ProviderKind) -> Vec<u8> {
         match kind {
-            ProviderKind::OpenAi => concat!(
+            ProviderKind::OpenAi | ProviderKind::Azure => concat!(
                 "data: {\"choices\":[{\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}\n\n",
                 "data: {\"choices\":[{\"delta\":{\"content\":\"b\"},\"finish_reason\":null}]}\n\n",
                 "data: {\"error\":{\"message\":\"overloaded\"}}\n\n",
                 "data: {\"choices\":[{\"delta\":{\"content\":\"never\"},\"finish_reason\":null}]}\n\n",
+            ),
+            ProviderKind::Gemini => concat!(
+                "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"a\"}]}}]}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"b\"}]}}]}\n\n",
+                "data: {\"error\":{\"code\":503,\"message\":\"overloaded\",\"status\":\"UNAVAILABLE\"}}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"never\"}]}}]}\n\n",
             ),
             ProviderKind::Anthropic => concat!(
                 "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"a\"}}\n\n",
@@ -295,7 +369,10 @@ mod tests {
 
     fn valid_delta(kind: ProviderKind) -> &'static [u8] {
         match kind {
-            ProviderKind::OpenAi => {
+            ProviderKind::Gemini => {
+                b"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"late\"}]}}]}\n\n"
+            }
+            ProviderKind::OpenAi | ProviderKind::Azure => {
                 b"data: {\"choices\":[{\"delta\":{\"content\":\"late\"},\"finish_reason\":null}]}\n\n"
             }
             ProviderKind::Anthropic => {
@@ -313,7 +390,7 @@ mod tests {
 
     #[test]
     fn events_before_an_error_in_the_same_chunk_are_kept() {
-        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic] {
+        for kind in ALL_KINDS {
             let mut d = StreamDecoder::new(kind);
             let got = d.feed(&stream_with_error(kind)).unwrap();
             assert_eq!(got, two_deltas(), "{kind:?}");
@@ -330,7 +407,7 @@ mod tests {
 
     #[test]
     fn events_before_an_error_are_kept_at_every_split_point() {
-        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic] {
+        for kind in ALL_KINDS {
             let input = stream_with_error(kind);
             for split in 0..=input.len() {
                 let mut d = StreamDecoder::new(kind);
@@ -364,7 +441,7 @@ mod tests {
 
     #[test]
     fn oversized_event_is_a_malformed_error() {
-        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic] {
+        for kind in ALL_KINDS {
             let mut d = StreamDecoder::new(kind);
             let e = d.feed(&oversized_event()).unwrap_err();
             assert!(is_size_limit_error(&e), "{kind:?}: {e:?}");
@@ -376,7 +453,7 @@ mod tests {
 
     #[test]
     fn events_before_an_oversized_event_are_kept() {
-        for kind in [ProviderKind::OpenAi, ProviderKind::Anthropic] {
+        for kind in ALL_KINDS {
             let mut input = valid_delta(kind).to_vec();
             input.extend(oversized_event());
             let mut d = StreamDecoder::new(kind);

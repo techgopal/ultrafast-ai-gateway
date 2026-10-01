@@ -439,3 +439,52 @@ mod records {
         assert!(records[0].usage.is_none());
     }
 }
+
+#[tokio::test]
+async fn streams_gemini_provider_in_openai_shape() {
+    let h = harness("gemini").await;
+    let upstream = concat!(
+        "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"sal\"}]}}],\"usageMetadata\":{\"promptTokenCount\":3}}\n\n",
+        "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ut\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":4}}\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/m:streamGenerateContent"))
+        .and(wiremock::matchers::query_param("alt", "sse"))
+        .respond_with(sse(upstream))
+        .expect(1)
+        .mount(&h.upstream)
+        .await;
+    let (status, body) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(text(&body), "salut");
+    let all = payloads(&body);
+    assert_eq!(all.last().unwrap()["choices"][0]["finish_reason"], "stop");
+    assert_eq!(all.last().unwrap()["usage"]["total_tokens"], 7);
+    assert!(body.ends_with("data: [DONE]\n\n"));
+}
+
+#[tokio::test]
+async fn streams_azure_provider_in_openai_shape() {
+    let h = harness("azure").await;
+    let upstream = concat!(
+        "data: {\"choices\":[],\"prompt_filter_results\":[{\"prompt_index\":0}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"az\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"ure\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/openai/deployments/m/chat/completions"))
+        .and(body_partial_json(serde_json::json!({ "stream": true })))
+        .respond_with(sse(upstream))
+        .expect(1)
+        .mount(&h.upstream)
+        .await;
+    let (status, body) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(text(&body), "azure");
+    let all = payloads(&body);
+    assert_eq!(all.last().unwrap()["usage"]["total_tokens"], 5);
+    assert!(body.ends_with("data: [DONE]\n\n"));
+}

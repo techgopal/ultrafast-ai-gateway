@@ -64,6 +64,25 @@ pub fn validate_base_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Checks the API version of an Azure OpenAI provider: `2024-10-21` or
+/// `2025-03-01-preview`.
+pub fn validate_api_version(version: &str) -> Result<()> {
+    let date = version.strip_suffix("-preview").unwrap_or(version);
+    let b = date.as_bytes();
+    let shaped = b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        });
+    if !shaped {
+        bail!("API version must look like 2024-10-21 or 2025-03-01-preview");
+    }
+    Ok(())
+}
+
 /// Longest accepted provider name, in characters.
 const MAX_PROVIDER_NAME_CHARS: usize = 40;
 

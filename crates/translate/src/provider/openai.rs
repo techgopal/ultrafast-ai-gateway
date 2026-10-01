@@ -38,6 +38,21 @@ fn tool_calls_unsupported() -> TranslateError {
 }
 
 pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, TranslateError> {
+    let mut headers = vec![("content-type".to_string(), "application/json".to_string())];
+    if let Some(k) = &target.api_key {
+        headers.push(("authorization".to_string(), format!("Bearer {k}")));
+    }
+    Ok(HttpRequest {
+        method: "POST",
+        url: format!("{}/chat/completions", target.base_url.trim_end_matches('/')),
+        headers,
+        body: body(req, Some(&target.model))?,
+    })
+}
+
+/// The JSON body of a chat completion. Azure names the model in the URL and
+/// leaves it out here.
+pub(crate) fn body(req: &ChatRequest, model: Option<&str>) -> Result<Vec<u8>, TranslateError> {
     let messages: Vec<Value> = req
         .messages
         .iter()
@@ -49,7 +64,10 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
             o
         })
         .collect();
-    let mut body = json!({ "model": target.model, "messages": messages });
+    let mut body = json!({ "messages": messages });
+    if let Some(model) = model {
+        body["model"] = json!(model);
+    }
     if let Some(v) = req.max_tokens {
         body["max_tokens"] = json!(v);
     }
@@ -66,17 +84,7 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
         body["stream"] = json!(true);
         body["stream_options"] = json!({ "include_usage": true });
     }
-    let mut headers = vec![("content-type".to_string(), "application/json".to_string())];
-    if let Some(k) = &target.api_key {
-        headers.push(("authorization".to_string(), format!("Bearer {k}")));
-    }
-    Ok(HttpRequest {
-        method: "POST",
-        url: format!("{}/chat/completions", target.base_url.trim_end_matches('/')),
-        headers,
-        body: serde_json::to_vec(&body)
-            .map_err(|e| TranslateError::InvalidRequest(e.to_string()))?,
-    })
+    serde_json::to_vec(&body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))
 }
 
 #[derive(Deserialize)]
@@ -211,6 +219,7 @@ mod tests {
             base_url: "https://api.example.com/v1/".into(),
             api_key: Some("sk-x".into()),
             model: "gpt-4o".into(),
+            api_version: None,
         }
     }
 

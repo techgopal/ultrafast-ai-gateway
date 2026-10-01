@@ -1736,6 +1736,16 @@
               }
             }
           },
+          "422": {
+            "description": "`sync_unsupported`: the provider has no list of models to read (Azure OpenAI).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Something went wrong.",
             "content": {
@@ -4227,6 +4237,13 @@
             ],
             "writeOnly": true
           },
+          "api_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Azure OpenAI only; `2024-10-21` when left out."
+          },
           "base_url": {
             "type": "string"
           },
@@ -4697,6 +4714,13 @@
           "has_credential"
         ],
         "properties": {
+          "api_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set for Azure OpenAI providers."
+          },
           "base_url": {
             "type": "string"
           },
@@ -5216,6 +5240,13 @@
             ],
             "description": "Absent leaves the key, `null` removes it, a string replaces it.",
             "writeOnly": true
+          },
+          "api_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Azure OpenAI only."
           },
           "base_url": {
             "type": [

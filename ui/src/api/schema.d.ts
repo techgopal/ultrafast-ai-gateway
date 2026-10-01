@@ -512,6 +512,8 @@ export interface components {
         };
         CreateProviderRequest: {
             api_key?: string | null;
+            /** @description Azure OpenAI only; `2024-10-21` when left out. */
+            api_version?: string | null;
             base_url: string;
             kind: string;
             name: string;
@@ -679,6 +681,8 @@ export interface components {
          *     credential.
          */
         ProviderView: {
+            /** @description Set for Azure OpenAI providers. */
+            api_version?: string | null;
             base_url: string;
             has_credential: boolean;
             /** Format: int64 */
@@ -878,6 +882,8 @@ export interface components {
         UpdateProviderRequest: {
             /** @description Absent leaves the key, `null` removes it, a string replaces it. */
             api_key?: string | null;
+            /** @description Azure OpenAI only. */
+            api_version?: string | null;
             base_url?: string | null;
         };
         UpdateRequest: {
@@ -2230,6 +2236,15 @@ export interface operations {
             };
             /** @description It does not exist, or it is hidden from the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `sync_unsupported`: the provider has no list of models to read (Azure OpenAI). */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

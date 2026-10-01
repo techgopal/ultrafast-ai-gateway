@@ -32,6 +32,8 @@ pub enum SyncError {
     TooLarge,
     #[error("the provider took too long")]
     Timeout,
+    #[error("the provider has no list of models to read")]
+    Unsupported,
 }
 
 /// The ids of the models the provider offers, in the order it gives them.
@@ -95,6 +97,30 @@ async fn fetch_pages(
             }
             Ok(names)
         }
+        ProviderKind::Gemini => {
+            let mut names = Vec::new();
+            let mut token: Option<String> = None;
+            for _ in 0..MAX_PAGES {
+                let mut url = format!("{base}/v1beta/models?pageSize=1000");
+                if let Some(t) = &token {
+                    url.push_str("&pageToken=");
+                    url.push_str(&percent_encode(t));
+                }
+                let page = get_json(http, &url, |r| match &provider.api_key {
+                    Some(key) => r.header("x-goog-api-key", key),
+                    None => r,
+                })
+                .await?;
+                names.extend(gemini_names_of(&page)?);
+                match page["nextPageToken"].as_str() {
+                    Some(next) if !next.is_empty() => token = Some(next.to_string()),
+                    _ => break,
+                }
+            }
+            Ok(names)
+        }
+        // Deployments are named by the admin; there is nothing to list.
+        ProviderKind::Azure => Err(SyncError::Unsupported),
     }
 }
 
@@ -132,6 +158,26 @@ fn ids_of(page: &Value) -> Result<Vec<String>, SyncError> {
         .collect())
 }
 
+/// The names of a page of Gemini models that can generate or embed, without
+/// the `models/` prefix.
+fn gemini_names_of(page: &Value) -> Result<Vec<String>, SyncError> {
+    let models = page["models"].as_array().ok_or(SyncError::Malformed)?;
+    Ok(models
+        .iter()
+        .filter(|m| {
+            m["supportedGenerationMethods"]
+                .as_array()
+                .is_some_and(|methods| {
+                    methods
+                        .iter()
+                        .any(|x| matches!(x.as_str(), Some("generateContent" | "embedContent")))
+                })
+        })
+        .filter_map(|m| m["name"].as_str())
+        .map(|n| n.strip_prefix("models/").unwrap_or(n).to_string())
+        .collect())
+}
+
 /// Escapes everything but the characters that are safe in a query value.
 fn percent_encode(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
@@ -159,6 +205,7 @@ mod tests {
             kind,
             base_url,
             api_key: Some("k".into()),
+            api_version: None,
         }
     }
 
@@ -245,6 +292,28 @@ mod tests {
     fn query_values_are_escaped() {
         assert_eq!(percent_encode("claude-3.5_x~"), "claude-3.5_x~");
         assert_eq!(percent_encode("a b&c=d/é"), "a%20b%26c%3Dd%2F%C3%A9");
+    }
+
+    #[test]
+    fn gemini_names_are_the_ones_that_generate_or_embed() {
+        let page = serde_json::json!({ "models": [
+            { "name": "models/a", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/b", "supportedGenerationMethods": ["countTokens"] },
+            { "name": "models/c", "supportedGenerationMethods": ["embedContent"] },
+            { "name": "d", "supportedGenerationMethods": ["generateContent"] },
+            { "name": "models/e" },
+        ]});
+        assert_eq!(gemini_names_of(&page).unwrap(), ["a", "c", "d"]);
+        assert!(gemini_names_of(&serde_json::json!({})).is_err());
+    }
+
+    #[tokio::test]
+    async fn azure_has_nothing_to_list() {
+        let p = provider(ProviderKind::Azure, "http://127.0.0.1:1".into());
+        let err = fetch_model_names(&reqwest::Client::new(), &p)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SyncError::Unsupported), "{err:?}");
     }
 
     #[test]

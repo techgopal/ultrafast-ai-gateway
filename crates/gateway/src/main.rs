@@ -9,13 +9,13 @@ use ultrafast_gateway::api::openapi::spec;
 use ultrafast_gateway::api::trimmed_name;
 use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
 use ultrafast_gateway::config::{
-    db_path, load_master_key, parse_trusted_proxies, restrict_permissions, validate_base_url,
-    validate_provider_name,
+    db_path, load_master_key, parse_trusted_proxies, restrict_permissions, validate_api_version,
+    validate_base_url, validate_provider_name,
 };
 use ultrafast_gateway::identity::password;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
 use ultrafast_gateway::store::Store;
-use ultrafast_translate::provider::ProviderKind;
+use ultrafast_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
 
 #[derive(Parser)]
 #[command(name = "ultrafast", version, about = "Ultrafast AI gateway")]
@@ -79,7 +79,7 @@ enum ProviderCommand {
     Add {
         #[arg(long)]
         name: String,
-        /// "openai" (also for OpenAI-compatible APIs) or "anthropic".
+        /// "openai" (also for OpenAI-compatible APIs), "anthropic", "gemini" or "azure".
         #[arg(long)]
         kind: String,
         /// http:// or https:// URL without credentials, query or fragment.
@@ -90,6 +90,9 @@ enum ProviderCommand {
         /// history.
         #[arg(long, env = "UF_PROVIDER_API_KEY", hide_env_values = true)]
         api_key: Option<String>,
+        /// Azure OpenAI only, like 2024-10-21. That is the default.
+        #[arg(long)]
+        api_version: Option<String>,
     },
 }
 
@@ -134,11 +137,18 @@ fn validate(command: &mut Command) -> Result<()> {
                     kind,
                     base_url,
                     api_key,
+                    api_version,
                 },
         } => {
             validate_provider_name(name)?;
-            if ProviderKind::parse(kind).is_none() {
-                bail!("unknown kind '{kind}'. Use 'openai' or 'anthropic'");
+            let Some(parsed) = ProviderKind::parse(kind) else {
+                bail!("unknown kind '{kind}'. Use 'openai', 'anthropic', 'gemini' or 'azure'");
+            };
+            match (parsed, api_version.as_deref()) {
+                (ProviderKind::Azure, Some(version)) => validate_api_version(version)?,
+                (ProviderKind::Azure, None) => {}
+                (_, Some(_)) => bail!("--api-version is only for Azure OpenAI providers"),
+                (_, None) => {}
             }
             validate_base_url(base_url)?;
             if api_key.as_deref().is_some_and(|k| k.trim().is_empty()) {
@@ -235,16 +245,27 @@ async fn main() -> Result<()> {
                     kind,
                     base_url,
                     api_key,
+                    api_version,
                 },
         } => {
+            // An Azure provider without a version gets the default one.
+            let api_version = (ProviderKind::parse(&kind) == Some(ProviderKind::Azure))
+                .then(|| api_version.unwrap_or_else(|| DEFAULT_AZURE_API_VERSION.to_string()));
             // Whitespace around a pasted key is not part of it.
             let credential = api_key
                 .as_deref()
                 .map(|k| cipher.encrypt(k.trim().as_bytes()));
-            store
-                .insert_provider(&name, &kind, &base_url, credential.as_deref())
-                .await
-                .with_context(|| format!("could not add provider '{name}' (is the name taken?)"))?;
+            let mut tx = store.begin().await?;
+            tx.insert_provider_versioned(
+                &name,
+                &kind,
+                &base_url,
+                credential.as_deref(),
+                api_version.as_deref(),
+            )
+            .await
+            .with_context(|| format!("could not add provider '{name}' (is the name taken?)"))?;
+            tx.commit().await.context("could not save the provider")?;
             println!("Added provider '{name}'. Call its models as {name}/<model>.");
         }
         Command::Key {
@@ -260,4 +281,39 @@ async fn main() -> Result<()> {
         Command::Openapi => unreachable!("answered before the data directory is opened"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn add(kind: &str, api_version: Option<&str>) -> Command {
+        Command::Provider {
+            command: ProviderCommand::Add {
+                name: "p".into(),
+                kind: kind.into(),
+                base_url: "https://x.example.com".into(),
+                api_key: None,
+                api_version: api_version.map(str::to_string),
+            },
+        }
+    }
+
+    #[test]
+    fn provider_add_takes_the_new_kinds_and_an_azure_api_version() {
+        for (kind, version, ok) in [
+            ("gemini", None, true),
+            ("azure", None, true),
+            ("azure", Some("2025-03-01-preview"), true),
+            ("azure", Some("latest"), false),
+            ("openai", Some("2024-10-21"), false),
+            ("palm", None, false),
+        ] {
+            assert_eq!(
+                validate(&mut add(kind, version)).is_ok(),
+                ok,
+                "{kind} {version:?}"
+            );
+        }
+    }
 }

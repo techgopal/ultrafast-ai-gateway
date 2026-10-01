@@ -8,7 +8,8 @@ use sqlx::{AssertSqlSafe, Row};
 
 use super::{write_error, Store, Tx, DEFAULT_ORG};
 
-const PROVIDER_SELECT: &str = "SELECT id, name, kind, base_url, credential FROM providers";
+const PROVIDER_SELECT: &str =
+    "SELECT id, name, kind, base_url, credential, api_version FROM providers";
 
 fn provider_from(r: &SqliteRow) -> ProviderRow {
     ProviderRow {
@@ -17,6 +18,7 @@ fn provider_from(r: &SqliteRow) -> ProviderRow {
         kind: r.get("kind"),
         base_url: r.get("base_url"),
         credential: r.get("credential"),
+        api_version: r.get("api_version"),
     }
 }
 
@@ -28,6 +30,8 @@ pub struct ProviderRow {
     pub base_url: String,
     /// Encrypted with the master key.
     pub credential: Option<Vec<u8>>,
+    /// Azure OpenAI only.
+    pub api_version: Option<String>,
 }
 
 /// Shows only whether a credential is present, never its bytes.
@@ -43,6 +47,7 @@ impl fmt::Debug for ProviderRow {
             .field("name", &self.name)
             .field("kind", &self.kind)
             .field("base_url", &self.base_url)
+            .field("api_version", &self.api_version)
             .field("credential", &credential)
             .finish()
     }
@@ -85,6 +90,21 @@ impl Tx<'_> {
         Ok(r.rows_affected() == 1)
     }
 
+    /// Sets or clears the API version. Returns `false` if there is no such provider.
+    pub async fn set_provider_api_version(
+        &mut self,
+        id: i64,
+        api_version: Option<&str>,
+    ) -> Result<bool> {
+        let r = sqlx::query("UPDATE providers SET api_version = ? WHERE id = ? AND org_id = ?")
+            .bind(api_version)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
     /// Returns `false` if there is no such provider.
     pub async fn delete_provider(&mut self, id: i64) -> Result<bool> {
         let r = sqlx::query("DELETE FROM providers WHERE id = ? AND org_id = ?")
@@ -103,15 +123,29 @@ impl Tx<'_> {
         base_url: &str,
         credential: Option<&[u8]>,
     ) -> Result<i64> {
+        self.insert_provider_versioned(name, kind, base_url, credential, None)
+            .await
+    }
+
+    /// Like [`Self::insert_provider`], with the API version of an Azure OpenAI provider.
+    pub async fn insert_provider_versioned(
+        &mut self,
+        name: &str,
+        kind: &str,
+        base_url: &str,
+        credential: Option<&[u8]>,
+        api_version: Option<&str>,
+    ) -> Result<i64> {
         let r = sqlx::query(
-            "INSERT INTO providers (org_id, name, kind, base_url, credential)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO providers (org_id, name, kind, base_url, credential, api_version)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(DEFAULT_ORG)
         .bind(name)
         .bind(kind)
         .bind(base_url)
         .bind(credential)
+        .bind(api_version)
         .execute(self.conn())
         .await
         .map_err(write_error)?;
@@ -281,6 +315,7 @@ mod tests {
             kind: "openai".into(),
             base_url: "https://api.openai.com/v1".into(),
             credential: Some(vec![222, 173, 190, 239]),
+            api_version: None,
         };
         let shown = format!("{p:?}");
         assert!(shown.contains("openai"));

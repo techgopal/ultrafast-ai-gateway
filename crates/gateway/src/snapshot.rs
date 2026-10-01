@@ -88,6 +88,8 @@ pub struct SnapProvider {
     pub kind: ProviderKind,
     pub base_url: String,
     pub api_key: Option<String>,
+    /// Azure OpenAI only.
+    pub api_version: Option<String>,
 }
 
 /// Shows only whether there is a credential, never the credential.
@@ -103,6 +105,7 @@ impl fmt::Debug for SnapProvider {
             .field("name", &self.name)
             .field("kind", &self.kind.as_str())
             .field("base_url", &self.base_url)
+            .field("api_version", &self.api_version)
             .field("api_key", &api_key)
             .finish()
     }
@@ -170,6 +173,7 @@ impl Snapshot {
                 kind,
                 base_url: p.base_url,
                 api_key,
+                api_version: p.api_version,
             };
             providers.insert(p.name, provider);
         }

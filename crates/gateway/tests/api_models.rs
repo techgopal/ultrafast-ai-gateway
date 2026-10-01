@@ -585,3 +585,66 @@ async fn sync_adds_at_most_ten_thousand_names() {
     assert_eq!(body["added"][0], "m0");
     assert_eq!(models(&org, &maya).await.len(), 10_000);
 }
+
+#[tokio::test]
+async fn gemini_sync_lists_pages_and_strips_the_prefix() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1beta/models"))
+        .and(header("x-goog-api-key", API_KEY))
+        .and(query_param("pageToken", "t2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "models": [
+            { "name": "models/text-embedding-004", "supportedGenerationMethods": ["embedContent"] },
+            { "name": "models/aqa", "supportedGenerationMethods": ["generateAnswer"] },
+        ]})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1beta/models"))
+        .and(header("x-goog-api-key", API_KEY))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "models": [
+                { "name": "models/gemini-2.0-flash", "supportedGenerationMethods": ["generateContent", "countTokens"] },
+                { "name": "models/embedding-gecko", "supportedGenerationMethods": ["countTextTokens"] },
+                { "supportedGenerationMethods": ["generateContent"] },
+            ],
+            "nextPageToken": "t2"
+        })))
+        .mount(&server)
+        .await;
+    let id = seed_provider(&org, "g", "gemini", &server.uri()).await;
+    let (status, body) = sync(&org, &maya, id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({ "added": ["gemini-2.0-flash", "text-embedding-004"], "existing": 0 })
+    );
+    assert_eq!(
+        names(&models(&org, &maya).await),
+        ["gemini-2.0-flash", "text-embedding-004"]
+    );
+}
+
+#[tokio::test]
+async fn azure_sync_is_unsupported() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let id = seed_provider(&org, "az", "azure", &server.uri()).await;
+    let (status, body) = sync(&org, &maya, id).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(error_code(&body), "sync_unsupported");
+    assert_eq!(
+        body["error"]["message"],
+        "Add Azure deployments as models by name."
+    );
+    assert!(models(&org, &maya).await.is_empty());
+}

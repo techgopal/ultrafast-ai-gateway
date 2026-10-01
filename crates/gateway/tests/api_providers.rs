@@ -100,12 +100,12 @@ async fn everyone_lists_providers_without_credentials() {
         list[0],
         json!({
             "id": list[0]["id"], "name": "local", "kind": "openai",
-            "base_url": "http://localhost:11434/v1", "has_credential": false
+            "base_url": "http://localhost:11434/v1", "has_credential": false, "api_version": null
         })
     );
     assert_eq!(list[1]["name"], "openai");
     assert_eq!(list[1]["has_credential"], true);
-    assert_eq!(list[1].as_object().unwrap().len(), 5);
+    assert_eq!(list[1].as_object().unwrap().len(), 6);
 
     let text = body.to_string();
     assert!(!text.contains(API_KEY), "{text}");
@@ -168,7 +168,7 @@ async fn creating_a_provider_encrypts_the_key() {
         body,
         json!({
             "id": id, "name": "openai", "kind": "openai",
-            "base_url": BASE_URL, "has_credential": true
+            "base_url": BASE_URL, "has_credential": true, "api_version": null
         })
     );
 
@@ -210,7 +210,7 @@ async fn provider_input_is_validated() {
         let (status, body) = create(&org, &maya, with("name", json!(name))).await;
         assert_invalid(status, &body, "name");
     }
-    for kind in ["gemini", "", "OpenAI"] {
+    for kind in ["palm", "", "OpenAI", "Gemini"] {
         let (status, body) = create(&org, &maya, with("kind", json!(kind))).await;
         assert_invalid(status, &body, "kind");
     }
@@ -231,7 +231,7 @@ async fn provider_input_is_validated() {
     }
 
     // Every field that failed is named.
-    let all = json!({ "name": "A B", "kind": "gemini", "base_url": "x", "api_key": " " });
+    let all = json!({ "name": "A B", "kind": "palm", "base_url": "x", "api_key": " " });
     let (status, body) = create(&org, &maya, all).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body["error"]["fields"].as_object().unwrap().len(), 4);
@@ -496,4 +496,116 @@ async fn a_key_is_stored_without_surrounding_whitespace() {
     let (status, _) = patch(&org, &maya, id, json!({ "api_key": "\tsk-def \n" })).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(stored_key(&org, id).await.as_deref(), Some("sk-def"));
+}
+
+#[tokio::test]
+async fn gemini_and_azure_providers_can_be_created() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let gemini = json!({
+        "name": "g", "kind": "gemini",
+        "base_url": "https://generativelanguage.googleapis.com", "api_key": API_KEY
+    });
+    let (status, body) = create(&org, &maya, gemini).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["kind"], "gemini");
+    assert_eq!(body["api_version"], Value::Null);
+
+    // Azure without an api_version gets the default.
+    let azure = json!({ "name": "az", "kind": "azure", "base_url": "https://r.openai.azure.com" });
+    let (status, body) = create(&org, &maya, azure).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["api_version"], "2024-10-21");
+    let id = body["id"].as_i64().unwrap();
+    let row = org.api.store.provider_by_id(id).await.unwrap().unwrap();
+    assert_eq!(row.api_version.as_deref(), Some("2024-10-21"));
+
+    let azure = json!({
+        "name": "az2", "kind": "azure", "base_url": "https://r.openai.azure.com",
+        "api_version": "2025-01-01-preview"
+    });
+    let (status, body) = create(&org, &maya, azure).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["api_version"], "2025-01-01-preview");
+    let (_, list) = org.call(Some(&maya), "GET", "/api/providers", None).await;
+    let shown: Vec<_> = list["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["api_version"].clone())
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            json!("2024-10-21"),
+            json!("2025-01-01-preview"),
+            Value::Null
+        ]
+    );
+}
+
+#[tokio::test]
+async fn api_version_is_validated() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let azure = |version: Value| json!({ "name": "az", "kind": "azure", "base_url": "https://r", "api_version": version });
+    for bad in [
+        "2024-10",
+        "latest",
+        "2024-10-21-beta",
+        "2024-10-21 ",
+        "",
+        "20241021",
+    ] {
+        let (status, body) = create(&org, &maya, azure(json!(bad))).await;
+        assert_invalid(status, &body, "api_version");
+    }
+    for good in ["2024-10-21", "2025-03-01-preview"] {
+        let mut b = azure(json!(good));
+        b["name"] = json!(format!("az{}", good.len()));
+        assert_eq!(
+            create(&org, &maya, b).await.0,
+            StatusCode::CREATED,
+            "{good}"
+        );
+    }
+    // Only Azure has one.
+    let mut other = openai("o");
+    other["api_version"] = json!("2024-10-21");
+    let (status, body) = create(&org, &maya, other).await;
+    assert_invalid(status, &body, "api_version");
+}
+
+#[tokio::test]
+async fn an_azure_api_version_can_be_changed() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let azure = json!({ "name": "az", "kind": "azure", "base_url": "https://r" });
+    let (_, body) = create(&org, &maya, azure).await;
+    let id = body["id"].as_i64().unwrap();
+
+    let (status, body) = patch(
+        &org,
+        &maya,
+        id,
+        json!({ "api_version": "2025-03-01-preview" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["api_version"], "2025-03-01-preview");
+    assert_eq!(
+        org.last_summary("provider.update").await,
+        "Updated provider az: API version changed"
+    );
+    for bad in [json!("soon"), json!(null)] {
+        let (status, body) = patch(&org, &maya, id, json!({ "api_version": bad })).await;
+        assert!(
+            status == StatusCode::UNPROCESSABLE_ENTITY || status == StatusCode::BAD_REQUEST,
+            "{status} {body}"
+        );
+    }
+    // A provider of another kind has none to change.
+    let other = seed(&org, &maya, "o").await;
+    let (status, body) = patch(&org, &maya, other, json!({ "api_version": "2024-10-21" })).await;
+    assert_invalid(status, &body, "api_version");
 }

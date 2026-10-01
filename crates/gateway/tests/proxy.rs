@@ -576,3 +576,96 @@ mod records {
         assert_eq!(r.attempts[1].duration_ms, 0);
     }
 }
+
+#[tokio::test]
+async fn proxies_to_gemini_provider_and_returns_openai_shape() {
+    let h = harness("gemini").await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gpt-4o:generateContent"))
+        .and(header("x-goog-api-key", "provider-secret"))
+        .and(body_partial_json(
+            json!({ "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }] }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [{ "content": { "role": "model", "parts": [{ "text": "ciao" }] }, "finishReason": "MAX_TOKENS" }],
+            "usageMetadata": { "promptTokenCount": 4, "candidatesTokenCount": 5 },
+            "modelVersion": "gemini-x", "responseId": "r1"
+        })))
+        .expect(1)
+        .mount(&h.upstream)
+        .await;
+    let (status, out) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["choices"][0]["message"]["content"], "ciao");
+    assert_eq!(v["choices"][0]["finish_reason"], "length");
+    assert_eq!(v["usage"]["total_tokens"], 9);
+    assert!(!out.contains("provider-secret"));
+}
+
+#[tokio::test]
+async fn gemini_errors_pass_through_the_common_rules() {
+    let h = harness("gemini").await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": { "code": 400, "message": "API key not valid", "status": "INVALID_ARGUMENT" }
+        })))
+        .mount(&h.upstream)
+        .await;
+    let (status, out) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert!(
+        status.is_client_error() || status.is_server_error(),
+        "{out}"
+    );
+    assert!(!out.contains("provider-secret"), "{out}");
+}
+
+async fn azure_harness(api_version: Option<&str>) -> common::Harness {
+    let h = harness("azure").await;
+    if let Some(v) = api_version {
+        let id = h.store.provider_by_name("p").await.unwrap().unwrap().id;
+        let mut tx = h.store.begin().await.unwrap();
+        assert!(tx.set_provider_api_version(id, Some(v)).await.unwrap());
+        tx.commit().await.unwrap();
+        h.state.refresh().await.unwrap();
+    }
+    h
+}
+
+#[tokio::test]
+async fn proxies_to_azure_provider_on_its_deployment_url() {
+    let h = azure_harness(Some("2025-01-01-preview")).await;
+    Mock::given(method("POST"))
+        .and(path("/openai/deployments/gpt-4o/chat/completions"))
+        .and(wiremock::matchers::query_param(
+            "api-version",
+            "2025-01-01-preview",
+        ))
+        .and(header("api-key", "provider-secret"))
+        .respond_with(openai_ok())
+        .expect(1)
+        .mount(&h.upstream)
+        .await;
+    let (status, out) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["choices"][0]["message"]["content"], "hello");
+    assert_eq!(v["usage"]["total_tokens"], 3);
+    let sent = &h.upstream.received_requests().await.unwrap()[0];
+    let body: Value = serde_json::from_slice(&sent.body).unwrap();
+    assert!(body.get("model").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn azure_without_an_api_version_uses_the_default() {
+    let h = azure_harness(None).await;
+    Mock::given(method("POST"))
+        .and(path("/openai/deployments/gpt-4o/chat/completions"))
+        .and(wiremock::matchers::query_param("api-version", "2024-10-21"))
+        .respond_with(openai_ok())
+        .expect(1)
+        .mount(&h.upstream)
+        .await;
+    let (status, out) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+}

@@ -230,6 +230,7 @@ export const providers = {
     kind: "openai",
     base_url: "https://api.openai.example.test/v1",
     has_credential: true,
+    api_version: null,
   },
   withoutCredential: {
     id: 2,
@@ -237,6 +238,7 @@ export const providers = {
     kind: "openai",
     base_url: "http://llm.internal.example.test:8000/v1",
     has_credential: false,
+    api_version: null,
   },
 } satisfies Record<string, Provider>;
 

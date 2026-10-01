@@ -381,6 +381,7 @@ async fn snapshot_debug_hides_credentials() {
         kind: ProviderKind::parse("openai").unwrap(),
         base_url: "https://api.openai.com/v1".into(),
         api_key: Some("sk-very-secret".into()),
+        api_version: None,
     };
     let shown = format!("{provider:?}");
     assert!(!shown.contains("sk-very-secret"), "{shown}");

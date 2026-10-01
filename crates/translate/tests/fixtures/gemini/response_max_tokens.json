@@ -1,0 +1,7 @@
+{
+  "candidates": [
+    { "content": { "role": "model", "parts": [{ "text": "Cut" }] }, "finishReason": "MAX_TOKENS" }
+  ],
+  "usageMetadata": { "promptTokenCount": 7, "candidatesTokenCount": 1 },
+  "modelVersion": "gemini-2.0-flash"
+}

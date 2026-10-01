@@ -364,6 +364,7 @@ async fn try_target(
         base_url: provider.base_url.clone(),
         api_key: provider.api_key.clone(),
         model: target.model.clone(),
+        api_version: provider.api_version.clone(),
     };
     let out = build_request(&wire, req).map_err(|e| Failure::Fatal {
         error: CallError::Translate(e),
