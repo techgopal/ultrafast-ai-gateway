@@ -5,15 +5,6 @@ import { NotAvailableContent } from "@/components/NotAvailableContent";
 import { PageHeader } from "@/components/PageHeader";
 import { InShell } from "@/components/shell-context";
 
-/** The whole screen, for where there is no shell. Inside the shell: `NotAvailableContent`. */
-export function NotAvailable() {
-  return (
-    <main className="flex min-h-svh flex-col p-6">
-      <NotAvailableContent />
-    </main>
-  );
-}
-
 export const PAGE_NOT_LOADED = "This page could not be loaded";
 
 /**
