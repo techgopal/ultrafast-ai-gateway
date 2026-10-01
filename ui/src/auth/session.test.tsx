@@ -1,11 +1,12 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryHistory } from "@tanstack/react-router";
 import { useState } from "react";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, onUnauthenticated } from "@/api/client";
 import { keysOptions, meOptions, useCreateTeam, useKeys, useTeams } from "@/api/queries";
+import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -19,7 +20,13 @@ import * as fixtures from "@/test/fixtures";
 import { gate, PASSWORD, startGateway } from "@/test/gateway";
 import { errors } from "@/test/errors";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
-import { theBrowserIsOffline } from "@/test/pages";
+import {
+  counted,
+  forgetToasts,
+  theBrowserIsOffline,
+  theWindowGetsTheFocus,
+  toasts,
+} from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 import { useSession, useSessionControl, useSignOut } from "./session";
 
@@ -990,6 +997,108 @@ describe("sign out", () => {
     expect(screen.queryByText(SESSION_ENDED)).toBeNull();
     expect(app.queryClient.getQueryCache().getAll()).toEqual([]);
     expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+    expect(await tokenOfAWrite()).toBeNull();
+  });
+});
+
+describe("another user signs in, in another window", () => {
+  afterEach(forgetToasts);
+
+  /** What the shell shows of who is signed in. */
+  function shownUser(name: string): HTMLElement {
+    return within(screen.getByRole("navigation", { name: "Main" })).getByText(name);
+  }
+
+  test("the tab drops what it held and starts again with the new user, as a reload does", async () => {
+    startGateway({ signedIn: true });
+    const app = await renderWithApp(null, { route: "/keys" });
+    await app.queryClient.query(keysOptions());
+    const before = app.queryClient.getQueryCache().getAll();
+    expect(before.length).toBeGreaterThan(2);
+    // A write and a mutation of Maya's are on their way, and a toast of hers shows.
+    const door = gate();
+    let asked = 0;
+    override("post", "/api/teams", async () => {
+      asked += 1;
+      await door.opened;
+      return ok("post", "/api/teams", 201, fixtures.teams.growth);
+    });
+    const write = api.post("/api/teams", { body: { name: "Growth" } }).then(
+      () => "resolved",
+      (error: unknown) => (error instanceof Error ? error.name : "rejected"),
+    );
+    await waitFor(() => {
+      expect(asked).toBe(1);
+    });
+    void app.queryClient
+      .getMutationCache()
+      .build(app.queryClient, { mutationFn: () => door.opened })
+      .execute(undefined)
+      .catch(() => undefined);
+    expect(app.queryClient.getMutationCache().getAll()).toHaveLength(1);
+    const { result } = renderHook(() => useToast());
+    act(() => {
+      result.current("Saved.");
+    });
+    expect(await screen.findByText("Saved.")).toBeInTheDocument();
+
+    // In another window Lena signs in: the cookie of the browser is hers now.
+    const lena = startGateway({ signedIn: true, me: fixtures.me.lena });
+    lena.csrfToken = "the-token-of-lena";
+    theWindowGetsTheFocus();
+
+    await waitFor(() => {
+      expect(shownUser("Lena Fischer")).toBeInTheDocument();
+    });
+    expect(heading("Virtual keys")).toBeInTheDocument();
+    expect(href(app)).toBe("/keys");
+    // Nothing of before is left: every query is a new one, no mutation is kept.
+    const after = app.queryClient.getQueryCache().getAll();
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.filter((query) => before.includes(query))).toEqual([]);
+    expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+    await waitFor(() => {
+      expect(toasts()).toEqual([]);
+    });
+    expect(await tokenOfAWrite()).toBe("the-token-of-lena");
+    // What Maya's tab sent answers into a session that is over.
+    door.open();
+    expect(await write).toBe("SessionOverError");
+  });
+
+  test("the same user read again keeps what the tab holds", async () => {
+    startGateway({ signedIn: true });
+    const app = await renderWithApp(null, { route: "/keys" });
+    await app.queryClient.query(keysOptions());
+    const keys = app.queryClient.getQueryCache().find({ queryKey: keysOptions().queryKey });
+    expect(keys).toBeDefined();
+    const me = counted("get", "/api/auth/me", () => ok("get", "/api/auth/me", 200, fixtures.me.maya));
+    theWindowGetsTheFocus();
+    await waitFor(() => {
+      expect(me.calls).toBe(1);
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(app.queryClient.getQueryCache().find({ queryKey: keysOptions().queryKey })).toBe(keys);
+    expect(shownUser("Maya Okafor")).toBeInTheDocument();
+  });
+
+  test("a new user whose session has no token for this tab: to the sign-in page, which says why", async () => {
+    startGateway({ signedIn: true });
+    const app = await renderWithApp(null, { route: "/keys" });
+    override("get", "/api/auth/me", () =>
+      ok("get", "/api/auth/me", 200, { ...fixtures.me.lena, csrf_token: null }),
+    );
+    theWindowGetsTheFocus();
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in");
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "You signed in with another account in another window.",
+    );
+    expect(heading("Sign in")).toBeInTheDocument();
+    expect(app.queryClient.getQueryCache().getAll()).toEqual([]);
     expect(await tokenOfAWrite()).toBeNull();
   });
 });
