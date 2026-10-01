@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{allow_model, harness, post_chat};
+use common::{allow_model, hanging_upstream, harness, post_chat};
 use futures::StreamExt;
 use serde_json::Value;
 use wiremock::matchers::{body_partial_json, method, path};
@@ -197,54 +197,13 @@ async fn provider_error_before_stream_starts_is_a_normal_json_error() {
         .mount(&h.upstream)
         .await;
     let (status, body) = post_chat(&h.app, Some(&h.key), BODY).await;
-    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    // Retried, and then no provider is left.
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     let v: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["error"]["message"], "unavailable");
-}
-
-/// An upstream that sends one chunk and then holds the connection open.
-/// Reports on the channel once the gateway closes its side.
-async fn hanging_upstream() -> (String, tokio::sync::oneshot::Receiver<()>) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let uri = format!("http://{}", listener.local_addr().unwrap());
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
-        let mut buf = vec![0u8; 8192];
-        let mut seen = Vec::new();
-        // Read the whole request: headers, then the announced body length.
-        loop {
-            let n = sock.read(&mut buf).await.unwrap();
-            assert!(n > 0, "gateway closed before sending the request");
-            seen.extend_from_slice(&buf[..n]);
-            if let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
-                let head = String::from_utf8_lossy(&seen[..end]).to_ascii_lowercase();
-                let len: usize = head
-                    .lines()
-                    .find_map(|l| l.strip_prefix("content-length:"))
-                    .map(|v| v.trim().parse().unwrap())
-                    .unwrap_or(0);
-                if seen.len() >= end + 4 + len {
-                    break;
-                }
-            }
-        }
-        let chunk =
-            "data: {\"choices\":[{\"delta\":{\"content\":\"one\"},\"finish_reason\":null}]}\n\n";
-        let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
-        let out = format!("{head}{:x}\r\n{chunk}\r\n", chunk.len());
-        sock.write_all(out.as_bytes()).await.unwrap();
-        // The stream is never finished; only the gateway closing ends this read.
-        loop {
-            match sock.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-        }
-        let _ = tx.send(());
-    });
-    (uri, rx)
+    assert_eq!(
+        v["error"]["message"],
+        "No provider could serve this request."
+    );
 }
 
 #[tokio::test]
@@ -460,9 +419,23 @@ mod records {
         drop(stream);
         let _ = closed.await;
         let records = h.sink.wait_for(1).await;
-        assert_eq!(records.len(), 1);
+        // Exactly one record, however long afterwards.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(h.sink.records().len(), 1);
         assert_eq!(records[0].requested, "hang/m");
         assert_eq!(records[0].status, 499);
         assert!(records[0].stream);
+        // The target that was streaming is the one attempt, and it did not
+        // finish: retryable, with the status the provider had answered.
+        let attempts: Vec<_> = records[0]
+            .attempts
+            .iter()
+            .map(|a| (a.provider.as_str(), a.model.as_str(), a.outcome, a.status))
+            .collect();
+        assert_eq!(
+            attempts,
+            [("hang", "m", AttemptOutcome::Retryable, Some(200))]
+        );
+        assert!(records[0].usage.is_none());
     }
 }

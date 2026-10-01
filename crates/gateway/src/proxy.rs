@@ -4,28 +4,36 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use tokio::time::timeout_at;
+
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use bytes::Bytes;
+use futures::stream::BoxStream;
 use futures::StreamExt;
 use http_body_util::LengthLimitError;
+use rand::rngs::StdRng;
 use ultrafast_translate::error::TranslateError;
 use ultrafast_translate::ingress::openai::{
     parse_request, render_response, render_stream_error, render_stream_event,
 };
 use ultrafast_translate::provider::{
-    build_request, parse_response, HttpRequest, ProviderKind, StreamDecoder, Target,
+    build_request, parse_response, HttpRequest, StreamDecoder, Target,
 };
-use ultrafast_translate::types::{StreamEvent, Usage};
+use ultrafast_translate::types::{ChatRequest, ChatResponse, StreamEvent, Usage};
 
-use crate::access::{self, Denied};
+use crate::access::{self, Denied, Resolved};
 use crate::app::AppState;
 use crate::auth::authenticate;
 use crate::errors::{caller_message, error_response, translate_error_response};
-use crate::snapshot::{SnapKey, Snapshot};
+use crate::routing::{
+    self, Candidate, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
+};
+use crate::snapshot::{SnapKey, SnapProvider, Snapshot};
 use crate::telemetry::{AttemptOutcome, Scope};
 
 pub(crate) fn now_secs() -> u64 {
@@ -69,14 +77,9 @@ pub async fn list_models(State(state): State<Arc<AppState>>, request: Request) -
     Json(serde_json::json!({ "object": "list", "data": data })).into_response()
 }
 
-/// How an answer of a provider counts for the record.
-fn outcome_of(status: u16) -> AttemptOutcome {
-    match status {
-        200..=299 => AttemptOutcome::Ok,
-        429 | 500..=599 => AttemptOutcome::Retryable,
-        _ => AttemptOutcome::Fatal,
-    }
-}
+const NO_PROVIDER: &str = "No provider could serve this request.";
+const NO_MODEL: &str = "No model is available for this request.";
+const TIMED_OUT: &str = "The request timed out.";
 
 pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Request) -> Response {
     // 1. Authenticate on the headers alone. The body has not been read yet.
@@ -102,6 +105,45 @@ pub async fn chat_completions(State(state): State<Arc<AppState>>, request: Reque
         scope.finish(response.status().as_u16());
     }
     response
+}
+
+/// The targets of a call in the order they are tried, and how they are tried.
+fn plan_of(
+    snapshot: &Snapshot,
+    key: &SnapKey,
+    resolved: &Resolved<'_>,
+    rng: &mut StdRng,
+) -> (Vec<Candidate>, Settings) {
+    let (order, settings) = match resolved {
+        Resolved::Model(model) => (
+            vec![TargetRef {
+                provider: model.provider.clone(),
+                model: model.name.clone(),
+                model_id: model.id,
+            }],
+            Settings::DIRECT,
+        ),
+        Resolved::Route(route) => (
+            routing::plan(route, rng),
+            Settings {
+                retries: route.retries,
+                first_token_timeout: route.first_token_timeout,
+                total_timeout: route.total_timeout,
+                breaker: route.breaker,
+            },
+        ),
+    };
+    let candidates = order
+        .into_iter()
+        .map(|target| {
+            let callable = snapshot.provider(&target.provider).is_some()
+                && snapshot
+                    .model(&target.provider, &target.model)
+                    .is_some_and(|m| access::may_call_model(snapshot, key, m));
+            Candidate { target, callable }
+        })
+        .collect();
+    (candidates, settings)
 }
 
 async fn dispatch(
@@ -145,121 +187,299 @@ async fn dispatch(
         Err(Denied::Unknown) => return not_found(&req.model),
         Err(Denied::Forbidden) => return forbidden(&req.model),
     };
-    // Until the routing engine, the first target is called, with no retry.
-    let targets = access::callable_targets(snapshot, key, &resolved);
+    let mut rng: StdRng = rand::make_rng();
+    let (candidates, settings) = plan_of(snapshot, key, &resolved, &mut rng);
     record.targets(
-        targets
+        candidates
             .iter()
-            .map(|t| (t.provider.name.clone(), t.model.to_string()))
+            .map(|c| (c.target.provider.clone(), c.target.model.clone()))
             .collect(),
     );
-    let Some(first) = targets.first() else {
-        return error_response(
+    if candidates.is_empty() {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "upstream_error", NO_MODEL);
+    }
+
+    // 4. Try the targets in order.
+    let served = routing::run(
+        &*state.health,
+        record,
+        &settings,
+        &candidates,
+        &mut rng,
+        |target, limits| {
+            // A candidate is called only when its provider is in the snapshot.
+            let provider = snapshot.provider(&target.provider);
+            try_target(
+                &state.http,
+                &req,
+                provider,
+                target,
+                limits,
+                state.max_provider_response_bytes,
+            )
+        },
+    )
+    .await;
+    match served {
+        Ok(Served::Whole(response)) => {
+            scope
+                .as_mut()
+                .expect("a whole answer keeps the scope")
+                .usage(response.usage);
+            Json(render_response(&response, now_secs())).into_response()
+        }
+        Ok(Served::Stream(committed)) => {
+            let guard = StreamRecord {
+                scope: scope.take(),
+                started: committed.started,
+                health: state.health.clone(),
+                target: committed.target.clone(),
+                breaker: settings.breaker,
+            };
+            stream_to_caller(*committed, guard)
+        }
+        Err(Stop::Fatal(e)) => e.into_response(),
+        Err(Stop::Exhausted) => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "upstream_error",
-            "No model is available for this request.",
-        );
-    };
-    let provider = first.provider;
-    let kind = provider.kind;
-    let target = Target {
-        kind,
-        base_url: provider.base_url.clone(),
-        api_key: provider.api_key.clone(),
-        model: first.model.to_string(),
-    };
+            NO_PROVIDER,
+        ),
+    }
+}
 
-    // 4. Call the provider.
-    let out = match build_request(&target, &req) {
-        Ok(o) => o,
-        Err(e) => return translate_error_response(&e),
-    };
-    let started = Instant::now();
-    let upstream = match send(&state.http, out).await {
-        Ok(r) => r,
-        Err(e) => {
-            record.attempt(
-                &provider.name,
-                &target.model,
-                AttemptOutcome::Retryable,
-                None,
-                started,
-            );
-            // `without_url` keeps credentials in query strings out of logs and replies.
-            let e = e.without_url();
-            tracing::warn!(provider = %provider.name, error = %e, "provider unreachable");
-            return error_response(
+/// Why a try of a target failed. Only a failure that is not retryable is
+/// ever shown to the caller.
+enum CallError {
+    Translate(TranslateError),
+    Redirect(String),
+    TooLarge,
+    /// Retryable: the caller sees only that no provider could serve it.
+    Lost,
+}
+
+impl CallError {
+    fn into_response(self) -> Response {
+        match self {
+            CallError::Translate(e) => translate_error_response(&e),
+            CallError::Redirect(provider) => error_response(
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",
-                &format!("Could not reach provider '{}'.", provider.name),
-            );
-        }
-    };
-
-    let status = upstream.status().as_u16();
-    // A stream is judged when it ends; everything else by its status.
-    let streaming = req.stream && status < 400;
-    let first_outcome = if (300..400).contains(&status) {
-        AttemptOutcome::Fatal
-    } else {
-        outcome_of(status)
-    };
-    record.attempt(
-        &provider.name,
-        &target.model,
-        first_outcome,
-        Some(status),
-        started,
-    );
-    // Redirects are not followed, and a redirect is never a usable answer.
-    if (300..400).contains(&status) {
-        tracing::warn!(provider = %provider.name, status, "provider answered with a redirect");
-        return error_response(
-            StatusCode::BAD_GATEWAY,
-            "upstream_error",
-            &format!("Provider '{}' answered with a redirect.", provider.name),
-        );
-    }
-    if streaming {
-        let guard = StreamRecord {
-            scope: scope.take(),
-            started,
-        };
-        return stream_to_caller(upstream, kind, target.model, provider.name.clone(), guard);
-    }
-    let bytes = match read_capped(upstream, state.max_provider_response_bytes).await {
-        Ok(b) => b,
-        Err(ReadError::TooLarge) => {
-            record.set_last_outcome(AttemptOutcome::Fatal);
-            record.end_last_attempt(started);
-            tracing::warn!(provider = %provider.name, "provider response was too large");
-            return error_response(
+                &format!("Provider '{provider}' answered with a redirect."),
+            ),
+            CallError::TooLarge => error_response(
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",
                 "The provider response was too large.",
-            );
-        }
-        Err(ReadError::Failed) => {
-            record.set_last_outcome(AttemptOutcome::Retryable);
-            record.end_last_attempt(started);
-            return error_response(
-                StatusCode::BAD_GATEWAY,
+            ),
+            CallError::Lost => error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
                 "upstream_error",
-                "The provider response could not be read.",
-            );
+                NO_PROVIDER,
+            ),
+        }
+    }
+}
+
+/// What a target gave.
+enum Served {
+    Whole(ChatResponse),
+    Stream(Box<Committed>),
+}
+
+/// A stream whose first event has arrived: the target is the caller's now.
+struct Committed {
+    target: TargetRef,
+    /// When the try began.
+    started: Instant,
+    deadline: tokio::time::Instant,
+    chunks: BoxStream<'static, Result<Bytes, reqwest::Error>>,
+    decoder: StreamDecoder,
+    /// Decoded from the chunks read to find the first event.
+    events: Vec<StreamEvent>,
+    error: Option<TranslateError>,
+}
+
+fn retryable<E>(error: E, status: Option<u16>) -> Failure<E> {
+    Failure::Retryable { error, status }
+}
+
+/// Whether another try could do better after this error of the provider.
+fn failure_of(e: TranslateError, status: Option<u16>) -> Failure<CallError> {
+    match e {
+        TranslateError::Provider {
+            retryable: true, ..
+        }
+        | TranslateError::Malformed(_) => retryable(CallError::Lost, status),
+        e => Failure::Fatal {
+            error: CallError::Translate(e),
+            status,
+        },
+    }
+}
+
+/// Whether an error the provider sent inside a stream is the provider's own
+/// trouble, which another target may not share. A rejected credential is not:
+/// it is answered as it is outside a stream.
+fn stream_error_is_retryable(e: &TranslateError) -> bool {
+    match e {
+        TranslateError::Provider {
+            status: 401 | 403, ..
+        } => false,
+        TranslateError::Provider {
+            status, retryable, ..
+        } => *retryable || *status >= 500,
+        TranslateError::Malformed(_) => true,
+        _ => false,
+    }
+}
+
+/// How an error inside a stream counts for the record and the breaker.
+fn outcome_of_error(e: &TranslateError) -> AttemptOutcome {
+    if stream_error_is_retryable(e) {
+        AttemptOutcome::Retryable
+    } else {
+        AttemptOutcome::Fatal
+    }
+}
+
+/// One try of one target: the request, and the answer up to the point where
+/// it is the caller's: the whole answer, or the first event of a stream.
+/// Until the first byte `limits.first_token` holds; the whole try is held to
+/// the deadline of the request.
+async fn try_target(
+    http: &reqwest::Client,
+    req: &ChatRequest,
+    provider: Option<&SnapProvider>,
+    target: TargetRef,
+    limits: Limits,
+    max_response: usize,
+) -> Result<Success<Served>, Failure<CallError>> {
+    let Some(provider) = provider else {
+        return Err(retryable(CallError::Lost, None));
+    };
+    let started = Instant::now();
+    let first_by = tokio::time::Instant::now() + limits.first_token;
+    let wire = Target {
+        kind: provider.kind,
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        model: target.model.clone(),
+    };
+    let out = build_request(&wire, req).map_err(|e| Failure::Fatal {
+        error: CallError::Translate(e),
+        status: None,
+    })?;
+    let upstream = match timeout_at(first_by, send(http, out)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            // `without_url` keeps credentials in query strings out of logs.
+            let e = e.without_url();
+            tracing::warn!(provider = %provider.name, error = %e, "provider unreachable");
+            return Err(retryable(CallError::Lost, None));
+        }
+        Err(_) => {
+            tracing::warn!(provider = %provider.name, "provider gave no answer in time");
+            return Err(retryable(CallError::Lost, None));
         }
     };
-    record.end_last_attempt(started);
-    match parse_response(kind, status, &bytes) {
-        Ok(r) => {
-            record.usage(r.usage);
-            Json(render_response(&r, now_secs())).into_response()
+    let status = upstream.status().as_u16();
+    // Redirects are not followed, and a redirect is never a usable answer.
+    if (300..400).contains(&status) {
+        tracing::warn!(provider = %provider.name, status, "provider answered with a redirect");
+        return Err(Failure::Fatal {
+            error: CallError::Redirect(provider.name.clone()),
+            status: Some(status),
+        });
+    }
+    if req.stream && status < 400 {
+        return first_event(
+            upstream,
+            provider,
+            target,
+            started,
+            first_by,
+            limits.deadline,
+            status,
+        )
+        .await;
+    }
+
+    let bytes = match timeout_at(limits.deadline, read_capped(upstream, max_response)).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(ReadError::TooLarge)) => {
+            tracing::warn!(provider = %provider.name, "provider response was too large");
+            return Err(Failure::Fatal {
+                error: CallError::TooLarge,
+                status: Some(status),
+            });
         }
-        Err(e) => {
-            if first_outcome == AttemptOutcome::Ok {
-                record.set_last_outcome(AttemptOutcome::Fatal);
+        Ok(Err(ReadError::Failed)) | Err(_) => {
+            return Err(retryable(CallError::Lost, Some(status)));
+        }
+    };
+    match parse_response(provider.kind, status, &bytes) {
+        Ok(r) => Ok(Success {
+            value: Served::Whole(r),
+            status: Some(status),
+        }),
+        Err(e) => Err(failure_of(e, Some(status))),
+    }
+}
+
+/// Reads a stream until its first event, which commits the target.
+async fn first_event(
+    upstream: reqwest::Response,
+    provider: &SnapProvider,
+    target: TargetRef,
+    started: Instant,
+    first_by: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+    status: u16,
+) -> Result<Success<Served>, Failure<CallError>> {
+    let mut chunks = upstream.bytes_stream().boxed();
+    let mut decoder = StreamDecoder::new(provider.kind);
+    loop {
+        let chunk = match timeout_at(first_by, chunks.next()).await {
+            Err(_) => {
+                tracing::warn!(provider = %provider.name, "provider sent no event in time");
+                return Err(retryable(CallError::Lost, Some(status)));
             }
-            translate_error_response(&e)
+            Ok(None) => {
+                tracing::warn!(provider = %provider.name, "provider stream ended before an event");
+                return Err(retryable(CallError::Lost, Some(status)));
+            }
+            Ok(Some(Err(e))) => {
+                let e = e.without_url();
+                tracing::warn!(provider = %provider.name, error = %e, "provider stream was lost");
+                return Err(retryable(CallError::Lost, Some(status)));
+            }
+            Ok(Some(Ok(bytes))) => bytes,
+        };
+        match decoder.feed(&chunk) {
+            Err(e) => {
+                log_stream_error(&provider.name, &e);
+                return Err(if stream_error_is_retryable(&e) {
+                    retryable(CallError::Lost, Some(status))
+                } else {
+                    failure_of(e, Some(status))
+                });
+            }
+            Ok(events) if events.is_empty() => continue,
+            Ok(events) => {
+                let error = decoder.take_error();
+                return Ok(Success {
+                    value: Served::Stream(Box::new(Committed {
+                        target,
+                        started,
+                        deadline,
+                        chunks,
+                        decoder,
+                        events,
+                        error,
+                    })),
+                    status: Some(status),
+                });
+            }
         }
     }
 }
@@ -300,11 +520,10 @@ fn stream_id() -> String {
     format!("chatcmpl-{}", hex::encode(bytes))
 }
 
-/// Logs a stream failure and renders the error event the caller may see.
-fn stream_failure(provider: &str, e: &TranslateError) -> String {
+/// Logs a stream failure. The provider's text about a rejected credential
+/// may quote the credential, so only the masked message is logged for it.
+fn log_stream_error(provider: &str, e: &TranslateError) {
     let (_, _, message) = caller_message(e);
-    // The provider's text about a rejected credential may quote the
-    // credential, so only the masked message is logged for it.
     let credential = matches!(
         e,
         TranslateError::Provider {
@@ -317,6 +536,12 @@ fn stream_failure(provider: &str, e: &TranslateError) -> String {
     } else {
         tracing::warn!(provider = %provider, error = %e, "provider stream failed");
     }
+}
+
+/// Logs a stream failure and renders the error event the caller may see.
+fn stream_failure(provider: &str, e: &TranslateError) -> String {
+    log_stream_error(provider, e);
+    let (_, _, message) = caller_message(e);
     render_stream_error(&message)
 }
 
@@ -325,13 +550,28 @@ fn stream_failure(provider: &str, e: &TranslateError) -> String {
 struct StreamRecord {
     scope: Option<Scope>,
     started: Instant,
+    health: Arc<dyn HealthStore>,
+    target: TargetRef,
+    breaker: crate::routing::BreakerSettings,
 }
 
 impl StreamRecord {
-    /// Records the end of the stream: what the provider's attempt came to,
-    /// and the usage if it was reported. The caller was answered 200.
+    /// Records the end of the stream: what the attempt came to, and the
+    /// usage if it was reported. The caller was answered 200. The success of
+    /// the first event is already with the breaker; a failure after it is
+    /// reported now, and counts when another try could have done better.
     fn end(mut self, outcome: AttemptOutcome, usage: Option<Usage>) {
         if let Some(mut scope) = self.scope.take() {
+            if outcome != AttemptOutcome::Ok {
+                self.health.report(
+                    &self.target,
+                    false,
+                    outcome == AttemptOutcome::Retryable,
+                    Some(200),
+                    tokio::time::Instant::now(),
+                    &self.breaker,
+                );
+            }
             scope.set_last_outcome(outcome);
             scope.end_last_attempt(self.started);
             scope.usage(usage);
@@ -342,7 +582,9 @@ impl StreamRecord {
 
 impl Drop for StreamRecord {
     fn drop(&mut self) {
+        // The caller went away before the end: the attempt did not finish.
         if let Some(scope) = self.scope.as_mut() {
+            scope.set_last_outcome(AttemptOutcome::Retryable);
             scope.end_last_attempt(self.started);
         }
     }
@@ -352,38 +594,55 @@ impl Drop for StreamRecord {
 ///
 /// The body owns the upstream response, so when the caller disconnects and the
 /// body is dropped, the provider request is dropped with it.
-fn stream_to_caller(
-    upstream: reqwest::Response,
-    kind: ProviderKind,
-    model: String,
-    provider: String,
-    record: StreamRecord,
-) -> Response {
+fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
     let created = now_secs();
     let id = stream_id();
     let body = async_stream::stream! {
         let record = record;
-        let mut decoder = StreamDecoder::new(kind);
-        let mut chunks = upstream.bytes_stream();
-        while let Some(chunk) = chunks.next().await {
-            let bytes = match chunk {
-                Ok(b) => b,
-                Err(e) => {
-                    let e = e.without_url();
-                    tracing::warn!(provider = %provider, error = %e, "provider stream was lost");
-                    record.end(AttemptOutcome::Retryable, None);
-                    yield Ok::<String, Infallible>(render_stream_error(
-                        "The connection to the provider was lost.",
-                    ));
-                    return;
-                }
-            };
-            let events = match decoder.feed(&bytes) {
-                Ok(events) => events,
-                Err(e) => {
-                    record.end(AttemptOutcome::Fatal, None);
-                    yield Ok(stream_failure(&provider, &e));
-                    return;
+        let Committed {
+            target,
+            started: _,
+            deadline,
+            mut chunks,
+            mut decoder,
+            events,
+            error,
+        } = committed;
+        let provider = target.provider.clone();
+        let model = target.model.clone();
+        let mut pending = Some((events, error));
+        loop {
+            let (events, error) = match pending.take() {
+                Some(first) => first,
+                None => {
+                    let chunk = match timeout_at(deadline, chunks.next()).await {
+                        Err(_) => {
+                            tracing::warn!(provider = %provider, "request ran out of time during the stream");
+                            record.end(AttemptOutcome::Retryable, None);
+                            yield Ok::<String, Infallible>(render_stream_error(TIMED_OUT));
+                            return;
+                        }
+                        Ok(None) => {
+                            record.end(AttemptOutcome::Retryable, None);
+                            tracing::warn!(provider = %provider, "provider stream ended before completion");
+                            yield Ok(render_stream_error("The provider stream ended before completion."));
+                            return;
+                        }
+                        Ok(Some(Err(e))) => {
+                            let e = e.without_url();
+                            tracing::warn!(provider = %provider, error = %e, "provider stream was lost");
+                            record.end(AttemptOutcome::Retryable, None);
+                            yield Ok(render_stream_error(
+                                "The connection to the provider was lost.",
+                            ));
+                            return;
+                        }
+                        Ok(Some(Ok(bytes))) => bytes,
+                    };
+                    match decoder.feed(&chunk) {
+                        Ok(events) => (events, decoder.take_error()),
+                        Err(e) => (Vec::new(), Some(e)),
+                    }
                 }
             };
             for ev in events {
@@ -401,16 +660,13 @@ fn stream_to_caller(
                 }
                 yield Ok(rendered);
             }
-            // An error that followed those events in the same chunk.
-            if let Some(e) = decoder.take_error() {
-                record.end(AttemptOutcome::Fatal, None);
+            // An error that ended the stream, after the events before it.
+            if let Some(e) = error {
+                record.end(outcome_of_error(&e), None);
                 yield Ok(stream_failure(&provider, &e));
                 return;
             }
         }
-        record.end(AttemptOutcome::Retryable, None);
-        tracing::warn!(provider = %provider, "provider stream ended before completion");
-        yield Ok(render_stream_error("The provider stream ended before completion."));
     };
     Response::builder()
         .status(StatusCode::OK)

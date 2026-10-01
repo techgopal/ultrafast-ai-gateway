@@ -8,7 +8,7 @@
 //! owner; the model is still checked for enabled and granted.
 
 use crate::identity::Role;
-use crate::snapshot::{SnapKey, SnapModel, SnapProvider, SnapRoute, SnapUser, Snapshot};
+use crate::snapshot::{SnapKey, SnapModel, SnapRoute, SnapUser, Snapshot};
 
 pub enum Resolved<'a> {
     Model(&'a SnapModel),
@@ -20,12 +20,6 @@ pub enum Denied {
     /// No such model or route.
     Unknown,
     Forbidden,
-}
-
-/// A target that can be called now.
-pub struct Callable<'a> {
-    pub provider: &'a SnapProvider,
-    pub model: &'a str,
 }
 
 fn allowlisted(key: &SnapKey, name: &str) -> bool {
@@ -124,29 +118,6 @@ pub fn resolve<'a>(
     } else {
         Err(Denied::Forbidden)
     }
-}
-
-/// The targets to try for a resolved name, in order. For a model it is that
-/// model; for a route, the callable primaries and then the callable
-/// fallbacks. The routing engine replaces how these are chosen and tried.
-pub fn callable_targets<'a>(
-    snapshot: &'a Snapshot,
-    key: &'a SnapKey,
-    resolved: &Resolved<'a>,
-) -> Vec<Callable<'a>> {
-    let models: Vec<&SnapModel> = match resolved {
-        Resolved::Model(model) => vec![*model],
-        Resolved::Route(route) => route_targets(snapshot, key, route).collect(),
-    };
-    models
-        .into_iter()
-        .filter_map(|m| {
-            Some(Callable {
-                provider: snapshot.provider(&m.provider)?,
-                model: &m.name,
-            })
-        })
-        .collect()
 }
 
 /// `(id, owned_by)` of everything this key can call, sorted by id.

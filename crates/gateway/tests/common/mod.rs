@@ -495,3 +495,48 @@ pub async fn raw(
         .unwrap();
     (status, headers, bytes.to_vec())
 }
+
+/// An upstream that sends one chunk and then holds the connection open.
+/// Reports on the channel once the gateway closes its side.
+pub async fn hanging_upstream() -> (String, tokio::sync::oneshot::Receiver<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let uri = format!("http://{}", listener.local_addr().unwrap());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 8192];
+        let mut seen = Vec::new();
+        // Read the whole request: headers, then the announced body length.
+        loop {
+            let n = sock.read(&mut buf).await.unwrap();
+            assert!(n > 0, "gateway closed before sending the request");
+            seen.extend_from_slice(&buf[..n]);
+            if let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&seen[..end]).to_ascii_lowercase();
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .map(|v| v.trim().parse().unwrap())
+                    .unwrap_or(0);
+                if seen.len() >= end + 4 + len {
+                    break;
+                }
+            }
+        }
+        let chunk =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"one\"},\"finish_reason\":null}]}\n\n";
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
+        let out = format!("{head}{:x}\r\n{chunk}\r\n", chunk.len());
+        sock.write_all(out.as_bytes()).await.unwrap();
+        // The stream is never finished; only the gateway closing ends this read.
+        loop {
+            match sock.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        let _ = tx.send(());
+    });
+    (uri, rx)
+}

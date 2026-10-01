@@ -194,8 +194,9 @@ async fn provider_errors_are_mapped() {
         .mount(&h.upstream)
         .await;
     let (s, b) = post_chat(&h.app, Some(&h.key), BODY).await;
-    assert_eq!(s, StatusCode::BAD_GATEWAY);
-    assert!(error_message(&b).contains("Bad Gateway"));
+    // Retried, and then no provider is left: the provider's own text is not shown.
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_message(&b), "No provider could serve this request.");
 
     let h = harness("openai").await;
     Mock::given(method("POST"))
@@ -206,8 +207,21 @@ async fn provider_errors_are_mapped() {
         .mount(&h.upstream)
         .await;
     let (s, b) = post_chat(&h.app, Some(&h.key), BODY).await;
-    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(error_message(&b), "slow down");
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_message(&b), "No provider could serve this request.");
+
+    // An answer no retry can change keeps its status and its message.
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(422)
+                .set_body_json(json!({ "error": { "message": "bad temperature" } })),
+        )
+        .mount(&h.upstream)
+        .await;
+    let (s, b) = post_chat(&h.app, Some(&h.key), BODY).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(error_message(&b), "bad temperature");
 }
 
 async fn assert_credential_rejection_is_502(status: u16) {
@@ -241,7 +255,7 @@ async fn provider_403_is_502_with_a_fixed_message() {
 }
 
 #[tokio::test]
-async fn unreachable_provider_gets_502() {
+async fn unreachable_provider_gets_503() {
     let h = harness("openai").await;
     h.store
         .insert_provider("dead", "openai", "http://127.0.0.1:1", None)
@@ -252,8 +266,9 @@ async fn unreachable_provider_gets_502() {
     h.state.refresh().await.unwrap();
     let body = r#"{"model":"dead/m","messages":[{"role":"user","content":"x"}]}"#;
     let (s, b) = post_chat(&h.app, Some(&h.key), body).await;
-    assert_eq!(s, StatusCode::BAD_GATEWAY);
-    assert!(!error_message(&b).is_empty());
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_message(&b), "No provider could serve this request.");
+    assert!(!b.contains("dead"), "the answer does not name the provider");
 }
 
 #[tokio::test]
@@ -460,12 +475,16 @@ mod records {
             .mount(&h.upstream)
             .await;
         let (status, _) = post_chat(&h.app, Some(&h.key), BODY).await;
-        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         let r = &h.sink.records()[0];
-        assert_eq!(r.status, 502);
+        assert_eq!(r.status, 503);
         assert!(r.usage.is_none());
-        assert_eq!(r.attempts[0].outcome, AttemptOutcome::Retryable);
-        assert_eq!(r.attempts[0].status, Some(503));
+        // The first try and two retries.
+        assert_eq!(r.attempts.len(), 3);
+        for a in &r.attempts {
+            assert_eq!(a.outcome, AttemptOutcome::Retryable);
+            assert_eq!(a.status, Some(503));
+        }
     }
 
     #[tokio::test]

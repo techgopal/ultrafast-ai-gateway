@@ -786,7 +786,7 @@ async fn a_provider_update_that_changes_nothing_still_refreshes() {
     let path = format!("/api/providers/{}", w.provider_id);
     let same = json!({ "base_url": "http://127.0.0.1:9" });
     assert_eq!(w.admin("PATCH", &path, Some(same)).await, StatusCode::OK);
-    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::BAD_GATEWAY);
+    assert_eq!(w.chat(&secret, CHAT).await, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 async fn in_snapshot(api: &Api, hash: &str) -> bool {
