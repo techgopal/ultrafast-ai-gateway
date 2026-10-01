@@ -11,7 +11,7 @@
 // it and removes its data directory also when the test process dies without
 // a chance to do so. `launcher.spec.ts` checks these.
 import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, constants, rmSync } from "node:fs";
+import { accessSync, constants, realpathSync, rmSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -57,11 +57,35 @@ export interface Gateway {
   stop: () => Promise<void>;
 }
 
-/** The binary that is started. */
+/** The path with every link on it followed; the path as it is when it leads nowhere. */
+function followed(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/** Whether the path is in the directory of the deployed gateway, also by a link. */
+function isDeployed(path: string): boolean {
+  const real = followed(path);
+  return [DEPLOYED, followed(DEPLOYED)].some(
+    (deployed) =>
+      path === deployed ||
+      path.startsWith(deployed + sep) ||
+      real === deployed ||
+      real.startsWith(deployed + sep),
+  );
+}
+
+/**
+ * The binary that is started, as it is named: the watchdog knows the gateway
+ * by that name in its command line.
+ */
 export function binaryPath(): string {
   const given = process.env[BINARY_VARIABLE];
   const path = given === undefined || given === "" ? OWN_BINARY : resolve(given);
-  if (path === DEPLOYED || path.startsWith(DEPLOYED + sep)) {
+  if (isDeployed(path)) {
     throw new Error(`${BINARY_VARIABLE} names a binary of the deployed gateway; it is not started.`);
   }
   try {
@@ -123,9 +147,12 @@ process.once("exit", () => {
 
 // A separate process that stops the gateway when its input closes, which it
 // does when the test process ends in any way, also by SIGKILL, when the test
-// process can do nothing itself. It stops only that process: on Linux it
-// checks the binary of the process id first. Then it removes the data
-// directory, which is one this file made (`uf-e2e-*`).
+// process can do nothing itself. It runs in a process group of its own, so
+// that it outlives a SIGKILL of the test's whole group (a cancelled CI job,
+// `kill -9 -<group>`), which kills the gateway with the test process. It
+// stops only that process: on Linux it checks the binary of the process id
+// first. Then it removes the data directory, which is one this file made
+// (`uf-e2e-*`).
 const WATCHDOG = `
 const { readFileSync, rmSync } = require("node:fs");
 const { basename } = require("node:path");
@@ -237,6 +264,7 @@ async function startOnce(binary: string, options: GatewayOptions): Promise<Try> 
       ? null
       : spawn(process.execPath, ["-e", WATCHDOG, String(pid), binary, dataDir], {
           stdio: ["pipe", "ignore", "ignore"],
+          detached: true,
         });
   const stop = async () => {
     await stopProcess(child);
