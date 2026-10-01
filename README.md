@@ -25,10 +25,8 @@ UF_PROVIDER_API_KEY=sk-ant-... ./target/release/ultrafast provider add \
 Changes made through the admin API under `/api` apply at once. Changes made
 with the CLI reach a running gateway within 30 seconds.
 
-Sign-in limiting behind a reverse proxy: the limit per address counts the
-address of the proxy, so 20 failed sign-ins from anyone block sign-in for
-everyone for 15 minutes. This is a known limitation until forwarded addresses
-are supported.
+Call it with any OpenAI SDK by setting the base URL to `http://127.0.0.1:3000/v1`
+and the model to `provider/model`, for example `anthropic/claude-sonnet-5`.
 
 ### Console
 
@@ -39,14 +37,15 @@ runtime.
 What is in it: setting up the first admin, signing in, accepting an invite;
 an overview with a getting-started guide; providers (add, edit, delete);
 virtual keys (create, shown once, revoke, filter); users (invite, role,
-status, new invite link, delete); teams (create, rename, members and leads);
-your account (name, password, access tokens); and the audit log, for admins.
+status, new invite link, delete); teams (create, rename, delete, members and
+leads); your account (name, password, access tokens); and the audit log, for
+admins.
 What a user sees depends on their role, and the API decides. Light and dark
 themes, following the device until one is chosen, and a layout for phones.
 
 Not yet: logs, the playground, models, routing, budgets and limits,
-guardrails and MCP tools (shown as coming in the navigation), and the
-retention and backup settings.
+guardrails and MCP tools (shown as coming in the navigation), and a Settings
+page (retention, sign-in settings, backup, configuration export and import).
 
 Build: the console is compiled into the binary from `ui/dist`, so build the
 console first, then the gateway:
@@ -97,11 +96,9 @@ Known limits:
   active, expired or revoked from its times, by the clock of the browser.
 - No usage, spend, request logs, models, routes or budgets: their backends do
   not exist yet.
-- Sign-in limiting counts the reverse proxy's address when the gateway is
-  behind one.
-
-Call it with any OpenAI SDK by setting the base URL to `http://127.0.0.1:3000/v1`
-and the model to `provider/model`, for example `anthropic/claude-sonnet-5`.
+- Sign-in limiting behind a reverse proxy counts the address of the proxy,
+  so 20 failed sign-ins from anyone block sign-in for everyone for 15 minutes,
+  until forwarded addresses are supported.
 
 What works today: chat completions, streaming, OpenAI-compatible and Anthropic
 providers, and the console. Not yet: tools, images, routing, limits and
