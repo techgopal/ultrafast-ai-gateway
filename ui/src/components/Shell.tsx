@@ -2,7 +2,7 @@ import { Outlet, useMatches } from "@tanstack/react-router";
 import { MenuIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { AppSidebar } from "@/components/AppSidebar";
-import type { ShellUser } from "@/components/shell-context";
+import { InShell, type ShellUser } from "@/components/shell-context";
 import { Button } from "@/components/ui/button";
 import {
   SidebarProvider,
@@ -72,7 +72,9 @@ export function Shell({ user, onSignOut }: ShellProps) {
       <div className="flex min-w-0 flex-1 flex-col bg-background">
         <TopBar />
         <main className="flex min-w-0 flex-1 flex-col gap-6 p-4 md:p-6">
-          <Outlet />
+          <InShell value>
+            <Outlet />
+          </InShell>
         </main>
       </div>
     </SidebarProvider>

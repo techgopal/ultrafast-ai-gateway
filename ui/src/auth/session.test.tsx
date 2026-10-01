@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { act, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryHistory } from "@tanstack/react-router";
+import { HttpResponse } from "msw";
 import { useState } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, onUnauthenticated } from "@/api/client";
@@ -22,7 +23,10 @@ import { errors } from "@/test/errors";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import {
   counted,
+  expectOneH1,
+  expectOneMain,
   forgetToasts,
+  shown as shownWithValues,
   theBrowserIsOffline,
   theWindowGetsTheFocus,
   toasts,
@@ -260,6 +264,77 @@ describe("guards of the routes", () => {
       expect(heading("Virtual keys")).toBeInTheDocument();
     });
     expect(href(app)).toBe("/keys");
+  });
+});
+
+describe("the screens of a failure", () => {
+  const NOT_LOADED = "This page could not be loaded";
+  const COULD_NOT_LOAD = "The console could not load";
+
+  test("a page that fails as it is shown: the error screen in the shell, with one h1 and not what was thrown", async () => {
+    // React and the router report the error of the render to the console.
+    const quiet = [
+      vi.spyOn(console, "error").mockImplementation(() => undefined),
+      vi.spyOn(console, "warn").mockImplementation(() => undefined),
+    ];
+    try {
+      startGateway({ signedIn: true });
+      // An answer the page cannot show: it fails while it renders.
+      override("get", "/api/teams/{id}", () => HttpResponse.json({ team: null, members: [] }));
+      await renderWithApp(null, { route: `/teams/${String(fixtures.teams.platform.id)}` });
+      expect(
+        await screen.findByRole("heading", { level: 1, name: NOT_LOADED }),
+      ).toBeInTheDocument();
+      expectOneH1(NOT_LOADED);
+      expectOneMain();
+      expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong.");
+      expect(shownWithValues()).not.toMatch(/Cannot read|null \(reading|is not a function/);
+      expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
+    } finally {
+      for (const spy of quiet) spy.mockRestore();
+    }
+  });
+
+  test("the error screen outside the shell brings its own main", async () => {
+    await renderWithApp(<PageProblem error={new TypeError("a detail of the code")} />);
+    expectOneMain();
+    expectOneH1(NOT_LOADED);
+    expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong.");
+    expect(shownWithValues()).not.toContain("a detail of the code");
+  });
+
+  test("the start screen when the gateway cannot be asked: one h1, the failure, and Try again", async () => {
+    startGateway({ signedIn: true });
+    override("get", "/api/setup", networkFailure);
+    await renderWithApp(null, { route: "/keys" });
+    expect(
+      await screen.findByRole("heading", { level: 1, name: COULD_NOT_LOAD }),
+    ).toBeInTheDocument();
+    expectOneH1(COULD_NOT_LOAD);
+    expectOneMain();
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not reach the gateway.");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  test("the start screen does not show what was thrown", async () => {
+    startGateway({ signedIn: true });
+    const original = api.get;
+    const fails: typeof api.get = (path, ...rest) =>
+      path === "/api/setup"
+        ? Promise.reject(new TypeError("a detail of the code"))
+        : original(path, ...rest);
+    const spy = vi.spyOn(api, "get").mockImplementation(fails);
+    try {
+      await renderWithApp(null, { route: "/keys" });
+      expect(
+        await screen.findByRole("heading", { level: 1, name: COULD_NOT_LOAD }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong.");
+      expect(shownWithValues()).not.toContain("a detail of the code");
+      expectOneH1(COULD_NOT_LOAD);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
