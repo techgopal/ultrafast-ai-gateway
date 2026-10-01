@@ -4,9 +4,11 @@
 // watchdog, no data directory. Linux only, as CI: it reads /proc.
 import { expect, test } from "@playwright/test";
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { binaryPath, startGateway } from "./gateway";
+import { BINARY_VARIABLE, binaryPath, startGateway } from "./gateway";
 
 /** Whether the process runs: it exists and is not a zombie. */
 function running(pid: number): boolean {
@@ -106,8 +108,12 @@ test("the gateway gets only its own environment, and leaves nothing when it stop
   }
 });
 
-test("when the test process is killed, its gateway stops and its data directory goes", async () => {
-  // A test process of its own, which starts a gateway, says which, and waits to be killed.
+/**
+ * A test process of its own, which starts a gateway, says which, and waits to
+ * be killed. `group`: in a process group of its own, as the job of a terminal
+ * or of CI is, which one signal can kill whole.
+ */
+async function aTestProcess(group: boolean) {
   const launcher = new URL("./gateway.ts", import.meta.url).href;
   const script = [
     `import { startGateway } from ${JSON.stringify(launcher)};`,
@@ -115,16 +121,29 @@ test("when the test process is killed, its gateway stops and its data directory 
     "console.log(JSON.stringify({ pid: gateway.pid, dataDir: gateway.dataDir }));",
     "setInterval(() => {}, 60_000);",
   ].join("\n");
-  const testProcess = spawn(process.execPath, ["--input-type=module", "-e", script], {
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
     stdio: ["ignore", "pipe", "inherit"],
+    detached: group,
   });
   let started: { pid: number; dataDir: string } | undefined;
+  const lines = createInterface({ input: child.stdout });
+  for await (const line of lines) {
+    started = JSON.parse(line) as { pid: number; dataDir: string };
+    break;
+  }
+  return { child, started };
+}
+
+/** Nothing of the gateway is left: not it, not its directory, not its watchdog. */
+async function expectNothingLeft(pid: number, dataDir: string): Promise<void> {
+  await expect.poll(() => running(pid), { message: "the gateway stops" }).toBe(false);
+  await expect.poll(() => existsSync(dataDir), { message: "the directory goes" }).toBe(false);
+  await expect.poll(() => processesWith(dataDir), { message: "the watchdog ends" }).toEqual([]);
+}
+
+test("when the test process is killed, its gateway stops and its data directory goes", async () => {
+  const { child, started } = await aTestProcess(false);
   try {
-    const lines = createInterface({ input: testProcess.stdout });
-    for await (const line of lines) {
-      started = JSON.parse(line) as { pid: number; dataDir: string };
-      break;
-    }
     expect(started).toBeDefined();
     if (started === undefined) return;
     const { pid, dataDir } = started;
@@ -132,12 +151,57 @@ test("when the test process is killed, its gateway stops and its data directory 
     expect(existsSync(dataDir)).toBe(true);
     expect(processesWith(dataDir)).toHaveLength(1);
 
-    testProcess.kill("SIGKILL");
-    await expect.poll(() => running(pid), { message: "the gateway stops" }).toBe(false);
-    await expect.poll(() => existsSync(dataDir), { message: "the directory goes" }).toBe(false);
-    await expect.poll(() => processesWith(dataDir), { message: "the watchdog ends" }).toEqual([]);
+    child.kill("SIGKILL");
+    await expectNothingLeft(pid, dataDir);
   } finally {
-    testProcess.kill("SIGKILL");
+    child.kill("SIGKILL");
     cleanUp(started?.pid, started?.dataDir);
+  }
+});
+
+test("when the whole process group of the test is killed, the watchdog still cleans up", async () => {
+  const { child, started } = await aTestProcess(true);
+  // The group is the test process's own: its id is the process's.
+  const group = child.pid;
+  try {
+    expect(started).toBeDefined();
+    expect(group).toBeGreaterThan(1);
+    if (started === undefined || group === undefined || group <= 1) return;
+    const { pid, dataDir } = started;
+    expect(running(pid)).toBe(true);
+    expect(processesWith(dataDir)).toHaveLength(1);
+
+    // As a cancelled CI job or `kill -9 -<group>` does: the test process and
+    // the gateway it started die at once, and nothing of theirs runs after.
+    process.kill(-group, "SIGKILL");
+    await expectNothingLeft(pid, dataDir);
+  } finally {
+    if (group !== undefined && group > 1) {
+      try {
+        process.kill(-group, "SIGKILL");
+      } catch {
+        // The group is gone already.
+      }
+    }
+    cleanUp(started?.pid, started?.dataDir);
+  }
+});
+
+test("a binary that is the deployed gateway's by a link is not started", () => {
+  const deployed = join(homedir(), ".local", "share", "ultrafast-gateway");
+  test.skip(!existsSync(deployed), "No gateway is deployed on this machine.");
+  // A link that leads into the directory of the deployed gateway. Nothing is
+  // read from there: the path is only resolved.
+  const dir = mkdtempSync(join(tmpdir(), "uf-link-"));
+  const link = join(dir, "ultrafast");
+  symlinkSync(deployed, link);
+  const before = process.env[BINARY_VARIABLE];
+  process.env[BINARY_VARIABLE] = link;
+  try {
+    expect(() => binaryPath()).toThrow(/deployed gateway/);
+  } finally {
+    if (before === undefined) Reflect.deleteProperty(process.env, BINARY_VARIABLE);
+    else process.env[BINARY_VARIABLE] = before;
+    rmSync(dir, { recursive: true, force: true });
   }
 });
