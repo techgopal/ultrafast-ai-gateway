@@ -6,18 +6,22 @@
 //! up in it, never a path read from disk.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::io::Write;
+use std::sync::{Arc, OnceLock};
 
 use axum::body::Body;
 use axum::http::header::{
-    HeaderName, ALLOW, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, ETAG, IF_NONE_MATCH,
-    REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
+    HeaderName, ACCEPT_ENCODING, ALLOW, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_SECURITY_POLICY,
+    CONTENT_TYPE, ETAG, IF_NONE_MATCH, REFERRER_POLICY, VARY, X_CONTENT_TYPE_OPTIONS,
+    X_FRAME_OPTIONS,
 };
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use bytes::Bytes;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use rust_embed::Embed;
 use sha2::{Digest, Sha256};
 
@@ -43,6 +47,9 @@ const HTML: &str = "text/html; charset=utf-8";
 const NEVER_STORED: &str = "no-store";
 const REVALIDATED: &str = "no-cache";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+const GZIP: HeaderValue = HeaderValue::from_static("gzip");
+/// What an answer of `/assets` depends on besides its path.
+const BY_ENCODING: HeaderValue = HeaderValue::from_static("accept-encoding");
 const NOSNIFF: HeaderValue = HeaderValue::from_static("nosniff");
 const CROSS_ORIGIN_OPENER_POLICY: HeaderName =
     HeaderName::from_static("cross-origin-opener-policy");
@@ -103,6 +110,74 @@ fn method_not_allowed() -> Response {
 struct File {
     data: Bytes,
     sha256: [u8; 32],
+    /// The file gzipped: made at the first request that takes it, then kept.
+    /// `None` when gzip makes it no smaller.
+    gzipped: OnceLock<Option<Bytes>>,
+}
+
+impl File {
+    fn new(data: Bytes) -> Self {
+        let sha256 = Sha256::digest(&data).into();
+        Self {
+            data,
+            sha256,
+            gzipped: OnceLock::new(),
+        }
+    }
+
+    /// The tag of the file as it is. The gzip form has one of its own.
+    fn etag(&self) -> String {
+        format!("\"{}\"", hex::encode(&self.sha256[..16]))
+    }
+
+    fn gzipped(&self) -> Option<&Bytes> {
+        self.gzipped
+            .get_or_init(|| {
+                let packed = gzip(&self.data);
+                (packed.len() < self.data.len()).then(|| Bytes::from(packed))
+            })
+            .as_ref()
+    }
+}
+
+/// The bytes in gzip, as small as gzip makes them: it is done once a file.
+fn gzip(data: &[u8]) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::with_capacity(data.len() / 3), Compression::best());
+    encoder
+        .write_all(data)
+        .expect("writing to memory does not fail");
+    encoder.finish().expect("writing to memory does not fail")
+}
+
+/// Whether the request takes a body in gzip: `Accept-Encoding` names
+/// `gzip` (or `x-gzip`), or `*`, with a weight above zero.
+fn accepts_gzip(request: &HeaderMap) -> bool {
+    let mut any = false;
+    let codings = request
+        .get_all(ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','));
+    for item in codings {
+        let mut parts = item.split(';');
+        let coding = parts.next().unwrap_or_default().trim();
+        let weight = parts
+            .filter_map(|part| {
+                let (name, value) = part.split_once('=')?;
+                name.trim()
+                    .eq_ignore_ascii_case("q")
+                    .then(|| value.trim().parse::<f32>().unwrap_or(0.0))
+            })
+            .next()
+            .unwrap_or(1.0);
+        if coding.eq_ignore_ascii_case("gzip") || coding.eq_ignore_ascii_case("x-gzip") {
+            return weight > 0.0;
+        }
+        if coding == "*" {
+            any = weight > 0.0;
+        }
+    }
+    any
 }
 
 /// What is served: the files of a build by their names, such as
@@ -134,10 +209,7 @@ impl Console {
     fn of(files: impl IntoIterator<Item = (String, Bytes)>, built: bool) -> Self {
         let files: HashMap<String, File> = files
             .into_iter()
-            .map(|(name, data)| {
-                let sha256 = Sha256::digest(&data).into();
-                (name, File { data, sha256 })
-            })
+            .map(|(name, data)| (name, File::new(data)))
             .collect();
         let page = if built {
             let index = files.get(INDEX).map(|file| &file.data[..]);
@@ -151,16 +223,35 @@ impl Console {
         Self { files, page }
     }
 
-    /// `GET /assets/<name>`: the file, or 404. Never the page.
+    /// `GET /assets/<name>`: the file, or 404. Never the page. In gzip when
+    /// the request takes it and gzip makes the file smaller; the tag says
+    /// which form it is.
     fn asset(&self, path: &str, headers: &HeaderMap) -> Response {
         if !is_plain(path) {
             return not_found();
         }
         let name = path.trim_start_matches('/');
-        match self.files.get(name) {
-            Some(file) => file_response(name, file, IMMUTABLE, headers),
-            None => not_found(),
-        }
+        let Some(file) = self.files.get(name) else {
+            return not_found();
+        };
+        let gzipped = if accepts_gzip(headers) {
+            file.gzipped()
+        } else {
+            None
+        };
+        let mut response = match gzipped {
+            Some(packed) => {
+                let etag = format!("\"{}-gzip\"", hex::encode(&file.sha256[..16]));
+                let mut response = file_response(name, packed, &etag, IMMUTABLE, headers);
+                if response.status() == StatusCode::OK {
+                    response.headers_mut().insert(CONTENT_ENCODING, GZIP);
+                }
+                response
+            }
+            None => file_response(name, &file.data, &file.etag(), IMMUTABLE, headers),
+        };
+        response.headers_mut().insert(VARY, BY_ENCODING);
+        response
     }
 
     /// Every path no route claimed.
@@ -178,7 +269,7 @@ impl Console {
         let name = path.trim_start_matches('/');
         if name != INDEX && !name.contains('/') {
             if let Some(file) = self.files.get(name) {
-                return file_response(name, file, REVALIDATED, headers);
+                return file_response(name, &file.data, &file.etag(), REVALIDATED, headers);
             }
         }
         self.page.response()
@@ -341,8 +432,15 @@ fn percent_decoded(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-fn file_response(name: &str, file: &File, cache: &'static str, request: &HeaderMap) -> Response {
-    let etag = format!("\"{}\"", hex::encode(&file.sha256[..16]));
+/// A file of the build as `data`, which is the file or its gzip form, with
+/// the tag of that form.
+fn file_response(
+    name: &str,
+    data: &Bytes,
+    etag: &str,
+    cache: &'static str,
+    request: &HeaderMap,
+) -> Response {
     let unchanged = request
         .get_all(IF_NONE_MATCH)
         .iter()
@@ -360,7 +458,7 @@ fn file_response(name: &str, file: &File, cache: &'static str, request: &HeaderM
         } else {
             mime.essence_str().to_string()
         };
-        let mut response = file.data.clone().into_response();
+        let mut response = data.clone().into_response();
         response.headers_mut().insert(
             CONTENT_TYPE,
             HeaderValue::from_str(&content_type).expect("a media type is valid in a header"),
@@ -375,7 +473,7 @@ fn file_response(name: &str, file: &File, cache: &'static str, request: &HeaderM
     headers.insert(CACHE_CONTROL, HeaderValue::from_static(cache));
     headers.insert(
         ETAG,
-        HeaderValue::from_str(&etag).expect("a hex digest is valid in a header"),
+        HeaderValue::from_str(etag).expect("a hex digest is valid in a header"),
     );
     response
 }
@@ -392,7 +490,16 @@ mod tests {
 
     const SCRIPT: &str = "/assets/app-abc123.js";
     const STYLES: &str = "/assets/app-abc123.css";
+    /// A script long enough for gzip to make it smaller.
+    const BIG_SCRIPT: &str = "/assets/big-abc123.js";
     const NOT_BUILT: &str = "console was not built";
+
+    fn big_script() -> Vec<u8> {
+        (0..400)
+            .map(|line| format!("console.log(\"line {line} of the app\");\n"))
+            .collect::<String>()
+            .into_bytes()
+    }
 
     /// A small build of the console.
     fn fixture() -> Console {
@@ -400,9 +507,11 @@ mod tests {
     }
 
     fn console_with(index: &[u8]) -> Console {
-        let files: [(&str, &[u8]); 5] = [
+        let big = big_script();
+        let files: [(&str, &[u8]); 6] = [
             ("index.html", index),
             ("assets/app-abc123.js", b"console.log(\"app\");"),
+            ("assets/big-abc123.js", &big),
             ("assets/app-abc123.css", b"body { margin: 0 }"),
             ("theme.js", b"/* uf-theme */"),
             (
@@ -428,6 +537,16 @@ mod tests {
         path: &str,
         headers: &[(&str, &str)],
     ) -> (StatusCode, HeaderMap, String) {
+        let (status, headers, body) = send_for_bytes(console, method, path, headers).await;
+        (status, headers, String::from_utf8(body).unwrap())
+    }
+
+    async fn send_for_bytes(
+        console: Console,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, HeaderMap, Vec<u8>) {
         let app: Router = router_for(console);
         let mut request = Request::builder().method(method).uri(path);
         for (name, value) in headers {
@@ -442,7 +561,157 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        (status, headers, String::from_utf8(body.to_vec()).unwrap())
+        (status, headers, body.to_vec())
+    }
+
+    fn gunzip(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Read;
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(bytes)
+            .read_to_end(&mut out)
+            .expect("the body is gzip");
+        out
+    }
+
+    #[tokio::test]
+    async fn assets_are_sent_gzipped_to_who_accepts_it() {
+        let big = big_script();
+        let (_, plain, _) = served(fixture(), BIG_SCRIPT).await;
+        for accepted in [
+            "gzip",
+            "gzip, deflate, br, zstd",
+            "br;q=1.0, gzip;q=0.8, *;q=0.1",
+            "GZIP",
+            "x-gzip",
+            "*",
+        ] {
+            let (status, headers, body) = send_for_bytes(
+                fixture(),
+                "GET",
+                BIG_SCRIPT,
+                &[("accept-encoding", accepted)],
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{accepted}");
+            assert_eq!(headers[CONTENT_ENCODING], "gzip", "{accepted}");
+            assert_eq!(headers[VARY], "accept-encoding", "{accepted}");
+            assert!(
+                body.len() < big.len() / 4,
+                "{accepted}: {} bytes",
+                body.len()
+            );
+            assert_eq!(headers["content-length"], body.len().to_string());
+            assert_eq!(gunzip(&body), big, "{accepted}");
+            // The headers of every asset, and a tag of its own for the gzip form.
+            assert_eq!(headers[CONTENT_TYPE], "text/javascript; charset=utf-8");
+            assert_eq!(headers[CACHE_CONTROL], IMMUTABLE);
+            assert_eq!(headers[X_CONTENT_TYPE_OPTIONS], "nosniff");
+            assert_ne!(headers[ETAG], plain[ETAG]);
+            let etag = headers[ETAG].to_str().unwrap();
+            assert!(etag.starts_with('"') && etag.ends_with('"'), "{etag}");
+            assert!(!headers.contains_key(CONTENT_SECURITY_POLICY));
+
+            let (status, head, text) = send(
+                fixture(),
+                "HEAD",
+                BIG_SCRIPT,
+                &[("accept-encoding", accepted)],
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(head[CONTENT_ENCODING], "gzip");
+            assert_eq!(head[ETAG], headers[ETAG]);
+            assert!(text.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn assets_are_sent_as_they_are_without_gzip() {
+        let big = big_script();
+        for accepted in [
+            None,
+            Some("identity"),
+            Some("br"),
+            Some("gzip;q=0"),
+            Some("gzip;q=0, br"),
+            Some("*;q=0"),
+            Some(""),
+        ] {
+            let headers: Vec<(&str, &str)> = accepted
+                .map(|value| vec![("accept-encoding", value)])
+                .unwrap_or_default();
+            let (status, answer, body) =
+                send_for_bytes(fixture(), "GET", BIG_SCRIPT, &headers).await;
+            assert_eq!(status, StatusCode::OK, "{accepted:?}");
+            assert!(!answer.contains_key(CONTENT_ENCODING), "{accepted:?}");
+            assert_eq!(answer[VARY], "accept-encoding", "{accepted:?}");
+            assert_eq!(body, big, "{accepted:?}");
+            assert_eq!(answer[ETAG].len(), 34, "{accepted:?}");
+        }
+        // A file that gzip makes no smaller is sent as it is, to everybody.
+        let (_, headers, text) =
+            send(fixture(), "GET", SCRIPT, &[("accept-encoding", "gzip")]).await;
+        assert!(!headers.contains_key(CONTENT_ENCODING));
+        assert_eq!(headers[VARY], "accept-encoding");
+        assert_eq!(text, "console.log(\"app\");");
+        // Files at the root and the page are never compressed: the page has
+        // its own nonce in every answer.
+        for path in ["/theme.js", "/", "/keys"] {
+            let (status, headers, _) =
+                send(fixture(), "GET", path, &[("accept-encoding", "gzip")]).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(!headers.contains_key(CONTENT_ENCODING), "{path}");
+        }
+        let (_, first, _) = send(fixture(), "GET", "/", &[("accept-encoding", "gzip")]).await;
+        let (_, second, _) = send(fixture(), "GET", "/", &[("accept-encoding", "gzip")]).await;
+        assert_ne!(
+            first[CONTENT_SECURITY_POLICY],
+            second[CONTENT_SECURITY_POLICY]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_etag_of_a_form_gives_304_for_that_form_only() {
+        let gzip = [("accept-encoding", "gzip")];
+        let (_, packed, _) = send_for_bytes(fixture(), "GET", BIG_SCRIPT, &gzip).await;
+        let (_, plain, _) = send_for_bytes(fixture(), "GET", BIG_SCRIPT, &[]).await;
+        let packed_tag = packed[ETAG].to_str().unwrap();
+        let plain_tag = plain[ETAG].to_str().unwrap();
+
+        let (status, headers, body) = send_for_bytes(
+            fixture(),
+            "GET",
+            BIG_SCRIPT,
+            &[("accept-encoding", "gzip"), ("if-none-match", packed_tag)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert!(body.is_empty());
+        assert_eq!(headers[ETAG], packed_tag);
+        assert_eq!(headers[VARY], "accept-encoding");
+        assert_eq!(headers[CACHE_CONTROL], IMMUTABLE);
+
+        // The tag of the gzip form is not the one of the file as it is, and the other way round.
+        let (status, headers, body) = send_for_bytes(
+            fixture(),
+            "GET",
+            BIG_SCRIPT,
+            &[("if-none-match", packed_tag)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!headers.contains_key(CONTENT_ENCODING));
+        assert_eq!(body, big_script());
+        let (status, headers, body) = send_for_bytes(
+            fixture(),
+            "GET",
+            BIG_SCRIPT,
+            &[("accept-encoding", "gzip"), ("if-none-match", plain_tag)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[CONTENT_ENCODING], "gzip");
+        assert_eq!(gunzip(&body), big_script());
     }
 
     async fn served(console: Console, path: &str) -> (StatusCode, HeaderMap, String) {
