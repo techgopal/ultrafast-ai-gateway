@@ -449,6 +449,8 @@ describe("the list of teams", () => {
     const link = within(first).getByRole("link", { name: platform.name });
     expect(link).toHaveAttribute("href", `/teams/${platform.id}`);
     expect(link.className.split(/\s+/)).toContain("min-h-11");
+    // And wide enough, also for a short name.
+    expect(link.className.split(/\s+/)).toContain("min-w-11");
     expect(button("New team").className.split(/\s+/)).toContain("min-h-11");
   });
 

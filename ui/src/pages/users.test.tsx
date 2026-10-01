@@ -339,6 +339,8 @@ describe("the list of users", () => {
     expect(link).toHaveAttribute("href", `/users/${maya.id}`);
     // High enough to touch.
     expect(link.className.split(/\s+/)).toContain("min-h-11");
+    // And wide enough, also for a short name.
+    expect(link.className.split(/\s+/)).toContain("min-w-11");
     expect(within(first).getByText("You")).toBeInTheDocument();
     expect(within(first).getByText("active")).toBeInTheDocument();
     expect(button("Invite user").className.split(/\s+/)).toContain("min-h-11");
