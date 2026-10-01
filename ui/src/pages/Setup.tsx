@@ -1,6 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useRef, useState, type SyntheticEvent } from "react";
-import { ApiError } from "@/api/errors";
+import { ApiError, messageOfError } from "@/api/errors";
 import { useSetup } from "@/api/queries";
 import { useSessionControl } from "@/auth/session";
 import {
@@ -77,7 +77,7 @@ export function Setup() {
         const others = Object.keys(reason.fields).length - Object.keys(known).length;
         if (others > 0 || Object.keys(known).length === 0) setMessage(reason.message);
       } else {
-        setMessage(reason instanceof Error ? reason.message : "Something went wrong.");
+        setMessage(messageOfError(reason));
       }
       failed();
     } finally {

@@ -1,6 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useRef, useState, type SyntheticEvent } from "react";
-import { ApiError } from "@/api/errors";
+import { ApiError, messageOfError } from "@/api/errors";
 import { useAcceptInvite } from "@/api/queries";
 import { useSession, useSessionControl, useSignOut } from "@/auth/session";
 import {
@@ -67,7 +67,7 @@ export function AcceptInvite() {
       } else if (error instanceof ApiError && error.fields.password !== undefined) {
         setPasswordError(error.fields.password);
       } else {
-        setMessage(error instanceof Error ? error.message : "Something went wrong.");
+        setMessage(messageOfError(error));
       }
     } finally {
       running.current = false;

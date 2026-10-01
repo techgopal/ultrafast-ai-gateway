@@ -2,7 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createBrowserHistory } from "@tanstack/react-router";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "@/api/client";
 import * as fixtures from "@/test/fixtures";
 import { createQueryClient } from "@/api/queries";
@@ -658,5 +658,62 @@ describe("accept invite", () => {
     });
     await api.post("/api/teams", { body: { name: "x" } });
     expect(seen).not.toContain(INVITE_TOKEN);
+  });
+});
+
+describe("a failure that is no answer of the gateway", () => {
+  const THROWN = "a detail of the code";
+
+  /** `api.post` to `path` rejects with an error of the code, not of the gateway or the network. */
+  function aPostThrows(path: string): () => void {
+    const original = api.post;
+    const throws: typeof api.post = (to, ...rest) =>
+      to === path ? Promise.reject(new TypeError(THROWN)) : original(to, ...rest);
+    const spy = vi.spyOn(api, "post").mockImplementation(throws);
+    return () => {
+      spy.mockRestore();
+    };
+  }
+
+  test.each([
+    [
+      "sign-in",
+      "/api/auth/login",
+      async () => {
+        startGateway();
+        await renderWithApp(null, { route: "/sign-in" });
+        const user = userEvent.setup();
+        await user.type(screen.getByLabelText("Email"), "maya@example.test");
+        await user.type(screen.getByLabelText("Password"), PASSWORD);
+        await user.click(screen.getByRole("button", { name: "Sign in" }));
+      },
+    ],
+    [
+      "setup",
+      "/api/setup",
+      async () => {
+        startGateway({ needsSetup: true });
+        await renderWithApp(null, { route: "/setup" });
+        await fillSetup({});
+      },
+    ],
+    [
+      "accept invite",
+      "/api/auth/accept-invite",
+      async () => {
+        startGateway();
+        await renderWithApp(null, { route: `/accept-invite?token=${INVITE_TOKEN}` });
+        await fillInvite();
+      },
+    ],
+  ])("%s says that something went wrong, and not what was thrown", async (_, path, send) => {
+    const restore = aPostThrows(path);
+    try {
+      await send();
+      expect(await screen.findByRole("alert")).toHaveTextContent("Something went wrong.");
+      expect(shown()).not.toContain(THROWN);
+    } finally {
+      restore();
+    }
   });
 });
