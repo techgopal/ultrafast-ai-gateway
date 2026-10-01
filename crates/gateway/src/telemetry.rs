@@ -138,6 +138,33 @@ impl Scope {
         });
     }
 
+    /// Starts an attempt that has not settled: a call that is out. Until
+    /// [`settle_attempt`](Self::settle_attempt) it reads as retryable with no
+    /// status, which is what a caller that goes away leaves behind.
+    pub fn begin_attempt(&mut self, provider: &str, model: &str) {
+        self.record_mut().attempts.push(Attempt {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            outcome: AttemptOutcome::Retryable,
+            status: None,
+            duration_ms: 0,
+        });
+    }
+
+    /// What the attempt that began last came to.
+    pub fn settle_attempt(
+        &mut self,
+        outcome: AttemptOutcome,
+        status: Option<u16>,
+        started: Instant,
+    ) {
+        if let Some(a) = self.record_mut().attempts.last_mut() {
+            a.outcome = outcome;
+            a.status = status;
+            a.duration_ms = elapsed_ms(started);
+        }
+    }
+
     /// The `(provider, model)` of every target the call may try, in order.
     pub fn targets(&mut self, targets: Vec<(String, String)>) {
         self.targets = targets;
@@ -257,6 +284,41 @@ mod tests {
         assert_eq!(r.attempts[0].outcome, AttemptOutcome::Retryable);
         assert_eq!(r.attempts[1].outcome, AttemptOutcome::Skipped);
         assert_eq!(r.attempts[1].status, None);
+    }
+
+    #[test]
+    fn an_attempt_that_never_settles_is_retryable_without_a_status() {
+        let sink = Arc::new(Mem::default());
+        let mut s = scope(&sink);
+        s.targets(vec![("a".into(), "m1".into()), ("b".into(), "m2".into())]);
+        s.begin_attempt("a", "m1");
+        drop(s);
+        let r = sink.0.lock().unwrap()[0].clone();
+        assert_eq!(r.status, CALLER_GONE);
+        assert_eq!(r.attempts.len(), 2);
+        assert_eq!(r.attempts[0].outcome, AttemptOutcome::Retryable);
+        assert_eq!(r.attempts[0].status, None);
+        assert_eq!(r.attempts[1].outcome, AttemptOutcome::Skipped);
+    }
+
+    #[test]
+    fn a_settled_attempt_keeps_what_it_came_to() {
+        let sink = Arc::new(Mem::default());
+        let mut s = scope(&sink);
+        s.begin_attempt("a", "m1");
+        s.settle_attempt(AttemptOutcome::Ok, Some(200), Instant::now());
+        s.begin_attempt("a", "m1");
+        s.settle_attempt(AttemptOutcome::Fatal, Some(400), Instant::now());
+        s.finish(400);
+        let r = sink.0.lock().unwrap()[0].clone();
+        let seen: Vec<_> = r.attempts.iter().map(|a| (a.outcome, a.status)).collect();
+        assert_eq!(
+            seen,
+            [
+                (AttemptOutcome::Ok, Some(200)),
+                (AttemptOutcome::Fatal, Some(400))
+            ]
+        );
     }
 
     #[test]
