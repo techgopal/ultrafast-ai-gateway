@@ -204,6 +204,8 @@ describe("dialogs and forms", () => {
 
 describe("class names that are shared", () => {
   const declaring = /^(?:export\s+)?const\s+control\s*=/;
+  // The class of `control` written out, in any quotes.
+  const writtenOut = /(["'`])min-h-11 md:min-h-8\1/;
 
   test("the scan sees what it should", () => {
     const quote = '"';
@@ -213,6 +215,10 @@ describe("class names that are shared", () => {
       false,
     );
     expect(declaring.test("for (const control of [filter()]) {")).toBe(false);
+    expect(writtenOut.test(`className=${quote}min-h-11 md:min-h-8${quote}`)).toBe(true);
+    expect(writtenOut.test("const size = 'min-h-11 md:min-h-8';")).toBe(true);
+    expect(writtenOut.test("className={control}")).toBe(false);
+    expect(writtenOut.test(`className=${quote}min-h-11 w-full${quote}`)).toBe(false);
   });
 
   // The class of a control that is high enough to touch is said once, in
@@ -222,6 +228,13 @@ describe("class names that are shared", () => {
     expect(
       findings(written(), declaring).map((finding) => finding.replace(/:\d+: .*$/, "")),
     ).toEqual(["components/AuthForm.tsx", "components/classes.ts"]);
+  });
+
+  // Nor writes it out: it is `control` of `components/classes.ts` everywhere.
+  test("no file writes the class of a control out", () => {
+    expect(
+      findings(written(), writtenOut).map((finding) => finding.replace(/: .*$/, "")),
+    ).toEqual(["components/classes.ts:4"]);
   });
 });
 

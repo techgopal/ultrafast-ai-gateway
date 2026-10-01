@@ -1,5 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { LogOutIcon } from "lucide-react";
+import { control } from "@/components/classes";
 import { ROLE_NAMES } from "@/components/RoleBadge";
 import type { ShellUser } from "@/components/shell-context";
 import { Badge } from "@/components/ui/badge";
@@ -81,8 +82,6 @@ function isActive(pathname: string, to: Path): boolean {
   return pathname === to || pathname.startsWith(`${to}/`);
 }
 
-const itemSize = "min-h-11 md:min-h-8";
-
 function NavEntry({ item, pathname }: { item: NavItem; pathname: string }) {
   const { setOpenMobile } = useSidebar();
   if (item.to === undefined) {
@@ -92,7 +91,7 @@ function NavEntry({ item, pathname }: { item: NavItem; pathname: string }) {
           aria-disabled="true"
           data-testid="nav-item"
           data-label={item.label}
-          className={`flex w-full items-center justify-between gap-2 rounded-md p-2 text-sm text-muted-foreground ${itemSize}`}
+          className={`flex w-full items-center justify-between gap-2 rounded-md p-2 text-sm text-muted-foreground ${control}`}
         >
           {item.label}
           <Badge variant="outline">Coming</Badge>
@@ -103,7 +102,7 @@ function NavEntry({ item, pathname }: { item: NavItem; pathname: string }) {
   const active = isActive(pathname, item.to);
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton asChild isActive={active} className={itemSize}>
+      <SidebarMenuButton asChild isActive={active} className={control}>
         <Link
           to={item.to}
           activeOptions={{ exact: item.to === "/" }}
@@ -166,7 +165,7 @@ export function AppSidebar({ user, onSignOut }: AppSidebarProps) {
                 type="button"
                 variant="outline"
                 size="sm"
-                className={itemSize}
+                className={control}
                 onClick={onSignOut}
               >
                 <LogOutIcon aria-hidden="true" />

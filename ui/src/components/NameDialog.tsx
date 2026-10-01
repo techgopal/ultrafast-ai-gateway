@@ -1,6 +1,7 @@
 import { useForm } from "@tanstack/react-form";
 import { useRef } from "react";
 import type { useUpdateUser } from "@/api/queries";
+import { control } from "@/components/classes";
 import { Field } from "@/components/Field";
 import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
@@ -49,7 +50,7 @@ function NameForm({ user, update, onDone, onCancel }: NameFormProps) {
           <Field label="Name" name={field.name} required error={failure.fieldError(field.name)}>
             <Input
               autoComplete="off"
-              className="min-h-11 md:min-h-8"
+              className={control}
               value={field.state.value}
               onBlur={field.handleBlur}
               onChange={(event) => {

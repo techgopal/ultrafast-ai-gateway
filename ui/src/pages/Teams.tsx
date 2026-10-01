@@ -5,6 +5,7 @@ import { useCreateTeam, useTeams } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
 import { useSession } from "@/auth/session";
+import { control } from "@/components/classes";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
@@ -80,7 +81,7 @@ function TeamNameForm({
           <Field label="Name" name={field.name} required error={failure.fieldError(field.name)}>
             <Input
               autoComplete="off"
-              className="min-h-11 md:min-h-8"
+              className={control}
               value={field.state.value}
               onBlur={field.handleBlur}
               onChange={(event) => {
@@ -168,7 +169,7 @@ export function Teams() {
   const newButton = mayCreate ? (
     <Button
       type="button"
-      className="min-h-11 md:min-h-8"
+      className={control}
       onClick={() => {
         setCreating(true);
       }}

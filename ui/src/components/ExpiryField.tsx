@@ -51,7 +51,7 @@ export function ExpiryField({ name, value, onChange, onBlur, error, hint }: Expi
               type="date"
               aria-label="Expiry date"
               min={today()}
-              className="min-h-11 md:min-h-8"
+              className={control}
               value={value.day}
               onBlur={onBlur}
               onChange={(event) => {

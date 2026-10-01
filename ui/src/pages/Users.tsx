@@ -101,7 +101,7 @@ function InviteForm({ invite, onInvited, onCancel }: InviteFormProps) {
           <Field label="Name" name={field.name} required error={failure.fieldError(field.name)}>
             <Input
               autoComplete="off"
-              className="min-h-11 md:min-h-8"
+              className={control}
               value={field.state.value}
               onBlur={field.handleBlur}
               onChange={(event) => {
@@ -117,7 +117,7 @@ function InviteForm({ invite, onInvited, onCancel }: InviteFormProps) {
             <Input
               type="email"
               autoComplete="off"
-              className="min-h-11 md:min-h-8"
+              className={control}
               value={field.state.value}
               onBlur={field.handleBlur}
               onChange={(event) => {
@@ -238,7 +238,7 @@ export function Users() {
   const inviteButton = mayInvite ? (
     <Button
       type="button"
-      className="min-h-11 md:min-h-8"
+      className={control}
       onClick={() => {
         setInviting(true);
       }}
