@@ -231,6 +231,17 @@ describe("the list of keys", () => {
     expectOneH1();
   });
 
+  // As the queries by role they stand for: what a dialog hides is not there.
+  test("the rows the tests read are none behind an open dialog", async () => {
+    await page();
+    await table();
+    expect(listed()).toContain(active.name);
+    expect(rowOf(active.name)).toBeInTheDocument();
+    await openCreate();
+    expect(listed()).toEqual([]);
+    expect(() => rowOf(active.name)).toThrow(`0 cells of a table say ${active.name}`);
+  });
+
   test("revoked keys are hidden by default", async () => {
     await page();
     await table();

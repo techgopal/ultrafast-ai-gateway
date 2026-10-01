@@ -282,11 +282,14 @@ export function held<M extends Method>(
  * a query by role for a cell asks of every cell of the page whether it is
  * hidden and what its name is, at every call. The text of a cell is taken as
  * a query by role takes a name, with its spaces run together; exactly one
- * cell of a table body may say it.
+ * cell of a table body may say it. As for a query by role, a row that an
+ * open dialog hides is not there.
  */
 export function rowWithCell(name: string): HTMLElement {
   const cells = [...document.querySelectorAll("tbody td")].filter(
-    (cell) => cell.textContent.replace(/\s+/g, " ").trim() === name,
+    (cell) =>
+      cell.textContent.replace(/\s+/g, " ").trim() === name &&
+      cell.closest('[aria-hidden="true"]') === null,
   );
   const row = cells.length === 1 ? cells[0]?.closest("tr") : null;
   if (row === null || row === undefined) {
