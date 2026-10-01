@@ -34,7 +34,16 @@ export function newAccount(kind: string): Account {
 
 // ------------------------------------------------------------ the browser rules
 
-const API_REFUSAL = /^Failed to load resource: the server responded with a status of 4\d\d\b/;
+/**
+ * The refusals of the gateway that the console meets on purpose and handles:
+ * 401 (nobody signed in: `/api/auth/me` before sign-in, a wrong password, a
+ * session that ended), 403 (what the account may not do), 409 (a conflict a
+ * dialog says, such as the last admin or a taken email) and 422 (fields that
+ * are not valid). Not 404 or 405: from the API they say that the console asked
+ * for a path or a method that is not there.
+ */
+const API_REFUSAL =
+  /^Failed to load resource: the server responded with a status of (?:401|403|409|422)\b/;
 
 /**
  * Collects what breaks the rules of the browser tests, from every context it
@@ -42,9 +51,9 @@ const API_REFUSAL = /^Failed to load resource: the server responded with a statu
  *
  * One kind of console error is not a problem: Chromium logs every answer
  * 4xx of a `fetch` as "Failed to load resource", also when the console asked
- * for it on purpose and handles it (a 401 of `/api/auth/me` before sign-in, a
- * refusal that a dialog shows). It is let through when the answer is of the
- * gateway's own `/api`; the flows check what the console makes of it.
+ * for it on purpose and handles it. It is let through for the refusals above,
+ * when the answer is of the gateway's own `/api`; the flows check what the
+ * console makes of it.
  */
 export class BrowserRules {
   readonly problems: string[] = [];
