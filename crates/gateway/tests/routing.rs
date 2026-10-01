@@ -488,7 +488,8 @@ async fn the_total_timeout_ends_a_stream_with_an_error_event() {
     assert_eq!(r.status, 200);
     assert_eq!(r.attempts[0].outcome, AttemptOutcome::Retryable);
     assert_eq!(state_of(&h, "hang"), Some(TargetState::Closed));
-    assert_eq!(h.state.health.view()[0].failures, 1);
+    // Running out of the request's time is not the target's failure.
+    assert_eq!(h.state.health.view()[0].failures, 0);
 }
 
 #[tokio::test]
@@ -860,5 +861,266 @@ mod health_endpoint {
             ("p", "gpt-4o")
         );
         assert_eq!(view[0].successes, 1);
+    }
+}
+
+/// A call with the headers of the answer.
+async fn post_raw(h: &Harness, body: &str) -> (StatusCode, axum::http::HeaderMap, String) {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", h.key))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (parts, body) = resp.into_parts();
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    (
+        parts.status,
+        parts.headers,
+        String::from_utf8(bytes.to_vec()).unwrap(),
+    )
+}
+
+fn no_retries() -> RouteSettings {
+    RouteSettings {
+        retries: 0,
+        ..DEFAULTS
+    }
+}
+
+mod fix_round_1 {
+    use super::*;
+
+    const MASKED: &str = "Provider rejected the gateway's credential.";
+
+    #[tokio::test]
+    async fn a_rejected_credential_fails_over_without_a_retry_and_counts_for_the_breaker() {
+        for status in [401, 403] {
+            let h = harness("openai").await;
+            let (a, ma) = provider(&h, "a").await;
+            let (b, mb) = provider(&h, "b").await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .set_body_json(json!({ "error": { "message": "bad key sk-abc" } })),
+                )
+                .mount(&a)
+                .await;
+            Mock::given(method("POST"))
+                .respond_with(ok("b"))
+                .mount(&b)
+                .await;
+            route(&h, "r", &[ma], &[mb], DEFAULTS).await;
+            let (s, body) = post_chat(&h.app, Some(&h.key), &chat("r", false)).await;
+            assert_eq!(s, StatusCode::OK, "{status}: {body}");
+            assert_eq!(hits(&a).await, 1, "no retry of a rejected credential");
+            let r = &h.sink.records()[0];
+            assert_eq!(
+                seen(r),
+                [
+                    ("a".into(), AttemptOutcome::Retryable, Some(status)),
+                    ("b".into(), AttemptOutcome::Ok, Some(200)),
+                ]
+            );
+            let health = h.state.health.view();
+            assert_eq!(
+                health.iter().find(|t| t.provider == "a").unwrap().failures,
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_target_rejecting_the_credential_answers_502_masked() {
+        let h = harness("openai").await;
+        let (a, ma) = provider(&h, "a").await;
+        let (b, mb) = provider(&h, "b").await;
+        for up in [&a, &b] {
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(401)
+                        .set_body_json(json!({ "error": { "message": "bad key sk-abc" } })),
+                )
+                .mount(up)
+                .await;
+        }
+        route(&h, "r", &[ma], &[mb], DEFAULTS).await;
+        let (s, body) = post_chat(&h.app, Some(&h.key), &chat("r", false)).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY);
+        assert_eq!(message(&body), MASKED);
+        assert!(!body.contains("sk-abc"));
+        assert_eq!((hits(&a).await, hits(&b).await), (1, 1));
+    }
+
+    async fn rate_limited(
+        retry_after: &[Option<&str>],
+    ) -> (StatusCode, axum::http::HeaderMap, String) {
+        let h = harness("openai").await;
+        let mut ids = Vec::new();
+        let mut servers = Vec::new();
+        for (i, ra) in retry_after.iter().enumerate() {
+            let (up, id) = provider(&h, &format!("t{i}")).await;
+            let mut t = ResponseTemplate::new(429).set_body_string("slow");
+            if let Some(ra) = ra {
+                t = t.insert_header("retry-after", *ra);
+            }
+            Mock::given(method("POST")).respond_with(t).mount(&up).await;
+            ids.push(id);
+            servers.push(up);
+        }
+        route(&h, "r", &ids[..1], &ids[1..], no_retries()).await;
+        let answer = post_raw(&h, &chat("r", false)).await;
+        drop(servers);
+        answer
+    }
+
+    #[tokio::test]
+    async fn all_429_answers_429_with_the_largest_retry_after() {
+        let (s, headers, body) = rate_limited(&[Some("7"), Some("12"), None]).await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"]["type"], "rate_limit_error");
+        assert_eq!(
+            v["error"]["message"],
+            "The provider is rate limiting this request. Try again later."
+        );
+        assert_eq!(headers["retry-after"], "12");
+    }
+
+    #[tokio::test]
+    async fn retry_after_is_capped_defaults_to_one_and_reads_dates() {
+        let (_, h, _) = rate_limited(&[Some("500")]).await;
+        assert_eq!(h["retry-after"], "60");
+        let (s, h, _) = rate_limited(&[None]).await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(h["retry-after"], "1");
+        let (_, h, _) = rate_limited(&[Some("Fri, 01 Jan 2100 00:00:00 GMT")]).await;
+        assert_eq!(h["retry-after"], "60", "a far date is capped");
+        let (_, h, _) = rate_limited(&[Some("Mon, 01 Jan 1990 00:00:00 GMT")]).await;
+        assert_eq!(h["retry-after"], "1", "a past date is no wait: the default");
+    }
+
+    #[tokio::test]
+    async fn mixed_failures_keep_503_and_carry_retry_after_when_one_had_it() {
+        let h = harness("openai").await;
+        let (a, ma) = provider(&h, "a").await;
+        let (b, mb) = provider(&h, "b").await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "5"))
+            .mount(&a)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&b)
+            .await;
+        route(&h, "r", &[ma], &[mb], no_retries()).await;
+        let (s, headers, body) = post_raw(&h, &chat("r", false)).await;
+        assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(message(&body), NO_PROVIDER);
+        assert_eq!(headers["retry-after"], "5");
+
+        let h = harness("openai").await;
+        let (a, ma) = provider(&h, "a").await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&a)
+            .await;
+        route(&h, "r", &[ma], &[], no_retries()).await;
+        let (s, headers, _) = post_raw(&h, &chat("r", false)).await;
+        assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(headers.get("retry-after").is_none());
+    }
+
+    /// An upstream that answers with headers and then sends nothing.
+    async fn stalling_body_upstream() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let uri = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let _ = sock.read(&mut buf).await;
+                    let head = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 500\r\n\r\n{";
+                    let _ = sock.write_all(head.as_bytes()).await;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                });
+            }
+        });
+        uri
+    }
+
+    #[tokio::test]
+    async fn a_body_that_stalls_after_the_headers_fails_over() {
+        let h = harness("openai").await;
+        let uri = stalling_body_upstream().await;
+        h.store
+            .insert_provider("stall", "openai", &uri, None)
+            .await
+            .unwrap();
+        let ma = allow_model(&h.store, "stall", "m").await;
+        let (b, mb) = provider(&h, "b").await;
+        Mock::given(method("POST"))
+            .respond_with(ok("b"))
+            .mount(&b)
+            .await;
+        let settings = RouteSettings {
+            retries: 0,
+            first_token_timeout_ms: 300,
+            ..DEFAULTS
+        };
+        route(&h, "r", &[ma], &[mb], settings).await;
+        let started = Instant::now();
+        let (s, body) = post_chat(&h.app, Some(&h.key), &chat("r", false)).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            seen(&h.sink.records()[0]),
+            [
+                ("stall".into(), AttemptOutcome::Retryable, Some(200)),
+                ("b".into(), AttemptOutcome::Ok, Some(200)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_drops_health_of_targets_no_longer_in_the_catalog() {
+        let h = harness("openai").await;
+        let now = tokio::time::Instant::now();
+        let s = BreakerSettings::DEFAULT;
+        h.state
+            .health
+            .report(&target("gone"), true, false, Some(200), now, &s);
+        let kept = TargetRef {
+            provider: "p".into(),
+            model: "gpt-4o".into(),
+            model_id: 1,
+        };
+        h.state
+            .health
+            .report(&kept, true, false, Some(200), now, &s);
+        h.state.refresh().await.unwrap();
+        let names: Vec<_> = h
+            .state
+            .health
+            .view()
+            .into_iter()
+            .map(|t| t.provider)
+            .collect();
+        assert_eq!(names, ["p"]);
     }
 }

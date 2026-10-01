@@ -207,8 +207,12 @@ async fn provider_errors_are_mapped() {
         .mount(&h.upstream)
         .await;
     let (s, b) = post_chat(&h.app, Some(&h.key), BODY).await;
-    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(error_message(&b), "No provider could serve this request.");
+    // Every try was a 429: the caller is told to wait.
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        error_message(&b),
+        "The provider is rate limiting this request. Try again later."
+    );
 
     // An answer no retry can change keeps its status and its message.
     let h = harness("openai").await;

@@ -95,6 +95,9 @@ impl AppState {
     pub async fn refresh(&self) -> anyhow::Result<()> {
         let _guard = self.refreshing.lock().await;
         let snapshot = Snapshot::load(&self.store, &self.cipher).await?;
+        // What left the catalog is no longer worth a breaker.
+        self.health
+            .retain(&|provider, model| snapshot.model(provider, model).is_some());
         self.snapshot.store(Arc::new(snapshot));
         self.refreshes.fetch_add(1, Ordering::Relaxed);
         Ok(())

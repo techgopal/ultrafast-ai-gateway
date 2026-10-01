@@ -50,6 +50,10 @@ pub trait HealthStore: Send + Sync {
 
     /// Every target that was called, by provider then model.
     fn view(&self) -> Vec<TargetHealth>;
+
+    /// Forgets the targets `keep` does not name (given provider and model):
+    /// those that left the catalog.
+    fn retain(&self, keep: &dyn Fn(&str, &str) -> bool);
 }
 
 #[derive(Default)]
@@ -92,6 +96,11 @@ impl HealthStore for InMemoryHealth {
             .entry(key(t))
             .or_default()
             .report(ok, retryable_failure, status, now, s);
+    }
+
+    fn retain(&self, keep: &dyn Fn(&str, &str) -> bool) {
+        self.lock()
+            .retain(|(provider, model), _| keep(provider, model));
     }
 
     fn view(&self) -> Vec<TargetHealth> {
@@ -169,6 +178,45 @@ mod tests {
         assert_eq!(v[1].state, TargetState::Closed);
         assert_eq!((v[1].successes, v[1].failures), (1, 0));
         assert_eq!(v[1].last_failure_at, None);
+    }
+
+    #[test]
+    fn parallel_callers_of_a_half_open_breaker_admit_exactly_one_trial() {
+        let h = Arc::new(InMemoryHealth::new());
+        let t = target("p", "m");
+        let start = Instant::now();
+        for _ in 0..2 {
+            h.report(&t, false, true, Some(500), start, &S);
+        }
+        let later = start + Duration::from_secs(31);
+        let barrier = Arc::new(std::sync::Barrier::new(64));
+        let threads: Vec<_> = (0..64)
+            .map(|_| {
+                let (h, t, barrier) = (h.clone(), t.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    h.allow(&t, later, &S)
+                })
+            })
+            .collect();
+        let admitted = threads
+            .into_iter()
+            .map(|th| th.join().unwrap())
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(admitted, 1);
+    }
+
+    #[test]
+    fn retain_forgets_the_targets_not_kept() {
+        let h = InMemoryHealth::new();
+        let now = Instant::now();
+        h.report(&target("p", "a"), true, false, Some(200), now, &S);
+        h.report(&target("p", "b"), true, false, Some(200), now, &S);
+        h.retain(&|_, model| model == "a");
+        let v = h.view();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].model, "a");
     }
 
     #[test]

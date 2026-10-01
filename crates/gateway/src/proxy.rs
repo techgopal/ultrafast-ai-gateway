@@ -2,13 +2,13 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::time::timeout_at;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -31,7 +31,7 @@ use crate::app::AppState;
 use crate::auth::authenticate;
 use crate::errors::{caller_message, error_response, translate_error_response};
 use crate::routing::{
-    self, Candidate, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
+    self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
 };
 use crate::snapshot::{SnapKey, SnapProvider, Snapshot};
 use crate::telemetry::{AttemptOutcome, Scope};
@@ -239,12 +239,57 @@ async fn dispatch(
             stream_to_caller(*committed, guard)
         }
         Err(Stop::Fatal(e)) => e.into_response(),
-        Err(Stop::Exhausted) => error_response(
+        Err(Stop::Exhausted(ex)) => exhausted_response(ex),
+    }
+}
+
+/// The longest wait a caller is told to keep.
+const RETRY_AFTER_CAP: Duration = Duration::from_secs(60);
+
+/// What the caller is told when no target served the call: the masked
+/// credential error when every try was refused, 429 when every try was a 429,
+/// otherwise 503.
+fn exhausted_response(ex: Exhausted<CallError>) -> Response {
+    if let Some(refused) = ex.refused {
+        return refused.into_response();
+    }
+    let seconds = |d: Duration| d.min(RETRY_AFTER_CAP).as_secs_f64().ceil() as u64;
+    let response = if ex.attempts > 0 && ex.rate_limited == ex.attempts {
+        let mut r = error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+            "The provider is rate limiting this request. Try again later.",
+        );
+        // Always a wait: one second when no provider said how long.
+        let wait = seconds(ex.retry_after.unwrap_or_default()).max(1);
+        r.headers_mut().insert(RETRY_AFTER, wait.into());
+        r
+    } else {
+        let mut r = error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "upstream_error",
             NO_PROVIDER,
-        ),
+        );
+        if let Some(wait) = ex.retry_after {
+            r.headers_mut()
+                .insert(RETRY_AFTER, seconds(wait).max(1).into());
+        }
+        r
+    };
+    response
+}
+
+/// How long a provider asked to be left alone: `Retry-After` as seconds or
+/// as an HTTP date.
+fn retry_after_of(headers: &axum::http::HeaderMap) -> Option<Duration> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
     }
+    let at =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc2822).ok()?;
+    let wait = (at - time::OffsetDateTime::now_utc()).whole_seconds();
+    Some(Duration::from_secs(u64::try_from(wait).unwrap_or(0)))
 }
 
 /// Why a try of a target failed. Only a failure that is not retryable is
@@ -300,16 +345,36 @@ struct Committed {
 }
 
 fn retryable<E>(error: E, status: Option<u16>) -> Failure<E> {
-    Failure::Retryable { error, status }
+    Failure::Retryable {
+        error,
+        status,
+        retry_after: None,
+    }
 }
 
 /// Whether another try could do better after this error of the provider.
-fn failure_of(e: TranslateError, status: Option<u16>) -> Failure<CallError> {
+/// A rejected credential is the gateway's problem with this target, not the
+/// caller's: the next target is tried.
+fn failure_of(
+    e: TranslateError,
+    status: Option<u16>,
+    retry_after: Option<Duration>,
+) -> Failure<CallError> {
     match e {
         TranslateError::Provider {
             retryable: true, ..
         }
-        | TranslateError::Malformed(_) => retryable(CallError::Lost, status),
+        | TranslateError::Malformed(_) => Failure::Retryable {
+            error: CallError::Lost,
+            status,
+            retry_after,
+        },
+        e @ TranslateError::Provider {
+            status: 401 | 403, ..
+        } => Failure::Failover {
+            error: CallError::Translate(e),
+            status,
+        },
         e => Failure::Fatal {
             error: CallError::Translate(e),
             status,
@@ -384,6 +449,7 @@ async fn try_target(
         }
     };
     let status = upstream.status().as_u16();
+    let retry_after = retry_after_of(upstream.headers());
     // Redirects are not followed, and a redirect is never a usable answer.
     if (300..400).contains(&status) {
         tracing::warn!(provider = %provider.name, status, "provider answered with a redirect");
@@ -405,7 +471,12 @@ async fn try_target(
         .await;
     }
 
-    let bytes = match timeout_at(limits.deadline, read_capped(upstream, max_response)).await {
+    let bytes = match timeout_at(
+        limits.deadline,
+        read_capped(upstream, max_response, limits.first_token),
+    )
+    .await
+    {
         Ok(Ok(b)) => b,
         Ok(Err(ReadError::TooLarge)) => {
             tracing::warn!(provider = %provider.name, "provider response was too large");
@@ -423,7 +494,7 @@ async fn try_target(
             value: Served::Whole(r),
             status: Some(status),
         }),
-        Err(e) => Err(failure_of(e, Some(status))),
+        Err(e) => Err(failure_of(e, Some(status), retry_after)),
     }
 }
 
@@ -462,7 +533,7 @@ async fn first_event(
                 return Err(if stream_error_is_retryable(&e) {
                     retryable(CallError::Lost, Some(status))
                 } else {
-                    failure_of(e, Some(status))
+                    failure_of(e, Some(status), None)
                 });
             }
             Ok(events) if events.is_empty() => continue,
@@ -490,11 +561,19 @@ enum ReadError {
     Failed,
 }
 
-/// Reads a provider response, giving up once it is larger than `max` bytes.
-async fn read_capped(upstream: reqwest::Response, max: usize) -> Result<Vec<u8>, ReadError> {
+/// Reads a provider response, giving up once it is larger than `max` bytes
+/// or when no byte comes for `idle`.
+async fn read_capped(
+    upstream: reqwest::Response,
+    max: usize,
+    idle: Duration,
+) -> Result<Vec<u8>, ReadError> {
     let mut out = Vec::new();
     let mut chunks = upstream.bytes_stream();
-    while let Some(chunk) = chunks.next().await {
+    while let Some(chunk) = tokio::time::timeout(idle, chunks.next())
+        .await
+        .map_err(|_| ReadError::Failed)?
+    {
         let chunk = chunk.map_err(|_| ReadError::Failed)?;
         if chunk.len() > max - out.len() {
             return Err(ReadError::TooLarge);
@@ -561,9 +640,19 @@ impl StreamRecord {
     /// usage if it was reported. The caller was answered 200. The success of
     /// the first event is already with the breaker; a failure after it is
     /// reported now, and counts when another try could have done better.
-    fn end(mut self, outcome: AttemptOutcome, usage: Option<Usage>) {
+    fn end(self, outcome: AttemptOutcome, usage: Option<Usage>) {
+        self.finish(outcome, usage, true);
+    }
+
+    /// Like [`end`](Self::end) for a stream the request ran out of time on:
+    /// a long answer is not the target's failure, so the breaker is left alone.
+    fn end_out_of_time(self) {
+        self.finish(AttemptOutcome::Retryable, None, false);
+    }
+
+    fn finish(mut self, outcome: AttemptOutcome, usage: Option<Usage>, report: bool) {
         if let Some(mut scope) = self.scope.take() {
-            if outcome != AttemptOutcome::Ok {
+            if report && outcome != AttemptOutcome::Ok {
                 self.health.report(
                     &self.target,
                     false,
@@ -619,7 +708,7 @@ fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
                     let chunk = match timeout_at(deadline, chunks.next()).await {
                         Err(_) => {
                             tracing::warn!(provider = %provider, "request ran out of time during the stream");
-                            record.end(AttemptOutcome::Retryable, None);
+                            record.end_out_of_time();
                             yield Ok::<String, Infallible>(render_stream_error(TIMED_OUT));
                             return;
                         }
@@ -675,4 +764,32 @@ fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
         .header(CACHE_CONTROL, "no-cache")
         .body(Body::from_stream(body))
         .expect("static headers are valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    fn with(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(RETRY_AFTER, value.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn retry_after_reads_seconds_and_dates() {
+        assert_eq!(retry_after_of(&with("7")), Some(Duration::from_secs(7)));
+        assert_eq!(retry_after_of(&with(" 0 ")), Some(Duration::ZERO));
+        assert_eq!(retry_after_of(&HeaderMap::new()), None);
+        assert_eq!(retry_after_of(&with("soon")), None);
+        assert_eq!(retry_after_of(&with("-3")), None);
+        // A date in the past is no wait; one far ahead is a long one.
+        assert_eq!(
+            retry_after_of(&with("Mon, 01 Jan 1990 00:00:00 GMT")),
+            Some(Duration::ZERO)
+        );
+        let far = retry_after_of(&with("Fri, 01 Jan 2100 00:00:00 GMT")).unwrap();
+        assert!(far > Duration::from_secs(3600 * 24 * 365));
+    }
 }

@@ -74,8 +74,17 @@ pub struct Success<T> {
 
 /// A try that did not work. `status` is what the provider answered, if it did.
 pub enum Failure<E> {
-    /// Another try, or another target, may do better.
-    Retryable { error: E, status: Option<u16> },
+    /// Another try, or another target, may do better. `retry_after` is how
+    /// long the provider asked to be left alone.
+    Retryable {
+        error: E,
+        status: Option<u16>,
+        retry_after: Option<StdDuration>,
+    },
+    /// This target cannot serve the call (the gateway's credential for it is
+    /// refused): the next target is tried, with no retry of this one. It
+    /// counts against the target's breaker.
+    Failover { error: E, status: Option<u16> },
     /// The request itself or the answer cannot be helped by trying again.
     Fatal { error: E, status: Option<u16> },
 }
@@ -86,7 +95,20 @@ pub enum Stop<E> {
     /// A try failed in a way no other try could help. Its error is the answer.
     Fatal(E),
     /// Every target was skipped, refused by its breaker or failed.
-    Exhausted,
+    Exhausted(Exhausted<E>),
+}
+
+/// What the tries of a call that no target served came to.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Exhausted<E> {
+    /// Tries made, retries included.
+    pub attempts: u32,
+    /// Of those, the ones the provider answered 429.
+    pub rate_limited: u32,
+    /// The largest wait a provider asked for.
+    pub retry_after: Option<StdDuration>,
+    /// The last refusal, when every try was a refusal of the credential.
+    pub refused: Option<E>,
 }
 
 /// The wait before retry number `retry` (0 for the first): up to 250 ms,
@@ -116,6 +138,9 @@ where
     Fut: Future<Output = Result<Success<T>, Failure<E>>>,
 {
     let deadline = Instant::now() + settings.total_timeout;
+    let (mut attempts, mut rate_limited, mut refusals) = (0u32, 0u32, 0u32);
+    let mut retry_after_max: Option<StdDuration> = None;
+    let mut last_refusal: Option<E> = None;
     for candidate in plan {
         let t = &candidate.target;
         if !candidate.callable {
@@ -152,7 +177,9 @@ where
                 first_token: settings.first_token_timeout,
                 deadline,
             };
+            attempts += 1;
             let tried = timeout_at(deadline, call(t.clone(), limits)).await;
+            let mut asked = None;
             let status = match tried {
                 Ok(Ok(done)) => {
                     scope.settle_attempt(AttemptOutcome::Ok, done.status, started);
@@ -171,16 +198,39 @@ where
                     health.report(t, false, false, status, Instant::now(), &settings.breaker);
                     return Err(Stop::Fatal(error));
                 }
-                Ok(Err(Failure::Retryable { status, .. })) => status,
+                Ok(Err(Failure::Failover { error, status })) => {
+                    scope.settle_attempt(AttemptOutcome::Retryable, status, started);
+                    health.report(t, false, true, status, Instant::now(), &settings.breaker);
+                    refusals += 1;
+                    last_refusal = Some(error);
+                    break;
+                }
+                Ok(Err(Failure::Retryable {
+                    status,
+                    retry_after,
+                    ..
+                })) => {
+                    asked = retry_after;
+                    status
+                }
                 // Out of time: a timeout is a retryable failure of the target.
                 Err(_) => None,
             };
+            if status == Some(429) {
+                rate_limited += 1;
+            }
+            if let Some(a) = asked {
+                retry_after_max = Some(retry_after_max.map_or(a, |m| m.max(a)));
+            }
             scope.settle_attempt(AttemptOutcome::Retryable, status, started);
             health.report(t, false, true, status, Instant::now(), &settings.breaker);
             if retry >= settings.retries || !health.allow(t, Instant::now(), &settings.breaker) {
                 break;
             }
-            let wait = backoff(retry, rng);
+            let mut wait = backoff(retry, rng);
+            if let Some(a) = asked {
+                wait = wait.max(a.min(StdDuration::from_millis(BACKOFF_MAX_MS)));
+            }
             if Instant::now() + wait >= deadline {
                 break;
             }
@@ -188,7 +238,16 @@ where
             retry += 1;
         }
     }
-    Err(Stop::Exhausted)
+    Err(Stop::Exhausted(Exhausted {
+        attempts,
+        rate_limited,
+        retry_after: retry_after_max,
+        refused: if attempts > 0 && refusals == attempts {
+            last_refusal
+        } else {
+            None
+        },
+    }))
 }
 
 #[cfg(test)]
@@ -244,6 +303,10 @@ mod tests {
         Fatal(u16),
         /// Never answers.
         Hang,
+        /// Retryable, and the provider asked for this many seconds.
+        RetryAfter(u16, u64),
+        /// The target is refused for this call: another is tried, no retry.
+        Failover(u16),
     }
 
     /// Answers each model from its own script; the last step repeats.
@@ -288,6 +351,16 @@ mod tests {
                 Step::Retry(status) => Err(Failure::Retryable {
                     error: "retry".into(),
                     status,
+                    retry_after: None,
+                }),
+                Step::RetryAfter(status, secs) => Err(Failure::Retryable {
+                    error: "retry".into(),
+                    status: Some(status),
+                    retry_after: Some(Duration::from_secs(secs)),
+                }),
+                Step::Failover(status) => Err(Failure::Failover {
+                    error: format!("refused {status}"),
+                    status: Some(status),
                 }),
                 Step::Fatal(status) => Err(Failure::Fatal {
                     error: format!("fatal {status}"),
@@ -422,7 +495,7 @@ mod tests {
             ("b", &[Step::Retry(None)]),
         ]);
         let ran = run_with(settings, &plan_of(&["a", "b"]), &script).await;
-        assert_eq!(ran.result, Err(Stop::Exhausted));
+        assert!(matches!(ran.result, Err(Stop::Exhausted(_))));
         assert_eq!(script.calls(), ["a", "b"]);
     }
 
@@ -436,10 +509,90 @@ mod tests {
         let start = Instant::now();
         let ran = run_with(settings, &plan_of(&["a"]), &script).await;
         let waited = start.elapsed();
-        assert_eq!(ran.result, Err(Stop::Exhausted));
+        assert!(matches!(ran.result, Err(Stop::Exhausted(_))));
         assert_eq!(script.calls().len(), 6);
         // Five waits of at most 250, 500, 1000, 2000 and 4000 ms.
         assert!(waited <= Duration::from_millis(7750), "waited {waited:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_retry_waits_at_least_the_retry_after_up_to_4s() {
+        let settings = Settings {
+            retries: 1,
+            ..SETTINGS
+        };
+        for (asked, waited) in [(3u64, 3u64), (30, 4)] {
+            let script = Script::new(&[("a", &[Step::RetryAfter(429, asked), Step::Ok])]);
+            let start = Instant::now();
+            let ran = run_with(settings, &plan_of(&["a"]), &script).await;
+            assert_eq!(ran.result, Ok("a".to_string()));
+            assert_eq!(
+                start.elapsed(),
+                Duration::from_secs(waited),
+                "asked {asked}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failover_moves_on_without_a_retry_and_counts_for_the_breaker() {
+        let script = Script::new(&[("a", &[Step::Failover(401)]), ("b", &[Step::Ok])]);
+        let ran = run_with(SETTINGS, &plan_of(&["a", "b"]), &script).await;
+        assert_eq!(ran.result, Ok("b".to_string()));
+        assert_eq!(script.calls(), ["a", "b"]);
+        assert_eq!(
+            seen(&ran.record)[0],
+            ("a".into(), AttemptOutcome::Retryable, Some(401))
+        );
+        let a = &ran.health.view()[0];
+        assert_eq!(
+            (a.provider.as_str(), a.model.as_str(), a.failures),
+            ("p", "a", 1)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn exhausted_says_what_the_attempts_were() {
+        let settings = Settings {
+            retries: 0,
+            ..SETTINGS
+        };
+        // Every attempt refused: the last refusal is the answer.
+        let script = Script::new(&[("a", &[Step::Failover(401)]), ("b", &[Step::Failover(403)])]);
+        let ran = run_with(settings, &plan_of(&["a", "b"]), &script).await;
+        let Err(Stop::Exhausted(ex)) = ran.result else {
+            panic!()
+        };
+        assert_eq!(ex.attempts, 2);
+        assert_eq!(ex.refused, Some("refused 403".to_string()));
+        assert_eq!(ex.rate_limited, 0);
+
+        // Every attempt a 429; the largest Retry-After is kept.
+        let script = Script::new(&[
+            ("a", &[Step::RetryAfter(429, 7)]),
+            ("b", &[Step::RetryAfter(429, 12)]),
+            ("c", &[Step::Retry(Some(429))]),
+        ]);
+        let ran = run_with(settings, &plan_of(&["a", "b", "c"]), &script).await;
+        let Err(Stop::Exhausted(ex)) = ran.result else {
+            panic!()
+        };
+        assert_eq!((ex.attempts, ex.rate_limited), (3, 3));
+        assert_eq!(ex.retry_after, Some(Duration::from_secs(12)));
+        assert_eq!(ex.refused, None);
+
+        // Mixed.
+        let script = Script::new(&[
+            ("a", &[Step::RetryAfter(429, 5)]),
+            ("b", &[Step::Retry(Some(500))]),
+        ]);
+        let ran = run_with(settings, &plan_of(&["a", "b"]), &script).await;
+        let Err(Stop::Exhausted(ex)) = ran.result else {
+            panic!()
+        };
+        assert_eq!((ex.attempts, ex.rate_limited), (2, 1));
+        assert_eq!(ex.retry_after, Some(Duration::from_secs(5)));
+        assert_eq!(ex.refused, None);
     }
 
     #[tokio::test(start_paused = true)]
@@ -498,7 +651,7 @@ mod tests {
         let start = Instant::now();
         let ran = run_on(health, settings, &plan_of(&["a", "b"]), &script).await;
         assert!(start.elapsed() < Duration::from_millis(100));
-        assert_eq!(ran.result, Err(Stop::Exhausted));
+        assert!(matches!(ran.result, Err(Stop::Exhausted(_))));
         assert!(script.calls().is_empty());
         assert_eq!(
             seen(&ran.record),
@@ -560,7 +713,7 @@ mod tests {
         let script = Script::new(&[("a", &[Step::Hang]), ("b", &[Step::Ok])]);
         let start = Instant::now();
         let ran = run_with(settings, &plan_of(&["a", "b"]), &script).await;
-        assert_eq!(ran.result, Err(Stop::Exhausted));
+        assert!(matches!(ran.result, Err(Stop::Exhausted(_))));
         assert_eq!(start.elapsed(), Duration::from_secs(5));
         assert_eq!(script.calls(), ["a"]);
         assert_eq!(
