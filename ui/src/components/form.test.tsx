@@ -713,6 +713,8 @@ describe("useSubmit", () => {
     });
     expect([first, second]).toEqual([false, false]);
     open();
+    // The answer arrives, and the form settles, before the test ends.
+    await settle();
   });
 });
 
