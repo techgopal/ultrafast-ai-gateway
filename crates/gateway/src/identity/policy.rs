@@ -1,0 +1,1010 @@
+//! Authorization policy: the one place that decides what a principal may do.
+
+use super::{Principal, Role, TeamRole};
+
+/// What a request wants to do, with the facts needed to decide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    // users
+    ListUsers,
+    ViewUser {
+        user_id: i64,
+        shares_led_team: bool,
+    },
+    InviteUser {
+        role: Role,
+    },
+    UpdateUser {
+        user_id: i64,
+        changes_role_or_status: bool,
+    },
+    DeleteUser {
+        user_id: i64,
+    },
+    // teams
+    ListTeams,
+    CreateTeam,
+    ViewTeam {
+        team_id: i64,
+    },
+    RenameTeam {
+        team_id: i64,
+    },
+    DeleteTeam {
+        team_id: i64,
+    },
+    PutMember {
+        team_id: i64,
+        role: TeamRole,
+    },
+    RemoveMember {
+        team_id: i64,
+    },
+    // virtual keys
+    ListKeys,
+    CreateKey {
+        owner_id: i64,
+        team_id: Option<i64>,
+    },
+    ViewKey {
+        owner_id: Option<i64>,
+        team_id: Option<i64>,
+    },
+    RevokeKey {
+        owner_id: Option<i64>,
+        team_id: Option<i64>,
+    },
+    // access tokens: always the caller's own
+    ManageOwnTokens,
+    // providers
+    ListProviders,
+    ManageProviders,
+    // audit
+    ViewAudit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    Allow,
+    /// Answer 403.
+    Forbidden,
+    /// Answer 404, so the caller cannot learn that the target exists.
+    Hidden,
+}
+
+/// Which rows a list call may return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    All,
+    Teams {
+        team_ids: Vec<i64>,
+        own_user_id: i64,
+    },
+    Own {
+        user_id: i64,
+    },
+}
+
+/// Decides whether `p` may perform `action`. Pure: no I/O, no clock.
+///
+/// The match has no catch-all arm on purpose: a new `Action` variant must be
+/// given a rule before the crate compiles.
+pub fn authorize(p: &Principal, action: &Action) -> Decision {
+    use Decision::{Allow, Forbidden, Hidden};
+
+    if p.is_admin() {
+        return Allow;
+    }
+    match action {
+        Action::ListUsers
+        | Action::ListTeams
+        | Action::ListKeys
+        | Action::ManageOwnTokens
+        | Action::ListProviders => Allow,
+
+        Action::InviteUser { role: _ }
+        | Action::CreateTeam
+        | Action::ManageProviders
+        | Action::ViewAudit => Forbidden,
+
+        Action::ViewUser {
+            user_id,
+            shares_led_team,
+        } => {
+            // `shares_led_team` only counts for a caller who leads a team.
+            let leads_any = !p.led_teams().is_empty();
+            if *user_id == p.user_id || (leads_any && *shares_led_team) {
+                Allow
+            } else {
+                Hidden
+            }
+        }
+        Action::UpdateUser {
+            user_id,
+            changes_role_or_status,
+        } => {
+            if *user_id != p.user_id {
+                Hidden
+            } else if *changes_role_or_status {
+                Forbidden
+            } else {
+                Allow
+            }
+        }
+        Action::DeleteUser { user_id } => {
+            if *user_id == p.user_id {
+                Forbidden
+            } else {
+                Hidden
+            }
+        }
+
+        Action::ViewTeam { team_id } => by_team_role(p, *team_id, Allow, Allow),
+        Action::RenameTeam { team_id } => by_team_role(p, *team_id, Allow, Forbidden),
+        Action::DeleteTeam { team_id } => by_team_role(p, *team_id, Forbidden, Forbidden),
+        Action::PutMember { team_id, role } => {
+            let as_lead = match role {
+                TeamRole::Member => Allow,
+                TeamRole::Lead => Forbidden,
+            };
+            by_team_role(p, *team_id, as_lead, Forbidden)
+        }
+        Action::RemoveMember { team_id } => by_team_role(p, *team_id, Allow, Forbidden),
+
+        Action::CreateKey { owner_id, team_id } => {
+            let allowed = if *owner_id == p.user_id {
+                team_id.is_none_or(|t| p.team_role(t).is_some())
+            } else {
+                team_id.is_some_and(|t| p.leads(t))
+            };
+            if allowed {
+                Allow
+            } else {
+                Forbidden
+            }
+        }
+        Action::ViewKey { owner_id, team_id } | Action::RevokeKey { owner_id, team_id } => {
+            if *owner_id == Some(p.user_id) || team_id.is_some_and(|t| p.leads(t)) {
+                Allow
+            } else {
+                Hidden
+            }
+        }
+    }
+}
+
+/// The decision for a team action: one outcome for the team's lead, one for
+/// its other members, and `Hidden` for everyone outside the team.
+fn by_team_role(p: &Principal, team_id: i64, lead: Decision, member: Decision) -> Decision {
+    match p.team_role(team_id) {
+        Some(TeamRole::Lead) => lead,
+        Some(TeamRole::Member) => member,
+        None => Decision::Hidden,
+    }
+}
+
+/// Which rows a list call by `p` may return.
+pub fn list_scope(p: &Principal) -> Scope {
+    if p.is_admin() {
+        return Scope::All;
+    }
+    let team_ids = p.led_teams();
+    if team_ids.is_empty() {
+        Scope::Own { user_id: p.user_id }
+    } else {
+        Scope::Teams {
+            team_ids,
+            own_user_id: p.user_id,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use Decision::{Allow, Forbidden, Hidden};
+
+    type Case<'a> = (&'static str, &'a Principal, Action, Decision);
+
+    struct Fixture {
+        admin: Principal,
+        lead: Principal,
+        member: Principal,
+        loner: Principal,
+    }
+
+    fn principal(user_id: i64, role: Role, teams: Vec<(i64, TeamRole)>) -> Principal {
+        Principal {
+            user_id,
+            email: format!("user{user_id}@example.com"),
+            role,
+            teams,
+        }
+    }
+
+    fn fixture() -> Fixture {
+        Fixture {
+            admin: principal(1, Role::Admin, vec![]),
+            lead: principal(
+                2,
+                Role::Member,
+                vec![(10, TeamRole::Lead), (20, TeamRole::Member)],
+            ),
+            member: principal(3, Role::Member, vec![(10, TeamRole::Member)]),
+            loner: principal(4, Role::Member, vec![]),
+        }
+    }
+
+    /// The rows shared by `ViewKey` and `RevokeKey`, which have the same rule.
+    fn key_cases<'a>(
+        f: &'a Fixture,
+        view: bool,
+        make: fn(Option<i64>, Option<i64>) -> Action,
+    ) -> Vec<Case<'a>> {
+        let rows: Vec<(&'static str, &'static str, &Principal, Action, Decision)> = vec![
+            (
+                "view_key: lead, own key without a team",
+                "revoke_key: lead, own key without a team",
+                &f.lead,
+                make(Some(2), None),
+                Allow,
+            ),
+            (
+                "view_key: lead, own key in a team they belong to",
+                "revoke_key: lead, own key in a team they belong to",
+                &f.lead,
+                make(Some(2), Some(20)),
+                Allow,
+            ),
+            (
+                "view_key: lead, own key in an unrelated team",
+                "revoke_key: lead, own key in an unrelated team",
+                &f.lead,
+                make(Some(2), Some(30)),
+                Allow,
+            ),
+            (
+                "view_key: lead, another user's key in a led team",
+                "revoke_key: lead, another user's key in a led team",
+                &f.lead,
+                make(Some(3), Some(10)),
+                Allow,
+            ),
+            (
+                "view_key: lead, ownerless key in a led team",
+                "revoke_key: lead, ownerless key in a led team",
+                &f.lead,
+                make(None, Some(10)),
+                Allow,
+            ),
+            (
+                "view_key: lead, another user's key in a team they only belong to",
+                "revoke_key: lead, another user's key in a team they only belong to",
+                &f.lead,
+                make(Some(3), Some(20)),
+                Hidden,
+            ),
+            (
+                "view_key: lead, ownerless key in a team they only belong to",
+                "revoke_key: lead, ownerless key in a team they only belong to",
+                &f.lead,
+                make(None, Some(20)),
+                Hidden,
+            ),
+            (
+                "view_key: lead, another user's key in an unrelated team",
+                "revoke_key: lead, another user's key in an unrelated team",
+                &f.lead,
+                make(Some(3), Some(30)),
+                Hidden,
+            ),
+            (
+                "view_key: lead, another user's key without a team",
+                "revoke_key: lead, another user's key without a team",
+                &f.lead,
+                make(Some(3), None),
+                Hidden,
+            ),
+            (
+                "view_key: lead, key with no owner and no team",
+                "revoke_key: lead, key with no owner and no team",
+                &f.lead,
+                make(None, None),
+                Hidden,
+            ),
+            (
+                "view_key: member, own key without a team",
+                "revoke_key: member, own key without a team",
+                &f.member,
+                make(Some(3), None),
+                Allow,
+            ),
+            (
+                "view_key: member, own key in their team",
+                "revoke_key: member, own key in their team",
+                &f.member,
+                make(Some(3), Some(10)),
+                Allow,
+            ),
+            (
+                "view_key: member, another user's key in their team",
+                "revoke_key: member, another user's key in their team",
+                &f.member,
+                make(Some(2), Some(10)),
+                Hidden,
+            ),
+            (
+                "view_key: member, ownerless key in their team",
+                "revoke_key: member, ownerless key in their team",
+                &f.member,
+                make(None, Some(10)),
+                Hidden,
+            ),
+            (
+                "view_key: member, another user's key in an unrelated team",
+                "revoke_key: member, another user's key in an unrelated team",
+                &f.member,
+                make(Some(2), Some(30)),
+                Hidden,
+            ),
+            (
+                "view_key: loner, own key",
+                "revoke_key: loner, own key",
+                &f.loner,
+                make(Some(4), None),
+                Allow,
+            ),
+            (
+                "view_key: loner, another user's key",
+                "revoke_key: loner, another user's key",
+                &f.loner,
+                make(Some(2), None),
+                Hidden,
+            ),
+            (
+                "view_key: loner, another user's key in a team",
+                "revoke_key: loner, another user's key in a team",
+                &f.loner,
+                make(Some(3), Some(10)),
+                Hidden,
+            ),
+            (
+                "view_key: loner, key with no owner and no team",
+                "revoke_key: loner, key with no owner and no team",
+                &f.loner,
+                make(None, None),
+                Hidden,
+            ),
+        ];
+        rows.into_iter()
+            .map(|(view_name, revoke_name, p, action, want)| {
+                (if view { view_name } else { revoke_name }, p, action, want)
+            })
+            .collect()
+    }
+
+    fn cases(f: &Fixture) -> Vec<Case<'_>> {
+        let (lead, member, loner) = (&f.lead, &f.member, &f.loner);
+        let view_user = |user_id, shares_led_team| Action::ViewUser {
+            user_id,
+            shares_led_team,
+        };
+        let update_user = |user_id, changes_role_or_status| Action::UpdateUser {
+            user_id,
+            changes_role_or_status,
+        };
+        let put = |team_id, role| Action::PutMember { team_id, role };
+        let create_key = |owner_id, team_id| Action::CreateKey { owner_id, team_id };
+
+        let mut cases: Vec<Case<'_>> = vec![
+            // ListUsers
+            ("list_users: lead", lead, Action::ListUsers, Allow),
+            ("list_users: member", member, Action::ListUsers, Allow),
+            ("list_users: loner", loner, Action::ListUsers, Allow),
+            // ViewUser
+            ("view_user: lead, own id", lead, view_user(2, false), Allow),
+            (
+                "view_user: lead, user sharing a led team",
+                lead,
+                view_user(3, true),
+                Allow,
+            ),
+            (
+                "view_user: lead, user not sharing a led team",
+                lead,
+                view_user(4, false),
+                Hidden,
+            ),
+            (
+                "view_user: member, own id",
+                member,
+                view_user(3, false),
+                Allow,
+            ),
+            (
+                "view_user: member, another user",
+                member,
+                view_user(2, false),
+                Hidden,
+            ),
+            (
+                "view_user: INTERPRETED member who leads nothing, shares_led_team set",
+                member,
+                view_user(2, true),
+                Hidden,
+            ),
+            (
+                "view_user: loner, own id",
+                loner,
+                view_user(4, false),
+                Allow,
+            ),
+            (
+                "view_user: loner, another user",
+                loner,
+                view_user(2, false),
+                Hidden,
+            ),
+            (
+                "view_user: INTERPRETED loner, shares_led_team set",
+                loner,
+                view_user(2, true),
+                Hidden,
+            ),
+            // InviteUser
+            (
+                "invite_user: lead inviting a member",
+                lead,
+                Action::InviteUser { role: Role::Member },
+                Forbidden,
+            ),
+            (
+                "invite_user: lead inviting an admin",
+                lead,
+                Action::InviteUser { role: Role::Admin },
+                Forbidden,
+            ),
+            (
+                "invite_user: member",
+                member,
+                Action::InviteUser { role: Role::Member },
+                Forbidden,
+            ),
+            (
+                "invite_user: loner",
+                loner,
+                Action::InviteUser { role: Role::Member },
+                Forbidden,
+            ),
+            // UpdateUser
+            (
+                "update_user: lead, own profile",
+                lead,
+                update_user(2, false),
+                Allow,
+            ),
+            (
+                "update_user: lead, own role or status",
+                lead,
+                update_user(2, true),
+                Forbidden,
+            ),
+            (
+                "update_user: lead, another user's profile",
+                lead,
+                update_user(3, false),
+                Hidden,
+            ),
+            (
+                "update_user: lead, another user's role or status",
+                lead,
+                update_user(3, true),
+                Hidden,
+            ),
+            (
+                "update_user: member, own profile",
+                member,
+                update_user(3, false),
+                Allow,
+            ),
+            (
+                "update_user: member, own role or status",
+                member,
+                update_user(3, true),
+                Forbidden,
+            ),
+            (
+                "update_user: member, another user",
+                member,
+                update_user(2, false),
+                Hidden,
+            ),
+            (
+                "update_user: loner, own profile",
+                loner,
+                update_user(4, false),
+                Allow,
+            ),
+            (
+                "update_user: loner, own role or status",
+                loner,
+                update_user(4, true),
+                Forbidden,
+            ),
+            (
+                "update_user: loner, another user's role or status",
+                loner,
+                update_user(2, true),
+                Hidden,
+            ),
+            // DeleteUser
+            (
+                "delete_user: lead, own id",
+                lead,
+                Action::DeleteUser { user_id: 2 },
+                Forbidden,
+            ),
+            (
+                "delete_user: lead, a user in a led team",
+                lead,
+                Action::DeleteUser { user_id: 3 },
+                Hidden,
+            ),
+            (
+                "delete_user: member, own id",
+                member,
+                Action::DeleteUser { user_id: 3 },
+                Forbidden,
+            ),
+            (
+                "delete_user: member, another user",
+                member,
+                Action::DeleteUser { user_id: 2 },
+                Hidden,
+            ),
+            (
+                "delete_user: loner, own id",
+                loner,
+                Action::DeleteUser { user_id: 4 },
+                Forbidden,
+            ),
+            (
+                "delete_user: loner, another user",
+                loner,
+                Action::DeleteUser { user_id: 2 },
+                Hidden,
+            ),
+            // ListTeams, CreateTeam
+            ("list_teams: lead", lead, Action::ListTeams, Allow),
+            ("list_teams: member", member, Action::ListTeams, Allow),
+            ("list_teams: loner", loner, Action::ListTeams, Allow),
+            ("create_team: lead", lead, Action::CreateTeam, Forbidden),
+            ("create_team: member", member, Action::CreateTeam, Forbidden),
+            ("create_team: loner", loner, Action::CreateTeam, Forbidden),
+            // ViewTeam
+            (
+                "view_team: lead, led team",
+                lead,
+                Action::ViewTeam { team_id: 10 },
+                Allow,
+            ),
+            (
+                "view_team: lead, team they only belong to",
+                lead,
+                Action::ViewTeam { team_id: 20 },
+                Allow,
+            ),
+            (
+                "view_team: lead, unrelated team",
+                lead,
+                Action::ViewTeam { team_id: 30 },
+                Hidden,
+            ),
+            (
+                "view_team: member, own team",
+                member,
+                Action::ViewTeam { team_id: 10 },
+                Allow,
+            ),
+            (
+                "view_team: member, unrelated team",
+                member,
+                Action::ViewTeam { team_id: 30 },
+                Hidden,
+            ),
+            (
+                "view_team: loner",
+                loner,
+                Action::ViewTeam { team_id: 10 },
+                Hidden,
+            ),
+            // RenameTeam
+            (
+                "rename_team: lead, led team",
+                lead,
+                Action::RenameTeam { team_id: 10 },
+                Allow,
+            ),
+            (
+                "rename_team: lead, team they only belong to",
+                lead,
+                Action::RenameTeam { team_id: 20 },
+                Forbidden,
+            ),
+            (
+                "rename_team: lead, unrelated team",
+                lead,
+                Action::RenameTeam { team_id: 30 },
+                Hidden,
+            ),
+            (
+                "rename_team: member, own team",
+                member,
+                Action::RenameTeam { team_id: 10 },
+                Forbidden,
+            ),
+            (
+                "rename_team: member, unrelated team",
+                member,
+                Action::RenameTeam { team_id: 30 },
+                Hidden,
+            ),
+            (
+                "rename_team: loner",
+                loner,
+                Action::RenameTeam { team_id: 10 },
+                Hidden,
+            ),
+            // DeleteTeam
+            (
+                "delete_team: lead, led team",
+                lead,
+                Action::DeleteTeam { team_id: 10 },
+                Forbidden,
+            ),
+            (
+                "delete_team: lead, team they only belong to",
+                lead,
+                Action::DeleteTeam { team_id: 20 },
+                Forbidden,
+            ),
+            (
+                "delete_team: lead, unrelated team",
+                lead,
+                Action::DeleteTeam { team_id: 30 },
+                Hidden,
+            ),
+            (
+                "delete_team: member, own team",
+                member,
+                Action::DeleteTeam { team_id: 10 },
+                Forbidden,
+            ),
+            (
+                "delete_team: member, unrelated team",
+                member,
+                Action::DeleteTeam { team_id: 30 },
+                Hidden,
+            ),
+            (
+                "delete_team: loner",
+                loner,
+                Action::DeleteTeam { team_id: 10 },
+                Hidden,
+            ),
+            // PutMember
+            (
+                "put_member: lead, led team, adding a member",
+                lead,
+                put(10, TeamRole::Member),
+                Allow,
+            ),
+            (
+                "put_member: lead, led team, adding a lead",
+                lead,
+                put(10, TeamRole::Lead),
+                Forbidden,
+            ),
+            (
+                "put_member: lead, team they only belong to, adding a member",
+                lead,
+                put(20, TeamRole::Member),
+                Forbidden,
+            ),
+            (
+                "put_member: lead, team they only belong to, adding a lead",
+                lead,
+                put(20, TeamRole::Lead),
+                Forbidden,
+            ),
+            (
+                "put_member: lead, unrelated team, adding a member",
+                lead,
+                put(30, TeamRole::Member),
+                Hidden,
+            ),
+            (
+                "put_member: lead, unrelated team, adding a lead",
+                lead,
+                put(30, TeamRole::Lead),
+                Hidden,
+            ),
+            (
+                "put_member: member, own team, adding a member",
+                member,
+                put(10, TeamRole::Member),
+                Forbidden,
+            ),
+            (
+                "put_member: member, own team, adding a lead",
+                member,
+                put(10, TeamRole::Lead),
+                Forbidden,
+            ),
+            (
+                "put_member: member, unrelated team",
+                member,
+                put(30, TeamRole::Member),
+                Hidden,
+            ),
+            (
+                "put_member: loner",
+                loner,
+                put(10, TeamRole::Member),
+                Hidden,
+            ),
+            // RemoveMember
+            (
+                "remove_member: lead, led team",
+                lead,
+                Action::RemoveMember { team_id: 10 },
+                Allow,
+            ),
+            (
+                "remove_member: lead, team they only belong to",
+                lead,
+                Action::RemoveMember { team_id: 20 },
+                Forbidden,
+            ),
+            (
+                "remove_member: lead, unrelated team",
+                lead,
+                Action::RemoveMember { team_id: 30 },
+                Hidden,
+            ),
+            (
+                "remove_member: member, own team",
+                member,
+                Action::RemoveMember { team_id: 10 },
+                Forbidden,
+            ),
+            (
+                "remove_member: member, unrelated team",
+                member,
+                Action::RemoveMember { team_id: 30 },
+                Hidden,
+            ),
+            (
+                "remove_member: loner",
+                loner,
+                Action::RemoveMember { team_id: 10 },
+                Hidden,
+            ),
+            // ListKeys
+            ("list_keys: lead", lead, Action::ListKeys, Allow),
+            ("list_keys: member", member, Action::ListKeys, Allow),
+            ("list_keys: loner", loner, Action::ListKeys, Allow),
+            // CreateKey
+            (
+                "create_key: lead, own, no team",
+                lead,
+                create_key(2, None),
+                Allow,
+            ),
+            (
+                "create_key: lead, own, led team",
+                lead,
+                create_key(2, Some(10)),
+                Allow,
+            ),
+            (
+                "create_key: lead, own, team they only belong to",
+                lead,
+                create_key(2, Some(20)),
+                Allow,
+            ),
+            (
+                "create_key: lead, own, unrelated team",
+                lead,
+                create_key(2, Some(30)),
+                Forbidden,
+            ),
+            (
+                "create_key: lead, another user, led team",
+                lead,
+                create_key(3, Some(10)),
+                Allow,
+            ),
+            (
+                "create_key: lead, another user, team they only belong to",
+                lead,
+                create_key(3, Some(20)),
+                Forbidden,
+            ),
+            (
+                "create_key: lead, another user, unrelated team",
+                lead,
+                create_key(3, Some(30)),
+                Forbidden,
+            ),
+            (
+                "create_key: lead, another user, no team",
+                lead,
+                create_key(3, None),
+                Forbidden,
+            ),
+            (
+                "create_key: member, own, no team",
+                member,
+                create_key(3, None),
+                Allow,
+            ),
+            (
+                "create_key: member, own, own team",
+                member,
+                create_key(3, Some(10)),
+                Allow,
+            ),
+            (
+                "create_key: member, own, unrelated team",
+                member,
+                create_key(3, Some(30)),
+                Forbidden,
+            ),
+            (
+                "create_key: member, another user, own team",
+                member,
+                create_key(2, Some(10)),
+                Forbidden,
+            ),
+            (
+                "create_key: member, another user, no team",
+                member,
+                create_key(2, None),
+                Forbidden,
+            ),
+            (
+                "create_key: loner, own, no team",
+                loner,
+                create_key(4, None),
+                Allow,
+            ),
+            (
+                "create_key: loner, own, a team they are not in",
+                loner,
+                create_key(4, Some(10)),
+                Forbidden,
+            ),
+            (
+                "create_key: loner, another user, no team",
+                loner,
+                create_key(2, None),
+                Forbidden,
+            ),
+            // ManageOwnTokens, ListProviders, ManageProviders, ViewAudit
+            ("own_tokens: lead", lead, Action::ManageOwnTokens, Allow),
+            ("own_tokens: member", member, Action::ManageOwnTokens, Allow),
+            ("own_tokens: loner", loner, Action::ManageOwnTokens, Allow),
+            ("list_providers: lead", lead, Action::ListProviders, Allow),
+            (
+                "list_providers: member",
+                member,
+                Action::ListProviders,
+                Allow,
+            ),
+            ("list_providers: loner", loner, Action::ListProviders, Allow),
+            (
+                "manage_providers: lead",
+                lead,
+                Action::ManageProviders,
+                Forbidden,
+            ),
+            (
+                "manage_providers: member",
+                member,
+                Action::ManageProviders,
+                Forbidden,
+            ),
+            (
+                "manage_providers: loner",
+                loner,
+                Action::ManageProviders,
+                Forbidden,
+            ),
+            ("view_audit: lead", lead, Action::ViewAudit, Forbidden),
+            ("view_audit: member", member, Action::ViewAudit, Forbidden),
+            ("view_audit: loner", loner, Action::ViewAudit, Forbidden),
+        ];
+        cases.extend(key_cases(f, true, |owner_id, team_id| Action::ViewKey {
+            owner_id,
+            team_id,
+        }));
+        cases.extend(key_cases(f, false, |owner_id, team_id| Action::RevokeKey {
+            owner_id,
+            team_id,
+        }));
+        cases
+    }
+
+    #[test]
+    fn policy_matrix() {
+        let f = fixture();
+        let cases = cases(&f);
+        assert!(cases.len() >= 70, "only {} cases", cases.len());
+        for (name, p, action, want) in &cases {
+            assert_eq!(authorize(p, action), *want, "case: {name}");
+        }
+    }
+
+    #[test]
+    fn admin_is_always_allowed() {
+        let f = fixture();
+        for (name, _, action, _) in &cases(&f) {
+            assert_eq!(authorize(&f.admin, action), Allow, "admin, case: {name}");
+        }
+        // Targets that are the admin's own, which the matrix does not reach.
+        for action in [
+            Action::ViewUser {
+                user_id: 1,
+                shares_led_team: false,
+            },
+            Action::UpdateUser {
+                user_id: 1,
+                changes_role_or_status: true,
+            },
+            Action::DeleteUser { user_id: 1 },
+            Action::CreateKey {
+                owner_id: 1,
+                team_id: None,
+            },
+        ] {
+            assert_eq!(authorize(&f.admin, &action), Allow, "admin, {action:?}");
+        }
+    }
+
+    #[test]
+    fn nobody_else_manages_providers_or_audit() {
+        let f = fixture();
+        for p in [&f.lead, &f.member, &f.loner] {
+            for action in [
+                Action::ManageProviders,
+                Action::ViewAudit,
+                Action::InviteUser { role: Role::Member },
+                Action::InviteUser { role: Role::Admin },
+                Action::CreateTeam,
+            ] {
+                assert_eq!(
+                    authorize(p, &action),
+                    Forbidden,
+                    "user {}, {action:?}",
+                    p.user_id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn list_scope_by_role() {
+        let f = fixture();
+        assert_eq!(list_scope(&f.admin), Scope::All);
+        assert_eq!(
+            list_scope(&f.lead),
+            Scope::Teams {
+                team_ids: vec![10],
+                own_user_id: 2
+            }
+        );
+        assert_eq!(list_scope(&f.member), Scope::Own { user_id: 3 });
+        assert_eq!(list_scope(&f.loner), Scope::Own { user_id: 4 });
+    }
+}

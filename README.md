@@ -1,8 +1,112 @@
 # Ultrafast Gateway 🚀
 
+> **v2 is in development on this branch.** The v1 code under `ultrafast-gateway/`
+> and `ultrafast-models-sdk/` is kept for reference and is tagged `v1-final`.
+> Design: `docs/superpowers/specs/2026-09-28-gateway-v2-design.md`.
+
+## v2 quickstart
+
+```bash
+cargo build --release -p ultrafast-gateway
+export UF_DATA_DIR=./data
+
+# Add a provider. Use kind "openai" for any OpenAI-compatible API.
+UF_PROVIDER_API_KEY=sk-... ./target/release/ultrafast provider add \
+  --name openai --kind openai --base-url https://api.openai.com/v1
+UF_PROVIDER_API_KEY=sk-ant-... ./target/release/ultrafast provider add \
+  --name anthropic --kind anthropic --base-url https://api.anthropic.com
+
+# Create a key for your app. It is printed once.
+./target/release/ultrafast key create --name my-app
+
+./target/release/ultrafast serve
+```
+
+Changes made through the admin API under `/api` apply at once. Changes made
+with the CLI reach a running gateway within 30 seconds.
+
+Call it with any OpenAI SDK by setting the base URL to `http://127.0.0.1:3000/v1`
+and the model to `provider/model`, for example `anthropic/claude-sonnet-5`.
+
+### Console
+
+The web console is served by the same binary at `/`: a static app compiled
+into the binary, with no Node process and no request to any other host at
+runtime.
+
+What is in it: setting up the first admin, signing in, accepting an invite;
+an overview with a getting-started guide; providers (add, edit, delete);
+virtual keys (create, shown once, revoke, filter); users (invite, role,
+status, new invite link, delete); teams (create, rename, delete, members and
+leads); your account (name, password, access tokens); and the audit log, for
+admins.
+What a user sees depends on their role, and the API decides. Light and dark
+themes, following the device until one is chosen, and a layout for phones.
+
+Not yet: logs, the playground, models, routing, budgets and limits,
+guardrails and MCP tools (shown as coming in the navigation), and a Settings
+page (retention, sign-in settings, backup, configuration export and import).
+
+Build: the console is compiled into the binary from `ui/dist`, so build the
+console first, then the gateway:
+
+```bash
+pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build && cargo build --release -p ultrafast-gateway
+```
+
+This needs Node 22 and pnpm. `cargo build` alone never runs Node and works
+without it: the binary then serves a page at `/` that says the console was not
+built, and `/api`, `/v1` and `/health` work as usual. The Docker image builds
+both.
+
+Develop: run a gateway on port 3900 with `--insecure-cookies` (plain HTTP on
+your own machine only) and the Vite dev server next to it, which passes
+`/api`, `/v1` and `/health` on to that gateway:
+
+```bash
+cargo run -p ultrafast-gateway -- serve --port 3900 --insecure-cookies
+pnpm --dir ui dev
+```
+
+Test: `pnpm --dir ui test` runs the unit and component tests. The browser
+tests run the release binary built as above (or the one named by
+`UF_E2E_BINARY`), each test with its own gateway on a free port and a new
+temporary data directory, in Chromium at desktop and phone sizes:
+
+```bash
+pnpm --dir ui exec playwright install chromium
+pnpm --dir ui test:e2e
+```
+
+Known limits:
+
+- The console needs HTTPS, except on localhost: the session cookie is
+  `Secure`, so over plain HTTP at any other address the browser drops it and
+  the sign-in page says so. On a trusted network, start the gateway with
+  `--insecure-cookies` instead.
+- A team lead adds a member by user ID, because the API does not let a lead
+  find users outside their teams. The project owner has an open decision on
+  adding members by email; when the API changes, the console's add-member
+  dialog changes with it.
+- The users list does not show each user's teams, because the API's list
+  response does not include them.
+- The API has no way to ask for a user's teams in one call, so the Create key
+  dialog reads each team.
+- The API returns no status for an access token: the console works out
+  active, expired or revoked from its times, by the clock of the browser.
+- No usage, spend, request logs, models, routes or budgets: their backends do
+  not exist yet.
+- Sign-in limiting behind a reverse proxy counts the address of the proxy,
+  so 20 failed sign-ins from anyone block sign-in for everyone for 15 minutes,
+  until forwarded addresses are supported.
+
+What works today: chat completions, streaming, OpenAI-compatible and Anthropic
+providers, and the console. Not yet: tools, images, routing, limits and
+budgets.
+
 > **A high-performance AI gateway built in Rust** that provides a unified interface to 10+ LLM providers with advanced routing, caching, and monitoring capabilities.
 
-[![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-1.94+-orange.svg)](LICENSE)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/ultrafast-ai/ultrafast-gateway/ci.yml?branch=main)](https://github.com/ultrafast-ai/ultrafast-gateway/actions)
 
@@ -513,7 +617,7 @@ cargo clippy
 
 ### Code Quality
 
-- **Rust 1.75+** required
+- **Rust 1.94+** required
 - **Clippy** for linting
 - **rustfmt** for code formatting
 - **Tarpaulin** for test coverage

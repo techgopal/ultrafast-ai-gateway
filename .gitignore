@@ -4,7 +4,6 @@
 *.pdb
 
 # Cargo
-Cargo.lock
 Cargo.toml.bak
 
 # IDE and editor files
@@ -86,3 +85,9 @@ CLAUDE.md
 .claude# Ignored generated files
 ultrafast-gateway/gateway.log
 /test_reports/
+
+# Web console
+ui/node_modules
+ui/dist
+ui/test-results
+ui/playwright-report
