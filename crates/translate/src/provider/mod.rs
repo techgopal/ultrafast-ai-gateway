@@ -172,6 +172,9 @@ pub(crate) struct StreamState {
     pub finish: Option<FinishReason>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+    /// The stream has ended by its own account but its end is not yet given
+    /// (Gemini: a usage-only chunk may still follow).
+    pub ended: bool,
 }
 
 impl StreamState {
@@ -251,6 +254,19 @@ impl StreamDecoder {
             self.pending_error = Some(e);
         }
         Ok(out)
+    }
+
+    /// Called when the provider closes the stream: the events that were held
+    /// back until the end (Gemini's last event, which carries the final
+    /// usage). Given once.
+    pub fn finish(&mut self) -> Vec<StreamEvent> {
+        if self.failed || !std::mem::take(&mut self.state.ended) {
+            return Vec::new();
+        }
+        vec![StreamEvent::Done {
+            finish_reason: self.state.finish,
+            usage: self.state.usage(),
+        }]
     }
 
     /// Returns the error that ended the stream, once, if `feed` did not

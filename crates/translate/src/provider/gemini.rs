@@ -88,7 +88,12 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
         url: format!(
             "{}/v1beta/models/{}:{method}",
             target.base_url.trim_end_matches('/'),
-            path_segment(&target.model)
+            path_segment(
+                target
+                    .model
+                    .strip_prefix("models/")
+                    .unwrap_or(&target.model)
+            )
         ),
         headers,
         body: serde_json::to_vec(&body)
@@ -96,11 +101,21 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
     })
 }
 
+/// Thinking is billed as output.
+fn output_tokens(u: &Value) -> u32 {
+    saturate(
+        u["candidatesTokenCount"]
+            .as_u64()
+            .unwrap_or(0)
+            .saturating_add(u["thoughtsTokenCount"].as_u64().unwrap_or(0)),
+    )
+}
+
 /// Reads `usageMetadata` into the state, when the chunk has it.
 fn read_usage(state: &mut StreamState, v: &Value) {
     if let Some(u) = v.get("usageMetadata").filter(|u| u.is_object()) {
         state.input_tokens = u["promptTokenCount"].as_u64().map(saturate);
-        state.output_tokens = Some(saturate(u["candidatesTokenCount"].as_u64().unwrap_or(0)));
+        state.output_tokens = Some(output_tokens(u));
     }
 }
 
@@ -127,6 +142,11 @@ fn read_candidate(v: &Value) -> Result<(String, Option<FinishReason>), Translate
             if part["thought"] != true {
                 text.push_str(t);
             }
+        } else if part
+            .as_object()
+            .is_some_and(|o| o.keys().all(|k| k == "thoughtSignature" || k == "thought"))
+        {
+            // A signature alone carries no content.
         } else {
             return Err(TranslateError::Unsupported(
                 "response part is not text".into(),
@@ -146,7 +166,7 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
         .filter(|u| u.is_object())
         .map(|u| Usage {
             input_tokens: saturate(u["promptTokenCount"].as_u64().unwrap_or(0)),
-            output_tokens: saturate(u["candidatesTokenCount"].as_u64().unwrap_or(0)),
+            output_tokens: output_tokens(u),
         });
     Ok(ChatResponse {
         id: v["responseId"].as_str().unwrap_or_default().to_string(),
@@ -157,8 +177,9 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
     })
 }
 
-/// Gemini ends a stream by closing it: the chunk that carries a finish reason
-/// is the last, so it also ends the decoded stream.
+/// Gemini ends a stream by closing it. The chunk with a finish reason marks the
+/// end, but `Done` is given by `StreamDecoder::finish` so that usage reported
+/// after it is not lost.
 pub(crate) fn decode(
     state: &mut StreamState,
     ev: &SseEvent,
@@ -167,11 +188,14 @@ pub(crate) fn decode(
     let v: Value =
         serde_json::from_str(&ev.data).map_err(|e| TranslateError::Malformed(e.to_string()))?;
     if let Some(msg) = v["error"]["message"].as_str() {
-        // Reported as 401 so it is handled like a rejected credential.
-        let credential = matches!(v["error"]["code"].as_u64(), Some(401 | 403));
+        // The code is read as an HTTP status, so the common rules apply.
+        let status = v["error"]["code"]
+            .as_u64()
+            .filter(|c| (400..600).contains(c))
+            .map_or(502, |c| c as u16);
         return Err(TranslateError::Provider {
-            status: if credential { 401 } else { 502 },
-            retryable: false,
+            status,
+            retryable: status == 408 || status == 429 || status >= 500,
             message: msg.to_string(),
         });
     }
@@ -188,11 +212,9 @@ pub(crate) fn decode(
     let ended = v["candidates"][0]["finishReason"].is_string()
         || v["promptFeedback"]["blockReason"].is_string();
     if ended {
+        // Given when the stream closes: a chunk of usage may still follow.
         state.finish = finish_reason;
-        out.push(StreamEvent::Done {
-            finish_reason: state.finish,
-            usage: state.usage(),
-        });
+        state.ended = true;
     }
     Ok(())
 }
@@ -273,6 +295,72 @@ mod tests {
         assert!((g["topP"].as_f64().unwrap() - 0.9).abs() < 1e-6);
         assert_eq!(g["stopSequences"][0], "x");
         assert!(v.get("model").is_none() && v.get("stream").is_none());
+    }
+
+    #[test]
+    fn a_leading_models_prefix_is_stripped_from_the_model_name() {
+        let mut t = target();
+        t.model = "models/gemini-2.0-flash".into();
+        let r = build_request(&t, &request(false)).unwrap();
+        assert_eq!(
+            r.url,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+        );
+        // Only a leading prefix, and only once.
+        t.model = "models/models/x".into();
+        let r = build_request(&t, &request(false)).unwrap();
+        assert!(r.url.contains("/models/models%2Fx:"), "{}", r.url);
+    }
+
+    #[test]
+    fn thoughts_are_skipped_and_their_tokens_count_as_output() {
+        let body = include_bytes!("../../tests/fixtures/gemini/response_thought.json");
+        let r = parse_response(ProviderKind::Gemini, 200, body).unwrap();
+        // The thought part is skipped; the part with only a signature is too.
+        assert_eq!(r.content, "Answer");
+        assert_eq!(
+            r.usage,
+            Some(Usage {
+                input_tokens: 7,
+                output_tokens: 14
+            })
+        );
+    }
+
+    #[test]
+    fn a_part_without_text_is_skipped_in_a_stream() {
+        let mut d = StreamDecoder::new(ProviderKind::Gemini);
+        let got = d
+            .feed(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"thoughtSignature\":\"c2ln\"}]}}]}\n\n")
+            .unwrap();
+        assert_eq!(got, vec![]);
+    }
+
+    #[test]
+    fn a_usage_only_chunk_after_the_finish_chunk_updates_the_usage() {
+        let input = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":1}}\n\n",
+            "data: {\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":1,\"thoughtsTokenCount\":4}}\n\n",
+        )
+        .as_bytes();
+        let want = vec![
+            StreamEvent::Delta { text: "Hi".into() },
+            StreamEvent::Done {
+                finish_reason: Some(FinishReason::Stop),
+                usage: Some(Usage {
+                    input_tokens: 7,
+                    output_tokens: 5,
+                }),
+            },
+        ];
+        for split in 0..=input.len() {
+            let mut d = StreamDecoder::new(ProviderKind::Gemini);
+            let mut events = d.feed(&input[..split]).unwrap();
+            events.extend(d.feed(&input[split..]).unwrap());
+            events.extend(d.finish());
+            assert_eq!(events, want, "split {split}");
+            assert_eq!(d.finish(), vec![], "Done is given once");
+        }
     }
 
     #[test]
@@ -390,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_use_the_common_rules() {
+    fn gemini_errors_pass_through_the_common_rules() {
         let body = include_bytes!("../../tests/fixtures/gemini/error_429.json");
         let e = parse_response(ProviderKind::Gemini, 429, body).unwrap_err();
         assert!(
@@ -398,13 +486,53 @@ mod tests {
             "{e:?}"
         );
         let e = parse_response(ProviderKind::Gemini, 400, body).unwrap_err();
-        assert!(matches!(
-            e,
-            TranslateError::Provider {
-                retryable: false,
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                &e,
+                TranslateError::Provider {
+                    status: 400,
+                    retryable: false,
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        for (status, retryable) in [
+            (408, true),
+            (500, true),
+            (503, true),
+            (401, false),
+            (403, false),
+        ] {
+            let e = parse_response(ProviderKind::Gemini, status, body).unwrap_err();
+            assert!(
+                matches!(&e, TranslateError::Provider { status: s, retryable: r, .. } if *s == status && *r == retryable),
+                "{status}: {e:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn in_stream_errors_map_their_code_like_http_errors() {
+        for (code, retryable) in [
+            (429, true),
+            (408, true),
+            (500, true),
+            (503, true),
+            (401, false),
+            (403, false),
+            (400, false),
+        ] {
+            let mut d = StreamDecoder::new(ProviderKind::Gemini);
+            let line = format!(
+                "data: {{\"error\":{{\"code\":{code},\"message\":\"m\",\"status\":\"X\"}}}}\n\n"
+            );
+            let e = d.feed(line.as_bytes()).unwrap_err();
+            assert!(
+                matches!(&e, TranslateError::Provider { status, retryable: r, .. } if *status == code && *r == retryable),
+                "{code}: {e:?}"
+            );
+        }
     }
 
     fn expected_stream() -> Vec<StreamEvent> {
@@ -428,6 +556,7 @@ mod tests {
             let mut d = StreamDecoder::new(ProviderKind::Gemini);
             let mut events = d.feed(&input[..split]).unwrap();
             events.extend(d.feed(&input[split..]).unwrap());
+            events.extend(d.finish());
             assert_eq!(events, expected_stream(), "split {split}");
         }
     }
@@ -447,7 +576,7 @@ mod tests {
             matches!(
                 e,
                 TranslateError::Provider {
-                    status: 401,
+                    status: 403,
                     retryable: false,
                     ..
                 }
@@ -462,6 +591,8 @@ mod tests {
         let got = d
             .feed(b"data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"},\"usageMetadata\":{\"promptTokenCount\":3}}\n\n")
             .unwrap();
+        assert_eq!(got, vec![]);
+        let got = d.finish();
         assert_eq!(
             got,
             vec![StreamEvent::Done {

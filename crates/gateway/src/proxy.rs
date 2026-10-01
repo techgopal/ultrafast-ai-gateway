@@ -517,8 +517,24 @@ async fn first_event(
                 return Err(retryable(CallError::Lost, Some(status)));
             }
             Ok(None) => {
-                tracing::warn!(provider = %provider.name, "provider stream ended before an event");
-                return Err(retryable(CallError::Lost, Some(status)));
+                // Some providers give their last event only when the stream closes.
+                let events = decoder.finish();
+                if events.is_empty() {
+                    tracing::warn!(provider = %provider.name, "provider stream ended before an event");
+                    return Err(retryable(CallError::Lost, Some(status)));
+                }
+                return Ok(Success {
+                    value: Served::Stream(Box::new(Committed {
+                        target,
+                        started,
+                        deadline,
+                        chunks,
+                        decoder,
+                        events,
+                        error: None,
+                    })),
+                    status: Some(status),
+                });
             }
             Ok(Some(Err(e))) => {
                 let e = e.without_url();
@@ -713,10 +729,16 @@ fn stream_to_caller(committed: Committed, record: StreamRecord) -> Response {
                             return;
                         }
                         Ok(None) => {
-                            record.end(AttemptOutcome::Retryable, None);
-                            tracing::warn!(provider = %provider, "provider stream ended before completion");
-                            yield Ok(render_stream_error("The provider stream ended before completion."));
-                            return;
+                            let tail = decoder.finish();
+                            if tail.is_empty() {
+                                record.end(AttemptOutcome::Retryable, None);
+                                tracing::warn!(provider = %provider, "provider stream ended before completion");
+                                yield Ok(render_stream_error("The provider stream ended before completion."));
+                                return;
+                            }
+                            // The closing event the provider held back.
+                            pending = Some((tail, None));
+                            continue;
                         }
                         Ok(Some(Err(e))) => {
                             let e = e.without_url();

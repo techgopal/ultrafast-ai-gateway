@@ -464,6 +464,38 @@ async fn streams_gemini_provider_in_openai_shape() {
 }
 
 #[tokio::test]
+async fn gemini_usage_after_the_finish_chunk_and_a_lone_blocked_prompt() {
+    for (upstream, finish, tokens) in [
+        (
+            concat!(
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1}}\n\n",
+                "data: {\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1,\"thoughtsTokenCount\":5}}\n\n",
+            ),
+            "stop",
+            9,
+        ),
+        (
+            "data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"},\"usageMetadata\":{\"promptTokenCount\":3}}\n\n",
+            "content_filter",
+            3,
+        ),
+    ] {
+        let h = harness("gemini").await;
+        Mock::given(method("POST"))
+            .and(path("/v1beta/models/m:streamGenerateContent"))
+            .respond_with(sse(upstream))
+            .mount(&h.upstream)
+            .await;
+        let (status, body) = post_chat(&h.app, Some(&h.key), BODY).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let all = payloads(&body);
+        assert_eq!(all.last().unwrap()["choices"][0]["finish_reason"], finish);
+        assert_eq!(all.last().unwrap()["usage"]["total_tokens"], tokens);
+        assert!(body.ends_with("data: [DONE]\n\n"), "{body}");
+    }
+}
+
+#[tokio::test]
 async fn streams_azure_provider_in_openai_shape() {
     let h = harness("azure").await;
     let upstream = concat!(
