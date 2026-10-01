@@ -4,6 +4,7 @@ import {
   expect,
   goTo,
   heading,
+  itemOf,
   openNavigation,
   signInFromStart,
   test,
@@ -67,7 +68,7 @@ test("a lead sees the controls of the team they lead, and none of another", asyn
   admin,
   apiAs,
 }) => {
-  const { lead, led, joined } = await people(await apiAs(admin));
+  const { member, lead, led, joined } = await people(await apiAs(admin));
   await signInFromStart(page, lead);
 
   await goTo(page, "Teams");
@@ -82,6 +83,26 @@ test("a lead sees the controls of the team they lead, and none of another", asyn
   await expect(actions(page).getByRole("button", { name: "Delete" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Make lead" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(2);
+
+  // Who is in the team already is not added again: the gateway would make a
+  // lead a member. The lead types a member's ID, then their own.
+  const puts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "PUT") puts.push(new URL(request.url()).pathname);
+  });
+  await actions(page).getByRole("button", { name: "Add member" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add member" });
+  const field = dialog.getByLabel("User ID", { exact: true });
+  for (const id of [member.id, lead.id]) {
+    await field.fill(String(id));
+    await dialog.getByRole("button", { name: "Add member" }).click();
+    await expect(field).toHaveAccessibleDescription(/^Already in this team\./);
+  }
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  expect(puts).toEqual([]);
+  await expect(itemOf(page, "Members", "Leo")).toContainText("Lead");
+  await expect(itemOf(page, "Members", "Mia")).toContainText("Member");
 
   await page.getByRole("link", { name: "Back to teams" }).click();
   await page.getByRole("link", { name: "Beta", exact: true }).click();

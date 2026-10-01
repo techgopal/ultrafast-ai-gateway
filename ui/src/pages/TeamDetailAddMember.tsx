@@ -20,6 +20,7 @@ type Member = components["schemas"]["MemberDetail"];
 export const NO_USER_WITH_ID = "No user with that ID.";
 export const USER_ID_HINT = "Ask an admin for the user's ID.";
 export const CHOOSE_A_USER = "Choose a user.";
+export const ALREADY_IN_TEAM = "Already in this team.";
 
 /** What the console says about the one field of the form. It is no answer of the gateway. */
 function onUserId(message: string): ConsoleRefusal {
@@ -137,7 +138,14 @@ function AddFromListForm(props: AddFormProps) {
 }
 
 // Mounted while the dialog is open: every opening starts with an empty form.
-function AddForm({ team, put, onDone, onCancel, choice }: AddFormProps & { choice?: Choice }) {
+function AddForm({
+  team,
+  members,
+  put,
+  onDone,
+  onCancel,
+  choice,
+}: AddFormProps & { choice?: Choice }) {
   const { mutateAsync } = put;
   const fromList = choice !== undefined;
   const anybody = choice === undefined || (choice.candidates ?? []).length > 0;
@@ -148,6 +156,9 @@ function AddForm({ team, put, onDone, onCancel, choice }: AddFormProps & { choic
         const userId = idOf(value.user_id.trim());
         // Nothing is sent for what is no id: the console refuses it itself.
         if (userId === null) throw onUserId(fromList ? CHOOSE_A_USER : NO_USER_WITH_ID);
+        // The gateway would change the role of who is in the team already:
+        // a lead or a member is not "added" again.
+        if (members.some((member) => member.user_id === userId)) throw onUserId(ALREADY_IN_TEAM);
         await mutateAsync({ id: team.id, userId, body: { role: "member" } });
         onDone();
       } catch (error) {

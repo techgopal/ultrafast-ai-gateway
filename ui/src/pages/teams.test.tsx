@@ -48,6 +48,7 @@ const DELETE = "Keys that belong to this team keep working and lose their team."
 const LEAVE = "You will lose access to this team.";
 const NO_USER = "No user with that ID.";
 const ID_HINT = "Ask an admin for the user's ID.";
+const IN_THE_TEAM = "Already in this team.";
 
 /** Maya, the admin, as the lead of Platform. */
 const mayaInPlatform: fixtures.Me = {
@@ -1095,6 +1096,60 @@ describe("adding a member", () => {
     });
     // A lead is not given the list of users.
     expect(users.calls).toBe(0);
+  });
+
+  // The gateway changes the role of who is in the team already (a PUT is an
+  // upsert): a lead who typed the ID of a co-lead, or their own, would make
+  // them a member and be told "Member added.".
+  const platformWithTwoLeads: fixtures.TeamDetail = {
+    team: { ...platform, member_count: 3 },
+    members: [
+      ...fixtures.teamDetails.platform.members,
+      { user_id: tomas.id, email: tomas.email, name: tomas.name, role: "lead" },
+    ],
+  };
+  test.each([
+    ["a member of the team", lena.id, "Member"],
+    ["a co-lead", tomas.id, "Lead"],
+    ["themselves", arjun.id, "Lead"],
+  ])(
+    "a lead who types the ID of %s is refused on the field, and nothing is sent",
+    async (_, userId, role) => {
+      const state = keeps(platformWithTwoLeads);
+      const who = platformWithTwoLeads.members.find((one) => one.user_id === userId);
+      await detail(platform, { user: fixtures.me.arjun });
+      const dialog = await open("Add member", "Add member");
+      const id = screen.getByLabelText("User ID");
+      await userEvent.type(id, String(userId));
+      await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+      await waitFor(() => {
+        expect(descriptionOf(id)).toBe(`${IN_THE_TEAM} ${ID_HINT}`);
+      });
+      expect(id).toHaveAttribute("aria-invalid", "true");
+      expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
+      expect(dialog).toBeInTheDocument();
+      expect(id).toHaveValue(String(userId));
+      await settle();
+      expect(state.puts).toEqual([]);
+      expect(toasts()).toEqual([]);
+      // Their role is what it was.
+      await userEvent.keyboard("{Escape}");
+      await closed();
+      expect(within(rowOf(who?.name ?? "nobody")).getByText(role)).toBeInTheDocument();
+    },
+  );
+
+  test("the admin's list offers nobody who is in the team: not a member, not a lead, not the admin", async () => {
+    keeps(platformWithMaya);
+    await detail(platform, { user: mayaInPlatform });
+    const dialog = await open("Add member", "Add member");
+    const group = await within(dialog).findByRole("radiogroup", { name: "User" });
+    // Arjun leads, Lena is a member, Maya leads; Dana is disabled.
+    expect(
+      within(group)
+        .getAllByRole("radio")
+        .map((radio) => radio.getAttribute("value")),
+    ).toEqual([tomas, priya, sam].map((user) => String(user.id)));
   });
 
   test.each(["0", "-4", "1.5", "abc", "007", " "])(
