@@ -41,6 +41,17 @@ test("the rules of the browser tests see what breaks them", async ({ page, rules
   expect(seen).toContain("request of the app outside /api: /assets/none.js");
   expect(seen.some((problem) => problem.includes("401"))).toBe(false);
 
+  // Only the refusals the console meets on purpose are let through. A 404 or
+  // a 405 of the API says that the console asked for a wrong path or method.
+  await page.evaluate(async () => {
+    await fetch("/api/no-such-operation");
+  });
+  await expectSeen(/^console error: Failed to load resource: .* 404/);
+  await page.evaluate(async () => {
+    await fetch("/api/setup", { method: "PUT" });
+  });
+  await expectSeen(/^console error: Failed to load resource: .* 405/);
+
   // An error the page logs, and one it throws.
   await page.evaluate(() => {
     console.error("an error of the page");
