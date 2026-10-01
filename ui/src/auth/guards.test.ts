@@ -58,6 +58,8 @@ describe("guards", () => {
   // Each row: the action, then what the admin, the lead, the member and the loner may do.
   const table: [string, ConsoleAction, [boolean, boolean, boolean, boolean]][] = [
     ["invite user", { type: "inviteUser" }, [true, false, false, false]],
+    // Who is given every user to choose from, as when a member is added to a team.
+    ["list all users", { type: "listAllUsers" }, [true, false, false, false]],
     ["edit user role or status", { type: "editUserRoleOrStatus" }, [true, false, false, false]],
     ["delete user", { type: "deleteUser" }, [true, false, false, false]],
     ["rename the lead", { type: "renameUser", userId: leadId }, [true, true, false, false]],
@@ -103,6 +105,7 @@ describe("guards", () => {
     const seen = new Set(table.map(([, action]) => action.type));
     const all: Record<ConsoleAction["type"], true> = {
       inviteUser: true,
+      listAllUsers: true,
       editUserRoleOrStatus: true,
       deleteUser: true,
       renameUser: true,

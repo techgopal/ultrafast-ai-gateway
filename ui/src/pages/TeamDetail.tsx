@@ -98,7 +98,7 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
   const mayChangeRoles = can(me, { type: "makeLead", teamId: id });
   const mayRemove = can(me, { type: "removeMember", teamId: id });
   // Only who may read the list of all users is given it to choose from.
-  const mayChoose = can(me, { type: "inviteUser" });
+  const mayChoose = can(me, { type: "listAllUsers" });
   const columns = useMemo(() => memberColumns(ownId), [ownId]);
 
   const own = member !== null && member.user_id === ownId;
