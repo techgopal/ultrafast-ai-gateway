@@ -3,6 +3,7 @@ import { useMemo, useRef } from "react";
 import { ApiError, ConsoleRefusal } from "@/api/errors";
 import { useUsers, type usePutTeamMember } from "@/api/queries";
 import type { components } from "@/api/schema";
+import { control } from "@/components/classes";
 import { ErrorState } from "@/components/ErrorState";
 import { Field, type FieldWiring } from "@/components/Field";
 import { applyApiError, onField, useFormFailure, useSubmit } from "@/components/form";
@@ -204,7 +205,7 @@ function AddForm({
               <Input
                 inputMode="numeric"
                 autoComplete="off"
-                className="min-h-11 md:min-h-8"
+                className={control}
                 value={field.state.value}
                 onBlur={field.handleBlur}
                 onChange={(event) => {

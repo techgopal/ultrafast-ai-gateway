@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { control } from "@/components/classes";
 import { Button } from "@/components/ui/button";
 
 /**
@@ -11,7 +12,7 @@ export function NotFoundContent() {
     <div className="flex flex-col items-center gap-4 py-8 text-center">
       <h1 className="text-2xl font-semibold">Page not found</h1>
       <p className="text-muted-foreground">There is nothing at this address.</p>
-      <Button asChild className="min-h-11 md:min-h-8">
+      <Button asChild className={control}>
         <Link to="/">Back to Overview</Link>
       </Button>
     </div>
