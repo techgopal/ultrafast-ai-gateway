@@ -1268,6 +1268,26 @@ describe("editing a provider", () => {
       ]);
     });
 
+    test("an empty new key is refused on its field, as one of spaces is, and nothing is sent", async () => {
+      const state = keeps();
+      const app = await page();
+      const dialog = await openEdit(withCredential);
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+      const key = within(dialog).getByLabelText("New API key");
+      await save(dialog);
+      await waitFor(() => {
+        expect(descriptionOf(key)).toContain("Enter an API key.");
+      });
+      expect(key).toHaveAttribute("aria-invalid", "true");
+      expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
+      await settle();
+      expect(state.patched).toEqual([]);
+      expect(toasts()).toEqual([]);
+      await waitFor(() => {
+        expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+      });
+    });
+
     test("remove sends null", async () => {
       const state = keeps();
       await page();
