@@ -113,12 +113,19 @@ async fn a_database_written_by_the_earlier_build_opens_and_reads() {
     assert!(!verify_password("fixture password 2025", phc));
 
     store.close().await;
-    // Opening ran no migration and rewrote nothing in the table.
-    assert_eq!(migration_rows(&path).await, before);
+    // Opening applied the migrations written since, and rewrote none of the
+    // rows the earlier build left.
+    let after = migration_rows(&path).await;
+    assert_eq!(after[..before.len()], before[..]);
+    let later: Vec<(i64, &str, bool)> = after[before.len()..]
+        .iter()
+        .map(|r| (r.0, r.1.as_str(), r.3))
+        .collect();
+    assert_eq!(later, [(3, "catalog", true)]);
 
-    // A second open of the same file behaves the same.
+    // A second open of the same file behaves the same and migrates nothing.
     let store = Store::open(&path).await.unwrap();
     assert_eq!(store.list_providers().await.unwrap().len(), 1);
     store.close().await;
-    assert_eq!(migration_rows(&path).await, before);
+    assert_eq!(migration_rows(&path).await, after);
 }

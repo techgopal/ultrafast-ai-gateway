@@ -67,6 +67,9 @@ pub enum Action {
     // providers
     ListProviders,
     ManageProviders,
+    // models
+    ListModels,
+    ManageModels,
     // audit
     ViewAudit,
 }
@@ -108,11 +111,13 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ListTeams
         | Action::ListKeys
         | Action::ManageOwnTokens
-        | Action::ListProviders => Allow,
+        | Action::ListProviders
+        | Action::ListModels => Allow,
 
         Action::InviteUser { role: _ }
         | Action::CreateTeam
         | Action::ManageProviders
+        | Action::ManageModels
         | Action::ViewAudit => Forbidden,
 
         Action::ViewUser {
@@ -910,7 +915,7 @@ mod tests {
                 create_key(2, None),
                 Forbidden,
             ),
-            // ManageOwnTokens, ListProviders, ManageProviders, ViewAudit
+            // ManageOwnTokens, ListProviders, ManageProviders, models, ViewAudit
             ("own_tokens: lead", lead, Action::ManageOwnTokens, Allow),
             ("own_tokens: member", member, Action::ManageOwnTokens, Allow),
             ("own_tokens: loner", loner, Action::ManageOwnTokens, Allow),
@@ -938,6 +943,22 @@ mod tests {
                 "manage_providers: loner",
                 loner,
                 Action::ManageProviders,
+                Forbidden,
+            ),
+            ("list_models: lead", lead, Action::ListModels, Allow),
+            ("list_models: member", member, Action::ListModels, Allow),
+            ("list_models: loner", loner, Action::ListModels, Allow),
+            ("manage_models: lead", lead, Action::ManageModels, Forbidden),
+            (
+                "manage_models: member",
+                member,
+                Action::ManageModels,
+                Forbidden,
+            ),
+            (
+                "manage_models: loner",
+                loner,
+                Action::ManageModels,
                 Forbidden,
             ),
             ("view_audit: lead", lead, Action::ViewAudit, Forbidden),
@@ -997,6 +1018,7 @@ mod tests {
         for p in [&f.lead, &f.member, &f.loner] {
             for action in [
                 Action::ManageProviders,
+                Action::ManageModels,
                 Action::ViewAudit,
                 Action::InviteUser { role: Role::Member },
                 Action::InviteUser { role: Role::Admin },

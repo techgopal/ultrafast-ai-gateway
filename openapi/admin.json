@@ -801,6 +801,499 @@
         ]
       }
     },
+    "/api/models": {
+      "get": {
+        "tags": [
+          "models"
+        ],
+        "operationId": "models_list",
+        "responses": {
+          "200": {
+            "description": "An admin gets every model with its grants. Everyone else gets the enabled models they may call, with empty grants.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "models"
+        ],
+        "operationId": "models_create",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateModelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new model. It is disabled and granted to nobody.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`model_exists`: the provider already has a model of this name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/models/{id}": {
+      "delete": {
+        "tags": [
+          "models"
+        ],
+        "operationId": "models_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the model.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The model and its grants are deleted."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "models"
+        ],
+        "operationId": "models_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the model.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateModelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The model after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/models/{id}/grants": {
+      "put": {
+        "tags": [
+          "models"
+        ],
+        "operationId": "models_grants_put",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the model.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantsView"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The model with its new grants. They replace the old ones.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A team or user does not exist, or everyone is combined with others; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/providers": {
       "get": {
         "tags": [
@@ -1156,6 +1649,105 @@
           },
           "500": {
             "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/providers/{id}/sync": {
+      "post": {
+        "tags": [
+          "providers"
+        ],
+        "operationId": "providers_sync",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the provider.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The names the provider listed that were new are added, disabled. Nothing is ever removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`sync_failed`: the provider did not return its models.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3081,6 +3673,24 @@
         },
         "additionalProperties": false
       },
+      "CreateModelRequest": {
+        "type": "object",
+        "required": [
+          "provider_id",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The provider's id for the model, 1 to 200 characters, no whitespace."
+          },
+          "provider_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateProviderRequest": {
         "type": "object",
         "required": [
@@ -3157,6 +3767,36 @@
             "$ref": "#/components/schemas/TokenView"
           }
         }
+      },
+      "GrantsView": {
+        "type": "object",
+        "description": "Who may call a model. For everyone who is not an admin it is always\nempty.",
+        "required": [
+          "everyone",
+          "team_ids",
+          "user_ids"
+        ],
+        "properties": {
+          "everyone": {
+            "type": "boolean",
+            "description": "Every user may call the model. It cannot be combined with teams or\nusers."
+          },
+          "team_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "user_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "InviteRequest": {
         "type": "object",
@@ -3378,6 +4018,58 @@
         },
         "additionalProperties": false
       },
+      "ModelList": {
+        "type": "object",
+        "required": [
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelView"
+            }
+          }
+        }
+      },
+      "ModelView": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider_id",
+          "provider_name",
+          "name",
+          "enabled",
+          "grants",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "grants": {
+            "$ref": "#/components/schemas/GrantsView"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string",
+            "description": "The provider's own id for the model."
+          },
+          "provider_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "provider_name": {
+            "type": "string"
+          }
+        }
+      },
       "ProviderList": {
         "type": "object",
         "required": [
@@ -3471,6 +4163,28 @@
           "needs_setup": {
             "type": "boolean",
             "description": "True while no user exists."
+          }
+        }
+      },
+      "SyncResult": {
+        "type": "object",
+        "required": [
+          "added",
+          "existing"
+        ],
+        "properties": {
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names that were new, now in the catalog and disabled."
+          },
+          "existing": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many names the provider listed that were already there.",
+            "minimum": 0
           }
         }
       },
@@ -3625,6 +4339,18 @@
             "description": "Worked out when the answer is made."
           }
         }
+      },
+      "UpdateModelRequest": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       },
       "UpdateProviderRequest": {
         "type": "object",
@@ -3797,6 +4523,10 @@
     {
       "name": "providers",
       "description": "Upstream providers."
+    },
+    {
+      "name": "models",
+      "description": "The model catalog and who may call each model."
     },
     {
       "name": "tokens",

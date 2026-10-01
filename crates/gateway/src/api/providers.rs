@@ -356,6 +356,8 @@ pub async fn delete(
     };
 
     let mut tx = store.begin().await?;
+    // The foreign keys take the models and their grants along.
+    let models = tx.count_models_of(target.id).await?;
     if !tx.delete_provider(target.id).await? {
         drop(tx);
         refresh_snapshot(&state).await?;
@@ -367,7 +369,11 @@ pub async fn delete(
         action: "provider.delete",
         target_type: "provider",
         target_id: Some(target.id),
-        summary: &format!("Deleted provider {}", target.name),
+        summary: &if models == 0 {
+            format!("Deleted provider {}", target.name)
+        } else {
+            format!("Deleted provider {} and its {models} models", target.name)
+        },
     })
     .await?;
     tx.commit().await?;

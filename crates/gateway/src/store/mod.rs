@@ -2,6 +2,7 @@
 
 mod audit;
 mod keys;
+mod models;
 mod providers;
 mod sessions;
 mod teams;
@@ -21,6 +22,7 @@ use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 pub use audit::{AuditEntry, AuditRow};
 pub use keys::{KeyRow, LiveKey};
+pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use providers::ProviderRow;
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
 pub use teams::{MemberDetail, MemberRow, TeamRow, TeamSummary, UserTeam};

@@ -4,6 +4,7 @@
 pub mod audit;
 pub mod auth;
 pub mod keys;
+pub mod models;
 pub mod openapi;
 pub mod providers;
 pub mod teams;
@@ -71,6 +72,10 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(keys::view, keys::revoke))
         .routes(routes!(providers::list, providers::create))
         .routes(routes!(providers::update, providers::delete))
+        .routes(routes!(models::sync))
+        .routes(routes!(models::list, models::create))
+        .routes(routes!(models::update, models::delete))
+        .routes(routes!(models::put_grants))
         .routes(routes!(tokens::list, tokens::create))
         .routes(routes!(tokens::revoke))
         .routes(routes!(audit::list))

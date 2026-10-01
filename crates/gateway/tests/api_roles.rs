@@ -14,6 +14,8 @@ use ultrafast_gateway::api::openapi::spec;
 use ultrafast_gateway::identity::{Role, UserStatus};
 use ultrafast_gateway::secrets::{generate_key, generate_secret, INVITE_PREFIX, TOKEN_PREFIX};
 use ultrafast_gateway::store::{after, NewUser};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Caller {
@@ -50,6 +52,12 @@ struct World {
     /// Invited, in no team.
     sam: i64,
     provider: i64,
+    /// A provider that lists one model, on a mock server.
+    syncable: i64,
+    /// A model of `provider`.
+    model: i64,
+    /// Keeps `syncable` answering.
+    _upstream: MockServer,
     /// Owned by lena, in Platform.
     lena_key: i64,
     /// Owned by tomas, in Research.
@@ -109,6 +117,23 @@ async fn world() -> World {
         .unwrap();
     tx.commit().await.unwrap();
 
+    let upstream = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{ "id": "gpt-4o" }],
+        })))
+        .mount(&upstream)
+        .await;
+    let syncable = store
+        .insert_provider("syncable", "openai", &upstream.uri(), None)
+        .await
+        .unwrap();
+    let mut tx = store.begin().await.unwrap();
+    let model = tx.insert_model(provider, "gpt-4o").await.unwrap();
+    tx.commit().await.unwrap();
+    org.api.state.refresh().await.unwrap();
+
     let lena_key = seed_key(&org, "lena", org.lena, org.platform).await;
     let tomas_key = seed_key(&org, "tomas", org.tomas, org.research).await;
     let maya_token = seed_token(&org, org.maya).await;
@@ -118,6 +143,9 @@ async fn world() -> World {
         org,
         sam,
         provider,
+        syncable,
+        model,
+        _upstream: upstream,
         lena_key,
         tomas_key,
         maya_token,
@@ -292,6 +320,22 @@ fn table() -> Vec<Row> {
             |w, _| format!("/api/teams/{}/members", w.org.platform),
             || Some(json!({ "email": "priya@example.com" })),
             [201, 201, 403, 401]),
+        row(35, "GET", "/api/models", "", |_, _| "/api/models".into(), no_body, [200, 200, 200, 401]),
+        row(36, "POST", "/api/models", "", |_, _| "/api/models".into(),
+            // "main" is the first provider of every world.
+            || Some(json!({ "provider_id": 1, "name": "gpt-4o-mini" })),
+            [201, 403, 403, 401]),
+        row(37, "PATCH", "/api/models/{id}", "", |w, _| format!("/api/models/{}", w.model),
+            || Some(json!({ "enabled": true })),
+            [200, 403, 403, 401]),
+        row(38, "PUT", "/api/models/{id}/grants", "", |w, _| format!("/api/models/{}/grants", w.model),
+            || Some(json!({ "everyone": true, "team_ids": [], "user_ids": [] })),
+            [200, 403, 403, 401]),
+        row(39, "DELETE", "/api/models/{id}", "", |w, _| format!("/api/models/{}", w.model), no_body,
+            [204, 403, 403, 401]),
+        row(40, "POST", "/api/providers/{id}/sync", "a provider that answers",
+            |w, _| format!("/api/providers/{}/sync", w.syncable), no_body,
+            [200, 403, 403, 401]),
     ]
 }
 
@@ -340,7 +384,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=34).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=40).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -466,7 +510,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 33);
+    assert_eq!(operations, 39);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

@@ -136,6 +136,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["models_list"];
+        put?: never;
+        post: operations["models_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/models/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["models_delete"];
+        options?: never;
+        head?: never;
+        patch: operations["models_update"];
+        trace?: never;
+    };
+    "/api/models/{id}/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["models_grants_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers": {
         parameters: {
             query?: never;
@@ -166,6 +214,22 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["providers_update"];
+        trace?: never;
+    };
+    "/api/providers/{id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["providers_sync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/setup": {
@@ -383,6 +447,12 @@ export interface components {
             /** Format: int64 */
             team_id?: number | null;
         };
+        CreateModelRequest: {
+            /** @description The provider's id for the model, 1 to 200 characters, no whitespace. */
+            name: string;
+            /** Format: int64 */
+            provider_id: number;
+        };
         CreateProviderRequest: {
             api_key?: string | null;
             base_url: string;
@@ -408,6 +478,19 @@ export interface components {
              */
             secret: string;
             token: components["schemas"]["TokenView"];
+        };
+        /**
+         * @description Who may call a model. For everyone who is not an admin it is always
+         *     empty.
+         */
+        GrantsView: {
+            /**
+             * @description Every user may call the model. It cannot be combined with teams or
+             *     users.
+             */
+            everyone: boolean;
+            team_ids: number[];
+            user_ids: number[];
         };
         InviteRequest: {
             email: string;
@@ -479,6 +562,21 @@ export interface components {
         MemberRequest: {
             role: string;
         };
+        ModelList: {
+            models: components["schemas"]["ModelView"][];
+        };
+        ModelView: {
+            created_at: string;
+            enabled: boolean;
+            grants: components["schemas"]["GrantsView"];
+            /** Format: int64 */
+            id: number;
+            /** @description The provider's own id for the model. */
+            name: string;
+            /** Format: int64 */
+            provider_id: number;
+            provider_name: string;
+        };
         ProviderList: {
             providers: components["schemas"]["ProviderView"][];
         };
@@ -514,6 +612,15 @@ export interface components {
         SetupStatus: {
             /** @description True while no user exists. */
             needs_setup: boolean;
+        };
+        SyncResult: {
+            /** @description The names that were new, now in the catalog and disabled. */
+            added: string[];
+            /**
+             * Format: int32
+             * @description How many names the provider listed that were already there.
+             */
+            existing: number;
         };
         TeamDetail: {
             members: components["schemas"]["MemberDetail"][];
@@ -559,6 +666,9 @@ export interface components {
             revoked_at: string | null;
             /** @description Worked out when the answer is made. */
             status: components["schemas"]["TokenStatus"];
+        };
+        UpdateModelRequest: {
+            enabled: boolean;
         };
         UpdateProviderRequest: {
             /** @description Absent leaves the key, `null` removes it, a string replaces it. */
@@ -1225,6 +1335,371 @@ export interface operations {
             };
         };
     };
+    models_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An admin gets every model with its grants. Everyone else gets the enabled models they may call, with empty grants. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelList"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    models_create: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateModelRequest"];
+            };
+        };
+        responses: {
+            /** @description The new model. It is disabled and granted to nobody. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `model_exists`: the provider already has a model of this name. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    models_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the model. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The model and its grants are deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    models_update: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the model. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateModelRequest"];
+            };
+        };
+        responses: {
+            /** @description The model after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    models_grants_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the model. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GrantsView"];
+            };
+        };
+        responses: {
+            /** @description The model with its new grants. They replace the old ones. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description A team or user does not exist, or everyone is combined with others; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     providers_list: {
         parameters: {
             query?: never;
@@ -1497,6 +1972,77 @@ export interface operations {
             };
             /** @description Something went wrong. */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    providers_sync: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the provider. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The names the provider listed that were new are added, disabled. Nothing is ever removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncResult"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `sync_failed`: the provider did not return its models. */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

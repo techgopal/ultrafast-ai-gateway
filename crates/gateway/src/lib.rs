@@ -3,6 +3,7 @@
 pub mod api;
 pub mod app;
 pub mod auth;
+pub mod catalog;
 pub mod config;
 pub mod errors;
 pub mod identity;
