@@ -8,11 +8,27 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { build } from "vite";
+import { build, createLogger, type Logger } from "vite";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
 const ui = resolve(__dirname, "../..");
 let dist = "";
+/** What the build warned of. A warning that stands in every build hides the next one. */
+const warnings: string[] = [];
+
+/** A logger that keeps the warnings for the test, and prints only errors. */
+function keepingWarnings(): Logger {
+  const quiet = createLogger("error");
+  return {
+    ...quiet,
+    warn: (message) => {
+      warnings.push(message);
+    },
+    warnOnce: (message) => {
+      warnings.push(message);
+    },
+  };
+}
 
 function files(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -219,6 +235,7 @@ async function buildConsole(): Promise<void> {
     root: ui,
     configFile: join(ui, "vite.config.ts"),
     logLevel: "error",
+    customLogger: keepingWarnings(),
     build: { outDir: dist, emptyOutDir: true },
   });
 }
@@ -228,6 +245,10 @@ afterAll(() => {
 });
 
 describe("build output", () => {
+  test("the build and its config warn of nothing", () => {
+    expect(warnings).toEqual([]);
+  });
+
   function scan(): { found: string[]; namespaces: Set<string>; used: Set<string> } {
     const namespace = /^https?:\/\/www\.w3\.org\//;
     const found: string[] = [];
