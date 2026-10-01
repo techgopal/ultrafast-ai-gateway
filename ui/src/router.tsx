@@ -8,6 +8,7 @@ import {
   type RouterHistory,
 } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
+import { messageOfError, SOMETHING_WENT_WRONG } from "@/api/errors";
 import { safePath } from "@/auth/guards";
 import { useSession, useSessionControl, useSignOut } from "@/auth/session";
 import { FormError } from "@/components/AuthForm";
@@ -115,8 +116,9 @@ function Root() {
   if (problem !== null) {
     return (
       <main className="flex min-h-svh flex-col items-center justify-center gap-4 bg-background p-4">
+        <h1 className="text-2xl font-semibold">The console could not load</h1>
         <div className="w-full max-w-sm">
-          <FormError>{problem.message}</FormError>
+          <FormError>{messageOfError(problem) ?? SOMETHING_WENT_WRONG}</FormError>
         </div>
         <Button type="button" className="min-h-11" onClick={retry}>
           Try again
