@@ -78,5 +78,5 @@ test("an invited user sets a password from the link and signs in", async ({
   await expect(heading(page, "Overview")).toBeVisible();
   const nav = await openNavigation(page);
   await expect(nav.getByText("Sam Reed", { exact: true })).toBeVisible();
-  await expect(nav.getByText("member", { exact: true })).toBeVisible();
+  await expect(nav.getByText("Member", { exact: true })).toBeVisible();
 });

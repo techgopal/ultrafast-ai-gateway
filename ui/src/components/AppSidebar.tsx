@@ -1,5 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { LogOutIcon } from "lucide-react";
+import { ROLE_NAMES } from "@/components/RoleBadge";
 import type { ShellUser } from "@/components/shell-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,7 +32,8 @@ interface NavItem {
   label: string;
   /** No path: the page is coming, and the item is plain text. */
   to?: Path;
-  adminOnly?: boolean;
+  /** Shown only to who may read the audit log. */
+  audit?: boolean;
 }
 
 interface NavSection {
@@ -70,7 +72,7 @@ const sections: NavSection[] = [
 ];
 
 const footerItems: NavItem[] = [
-  { label: "Audit log", to: "/audit", adminOnly: true },
+  { label: "Audit log", to: "/audit", audit: true },
   { label: "Account", to: "/account" },
 ];
 
@@ -125,7 +127,6 @@ interface AppSidebarProps {
 
 export function AppSidebar({ user, onSignOut }: AppSidebarProps) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const isAdmin = user?.role === "admin";
   return (
     <Sidebar>
       <nav aria-label="Main" className="flex min-h-0 flex-1 flex-col">
@@ -149,7 +150,7 @@ export function AppSidebar({ user, onSignOut }: AppSidebarProps) {
         <SidebarFooter>
           <SidebarMenu>
             {footerItems
-              .filter((item) => item.adminOnly !== true || isAdmin)
+              .filter((item) => item.audit !== true || user?.mayViewAudit === true)
               .map((item) => (
                 <NavEntry key={item.label} item={item} pathname={pathname} />
               ))}
@@ -159,7 +160,7 @@ export function AppSidebar({ user, onSignOut }: AppSidebarProps) {
             <div className="flex items-center justify-between gap-2 p-2">
               <div className="min-w-0 text-sm">
                 <div className="truncate font-medium">{user.name}</div>
-                <div className="text-muted-foreground">{user.role}</div>
+                <div className="text-muted-foreground">{ROLE_NAMES[user.role] ?? user.role}</div>
               </div>
               <Button
                 type="button"

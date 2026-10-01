@@ -375,7 +375,7 @@ describe("sign-in", () => {
     expect(gateway.logins).toEqual([{ email: "arjun@example.test", password: PASSWORD }]);
     const nav = screen.getByRole("navigation", { name: "Main" });
     expect(within(nav).getByText("Arjun Mehta")).toBeInTheDocument();
-    expect(within(nav).getByText("member")).toBeInTheDocument();
+    expect(within(nav).getByText("Member")).toBeInTheDocument();
     expect(within(nav).queryByRole("link", { name: "Audit log" })).toBeNull();
     expect(await tokenOfAWrite()).toBe(fixtures.csrfToken);
   });
