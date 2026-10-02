@@ -4,9 +4,7 @@ import { createMemoryHistory } from "@tanstack/react-router";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse } from "msw";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { ApiError, ConsoleRefusal, NetworkError } from "@/api/errors";
 import { queryKeys } from "@/api/queries";
-import { aboutTheUser } from "@/pages/TeamDetailAddMember";
 import { errors, fieldMessages, validationFailed } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
 import { gate, startGateway } from "@/test/gateway";
@@ -29,8 +27,10 @@ import {
   held,
   href,
   inside,
-  installPointerCapture,
+  choose,
+  installSelect,
   NOT_FOUND,
+  optionsOf,
   SESSION_ENDED,
   settle,
   shown,
@@ -41,13 +41,11 @@ import {
 } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
-const { maya, arjun, lena, tomas, priya, sam, dana } = fixtures.users;
+const { maya, arjun, lena, tomas, priya, dana } = fixtures.users;
 const { platform, research, growth } = fixtures.teams;
 
 const DELETE = "Keys that belong to this team keep working and lose their team.";
 const LEAVE = "You will lose access to this team.";
-const NO_USER = "No user with that ID.";
-const ID_HINT = "Ask an admin for the user's ID.";
 const IN_THE_TEAM = "Already in this team.";
 
 /** Maya, the admin, as the lead of Platform. */
@@ -66,7 +64,7 @@ const platformWithMaya: fixtures.TeamDetail = {
 const HOLDS =
   "two submits at once are one request, it stays while the request runs, and after a refusal it can be left";
 
-beforeAll(installPointerCapture);
+beforeAll(installSelect);
 afterEach(forgetToasts);
 
 type Options = { user?: fixtures.Me; width?: number; queryClient?: QueryClient };
@@ -149,6 +147,7 @@ function keeps(start: fixtures.TeamDetail) {
     reads: 0,
     lists: 0,
     puts: [] as { userId: string | undefined; body: unknown }[],
+    adds: [] as unknown[],
     removed: [] as (string | undefined)[],
     patches: [] as unknown[],
   };
@@ -174,6 +173,20 @@ function keeps(start: fixtures.TeamDetail) {
       state.detail = { ...state.detail, team: { ...state.detail.team, name: name.trim() } };
     }
     return ok("patch", "/api/teams/{id}", 200, state.detail.team);
+  });
+  override("post", "/api/teams/{id}/members", async ({ request }) => {
+    const body: unknown = await request.json();
+    state.adds.push(body);
+    const email: unknown = typeof body === "object" && body !== null ? Reflect.get(body, "email") : "";
+    // The same answer for a user who does not exist and for one who is not active.
+    const user = fixtures.userList.find((one) => one.email === email && one.status === "active");
+    if (user === undefined) return refuse(errors.user_not_found);
+    if (state.detail.members.some((member) => member.user_id === user.id)) {
+      return refuse(errors.already_member);
+    }
+    const member = { user_id: user.id, email: user.email, name: user.name, role: "member" as const };
+    state.detail = count([...state.detail.members, member]);
+    return ok("post", "/api/teams/{id}/members", 201, member);
   });
   override("put", "/api/teams/{id}/members/{user_id}", async ({ request, params }) => {
     const body: unknown = await request.json();
@@ -544,8 +557,32 @@ describe("the page of a team", () => {
     await detail(platform, { user: fixtures.me.arjun });
     await table("Members");
     expect(actions()).toEqual(["Rename", "Add member"]);
-    expect(names(rowOf(arjun.name))).toEqual(["Remove"]);
+    // A lead leaves, and removes members.
+    expect(names(rowOf(arjun.name))).toEqual(["Leave team"]);
     expect(names(rowOf(lena.name))).toEqual(["Remove"]);
+  });
+
+  test("detail controls by role: a lead has nothing on another lead, an admin has Remove", async () => {
+    const twoLeads: fixtures.TeamDetail = {
+      team: { ...platform, member_count: 3 },
+      members: [
+        ...fixtures.teamDetails.platform.members,
+        { user_id: tomas.id, email: tomas.email, name: tomas.name, role: "lead" },
+      ],
+    };
+    keeps(twoLeads);
+    await detail(platform, { user: fixtures.me.arjun });
+    await table("Members");
+    expect(names(rowOf(tomas.name))).toEqual([]);
+    expect(names(rowOf(arjun.name))).toEqual(["Leave team"]);
+    expect(names(rowOf(lena.name))).toEqual(["Remove"]);
+  });
+
+  test("detail controls by role: an admin who leads the team removes themselves with Remove", async () => {
+    keeps(platformWithMaya);
+    await detail(platform, { user: mayaInPlatform });
+    await table("Members");
+    expect(names(rowOf(maya.name))).toEqual(["Make member", "Remove"]);
   });
 
   test("detail controls by role: a member of the team has no controls", async () => {
@@ -583,11 +620,9 @@ describe("the page of a team", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await closed();
 
-    const puts = counted("put", "/api/teams/{id}/members/{user_id}", () =>
-      refuse(errors.forbidden),
-    );
+    const puts = counted("post", "/api/teams/{id}/members", () => refuse(errors.forbidden));
     const form = await open("Add member", "Add member");
-    await userEvent.type(screen.getByLabelText("User ID"), String(priya.id));
+    await userEvent.type(screen.getByLabelText("Email"), priya.email);
     await userEvent.click(within(form).getByRole("button", { name: "Add member" }));
     expect(await within(form).findByRole("alert")).toHaveTextContent(
       errors.forbidden.body.error.message,
@@ -935,174 +970,132 @@ describe("renaming a team: the dialog while its request runs", () => {
 });
 
 describe("adding a member", () => {
-  test(`the dialog of who chooses from the list: ${HOLDS}`, async () => {
-    const request = held("put", "/api/teams/{id}/members/{user_id}");
+  /** Types the email into the field of the open dialog and returns the field. */
+  async function typeEmail(dialog: HTMLElement, email: string): Promise<HTMLElement> {
+    const field = within(dialog).getByLabelText("Email");
+    await userEvent.type(field, email);
+    return field;
+  }
+
+  test(`the dialog of an admin: ${HOLDS}`, async () => {
+    const request = held("post", "/api/teams/{id}/members");
     await detail(platform);
     const dialog = await open("Add member", "Add member");
-    const group = await within(dialog).findByRole("radiogroup", { name: "User" });
-    const user = within(group).getByRole("radio", { name: new RegExp(priya.name) });
-    await userEvent.click(user);
-    await expectOneRequestWhileTheDialogStays(dialog, user, "Adding", request);
-    expect(request.bodies).toEqual([{ role: "member" }]);
+    const field = await typeEmail(dialog, priya.email);
+    await expectOneRequestWhileTheDialogStays(dialog, field, "Adding", request);
+    expect(request.bodies).toEqual([{ email: priya.email }]);
     expect(toasts()).toEqual([]);
   });
 
-  test(`the dialog of who adds by id: ${HOLDS}`, async () => {
-    const request = held("put", "/api/teams/{id}/members/{user_id}");
+  test(`the dialog of a lead: ${HOLDS}`, async () => {
+    const request = held("post", "/api/teams/{id}/members");
     await detail(platform, { user: fixtures.me.arjun });
     const dialog = await open("Add member", "Add member");
-    const id = within(dialog).getByLabelText("User ID");
-    await userEvent.type(id, String(priya.id));
-    await expectOneRequestWhileTheDialogStays(dialog, id, "Adding", request);
-    expect(request.bodies).toEqual([{ role: "member" }]);
+    const field = await typeEmail(dialog, priya.email);
+    await expectOneRequestWhileTheDialogStays(dialog, field, "Adding", request);
+    expect(request.bodies).toEqual([{ email: priya.email }]);
     expect(toasts()).toEqual([]);
   });
 
-  test("the labels of the form name controls, and the group of users is named once, by its field", async () => {
-    await detail(platform);
+  test("the form has one field, Email, with no User ID and no hint about an ID", async () => {
+    await detail(platform, { user: fixtures.me.arjun });
     const dialog = await open("Add member", "Add member");
-    await within(dialog).findByRole("radiogroup", { name: "User" });
     expectLabelsNameControls(dialog);
+    expect(within(dialog).getByLabelText("Email")).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("User ID")).toBeNull();
+    expect(dialog).not.toHaveTextContent("Ask an admin for the user's ID.");
+    // A lead is not given the list of users to choose from.
+    expect(within(dialog).queryByRole("combobox")).toBeNull();
   });
 
-  test("admin picks a user from a list", async () => {
+  test("an admin can choose a user, which fills the email; the list has the active users who are not in the team", async () => {
     const state = keeps(fixtures.teamDetails.platform);
     await detail(platform);
     const dialog = await open("Add member", "Add member");
-    const group = await within(dialog).findByRole("radiogroup", { name: "User" });
-    // Not Arjun and Lena, who are in the team, and not Dana, who is disabled.
-    const expected = [maya, tomas, priya, sam];
-    expect(within(group).getAllByRole("radio")).toHaveLength(expected.length);
-    for (const user of expected) {
-      expect(within(group).getByRole("radio", { name: new RegExp(user.name) })).toBeEnabled();
-      expect(group).toHaveTextContent(user.email);
-    }
-    for (const user of [arjun, lena, dana]) {
-      expect(group).not.toHaveTextContent(user.name);
-    }
-    expect(screen.queryByLabelText("User ID")).toBeNull();
-
-    await userEvent.click(within(group).getByRole("radio", { name: new RegExp(priya.name) }));
-    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
-    await closed();
-    expect(state.puts).toEqual([{ userId: String(priya.id), body: { role: "member" } }]);
-    expect(toasts()).toEqual(["Member added."]);
-    await waitFor(() => {
-      expect(rowOf(priya.name)).toHaveTextContent("Member");
-    });
-  });
-
-  test("an admin who chose nobody is asked to choose, and nothing is sent", async () => {
-    const state = keeps(fixtures.teamDetails.platform);
-    await detail(platform);
-    const dialog = await open("Add member", "Add member");
-    const group = await within(dialog).findByRole("radiogroup", { name: "User" });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Choose a user.");
-    // The list says it, and nothing else does.
-    expect(descriptionOf(group)).toBe("Choose a user.");
-    expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
-    expect(toasts()).toEqual([]);
-    await settle();
-    expect(state.puts).toEqual([]);
-  });
-
-  test("when everybody is in the team the dialog says so", async () => {
-    override("get", "/api/users", () => ok("get", "/api/users", 200, { users: [arjun, lena, dana] }));
-    await detail(platform);
-    const dialog = await open("Add member", "Add member");
-    expect(
-      await within(dialog).findByText("Every user who can be added is in this team already."),
-    ).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "Add member" })).toBeDisabled();
-  });
-
-  test("the list of users of the dialog: loading, failed with Retry", async () => {
-    const failing = counted("get", "/api/users", () => refuse(errors.internal_error));
-    await detail(platform);
-    await table("Members");
-    // The page itself does not ask for the users.
-    expect(failing.calls).toBe(0);
-    const dialog = await open("Add member", "Add member");
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      errors.internal_error.body.error.message,
+    const select = await within(dialog).findByRole("combobox", { name: "Choose a user" });
+    // Not Arjun and Lena, who are in the team, not Dana, who is disabled, and not Sam, who is invited.
+    expect(await optionsOf(select)).toEqual(
+      [maya, tomas, priya].map((user) => `${user.name} (${user.email})`),
     );
-    expect(within(dialog).getByRole("button", { name: "Add member" })).toBeDisabled();
-    const door = gate();
-    override("get", "/api/users", async () => {
-      await door.opened;
-      return ok("get", "/api/users", 200, { users: fixtures.userList });
-    });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
-    const loading = await within(dialog).findByRole("status", { name: "Loading the users" });
-    expect(loading).toHaveAttribute("aria-busy", "true");
-    act(() => {
-      door.open();
-    });
-    expect(await within(dialog).findByRole("radiogroup", { name: "User" })).toBeInTheDocument();
-  });
-
-  test("a user who was disabled meanwhile: the refusal is on the list", async () => {
-    override("put", "/api/teams/{id}/members/{user_id}", () => refuse(errors.user_disabled));
-    await detail(platform);
-    const dialog = await open("Add member", "Add member");
-    const group = await within(dialog).findByRole("radiogroup", { name: "User" });
-    await userEvent.click(within(group).getByRole("radio", { name: new RegExp(priya.name) }));
-    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
-    await waitFor(() => {
-      expect(descriptionOf(group)).toBe(errors.user_disabled.body.error.message);
-    });
-    expect(dialog).toBeInTheDocument();
-    expect(toasts()).toEqual([]);
-  });
-
-  test("lead adds by id", async () => {
-    const state = keeps(fixtures.teamDetails.platform);
-    const users = counted("get", "/api/users", () => refuse(errors.forbidden));
-    await detail(platform, { user: fixtures.me.arjun });
-    const dialog = await open("Add member", "Add member");
-    const id = screen.getByLabelText("User ID");
-    expect(descriptionOf(id)).toBe(ID_HINT);
-    expect(within(dialog).queryByRole("radiogroup")).toBeNull();
-
-    // An id that no user has.
-    await userEvent.type(id, "999");
-    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
-    await waitFor(() => {
-      expect(id).toHaveAttribute("aria-invalid", "true");
-    });
-    expect(descriptionOf(id)).toBe(`${NO_USER} ${ID_HINT}`);
-    expect(screen.queryByText(errors.not_found.body.error.message)).toBeNull();
-    expect(state.puts).toEqual([{ userId: "999", body: { role: "member" } }]);
-    expect(toasts()).toEqual([]);
-    expect(dialog).toBeInTheDocument();
-    expect(id).toHaveValue("999");
-    // The error goes when the field is changed.
-    await userEvent.clear(id);
-    expect(descriptionOf(id)).toBe(ID_HINT);
-    expect(users.calls).toBe(0);
-  });
-
-  test("lead adds by id: the user is added as a member", async () => {
-    const state = keeps(fixtures.teamDetails.platform);
-    const users = counted("get", "/api/users", () => refuse(errors.forbidden));
-    await detail(platform, { user: fixtures.me.arjun });
-    const dialog = await open("Add member", "Add member");
-    await userEvent.type(screen.getByLabelText("User ID"), String(priya.id));
+    await choose(select, new RegExp(priya.name));
+    expect(within(dialog).getByLabelText("Email")).toHaveValue(priya.email);
     await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
     await closed();
-    expect(state.puts).toEqual([{ userId: String(priya.id), body: { role: "member" } }]);
+    expect(state.adds).toEqual([{ email: priya.email }]);
     expect(toasts()).toEqual(["Member added."]);
     await waitFor(() => {
       expect(rowOf(priya.name)).toHaveTextContent("Member");
     });
-    // A lead is not given the list of users.
+  });
+
+  test("an admin can type an email as well, and the choice follows what is typed", async () => {
+    const state = keeps(fixtures.teamDetails.platform);
+    await detail(platform);
+    const dialog = await open("Add member", "Add member");
+    const select = await within(dialog).findByRole("combobox", { name: "Choose a user" });
+    await choose(select, new RegExp(priya.name));
+    const field = within(dialog).getByLabelText("Email");
+    await userEvent.clear(field);
+    await userEvent.type(field, tomas.email);
+    // The choice is the user whose email is typed.
+    expect(select).toHaveTextContent(tomas.name);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await closed();
+    expect(state.adds).toEqual([{ email: tomas.email }]);
+  });
+
+  test("a user list that cannot be read does not keep an admin from typing an email", async () => {
+    const state = keeps(fixtures.teamDetails.platform);
+    override("get", "/api/users", () => refuse(errors.internal_error));
+    await detail(platform);
+    const dialog = await open("Add member", "Add member");
+    await typeEmail(dialog, priya.email);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await closed();
+    expect(state.adds).toEqual([{ email: priya.email }]);
+  });
+
+  test("a lead adds by email, as a member, and reads no list of users", async () => {
+    const state = keeps(fixtures.teamDetails.platform);
+    const users = counted("get", "/api/users", () => refuse(errors.forbidden));
+    await detail(platform, { user: fixtures.me.arjun });
+    const dialog = await open("Add member", "Add member");
+    await typeEmail(dialog, `  ${priya.email} `);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await closed();
+    // What was typed is sent without the spaces around it.
+    expect(state.adds).toEqual([{ email: priya.email }]);
+    expect(toasts()).toEqual(["Member added."]);
+    await waitFor(() => {
+      expect(rowOf(priya.name)).toHaveTextContent("Member");
+    });
     expect(users.calls).toBe(0);
   });
 
-  // The gateway changes the role of who is in the team already (a PUT is an
-  // upsert): a lead who typed the ID of a co-lead, or their own, would make
-  // them a member and be told "Member added.".
+  test("an email that is no active user's: the field says so, and the team is not read again", async () => {
+    const state = keeps(fixtures.teamDetails.platform);
+    await detail(platform, { user: fixtures.me.arjun });
+    const dialog = await open("Add member", "Add member");
+    // Dana is disabled: the gateway says the same as for a user who does not exist.
+    const field = await typeEmail(dialog, dana.email);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await waitFor(() => {
+      expect(descriptionOf(field)).toBe(errors.user_not_found.body.error.message);
+    });
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
+    expect(state.adds).toEqual([{ email: dana.email }]);
+    await settle();
+    expect(state.reads).toBe(1);
+    expect(toasts()).toEqual([]);
+    expect(dialog).toBeInTheDocument();
+    expect(field).toHaveValue(dana.email);
+    // The error goes when the field is changed.
+    await userEvent.type(field, "x");
+    expect(descriptionOf(field)).toBe("");
+  });
+
+  // The gateway says 409 for who is in the team in any role: a co-lead, or the lead themselves.
   const platformWithTwoLeads: fixtures.TeamDetail = {
     team: { ...platform, member_count: 3 },
     members: [
@@ -1111,84 +1104,69 @@ describe("adding a member", () => {
     ],
   };
   test.each([
-    ["a member of the team", lena.id, "Member"],
-    ["a co-lead", tomas.id, "Lead"],
-    ["themselves", arjun.id, "Lead"],
-  ])(
-    "a lead who types the ID of %s is refused on the field, and nothing is sent",
-    async (_, userId, role) => {
-      const state = keeps(platformWithTwoLeads);
-      const who = platformWithTwoLeads.members.find((one) => one.user_id === userId);
-      await detail(platform, { user: fixtures.me.arjun });
-      const dialog = await open("Add member", "Add member");
-      const id = screen.getByLabelText("User ID");
-      await userEvent.type(id, String(userId));
-      await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
-      await waitFor(() => {
-        expect(descriptionOf(id)).toBe(`${IN_THE_TEAM} ${ID_HINT}`);
-      });
-      expect(id).toHaveAttribute("aria-invalid", "true");
-      expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
-      expect(dialog).toBeInTheDocument();
-      expect(id).toHaveValue(String(userId));
-      await settle();
-      expect(state.puts).toEqual([]);
-      expect(toasts()).toEqual([]);
-      // Their role is what it was.
-      await userEvent.keyboard("{Escape}");
-      await closed();
-      expect(within(rowOf(who?.name ?? "nobody")).getByText(role)).toBeInTheDocument();
-    },
-  );
-
-  test("the admin's list offers nobody who is in the team: not a member, not a lead, not the admin", async () => {
-    keeps(platformWithMaya);
-    await detail(platform, { user: mayaInPlatform });
+    ["a member of the team", lena, "Member"],
+    ["a co-lead", tomas, "Lead"],
+    ["themselves", arjun, "Lead"],
+  ])("a lead who types the email of %s is told so on the field", async (_, who, role) => {
+    keeps(platformWithTwoLeads);
+    await detail(platform, { user: fixtures.me.arjun });
     const dialog = await open("Add member", "Add member");
-    const group = await within(dialog).findByRole("radiogroup", { name: "User" });
-    // Arjun leads, Lena is a member, Maya leads; Dana is disabled.
-    expect(
-      within(group)
-        .getAllByRole("radio")
-        .map((radio) => radio.getAttribute("value")),
-    ).toEqual([tomas, priya, sam].map((user) => String(user.id)));
+    const field = await typeEmail(dialog, who.email);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await waitFor(() => {
+      expect(descriptionOf(field)).toBe(IN_THE_TEAM);
+    });
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
+    expect(dialog).toBeInTheDocument();
+    expect(toasts()).toEqual([]);
+    // Their role is what it was.
+    await userEvent.keyboard("{Escape}");
+    await closed();
+    expect(within(rowOf(who.name)).getByText(role)).toBeInTheDocument();
   });
 
-  test.each(["0", "-4", "1.5", "abc", "007", " "])(
-    "what is no id (%s) is refused on the field, and the API is not asked",
-    async (text) => {
-      const state = keeps(fixtures.teamDetails.platform);
-      await detail(platform, { user: fixtures.me.arjun });
-      const dialog = await open("Add member", "Add member");
-      const id = screen.getByLabelText("User ID");
-      await userEvent.type(id, text);
-      await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
-      await waitFor(() => {
-        expect(descriptionOf(id)).toBe(`${NO_USER} ${ID_HINT}`);
-      });
-      expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
-      await settle();
-      expect(state.puts).toEqual([]);
-    },
-  );
+  test("an email that is not valid is told on the field, as the gateway words it", async () => {
+    override("post", "/api/teams/{id}/members", () =>
+      refuse(validationFailed({ email: fieldMessages.email })),
+    );
+    await detail(platform, { user: fixtures.me.arjun });
+    const dialog = await open("Add member", "Add member");
+    const field = await typeEmail(dialog, "nobody");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await waitFor(() => {
+      expect(descriptionOf(field)).toBe(fieldMessages.email);
+    });
+  });
 
-  test("a 404 can be the team: a team that is gone meanwhile is not found", async () => {
+  test("nothing typed is refused by the console on the field, and the API is not asked", async () => {
+    const state = keeps(fixtures.teamDetails.platform);
+    await detail(platform, { user: fixtures.me.arjun });
+    const dialog = await open("Add member", "Add member");
+    const field = within(dialog).getByLabelText("Email");
+    await userEvent.type(field, "   ");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await waitFor(() => {
+      expect(descriptionOf(field)).toBe("Enter the user's email.");
+    });
+    await settle();
+    expect(state.adds).toEqual([]);
+  });
+
+  test("a 404 that is the team: a team that is gone meanwhile is not found", async () => {
     const state = keeps(fixtures.teamDetails.platform);
     const app = await detail(platform, { user: fixtures.me.arjun });
     const dialog = await open("Add member", "Add member");
-    await userEvent.type(screen.getByLabelText("User ID"), String(priya.id));
+    await typeEmail(dialog, priya.email);
     expect(state.reads).toBe(1);
-    // Meanwhile the team was deleted, or hidden from the caller. The gateway
-    // answers 404 for the team before it looks at the user.
+    // Meanwhile the team was deleted, or hidden from the caller.
     state.hidden = true;
-    const puts = counted("put", "/api/teams/{id}/members/{user_id}", () =>
-      refuse(errors.not_found),
-    );
+    const posts = counted("post", "/api/teams/{id}/members", () => refuse(errors.not_found));
     await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
     expect(await screen.findByRole("heading", { name: NOT_FOUND })).toBeInTheDocument();
     expectOneMain();
     expectOneH1();
-    expect(puts.calls).toBe(1);
+    expect(posts.calls).toBe(1);
     expect(state.reads).toBe(2);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByRole("heading", { name: platform.name })).toBeNull();
@@ -1199,94 +1177,23 @@ describe("adding a member", () => {
     expect(href(app)).toBe(`/teams/${platform.id}`);
   });
 
-  test("a 404 can be the team: when the team is still there the field says it, and the page stays", async () => {
-    const state = keeps(fixtures.teamDetails.platform);
-    const app = await detail(platform, { user: fixtures.me.arjun });
-    const dialog = await open("Add member", "Add member");
-    const id = screen.getByLabelText("User ID");
-    await userEvent.type(id, "999");
-    expect(state.reads).toBe(1);
-    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
-    await waitFor(() => {
-      expect(descriptionOf(id)).toBe(`${NO_USER} ${ID_HINT}`);
-    });
-    // The team was asked for again, and is still there.
-    await waitFor(() => {
-      expect(state.reads).toBe(2);
-    });
-    await settle();
-    expect(state.reads).toBe(2);
-    expect(dialog).toBeInTheDocument();
-    expect(id).toHaveValue("999");
-    expect(descriptionOf(id)).toBe(`${NO_USER} ${ID_HINT}`);
-    // Behind the dialog, which hides the page from the roles.
-    expect(
-      screen.getByRole("heading", { level: 1, name: platform.name, hidden: true }),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: NOT_FOUND, hidden: true })).toBeNull();
-    expect(document.querySelectorAll("main")).toHaveLength(1);
-    expect(toasts()).toEqual([]);
-    expect(href(app)).toBe(`/teams/${platform.id}`);
-  });
-
-  test("a 404 stays the answer of the gateway: the field says what was not found, and no refusal of the console is made of it", () => {
-    const answerOf = ({ status, body }: (typeof errors)[keyof typeof errors]) =>
-      new ApiError(status, body.error.code, body.error.message);
-    const said = aboutTheUser(answerOf(errors.not_found));
-    expect(said).toBeInstanceOf(ApiError);
-    expect(said).not.toBeInstanceOf(ConsoleRefusal);
-    expect(said).toMatchObject({
-      status: 404,
-      code: "not_found",
-      message: errors.not_found.body.error.message,
-      fields: { user_id: NO_USER },
-    });
-    // A user who is disabled: the field says it in the words of the gateway.
-    expect(aboutTheUser(answerOf(errors.user_disabled))).toMatchObject({
-      status: errors.user_disabled.status,
-      code: "user_disabled",
-      fields: { user_id: errors.user_disabled.body.error.message },
-    });
-    // What is about no user is passed on as it is.
-    const forbidden = answerOf(errors.forbidden);
-    expect(aboutTheUser(forbidden)).toBe(forbidden);
-    const network = new NetworkError();
-    expect(aboutTheUser(network)).toBe(network);
-  });
-
-  test("a lead adds a disabled user: the refusal is on the field", async () => {
-    const state = keeps(fixtures.teamDetails.platform);
-    await detail(platform, { user: fixtures.me.arjun });
-    const dialog = await open("Add member", "Add member");
-    const id = screen.getByLabelText("User ID");
-    await userEvent.type(id, String(dana.id));
-    await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
-    await waitFor(() => {
-      expect(descriptionOf(id)).toBe(`${errors.user_disabled.body.error.message} ${ID_HINT}`);
-    });
-    expect(state.puts).toHaveLength(1);
-    expect(toasts()).toEqual([]);
-  });
-
   test("the session has ended when the member is added: signed out, and the form says nothing", async () => {
     startGateway({ signedIn: true, me: fixtures.me.arjun });
-    const puts = counted("put", "/api/teams/{id}/members/{user_id}", unauthenticated);
+    const posts = counted("post", "/api/teams/{id}/members", unauthenticated);
     const app = await detail(platform);
     const dialog = await open("Add member", "Add member");
-    await userEvent.type(screen.getByLabelText("User ID"), String(priya.id));
+    await typeEmail(dialog, priya.email);
     await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
     await waitFor(() => {
       expect(href(app)).toBe(`/sign-in?next=${encodeURIComponent(`/teams/${platform.id}`)}`);
     });
     expect(screen.getByRole("status")).toHaveTextContent(SESSION_ENDED);
     await settle();
-    expect(puts.calls).toBe(1);
+    expect(posts.calls).toBe(1);
     expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.queryByLabelText("User ID")).toBeNull();
     // No error of a field, none of a form, and not the answer of the gateway.
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.queryByText(NO_USER)).toBeNull();
     expect(screen.queryByText(errors.unauthenticated.body.error.message)).toBeNull();
     expect(toasts()).toEqual([]);
     expect(app.queryClient.getQueryCache().getAll()).toEqual([]);
@@ -1296,19 +1203,24 @@ describe("adding a member", () => {
   test("a member whose answer came for a session that is over says nothing", async () => {
     startGateway({ signedIn: true, me: fixtures.me.arjun });
     const door = gate();
-    const puts = counted("put", "/api/teams/{id}/members/{user_id}", async () => {
+    const posts = counted("post", "/api/teams/{id}/members", async () => {
       await door.opened;
-      return noContent();
+      return ok("post", "/api/teams/{id}/members", 201, {
+        user_id: priya.id,
+        email: priya.email,
+        name: priya.name,
+        role: "member",
+      });
     });
     const app = await detail(platform);
     const dialog = await open("Add member", "Add member");
-    await userEvent.type(screen.getByLabelText("User ID"), String(priya.id));
+    await typeEmail(dialog, priya.email);
     await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
     await within(dialog).findByRole("button", { name: "Adding" });
     await aCallFindsTheSessionEnded("/api/keys");
     door.open();
     await settle();
-    expect(puts.calls).toBe(1);
+    expect(posts.calls).toBe(1);
     expect(href(app)).toBe(`/sign-in?next=${encodeURIComponent(`/teams/${platform.id}`)}`);
     expect(screen.getByRole("status")).toHaveTextContent(SESSION_ENDED);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -1320,18 +1232,22 @@ describe("adding a member", () => {
 
   test("while the member is added the button is disabled and says so", async () => {
     const door = gate();
-    const puts = counted("put", "/api/teams/{id}/members/{user_id}", async () => {
+    const posts = counted("post", "/api/teams/{id}/members", async () => {
       await door.opened;
-      return noContent();
+      return ok("post", "/api/teams/{id}/members", 201, {
+        user_id: priya.id,
+        email: priya.email,
+        name: priya.name,
+        role: "member",
+      });
     });
     await detail(platform, { user: fixtures.me.arjun });
     const dialog = await open("Add member", "Add member");
-    const id = screen.getByLabelText("User ID");
-    await userEvent.type(id, String(priya.id));
+    const field = await typeEmail(dialog, priya.email);
     await userEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
     expect(await within(dialog).findByRole("button", { name: "Adding" })).toBeDisabled();
-    await userEvent.type(id, "{Enter}");
-    expect(puts.calls).toBe(1);
+    await userEvent.type(field, "{Enter}");
+    expect(posts.calls).toBe(1);
     act(() => {
       door.open();
     });
@@ -1481,9 +1397,9 @@ describe("removing a member", () => {
     const app = await list({ queryClient: clientThatKeepsDataFresh() });
     await table("Teams");
     await userEvent.click(screen.getByRole("link", { name: platform.name }));
-    const dialog = await askOf(arjun, "Remove");
+    const dialog = await askOf(arjun, "Leave team");
     expect(state.lists).toBe(1);
-    expect(dialog).toHaveAccessibleName(`Remove ${arjun.name}?`);
+    expect(dialog).toHaveAccessibleName("Leave this team?");
     expect(dialog).toHaveTextContent(LEAVE);
     expect(dialog).not.toHaveTextContent("They will");
 
@@ -1500,7 +1416,7 @@ describe("removing a member", () => {
       return noContent();
     });
     const before = gateway.meCalls;
-    await confirm(dialog, "Remove");
+    await confirm(dialog, "Leave team");
     await waitFor(() => {
       expect(href(app)).toBe("/teams");
     });
@@ -1573,7 +1489,7 @@ describe("removing a member", () => {
       });
     });
     const app = await renderWithApp(null, { history });
-    const dialog = await askOf(arjun, "Remove");
+    const dialog = await askOf(arjun, "Leave team");
     // Afterwards the gateway hides the team from them.
     override("delete", "/api/teams/{id}/members/{user_id}", () => {
       state.hidden = true;
@@ -1590,7 +1506,7 @@ describe("removing a member", () => {
     expect(state.reads).toBe(1);
 
     const way = watchTheWay();
-    await confirm(dialog, "Remove");
+    await confirm(dialog, "Leave team");
     await waitFor(() => {
       expect(pushed).toHaveBeenCalledTimes(1);
     });
@@ -1632,7 +1548,7 @@ describe("removing a member", () => {
     const state = keeps(fixtures.teamDetails.platform);
     const way = aWayThatIsHeld(`/teams/${platform.id}`);
     const app = await renderWithApp(null, { history: way.history });
-    const dialog = await askOf(arjun, "Remove");
+    const dialog = await askOf(arjun, "Leave team");
     // Afterwards the gateway hides the team from them.
     override("delete", "/api/teams/{id}/members/{user_id}", () => {
       state.hidden = true;
@@ -1641,7 +1557,7 @@ describe("removing a member", () => {
     expect(state.reads).toBe(1);
 
     const watch = watchTheWay();
-    await confirm(dialog, "Remove");
+    await confirm(dialog, "Leave team");
     await waitFor(() => {
       expect(way.pushes()).toBe(1);
     });

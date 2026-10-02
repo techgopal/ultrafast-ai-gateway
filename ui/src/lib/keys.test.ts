@@ -1,16 +1,15 @@
 import { describe, expect, test } from "vitest";
-import { ApiError, ConsoleRefusal, NetworkError, SessionOverError } from "@/api/errors";
+import { ApiError, ConsoleRefusal } from "@/api/errors";
 import * as fixtures from "@/test/fixtures";
 import { NO_EXPIRY } from "./expiry";
 import {
+  allowedOf,
+  allowedSummary,
+  callableItems,
+  CHOOSE_A_TEAM,
+  CHOOSE_ALLOWED,
   choiceOffered,
   choiceShown,
-  CHOOSE_A_TEAM,
-  goneAmong,
-  isAskedAgain,
-  isFirstRead,
-  isGone,
-  isMissing,
   ownerOffered,
   ownersFor,
   ownTeams,
@@ -21,13 +20,10 @@ import {
   type KeyValues,
   type Owners,
   type TeamChoices,
-  type TeamRead,
 } from "./keys";
 
 const { maya, arjun, lena, tomas, priya, sam, dana } = fixtures.users;
 const { platform, research, growth } = fixtures.teams;
-const everyTeam = () => true;
-const allDetails = fixtures.teamDetailList;
 
 const PLATFORM = { id: platform.id, name: platform.name };
 const RESEARCH = { id: research.id, name: research.name };
@@ -42,24 +38,19 @@ describe("the teams of a key of one's own", () => {
     expect(ownTeams(fixtures.me.lena)).toEqual([PLATFORM]);
     expect(ownTeams(fixtures.me.maya)).toEqual([]);
   });
-
-  test("a team that is not there is not among them", () => {
-    expect(ownTeams(fixtures.me.arjun, (id) => id !== platform.id)).toEqual([RESEARCH]);
-    expect(ownTeams(fixtures.me.arjun, () => false)).toEqual([]);
-  });
 });
 
 describe("who can own a new key", () => {
   test("an admin chooses among the active users, themselves first, the others by name", () => {
-    const owners = ownersFor(fixtures.me.maya, fixtures.userList, allDetails, everyTeam);
+    const owners = ownersFor(fixtures.me.maya, fixtures.userList);
     // Not Sam, who is invited, and not Dana, who is disabled.
     expect(names(owners.people)).toEqual(names([maya, arjun, lena, priya, tomas]));
     expect(names(owners.people)).not.toContain(sam.name);
     expect(names(owners.people)).not.toContain(dana.name);
   });
 
-  test("for an admin the teams of an owner are those the owner is a member of, by name, and none", () => {
-    const owners = ownersFor(fixtures.me.maya, fixtures.userList, allDetails, everyTeam);
+  test("for an admin the teams of an owner are those the user list gives them, by name, and none", () => {
+    const owners = ownersFor(fixtures.me.maya, fixtures.userList);
     expect(owners.teamsOf(arjun.id)).toEqual([PLATFORM, RESEARCH]);
     expect(owners.teamsOf(tomas.id)).toEqual([RESEARCH]);
     expect(owners.teamsOf(priya.id)).toEqual([]);
@@ -71,14 +62,19 @@ describe("who can own a new key", () => {
     expect(growth.member_count).toBe(0);
   });
 
-  test("a lead chooses themselves and the members of the teams they lead, which are read", () => {
-    // Arjun leads Platform and is a member of Research: only Platform is read.
-    const owners = ownersFor(
-      fixtures.me.arjun,
-      fixtures.userList,
-      [fixtures.teamDetails.platform],
-      everyTeam,
-    );
+  test("the teams come from the users: nothing else is read", () => {
+    // A team the user list gives Priya is one of hers, whatever else is known.
+    const priyaInGrowth: fixtures.User = {
+      ...priya,
+      teams: [{ team_id: growth.id, name: growth.name, role: "member" }],
+    };
+    const owners = ownersFor(fixtures.me.maya, [maya, priyaInGrowth]);
+    expect(owners.teamsOf(priya.id)).toEqual([{ id: growth.id, name: growth.name }]);
+  });
+
+  test("a lead chooses themselves and the users who are in a team they lead", () => {
+    // Arjun leads Platform and is a member of Research: Tomas is in Research only.
+    const owners = ownersFor(fixtures.me.arjun, fixtures.userList);
     expect(names(owners.people)).toEqual(names([arjun, lena]));
     // A key of another user belongs to a team the lead leads: never to none.
     expect(owners.teamsOf(lena.id)).toEqual([PLATFORM]);
@@ -88,33 +84,27 @@ describe("who can own a new key", () => {
     expect(owners.withoutTeam(arjun.id)).toBe(true);
   });
 
-  test("a lead whose team was not read is offered alone, with their own teams", () => {
-    const owners = ownersFor(fixtures.me.arjun, fixtures.userList, [], everyTeam);
+  test("a lead is not offered a team they only belong to, for another user", () => {
+    const owners = ownersFor(fixtures.me.arjun, fixtures.userList);
+    expect(owners.teamsOf(tomas.id)).toEqual([]);
+  });
+
+  test("a lead who leads nothing is offered alone, with their own teams", () => {
+    const owners = ownersFor(fixtures.me.arjun, []);
     expect(names(owners.people)).toEqual([arjun.name]);
     expect(owners.teamsOf(arjun.id)).toEqual([PLATFORM, RESEARCH]);
   });
 
-  test("a team of the viewer's own that is not there is no team of a key of their own", () => {
-    const owners = ownersFor(fixtures.me.arjun, fixtures.userList, [], (id) => id !== platform.id);
-    expect(owners.teamsOf(arjun.id)).toEqual([RESEARCH]);
-    expect(owners.withoutTeam(arjun.id)).toBe(true);
-  });
-
-  test("a member of a team that is open is an owner only while they are active", () => {
+  test("a user of a team is an owner only while they are active", () => {
     const disabled: fixtures.User = { ...lena, status: "disabled" };
-    const owners = ownersFor(
-      fixtures.me.arjun,
-      [arjun, disabled],
-      [fixtures.teamDetails.platform],
-      everyTeam,
-    );
+    const owners = ownersFor(fixtures.me.arjun, [arjun, disabled]);
     expect(names(owners.people)).toEqual([arjun.name]);
   });
 });
 
 /** What the form of an admin is offered, with the teams of the fixtures. */
 function adminOwners(users: readonly fixtures.User[] = fixtures.userList): Owners {
-  return ownersFor(fixtures.me.maya, users, allDetails, everyTeam);
+  return ownersFor(fixtures.me.maya, users);
 }
 
 function teamsFor(owners: Owners) {
@@ -179,11 +169,10 @@ describe("the choice as it is offered", () => {
   });
 
   test("a team that is offered no more goes, and the owner stays", () => {
+    // Tomas is not in Research any more, as the user list now says.
     const owners = ownersFor(
       fixtures.me.maya,
-      fixtures.userList,
-      [fixtures.teamDetails.platform],
-      everyTeam,
+      fixtures.userList.map((user) => (user.id === tomas.id ? { ...user, teams: [] } : user)),
     );
     expect(
       choiceOffered(
@@ -197,12 +186,7 @@ describe("the choice as it is offered", () => {
 
   test("an owner who is offered no more takes the team with them, also a team the viewer is in", () => {
     // Arjun chose Lena and Platform. Lena is gone; Arjun is in Platform himself.
-    const owners = ownersFor(
-      fixtures.me.arjun,
-      [arjun],
-      [fixtures.teamDetails.platform],
-      everyTeam,
-    );
+    const owners = ownersFor(fixtures.me.arjun, [arjun]);
     expect(owners.teamsOf(arjun.id)).toContainEqual(PLATFORM);
     expect(
       choiceOffered(
@@ -264,6 +248,8 @@ describe("the request for a key", () => {
     owner_id: String(maya.id),
     team_id: WITHOUT_TEAM,
     expires_at: NO_EXPIRY,
+    allow: "all",
+    allowed: [],
   };
 
   test("a key of one's own without a team and an expiry is its name", () => {
@@ -278,6 +264,8 @@ describe("the request for a key", () => {
           owner_id: String(tomas.id),
           team_id: String(research.id),
           expires_at: { choice: "date", day: "2027-01-31" },
+          allow: "all",
+          allowed: [],
         },
         fixtures.me.maya,
       ),
@@ -313,93 +301,84 @@ describe("the request for a key", () => {
   });
 });
 
-describe("what is known of a team that was asked for", () => {
-  const detail = fixtures.teamDetails.research;
-  const notFound = new ApiError(404, "not_found", "Not found.");
-  const failed = new ApiError(500, "internal_error", "Something went wrong.");
+describe("the models a key may call", () => {
+  const offered = ["openai/gpt-4o-mini", "openai/gpt-4o", "support"];
 
-  const reads = {
-    "asked for, for the first time": { data: undefined, error: null, errorUpdateCount: 0 },
-    read: { data: detail, error: null, errorUpdateCount: 0 },
-    "read, after a failure": { data: detail, error: null, errorUpdateCount: 2 },
-    "read before, and the read again failed": { data: detail, error: failed, errorUpdateCount: 1 },
-    "answered 404": { data: undefined, error: notFound, errorUpdateCount: 1 },
-    "answered 500": { data: undefined, error: failed, errorUpdateCount: 1 },
-    "not reached": { data: undefined, error: new NetworkError(), errorUpdateCount: 1 },
-    "answered for a session that is over": {
-      data: undefined,
-      error: new SessionOverError(),
-      errorUpdateCount: 1,
-    },
-    "asked for again after a failure": { data: undefined, error: null, errorUpdateCount: 1 },
-  } satisfies Record<string, TeamRead>;
-
-  // gone, first read, asked again, missing
-  const expected: Record<keyof typeof reads, [boolean, boolean, boolean, boolean]> = {
-    "asked for, for the first time": [false, true, false, false],
-    read: [false, false, false, false],
-    "read, after a failure": [false, false, false, false],
-    "read before, and the read again failed": [false, false, false, false],
-    "answered 404": [true, false, false, false],
-    "answered 500": [false, false, false, true],
-    "not reached": [false, false, false, true],
-    "answered for a session that is over": [false, false, false, false],
-    "asked for again after a failure": [false, false, true, true],
-  };
-
-  test.each(Object.keys(reads) as (keyof typeof reads)[])("a team that is %s", (name) => {
-    const read: TeamRead = reads[name];
-    expect([isGone(read), isFirstRead(read), isAskedAgain(read), isMissing(read)]).toEqual(
-      expected[name],
-    );
+  test("all models I can use sends no list", () => {
+    expect(allowedOf("all", ["openai/gpt-4o"], offered)).toBeUndefined();
+    expect(allowedOf("all", [], null)).toBeUndefined();
   });
 
-  test("a 404 is no read that failed: a team that is gone is not missing", () => {
-    expect(isGone(reads["answered 404"])).toBe(true);
-    expect(isMissing(reads["answered 404"])).toBe(false);
+  test("a choice is sent as the names, in the order the list offers them", () => {
+    expect(allowedOf("some", ["support", "openai/gpt-4o-mini"], offered)).toEqual([
+      "openai/gpt-4o-mini",
+      "support",
+    ]);
+  });
+
+  test("a name that is offered no more is not sent", () => {
+    expect(allowedOf("some", ["openai/gpt-4o", "retired/model"], offered)).toEqual([
+      "openai/gpt-4o",
+    ]);
+  });
+
+  test.each([
+    ["nothing is chosen", [], offered],
+    ["everything chosen is offered no more", ["retired/model"], offered],
+    ["the lists are not known", ["openai/gpt-4o"], null],
+  ])("a list is refused by the console, on the field, when %s", (_, chosen, list) => {
+    let refusal: unknown;
+    try {
+      allowedOf("some", chosen, list);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(ConsoleRefusal);
+    expect(refusal).toMatchObject({ message: CHOOSE_ALLOWED, field: "allowed" });
+    expect(refusal).not.toBeInstanceOf(ApiError);
+  });
+
+  test("the request carries the list, and nothing without one", () => {
+    const values: KeyValues = {
+      name: "laptop",
+      owner_id: String(maya.id),
+      team_id: WITHOUT_TEAM,
+      expires_at: NO_EXPIRY,
+      allow: "some",
+      allowed: ["support"],
+    };
+    expect(requestOf(values, fixtures.me.maya, offered)).toEqual({
+      name: "laptop",
+      allowed: ["support"],
+    });
+    expect(requestOf({ ...values, allow: "all" }, fixtures.me.maya, offered)).toEqual({
+      name: "laptop",
+    });
+  });
+
+  test("the list says All, or how many", () => {
+    expect(allowedSummary(null)).toBe("All");
+    expect(allowedSummary(["a/b"])).toBe("1");
+    expect(allowedSummary(["a/b", "support", "c/d"])).toBe("3");
   });
 });
 
-describe("the teams that are gone", () => {
-  const notFound = new ApiError(404, "not_found", "Not found.");
-  const gone: TeamRead = { data: undefined, error: notFound, errorUpdateCount: 1 };
-  const again: TeamRead = { data: undefined, error: null, errorUpdateCount: 1 };
-  const first: TeamRead = { data: undefined, error: null, errorUpdateCount: 0 };
-  const read: TeamRead = { data: fixtures.teamDetails.platform, error: null, errorUpdateCount: 0 };
-  const failed: TeamRead = {
-    data: undefined,
-    error: new ApiError(500, "internal_error", "Something went wrong."),
-    errorUpdateCount: 2,
-  };
-  const ids = [platform.id, research.id, growth.id];
-
-  test("are those that answer 404", () => {
-    expect(goneAmong(ids, [read, gone, read], [])).toEqual([research.id]);
-    expect(goneAmong(ids, [gone, gone, read], [])).toEqual([platform.id, research.id]);
-    expect(goneAmong(ids, [read, read, read], [])).toEqual([]);
+describe("the models and routes a key can be limited to", () => {
+  test("are the enabled models, then the routes, each by its name", () => {
+    const items = callableItems(fixtures.modelList, fixtures.routeList);
+    // The disabled model cannot be called, so it is no choice.
+    expect(items.map((item) => item.id)).toEqual([
+      "local-llm/llama3.1:8b",
+      "openai/gpt-4o",
+      "openai/gpt-4o-mini",
+      "legacy.v1",
+      "research",
+      "support-chat",
+    ]);
+    expect(items.map((item) => item.route)).toEqual([false, false, false, true, true, true]);
   });
 
-  test("a team that was gone stays gone while it is asked for again", () => {
-    expect(goneAmong(ids, [read, again, read], [research.id])).toEqual([research.id]);
-  });
-
-  test("a team that is asked for again after another failure is not gone", () => {
-    expect(goneAmong(ids, [read, again, read], [])).toEqual([]);
-    expect(goneAmong(ids, [read, again, read], [platform.id])).toEqual([]);
-  });
-
-  test("a team that was gone and answers is gone no more, whatever it answers", () => {
-    expect(goneAmong(ids, [read, read, read], [research.id])).toEqual([]);
-    expect(goneAmong(ids, [read, failed, read], [research.id])).toEqual([]);
-  });
-
-  test("a team that is asked for, for the first time, is not gone, also if one of its id was", () => {
-    expect(goneAmong(ids, [read, first, read], [research.id])).toEqual([]);
-  });
-
-  test("a team that is asked for no more is not among them", () => {
-    expect(goneAmong([platform.id], [read], [research.id])).toEqual([]);
-    // More ids than reads: what is not read is not gone.
-    expect(goneAmong(ids, [gone], [])).toEqual([platform.id]);
+  test("a name is there once", () => {
+    expect(callableItems([fixtures.models.openaiMini, fixtures.models.openaiMini], [])).toHaveLength(1);
   });
 });

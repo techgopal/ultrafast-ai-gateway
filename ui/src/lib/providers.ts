@@ -2,8 +2,16 @@
 // is sent for one.
 import { ConsoleRefusal } from "@/api/errors";
 
-const KIND_NAMES: Record<string, string> = { openai: "OpenAI-compatible", anthropic: "Anthropic" };
-export const KINDS = ["openai", "anthropic"] as const;
+const KIND_NAMES: Record<string, string> = {
+  openai: "OpenAI-compatible",
+  anthropic: "Anthropic",
+  gemini: "Gemini",
+  azure: "Azure OpenAI",
+};
+export const KINDS = ["openai", "anthropic", "gemini", "azure"] as const;
+
+/** The API version the gateway uses for an Azure OpenAI provider that is given none. */
+export const DEFAULT_API_VERSION = "2024-10-21";
 
 export function kindName(kind: string): string {
   return KIND_NAMES[kind] ?? kind;

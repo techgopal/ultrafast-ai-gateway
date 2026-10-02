@@ -20,7 +20,6 @@ import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { expiryOf, NO_EXPIRY } from "@/lib/expiry";
-import { tokenStatus } from "@/lib/token-status";
 
 type Token = components["schemas"]["TokenView"];
 type CreateTokenRequest = components["schemas"]["CreateTokenRequest"];
@@ -150,9 +149,8 @@ const columns: Column<Token>[] = [
   {
     id: "status",
     header: "Status",
-    // The API has no status for a token: see `tokenStatus`.
-    cell: (token) => <StatusBadge status={tokenStatus(token)} />,
-    sortValue: (token) => tokenStatus(token),
+    cell: (token) => <StatusBadge status={token.status} />,
+    sortValue: (token) => token.status,
   },
 ];
 

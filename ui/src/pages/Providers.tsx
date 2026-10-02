@@ -1,5 +1,13 @@
+import { Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { useCreateProvider, useDeleteProvider, useProviders, useUpdateProvider } from "@/api/queries";
+import {
+  useCreateProvider,
+  useDeleteProvider,
+  useProviders,
+  useSyncProvider,
+  useUpdateProvider,
+} from "@/api/queries";
+import { messageOfError } from "@/api/errors";
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
 import { useSession } from "@/auth/session";
@@ -13,6 +21,7 @@ import { useToast } from "@/components/toast";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { syncText } from "@/lib/models";
 import { kindName } from "@/lib/providers";
 import { AddDialog } from "@/pages/ProvidersAdd";
 import { EditDialog } from "@/pages/ProvidersEdit";
@@ -74,12 +83,17 @@ export function Providers() {
   const create = useCreateProvider();
   const update = useUpdateProvider();
   const remove = useDeleteProvider();
+  const sync = useSyncProvider();
   const toast = useToast();
   const [asking, setAsking] = useState<Asking | null>(null);
   // Which provider the dialog is about. Kept while the dialog closes.
   const [target, setTarget] = useState<Provider | null>(null);
   // The name of the provider that was added, for the notice that says how to call it.
   const [added, setAdded] = useState<string | null>(null);
+  // What the last sync of a provider did, or why it did not work. The provider whose sync runs.
+  const [synced, setSynced] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState<number | null>(null);
 
   if (session.status !== "signedIn") return null;
   const mayManage = can(session.me, { type: "manageProviders" });
@@ -99,6 +113,20 @@ export function Providers() {
     };
   }
 
+  async function syncModels(provider: Provider) {
+    setSynced(null);
+    setProblem(null);
+    setSyncing(provider.id);
+    try {
+      setSynced(syncText(await sync.mutateAsync({ id: provider.id })));
+    } catch (error) {
+      // A session that is over says nothing; the clean-up of the session leaves the page.
+      setProblem(messageOfError(error));
+    } finally {
+      setSyncing(null);
+    }
+  }
+
   const addButton = mayManage ? (
     <Button
       type="button"
@@ -114,6 +142,20 @@ export function Providers() {
   const rowActions = mayManage
     ? (provider: Provider) => (
         <>
+          {/* The gateway cannot read the models of an Azure OpenAI provider: they are added by name. */}
+          {provider.kind === "azure" ? null : (
+            <Button
+              type="button"
+              variant="outline"
+              className={control}
+              disabled={syncing === provider.id}
+              onClick={() => {
+                void syncModels(provider);
+              }}
+            >
+              {syncing === provider.id ? "Syncing" : "Sync models"}
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -157,6 +199,16 @@ export function Providers() {
                     <code className="font-mono break-words">{`${added}/<model>`}</code>: the name
                     of the provider, a slash, and the name of the model.
                   </p>
+                  <p>
+                    Enable its models on the{" "}
+                    <Link
+                      to="/models"
+                      className="rounded-sm underline underline-offset-4 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                    >
+                      Models page
+                    </Link>{" "}
+                    first.
+                  </p>
                 </AlertDescription>
                 <AlertAction>
                   <Button
@@ -172,7 +224,34 @@ export function Providers() {
                 </AlertAction>
               </Alert>
             )}
+            {synced === null ? null : (
+              <Alert role="presentation" className={added === null ? "" : "mt-4"}>
+                <AlertTitle>Sync done</AlertTitle>
+                <AlertDescription>
+                  <p>{synced}</p>
+                </AlertDescription>
+                <AlertAction>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className={control}
+                    onClick={() => {
+                      setSynced(null);
+                    }}
+                  >
+                    Dismiss
+                  </Button>
+                </AlertAction>
+              </Alert>
+            )}
           </div>
+          {problem === null ? null : (
+            <Alert variant="destructive" className="mt-6">
+              <AlertDescription>
+                <p>{problem}</p>
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
       )}
       {failed ? (

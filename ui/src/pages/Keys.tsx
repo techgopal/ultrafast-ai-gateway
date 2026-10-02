@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { NO_TEAM } from "@/lib/keys";
+import { allowedSummary, NO_TEAM } from "@/lib/keys";
 import { CreateDialog } from "@/pages/KeysCreate";
 import {
   ANY,
@@ -94,6 +94,13 @@ const columns: Column<Key>[] = [
         <span className={`${longText} break-words md:max-w-64`}>{key.team_name}</span>
       ),
     sortValue: (key) => key.team_name,
+  },
+  {
+    id: "allowed",
+    header: "Models",
+    // "All", or how many models and routes the key is limited to.
+    cell: (key) => allowedSummary(key.allowed),
+    sortValue: (key) => key.allowed?.length ?? Number.POSITIVE_INFINITY,
   },
   {
     id: "expires_at",

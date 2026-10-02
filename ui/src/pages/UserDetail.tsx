@@ -10,7 +10,7 @@ import { NameDialog } from "@/components/NameDialog";
 import { NotFoundContent } from "@/components/NotFoundContent";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
-import { RoleBadge } from "@/components/RoleBadge";
+import { RoleBadge, TeamRoleBadge } from "@/components/RoleBadge";
 import { SecretDialog, useSecretOnce } from "@/components/SecretDialog";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timestamp } from "@/components/Timestamp";
@@ -300,6 +300,21 @@ function Details({ id }: { id: number }) {
         <dt className="text-muted-foreground">Status</dt>
         <dd>
           <StatusBadge status={shown.status} />
+        </dd>
+        <dt className="text-muted-foreground">Teams</dt>
+        <dd className="min-w-0">
+          {shown.teams.length === 0 ? (
+            "—"
+          ) : (
+            <ul aria-label="Teams" className="flex flex-col gap-1">
+              {shown.teams.map((team) => (
+                <li key={team.team_id} className="flex flex-wrap items-center gap-2">
+                  <span className="break-words">{team.name}</span>
+                  <TeamRoleBadge role={team.role} />
+                </li>
+              ))}
+            </ul>
+          )}
         </dd>
         <dt className="text-muted-foreground">Created</dt>
         <dd>

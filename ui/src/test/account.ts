@@ -179,6 +179,8 @@ export function passwordIs(current: string, tokens?: { tokens: fixtures.Token[] 
       tokens.tokens = tokens.tokens.map((token) => ({
         ...token,
         revoked_at: token.revoked_at ?? "2026-09-30 10:00:00",
+        // Revoked comes first, as the gateway says it.
+        status: "revoked",
       }));
     }
     return noContent();
@@ -222,7 +224,9 @@ export function keeps(start: readonly fixtures.Token[] = fixtures.tokenList) {
   override("delete", "/api/tokens/{id}", ({ params }) => {
     state.revoked.push(params.id);
     state.tokens = state.tokens.map((token) =>
-      String(token.id) === params.id ? { ...token, revoked_at: "2026-09-30 10:00:00" } : token,
+      String(token.id) === params.id
+          ? { ...token, revoked_at: "2026-09-30 10:00:00", status: "revoked" }
+          : token,
     );
     return noContent();
   });

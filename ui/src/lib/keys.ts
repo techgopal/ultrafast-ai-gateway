@@ -1,16 +1,17 @@
 // The rules of a new virtual key: who can own it and which teams it can
 // belong to, what of a choice is still offered when the choices change under
-// the form, the request that is made of the form, and what is known of a
-// team that was asked for. Pure functions: the form of `pages/KeysCreate`
-// asks them, and the gateway decides.
-import { ApiError, ConsoleRefusal, messageOfError } from "@/api/errors";
+// the form, and the request that is made of the form. Pure functions: the
+// form of `pages/KeysCreate` asks them, and the gateway decides.
+import { ConsoleRefusal } from "@/api/errors";
 import type { components } from "@/api/schema";
 import { can, type Me } from "@/auth/guards";
 import { expiryOf, type Expiry } from "@/lib/expiry";
 import { idOf } from "@/lib/id";
+import { refOf, sortModels } from "@/lib/models";
 
 type User = components["schemas"]["UserView"];
-type TeamDetail = components["schemas"]["TeamDetail"];
+type Model = components["schemas"]["ModelView"];
+type Route = components["schemas"]["RouteView"];
 type CreateKeyRequest = components["schemas"]["CreateKeyRequest"];
 
 export const CHOOSE_A_TEAM = "Choose a team.";
@@ -40,21 +41,12 @@ function byName(a: { name: string }, b: { name: string }): number {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
-/** Whether a team is there, as far as the form knows: see `ChoosingKeyForm`. */
-export type IsThere = (teamId: number) => boolean;
-
-/** Without a list of teams to ask, every team the viewer is in is taken to be there. */
-const everyTeam: IsThere = () => true;
-
 /**
  * The teams a key of the viewer's own can belong to: those they are in, in
- * any role. They come from what the session knows of the viewer, which can
- * be older than what the gateway says of the teams now: a team that is there
- * no more is not among them.
+ * any role, as the session knows them.
  */
-export function ownTeams(me: Me, isThere: IsThere = everyTeam): TeamChoice[] {
+export function ownTeams(me: Me): TeamChoice[] {
   return me.teams
-    .filter((team) => isThere(team.team_id))
     .filter((team) => can(me, { type: "createKeyForSelf", teamId: team.team_id }))
     .map((team) => ({ id: team.team_id, name: team.name }));
 }
@@ -64,24 +56,18 @@ export function ownTeams(me: Me, isThere: IsThere = everyTeam): TeamChoice[] {
  * of `POST /api/keys`): the owner is an active user; a key of another user
  * belongs to a team the viewer may make keys in, and that the owner is a
  * member of; only who may make keys for anyone may leave out the team.
- * `users` is what the gateway lists for the viewer; `open` are the teams in
- * which the viewer may make a key for another member, with their members;
- * `isThere` says which of the viewer's own teams are there.
+ * `users` is what the gateway lists for the viewer, each with the teams of
+ * the user that the viewer may see: the teams of an owner are read from it.
  */
-export function ownersFor(
-  me: Me,
-  users: readonly User[],
-  open: readonly TeamDetail[],
-  isThere: IsThere,
-): Owners {
+export function ownersFor(me: Me, users: readonly User[]): Owners {
   const anyone = can(me, { type: "createKeyForAnyone" });
-  const own = ownTeams(me, isThere);
+  const own = ownTeams(me);
   const teamsOf = (ownerId: number): TeamChoice[] =>
     ownerId === me.user.id
       ? own
-      : open
-          .filter((detail) => detail.members.some((member) => member.user_id === ownerId))
-          .map((detail) => ({ id: detail.team.id, name: detail.team.name }))
+      : (users.find((user) => user.id === ownerId)?.teams ?? [])
+          .filter((team) => can(me, { type: "createKeyForMember", teamId: team.team_id }))
+          .map((team) => ({ id: team.team_id, name: team.name }))
           .sort(byName);
   const others = users
     .filter((user) => user.id !== me.user.id && user.status === "active")
@@ -101,6 +87,10 @@ export interface KeyValues {
   /** The id of a team, `WITHOUT_TEAM`, or nothing while a team has to be chosen. */
   team_id: string;
   expires_at: Expiry;
+  /** `all`: the key may call whatever its owner may; `some`: only `allowed`. */
+  allow: "all" | "some";
+  /** The names of the models (`provider/model`) and routes that were checked. */
+  allowed: readonly string[];
 }
 
 /** The teams a key of one owner can belong to, and whether it can have none. */
@@ -182,8 +172,65 @@ export function choiceShown(
   return waiting ? chosen : choiceOffered(chosen, me, owners, teamsFor);
 }
 
-/** The request for the key. What cannot be sent is refused by the console itself. */
-export function requestOf(values: KeyValues, me: Me): CreateKeyRequest {
+export const CHOOSE_ALLOWED = "Choose at least one model or route.";
+
+/**
+ * The names to send as `allowed`, or nothing for no limit. Only names that
+ * are offered are sent, in the order the list offers them (a name that is
+ * offered no more is not sent: the gateway would refuse it). A limit with no
+ * name to send is refused by the console itself, on the field.
+ */
+export function allowedOf(
+  allow: "all" | "some",
+  chosen: readonly string[],
+  offered: readonly string[] | null,
+): string[] | undefined {
+  if (allow === "all") return undefined;
+  const names = (offered ?? []).filter((name) => chosen.includes(name));
+  if (names.length === 0) throw new ConsoleRefusal(CHOOSE_ALLOWED, "allowed");
+  return names;
+}
+
+/** A model or a route that a key can be limited to. Its id is the name a call uses. */
+export interface CallableItem {
+  id: string;
+  route: boolean;
+}
+
+/**
+ * What the lists of models and routes give as choices for the allowlist of a
+ * key: the models that are enabled (a disabled one cannot be called), as
+ * `provider/model`, then the routes by name. The gateway gives the caller
+ * only what they may use; for an admin it gives everything.
+ */
+export function callableItems(models: readonly Model[], routes: readonly Route[]): CallableItem[] {
+  const names = new Set<string>();
+  const items: CallableItem[] = [];
+  const add = (id: string, route: boolean) => {
+    if (names.has(id)) return;
+    names.add(id);
+    items.push({ id, route });
+  };
+  for (const model of sortModels(models.filter((one) => one.enabled))) add(refOf(model), false);
+  for (const route of [...routes].sort((a, b) => a.name.localeCompare(b.name))) add(route.name, true);
+  return items;
+}
+
+/** What the list of keys says of the models of a key: "All", or how many. */
+export function allowedSummary(allowed: readonly string[] | null): string {
+  return allowed === null ? "All" : String(allowed.length);
+}
+
+/**
+ * The request for the key. What cannot be sent is refused by the console
+ * itself. `offered` are the names of the models and routes that the form
+ * offers, `null` while they are not known.
+ */
+export function requestOf(
+  values: KeyValues,
+  me: Me,
+  offered: readonly string[] | null = null,
+): CreateKeyRequest {
   const body: CreateKeyRequest = { name: values.name };
   // Without an owner the gateway takes the caller.
   const owner = idOf(values.owner_id);
@@ -195,62 +242,7 @@ export function requestOf(values: KeyValues, me: Me): CreateKeyRequest {
   }
   const expires = expiryOf(values.expires_at);
   if (expires !== undefined) body.expires_at = expires;
+  const allowed = allowedOf(values.allow, values.allowed, offered);
+  if (allowed !== undefined) body.allowed = allowed;
   return body;
-}
-
-/** What is known of a team that was asked for. */
-export interface TeamRead {
-  data: TeamDetail | undefined;
-  error: unknown;
-  /** How often asking for it has failed. */
-  errorUpdateCount: number;
-}
-
-/** The team answered 404: it is gone, or not the viewer's to see any more. */
-export function isGone(read: TeamRead): boolean {
-  return read.data === undefined && read.error instanceof ApiError && read.error.status === 404;
-}
-
-/** The team is asked for, for the first time: nothing is known of it yet. */
-export function isFirstRead(read: TeamRead): boolean {
-  return read.data === undefined && read.error === null && read.errorUpdateCount === 0;
-}
-
-/**
- * The team is asked for again after a failure, and has not answered yet. For
- * that time the read says nothing of how it failed: whether the team was gone
- * is known only to who remembers it (`goneAmong`).
- */
-export function isAskedAgain(read: TeamRead): boolean {
-  return read.data === undefined && read.error === null && read.errorUpdateCount > 0;
-}
-
-/**
- * The team could not be read, or is asked for again after that. A team that
- * is gone is not among them: there is nothing to read, and a 404 is no read
- * that failed. Nor is one whose answer came for a session that is over, which
- * says nothing.
- */
-export function isMissing(read: TeamRead): boolean {
-  if (read.data !== undefined || isGone(read) || isFirstRead(read)) return false;
-  return read.error === null || messageOfError(read.error) !== null;
-}
-
-/**
- * The teams of `ids` that are gone: those that answer 404, and those that
- * did when they were last heard of (`before`) and are asked for again. Such a
- * team stays gone until it answers: while it is asked for, at every return to
- * the window, it is neither offered for that moment nor a team that could not
- * be loaded.
- */
-export function goneAmong(
-  ids: readonly number[],
-  reads: readonly TeamRead[],
-  before: readonly number[],
-): number[] {
-  return ids.filter((id, index) => {
-    const read = reads[index];
-    if (read === undefined) return false;
-    return isGone(read) || (isAskedAgain(read) && before.includes(id));
-  });
 }

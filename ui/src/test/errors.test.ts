@@ -29,6 +29,8 @@ const statuses: Record<ErrorName, number> = {
   no_password: 409,
   not_invited: 409,
   user_exists: 409,
+  user_not_found: 404,
+  already_member: 409,
   user_disabled: 409,
   team_exists: 409,
   provider_exists: 409,
@@ -173,4 +175,23 @@ test("the messages of the routes are in the gateway source", () => {
   expect(source).toContain('"must be {lo} to {hi}"');
   expect(fieldMessages.routeRetries).toBe("must be 0 to 5");
   expect(fieldMessages.routeFirstToken).toBe("must be 1000 to 300000");
+});
+
+test("the messages of team members, key allowlists and the API version are in the gateway source", () => {
+  const dir = fileURLToPath(new URL("../../../crates/gateway/src/", import.meta.url));
+  const source = ["api/teams.rs", "api/keys.rs", "api/providers.rs", "config.rs"]
+    .map((file) => readFileSync(dir + file, "utf8"))
+    .join("\n");
+  for (const message of [
+    errors.user_not_found.body.error.message,
+    errors.already_member.body.error.message,
+    fieldMessages.providerKind,
+    fieldMessages.apiVersionForm,
+    fieldMessages.apiVersionKind,
+  ]) {
+    expect(source).toContain(`"${message}`);
+  }
+  // The message about a name is made with the name: `'{name}' is not a model or route you can use`.
+  expect(source).toContain("'{name}' is not a model or route you can use");
+  expect(fieldMessages.allowedHidden).toBe("'gpt-secret' is not a model or route you can use");
 });

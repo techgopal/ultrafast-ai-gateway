@@ -51,7 +51,6 @@ import {
   SESSION_ENDED,
   settle,
   shown,
-  theClockIs,
   toasts,
 } from "@/test/pages";
 import { unauthenticated } from "@/test/render";
@@ -61,8 +60,6 @@ afterEach(forgetToasts);
 
 describe("the access tokens", () => {
   test("the list: name, what is shown of the token, expiry, last use and status", async () => {
-    // The status is worked out with the clock.
-    theClockIs(fixtures.now);
     await page();
     const tokens = await table();
     expect(within(tokens).getAllByRole("columnheader").map((th) => th.textContent)).toEqual([
@@ -77,7 +74,7 @@ describe("the access tokens", () => {
       const display = within(rowOf(token.name)).getByText(token.display);
       expect(display.className.split(/\s+/)).toContain("font-mono");
     }
-    // The status is worked out from what the API gives: it has no field for it.
+    // The status is what the API says.
     expect(fixtures.tokenList.map((token) => cellsOf(token.name)[4])).toEqual([
       "active",
       "active",
@@ -105,6 +102,18 @@ describe("the access tokens", () => {
     // A token itself is nowhere: the list has only what the gateway shows of it.
     expect(shown()).not.toContain(SECRET);
     expect(shown()).not.toMatch(/uf-at-[0-9a-f]{8}/);
+  });
+
+  test("the status is the one the gateway gives, whatever the times say", async () => {
+    // No time says so: only the status does. The console works nothing out.
+    tokensAre([
+      { ...active, status: "expired" },
+      { ...neverUsed, status: "revoked" },
+    ]);
+    await page();
+    await table();
+    expect(cellsOf(active.name)[4]).toBe("expired");
+    expect(cellsOf(neverUsed.name)[4]).toBe("revoked");
   });
 
   test("loading shows skeleton rows", async () => {
@@ -585,8 +594,6 @@ describe("creating a token", () => {
 
 describe("revoking a token", () => {
   test("token revoke", async () => {
-    // The status of the other tokens is worked out with the clock.
-    theClockIs(fixtures.now);
     const state = keeps();
     await page();
     await table();

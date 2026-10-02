@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 /** A long list scrolls inside its place. */
 const scrolling = "max-h-48 overflow-y-auto";
 
-export interface ChecksProps<T extends { id: number }> {
+export interface ChecksProps<T extends { id: number | string }> {
   wiring: FieldWiring;
   /** `null` while the list is on its way. */
   items: readonly T[] | null;
@@ -22,7 +22,7 @@ export interface ChecksProps<T extends { id: number }> {
 }
 
 /** A list of checkboxes, one for each thing that can be granted. */
-export function Checks<T extends { id: number }>({
+export function Checks<T extends { id: number | string }>({
   wiring,
   items,
   error,

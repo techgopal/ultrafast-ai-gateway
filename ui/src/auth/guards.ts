@@ -29,7 +29,11 @@ export type ConsoleAction =
   /** Adds a user to the team as a member. */
   | { type: "addMember"; teamId: number }
   | { type: "makeLead"; teamId: number }
-  | { type: "removeMember"; teamId: number }
+  /**
+   * Removes a user from the team. A lead removes members and may leave; only
+   * an admin removes another lead. `role` is the role of the user in the team.
+   */
+  | { type: "removeMember"; teamId: number; userId: number; role: string }
   /** `teamId` is `null` for a key that belongs to no team. */
   | { type: "createKeyForSelf"; teamId: number | null }
   /** For another user: only in a team the caller leads. */
@@ -92,9 +96,12 @@ export function can(me: Me, action: ConsoleAction): boolean {
       return action.userId === me.user.id;
     case "renameTeam":
     case "addMember":
-    case "removeMember":
     case "createKeyForMember":
       return leads(me, action.teamId);
+    case "removeMember":
+      return (
+        leads(me, action.teamId) && (action.role !== "lead" || action.userId === me.user.id)
+      );
     case "viewUserAndTeamCounts":
       return ledTeamIds(me).length > 0;
     case "viewTeam":

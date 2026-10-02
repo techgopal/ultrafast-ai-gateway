@@ -1,6 +1,6 @@
 import { useForm, useSelector } from "@tanstack/react-form";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useTeamDetails, useTeams, useUsers, type useCreateKey } from "@/api/queries";
+import { useEffect, useRef } from "react";
+import { useUsers, type useCreateKey } from "@/api/queries";
 import { can, type Me } from "@/auth/guards";
 import { control, cutLongChoice, selectList } from "@/components/classes";
 import { ErrorState } from "@/components/ErrorState";
@@ -9,8 +9,6 @@ import { Field } from "@/components/Field";
 import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -20,14 +18,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AllowedField, useCallable } from "@/pages/KeysAllowed";
 import { NO_EXPIRY } from "@/lib/expiry";
 import { idOf } from "@/lib/id";
 import {
   choiceOffered,
   choiceShown,
-  goneAmong,
-  isFirstRead,
-  isMissing,
   NO_TEAM,
   ownersFor,
   ownTeams,
@@ -39,8 +35,6 @@ import {
   type TeamChoices,
 } from "@/lib/keys";
 
-export const TEAMS_NOT_LOADED = "Some teams could not be loaded.";
-
 /** A select of a form: as wide as the form. */
 const selectTrigger = `${control} w-full ${cutLongChoice}`;
 
@@ -49,12 +43,7 @@ interface OwnerChoice {
   owners: Owners | null;
   /** Why they are not known. */
   error: unknown;
-  /**
-   * Some teams could not be read. The owners are known without them: a key
-   * of another user cannot be put into one of them until it is read.
-   */
-  teamsMissing: boolean;
-  /** Asks again for what is not known, and for the teams that could not be read. */
+  /** Asks again for what is not known. */
   retry: () => void;
 }
 
@@ -82,6 +71,8 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
     owner_id: String(me.user.id),
     team_id: WITHOUT_TEAM,
     expires_at: NO_EXPIRY,
+    allow: "all",
+    allowed: [],
   };
   const form = useForm({
     defaultValues: start,
@@ -92,7 +83,9 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
       try {
         // What is sent is what the form shows: see `choiceOffered`.
         const choice = choiceOffered(value, me, owners, teamsFor);
-        const made = await mutateAsync(requestOf({ ...value, ...choice }, me));
+        const made = await mutateAsync(
+          requestOf({ ...value, ...choice }, me, callable.items?.map((item) => item.id) ?? null),
+        );
         onCreated(made.secret);
       } catch (error) {
         applyApiError(form, error);
@@ -103,6 +96,9 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
   const onSubmit = useSubmit(form);
+  // The models and routes are read when the key is limited to some.
+  const allowHeld = useSelector(form.store, (state) => state.values.allow);
+  const callable = useCallable(allowHeld === "some");
 
   /** The teams of a key of this owner, and whether it can have none. */
   function teamsFor(ownerId: string): TeamChoices {
@@ -186,21 +182,6 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
           </div>
         )
       ) : null}
-      {choice?.teamsMissing === true && owners !== null ? (
-        <Alert variant="destructive">
-          <AlertDescription>
-            <p>{TEAMS_NOT_LOADED}</p>
-            <Button
-              type="button"
-              variant="outline"
-              className="mt-2 max-md:min-h-11"
-              onClick={choice.retry}
-            >
-              Retry
-            </Button>
-          </AlertDescription>
-        </Alert>
-      ) : null}
       {owners !== null ? (
         <form.Field name="owner_id">
           {(field) => (
@@ -279,6 +260,23 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
         )}
       </form.Field>
 
+      <form.Field name="allow">
+        {(allow) => (
+          <form.Field name="allowed">
+            {(allowed) => (
+              <AllowedField
+                mode={allow.state.value}
+                onMode={allow.handleChange}
+                chosen={allowed.state.value}
+                onChosen={allowed.handleChange}
+                callable={callable}
+                error={failure.fieldError(allowed.name)}
+              />
+            )}
+          </form.Field>
+        )}
+      </form.Field>
+
       <FormDialogFooter
         running={create.isPending}
         submit="Create key"
@@ -291,77 +289,22 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
 }
 
 /**
- * The form of who chooses the owner. The users and the teams with their
- * members are asked for when the dialog opens: the page does not need them.
- *
- * A team that cannot be read does not keep a key from being made: the form
- * goes on without it and says so, with Retry. A team that answers 404 is
- * gone since the list was read: it is offered no more, for a key of another
- * user and for a key of the viewer's own, nothing is said, and the list is
- * read again, which says which teams there are.
+ * The form of who chooses the owner. The users are asked for when the dialog
+ * opens: the page does not need them. Each comes with the teams of the user
+ * that the viewer may see, from which the teams of a key are chosen.
  */
 function ChoosingKeyForm(props: Omit<KeyFormProps, "choice">) {
   const { me } = props;
   const users = useUsers();
-  const teams = useTeams();
-  // The teams in which a key can be made for another member.
-  const ids = useMemo(
-    () =>
-      (teams.data?.teams ?? [])
-        .filter((team) => can(me, { type: "createKeyForMember", teamId: team.id }))
-        .map((team) => team.id),
-    [teams.data, me],
-  );
-  const details = useTeamDetails(ids);
-
-  // The teams that are gone. They are remembered from one render to the
-  // next, since a team that is asked for again says nothing until it answers.
-  const [goneBefore, setGoneBefore] = useState<readonly number[]>([]);
-  const gone = goneAmong(ids, details, goneBefore);
-  // As one text: the list is read again when it changes, and so once for a
-  // team, also when the list still names it and the team is asked for again.
-  const goneText = gone.join(" ");
-  if (goneText !== goneBefore.join(" ")) setGoneBefore(gone);
-  const { refetch: readTeams } = teams;
-  useEffect(() => {
-    if (goneText !== "") void readTeams();
-  }, [goneText, readTeams]);
-
-  let owners: Owners | null = null;
-  if (users.data !== undefined && teams.data !== undefined && !details.some(isFirstRead)) {
-    const known = details.flatMap((detail) => (detail.data === undefined ? [] : [detail.data]));
-    // A team is there when the list names it, and it did not answer 404. A
-    // list whose last reading failed can be older than the session: a team
-    // of the viewer's own is not taken away on its word.
-    const listed = new Set(teams.data.teams.map((team) => team.id));
-    const listFailed = teams.error !== null;
-    owners = ownersFor(
-      me,
-      users.data.users,
-      known,
-      (teamId) => (listFailed || listed.has(teamId)) && !gone.includes(teamId),
-    );
-  }
-  const missing = details.filter(
-    (detail, index) => isMissing(detail) && !gone.some((id) => id === ids[index]),
-  );
-  const error =
-    (users.data === undefined ? users.error : null) ??
-    (teams.data === undefined ? teams.error : null) ??
-    null;
-
+  const owners = users.data === undefined ? null : ownersFor(me, users.data.users);
   return (
     <KeyForm
       {...props}
       choice={{
         owners,
-        error,
-        teamsMissing: missing.length > 0,
+        error: users.data === undefined ? users.error : null,
         retry: () => {
-          if (users.data === undefined) void users.refetch();
-          // A team that cannot be read may be gone: the list says which there are.
-          if (teams.data === undefined || missing.length > 0) void teams.refetch();
-          for (const detail of missing) void detail.refetch();
+          void users.refetch();
         },
       }}
     />

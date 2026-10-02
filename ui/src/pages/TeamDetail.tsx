@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import {
+  useAddTeamMember,
   useDeleteTeam,
   usePutTeamMember,
   useRemoveTeamMember,
@@ -8,7 +9,7 @@ import {
   useTeam,
 } from "@/api/queries";
 import type { components } from "@/api/schema";
-import { can, type Me } from "@/auth/guards";
+import { can, isAdmin, type Me } from "@/auth/guards";
 import { useSession } from "@/auth/session";
 import { control } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -84,6 +85,7 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
   const toast = useToast();
   const rename = useRenameTeam();
   const remove = useDeleteTeam();
+  const add = useAddTeamMember();
   const put = usePutTeamMember();
   const removeMember = useRemoveTeamMember();
   const [asking, setAsking] = useState<Asking | null>(null);
@@ -96,9 +98,12 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
   const mayDelete = can(me, { type: "deleteTeam", teamId: id });
   const mayAdd = can(me, { type: "addMember", teamId: id });
   const mayChangeRoles = can(me, { type: "makeLead", teamId: id });
-  const mayRemove = can(me, { type: "removeMember", teamId: id });
   // Only who may read the list of all users is given it to choose from.
   const mayChoose = can(me, { type: "listAllUsers" });
+  // What may be removed is decided for each row: a lead does not remove another lead.
+  const mayRemoveOf = (row: Member) =>
+    can(me, { type: "removeMember", teamId: id, userId: row.user_id, role: row.role });
+  const mayRemoveAny = members.some(mayRemoveOf);
   const columns = useMemo(() => memberColumns(ownId), [ownId]);
 
   const own = member !== null && member.user_id === ownId;
@@ -109,6 +114,9 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
       { user: me.user, teams: me.teams.filter((one) => one.team_id !== id) },
       { type: "viewTeam", teamId: id },
     );
+  // A lead who is not an admin leaves their team; for everybody else it is "Remove".
+  const leavesWith = (row: Member) => row.user_id === ownId && !isAdmin(me);
+  const leaves = member !== null && leavesWith(member);
   const newRole = member?.role === "lead" ? "member" : "lead";
   const who = member?.name ?? "";
 
@@ -128,7 +136,7 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
   }
 
   const rowActions =
-    mayChangeRoles || mayRemove
+    mayChangeRoles || mayRemoveAny
       ? (row: Member) => (
           <>
             {mayChangeRoles ? (
@@ -141,14 +149,14 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
                 {row.role === "lead" ? "Make member" : "Make lead"}
               </Button>
             ) : null}
-            {mayRemove ? (
+            {mayRemoveOf(row) ? (
               <Button
                 type="button"
                 variant="outline"
                 className={control}
                 onClick={askAbout("remove", row)}
               >
-                Remove
+                {leavesWith(row) ? "Leave team" : "Remove"}
               </Button>
             ) : null}
           </>
@@ -232,13 +240,13 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
           open={asking === "add"}
           team={team}
           members={members}
-          fromList={mayChoose}
-          put={put}
+          withShortcut={mayChoose}
+          add={add}
           onCancel={() => {
-            closing(put.reset)(false);
+            closing(add.reset)(false);
           }}
           onDone={() => {
-            closing(put.reset)(false);
+            closing(add.reset)(false);
             toast(DONE.add);
           }}
         />
@@ -257,15 +265,15 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
           }}
         />
       ) : null}
-      {mayRemove ? (
+      {mayRemoveAny ? (
         <ConfirmDialog
           open={asking === "remove"}
           onOpenChange={closing(removeMember.reset)}
-          title={`Remove ${who}?`}
+          title={leaves ? "Leave this team?" : `Remove ${who}?`}
           body={
             losesAccess ? CONSEQUENCES.leave : own ? CONSEQUENCES.removeSelf : CONSEQUENCES.remove
           }
-          confirmLabel="Remove"
+          confirmLabel={leaves ? "Leave team" : "Remove"}
           tone="danger"
           onConfirm={async () => {
             if (member === null) return;

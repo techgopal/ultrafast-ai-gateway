@@ -1,169 +1,104 @@
 import { useForm } from "@tanstack/react-form";
 import { useMemo, useRef } from "react";
-import { ApiError, ConsoleRefusal } from "@/api/errors";
-import { useUsers, type usePutTeamMember } from "@/api/queries";
+import { ConsoleRefusal } from "@/api/errors";
+import { useUsers, type useAddTeamMember } from "@/api/queries";
 import type { components } from "@/api/schema";
-import { control } from "@/components/classes";
-import { ErrorState } from "@/components/ErrorState";
-import { Field, type FieldWiring } from "@/components/Field";
+import { control, cutLongChoice, selectList } from "@/components/classes";
+import { Field } from "@/components/Field";
 import { applyApiError, onField, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Skeleton } from "@/components/ui/skeleton";
-import { idOf } from "@/lib/id";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 type Team = components["schemas"]["TeamSummary"];
 type Member = components["schemas"]["MemberDetail"];
+type User = components["schemas"]["UserView"];
 
-export const NO_USER_WITH_ID = "No user with that ID.";
-export const USER_ID_HINT = "Ask an admin for the user's ID.";
-export const CHOOSE_A_USER = "Choose a user.";
-export const ALREADY_IN_TEAM = "Already in this team.";
-
-/** What the console says about the one field of the form. It is no answer of the gateway. */
-function onUserId(message: string): ConsoleRefusal {
-  return new ConsoleRefusal(message, "user_id");
-}
+export const ENTER_AN_EMAIL = "Enter the user's email.";
 
 /**
  * The refusals of the gateway that are about the user who is added, said by
- * the field. Each stays the answer of the gateway that it is.
+ * the field. Each stays the answer of the gateway that it is, with the words
+ * of the gateway: "No active user with that email." and "Already in this team.".
+ * A 404 that has another code is the team, which the form does not say.
  */
-export function aboutTheUser(error: unknown): unknown {
-  // The gateway says "not found"; the form says what was not found. It may be
-  // the team as well: `usePutTeamMember` asks for the team again, and when it
-  // is gone the page shows that in place of this form.
-  if (error instanceof ApiError && error.status === 404) {
-    return onField(error, error.code, "user_id", NO_USER_WITH_ID);
-  }
-  return onField(error, "user_disabled", "user_id");
-}
-
-type User = components["schemas"]["UserView"];
-
-/** The list the user is chosen from, for who may read it. */
-interface Choice {
-  /** Who can be added; `null` while they are not known. */
-  candidates: readonly User[] | null;
-  /** Why they are not known. */
-  error: unknown;
-  retry: () => void;
+export function aboutTheEmail(error: unknown): unknown {
+  return onField(onField(error, "user_not_found", "email"), "already_member", "email");
 }
 
 interface AddFormProps {
   team: Team;
   members: readonly Member[];
-  put: ReturnType<typeof usePutTeamMember>;
+  add: ReturnType<typeof useAddTeamMember>;
   onDone: () => void;
   onCancel: () => void;
 }
 
-function Candidates({
-  choice,
-  wiring,
-  value,
-  onChange,
-}: {
-  choice: Choice;
-  wiring: FieldWiring;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const { candidates } = choice;
-  if (candidates === null) {
-    if (choice.error !== null) return <ErrorState error={choice.error} onRetry={choice.retry} />;
-    return (
-      <div role="status" aria-busy="true" aria-label="Loading the users" className="flex flex-col gap-2">
-        <Skeleton className="h-4 w-full" />
-        <Skeleton className="h-4 w-full" />
-        <Skeleton className="h-4 w-full" />
-      </div>
-    );
-  }
-  if (candidates.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        Every user who can be added is in this team already.
-      </p>
-    );
-  }
-  const { id, name, ...described } = wiring;
-  return (
-    <RadioGroup
-      {...described}
-      id={id}
-      name={name}
-      value={value}
-      onValueChange={onChange}
-    >
-      {candidates.map((user) => (
-        <Label key={user.id} htmlFor={`${id}-${String(user.id)}`} className="min-h-11">
-          <RadioGroupItem id={`${id}-${String(user.id)}`} value={String(user.id)} />
-          <span className="flex min-w-0 flex-wrap gap-x-2">
-            <span>{user.name}</span>
-            <span className="font-normal break-all text-muted-foreground">{user.email}</span>
-          </span>
-        </Label>
-      ))}
-    </RadioGroup>
-  );
-}
-
 /**
- * The form of who chooses from the list of users: not who is in the team,
- * and not who is disabled. The list is asked for when the dialog opens.
+ * The users an admin can choose from, as a shortcut that fills the email:
+ * the active users who are not in the team. `null` while they are not known,
+ * and when they could not be read: the email can always be typed.
  */
-function AddFromListForm(props: AddFormProps) {
-  const users = useUsers();
-  const { members } = props;
-  const candidates = useMemo(() => {
-    if (users.data === undefined) return null;
-    const inTeam = new Set(members.map((member) => member.user_id));
-    return users.data.users.filter((user) => !inTeam.has(user.id) && user.status !== "disabled");
-  }, [users.data, members]);
+type Candidates = readonly User[] | null;
+
+function Shortcut({
+  candidates,
+  email,
+  onChoose,
+}: {
+  candidates: readonly User[];
+  email: string;
+  onChoose: (email: string) => void;
+}) {
+  // The choice is the user whose email is in the field: typing another clears it.
+  const chosen = candidates.find((user) => user.email === email)?.email ?? "";
   return (
-    <AddForm
-      {...props}
-      choice={{
-        candidates,
-        error: users.error,
-        retry: () => {
-          void users.refetch();
-        },
-      }}
-    />
+    <Field label="Choose a user" name="user">
+      {({ id, name, ...described }) => (
+        <Select name={name} value={chosen} onValueChange={onChoose}>
+          <SelectTrigger id={id} {...described} className={`${control} w-full ${cutLongChoice}`}>
+            <SelectValue placeholder="Choose a user" />
+          </SelectTrigger>
+          <SelectContent className={selectList}>
+            {candidates.map((user) => (
+              <SelectItem key={user.id} value={user.email}>
+                {`${user.name} (${user.email})`}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+    </Field>
   );
 }
 
 // Mounted while the dialog is open: every opening starts with an empty form.
 function AddForm({
   team,
-  members,
-  put,
+  add,
   onDone,
   onCancel,
-  choice,
-}: AddFormProps & { choice?: Choice }) {
-  const { mutateAsync } = put;
-  const fromList = choice !== undefined;
-  const anybody = choice === undefined || (choice.candidates ?? []).length > 0;
+  candidates,
+}: AddFormProps & { candidates: Candidates }) {
+  const { mutateAsync } = add;
   const form = useForm({
-    defaultValues: { user_id: "" },
+    defaultValues: { email: "" },
     onSubmit: async ({ value }) => {
       try {
-        const userId = idOf(value.user_id.trim());
-        // Nothing is sent for what is no id: the console refuses it itself.
-        if (userId === null) throw onUserId(fromList ? CHOOSE_A_USER : NO_USER_WITH_ID);
-        // The gateway would change the role of who is in the team already:
-        // a lead or a member is not "added" again.
-        if (members.some((member) => member.user_id === userId)) throw onUserId(ALREADY_IN_TEAM);
-        await mutateAsync({ id: team.id, userId, body: { role: "member" } });
+        const email = value.email.trim();
+        // Nothing is sent for nothing: the console refuses it itself.
+        if (email === "") throw new ConsoleRefusal(ENTER_AN_EMAIL, "email");
+        await mutateAsync({ id: team.id, body: { email } });
         onDone();
       } catch (error) {
-        applyApiError(form, aboutTheUser(error));
+        applyApiError(form, aboutTheEmail(error));
       }
     },
   });
@@ -181,30 +116,15 @@ function AddForm({
       onSubmit={onSubmit}
     >
       <FormError ref={errorRef} messages={failure.messages} />
-      <form.Field name="user_id">
-        {(field) =>
-          choice !== undefined ? (
-            <Field group label="User" name={field.name} error={failure.fieldError(field.name)}>
-              {(wiring) => (
-                <Candidates
-                  choice={choice}
-                  wiring={wiring}
-                  value={field.state.value}
-                  onChange={field.handleChange}
-                />
-              )}
-            </Field>
-          ) : (
-            <Field
-              label="User ID"
-              name={field.name}
-              required
-              hint={USER_ID_HINT}
-              error={failure.fieldError(field.name)}
-            >
+      <form.Field name="email">
+        {(field) => (
+          <>
+            <Field label="Email" name={field.name} required error={failure.fieldError(field.name)}>
               <Input
-                inputMode="numeric"
+                type="email"
                 autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
                 className={control}
                 value={field.state.value}
                 onBlur={field.handleBlur}
@@ -213,34 +133,53 @@ function AddForm({
                 }}
               />
             </Field>
-          )
-        }
+            {candidates !== null && candidates.length > 0 ? (
+              <Shortcut
+                candidates={candidates}
+                email={field.state.value}
+                onChoose={field.handleChange}
+              />
+            ) : null}
+          </>
+        )}
       </form.Field>
       <FormDialogFooter
-        running={put.isPending}
+        running={add.isPending}
         submit="Add member"
         submitting="Adding"
-        disabled={!anybody}
         onCancel={onCancel}
       />
     </form>
   );
 }
 
+/** For an admin, who may read the users: the shortcut is read when the dialog opens. */
+function AddWithShortcut(props: AddFormProps) {
+  const users = useUsers();
+  const { members } = props;
+  const candidates = useMemo(() => {
+    if (users.data === undefined) return null;
+    const inTeam = new Set(members.map((member) => member.user_id));
+    // The gateway adds an active user only.
+    return users.data.users.filter((user) => !inTeam.has(user.id) && user.status === "active");
+  }, [users.data, members]);
+  return <AddForm {...props} candidates={candidates} />;
+}
+
 export function AddDialog({
   open,
-  fromList,
+  withShortcut,
   ...form
-}: AddFormProps & { open: boolean; fromList: boolean }) {
+}: AddFormProps & { open: boolean; withShortcut: boolean }) {
   return (
     <FormDialog
       open={open}
-      running={form.put.isPending}
+      running={form.add.isPending}
       title="Add member"
       description="The user joins this team as a member."
       onCancel={form.onCancel}
     >
-      {fromList ? <AddFromListForm {...form} /> : <AddForm {...form} />}
+      {withShortcut ? <AddWithShortcut {...form} /> : <AddForm {...form} candidates={null} />}
     </FormDialog>
   );
 }

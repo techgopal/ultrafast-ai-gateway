@@ -2,7 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, onTestFinished, test, vi } from "vitest";
-import { queryKeys, teamsOptions } from "@/api/queries";
+import { queryKeys } from "@/api/queries";
 import { errors, fieldMessages, validationFailed } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
 import { gate, startGateway } from "@/test/gateway";
@@ -11,7 +11,6 @@ import {
   aCallFindsTheSessionEnded,
   cached,
   choose,
-  clientThatKeepsDataFresh,
   counted,
   descriptionOf,
   expectLabelsNameControls,
@@ -25,7 +24,6 @@ import {
   forgetToasts,
   held,
   href,
-  inside,
   installSelect,
   listenToConsole,
   optionsOf,
@@ -33,14 +31,12 @@ import {
   SESSION_ENDED,
   settle,
   shown,
-  theWindowGetsTheFocus,
   toasts,
-  watchTheDocument,
 } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
 const { maya, arjun, lena, tomas, priya, sam, dana } = fixtures.users;
-const { platform, research, growth } = fixtures.teams;
+const { platform, research } = fixtures.teams;
 const { active, suspended, expired, revoked, noOwner } = fixtures.keys;
 const SECRET = fixtures.newKeySecret;
 
@@ -194,6 +190,7 @@ describe("the list of keys", () => {
       "Key",
       "Owner",
       "Team",
+      "Models",
       "Expires",
       "Status",
       "Actions",
@@ -229,6 +226,20 @@ describe("the list of keys", () => {
     expect(shown()).not.toContain(SECRET);
     expectOneMain();
     expectOneH1();
+  });
+
+  test("the Models column says All for a key without a limit, and how many for one with a limit", async () => {
+    keysAre([
+      active,
+      { ...suspended, allowed: ["openai/gpt-4o", "support-chat", "research"] },
+      { ...noOwner, allowed: ["openai/gpt-4o-mini"] },
+    ]);
+    await page();
+    await table();
+    const cell = (key: fixtures.Key) => within(rowOf(key.name)).getAllByRole("cell")[4];
+    expect(cell(active)).toHaveTextContent(/^All$/);
+    expect(cell(suspended)).toHaveTextContent(/^3$/);
+    expect(cell(noOwner)).toHaveTextContent(/^1$/);
   });
 
   // As the queries by role they stand for: what a dialog hides is not there.
@@ -431,6 +442,7 @@ describe("the list of keys", () => {
       "Key",
       "Owner",
       "Team",
+      "Models",
       "Expires",
       "Status",
     ]);
@@ -517,6 +529,7 @@ describe("the list of keys", () => {
       "Key",
       "Owner",
       "Team",
+      "Models",
       "Expires",
       "Status",
     ]);
@@ -572,7 +585,8 @@ describe("creating a key", () => {
     const state = keeps([]);
     const users = counted("get", "/api/users", () => refuse(errors.internal_error));
     const teams = counted("get", "/api/teams", () => refuse(errors.internal_error));
-    const details = counted("get", "/api/teams/{id}", () => refuse(errors.internal_error));
+    const models = counted("get", "/api/models", () => refuse(errors.internal_error));
+    const routes = counted("get", "/api/routes", () => refuse(errors.internal_error));
     await page({ user: fixtures.me.lena });
     const dialog = await openCreate(false);
     // The owner is a text, not a choice.
@@ -592,7 +606,7 @@ describe("creating a key", () => {
     // No `owner_id`: the gateway takes the caller.
     expect(state.created).toEqual([{ name: "laptop" }]);
     // Nothing was asked for to fill the form.
-    expect([users.calls, teams.calls, details.calls]).toEqual([0, 0, 0]);
+    expect([users.calls, teams.calls, models.calls, routes.calls]).toEqual([0, 0, 0, 0]);
   });
 
   test("a member creates a key in their team", async () => {
@@ -608,16 +622,18 @@ describe("creating a key", () => {
 
   test("lead can choose a team member", async () => {
     // Dana was added to the team and disabled since.
-    const details = counted("get", "/api/teams/{id}", ({ params }) =>
-      params.id === String(platform.id)
-        ? ok("get", "/api/teams/{id}", 200, {
-            team: platform,
-            members: [
-              ...fixtures.teamDetails.platform.members,
-              { user_id: dana.id, email: dana.email, name: dana.name, role: "member" },
-            ],
-          })
-        : refuse(errors.not_found),
+    const details = counted("get", "/api/teams/{id}", () => refuse(errors.internal_error));
+    counted("get", "/api/users", () =>
+      ok("get", "/api/users", 200, {
+        users: fixtures.userList.map((user) =>
+          user.id === dana.id
+            ? {
+                ...user,
+                teams: [{ team_id: platform.id, name: platform.name, role: "member" as const }],
+              }
+            : user,
+        ),
+      }),
     );
     await page({ user: fixtures.me.arjun });
     const dialog = await openCreate();
@@ -625,8 +641,8 @@ describe("creating a key", () => {
     // themselves and the active members of the team they lead.
     expect(field(dialog, "Owner")).toHaveTextContent(person(arjun));
     expect(await optionsOf(field(dialog, "Owner"))).toEqual([person(arjun), person(lena)]);
-    // Only the team they lead was asked for: not Research, where they are a member.
-    expect(details.calls).toBe(1);
+    // No team is read: the teams of a user come with the users.
+    expect(details.calls).toBe(0);
   });
 
   test("a lead creates a key for a member, in a team they lead", async () => {
@@ -715,6 +731,207 @@ describe("creating a key", () => {
       expect(state.created).toEqual([
         { name: "tomas-notebook", owner_id: tomas.id, team_id: research.id },
       ]);
+    });
+  });
+
+  describe("the models a key may call", () => {
+    /** The names of the checkboxes of the dialog, by what they say. */
+    function boxes(dialog: HTMLElement): string[] {
+      return within(dialog)
+        .getAllByRole("checkbox")
+        .map((box) => box.closest("label")?.textContent ?? "");
+    }
+
+    /** The checkbox of the model or route of this name. */
+    function box(dialog: HTMLElement, name: string): HTMLElement {
+      const found = within(dialog)
+        .getAllByRole("checkbox")
+        .find((one) => {
+          const text = one.closest("label")?.textContent ?? "";
+          return text === name || text === `${name}Route`;
+        });
+      if (found === undefined) throw new Error(`no checkbox for ${name}`);
+      return found;
+    }
+
+    test("the default is all the models the owner can use: no list is sent, none is read", async () => {
+      const state = keeps([]);
+      const models = counted("get", "/api/models", () => refuse(errors.internal_error));
+      const routes = counted("get", "/api/routes", () => refuse(errors.internal_error));
+      await page();
+      const dialog = await openCreate();
+      const group = within(dialog).getByRole("radiogroup", { name: "Allowed models" });
+      expect(within(group).getByRole("radio", { name: "All models I can use" })).toBeChecked();
+      expect(within(dialog).queryByRole("checkbox")).toBeNull();
+      await named(dialog, "ci");
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "ci" }]);
+      expect([models.calls, routes.calls]).toEqual([0, 0]);
+    });
+
+    test("the labels of the form name controls, and the groups are named once, by their fields", async () => {
+      await page();
+      const dialog = await openCreate();
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Only these" }));
+      await within(dialog).findAllByRole("checkbox");
+      expectLabelsNameControls(dialog);
+      expect(within(dialog).getByRole("group", { name: "Models and routes" })).toBeInTheDocument();
+    });
+
+    test("an admin chooses among the enabled models and the routes, and the names are sent", async () => {
+      const state = keeps([]);
+      await page();
+      const dialog = await openCreate();
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Only these" }));
+      await within(dialog).findAllByRole("checkbox");
+      // The disabled model cannot be called: it is no choice. A route says what it is.
+      expect(boxes(dialog)).toEqual([
+        "local-llm/llama3.1:8b",
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini",
+        "legacy.v1Route",
+        "researchRoute",
+        "support-chatRoute",
+      ]);
+      await userEvent.click(box(dialog, "support-chat"));
+      await userEvent.click(box(dialog, "openai/gpt-4o-mini"));
+      await named(dialog, "ci");
+      await send(dialog);
+      await secretDialog();
+      // In the order the list offers them.
+      expect(state.created).toEqual([
+        { name: "ci", allowed: ["openai/gpt-4o-mini", "support-chat"] },
+      ]);
+    });
+
+    test("a member chooses among what the gateway says they can use", async () => {
+      const state = keeps([]);
+      override("get", "/api/models", () =>
+        ok("get", "/api/models", 200, { models: fixtures.callableModels }),
+      );
+      override("get", "/api/routes", () =>
+        ok("get", "/api/routes", 200, { routes: fixtures.routesForMember }),
+      );
+      await page({ user: fixtures.me.lena });
+      const dialog = await openCreate(false);
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Only these" }));
+      await within(dialog).findAllByRole("checkbox");
+      expect(boxes(dialog)).toEqual([
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini",
+        "researchRoute",
+        "support-chatRoute",
+      ]);
+      await userEvent.click(box(dialog, "research"));
+      await named(dialog, "ci");
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "ci", allowed: ["research"] }]);
+    });
+
+    test("only these with nothing chosen is refused by the console, on the field, and nothing is sent", async () => {
+      const state = keeps([]);
+      await page();
+      const dialog = await openCreate();
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Only these" }));
+      await within(dialog).findAllByRole("checkbox");
+      await named(dialog, "ci");
+      await send(dialog);
+      const group = within(dialog).getByRole("group", { name: "Models and routes" });
+      await waitFor(() => {
+        expect(descriptionOf(group)).toBe("Choose at least one model or route.");
+      });
+      await settle();
+      expect(state.created).toEqual([]);
+      // The error goes with the choice.
+      await userEvent.click(box(dialog, "openai/gpt-4o"));
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "ci", allowed: ["openai/gpt-4o"] }]);
+    });
+
+    test("back to all models: the names that were checked are not sent", async () => {
+      const state = keeps([]);
+      await page();
+      const dialog = await openCreate();
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Only these" }));
+      await within(dialog).findAllByRole("checkbox");
+      await userEvent.click(box(dialog, "openai/gpt-4o"));
+      await userEvent.click(within(dialog).getByRole("radio", { name: "All models I can use" }));
+      expect(within(dialog).queryByRole("checkbox")).toBeNull();
+      await named(dialog, "ci");
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "ci" }]);
+    });
+
+    test("a name that is offered no more is not sent", async () => {
+      const state = keeps([]);
+      const app = await page();
+      const dialog = await openCreate();
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Only these" }));
+      await within(dialog).findAllByRole("checkbox");
+      await userEvent.click(box(dialog, "openai/gpt-4o"));
+      await userEvent.click(box(dialog, "openai/gpt-4o-mini"));
+      // The model is deleted meanwhile, and the lists are read again.
+      override("get", "/api/models", () =>
+        ok("get", "/api/models", 200, {
+          models: fixtures.modelList.filter((model) => model.id !== fixtures.models.openaiFull.id),
+        }),
+      );
+      await act(async () => {
+        await app.queryClient.invalidateQueries({ queryKey: queryKeys.models.list() });
+      });
+      await waitFor(() => {
+        expect(boxes(dialog)).not.toContain("openai/gpt-4o");
+      });
+      await named(dialog, "ci");
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "ci", allowed: ["openai/gpt-4o-mini"] }]);
+    });
+
+    test("a name the gateway refuses is told on the field", async () => {
+      override("post", "/api/keys", () =>
+        refuse(validationFailed({ allowed: fieldMessages.allowedHidden })),
+      );
+      await page({ user: fixtures.me.lena });
+      const dialog = await openCreate(false);
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Only these" }));
+      await within(dialog).findAllByRole("checkbox");
+      await userEvent.click(box(dialog, "openai/gpt-4o"));
+      await named(dialog, "ci");
+      await send(dialog);
+      const group = within(dialog).getByRole("group", { name: "Models and routes" });
+      await waitFor(() => {
+        expect(descriptionOf(group)).toBe(fieldMessages.allowedHidden);
+      });
+      expect(toasts()).toEqual([]);
+    });
+
+    test("the lists: loading, failed with Retry", async () => {
+      override("get", "/api/routes", () => refuse(errors.internal_error));
+      await page();
+      const dialog = await openCreate();
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Only these" }));
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+        errors.internal_error.body.error.message,
+      );
+      expect(within(dialog).queryByRole("checkbox")).toBeNull();
+      const door = gate();
+      override("get", "/api/routes", async () => {
+        await door.opened;
+        return ok("get", "/api/routes", 200, { routes: fixtures.routeList });
+      });
+      await userEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+      expect(
+        await within(dialog).findByRole("status", { name: "Loading the models and routes" }),
+      ).toHaveAttribute("aria-busy", "true");
+      act(() => {
+        door.open();
+      });
+      expect((await within(dialog).findAllByRole("checkbox")).length).toBeGreaterThan(0);
     });
   });
 
@@ -1097,258 +1314,47 @@ describe("creating a key", () => {
     expect(within(dialog).queryByRole("alert")).toBeNull();
   });
 
-  describe("teams that cannot be read", () => {
-    const NOT_LOADED = "Some teams could not be loaded.";
-
-    /** Every team answers as the fixtures have it, but for these. */
-    function teamsAnswer(but: Record<number, () => Response | Promise<Response>> = {}) {
-      return counted("get", "/api/teams/{id}", ({ params }) => {
-        const id = Number(params.id);
-        const other = but[id];
-        if (other !== undefined) return other();
-        const detail = fixtures.teamDetailList.find((one) => one.team.id === id);
-        return detail === undefined
-          ? refuse(errors.not_found)
-          : ok("get", "/api/teams/{id}", 200, detail);
-      });
-    }
-
-    function listIs(teams: readonly fixtures.Team[]) {
-      return counted("get", "/api/teams", () => ok("get", "/api/teams", 200, { teams: [...teams] }));
-    }
-
-    const fails = () => refuse(errors.internal_error);
-    const isGone = () => refuse(errors.not_found);
-
-    /** The notice about the teams, which names no error of the gateway. */
-    function notice(dialog: HTMLElement): HTMLElement {
-      const found = within(dialog).getByRole("alert");
-      expect(found).toHaveTextContent(NOT_LOADED);
-      expect(found).not.toHaveTextContent(errors.internal_error.body.error.message);
-      return found;
-    }
-
-    test("one team of three that cannot be read: the dialog says so, and a key of one's own with no team is created", async () => {
-      const state = keeps();
-      const reads = teamsAnswer({ [research.id]: fails });
-      await page();
-      const dialog = await openCreate();
-      expect(reads.calls).toBe(fixtures.teamList.length);
-      expect(fixtures.teamList).toHaveLength(3);
-      expect(within(notice(dialog)).getByRole("button", { name: "Retry" })).toBeInTheDocument();
-      expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
-      expect(field(dialog, "Team")).toHaveTextContent("No team");
-      expect(within(dialog).getByRole("button", { name: "Create key" })).toBeEnabled();
-
-      await named(dialog, "laptop");
-      await send(dialog);
-      await secretDialog();
-      expect(state.created).toEqual([{ name: "laptop" }]);
-    });
-
-    test("the teams that were read stay usable, for every owner", async () => {
-      teamsAnswer({ [research.id]: fails });
-      await page();
-      const dialog = await openCreate();
-      notice(dialog);
-      // An admin still chooses among all active users.
-      expect(await optionsOf(field(dialog, "Owner"))).toEqual(
-        [maya, arjun, lena, priya, tomas].map(person),
+  describe("the choices follow the list of users", () => {
+    /** The users the gateway lists are these from now on, and they are read again. */
+    async function usersAre(app: AppRenderResult, users: readonly fixtures.User[]) {
+      const reads = counted("get", "/api/users", () =>
+        ok("get", "/api/users", 200, { users: [...users] }),
       );
-      // Arjun is in Platform and in Research: Platform was read.
-      await choose(field(dialog, "Owner"), person(arjun));
-      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", platform.name]);
-    });
-
-    test("Retry reads what failed again, and the teams are offered", async () => {
-      teamsAnswer({ [research.id]: fails });
-      await page();
-      const dialog = await openCreate();
-      await named(dialog, "notebook");
-      await choose(field(dialog, "Owner"), person(tomas));
-      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
-
-      const again = teamsAnswer();
-      await userEvent.click(within(notice(dialog)).getByRole("button", { name: "Retry" }));
-      await waitFor(() => {
-        expect(within(dialog).queryByRole("alert")).toBeNull();
+      await act(async () => {
+        await app.queryClient.invalidateQueries({ queryKey: queryKeys.users.list() });
       });
-      // Only what failed was asked for again, and the form is as it was.
-      expect(again.calls).toBe(1);
-      expect(within(dialog).getByLabelText("Name")).toHaveValue("notebook");
-      expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
-      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
-    });
-
-    test("while it is read again the form stays, and a second failure says the same", async () => {
-      teamsAnswer({ [research.id]: fails });
-      await page();
-      const dialog = await openCreate();
-      const door = gate();
-      const again = teamsAnswer({
-        [research.id]: async () => {
-          await door.opened;
-          return fails();
-        },
-      });
-      await userEvent.click(within(notice(dialog)).getByRole("button", { name: "Retry" }));
-      await waitFor(() => {
-        expect(again.calls).toBe(1);
-      });
-      // No skeleton in place of the form, and the key can be made meanwhile.
-      expect(within(dialog).queryByRole("status")).toBeNull();
-      expect(field(dialog, "Owner")).toBeInTheDocument();
-      expect(within(dialog).getByRole("button", { name: "Create key" })).toBeEnabled();
-      notice(dialog);
-      act(() => {
-        door.open();
-      });
-      await settle();
-      notice(dialog);
-      expect(field(dialog, "Owner")).toBeInTheDocument();
-    });
-
-    test("a lead whose team cannot be read still makes a key of their own in it", async () => {
-      const state = keeps();
-      const reads = teamsAnswer({ [platform.id]: fails });
-      await page({ user: fixtures.me.arjun });
-      const dialog = await openCreate();
       expect(reads.calls).toBe(1);
-      notice(dialog);
-      // The members of the team are not known: only the lead is offered as the owner.
-      expect(await optionsOf(field(dialog, "Owner"))).toEqual([person(arjun)]);
-      // Their own teams are known without the read.
+    }
+
+    /** The users, but the user is in these teams only. */
+    function inTeams(user: fixtures.User, teams: readonly fixtures.Team[]): fixtures.User[] {
+      return fixtures.userList.map((one) =>
+        one.id === user.id
+          ? {
+              ...one,
+              teams: teams.map((team) => ({
+                team_id: team.id,
+                name: team.name,
+                role: "member" as const,
+              })),
+            }
+          : one,
+      );
+    }
+
+    test("the teams of an owner come from the user list: no team is read for them", async () => {
+      const details = counted("get", "/api/teams/{id}", () => refuse(errors.internal_error));
+      const teams = counted("get", "/api/teams", () => refuse(errors.internal_error));
+      await page();
+      const dialog = await openCreate();
+      await choose(field(dialog, "Owner"), person(arjun));
       expect(await optionsOf(field(dialog, "Team"))).toEqual([
         "No team",
         platform.name,
         research.name,
       ]);
-      await named(dialog, "ci");
-      await choose(field(dialog, "Team"), platform.name);
-      await send(dialog);
-      await secretDialog();
-      expect(state.created).toEqual([{ name: "ci", team_id: platform.id }]);
+      expect([details.calls, teams.calls]).toEqual([0, 0]);
     });
-
-    test("a team that is gone when the dialog opens is not offered: no error, and the list is read again by itself", async () => {
-      // The list was read before the team was deleted.
-      const app = await page({ queryClient: clientThatKeepsDataFresh() });
-      await act(async () => {
-        await app.queryClient.query(teamsOptions());
-      });
-      const reads = teamsAnswer({ [research.id]: isGone });
-      const lists = listIs(fixtures.teamList.filter((team) => team.id !== research.id));
-      const dialog = await openCreate();
-      await waitFor(() => {
-        expect(lists.calls).toBe(1);
-      });
-      expect(within(dialog).queryByRole("alert")).toBeNull();
-      expect(dialog).not.toHaveTextContent(errors.not_found.body.error.message);
-      await choose(field(dialog, "Owner"), person(tomas));
-      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
-      expect(within(dialog).getByRole("button", { name: "Create key" })).toBeEnabled();
-      await settle();
-      // The team that is gone was asked for once, and the list once.
-      expect(reads.calls).toBe(fixtures.teamList.length);
-      expect(lists.calls).toBe(1);
-      expect(within(dialog).queryByRole("alert")).toBeNull();
-    });
-
-    test("a team that is gone while the dialog is open is offered no more: no error, and the list is read again by itself", async () => {
-      const app = await page();
-      const dialog = await openCreate();
-      await named(dialog, "notebook");
-      await choose(field(dialog, "Owner"), person(tomas));
-      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
-
-      // Research is deleted meanwhile. Asked for again, it answers 404.
-      const reads = teamsAnswer({ [research.id]: isGone });
-      const lists = listIs(fixtures.teamList.filter((team) => team.id !== research.id));
-      const key = queryKeys.teams.detail(research.id);
-      await act(async () => {
-        await app.queryClient.invalidateQueries({ queryKey: key });
-      });
-      // What was loaded of the team is dropped, and the list says which teams there are.
-      await waitFor(() => {
-        expect(lists.calls).toBe(1);
-      });
-      expect(app.queryClient.getQueryData(key)).toBeUndefined();
-      expect(within(dialog).queryByRole("alert")).toBeNull();
-      expect(dialog).not.toHaveTextContent(errors.not_found.body.error.message);
-      expect(within(dialog).queryByRole("status")).toBeNull();
-      // The form is as it was, without the team.
-      expect(within(dialog).getByLabelText("Name")).toHaveValue("notebook");
-      expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
-      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
-      expect(within(dialog).getByRole("button", { name: "Create key" })).toBeEnabled();
-      await settle();
-      expect([reads.calls, lists.calls]).toEqual([1, 1]);
-    });
-
-    test("a team that answers 404 though the list still names it is not offered, and the list is read again once", async () => {
-      const app = await page();
-      const dialog = await openCreate();
-      const reads = teamsAnswer({ [research.id]: isGone });
-      const lists = listIs(fixtures.teamList);
-      await act(async () => {
-        await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(research.id) });
-      });
-      await waitFor(() => {
-        expect(lists.calls).toBe(1);
-      });
-      await settle(60);
-      // Not again and again, also not when the dialog has something new to show.
-      act(() => {
-        app.queryClient.setQueryData(queryKeys.teams.detail(platform.id), {
-          team: platform,
-          members: [],
-        });
-      });
-      await settle(60);
-      expect([reads.calls, lists.calls]).toEqual([1, 1]);
-      expect(within(dialog).queryByRole("alert")).toBeNull();
-      await choose(field(dialog, "Owner"), person(tomas));
-      expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
-    });
-
-    test("Retry does not ask again for a team that is gone", async () => {
-      // Research cannot be read; Growth is gone, though the list goes on naming it.
-      const asked: number[] = [];
-      counted("get", "/api/teams/{id}", ({ params }) => {
-        asked.push(Number(params.id));
-        if (params.id === String(research.id)) return fails();
-        if (params.id === String(growth.id)) return isGone();
-        return ok("get", "/api/teams/{id}", 200, fixtures.teamDetails.platform);
-      });
-      const lists = listIs(fixtures.teamList);
-      await page();
-      const dialog = await openCreate();
-      await waitFor(() => {
-        expect(lists.calls).toBe(2);
-      });
-      expect([...asked].sort()).toEqual([platform.id, research.id, growth.id]);
-
-      await userEvent.click(within(notice(dialog)).getByRole("button", { name: "Retry" }));
-      await waitFor(() => {
-        expect(asked).toHaveLength(4);
-      });
-      await settle();
-      // Only the team that could not be read: the one that is gone is not asked for again.
-      expect(asked.slice(3)).toEqual([research.id]);
-      notice(dialog);
-    });
-
-    /** The team answers 404 from now on, and the list of teams is without it. */
-    async function vanishes(app: AppRenderResult, team: fixtures.Team): Promise<void> {
-      teamsAnswer({ [team.id]: isGone });
-      const lists = listIs(fixtures.teamList.filter((one) => one.id !== team.id));
-      await act(async () => {
-        await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(team.id) });
-      });
-      await waitFor(() => {
-        expect(lists.calls).toBe(1);
-      });
-    }
 
     test("the team that was chosen is gone: the choice is no team again, and the request has no team", async () => {
       const state = keeps();
@@ -1359,9 +1365,11 @@ describe("creating a key", () => {
       await choose(field(dialog, "Team"), research.name);
       expect(field(dialog, "Team")).toHaveTextContent(research.name);
 
-      await vanishes(app, research);
+      await usersAre(app, inTeams(tomas, []));
+      await waitFor(() => {
+        expect(field(dialog, "Team")).toHaveTextContent("No team");
+      });
       const team = field(dialog, "Team");
-      expect(team).toHaveTextContent("No team");
       expect(team).not.toHaveTextContent(research.name);
       expect(team).not.toHaveAttribute("aria-invalid");
       expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
@@ -1379,20 +1387,10 @@ describe("creating a key", () => {
         ...fixtures.me.arjun,
         teams: fixtures.me.arjun.teams.map((team) => ({ ...team, role: "lead" })),
       };
-      const researchWithLena: fixtures.TeamDetail = {
-        team: research,
-        members: [
-          ...fixtures.teamDetails.research.members,
-          { user_id: lena.id, email: lena.email, name: lena.name, role: "member" },
-        ],
-      };
-      const details = (but: Record<number, () => Response> = {}) =>
-        teamsAnswer({
-          [research.id]: () => ok("get", "/api/teams/{id}", 200, researchWithLena),
-          ...but,
-        });
       const state = keeps();
-      details();
+      counted("get", "/api/users", () =>
+        ok("get", "/api/users", 200, { users: inTeams(lena, [platform, research]) }),
+      );
       const app = await page({ user: leadOfBoth });
       const dialog = await openCreate();
       await named(dialog, "lena-ci");
@@ -1400,17 +1398,12 @@ describe("creating a key", () => {
       expect(await optionsOf(field(dialog, "Team"))).toEqual([platform.name, research.name]);
       await choose(field(dialog, "Team"), research.name);
 
-      details({ [research.id]: isGone });
-      const lists = listIs(fixtures.teamList.filter((one) => one.id !== research.id));
-      await act(async () => {
-        await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.detail(research.id) });
-      });
-      await waitFor(() => {
-        expect(lists.calls).toBe(1);
-      });
+      await usersAre(app, inTeams(lena, [platform]));
       // "No team" is no choice for a key of another user: the team that is left is chosen.
+      await waitFor(() => {
+        expect(field(dialog, "Team")).toHaveTextContent(platform.name);
+      });
       expect(field(dialog, "Owner")).toHaveTextContent(person(lena));
-      expect(field(dialog, "Team")).toHaveTextContent(platform.name);
       expect(await optionsOf(field(dialog, "Team"))).toEqual([platform.name]);
       await send(dialog);
       await secretDialog();
@@ -1426,15 +1419,10 @@ describe("creating a key", () => {
       await choose(field(dialog, "Team"), research.name);
 
       // Tomas is deleted meanwhile, and the users are read again.
-      const users = counted("get", "/api/users", () =>
-        ok("get", "/api/users", 200, {
-          users: fixtures.userList.filter((user) => user.id !== tomas.id),
-        }),
+      await usersAre(
+        app,
+        fixtures.userList.filter((user) => user.id !== tomas.id),
       );
-      await act(async () => {
-        await app.queryClient.invalidateQueries({ queryKey: queryKeys.users.list() });
-      });
-      expect(users.calls).toBe(1);
       await waitFor(() => {
         expect(field(dialog, "Owner")).toHaveTextContent(person(maya));
       });
@@ -1448,351 +1436,109 @@ describe("creating a key", () => {
       expect(state.created).toEqual([{ name: "notebook" }]);
     });
 
-    describe("one choice, never a stale one", () => {
-      /** The users the gateway lists are these from now on, and they are read again. */
-      async function usersAre(app: AppRenderResult, users: readonly fixtures.User[]) {
-        const reads = counted("get", "/api/users", () =>
-          ok("get", "/api/users", 200, { users: [...users] }),
-        );
-        await act(async () => {
-          await app.queryClient.invalidateQueries({ queryKey: queryKeys.users.list() });
-        });
-        expect(reads.calls).toBe(1);
-      }
+    test("the last team of the owner whom a lead can make a key for is gone: the owner is the lead again, whose team is not chosen for them", async () => {
+      const state = keeps();
+      const app = await page({ user: fixtures.me.arjun });
+      const dialog = await openCreate();
+      await named(dialog, "lena-ci");
+      await choose(field(dialog, "Owner"), person(lena));
+      await choose(field(dialog, "Team"), platform.name);
+      expect(field(dialog, "Team")).toHaveTextContent(platform.name);
 
-      test("a team of the viewer's own that is gone is offered for their own key no more, and is not sent", async () => {
-        // Arjun leads Platform and is a member of Research.
-        const state = keeps();
-        const app = await page({ user: fixtures.me.arjun });
-        const dialog = await openCreate();
-        await named(dialog, "ci");
-        await choose(field(dialog, "Team"), platform.name);
-        expect(field(dialog, "Team")).toHaveTextContent(platform.name);
-
-        await vanishes(app, platform);
-        const team = field(dialog, "Team");
-        await waitFor(() => {
-          expect(team).toHaveTextContent("No team");
-        });
+      // Lena leaves Platform. Arjun is in Platform himself.
+      await usersAre(app, inTeams(lena, []));
+      await waitFor(() => {
         expect(field(dialog, "Owner")).toHaveTextContent(person(arjun));
-        expect(await optionsOf(team)).toEqual(["No team", research.name]);
-        expect(within(dialog).queryByRole("alert")).toBeNull();
-
-        await send(dialog);
-        await secretDialog();
-        expect(state.created).toEqual([{ name: "ci" }]);
       });
+      // Not Platform, which nobody chose for a key of Arjun's.
+      const team = field(dialog, "Team");
+      expect(team).toHaveTextContent("No team");
+      expect(team).not.toHaveTextContent(platform.name);
+      // Platform is still his to choose.
+      expect(await optionsOf(team)).toEqual(["No team", platform.name, research.name]);
+      expect(await optionsOf(field(dialog, "Owner"))).toEqual([person(arjun)]);
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "lena-ci" }]);
+    });
 
-      test("the same while the list of teams still names the team that answers 404", async () => {
-        const state = keeps();
-        const app = await page({ user: fixtures.me.arjun });
-        const dialog = await openCreate();
-        await named(dialog, "ci");
-        await choose(field(dialog, "Team"), platform.name);
-
-        teamsAnswer({ [platform.id]: isGone });
-        const lists = listIs(fixtures.teamList);
-        await act(async () => {
-          await app.queryClient.invalidateQueries({
-            queryKey: queryKeys.teams.detail(platform.id),
-          });
-        });
-        await waitFor(() => {
-          expect(lists.calls).toBe(1);
-        });
-        const team = field(dialog, "Team");
-        await waitFor(() => {
-          expect(team).toHaveTextContent("No team");
-        });
-        expect(await optionsOf(team)).toEqual(["No team", research.name]);
-        await send(dialog);
-        await secretDialog();
-        expect(state.created).toEqual([{ name: "ci" }]);
+    test("what the gateway said of a team goes when that team is the choice no more", async () => {
+      const posts = counted("post", "/api/keys", () =>
+        refuse(validationFailed({ team_id: fieldMessages.teamIdOwner })),
+      );
+      const app = await page();
+      const dialog = await openCreate();
+      await named(dialog, "notebook");
+      await choose(field(dialog, "Owner"), person(tomas));
+      await choose(field(dialog, "Team"), research.name);
+      await send(dialog);
+      const team = field(dialog, "Team");
+      await waitFor(() => {
+        expect(descriptionOf(team)).toBe(fieldMessages.teamIdOwner);
       });
+      expect(team).toHaveAttribute("aria-invalid", "true");
 
-      test("a team of the viewer's own that is gone when the dialog opens is not offered", async () => {
-        teamsAnswer({ [platform.id]: isGone });
-        listIs(fixtures.teamList);
-        await page({ user: fixtures.me.arjun });
-        const dialog = await openCreate();
-        expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
-        expect(within(dialog).queryByRole("alert")).toBeNull();
-      });
-
-      test("the team of another owner is gone, and with it the owner: the owner is the viewer again, with no team, though the viewer was in that team", async () => {
-        const state = keeps();
-        const app = await page({ user: fixtures.me.arjun });
-        const dialog = await openCreate();
-        await named(dialog, "lena-ci");
-        await choose(field(dialog, "Owner"), person(lena));
-        await choose(field(dialog, "Team"), platform.name);
-
-        // Platform was the one team in which Arjun could make a key for Lena.
-        await vanishes(app, platform);
-        await waitFor(() => {
-          expect(field(dialog, "Owner")).toHaveTextContent(person(arjun));
-        });
-        expect(field(dialog, "Team")).toHaveTextContent("No team");
-        expect(await optionsOf(field(dialog, "Owner"))).toEqual([person(arjun)]);
-        expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team", research.name]);
-        await send(dialog);
-        await secretDialog();
-        expect(state.created).toEqual([{ name: "lena-ci" }]);
-      });
-
-      test("the owner that was chosen is offered no more, and the viewer is in the team that was chosen for them: the team is reset as when the owner is changed by hand", async () => {
-        const state = keeps();
-        const app = await page({ user: fixtures.me.arjun });
-        const dialog = await openCreate();
-        await named(dialog, "lena-ci");
-        await choose(field(dialog, "Owner"), person(lena));
-        await choose(field(dialog, "Team"), platform.name);
-        expect(field(dialog, "Team")).toHaveTextContent(platform.name);
-
-        // Lena is deleted meanwhile. Arjun is in Platform himself.
-        await usersAre(
-          app,
-          fixtures.userList.filter((user) => user.id !== lena.id),
-        );
-        await waitFor(() => {
-          expect(field(dialog, "Owner")).toHaveTextContent(person(arjun));
-        });
-        // Not Platform, which nobody chose for a key of Arjun's.
-        const team = field(dialog, "Team");
+      await usersAre(app, inTeams(tomas, []));
+      await waitFor(() => {
         expect(team).toHaveTextContent("No team");
-        expect(team).not.toHaveTextContent(platform.name);
-        // Platform is still his to choose.
-        expect(await optionsOf(team)).toEqual(["No team", platform.name, research.name]);
-        await send(dialog);
-        await secretDialog();
-        expect(state.created).toEqual([{ name: "lena-ci" }]);
       });
-
-      test("what the gateway said of a team goes when that team is the choice no more", async () => {
-        const posts = counted("post", "/api/keys", () =>
-          refuse(validationFailed({ team_id: fieldMessages.teamIdOwner })),
-        );
-        const app = await page();
-        const dialog = await openCreate();
-        await named(dialog, "notebook");
-        await choose(field(dialog, "Owner"), person(tomas));
-        await choose(field(dialog, "Team"), research.name);
-        await send(dialog);
-        const team = field(dialog, "Team");
-        await waitFor(() => {
-          expect(descriptionOf(team)).toBe(fieldMessages.teamIdOwner);
-        });
-        expect(team).toHaveAttribute("aria-invalid", "true");
-
-        await vanishes(app, research);
-        await waitFor(() => {
-          expect(team).toHaveTextContent("No team");
-        });
-        // The error was about Research. The form shows another choice now, and holds it.
-        await waitFor(() => {
-          expect(team).not.toHaveAttribute("aria-invalid");
-        });
-        expect(descriptionOf(team)).toBe("");
-        expect(within(dialog).queryByRole("alert")).toBeNull();
-        expect(dialog).not.toHaveTextContent(fieldMessages.teamIdOwner);
-        expect(posts.calls).toBe(1);
+      // The error was about Research. The form shows another choice now, and holds it.
+      await waitFor(() => {
+        expect(team).not.toHaveAttribute("aria-invalid");
       });
+      expect(descriptionOf(team)).toBe("");
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      expect(dialog).not.toHaveTextContent(fieldMessages.teamIdOwner);
+      expect(posts.calls).toBe(1);
+    });
 
-      test("a team that comes back is offered again, and the choice stays what the form showed", async () => {
-        const state = keeps();
-        const app = await page();
-        const dialog = await openCreate();
-        await named(dialog, "notebook");
-        await choose(field(dialog, "Owner"), person(tomas));
-        await choose(field(dialog, "Team"), research.name);
-        await vanishes(app, research);
-        await waitFor(() => {
-          expect(field(dialog, "Team")).toHaveTextContent("No team");
-        });
-
-        // The team is there again: the list names it, and it answers.
-        const reads = teamsAnswer();
-        listIs(fixtures.teamList);
-        await act(async () => {
-          await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.list() });
-        });
-        await waitFor(() => {
-          expect(reads.calls).toBeGreaterThan(0);
-        });
-        await settle(60);
-        const team = field(dialog, "Team");
-        // Not Research, which the form showed no more, and not an empty choice.
-        expect(team).toHaveTextContent("No team");
-        expect(team).not.toHaveTextContent("Choose a team");
-        expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
-        expect(await optionsOf(team)).toEqual(["No team", research.name]);
-        await send(dialog);
-        await secretDialog();
-        expect(within(dialog).queryByText("Choose a team.")).toBeNull();
-        expect(state.created).toEqual([{ name: "notebook", owner_id: tomas.id }]);
-      });
-
-      test("an owner who comes back is offered again, and the owner stays the viewer", async () => {
-        const state = keeps();
-        const app = await page();
-        const dialog = await openCreate();
-        await named(dialog, "notebook");
-        await choose(field(dialog, "Owner"), person(tomas));
-        await usersAre(
-          app,
-          fixtures.userList.filter((user) => user.id !== tomas.id),
-        );
-        await waitFor(() => {
-          expect(field(dialog, "Owner")).toHaveTextContent(person(maya));
-        });
-
-        await usersAre(app, fixtures.userList);
-        await settle(60);
+    test("an owner who comes back is offered again, and the owner stays the viewer", async () => {
+      const state = keeps();
+      const app = await page();
+      const dialog = await openCreate();
+      await named(dialog, "notebook");
+      await choose(field(dialog, "Owner"), person(tomas));
+      await usersAre(
+        app,
+        fixtures.userList.filter((user) => user.id !== tomas.id),
+      );
+      await waitFor(() => {
         expect(field(dialog, "Owner")).toHaveTextContent(person(maya));
-        expect(field(dialog, "Team")).toHaveTextContent("No team");
-        expect(await optionsOf(field(dialog, "Owner"))).toEqual(
-          [maya, arjun, lena, priya, tomas].map(person),
-        );
-        await send(dialog);
-        await secretDialog();
-        expect(state.created).toEqual([{ name: "notebook" }]);
       });
 
-      test("a team that is gone though the list names it says nothing when the window gets the focus, and the list is not read again for it", async () => {
-        const app = await page();
-        const dialog = await openCreate();
-        teamsAnswer({ [research.id]: isGone });
-        listIs(fixtures.teamList);
-        await act(async () => {
-          await app.queryClient.invalidateQueries({
-            queryKey: queryKeys.teams.detail(research.id),
-          });
-        });
-        await settle(60);
-        expect(within(dialog).queryByRole("alert")).toBeNull();
+      await usersAre(app, fixtures.userList);
+      await settle(60);
+      expect(field(dialog, "Owner")).toHaveTextContent(person(maya));
+      expect(field(dialog, "Team")).toHaveTextContent("No team");
+      expect(await optionsOf(field(dialog, "Owner"))).toEqual(
+        [maya, arjun, lena, priya, tomas].map(person),
+      );
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "notebook" }]);
+    });
 
-        // The user comes back to the tab: everything that is shown is read
-        // again, the team that is gone as well. Its answer is held.
-        const door = gate();
-        const reads = teamsAnswer({
-          [research.id]: async () => {
-            await door.opened;
-            return isGone();
-          },
-        });
-        const lists = listIs(fixtures.teamList);
-        const watch = watchTheDocument((scope) =>
-          inside(scope, '[role="alert"]').some((alert) => alert.textContent.includes(NOT_LOADED))
-            ? [NOT_LOADED]
-            : [],
-        );
-        theWindowGetsTheFocus();
-        await waitFor(() => {
-          expect([reads.calls, lists.calls]).toEqual([fixtures.teamList.length, 1]);
-        });
-        await settle(60);
-        // While it is asked for again it is not a team that could not be loaded.
-        expect(within(dialog).queryByRole("alert")).toBeNull();
-        act(() => {
-          door.open();
-        });
-        await settle(60);
-        expect(watch.seen()).toEqual([]);
-        // The list was read by the focus, once, and not again for the team that is still gone.
-        expect(lists.calls).toBe(1);
-        await choose(field(dialog, "Owner"), person(tomas));
-        expect(await optionsOf(field(dialog, "Team"))).toEqual(["No team"]);
+    test("while the owners are not known nothing is sent, also not by a submit of the form itself", async () => {
+      const door = gate();
+      counted("get", "/api/users", async () => {
+        await door.opened;
+        return ok("get", "/api/users", 200, { users: fixtures.userList });
       });
-
-      test("while a new team is read for the first time the owners are not known: the team chosen for another owner stays, and is sent", async () => {
-        const state = keeps();
-        const app = await page();
-        const dialog = await openCreate();
-        await named(dialog, "notebook");
-        await choose(field(dialog, "Owner"), person(tomas));
-        await choose(field(dialog, "Team"), research.name);
-
-        // Somebody makes a team, which the list names when it is read again.
-        // Its first read is held: for that time the owners are not known.
-        const design: fixtures.Team = {
-          id: 4,
-          name: "Design",
-          member_count: 0,
-          created_at: "2026-09-30 09:00:00",
-        };
-        const door = gate();
-        listIs([...fixtures.teamList, design]);
-        teamsAnswer({
-          [design.id]: async () => {
-            await door.opened;
-            return ok("get", "/api/teams/{id}", 200, { team: design, members: [] });
-          },
-        });
-        await act(async () => {
-          await app.queryClient.invalidateQueries({ queryKey: queryKeys.teams.list() });
-        });
-        const loading = await within(dialog).findByRole("status", {
-          name: "Loading the users and teams",
-        });
-        act(() => {
-          door.open();
-        });
-        await waitFor(() => {
-          expect(loading).not.toBeInTheDocument();
-        });
-        expect(field(dialog, "Owner")).toHaveTextContent(person(tomas));
-        expect(field(dialog, "Team")).toHaveTextContent(research.name);
-        await send(dialog);
-        await secretDialog();
-        expect(state.created).toEqual([{ name: "notebook", owner_id: tomas.id, team_id: research.id }]);
+      const posts = counted("post", "/api/keys", () =>
+        ok("post", "/api/keys", 201, { key: active, secret: SECRET }),
+      );
+      await page();
+      const dialog = await openCreate(false);
+      await named(dialog, "notebook");
+      expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
+      fireEvent.submit(within(dialog).getByRole("form"));
+      await settle();
+      expect(posts.calls).toBe(0);
+      act(() => {
+        door.open();
       });
-
-      test("while the owners are not known nothing is sent, also not by a submit of the form itself", async () => {
-        const door = gate();
-        counted("get", "/api/users", async () => {
-          await door.opened;
-          return ok("get", "/api/users", 200, { users: fixtures.userList });
-        });
-        const posts = counted("post", "/api/keys", () =>
-          ok("post", "/api/keys", 201, { key: active, secret: SECRET }),
-        );
-        await page();
-        const dialog = await openCreate(false);
-        await named(dialog, "notebook");
-        expect(within(dialog).getByRole("button", { name: "Create key" })).toBeDisabled();
-        fireEvent.submit(within(dialog).getByRole("form"));
-        await settle();
-        expect(posts.calls).toBe(0);
-        act(() => {
-          door.open();
-        });
-        await within(dialog).findByRole("combobox", { name: "Owner" });
-        expect(posts.calls).toBe(0);
-      });
-
-      test("while the list of teams cannot be read again, a team of the viewer's own that it does not name is offered: the list may be older than the session", async () => {
-        const state = keeps();
-        // Arjun leads Platform and is a member of Research. The list that is
-        // kept was read when he was in Platform only; it is read again when
-        // the dialog opens, and that fails.
-        const app = await page({ user: fixtures.me.arjun });
-        await table();
-        app.queryClient.setQueryData(queryKeys.teams.list(), { teams: [platform] });
-        const lists = counted("get", "/api/teams", fails);
-        const dialog = await openCreate();
-        await waitFor(() => {
-          expect(app.queryClient.getQueryState(queryKeys.teams.list())?.error).not.toBeNull();
-        });
-        await settle();
-        expect(lists.calls).toBe(1);
-        const team = field(dialog, "Team");
-        expect(await optionsOf(team)).toEqual(["No team", platform.name, research.name]);
-        await choose(team, research.name);
-        await named(dialog, "ci");
-        await send(dialog);
-        await secretDialog();
-        expect(state.created).toEqual([{ name: "ci", team_id: research.id }]);
-      });
+      await within(dialog).findByRole("combobox", { name: "Owner" });
+      expect(posts.calls).toBe(0);
     });
   });
 

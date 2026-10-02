@@ -45,7 +45,7 @@ import {
 } from "@/test/pages";
 import { renderWithApp, unauthenticated, type AppRenderResult } from "@/test/render";
 
-const { maya, arjun, lena, tomas, sam, dana } = fixtures.users;
+const { maya, arjun, lena, tomas, priya, sam, dana } = fixtures.users;
 const LINK = window.location.origin + fixtures.newInviteLink;
 const TOKEN = fixtures.newInviteToken;
 const LINK_DESCRIPTION = "Send this link to the user. It works once and expires in 7 days.";
@@ -163,6 +163,7 @@ describe("the list of users", () => {
       "Name",
       "Email",
       "Role",
+      "Teams",
       "Status",
       "Last active",
     ]);
@@ -182,6 +183,16 @@ describe("the list of users", () => {
     expect(button("Invite user")).toBeInTheDocument();
     expectOneMain();
     expectOneH1();
+  });
+
+  test("the Teams column names the teams of the user, and says none with a dash", async () => {
+    await list();
+    await table();
+    const cell = (user: fixtures.User) => within(rowOf(user.name)).getAllByRole("cell")[3];
+    expect(cell(arjun)).toHaveTextContent("Platform, Research");
+    expect(cell(lena)).toHaveTextContent("Platform");
+    expect(cell(priya)).toHaveTextContent("—");
+    expect(cell(maya)).toHaveTextContent("—");
   });
 
   test("member sees only what the API returns and no invite button", async () => {
@@ -332,6 +343,7 @@ describe("the list of users", () => {
       "Name",
       "Email",
       "Role",
+      "Teams",
       "Status",
       "Last active",
     ]);
@@ -874,6 +886,7 @@ describe("the page of a user", () => {
       "Email",
       "Role",
       "Status",
+      "Teams",
       "Created",
       "Last active",
     ]);
@@ -885,6 +898,24 @@ describe("the page of a user", () => {
     expect(screen.queryByText("You")).toBeNull();
     expectOneMain();
     expectOneH1();
+  });
+
+  test("it lists the teams of the user with their roles, and says none", async () => {
+    await detail(arjun);
+    await screen.findByRole("heading", { level: 1, name: arjun.name });
+    const teams = within(screen.getByLabelText("Details")).getByRole("list", { name: "Teams" });
+    expect(within(teams).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "PlatformLead",
+      "ResearchMember",
+    ]);
+  });
+
+  test("a user in no team shows a dash for the teams", async () => {
+    await detail(priya);
+    await screen.findByRole("heading", { level: 1, name: priya.name });
+    const details = screen.getByLabelText("Details");
+    expect(within(details).queryByRole("list", { name: "Teams" })).toBeNull();
+    expect(details).toHaveTextContent("—");
   });
 
   test("the own page is marked", async () => {
@@ -1208,7 +1239,8 @@ describe("changing a user", () => {
     await waitFor(() => {
       expect(within(details).getByText("Admin")).toBeInTheDocument();
     });
-    expect(within(details).queryByText("Member")).toBeNull();
+    // Lena is still a member of her team: the role of the user is the second field.
+    expect(details.querySelectorAll("dd")[1]).toHaveTextContent("Admin");
     await waitFor(() => {
       expect(toasts()).toEqual(["Role changed."]);
     });

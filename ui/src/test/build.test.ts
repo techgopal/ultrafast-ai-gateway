@@ -85,6 +85,11 @@ const allowedUrls: AllowedUrl[] = [
   { text: "https://api.mistral.ai/v1", match: "exact" },
   { text: "https://openrouter.ai/api/v1", match: "exact" },
   { text: "http://localhost:11434/v1", match: "exact" },
+  { text: "https://generativelanguage.googleapis.com", match: "exact" },
+  // components/BaseUrlField.tsx: the hint of an Azure OpenAI provider, which says what a base
+  // URL looks like ("... for example https://my-resource.openai.azure.com."). It is a text of
+  // the page, with the full stop that ends the sentence. No request: nothing fetches it.
+  { text: "https://my-resource.openai.azure.com.", match: "exact" },
 ];
 
 // What may follow a `prefix` entry: characters of a path and a query, nothing else.
@@ -119,6 +124,9 @@ describe("the allow-list of the URL scan", () => {
     "https://openrouter.ai",
     "http://localhost:11434",
     "http://localhost:11434/v1/models",
+    "https://generativelanguage.googleapis.com/v1beta",
+    "https://my-resource.openai.azure.com",
+    "https://my-resource.openai.azure.com/openai",
   ])("does not allow %s", (url) => {
     expect(allowedEntry(url)).toBeUndefined();
   });
@@ -134,10 +142,12 @@ describe("the allow-list of the URL scan", () => {
       "https://api.mistral.ai/v1",
       "https://openrouter.ai/api/v1",
       "http://localhost:11434/v1",
+      "https://generativelanguage.googleapis.com",
+      "https://my-resource.openai.azure.com.",
     ]) {
       expect(allowedEntry(url)).toEqual({ text: url, match: "exact" });
     }
-    expect(allowedUrls).toHaveLength(8);
+    expect(allowedUrls).toHaveLength(10);
   });
 });
 

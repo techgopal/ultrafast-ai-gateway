@@ -17,7 +17,6 @@ import {
   queryOptions,
   useInfiniteQuery,
   useMutation,
-  useQueries,
   useQuery,
   useQueryClient,
   type Query,
@@ -264,19 +263,12 @@ export const useUsers = () => useQuery(usersOptions());
 export const useUser = (id: number) => useQuery(userOptions(id));
 export const useTeams = () => useQuery(teamsOptions());
 export const useTeam = (id: number) => useQuery(teamOptions(id));
-/**
- * The teams with their members: one call for each team, in the order of the
- * ids. The API has no operation that gives the teams of a user; who is in
- * which team is read from the teams.
- */
-export const useTeamDetails = (ids: readonly number[]) =>
-  useQueries({ queries: ids.map((id) => teamOptions(id)) });
 export const useKeys = () => useQuery(keysOptions());
 export const useProviders = () => useQuery(providersOptions());
 /** An admin gets every model with its grants; anybody else the models they may call. */
-export const useModels = () => useQuery(modelsOptions());
+export const useModels = (enabled = true) => useQuery({ ...modelsOptions(), enabled });
 /** An admin gets every route in full; anybody else the routes they may use, with their models only. */
-export const useRoutes = () => useQuery(routesOptions());
+export const useRoutes = (enabled = true) => useQuery({ ...routesOptions(), enabled });
 export const useRoute = (id: number) => useQuery(routeOptions(id));
 /** Admin only. What the gateway saw of the targets in real traffic since it started. */
 export const useRoutingHealth = () => useQuery(routingHealthOptions());
@@ -512,7 +504,21 @@ export const useDeleteTeam = () =>
     ({ id }) => ({ stale: aTeamChanged, gone: [queryKeys.teams.detail(id)] }),
   );
 
-/** Adds the user to the team, or changes their role in it. */
+/** Adds the active user with this email to the team, as a member. The answer is the member. */
+export const useAddTeamMember = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/teams/{id}/members", "post"> }) =>
+      api.post("/api/teams/{id}/members", { params: { id }, body }),
+    () => ({ stale: membersChanged }),
+    // The gateway answers 404 for a team it does not show, and also for an
+    // email that is no active user's: only the first puts the team in doubt.
+    (error, { id }) =>
+      isNotFound(error) && !(error instanceof ApiError && error.code === "user_not_found")
+        ? [queryKeys.teams.detail(id)]
+        : [],
+  );
+
+/** Changes the role of a member of the team. */
 export const usePutTeamMember = () =>
   useApiMutation(
     ({

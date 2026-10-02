@@ -212,6 +212,11 @@ export function Users() {
         sortValue: (user) => user.role,
       },
       {
+        id: "teams",
+        header: "Teams",
+        cell: (user) => (user.teams.length === 0 ? "—" : user.teams.map((team) => team.name).join(", ")),
+      },
+      {
         id: "status",
         header: "Status",
         cell: (user) => <StatusBadge status={user.status} />,

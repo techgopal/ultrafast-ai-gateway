@@ -230,39 +230,6 @@ describe("queries", () => {
     expect(audit.calls).toBe(1);
   });
 
-  test("the teams with their members are one call for each team", async () => {
-    const asked: string[] = [];
-    override("get", "/api/teams/{id}", ({ params }) => {
-      asked.push(params.id ?? "");
-      const detail = fixtures.teamDetailList.find((one) => String(one.team.id) === params.id);
-      return detail === undefined
-        ? refuse(errors.not_found)
-        : ok("get", "/api/teams/{id}", 200, detail);
-    });
-    const client = appClient();
-    const ids = [fixtures.teams.platform.id, fixtures.teams.research.id];
-    const { result, rerender } = renderHook(({ of }: { of: number[] }) => q.useTeamDetails(of), {
-      wrapper: wrapperOf(client),
-      initialProps: { of: ids },
-    });
-    await waitFor(() => {
-      expect(result.current.every((query) => query.isSuccess)).toBe(true);
-    });
-    expect(result.current.map((query) => query.data)).toEqual([
-      fixtures.teamDetails.platform,
-      fixtures.teamDetails.research,
-    ]);
-    expect(asked.sort()).toEqual(ids.map(String));
-    // They are the queries of the pages of the teams: a change of a team reaches them.
-    expect(client.getQueryData(q.queryKeys.teams.detail(ids[0] ?? 0))).toEqual(
-      fixtures.teamDetails.platform,
-    );
-    // No team, no call.
-    rerender({ of: [] });
-    expect(result.current).toEqual([]);
-    expect(asked).toHaveLength(2);
-  });
-
   test("a 404 is an ApiError of the query", async () => {
     const { result } = renderHook(() => q.useTeam(999), { wrapper: wrapperOf(appClient()) });
     await waitFor(() => {
@@ -610,6 +577,71 @@ describe("mutations invalidate", () => {
     });
     // Only the team is in doubt.
     expect([teams.calls, me.calls]).toEqual([1, 1]);
+  });
+
+  test("adding a member by email changes the teams, the caller's teams and the audit log; user_not_found does not put the team in doubt", async () => {
+    let detail = 0;
+    override("get", "/api/teams/{id}", () => {
+      detail += 1;
+      return ok("get", "/api/teams/{id}", 200, fixtures.teamDetails.platform);
+    });
+    const teams = counted("/api/teams");
+    const me = counted("/api/auth/me");
+    const audit = counted("/api/audit");
+    const id = fixtures.teams.platform.id;
+    const { result } = renderHook(
+      () => ({
+        team: q.useTeam(id),
+        teams: q.useTeams(),
+        me: useMe(),
+        audit: q.useAuditPages(),
+        add: q.useAddTeamMember(),
+      }),
+      { wrapper: wrapperOf(appClient()) },
+    );
+    await waitFor(() => {
+      expect(
+        result.current.team.isSuccess &&
+          result.current.teams.isSuccess &&
+          result.current.me.isSuccess &&
+          result.current.audit.isSuccess,
+      ).toBe(true);
+    });
+    const add = () => result.current.add.mutateAsync({ id, body: { email: "nobody@example.test" } });
+
+    // The gateway's 404 for a user is no doubt about the team.
+    override("post", "/api/teams/{id}/members", () => refuse(errors.user_not_found));
+    await act(async () => {
+      await expect(add()).rejects.toMatchObject({ status: 404, code: "user_not_found" });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect([detail, teams.calls, me.calls, audit.calls]).toEqual([1, 1, 1, 1]);
+
+    // A 404 that is the team asks for the team again.
+    override("post", "/api/teams/{id}/members", () => refuse(errors.not_found));
+    await act(async () => {
+      await expect(add()).rejects.toMatchObject({ status: 404, code: "not_found" });
+    });
+    await waitFor(() => {
+      expect(detail).toBe(2);
+    });
+    expect([teams.calls, me.calls]).toEqual([1, 1]);
+
+    // A member that was added: the teams, the caller's teams and the audit log are asked for again.
+    override("post", "/api/teams/{id}/members", () =>
+      ok("post", "/api/teams/{id}/members", 201, {
+        user_id: 5,
+        email: "priya@example.test",
+        name: "Priya Raman",
+        role: "member",
+      }),
+    );
+    await act(async () => {
+      await add();
+    });
+    await waitFor(() => {
+      expect([teams.calls, me.calls, audit.calls]).toEqual([2, 2, 2]);
+    });
   });
 
   test.each([
@@ -1254,6 +1286,7 @@ describe("every mutation calls its operation", () => {
       ["useCreateTeam", "POST /api/teams", q.useCreateTeam, { name: "Growth" }],
       ["useRenameTeam", "PATCH /api/teams/2", q.useRenameTeam, { id: 2, body: { name: "R" } }],
       ["useDeleteTeam", "DELETE /api/teams/3", q.useDeleteTeam, { id: 3 }],
+      ["useAddTeamMember", "POST /api/teams/1/members", q.useAddTeamMember, { id: 1, body: { email: "priya@example.test" } }],
       ["usePutTeamMember", "PUT /api/teams/1/members/5", q.usePutTeamMember, { id: 1, userId: 5, body: { role: "member" } }],
       ["useRemoveTeamMember", "DELETE /api/teams/1/members/3", q.useRemoveTeamMember, { id: 1, userId: 3 }],
       ["useCreateKey", "POST /api/keys", q.useCreateKey, { name: "k" }],
@@ -1275,8 +1308,8 @@ describe("every mutation calls its operation", () => {
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 28 of them, 14 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(28);
+  test("there are 29 of them, 14 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(29);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
     expect(hooks).toHaveLength(43);
     // What only tests used is not kept: a key read by its id, the audit log
@@ -1288,7 +1321,8 @@ describe("every mutation calls its operation", () => {
     expect(Object.keys(q.queryKeys.audit)).not.toContain("list");
     expect(hooks).toContain("useAuditPages");
     expect(hooks).toContain("useAuditFromTheStart");
-    expect(hooks).toContain("useTeamDetails");
+    expect(Object.keys(q)).not.toContain("useTeamDetails");
+    expect(hooks).toContain("useAddTeamMember");
     expect(hooks).not.toContain("useLogout");
     expect(hooks).toEqual(expect.arrayContaining(cases.map(([name]) => name)));
   });

@@ -35,15 +35,18 @@ into the binary, with no Node process and no request to any other host at
 runtime.
 
 What is in it: setting up the first admin, signing in, accepting an invite;
-an overview with a getting-started guide; providers (add, edit, delete);
-virtual keys (create, shown once, revoke, filter); users (invite, role,
-status, new invite link, delete); teams (create, rename, delete, members and
-leads); your account (name, password, access tokens); and the audit log, for
+an overview with a getting-started guide; providers (OpenAI-compatible,
+Anthropic, Gemini and Azure OpenAI: add, edit, sync models, delete); models
+(enable, who may call each, add by name); routing (routes with fallbacks, who
+may use each, and the health of their targets); virtual keys (create, shown
+once, limit to chosen models and routes, revoke, filter); users (invite, role,
+status, teams, new invite link, delete); teams (create, rename, delete,
+members added by email, and leads); your account (name, password, access tokens); and the audit log, for
 admins.
 What a user sees depends on their role, and the API decides. Light and dark
 themes, following the device until one is chosen, and a layout for phones.
 
-Not yet: logs, the playground, models, routing, budgets and limits,
+Not yet: logs, the playground, budgets and limits,
 guardrails and MCP tools (shown as coming in the navigation), and a Settings
 page (retention, sign-in settings, backup, configuration export and import).
 
@@ -84,25 +87,14 @@ Known limits:
   `Secure`, so over plain HTTP at any other address the browser drops it and
   the sign-in page says so. On a trusted network, start the gateway with
   `--insecure-cookies` instead.
-- A team lead adds a member by user ID, because the API does not let a lead
-  find users outside their teams. The project owner has an open decision on
-  adding members by email; when the API changes, the console's add-member
-  dialog changes with it.
-- The users list does not show each user's teams, because the API's list
-  response does not include them.
-- The API has no way to ask for a user's teams in one call, so the Create key
-  dialog reads each team.
-- The API returns no status for an access token: the console works out
-  active, expired or revoked from its times, by the clock of the browser.
-- No usage, spend, request logs, models, routes or budgets: their backends do
-  not exist yet.
+- No usage, spend, request logs or budgets: their backends do not exist yet.
 - Sign-in limiting behind a reverse proxy counts the address of the proxy,
   so 20 failed sign-ins from anyone block sign-in for everyone for 15 minutes,
   until forwarded addresses are supported.
 
-What works today: chat completions, streaming, OpenAI-compatible and Anthropic
-providers, and the console. Not yet: tools, images, routing, limits and
-budgets.
+What works today: chat completions, streaming, OpenAI-compatible, Anthropic,
+Gemini and Azure OpenAI providers, models and routing, and the console. Not
+yet: tools, images, limits and budgets.
 
 > **A high-performance AI gateway built in Rust** that provides a unified interface to 10+ LLM providers with advanced routing, caching, and monitoring capabilities.
 

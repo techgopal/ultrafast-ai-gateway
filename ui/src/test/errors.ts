@@ -33,7 +33,12 @@ export const fieldMessages = {
   ownerId: "owner must be an active user",
   teamId: "team does not exist",
   teamIdOwner: "owner is not a member of this team",
-  providerKind: "kind must be openai or anthropic",
+  providerKind: "kind must be openai, anthropic, gemini or azure",
+  // `api/providers.rs` and `config.rs`: an API version is for Azure only, and has a form.
+  apiVersionKind: "only Azure OpenAI providers have an API version",
+  apiVersionForm: "API version must look like 2024-10-21 or 2025-03-01-preview",
+  // `api/keys.rs`: what a caller who is not an admin is told of a name in the allowlist of a key.
+  allowedHidden: "'gpt-secret' is not a model or route you can use",
   // The name and the base URL of a provider (`crates/gateway/src/config.rs`).
   providerName:
     "provider name must be 1 to 40 characters of a-z, 0-9, '-' and '_', starting with a letter or a digit",
@@ -126,6 +131,8 @@ export const errors = {
     "Only a user who has not accepted an invite can get a new one.",
   ),
   user_exists: error(409, "user_exists", "A user with this email already exists."),
+  user_not_found: error(404, "user_not_found", "No active user with that email."),
+  already_member: error(409, "already_member", "Already in this team."),
   user_disabled: error(409, "user_disabled", "A disabled user cannot be added to a team."),
   team_exists: error(409, "team_exists", "A team with this name already exists."),
   provider_exists: error(409, "provider_exists", "A provider with this name already exists."),

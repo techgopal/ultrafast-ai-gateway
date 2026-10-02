@@ -76,8 +76,11 @@ describe("guards", () => {
     ["add member to team 1", { type: "addMember", teamId: 1 }, [true, true, false, false]],
     ["add member to team 2", { type: "addMember", teamId: 2 }, [true, false, false, false]],
     ["make lead in team 1", { type: "makeLead", teamId: 1 }, [true, false, false, false]],
-    ["remove member from team 1", { type: "removeMember", teamId: 1 }, [true, true, false, false]],
-    ["remove member from team 2", { type: "removeMember", teamId: 2 }, [true, false, false, false]],
+    ["remove a member from team 1", { type: "removeMember", teamId: 1, userId: memberId, role: "member" }, [true, true, false, false]],
+    ["remove a member from team 2", { type: "removeMember", teamId: 2, userId: 4, role: "member" }, [true, false, false, false]],
+    // A lead removes members and may leave; another lead only an admin removes.
+    ["remove another lead from team 1", { type: "removeMember", teamId: 1, userId: 99, role: "lead" }, [true, false, false, false]],
+    ["the lead leaves team 1", { type: "removeMember", teamId: 1, userId: leadId, role: "lead" }, [true, true, false, false]],
     ["create key for self, no team", { type: "createKeyForSelf", teamId: null }, [true, true, true, true]],
     ["create key for self in team 1", { type: "createKeyForSelf", teamId: 1 }, [true, true, true, false]],
     ["create key for self in team 2", { type: "createKeyForSelf", teamId: 2 }, [true, true, false, false]],

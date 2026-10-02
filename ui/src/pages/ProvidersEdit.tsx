@@ -3,6 +3,7 @@ import { useRef } from "react";
 import type { useUpdateProvider } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { ApiKeyInput } from "@/components/ApiKeyInput";
+import { ApiVersionField } from "@/components/ApiVersionField";
 import { BaseUrlField } from "@/components/BaseUrlField";
 import { control } from "@/components/classes";
 import { Field } from "@/components/Field";
@@ -11,7 +12,7 @@ import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { kindName, newApiKeyOf } from "@/lib/providers";
+import { DEFAULT_API_VERSION, kindName, newApiKeyOf } from "@/lib/providers";
 
 type Provider = components["schemas"]["ProviderView"];
 type UpdateProviderRequest = components["schemas"]["UpdateProviderRequest"];
@@ -40,17 +41,27 @@ interface EditFormProps {
 // it is. The credential it has is not in the form: the API never returns it.
 function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
   const { mutateAsync, reset } = update;
+  // Only an Azure OpenAI provider has an API version; the gateway may show none for one that has the default.
+  const azure = provider.kind === "azure";
+  const version = provider.api_version ?? DEFAULT_API_VERSION;
   const form = useForm({
-    defaultValues: { base_url: provider.base_url, credential: "keep", api_key: "" },
+    defaultValues: {
+      base_url: provider.base_url,
+      api_version: version,
+      credential: "keep",
+      api_key: "",
+    },
     onSubmit: async ({ value }) => {
+      const versionChanged = azure && value.api_version.trim() !== version;
       // Nothing was changed: nothing is sent, and nothing is reported as updated.
-      if (value.credential === "keep" && value.base_url === provider.base_url) {
+      if (value.credential === "keep" && value.base_url === provider.base_url && !versionChanged) {
         onCancel();
         return;
       }
       try {
         // Keeping the key sends no `api_key` at all.
         const body: UpdateProviderRequest = { base_url: value.base_url };
+        if (versionChanged) body.api_version = value.api_version.trim();
         if (value.credential === "replace") body.api_key = newApiKeyOf(value.api_key);
         if (value.credential === "remove") body.api_key = null;
         await mutateAsync({ id: provider.id, body });
@@ -92,6 +103,19 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
           />
         )}
       </form.Field>
+      {azure ? (
+        <form.Field name="api_version">
+          {(field) => (
+            <ApiVersionField
+              name={field.name}
+              value={field.state.value}
+              onChange={field.handleChange}
+              onBlur={field.handleBlur}
+              error={failure.fieldError(field.name)}
+            />
+          )}
+        </form.Field>
+      ) : null}
       <form.Field name="credential">
         {(field) => (
           <>

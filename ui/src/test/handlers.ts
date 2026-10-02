@@ -116,6 +116,19 @@ export const handlers = [
   handler("delete", "/api/teams/{id}", (call) =>
     byId(fixtures.teamList, call) === undefined ? notFound() : noContent(),
   ),
+  handler("post", "/api/teams/{id}/members", async (call) => {
+    if (byId(fixtures.teamList, call) === undefined) return notFound();
+    const body: unknown = await call.request.json();
+    const email: unknown = typeof body === "object" && body !== null ? Reflect.get(body, "email") : "";
+    const user = fixtures.userList.find((one) => one.email === email && one.status === "active");
+    if (user === undefined) return refuse(errors.user_not_found);
+    return ok("post", "/api/teams/{id}/members", 201, {
+      user_id: user.id,
+      email: user.email,
+      name: user.name,
+      role: "member",
+    });
+  }),
   handler("put", "/api/teams/{id}/members/{user_id}", (call) =>
     byId(fixtures.teamList, call) === undefined ? notFound() : noContent(),
   ),

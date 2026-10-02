@@ -3,6 +3,7 @@ import { useId, useRef } from "react";
 import type { useCreateProvider } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { ApiKeyInput } from "@/components/ApiKeyInput";
+import { ApiVersionField } from "@/components/ApiVersionField";
 import { BaseUrlField } from "@/components/BaseUrlField";
 import { control } from "@/components/classes";
 import { Field } from "@/components/Field";
@@ -13,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { apiKeyOf, kindName, KINDS } from "@/lib/providers";
+import { apiKeyOf, DEFAULT_API_VERSION, kindName, KINDS } from "@/lib/providers";
 
 type CreateProviderRequest = components["schemas"]["CreateProviderRequest"];
 
@@ -27,6 +28,7 @@ export const NAME_HINT = "lowercase letters, digits, - and _";
 const KNOWN = [
   { name: "OpenAI", kind: "openai", base_url: "https://api.openai.com/v1" },
   { name: "Anthropic", kind: "anthropic", base_url: "https://api.anthropic.com" },
+  { name: "Gemini", kind: "gemini", base_url: "https://generativelanguage.googleapis.com" },
   { name: "Groq", kind: "openai", base_url: "https://api.groq.com/openai/v1" },
   { name: "Mistral", kind: "openai", base_url: "https://api.mistral.ai/v1" },
   { name: "OpenRouter", kind: "openai", base_url: "https://openrouter.ai/api/v1" },
@@ -45,7 +47,13 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
   const { mutateAsync, reset } = create;
   const knownId = useId();
   const form = useForm({
-    defaultValues: { name: "", kind: "openai", base_url: "", api_key: "" },
+    defaultValues: {
+      name: "",
+      kind: "openai",
+      base_url: "",
+      api_key: "",
+      api_version: DEFAULT_API_VERSION,
+    },
     onSubmit: async ({ value }) => {
       try {
         const body: CreateProviderRequest = {
@@ -53,6 +61,9 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
           kind: value.kind,
           base_url: value.base_url,
         };
+        // Only an Azure OpenAI provider has an API version; left empty, the gateway has its own.
+        const version = value.api_version.trim();
+        if (value.kind === "azure" && version !== "") body.api_version = version;
         // No key is no field: an empty one the gateway refuses.
         const key = apiKeyOf(value.api_key);
         if (key !== "") body.api_key = key;
@@ -164,6 +175,23 @@ function AddForm({ create, onAdded, onCancel }: AddFormProps) {
             )}
           </form.Field>
         )}
+      </form.Subscribe>
+      <form.Subscribe selector={(state) => state.values.kind}>
+        {(kind) =>
+          kind === "azure" ? (
+            <form.Field name="api_version">
+              {(field) => (
+                <ApiVersionField
+                  name={field.name}
+                  value={field.state.value}
+                  onChange={field.handleChange}
+                  onBlur={field.handleBlur}
+                  error={failure.fieldError(field.name)}
+                />
+              )}
+            </form.Field>
+          ) : null
+        }
       </form.Subscribe>
       <form.Field name="api_key">
         {(field) => (

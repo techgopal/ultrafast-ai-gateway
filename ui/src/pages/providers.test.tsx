@@ -50,10 +50,34 @@ const NEW_KEY_HINT = "The gateway stores it encrypted and never shows it.";
 /** What the console says of a request that got no answer. */
 const COULD_NOT_REACH = "Could not reach the gateway.";
 
+/** An Azure OpenAI provider, and one whose API version the gateway does not show. */
+const azure: fixtures.Provider = {
+  id: 3,
+  name: "azure-eu",
+  kind: "azure",
+  base_url: "https://my-resource.openai.azure.com",
+  has_credential: true,
+  api_version: "2025-03-01-preview",
+};
+const azureDefault: fixtures.Provider = { ...azure, id: 4, name: "azure-old", api_version: null };
+const gemini: fixtures.Provider = {
+  id: 5,
+  name: "gemini",
+  kind: "gemini",
+  base_url: "https://generativelanguage.googleapis.com",
+  has_credential: true,
+  api_version: null,
+};
+const DEFAULT_VERSION = "2024-10-21";
+const AZURE_HINT =
+  "Base URL is your resource endpoint, for example https://my-resource.openai.azure.com.";
+const ENABLE_MODELS = "Enable its models on the Models page first.";
+
 /** The known base URLs of the brief, with the kind each one is of. */
 const KNOWN = [
   ["OpenAI", "https://api.openai.com/v1", "OpenAI-compatible"],
   ["Anthropic", "https://api.anthropic.com", "Anthropic"],
+  ["Gemini", "https://generativelanguage.googleapis.com", "Gemini"],
   ["Groq", "https://api.groq.com/openai/v1", "OpenAI-compatible"],
   ["Mistral", "https://api.mistral.ai/v1", "OpenAI-compatible"],
   ["OpenRouter", "https://openrouter.ai/api/v1", "OpenAI-compatible"],
@@ -124,12 +148,16 @@ function keeps(start: readonly fixtures.Provider[] = fixtures.providerList) {
     const refusal = state.refuseAdd.shift();
     if (refusal !== undefined) return refuse(refusal);
     state.created.push(body);
+    const kindOf = String(read(body, "kind"));
+    const version = read(body, "api_version");
     const provider: fixtures.Provider = {
       id: 9,
       name: String(read(body, "name")),
-      kind: String(read(body, "kind")),
+      kind: kindOf,
       base_url: String(read(body, "base_url")),
       has_credential: typeof read(body, "api_key") === "string",
+      // The gateway fills the default for an Azure provider, and has none for the others.
+      api_version: kindOf === "azure" ? (typeof version === "string" ? version : DEFAULT_VERSION) : null,
     };
     state.providers = [...state.providers, provider];
     return ok("post", "/api/providers", 201, provider);
@@ -143,9 +171,11 @@ function keeps(start: readonly fixtures.Provider[] = fixtures.providerList) {
     if (was === undefined) return refuse(errors.not_found);
     const url = read(body, "base_url");
     const key = read(body, "api_key");
+    const version = read(body, "api_version");
     const now: fixtures.Provider = {
       ...was,
       base_url: typeof url === "string" ? url : was.base_url,
+      api_version: typeof version === "string" ? version : (was.api_version ?? null),
       has_credential: key === undefined ? was.has_credential : key !== null,
     };
     state.providers = state.providers.map((one) => (one.id === was.id ? now : one));
@@ -197,7 +227,10 @@ function known(dialog: HTMLElement, name: string): Promise<void> {
   return userEvent.click(within(group).getByRole("button", { name }));
 }
 
-function kind(dialog: HTMLElement, name: "OpenAI-compatible" | "Anthropic"): HTMLElement {
+function kind(
+  dialog: HTMLElement,
+  name: "OpenAI-compatible" | "Anthropic" | "Gemini" | "Azure OpenAI",
+): HTMLElement {
   const group = within(dialog).getByRole("radiogroup", { name: "Kind" });
   return within(group).getByRole("radio", { name });
 }
@@ -295,7 +328,7 @@ describe("the list of providers", () => {
     await table();
     expect(screen.getByRole("button", { name: "Add provider" })).toBeInTheDocument();
     for (const provider of fixtures.providerList) {
-      expect(names(rowOf(provider.name))).toEqual(["Edit", "Delete"]);
+      expect(names(rowOf(provider.name))).toEqual(["Sync models", "Edit", "Delete"]);
     }
     first.unmount();
 
@@ -308,8 +341,9 @@ describe("the list of providers", () => {
       }
       expect(rowOf(withCredential.name)).toHaveTextContent("Set");
       expect(rowOf(withoutCredential.name)).toHaveTextContent("None");
-      // Only admins see Add, Edit and Delete.
+      // Only admins see Add, Sync, Edit and Delete.
       expect(screen.queryByRole("button", { name: "Add provider" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Sync models" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
       expect(within(providers).getAllByRole("columnheader").map((th) => th.textContent)).toEqual([
@@ -330,15 +364,121 @@ describe("the list of providers", () => {
           withCredential,
           { ...withCredential, id: 3, name: "claude", kind: "anthropic" },
           { ...withCredential, id: 4, name: "aws", kind: "bedrock" },
+          gemini,
+          azure,
         ],
       }),
     );
     await page();
     await table();
     expect(within(rowOf("claude")).getByText("Anthropic")).toHaveAttribute("data-slot", "badge");
+    expect(within(rowOf("gemini")).getByText("Gemini")).toHaveAttribute("data-slot", "badge");
+    expect(within(rowOf("azure-eu")).getByText("Azure OpenAI")).toHaveAttribute(
+      "data-slot",
+      "badge",
+    );
     const unknown = within(rowOf("aws")).getByText("bedrock");
     expect(unknown).toHaveAttribute("data-slot", "badge");
     expect(unknown).toHaveAttribute("data-variant", "outline");
+  });
+
+  describe("syncing the models of a provider", () => {
+    function sync(provider: fixtures.Provider): HTMLElement {
+      return within(rowOf(provider.name)).getByRole("button", { name: "Sync models" });
+    }
+
+    test("Sync models reads the models of the provider, and the page says what was added", async () => {
+      const calls = counted("post", "/api/providers/{id}/sync", () =>
+        ok("post", "/api/providers/{id}/sync", 200, fixtures.syncResult),
+      );
+      const models = counted("get", "/api/models", () =>
+        ok("get", "/api/models", 200, { models: fixtures.modelList }),
+      );
+      await page();
+      await table();
+      await userEvent.click(sync(withoutCredential));
+      await waitFor(() => {
+        expect(notice()).toHaveTextContent("Sync done");
+      });
+      expect(notice()).toHaveTextContent("Added 2 models. They start disabled.");
+      expect(calls.calls).toBe(1);
+      expect(models.calls).toBe(0);
+      // Nothing is named in a toast.
+      expect(toasts()).toEqual([]);
+      await userEvent.click(within(notice()).getByRole("button", { name: "Dismiss" }));
+      expect(notice()).toBeEmptyDOMElement();
+    });
+
+    test("the models that were read are stale afterwards, so the Models page asks again", async () => {
+      override("post", "/api/providers/{id}/sync", () =>
+        ok("post", "/api/providers/{id}/sync", 200, { added: [], existing: 4 }),
+      );
+      const app = await page();
+      await table();
+      app.queryClient.setQueryData(queryKeys.models.list(), { models: fixtures.modelList });
+      expect(app.queryClient.getQueryState(queryKeys.models.list())?.isInvalidated).toBe(false);
+      await userEvent.click(sync(withCredential));
+      await waitFor(() => {
+        expect(notice()).toHaveTextContent("No new models.");
+      });
+      await waitFor(() => {
+        expect(app.queryClient.getQueryState(queryKeys.models.list())?.isInvalidated).toBe(true);
+      });
+    });
+
+    test("the button of the provider that is synced says so and is off while it runs", async () => {
+      const door = gate();
+      const calls = counted("post", "/api/providers/{id}/sync", async () => {
+        await door.opened;
+        return ok("post", "/api/providers/{id}/sync", 200, fixtures.syncResult);
+      });
+      await page();
+      await table();
+      await userEvent.click(sync(withCredential));
+      const busy = await within(rowOf(withCredential.name)).findByRole("button", {
+        name: "Syncing",
+      });
+      expect(busy).toBeDisabled();
+      await userEvent.click(busy);
+      expect(calls.calls).toBe(1);
+      act(() => {
+        door.open();
+      });
+      await within(rowOf(withCredential.name)).findByRole("button", { name: "Sync models" });
+    });
+
+    test("a refusal is said on the page", async () => {
+      override("post", "/api/providers/{id}/sync", () => refuse(errors.sync_failed));
+      await page();
+      await table();
+      await userEvent.click(sync(withCredential));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        errors.sync_failed.body.error.message,
+      );
+      expect(notice()).toBeEmptyDOMElement();
+    });
+
+    test("an Azure provider has no Sync models: the gateway cannot read its models", async () => {
+      keeps([...fixtures.providerList, azure]);
+      await page();
+      await table();
+      expect(names(rowOf(azure.name))).toEqual(["Edit", "Delete"]);
+      expect(names(rowOf(withCredential.name))).toEqual(["Sync models", "Edit", "Delete"]);
+    });
+
+    test("a provider that is gone is a refusal on the page, and the list is asked for again", async () => {
+      const lists = providersAre(fixtures.providerList);
+      override("post", "/api/providers/{id}/sync", () => refuse(errors.not_found));
+      await page();
+      await table();
+      await userEvent.click(sync(withCredential));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        errors.not_found.body.error.message,
+      );
+      await waitFor(() => {
+        expect(lists.calls).toBe(2);
+      });
+    });
   });
 
   test("the credential is said in words", async () => {
@@ -418,8 +558,8 @@ describe("the list of providers", () => {
       "Base URL",
       "Credential",
     ]);
-    expect(names(first)).toEqual(["Edit", "Delete"]);
-    for (const control of screen.getAllByRole("button", { name: /Add provider|Edit|Delete/ })) {
+    expect(names(first)).toEqual(["Sync models", "Edit", "Delete"]);
+    for (const control of screen.getAllByRole("button", { name: /Add provider|Sync|Edit|Delete/ })) {
       expect(control.className.split(/\s+/)).toContain("min-h-11");
     }
   });
@@ -484,6 +624,12 @@ describe("adding a provider", () => {
       expect(said).toHaveTextContent("Provider added");
     });
     expect(said).toHaveTextContent("groq/<model>");
+    // Its models are enabled on the Models page first, and there is a link to it.
+    expect(said).toHaveTextContent(ENABLE_MODELS);
+    expect(within(said).getByRole("link", { name: "Models page" })).toHaveAttribute(
+      "href",
+      "/models",
+    );
     expect(notice()).toBe(said);
     expect(said).toBeVisible();
     // One announcement: nothing in it is a live region of its own.
@@ -562,6 +708,137 @@ describe("adding a provider", () => {
     expect(state.created).toEqual([
       { name: "claude", kind: "anthropic", base_url: "https://llm.example.test" },
     ]);
+  });
+
+  test("a Gemini provider is sent with its kind, and no API version", async () => {
+    const state = keeps();
+    await page();
+    const dialog = await openAdd();
+    await userEvent.type(within(dialog).getByLabelText("Name"), "gemini");
+    await known(dialog, "Gemini");
+    expect(kind(dialog, "Gemini")).toBeChecked();
+    expect(within(dialog).getByLabelText("Base URL")).toHaveValue(
+      "https://generativelanguage.googleapis.com",
+    );
+    expect(within(dialog).queryByLabelText("API version")).toBeNull();
+    await add(dialog);
+    await closed();
+    expect(state.created).toEqual([
+      { name: "gemini", kind: "gemini", base_url: "https://generativelanguage.googleapis.com" },
+    ]);
+  });
+
+  describe("an Azure OpenAI provider", () => {
+    test("has an API version, which starts as the default, and the hint about its base URL", async () => {
+      await page();
+      const dialog = await openAdd();
+      expect(within(dialog).queryByLabelText("API version")).toBeNull();
+      await userEvent.click(kind(dialog, "Azure OpenAI"));
+      expect(within(dialog).getByLabelText("API version")).toHaveValue(DEFAULT_VERSION);
+      expect(descriptionOf(within(dialog).getByLabelText("Base URL"))).toBe(AZURE_HINT);
+      expectLabelsNameControls(dialog);
+      // Another kind takes both away again.
+      await userEvent.click(kind(dialog, "Anthropic"));
+      expect(within(dialog).queryByLabelText("API version")).toBeNull();
+      expect(descriptionOf(within(dialog).getByLabelText("Base URL"))).toBe("");
+    });
+
+    test("is sent with its kind and API version", async () => {
+      const state = keeps();
+      await page();
+      const dialog = await openAdd();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "azure-eu");
+      await userEvent.click(kind(dialog, "Azure OpenAI"));
+      await userEvent.type(
+        within(dialog).getByLabelText("Base URL"),
+        "https://my-resource.openai.azure.com",
+      );
+      const version = within(dialog).getByLabelText("API version");
+      await userEvent.clear(version);
+      await userEvent.type(version, "2025-03-01-preview");
+      await add(dialog);
+      await closed();
+      expect(state.created).toEqual([
+        {
+          name: "azure-eu",
+          kind: "azure",
+          base_url: "https://my-resource.openai.azure.com",
+          api_version: "2025-03-01-preview",
+        },
+      ]);
+      await waitFor(() => {
+        expect(rowOf("azure-eu")).toHaveTextContent("Azure OpenAI");
+      });
+    });
+
+    test("with the default version it is sent as it stands", async () => {
+      const state = keeps();
+      await page();
+      const dialog = await openAdd();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "azure-eu");
+      await userEvent.click(kind(dialog, "Azure OpenAI"));
+      await userEvent.type(within(dialog).getByLabelText("Base URL"), "https://r.openai.azure.com");
+      await add(dialog);
+      await closed();
+      expect(state.created).toEqual([
+        {
+          name: "azure-eu",
+          kind: "azure",
+          base_url: "https://r.openai.azure.com",
+          api_version: DEFAULT_VERSION,
+        },
+      ]);
+    });
+
+    test("a version left empty is not sent: the gateway has its default", async () => {
+      const state = keeps();
+      await page();
+      const dialog = await openAdd();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "azure-eu");
+      await userEvent.click(kind(dialog, "Azure OpenAI"));
+      await userEvent.type(within(dialog).getByLabelText("Base URL"), "https://r.openai.azure.com");
+      await userEvent.clear(within(dialog).getByLabelText("API version"));
+      await add(dialog);
+      await closed();
+      expect(state.created).toEqual([
+        { name: "azure-eu", kind: "azure", base_url: "https://r.openai.azure.com" },
+      ]);
+    });
+
+    test("a version typed and then another kind chosen is not sent", async () => {
+      const state = keeps();
+      await page();
+      const dialog = await openAdd();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "claude");
+      await userEvent.click(kind(dialog, "Azure OpenAI"));
+      await userEvent.click(kind(dialog, "Anthropic"));
+      await userEvent.type(within(dialog).getByLabelText("Base URL"), "https://llm.example.test");
+      await add(dialog);
+      await closed();
+      expect(state.created).toEqual([
+        { name: "claude", kind: "anthropic", base_url: "https://llm.example.test" },
+      ]);
+    });
+
+    test("an API version the gateway refuses is told on its field", async () => {
+      override("post", "/api/providers", () =>
+        refuse(validationFailed({ api_version: fieldMessages.apiVersionForm })),
+      );
+      await page();
+      const dialog = await openAdd();
+      await userEvent.type(within(dialog).getByLabelText("Name"), "azure-eu");
+      await userEvent.click(kind(dialog, "Azure OpenAI"));
+      await userEvent.type(within(dialog).getByLabelText("Base URL"), "https://r.openai.azure.com");
+      const version = within(dialog).getByLabelText("API version");
+      await userEvent.clear(version);
+      await userEvent.type(version, "latest");
+      await add(dialog);
+      await waitFor(() => {
+        expect(descriptionOf(version)).toContain(fieldMessages.apiVersionForm);
+      });
+      expect(version).toHaveAttribute("aria-invalid", "true");
+      expect(version).toHaveValue("latest");
+    });
   });
 
   test("known base URLs fill the field", async () => {
@@ -1196,6 +1473,89 @@ describe("editing a provider", () => {
     // Another choice takes the field away again.
     await userEvent.click(within(choices).getByRole("radio", { name: "Remove the key" }));
     expect(within(dialog).queryByLabelText("New API key")).toBeNull();
+  });
+
+  describe("an Azure OpenAI provider", () => {
+    test("shows its API version, or the default where the gateway shows none; no other provider has the field", async () => {
+      keeps([...fixtures.providerList, azure, azureDefault]);
+      await page();
+      let dialog = await openEdit(azure);
+      expect(within(dialog).getByLabelText("API version")).toHaveValue("2025-03-01-preview");
+      expect(descriptionOf(within(dialog).getByLabelText("Base URL"))).toBe(AZURE_HINT);
+      expectLabelsNameControls(dialog);
+      await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await closed();
+      dialog = await openEdit(azureDefault);
+      expect(within(dialog).getByLabelText("API version")).toHaveValue(DEFAULT_VERSION);
+      await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await closed();
+      dialog = await openEdit(withCredential);
+      expect(within(dialog).queryByLabelText("API version")).toBeNull();
+    });
+
+    test("a new version is sent, with the address that stands", async () => {
+      const state = keeps([...fixtures.providerList, azure]);
+      await page();
+      const dialog = await openEdit(azure);
+      const version = within(dialog).getByLabelText("API version");
+      await userEvent.clear(version);
+      await userEvent.type(version, "2024-10-21");
+      await save(dialog);
+      await closed();
+      expect(state.patched).toEqual([
+        {
+          id: String(azure.id),
+          body: { base_url: azure.base_url, api_version: "2024-10-21" },
+        },
+      ]);
+      expect(toasts()).toEqual(["Provider updated."]);
+    });
+
+    test("the version as it is, with a new address: only the address is sent", async () => {
+      const state = keeps([...fixtures.providerList, azure]);
+      await page();
+      const dialog = await openEdit(azure);
+      const url = within(dialog).getByLabelText("Base URL");
+      await userEvent.clear(url);
+      await userEvent.type(url, "https://other.openai.azure.com");
+      await save(dialog);
+      await closed();
+      expect(state.patched).toEqual([
+        { id: String(azure.id), body: { base_url: "https://other.openai.azure.com" } },
+      ]);
+    });
+
+    test("nothing changed, nothing sent", async () => {
+      const state = keeps([...fixtures.providerList, azureDefault]);
+      await page();
+      const dialog = await openEdit(azureDefault);
+      await save(dialog);
+      await closed();
+      await settle();
+      expect(state.patched).toEqual([]);
+      expect(toasts()).toEqual([]);
+    });
+
+    test("an API version the gateway refuses is told on its field", async () => {
+      override("patch", "/api/providers/{id}", () =>
+        refuse(validationFailed({ api_version: fieldMessages.apiVersionForm })),
+      );
+      keeps([...fixtures.providerList, azure]);
+      override("patch", "/api/providers/{id}", () =>
+        refuse(validationFailed({ api_version: fieldMessages.apiVersionForm })),
+      );
+      await page();
+      const dialog = await openEdit(azure);
+      const version = within(dialog).getByLabelText("API version");
+      await userEvent.clear(version);
+      await userEvent.type(version, "latest");
+      await save(dialog);
+      await waitFor(() => {
+        expect(descriptionOf(version)).toContain(fieldMessages.apiVersionForm);
+      });
+      expect(version).toHaveValue("latest");
+      expect(toasts()).toEqual([]);
+    });
   });
 
   describe("edit sends the three credential choices", () => {
