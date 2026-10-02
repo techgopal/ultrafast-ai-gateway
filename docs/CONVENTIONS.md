@@ -44,6 +44,9 @@ and briefs add to these; they do not repeat them.
     `cargo test --all`.
   - E2E: `pnpm --dir ui build`, `cargo build --release -p ultrafast-gateway`
     (the binary embeds the console), `pnpm --dir ui test:e2e`.
+- Before reporting done: `git status --ignored` shows no source file ignored, and a
+  clean `git archive HEAD` extracted to a temp dir builds (`cargo check`), so what
+  is committed is what was tested.
 - If a full run fails even once, do not commit over it: record the output,
   find the cause. Other sessions load this machine; note `uptime` with runs.
   Load timeouts are not proof of correctness or of a defect.
