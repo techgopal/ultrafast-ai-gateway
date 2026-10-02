@@ -405,7 +405,15 @@ describe("the fixtures have the forms of the gateway", () => {
     // Covers every state of the page: enabled and disabled, every kind of grant, no grant.
     expect(fixtures.modelList.map((m) => m.enabled)).toContain(false);
     expect(fixtures.modelList.some((m) => m.grants.everyone)).toBe(true);
-    expect(fixtures.modelList.some((m) => m.enabled && !m.grants.everyone && m.grants.team_ids.length === 0 && m.grants.user_ids.length === 0)).toBe(true);
+    expect(
+      fixtures.modelList.some(
+        (m) =>
+          m.enabled &&
+          !m.grants.everyone &&
+          m.grants.team_ids.length === 0 &&
+          m.grants.user_ids.length === 0,
+      ),
+    ).toBe(true);
   });
 
   test("what a member is given of the models", () => {

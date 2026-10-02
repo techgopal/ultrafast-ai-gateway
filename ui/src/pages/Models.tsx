@@ -83,17 +83,27 @@ function AdminModels() {
     () => sortModels(all).filter((model) => matches(model, { search, provider, status })),
     [all, search, provider, status],
   );
-  const changing = update.isPending ? update.variables.id : null;
+  // Every model whose change is on its way: each row's switch waits for its own.
+  const [changing, setChanging] = useState<ReadonlySet<number>>(new Set());
+
+  function settled(id: number) {
+    setChanging((now) => {
+      const next = new Set(now);
+      next.delete(id);
+      return next;
+    });
+  }
 
   async function toggle(model: Model, enabled: boolean) {
     setProblem(null);
+    setChanging((now) => new Set(now).add(model.id));
     try {
       await update.mutateAsync({ id: model.id, body: { enabled } });
     } catch (error) {
       // A session that is over says nothing; the clean-up of the session leaves the page.
       setProblem(messageOfError(error));
     } finally {
-      update.reset();
+      settled(model.id);
     }
   }
 
@@ -136,9 +146,9 @@ function AdminModels() {
         return (
           <Label className={`${control} gap-2`}>
             <Switch
-              aria-label={`${text} ${model.name}`}
+              aria-label={model.name}
               checked={model.enabled}
-              disabled={changing === model.id}
+              disabled={changing.has(model.id)}
               onCheckedChange={(on) => {
                 void toggle(model, on);
               }}

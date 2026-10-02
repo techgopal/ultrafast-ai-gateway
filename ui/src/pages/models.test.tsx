@@ -374,6 +374,34 @@ describe("enabling and disabling", () => {
   });
 });
 
+describe("two changes at once", () => {
+  test("toggling another row does not free the switch of a row that is still changing", async () => {
+    const request = held("patch", "/api/models/{id}");
+    await page();
+    await table();
+    const first = within(rowOf(openaiMini)).getByRole("switch");
+    const second = within(rowOf(openaiFull)).getByRole("switch");
+    await userEvent.click(first);
+    await waitFor(() => {
+      expect(first).toBeDisabled();
+    });
+    await userEvent.click(second);
+    await waitFor(() => {
+      expect(second).toBeDisabled();
+    });
+    expect(request.calls).toBe(2);
+    expect(first).toBeDisabled();
+    await userEvent.click(first);
+    expect(request.calls).toBe(2);
+  });
+
+  test("the switch is named by the model alone", async () => {
+    await page();
+    await table();
+    expect(within(rowOf(openaiMini)).getByRole("switch")).toHaveAccessibleName(openaiMini.name);
+  });
+});
+
 describe("syncing the models of a provider", () => {
   test("it asks for a provider and says how many models were added", async () => {
     const state = keeps();
@@ -464,6 +492,24 @@ describe("syncing the models of a provider", () => {
 });
 
 describe("adding a model", () => {
+  test("the session ends while the model is added: nothing is said", async () => {
+    startGateway({ signedIn: true });
+    const posts = counted("post", "/api/models", () => refuse(errors.unauthenticated));
+    const app = await page();
+    const dialog = await openAdd();
+    await choice(dialog, withCredential);
+    await userEvent.click(within(dialog).getByLabelText("Model name"));
+    await userEvent.paste("gpt-4o");
+    await press(dialog, "Add model");
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in?next=%2Fmodels");
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(SESSION_ENDED);
+    expect(posts.calls).toBe(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(toasts()).toEqual([]);
+  });
+
   test("a provider and a name: the model is added, disabled, and listed", async () => {
     const state = keeps();
     await page();
@@ -664,6 +710,21 @@ describe("who has access", () => {
     await page();
     const dialog = await openAccess(openaiMini);
     await expectOneRequestWhileTheDialogStays(dialog, everyone(dialog), "Saving", request);
+  });
+
+  test("the session ends while the access is saved: nothing is said", async () => {
+    startGateway({ signedIn: true });
+    const puts = counted("put", "/api/models/{id}/grants", () => refuse(errors.unauthenticated));
+    const app = await page();
+    const dialog = await openAccess(openaiMini);
+    await press(dialog, "Save access");
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in?next=%2Fmodels");
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(SESSION_ENDED);
+    expect(puts.calls).toBe(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(toasts()).toEqual([]);
   });
 
   test("the access dialog of a model that is gone: the list shows what is so", async () => {
