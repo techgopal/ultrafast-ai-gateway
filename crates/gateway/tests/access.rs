@@ -296,6 +296,49 @@ async fn left_team_loses_team_grant() {
 }
 
 #[tokio::test]
+async fn a_role_change_takes_effect_on_v1_without_a_refresh() {
+    let w = world().await;
+    w.model("private", true, Grant::Nobody).await;
+    let org = &w.org;
+    let maya = org.sign_in("maya").await;
+    let (status, body) = org
+        .call(
+            Some(&maya),
+            "POST",
+            "/api/keys",
+            Some(json!({ "name": "lena", "owner_id": org.lena })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let secret = body["secret"].as_str().unwrap().to_string();
+    assert_eq!(w.status(&secret, "p/private").await, StatusCode::FORBIDDEN);
+
+    let path = format!("/api/users/{}", org.lena);
+    let (status, body) = org
+        .call(
+            Some(&maya),
+            "PATCH",
+            &path,
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(w.status(&secret, "p/private").await, StatusCode::OK);
+
+    let (status, body) = org
+        .call(
+            Some(&maya),
+            "PATCH",
+            &path,
+            Some(json!({ "role": "member" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // No refresh by hand: the write did it.
+    assert_eq!(w.status(&secret, "p/private").await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn route_access() {
     let w = world().await;
     let m1 = w.model("m1", true, Grant::Everyone).await;

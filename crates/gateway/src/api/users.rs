@@ -403,7 +403,7 @@ pub async fn update(
         drop(tx);
         // An earlier call may have committed this status and failed to
         // refresh.
-        if req.status.is_some() {
+        if req.status.is_some() || req.role.is_some() {
             refresh_snapshot(&state).await?;
         }
         return Ok(Json(user_view_for(store, me, was).await?).into_response());
@@ -429,8 +429,9 @@ pub async fn update(
     })
     .await?;
     tx.commit().await?;
-    // Only a change of status alters which keys work.
-    if status.is_some() {
+    // A change of status or of role alters which keys work and what they may
+    // call.
+    if status.is_some() || role.is_some() {
         refresh_snapshot(&state).await?;
     }
 
