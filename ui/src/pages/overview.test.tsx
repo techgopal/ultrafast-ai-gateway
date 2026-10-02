@@ -21,7 +21,8 @@ import {
 } from "@/test/pages";
 import { renderWithApp, type AppRenderResult } from "@/test/render";
 
-const NOTE = "Usage, spend and request logs arrive with a later release.";
+/** The note that stood where the usage is now: it is gone. */
+const OLD_NOTE = "Usage, spend and request logs arrive with a later release.";
 const NOT_TRACKED =
   "The console cannot tell yet whether a call was made, so this step is never marked done.";
 const TILE_NOT_AVAILABLE = "Not available to your account.";
@@ -39,6 +40,19 @@ function page(options: Options = {}): Promise<AppRenderResult> {
 
 function main(): HTMLElement {
   return screen.getByRole("main");
+}
+
+const USAGE = "Usage, last 30 days";
+
+function usageSection(): HTMLElement {
+  return within(main()).getByRole("region", { name: USAGE });
+}
+
+/** The page without its usage section: the counts and the steps. */
+function withoutUsage(): HTMLElement {
+  const copy = main().cloneNode(true) as HTMLElement;
+  copy.querySelector(`section[aria-label="${USAGE}"]`)?.remove();
+  return copy;
 }
 
 function tile(name: string): HTMLElement {
@@ -67,7 +81,10 @@ function figures(name: string): string[] {
 function tiles(): string[] {
   return within(main())
     .queryAllByRole("group")
-    .filter((group) => group.getAttribute("data-slot") === "card")
+    .filter(
+      (group) =>
+        group.getAttribute("data-slot") === "card" && group.closest(`section[aria-label="${USAGE}"]`) === null,
+    )
     .map((group) => within(group).getByRole("heading").textContent);
 }
 
@@ -121,11 +138,11 @@ function step(index: number): HTMLElement {
   return found;
 }
 
-/** The text of the page without its note, which is where those words may be. */
+/** The text of the page without its usage section, which is where those words are. */
 function pageText(): string {
-  const text = main().textContent;
-  expect(text).toContain(NOTE);
-  return text.replace(NOTE, "");
+  const text = withoutUsage().textContent;
+  expect(text).not.toContain(OLD_NOTE);
+  return text;
 }
 
 function expectNoInventedNumbers(): void {
@@ -138,7 +155,7 @@ function expectNoInventedNumbers(): void {
   expect("1 suspended").not.toMatch(/\bspend\b/i);
   expect("no spend yet").toMatch(/\bspend\b/i);
   // No charts.
-  expect(main().querySelector("canvas, svg[role=img], figure")).toBeNull();
+  expect(withoutUsage().querySelector("canvas, svg[role=img], figure")).toBeNull();
 }
 
 describe("the overview", () => {
@@ -190,7 +207,7 @@ describe("the overview", () => {
       expect(within(tile(name)).getByRole("link", { name })).toHaveAttribute("href", to);
       expect(within(tile(name)).getAllByRole("link")).toHaveLength(1);
     }
-    expect(within(main()).getByText(NOTE)).toBeInTheDocument();
+    expect(within(main()).queryByText(OLD_NOTE)).toBeNull();
     // There is a provider and a key: nothing to get started with.
     expect(queryGetStarted()).toBeNull();
     expect(toasts()).toEqual([]);
@@ -271,7 +288,7 @@ describe("the overview", () => {
     for (const name of ["Providers", "Virtual keys", "Users", "Teams"]) await loaded(name);
     expectNoInventedNumbers();
     // Every number on the page is one of the counts: there is no digit outside the tiles,
-    const outside = main().cloneNode(true) as HTMLElement;
+    const outside = withoutUsage();
     for (const card of outside.querySelectorAll('[data-slot="card"]')) card.remove();
     expect(outside.textContent).not.toMatch(/\d/);
     // and in the tiles there are the counts, and nothing else.
@@ -410,7 +427,7 @@ describe("the overview", () => {
     expect(queryTile("Users")).toBeNull();
     expect(queryTile("Teams")).toBeNull();
     expect(figures("Providers")).toEqual(["2", "1 with a credential"]);
-    expect(within(main()).getByText(NOTE)).toBeInTheDocument();
+    expect(within(main()).queryByText(OLD_NOTE)).toBeNull();
     await settle();
     // No call that would return 403, and none beyond the two lists.
     expect([users.calls, teams.calls, audit.calls]).toEqual([0, 0, 0]);
@@ -419,6 +436,9 @@ describe("the overview", () => {
       "GET /api/keys",
       "GET /api/providers",
       "GET /api/setup",
+      // The usage by day and by model: one request each, however many tiles read them.
+      "GET /api/usage",
+      "GET /api/usage",
     ]);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByText(errors.forbidden.body.error.message)).toBeNull();
@@ -441,7 +461,7 @@ describe("the overview", () => {
   test.each([
     ["an admin", fixtures.me.maya, ["Users", "Teams"]],
     ["a lead", fixtures.me.arjun, [LEAD_USERS, LEAD_TEAMS]],
-  ])("%s makes the four list calls, once each, and no other", async (_, user, theirs) => {
+  ])("%s makes the four list calls and the three usage calls, once each, and no other", async (_, user, theirs) => {
     const made = requests();
     await page({ user });
     for (const name of ["Providers", "Virtual keys", ...theirs]) await loaded(name);
@@ -452,6 +472,10 @@ describe("the overview", () => {
       "GET /api/providers",
       "GET /api/setup",
       "GET /api/teams",
+      // By day, by model, and by key.
+      "GET /api/usage",
+      "GET /api/usage",
+      "GET /api/usage",
       "GET /api/users",
     ]);
   });
@@ -527,7 +551,7 @@ describe("the overview", () => {
     expect(figures("Users")).toEqual(["7", "5 active", "1 invited", "1 disabled"]);
     expect(figures("Teams")).toEqual(["3"]);
     expect(within(keys).getByRole("link", { name: "Virtual keys" })).toHaveAttribute("href", "/keys");
-    expect(within(main()).getByText(NOTE)).toBeInTheDocument();
+    expect(within(main()).queryByText(OLD_NOTE)).toBeNull();
     expect(screen.getByRole("heading", { level: 1, name: "Overview" })).toBeInTheDocument();
     // Whether there is a key is not known: nothing is said about getting started.
     expect(queryGetStarted()).toBeNull();
@@ -559,7 +583,7 @@ describe("the overview", () => {
       expect(within(tile(name)).getByRole("button", { name: "Retry" })).toBeInTheDocument();
     }
     expect(screen.getByRole("heading", { level: 1, name: "Overview" })).toBeInTheDocument();
-    expect(within(main()).getByText(NOTE)).toBeInTheDocument();
+    expect(within(main()).queryByText(OLD_NOTE)).toBeNull();
     expectOneMain();
     expectOneH1();
   });
@@ -659,6 +683,156 @@ describe("the overview", () => {
       at: "/",
     });
     expect(href(app)).toBe("/sign-in");
-    expect(shown()).not.toContain(NOTE);
+    expect(shown()).not.toContain(OLD_NOTE);
+  });
+});
+
+describe("usage on the overview", () => {
+  const UNPRICED = "Some models have no price; spend is a lower bound.";
+
+  function usageTile(name: string): HTMLElement {
+    return within(usageSection()).getByRole("group", { name });
+  }
+
+  async function usageLoaded(name: string): Promise<HTMLElement> {
+    const found = await within(await screen.findByRole("region", { name: USAGE })).findByRole(
+      "group",
+      { name },
+    );
+    await waitFor(() => {
+      expect(found).toHaveAttribute("aria-busy", "false");
+    });
+    return found;
+  }
+
+  function lines(name: string): string[] {
+    return [...usageTile(name).querySelectorAll("p")].map((line) => line.textContent.trim());
+  }
+
+  function tableRows(name: string): string[][] {
+    return [...usageTile(name).querySelectorAll("tbody tr")].map((row) =>
+      [...row.querySelectorAll("td")].map((cell) => cell.textContent.trim()),
+    );
+  }
+
+  test("tiles for the last 30 days, each with a sparkline of its days", async () => {
+    await page();
+    for (const name of ["Requests", "Errors", "Tokens", "Spend"]) await usageLoaded(name);
+    expect(lines("Requests")).toEqual(["150"]);
+    expect(lines("Errors")).toEqual(["6", "4% of requests"]);
+    expect(lines("Tokens")).toEqual(["15,000 in", "6,000 out"]);
+    expect(lines("Spend").slice(0, 1)).toEqual(["$12.34"]);
+    // Thirty days; a day with no row is a day with nothing; the name says lowest and highest.
+    const names = ["Requests", "Errors", "Tokens", "Spend"].map((name) => {
+      const image = within(usageTile(name)).getByRole("img");
+      expect(image.querySelector("title")).not.toBeNull();
+      return image.getAttribute("aria-label");
+    });
+    expect(names).toEqual([
+      "Requests per day, 30 days, lowest 0, highest 70",
+      "Errors per day, 30 days, lowest 0, highest 5",
+      "Tokens per day, 30 days, lowest 0, highest 10,000",
+      "Spend per day, 30 days, lowest $0.00, highest $6.00",
+    ]);
+    expect(main().textContent).not.toContain(OLD_NOTE);
+    expect(within(usageTile("Requests")).getByRole("link", { name: "Requests" })).toHaveAttribute(
+      "href",
+      "/logs",
+    );
+    expectOneMain();
+    expectOneH1("Overview");
+  });
+
+  test("an unpriced call says that spend is a lower bound", async () => {
+    await page();
+    await usageLoaded("Spend");
+    expect(usageTile("Spend")).toHaveTextContent(UNPRICED);
+  });
+
+  test("with every call priced there is no such note", async () => {
+    const day = fixtures.usageByDay;
+    override("get", "/api/usage", () =>
+      ok("get", "/api/usage", 200, {
+        ...day,
+        total: { ...day.total, unpriced_requests: 0 },
+        rows: day.rows.map((row) => ({ ...row, unpriced_requests: 0 })),
+      }),
+    );
+    await page();
+    await usageLoaded("Spend");
+    expect(main().textContent).not.toContain(UNPRICED);
+  });
+
+  test("a gateway with no calls shows zeros, a flat line and no rate", async () => {
+    const empty = { ...fixtures.usageByDay, rows: [], total: { ...fixtures.usageByDay.total, requests: 0, errors: 0, input_tokens: 0, output_tokens: 0, cost_micros: 0, unpriced_requests: 0 } };
+    override("get", "/api/usage", () => ok("get", "/api/usage", 200, empty));
+    await page();
+    await usageLoaded("Spend");
+    expect(lines("Requests")).toEqual(["0"]);
+    expect(lines("Errors")).toEqual(["0", "0% of requests"]);
+    expect(lines("Spend")).toEqual(["$0.00"]);
+    expect(usageTile("Top models")).toHaveTextContent("No calls yet");
+  });
+
+  test("top models: five, most requests first, with their spend", async () => {
+    const asked = counted("get", "/api/usage", ({ request }) =>
+      ok("get", "/api/usage", 200, fixtures.usageOf(new URL(request.url).searchParams.get("group") ?? "day")),
+    );
+    await page();
+    await usageLoaded("Top models");
+    expect(tableRows("Top models")).toEqual([
+      ["openai/gpt-4o", "60", "$8.00"],
+      ["anthropic/claude-haiku", "40", "$3.00"],
+      ["chat-fast", "20", "$0.00"],
+      ["ollama/llama3", "15", "$1.34"],
+      ["openai/gpt-4o-mini", "10", "<$0.01"],
+    ]);
+    expect(asked.calls).toBeGreaterThanOrEqual(3);
+  });
+
+  test("top keys for an admin and for a lead, not for a member", async () => {
+    for (const user of [fixtures.me.maya, fixtures.me.arjun]) {
+      const app = await page({ user });
+      await usageLoaded("Top keys");
+      expect(tableRows("Top keys")).toEqual([
+        ["platform-prod", "100", "$9.00"],
+        ["(none)", "30", "$3.00"],
+        ["(deleted)", "20", "$0.34"],
+      ]);
+      app.unmount();
+    }
+    const groups: (string | null)[] = [];
+    override("get", "/api/usage", ({ request }) => {
+      const group = new URL(request.url).searchParams.get("group");
+      groups.push(group);
+      return ok("get", "/api/usage", 200, fixtures.usageOf(group ?? "day"));
+    });
+    await page({ user: fixtures.me.tomas });
+    await usageLoaded("Spend");
+    await usageLoaded("Top models");
+    await settle();
+    expect(within(usageSection()).queryByRole("group", { name: "Top keys" })).toBeNull();
+    expect(groups.sort()).toEqual(["day", "model"]);
+  });
+
+  test("a failed usage call is said in its tiles with Retry; the counts stay", async () => {
+    override("get", "/api/usage", () => refuse(errors.internal_error));
+    await page();
+    await loaded("Providers");
+    const tile = await within(await screen.findByRole("region", { name: USAGE })).findByRole("group", { name: "Requests" });
+    expect(await within(tile).findByRole("alert")).toHaveTextContent(errors.internal_error.body.error.message);
+    expect(within(tile).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(figures("Providers")).toEqual(["2", "1 with a credential"]);
+    expectOneMain();
+    expectOneH1("Overview");
+  });
+
+  test("at width 390 the tiles fit one column", async () => {
+    await page({ width: 390 });
+    await usageLoaded("Requests");
+    expect(usageSection().querySelector(".grid")?.className).toContain("grid-cols-1");
+    for (const link of within(usageSection()).getAllByRole("link")) {
+      expect(link.className).toContain("min-h-11");
+    }
   });
 });

@@ -91,7 +91,29 @@ export const queryKeys = {
     /** The log as it is read page by page: one entry of the cache for all its pages. */
     pages: () => ["audit", "pages"] as const,
   },
+  logs: {
+    all: () => ["logs"] as const,
+    /** The calls as they are read page by page, for one filter and one run. */
+    pages: (filter: LogsFilter, run: number) => ["logs", "pages", filter, run] as const,
+    detail: detailOf("logs"),
+  },
+  usage: {
+    all: () => ["usage"] as const,
+    sums: (group: UsageGroup) => ["usage", group] as const,
+  },
 };
+
+/** What narrows the list of calls. A part that is not there leaves nothing out. */
+export interface LogsFilter {
+  from?: string;
+  to?: string;
+  key_id?: number;
+  user_id?: number;
+  team_id?: number;
+  model?: string;
+}
+
+export type UsageGroup = "day" | "model" | "key" | "user" | "team";
 
 /** How often a query is tried again after a network error. */
 const NETWORK_RETRIES = 2;
@@ -319,6 +341,45 @@ export function useAuditFromTheStart(): () => void {
     void client.resetQueries({ queryKey: queryKeys.audit.pages(), exact: true });
   };
 }
+
+/** How many calls a page of the logs has. A page with fewer is the last. */
+export const LOGS_PAGE_SIZE = 50;
+
+/**
+ * The calls, newest first, read page by page with `before` as the audit log
+ * is. `run` is part of the key: Refresh starts a new run, which is one request
+ * for the newest page. Like the audit log it is not read again by the focus
+ * or the network, and not kept when its page is left.
+ */
+export const useLogsPages = (filter: LogsFilter, run: number) =>
+  useInfiniteQuery({
+    queryKey: queryKeys.logs.pages(filter, run),
+    queryFn: ({ pageParam, signal }) =>
+      api.get("/api/logs", {
+        query: { limit: LOGS_PAGE_SIZE, ...filter, ...(pageParam === null ? {} : { before: pageParam }) },
+        signal,
+      }),
+    initialPageParam: null as number | null,
+    getNextPageParam: (last) =>
+      last.logs.length < LOGS_PAGE_SIZE ? undefined : last.logs.at(-1)?.id,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    gcTime: 0,
+  });
+
+/** One call with the targets it tried. */
+export const useLog = (id: number) =>
+  useQuery({
+    queryKey: queryKeys.logs.detail(id),
+    queryFn: ({ signal }) => api.get("/api/logs/{id}", { params: { id }, signal }),
+  });
+
+/** Sums of the last 30 days (the API's default range), by day, model, key, user or team. */
+export const useUsage = (group: UsageGroup) =>
+  useQuery({
+    queryKey: queryKeys.usage.sums(group),
+    queryFn: ({ signal }) => api.get("/api/usage", { query: { group }, signal }),
+  });
 
 // -------------------------------------------------------------- mutations
 

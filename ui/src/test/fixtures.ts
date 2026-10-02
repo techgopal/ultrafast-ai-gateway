@@ -19,6 +19,11 @@ export type AuditEntry = Schemas["AuditRow"];
 export type Me = Schemas["MeResponse"];
 export type Route = Schemas["RouteView"];
 export type TargetHealth = Schemas["TargetHealth"];
+export type Log = Schemas["LogView"];
+export type LogDetail = Schemas["LogDetailView"];
+export type LogAttempt = Schemas["LogAttempt"];
+export type UsageRow = Schemas["UsageRow"];
+export type UsagePage = Schemas["UsagePage"];
 
 /**
  * The time of the fixtures: what they call past (the expired key and token,
@@ -563,4 +568,183 @@ export function auditEntriesFrom(newest: number, count: number): AuditEntry[] {
       summary: `${users.maya.email} signed in`,
     };
   });
+}
+
+function log(
+  id: number,
+  at: string,
+  who: { key: Key | null; user: User | null; team: Team | null },
+  call: Partial<Log>,
+): Log {
+  return {
+    id,
+    at,
+    key_id: who.key?.id ?? null,
+    key_name: who.key?.name ?? null,
+    user_id: who.user?.id ?? null,
+    user_email: who.user?.email ?? null,
+    team_id: who.team?.id ?? null,
+    team_name: who.team?.name ?? null,
+    requested: "gpt-4o",
+    endpoint: "/v1/chat/completions",
+    stream: false,
+    status: 200,
+    provider: "openai",
+    model: "gpt-4o",
+    input_tokens: 120,
+    output_tokens: 48,
+    cost_micros: 1_250_000,
+    priced: true,
+    cached: false,
+    duration_ms: 850,
+    ...call,
+  };
+}
+
+const platformCall = { key: keys.active, user: users.arjun, team: teams.platform };
+
+/** Newest first, as the API gives them. */
+export const logs = {
+  answered: log(5, "2026-09-30 11:55:00", platformCall, {}),
+  /** The call the second target answered, after the first failed. */
+  failedOver: log(4, "2026-09-30 11:40:00", platformCall, {
+    requested: "chat-fast",
+    provider: "anthropic",
+    model: "claude-haiku",
+    stream: true,
+    cost_micros: 4_000,
+    duration_ms: 2_400,
+  }),
+  cached: log(3, "2026-09-30 11:30:00", platformCall, {
+    cost_micros: 0,
+    duration_ms: 3,
+    cached: true,
+  }),
+  /** No target answered: only the name asked for is known. */
+  failed: log(2, "2026-09-30 11:20:00", { key: keys.expired, user: users.tomas, team: teams.research }, {
+    requested: "chat-fast",
+    status: 502,
+    provider: null,
+    model: null,
+    input_tokens: null,
+    output_tokens: null,
+    cost_micros: 0,
+    priced: false,
+    duration_ms: 30_000,
+  }),
+  /** Tokens but no price. */
+  unpriced: log(1, "2026-09-30 11:10:00", { key: null, user: users.tomas, team: null }, {
+    requested: "local-llama",
+    provider: "ollama",
+    model: "llama3",
+    cost_micros: 0,
+    priced: false,
+  }),
+} satisfies Record<string, Log>;
+
+export const logList: Log[] = Object.values(logs);
+
+/** What `GET /api/logs/{id}` adds: the targets tried, in order. */
+export const logAttempts: Record<number, LogAttempt[]> = {
+  5: [{ provider: "openai", model: "gpt-4o", outcome: "ok", status: 200, duration_ms: 850 }],
+  4: [
+    { provider: "openai", model: "gpt-4o-mini", outcome: "circuit_open", status: null, duration_ms: 0 },
+    { provider: "openai", model: "gpt-4o", outcome: "retryable", status: 503, duration_ms: 900 },
+    { provider: "anthropic", model: "claude-haiku", outcome: "ok", status: 200, duration_ms: 1_500 },
+  ],
+  3: [{ provider: "openai", model: "gpt-4o", outcome: "cached", status: null, duration_ms: 3 }],
+  2: [
+    { provider: "openai", model: "gpt-4o", outcome: "fatal", status: 401, duration_ms: 120 },
+    { provider: "anthropic", model: "claude-haiku", outcome: "skipped", status: null, duration_ms: 0 },
+  ],
+  1: [{ provider: "ollama", model: "llama3", outcome: "ok", status: 200, duration_ms: 850 }],
+};
+
+export function logDetail(id: number): LogDetail | undefined {
+  const row = logList.find((one) => one.id === id);
+  return row === undefined ? undefined : { ...row, attempts: logAttempts[id] ?? [] };
+}
+
+function usageRow(group: string, label: string, rest: Partial<UsageRow>): UsageRow {
+  return {
+    group,
+    label,
+    requests: 0,
+    errors: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cost_micros: 0,
+    unpriced_requests: 0,
+    ...rest,
+  };
+}
+
+/** `GET /api/usage?group=day`: only days with calls have a row. */
+export const usageByDay: UsagePage = {
+  from: "2026-09-01",
+  to: "2026-09-30",
+  total: usageRow("total", "Total", {
+    requests: 150,
+    errors: 6,
+    input_tokens: 15_000,
+    output_tokens: 6_000,
+    cost_micros: 12_340_000,
+    unpriced_requests: 4,
+  }),
+  rows: [
+    usageRow("2026-09-28", "2026-09-28", {
+      requests: 50,
+      errors: 1,
+      input_tokens: 5_000,
+      output_tokens: 2_000,
+      cost_micros: 4_000_000,
+      unpriced_requests: 1,
+    }),
+    usageRow("2026-09-29", "2026-09-29", {
+      requests: 30,
+      errors: 5,
+      input_tokens: 3_000,
+      output_tokens: 1_000,
+      cost_micros: 2_340_000,
+      unpriced_requests: 3,
+    }),
+    usageRow("2026-09-30", "2026-09-30", {
+      requests: 70,
+      input_tokens: 7_000,
+      output_tokens: 3_000,
+      cost_micros: 6_000_000,
+    }),
+  ],
+};
+
+const modelRow = (label: string, requests: number, cost: number) =>
+  usageRow(label, label, { requests, cost_micros: cost, input_tokens: requests * 100, output_tokens: requests * 40 });
+
+/** `GET /api/usage?group=model`: most requests first, as the API orders it. */
+export const usageByModel: UsagePage = {
+  ...usageByDay,
+  rows: [
+    modelRow("openai/gpt-4o", 60, 8_000_000),
+    modelRow("anthropic/claude-haiku", 40, 3_000_000),
+    modelRow("chat-fast", 20, 0),
+    modelRow("ollama/llama3", 15, 1_340_000),
+    modelRow("openai/gpt-4o-mini", 10, 5_000),
+    modelRow("openai/o3", 5, 0),
+  ],
+};
+
+/** `GET /api/usage?group=key`; a call without a key is `(none)`, a deleted key `(deleted)`. */
+export const usageByKey: UsagePage = {
+  ...usageByDay,
+  rows: [
+    usageRow("1", keys.active.name, { requests: 100, cost_micros: 9_000_000 }),
+    usageRow("", "(none)", { requests: 30, cost_micros: 3_000_000 }),
+    usageRow("9", "(deleted)", { requests: 20, cost_micros: 340_000 }),
+  ],
+};
+
+export function usageOf(group: string): UsagePage {
+  if (group === "model") return usageByModel;
+  if (group === "key") return usageByKey;
+  return usageByDay;
 }

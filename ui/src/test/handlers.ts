@@ -223,6 +223,21 @@ export const handlers = [
     byId(fixtures.tokenList, call) === undefined ? notFound() : noContent(),
   ),
 
+  // logs and usage
+  handler("get", "/api/logs", () => ok("get", "/api/logs", 200, { logs: fixtures.logList })),
+  handler("get", "/api/logs/{id}", (call) => {
+    const detail = fixtures.logDetail(Number(call.params.id));
+    return detail === undefined ? notFound() : ok("get", "/api/logs/{id}", 200, detail);
+  }),
+  handler("get", "/api/usage", ({ request }) =>
+    ok(
+      "get",
+      "/api/usage",
+      200,
+      fixtures.usageOf(new URL(request.url).searchParams.get("group") ?? "day"),
+    ),
+  ),
+
   // audit
   handler("get", "/api/audit", () =>
     ok("get", "/api/audit", 200, { entries: fixtures.auditEntries }),

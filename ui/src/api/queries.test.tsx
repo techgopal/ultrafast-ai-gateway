@@ -1311,7 +1311,7 @@ describe("every mutation calls its operation", () => {
   test("there are 29 of them, 14 queries, and the one that starts the audit log again", () => {
     expect(cases).toHaveLength(29);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(43);
+    expect(hooks).toHaveLength(46);
     // What only tests used is not kept: a key read by its id, the audit log
     // read as one page, and `me`, which the session reads itself.
     for (const gone of ["useKey", "keyOptions", "useAuditLog", "auditLogOptions", "useMe"]) {
@@ -1321,6 +1321,8 @@ describe("every mutation calls its operation", () => {
     expect(Object.keys(q.queryKeys.audit)).not.toContain("list");
     expect(hooks).toContain("useAuditPages");
     expect(hooks).toContain("useAuditFromTheStart");
+    // The request logs, one of them, and the usage sums: three more.
+    for (const name of ["useLogsPages", "useLog", "useUsage"]) expect(hooks).toContain(name);
     expect(Object.keys(q)).not.toContain("useTeamDetails");
     expect(hooks).toContain("useAddTeamMember");
     expect(hooks).not.toContain("useLogout");

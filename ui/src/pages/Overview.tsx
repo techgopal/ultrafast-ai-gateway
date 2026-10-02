@@ -1,15 +1,25 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRightIcon } from "lucide-react";
 import { useId, type ReactNode } from "react";
-import { useKeys, useProviders, useTeams, useUsers } from "@/api/queries";
+import { useKeys, useProviders, useTeams, useUsage, useUsers } from "@/api/queries";
+import type { components } from "@/api/schema";
 import { can, isAdmin, type Me } from "@/auth/guards";
 import { useSession } from "@/auth/session";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
+import { Sparkline } from "@/components/Sparkline";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   countByStatus,
   countTitles,
@@ -21,8 +31,9 @@ import {
   type FirstSteps,
   type StatusCount,
 } from "@/lib/overview";
+import { errorRate, formatMoney, formatTokens, perDay } from "@/lib/usage";
 
-export const LATER_NOTE = "Usage, spend and request logs arrive with a later release.";
+export const UNPRICED_NOTE = "Some models have no price; spend is a lower bound.";
 export const CALLS_NOT_TRACKED =
   "The console cannot tell yet whether a call was made, so this step is never marked done.";
 export const ONLY_AN_ADMIN = "Only an admin can add a provider.";
@@ -40,7 +51,7 @@ interface Read<T> {
 
 interface TileProps<T> {
   title: string;
-  to: "/providers" | "/keys" | "/users" | "/teams";
+  to: "/providers" | "/keys" | "/users" | "/teams" | "/logs" | "/models";
   read: Read<T>;
   /** What the tile says of the list when it is read. */
   children: (list: T) => ReactNode;
@@ -134,6 +145,159 @@ function TeamsTile({ title }: { title: string }) {
     <Tile title={title} to="/teams" read={teams}>
       {({ teams: list }) => <Count of={list.length} />}
     </Tile>
+  );
+}
+
+type UsagePage = components["schemas"]["UsagePage"];
+type UsageRow = components["schemas"]["UsageRow"];
+
+interface SeriesProps {
+  label: string;
+  page: UsagePage;
+  of: (row: UsageRow) => number;
+  format: (value: number) => string;
+}
+
+/** The days of the range, one value each; a day with no calls is zero. */
+function Series({ label, page, of, format }: SeriesProps) {
+  const values = perDay(page.from, page.to, page.rows).map(of);
+  return <Sparkline label={`${label} per day`} values={values} format={format} />;
+}
+
+/** One of the last 30 days' sums, with the line of its days. */
+function UsageTile({
+  title,
+  read,
+  children,
+}: {
+  title: string;
+  read: Read<UsagePage>;
+  children: (page: UsagePage) => ReactNode;
+}) {
+  return (
+    <Tile title={title} to="/logs" read={read}>
+      {children}
+    </Tile>
+  );
+}
+
+const TOP = 5;
+
+/** The groups with the most requests, as the API orders them. */
+function TopTable({
+  title,
+  to,
+  read,
+  column,
+}: {
+  title: string;
+  to: "/models" | "/keys";
+  read: Read<UsagePage>;
+  column: string;
+}) {
+  return (
+    <Tile title={title} to={to} read={read}>
+      {(page) =>
+        page.rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No calls yet</p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead scope="col">{column}</TableHead>
+                <TableHead scope="col" className="text-right">
+                  Requests
+                </TableHead>
+                <TableHead scope="col" className="text-right">
+                  Spend
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {page.rows.slice(0, TOP).map((row) => (
+                <TableRow key={row.group}>
+                  <TableCell className="break-all whitespace-normal">{row.label}</TableCell>
+                  <TableCell className="text-right tabular-nums">{row.requests}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {formatMoney(row.cost_micros)}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )
+      }
+    </Tile>
+  );
+}
+
+function TopKeys() {
+  return <TopTable title="Top keys" to="/keys" read={useUsage("key")} column="Key" />;
+}
+
+/** What went through the gateway in the last 30 days, as far as the viewer may see it. */
+function Usage({ me }: { me: Me }) {
+  const day = useUsage("day");
+  const models = useUsage("model");
+  return (
+    <section aria-label="Usage, last 30 days" className="flex flex-col gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <UsageTile title="Requests" read={day}>
+          {(page) => (
+            <>
+              <Count of={page.total.requests} />
+              <Series label="Requests" page={page} of={(row) => row.requests} format={String} />
+            </>
+          )}
+        </UsageTile>
+        <UsageTile title="Errors" read={day}>
+          {(page) => (
+            <>
+              <Count of={page.total.errors} />
+              <p className="text-sm text-muted-foreground">
+                {errorRate(page.total.errors, page.total.requests)} of requests
+              </p>
+              <Series label="Errors" page={page} of={(row) => row.errors} format={String} />
+            </>
+          )}
+        </UsageTile>
+        <UsageTile title="Tokens" read={day}>
+          {(page) => (
+            <>
+              <p className="text-3xl font-semibold tabular-nums">
+                {formatTokens(page.total.input_tokens)} in
+              </p>
+              <p className="text-sm text-muted-foreground tabular-nums">
+                {formatTokens(page.total.output_tokens)} out
+              </p>
+              <Series
+                label="Tokens"
+                page={page}
+                of={(row) => row.input_tokens + row.output_tokens}
+                format={formatTokens}
+              />
+            </>
+          )}
+        </UsageTile>
+        <UsageTile title="Spend" read={day}>
+          {(page) => (
+            <>
+              <p className="text-3xl font-semibold tabular-nums">
+                {formatMoney(page.total.cost_micros)}
+              </p>
+              {page.total.unpriced_requests > 0 ? (
+                <p className="text-sm text-muted-foreground">{UNPRICED_NOTE}</p>
+              ) : null}
+              <Series label="Spend" page={page} of={(row) => row.cost_micros} format={formatMoney} />
+            </>
+          )}
+        </UsageTile>
+      </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <TopTable title="Top models" to="/models" read={models} column="Model" />
+        {can(me, { type: "viewOthersUsage" }) ? <TopKeys /> : null}
+      </div>
+    </section>
   );
 }
 
@@ -250,7 +414,7 @@ function OverviewOf({ me }: { me: Me }) {
           </>
         ) : null}
       </div>
-      <p className="text-sm text-muted-foreground">{LATER_NOTE}</p>
+      <Usage me={me} />
     </>
   );
 }

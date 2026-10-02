@@ -55,7 +55,13 @@ export type ConsoleAction =
    * and teams for everybody, as far as they are theirs to see; to a member
    * that is themselves and their own teams, which is nothing to count.
    */
-  | { type: "viewUserAndTeamCounts" };
+  | { type: "viewUserAndTeamCounts" }
+  /**
+   * Sees the calls and the usage of more than themselves: an admin sees all,
+   * the lead of a team its people. A member sees their own only, so the logs
+   * offer them no filter by key, user or team, and the overview no top keys.
+   */
+  | { type: "viewOthersUsage" };
 
 export function isAdmin(me: Me): boolean {
   return me.user.role === "admin";
@@ -103,6 +109,7 @@ export function can(me: Me, action: ConsoleAction): boolean {
         leads(me, action.teamId) && (action.role !== "lead" || action.userId === me.user.id)
       );
     case "viewUserAndTeamCounts":
+    case "viewOthersUsage":
       return ledTeamIds(me).length > 0;
     case "viewTeam":
       return isIn(me, action.teamId);

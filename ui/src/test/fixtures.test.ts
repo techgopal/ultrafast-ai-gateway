@@ -87,6 +87,7 @@ function timestamps(): [string, unknown][] {
       providers: fixtures.providerList,
       tokens: fixtures.tokenList,
       audit: fixtures.auditEntries,
+      logs: fixtures.logList,
     },
     "fixtures",
   );
@@ -522,5 +523,42 @@ describe("the fixtures have the forms of the gateway", () => {
     // api/models.rs, SyncResult: the new names, and how many were there already.
     expect(fixtures.syncResult.added.every((name) => /^\S{1,200}$/.test(name))).toBe(true);
     expect(Number.isInteger(fixtures.syncResult.existing)).toBe(true);
+  });
+
+  // crates/gateway/src/api/logs.rs, usage.rs and logs/mod.rs (cost and priced).
+  test("logs and their attempts", () => {
+    const ids = fixtures.logList.map((row) => row.id);
+    expect(ids).toEqual([...ids].sort((a, b) => b - a));
+    const outcomes = ["ok", "retryable", "fatal", "circuit_open", "skipped", "cached"];
+    for (const row of fixtures.logList) {
+      // A cached answer is free and priced; an unpriced one costs nothing.
+      if (row.cached) expect([row.cost_micros, row.priced]).toEqual([0, true]);
+      if (!row.priced) expect(row.cost_micros).toBe(0);
+      // No key, no name; a name only with an id.
+      if (row.key_id === null) expect(row.key_name).toBeNull();
+      const detail = fixtures.logDetail(row.id);
+      expect(detail?.attempts.length, String(row.id)).toBeGreaterThan(0);
+      for (const attempt of detail?.attempts ?? []) {
+        expect(outcomes).toContain(attempt.outcome);
+      }
+    }
+    expect(fixtures.logDetail(999)).toBeUndefined();
+    expect(fixtures.logList.some((row) => row.cached)).toBe(true);
+    expect(fixtures.logList.some((row) => row.status >= 400 && row.provider === null)).toBe(true);
+  });
+
+  test("usage totals are the sums of the rows", () => {
+    for (const page of [fixtures.usageByDay, fixtures.usageByModel, fixtures.usageByKey]) {
+      expect(page.total.group).toBe("total");
+      expect(page.total.label).toBe("Total");
+    }
+    const days = fixtures.usageByDay;
+    for (const field of ["requests", "errors", "input_tokens", "output_tokens", "cost_micros", "unpriced_requests"] as const) {
+      expect(days.rows.reduce((sum, row) => sum + row[field], 0), field).toBe(days.total[field]);
+    }
+    for (const row of days.rows) expect(row.group).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // The models come most requests first; none has a bare name besides a route's.
+    const requests = fixtures.usageByModel.rows.map((row) => row.requests);
+    expect(requests).toEqual([...requests].sort((a, b) => b - a));
   });
 });

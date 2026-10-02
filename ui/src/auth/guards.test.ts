@@ -101,6 +101,8 @@ describe("guards", () => {
     ["view audit", { type: "viewAudit" }, [true, false, false, false]],
     // The overview counts users and teams for who manages some: admins, and leads.
     ["view the counts of users and teams", { type: "viewUserAndTeamCounts" }, [true, true, false, false]],
+    // Logs and usage of others: filters by key, user and team, and the top keys.
+    ["see the logs and usage of others", { type: "viewOthersUsage" }, [true, true, false, false]],
   ];
 
   test.each(table)("%s", (_, action, expected) => {
@@ -132,6 +134,7 @@ describe("guards", () => {
       viewRoutingHealth: true,
       viewAudit: true,
       viewUserAndTeamCounts: true,
+      viewOthersUsage: true,
     };
     expect([...seen].sort()).toEqual(Object.keys(all).sort());
   });

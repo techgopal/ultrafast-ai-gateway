@@ -19,6 +19,8 @@ import { AcceptInvite } from "@/pages/AcceptInvite";
 import { Account } from "@/pages/Account";
 import { Audit } from "@/pages/Audit";
 import { Keys } from "@/pages/Keys";
+import { Logs } from "@/pages/Logs";
+import { LogsDetail } from "@/pages/LogsDetail";
 import { PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
 import { Overview } from "@/pages/Overview";
@@ -200,6 +202,23 @@ const auditRoute = createRoute({
   component: Audit,
 });
 
+const logsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/logs",
+  staticData: { title: "Logs" },
+  component: Logs,
+});
+
+const logRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/logs/$id",
+  staticData: { title: "Call" },
+  component: function LogRoute() {
+    const { id } = logRoute.useParams();
+    return <LogsDetail key={id} id={id} />;
+  },
+});
+
 const accountRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/account",
@@ -328,6 +347,8 @@ const routeTree = rootRoute.addChildren([
   acceptInviteRoute,
   shellRoute.addChildren([
     overviewRoute,
+    logsRoute,
+    logRoute,
     providersRoute,
     modelsRoute,
     routesRoute,
