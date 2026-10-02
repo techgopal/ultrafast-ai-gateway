@@ -447,6 +447,48 @@ describe("the list of providers", () => {
       await within(rowOf(withCredential.name)).findByRole("button", { name: "Sync models" });
     });
 
+    test("while one provider syncs no other can be synced", async () => {
+      const door = gate();
+      const calls = counted("post", "/api/providers/{id}/sync", async () => {
+        await door.opened;
+        return ok("post", "/api/providers/{id}/sync", 200, fixtures.syncResult);
+      });
+      await page();
+      await table();
+      await userEvent.click(sync(withCredential));
+      await within(rowOf(withCredential.name)).findByRole("button", { name: "Syncing" });
+      const other = sync(withoutCredential);
+      expect(other).toBeDisabled();
+      await userEvent.click(other);
+      expect(calls.calls).toBe(1);
+      act(() => {
+        door.open();
+      });
+      await waitFor(() => {
+        expect(sync(withoutCredential)).toBeEnabled();
+      });
+    });
+
+    test("the problem of a sync goes when another action starts", async () => {
+      override("post", "/api/providers/{id}/sync", () => refuse(errors.sync_failed));
+      await page();
+      await table();
+      for (const start of [
+        () => userEvent.click(screen.getByRole("button", { name: "Add provider" })),
+        () => userEvent.click(within(rowOf(withCredential.name)).getByRole("button", { name: "Edit" })),
+        () => userEvent.click(within(rowOf(withCredential.name)).getByRole("button", { name: "Delete" })),
+      ]) {
+        await userEvent.click(sync(withCredential));
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          errors.sync_failed.body.error.message,
+        );
+        await start();
+        expect(screen.queryByText(errors.sync_failed.body.error.message)).toBeNull();
+        await userEvent.keyboard("{Escape}");
+        await closed();
+      }
+    });
+
     test("a refusal is said on the page", async () => {
       override("post", "/api/providers/{id}/sync", () => refuse(errors.sync_failed));
       await page();
@@ -1523,6 +1565,32 @@ describe("editing a provider", () => {
       expect(state.patched).toEqual([
         { id: String(azure.id), body: { base_url: "https://other.openai.azure.com" } },
       ]);
+    });
+
+    test("a version cleared is never sent as an empty text", async () => {
+      const state = keeps([...fixtures.providerList, azure]);
+      await page();
+      const dialog = await openEdit(azure);
+      await userEvent.clear(within(dialog).getByLabelText("API version"));
+      const url = within(dialog).getByLabelText("Base URL");
+      await userEvent.clear(url);
+      await userEvent.type(url, "https://other.openai.azure.com");
+      await save(dialog);
+      await closed();
+      expect(state.patched).toEqual([
+        { id: String(azure.id), body: { base_url: "https://other.openai.azure.com" } },
+      ]);
+    });
+
+    test("only a cleared version: nothing is sent", async () => {
+      const state = keeps([...fixtures.providerList, azure]);
+      await page();
+      const dialog = await openEdit(azure);
+      await userEvent.clear(within(dialog).getByLabelText("API version"));
+      await save(dialog);
+      await closed();
+      await settle();
+      expect(state.patched).toEqual([]);
     });
 
     test("nothing changed, nothing sent", async () => {

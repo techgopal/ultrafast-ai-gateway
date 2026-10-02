@@ -52,7 +52,9 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
       api_key: "",
     },
     onSubmit: async ({ value }) => {
-      const versionChanged = azure && value.api_version.trim() !== version;
+      // A version cleared is no change: the gateway has no empty version.
+      const typed = value.api_version.trim();
+      const versionChanged = azure && typed !== "" && typed !== version;
       // Nothing was changed: nothing is sent, and nothing is reported as updated.
       if (value.credential === "keep" && value.base_url === provider.base_url && !versionChanged) {
         onCancel();
@@ -61,7 +63,7 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
       try {
         // Keeping the key sends no `api_key` at all.
         const body: UpdateProviderRequest = { base_url: value.base_url };
-        if (versionChanged) body.api_version = value.api_version.trim();
+        if (versionChanged) body.api_version = typed;
         if (value.credential === "replace") body.api_key = newApiKeyOf(value.api_key);
         if (value.credential === "remove") body.api_key = null;
         await mutateAsync({ id: provider.id, body });

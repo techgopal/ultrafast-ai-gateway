@@ -108,6 +108,7 @@ export function Providers() {
 
   function askAbout(what: "edit" | "delete", provider: Provider) {
     return () => {
+      setProblem(null);
       setTarget(provider);
       setAsking(what);
     };
@@ -132,6 +133,8 @@ export function Providers() {
       type="button"
       className={control}
       onClick={() => {
+        // Another action starts: the problem of the last sync is stale.
+        setProblem(null);
         setAsking("add");
       }}
     >
@@ -148,7 +151,8 @@ export function Providers() {
               type="button"
               variant="outline"
               className={control}
-              disabled={syncing === provider.id}
+              // One sync at a time: the notices are about one.
+              disabled={syncing !== null}
               onClick={() => {
                 void syncModels(provider);
               }}
