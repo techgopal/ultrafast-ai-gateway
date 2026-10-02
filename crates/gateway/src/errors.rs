@@ -9,6 +9,7 @@ use ultrafast_translate::error::TranslateError;
 use ultrafast_translate::ingress::anthropic;
 use ultrafast_translate::ingress::openai::render_error;
 
+use crate::budgets::BudgetRefusal;
 use crate::limits::Refusal;
 
 /// Which API's error body a caller expects.
@@ -39,6 +40,27 @@ impl Shape {
             "rate_limit_error",
             &refusal.message(),
         );
+        response
+            .headers_mut()
+            .insert(RETRY_AFTER, refusal.retry_after_seconds().into());
+        response
+    }
+
+    /// A call refused because a budget is spent: 429 naming the budget, and
+    /// when the period resets. OpenAI callers get the code `budget_exceeded`;
+    /// Anthropic's error body has no code, its type is `rate_limit_error`.
+    pub fn budget_exceeded(self, refusal: &BudgetRefusal) -> Response {
+        let message = refusal.message();
+        let mut response = match self {
+            Shape::OpenAi => {
+                let mut body = render_error("rate_limit_error", &message);
+                body["error"]["code"] = "budget_exceeded".into();
+                (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
+            }
+            Shape::Anthropic => {
+                self.error(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", &message)
+            }
+        };
         response
             .headers_mut()
             .insert(RETRY_AFTER, refusal.retry_after_seconds().into());

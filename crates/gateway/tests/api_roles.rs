@@ -196,6 +196,16 @@ async fn world() -> World {
     )
     .await
     .unwrap();
+    // Budget 1, which the table's DELETE row removes.
+    tx.upsert_budget(
+        ultrafast_gateway::limits::LimitScope::Gateway,
+        None,
+        1_000_000,
+        ultrafast_gateway::budgets::Period::Daily,
+        ultrafast_gateway::budgets::BudgetAction::Block,
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     let lena_key = seed_key(&org, "lena", org.lena, org.platform).await;
     let tomas_key = seed_key(&org, "tomas", org.tomas, org.research).await;
@@ -432,6 +442,13 @@ fn table() -> Vec<Row> {
         // Limit 1 exists in the world's store for the table: see `world`.
         row(55, "DELETE", "/api/limits/{id}", "the gateway's limit", |_, _| "/api/limits/1".into(), no_body,
             [204, 403, 403, 401]),
+        row(56, "GET", "/api/budgets", "", |_, _| "/api/budgets".into(), no_body, [200, 200, 200, 401]),
+        row(57, "PUT", "/api/budgets", "", |_, _| "/api/budgets".into(),
+            || Some(json!({ "scope": "gateway", "amount_micros": 5_000_000, "period": "weekly", "action": "alert" })),
+            [200, 403, 403, 401]),
+        // Budget 1 exists in the world's store for the table: see `world`.
+        row(58, "DELETE", "/api/budgets/{id}", "the gateway's budget", |_, _| "/api/budgets/1".into(), no_body,
+            [204, 403, 403, 401]),
     ]
 }
 
@@ -498,7 +515,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=55).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=58).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -624,7 +641,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 53);
+    assert_eq!(operations, 56);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

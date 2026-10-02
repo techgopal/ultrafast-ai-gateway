@@ -4,6 +4,7 @@ pub mod access;
 pub mod api;
 pub mod app;
 pub mod auth;
+pub mod budgets;
 pub mod catalog;
 pub mod config;
 pub mod errors;

@@ -12,6 +12,7 @@ use std::time::Duration;
 use anyhow::Result;
 use ultrafast_translate::provider::ProviderKind;
 
+use crate::budgets::Budget;
 use crate::identity::{Role, UserStatus};
 use crate::limits::{LimitScope, Subject, Subjects};
 use crate::routing::{BreakerSettings, TargetRef};
@@ -130,6 +131,8 @@ pub struct Snapshot {
     users: HashMap<i64, SnapUser>,
     /// The rate limits, by what they are set on (id 0 for the gateway).
     limits: HashMap<(LimitScope, i64), Arc<Subject>>,
+    /// The budgets, by what they are set on (id 0 for the gateway).
+    budgets: HashMap<(LimitScope, i64), Vec<Arc<Budget>>>,
 }
 
 /// Grants are few; a list keeps each id once.
@@ -324,6 +327,22 @@ impl Snapshot {
                 ((l.scope, id), Arc::new(subject))
             })
             .collect();
+        let mut budgets: HashMap<(LimitScope, i64), Vec<Arc<Budget>>> = HashMap::new();
+        for b in rows.budgets.into_iter().filter(|b| b.has_subject()) {
+            let id = b.scope_id.unwrap_or(0);
+            budgets
+                .entry((b.scope, id))
+                .or_default()
+                .push(Arc::new(Budget {
+                    id: b.id,
+                    scope: b.scope,
+                    scope_id: id,
+                    scope_label: b.label(),
+                    amount_micros: b.amount_micros,
+                    period: b.period,
+                    action: b.action,
+                }));
+        }
         Ok(Snapshot {
             keys,
             providers,
@@ -331,6 +350,7 @@ impl Snapshot {
             routes,
             users,
             limits,
+            budgets,
         })
     }
 
@@ -375,23 +395,65 @@ impl Snapshot {
             return Subjects::default();
         }
         let get = |scope, id| self.limits.get(&(scope, id)).cloned();
-        let mut team_ids: Vec<i64> = key
-            .user_id
-            .and_then(|u| self.users.get(&u))
-            .map(|u| u.team_ids.clone())
-            .unwrap_or_default();
-        if let Some(team) = key.team_id {
-            push_new(&mut team_ids, team);
-        }
         Subjects {
             key: get(LimitScope::Key, key.id),
             user: key.user_id.and_then(|u| get(LimitScope::User, u)),
-            teams: team_ids
+            teams: self
+                .team_ids_of(key.user_id, key.team_id)
                 .into_iter()
                 .filter_map(|t| get(LimitScope::Team, t))
                 .collect(),
             gateway: get(LimitScope::Gateway, 0),
         }
+    }
+
+    /// The teams a call counts for: those of the key's owner and the key's
+    /// own team.
+    fn team_ids_of(&self, user_id: Option<i64>, team_id: Option<i64>) -> Vec<i64> {
+        let mut team_ids: Vec<i64> = user_id
+            .and_then(|u| self.users.get(&u))
+            .map(|u| u.team_ids.clone())
+            .unwrap_or_default();
+        if let Some(team) = team_id {
+            push_new(&mut team_ids, team);
+        }
+        team_ids
+    }
+
+    /// The budgets that apply to a call of this key, owner and team: those
+    /// of the key, its owner, their teams (as for [`Snapshot::subjects`])
+    /// and the gateway, in that order. The log writer calls it with the
+    /// ids of a record, so a key that is gone still counts.
+    pub fn budgets_of(
+        &self,
+        key_id: i64,
+        user_id: Option<i64>,
+        team_id: Option<i64>,
+    ) -> Vec<Arc<Budget>> {
+        if self.budgets.is_empty() {
+            return Vec::new();
+        }
+        let get = |scope, id| {
+            self.budgets
+                .get(&(scope, id))
+                .into_iter()
+                .flatten()
+                .cloned()
+        };
+        let mut out: Vec<Arc<Budget>> = get(LimitScope::Key, key_id).collect();
+        if let Some(u) = user_id {
+            out.extend(get(LimitScope::User, u));
+        }
+        for t in self.team_ids_of(user_id, team_id) {
+            out.extend(get(LimitScope::Team, t));
+        }
+        out.extend(get(LimitScope::Gateway, 0));
+        out
+    }
+
+    /// Every budget.
+    pub fn all_budgets(&self) -> Vec<Arc<Budget>> {
+        self.budgets.values().flatten().cloned().collect()
     }
 
     /// How many keys are held, expired ones included.

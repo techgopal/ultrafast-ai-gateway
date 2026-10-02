@@ -17,6 +17,7 @@ use tokio::sync::{watch, Mutex, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::api;
+use crate::budgets::{Budgets, MemoryBudgets};
 use crate::errors::error_response;
 use crate::identity::limiter::LoginLimiter;
 use crate::limits::{Limiter, MemoryLimiter};
@@ -60,6 +61,8 @@ pub struct AppState {
     pub sink: Arc<dyn RequestSink>,
     /// The rate limits of `/v1`: requests, tokens and concurrency.
     pub rate: Arc<dyn Limiter>,
+    /// The spend counters of the budgets of `/v1`.
+    pub budgets: Arc<dyn Budgets>,
     /// The circuit breaker of every target that was called.
     pub health: Arc<dyn HealthStore>,
     /// How many snapshots have been swapped in since the start.
@@ -80,6 +83,7 @@ impl AppState {
             trusted_proxies: Vec::new(),
             sink: Arc::new(NoopSink),
             rate: Arc::new(MemoryLimiter::new()),
+            budgets: Arc::new(MemoryBudgets::new()),
             health: Arc::new(InMemoryHealth::new()),
             refreshes: AtomicU64::new(0),
             refreshing: Mutex::new(()),
@@ -102,6 +106,9 @@ impl AppState {
         // What left the catalog is no longer worth a breaker.
         self.health
             .retain(&|provider, model| snapshot.model(provider, model).is_some());
+        // A deleted budget (or one whose team or user is gone) loses its counter.
+        let budget_ids: Vec<i64> = snapshot.all_budgets().iter().map(|b| b.id).collect();
+        self.budgets.retain(&budget_ids);
         self.snapshot.store(Arc::new(snapshot));
         self.refreshes.fetch_add(1, Ordering::Relaxed);
         Ok(())

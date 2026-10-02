@@ -8,6 +8,7 @@ use ultrafast_gateway::api::auth::bootstrap_admin;
 use ultrafast_gateway::api::openapi::spec;
 use ultrafast_gateway::api::trimmed_name;
 use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
+use ultrafast_gateway::budgets::{self, FLUSH_INTERVAL};
 use ultrafast_gateway::catalog::{add_model, describe_model_add, validate_model_name};
 use ultrafast_gateway::config::{
     db_path, load_master_key, parse_trusted_proxies, restrict_permissions, validate_api_version,
@@ -258,26 +259,33 @@ async fn main() -> Result<()> {
                 tracing::warn!("session cookies are sent without Secure");
             }
             let state = Arc::new(state);
+            // Before the listener is bound, so the first call is already
+            // counted against what was spent before the restart.
+            budgets::rebuild(&state, time::OffsetDateTime::now_utc())
+                .await
+                .context("could not rebuild the budgets from the request logs")?;
             let listener = tokio::net::TcpListener::bind(addr)
                 .await
                 .with_context(|| format!("could not listen on {addr}"))?;
             tracing::info!(%addr, "gateway listening");
             let (stop, stopped) = tokio::sync::watch::channel(false);
             let refresher = spawn_refresher(state.clone(), stopped.clone());
-            let log_writer = logs::writer::spawn(
+            let log_writer = logs::writer::spawn_accounted(
                 state.store.clone(),
                 log_queue,
                 logs::snapshot_prices(state.clone()),
                 log_stats,
                 logs::writer::WriterConfig::default(),
                 stopped.clone(),
+                budgets::accountant(state.clone()),
             );
+            let budget_flush = budgets::spawn_flush(state.clone(), FLUSH_INTERVAL, stopped.clone());
             let log_retention = logs::retention::spawn(
                 state.store.clone(),
                 logs::retention::RetentionConfig::default(),
                 stopped,
             );
-            let service = router(state).into_make_service_with_connect_info::<SocketAddr>();
+            let service = router(state.clone()).into_make_service_with_connect_info::<SocketAddr>();
             let served = axum::serve(listener, service)
                 .with_graceful_shutdown(shutdown_signal())
                 .await;
@@ -286,6 +294,9 @@ async fn main() -> Result<()> {
             let _ = refresher.await;
             // The writer writes what is still queued before the process ends.
             let _ = log_writer.await;
+            // After the writer: what it counted while draining is written too.
+            let _ = budget_flush.await;
+            budgets::flush(&state).await;
             let _ = log_retention.await;
             served?;
         }

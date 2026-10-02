@@ -104,6 +104,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/budgets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The budgets that apply to the caller, with what each has spent in its
+         *     current period: all of them for an admin; for anyone else the gateway's,
+         *     those of their teams and of themselves, and those of their keys.
+         */
+        get: operations["budgets_list"];
+        /**
+         * Sets the budget of a team, a user, a key or the gateway for a period:
+         *     the amount and what happens when it is spent. A second call for the same
+         *     subject and period changes that budget. Admin only. The change reaches
+         *     `/v1` at once.
+         */
+        put: operations["budgets_set"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/budgets/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Removes one budget. Admin only. The change reaches `/v1` at once. */
+        delete: operations["budgets_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/keys": {
         parameters: {
             query?: never;
@@ -625,6 +669,46 @@ export interface components {
             target_id: number | null;
             target_type: string;
         };
+        /** @description The budget of one team, user, key or of the gateway for one period. */
+        BudgetView: {
+            /**
+             * @description `block` refuses calls once the amount is spent; `alert` allows them
+             *     and writes one audit entry per period.
+             */
+            action: string;
+            /**
+             * Format: int64
+             * @description The amount, in millionths of a dollar.
+             */
+            amount_micros: number;
+            /** Format: int64 */
+            id: number;
+            /**
+             * @description How a message names it: `gateway`, `team 'Platform'`,
+             *     `user 'lena@example.com'` or `key 'ci'`.
+             */
+            label: string;
+            /** @description `daily`, `weekly` (from Monday) or `monthly`; UTC calendar periods. */
+            period: string;
+            /** @description The UTC date the current period began on, `YYYY-MM-DD`. */
+            period_start: string;
+            /** @description `gateway`, `team`, `user` or `key`. */
+            scope: string;
+            /**
+             * Format: int64
+             * @description The id of the team, user or key; `null` for the gateway.
+             */
+            scope_id: number | null;
+            /**
+             * Format: int64
+             * @description What the gateway counted as spent in the current period, in
+             *     millionths of a dollar.
+             */
+            spent_micros: number;
+        };
+        BudgetsPage: {
+            budgets: components["schemas"]["BudgetView"][];
+        };
         ChangePasswordRequest: {
             current_password: string;
             new_password: string;
@@ -1069,6 +1153,24 @@ export interface components {
         };
         RoutingHealth: {
             targets: components["schemas"]["TargetHealth"][];
+        };
+        SetBudgetRequest: {
+            /** @description `block` or `alert`. */
+            action: string;
+            /**
+             * Format: int64
+             * @description The amount in millionths of a dollar: 1 to 1 000 000 000 000 000.
+             */
+            amount_micros: number;
+            /** @description `daily`, `weekly` or `monthly`. */
+            period: string;
+            /** @description `gateway`, `team`, `user` or `key`. */
+            scope: string;
+            /**
+             * Format: int64
+             * @description The id of the team, user or key. Not sent for the gateway.
+             */
+            scope_id?: number | null;
         };
         SetLimitRequest: {
             /**
@@ -1678,6 +1780,185 @@ export interface operations {
             };
             /** @description Too many failed attempts. */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    budgets_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The budgets that apply to the caller. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetsPage"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    budgets_set: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetBudgetRequest"];
+            };
+        };
+        responses: {
+            /** @description The budget after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description A value is not valid, or the team, user or key does not exist; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    budgets_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the budget. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The budget is removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

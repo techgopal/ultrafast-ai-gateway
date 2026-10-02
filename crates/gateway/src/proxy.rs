@@ -20,6 +20,7 @@ use futures::StreamExt;
 use http_body_util::LengthLimitError;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use time::OffsetDateTime;
 use ultrafast_translate::embeddings::{
     self, EmbeddingsRequest, EmbeddingsResponse, NOT_SUPPORTED as EMBEDDINGS_NOT_SUPPORTED,
 };
@@ -313,6 +314,15 @@ async fn dispatch(
     {
         Ok(permit) => record.hold(permit),
         Err(refusal) => return shape.rate_limited(&refusal),
+    }
+    // 3c. The budgets of the same subjects: a spent `block` budget refuses
+    // the call. Spend is counted when the log writer prices a call, so what
+    // was already running is not stopped.
+    let budgets = snapshot.budgets_of(key.id, key.user_id, key.team_id);
+    if !budgets.is_empty() {
+        if let Err(refusal) = state.budgets.check(&budgets, OffsetDateTime::now_utc()) {
+            return shape.budget_exceeded(&refusal);
+        }
     }
     // Seeded from the thread's generator (itself seeded once per thread), not
     // from the operating system on every request. It is `Send`: it lives

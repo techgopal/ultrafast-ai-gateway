@@ -71,6 +71,7 @@ pub fn secrets_equal(a: &str, b: &str) -> bool {
     hash_key(a) == hash_key(b)
 }
 
+#[derive(Clone)]
 pub struct Cipher(ChaCha20Poly1305);
 
 /// Never prints key material.

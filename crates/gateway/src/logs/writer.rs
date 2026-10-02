@@ -32,6 +32,11 @@ impl Default for WriterConfig {
     }
 }
 
+/// Told the cost, in micro-dollars, of every record that was priced, once
+/// per record and before it is written: the budgets count it. It runs in
+/// the writer task, off the request path, and must not block.
+pub type Accountant = Arc<dyn Fn(&RequestRecord, u64) + Send + Sync>;
+
 /// Resolves when `stop` is true or its sender is gone.
 async fn stopped(stop: &mut watch::Receiver<bool>) {
     loop {
@@ -49,12 +54,20 @@ async fn flush(
     prices: &PriceLookup,
     stats: &LogStats,
     retry_delay: Duration,
+    account: &Accountant,
     batch: &[RequestRecord],
 ) {
     if batch.is_empty() {
         return;
     }
     let rows: Vec<_> = batch.iter().map(|r| row_of(r, prices)).collect();
+    // Once per record, whether or not the write below succeeds: the money
+    // was spent either way.
+    for (record, row) in batch.iter().zip(&rows) {
+        if row.priced && row.cost_micros > 0 {
+            account(record, u64::try_from(row.cost_micros).unwrap_or(0));
+        }
+    }
     // One retry with the same rows: a busy database is usually free again.
     let mut result = store.insert_logs(&rows).await;
     if let Err(e) = &result {
@@ -84,11 +97,32 @@ async fn flush(
 /// what is in it is written, and the task ends.
 pub fn spawn(
     store: Store,
+    queue: mpsc::Receiver<RequestRecord>,
+    prices: PriceLookup,
+    stats: Arc<LogStats>,
+    config: WriterConfig,
+    stop: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    spawn_accounted(
+        store,
+        queue,
+        prices,
+        stats,
+        config,
+        stop,
+        Arc::new(|_, _| {}),
+    )
+}
+
+/// Like [`spawn`], and tells `account` the cost of every priced record.
+pub fn spawn_accounted(
+    store: Store,
     mut queue: mpsc::Receiver<RequestRecord>,
     prices: PriceLookup,
     stats: Arc<LogStats>,
     config: WriterConfig,
     mut stop: watch::Receiver<bool>,
+    account: Accountant,
 ) -> JoinHandle<()> {
     let max_batch = config.max_batch.max(1);
     tokio::spawn(async move {
@@ -116,7 +150,15 @@ pub fn spawn(
                     },
                 }
             }
-            flush(&store, &prices, &stats, config.retry_delay, &batch).await;
+            flush(
+                &store,
+                &prices,
+                &stats,
+                config.retry_delay,
+                &account,
+                &batch,
+            )
+            .await;
         }
         // Drain: nothing new is accepted, what is queued is written.
         queue.close();
@@ -131,7 +173,15 @@ pub fn spawn(
             if batch.is_empty() {
                 return;
             }
-            flush(&store, &prices, &stats, config.retry_delay, &batch).await;
+            flush(
+                &store,
+                &prices,
+                &stats,
+                config.retry_delay,
+                &account,
+                &batch,
+            )
+            .await;
         }
     })
 }

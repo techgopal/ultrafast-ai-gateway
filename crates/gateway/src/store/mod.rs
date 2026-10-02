@@ -1,6 +1,7 @@
 //! SQLite storage. Nothing outside this module writes SQL.
 
 mod audit;
+mod budgets;
 mod keys;
 mod limits;
 mod logs;
@@ -27,6 +28,7 @@ use time::macros::format_description;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 pub use audit::{AuditEntry, AuditRow};
+pub use budgets::{BudgetRow, UsageRow};
 pub use keys::{parse_allowed, KeyRow, LiveKey};
 pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
@@ -113,6 +115,7 @@ pub struct SnapshotRows {
     pub route_grants: Vec<(i64, i64)>,
     pub users: Vec<UserRow>,
     pub limits: Vec<LimitRow>,
+    pub budgets: Vec<BudgetRow>,
     pub teams: std::collections::HashMap<i64, Vec<UserTeam>>,
 }
 
@@ -186,6 +189,7 @@ impl Store {
         let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
         let teams = teams::teams_of_users_in(conn, &ids).await?;
         let limits = limits::list_limits_in(conn).await?;
+        let budgets = budgets::list_budgets_in(conn).await?;
         tx.commit().await?;
         Ok(SnapshotRows {
             keys,
@@ -197,6 +201,7 @@ impl Store {
             route_grants,
             users,
             limits,
+            budgets,
             teams,
         })
     }

@@ -85,6 +85,11 @@ pub enum Action {
     ListLimits,
     /// Setting and removing limits. Only an admin may.
     ManageLimits,
+    // budgets
+    /// Everyone may ask; what they get is cut by `limit_applies_to`.
+    ListBudgets,
+    /// Setting and removing budgets. Only an admin may.
+    ManageBudgets,
     // request logs
     /// Everyone may ask; what they get is cut to `list_scope`.
     ListLogs,
@@ -141,6 +146,7 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ListRoutes
         | Action::ListLogs
         | Action::ListLimits
+        | Action::ListBudgets
         | Action::ListUsage => Allow,
 
         Action::InviteUser { role: _ }
@@ -151,7 +157,8 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ViewAudit
         | Action::ViewRoutingHealth
         | Action::ManageSettings
-        | Action::ManageLimits => Forbidden,
+        | Action::ManageLimits
+        | Action::ManageBudgets => Forbidden,
 
         Action::ViewUser {
             user_id,
@@ -1090,6 +1097,27 @@ mod tests {
                 "manage_limits: loner",
                 loner,
                 Action::ManageLimits,
+                Forbidden,
+            ),
+            ("list_budgets: lead", lead, Action::ListBudgets, Allow),
+            ("list_budgets: member", member, Action::ListBudgets, Allow),
+            ("list_budgets: loner", loner, Action::ListBudgets, Allow),
+            (
+                "manage_budgets: lead",
+                lead,
+                Action::ManageBudgets,
+                Forbidden,
+            ),
+            (
+                "manage_budgets: member",
+                member,
+                Action::ManageBudgets,
+                Forbidden,
+            ),
+            (
+                "manage_budgets: loner",
+                loner,
+                Action::ManageBudgets,
                 Forbidden,
             ),
             ("list_usage: lead", lead, Action::ListUsage, Allow),

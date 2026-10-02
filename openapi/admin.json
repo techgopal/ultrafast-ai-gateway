@@ -496,6 +496,246 @@
         ]
       }
     },
+    "/api/budgets": {
+      "get": {
+        "tags": [
+          "budgets"
+        ],
+        "summary": "The budgets that apply to the caller, with what each has spent in its\ncurrent period: all of them for an admin; for anyone else the gateway's,\nthose of their teams and of themselves, and those of their keys.",
+        "operationId": "budgets_list",
+        "responses": {
+          "200": {
+            "description": "The budgets that apply to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetsPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "budgets"
+        ],
+        "summary": "Sets the budget of a team, a user, a key or the gateway for a period:\nthe amount and what happens when it is spent. A second call for the same\nsubject and period changes that budget. Admin only. The change reaches\n`/v1` at once.",
+        "operationId": "budgets_set",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetBudgetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The budget after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value is not valid, or the team, user or key does not exist; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/budgets/{id}": {
+      "delete": {
+        "tags": [
+          "budgets"
+        ],
+        "summary": "Removes one budget. Admin only. The change reaches `/v1` at once.",
+        "operationId": "budgets_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the budget.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The budget is removed."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/keys": {
       "get": {
         "tags": [
@@ -4888,6 +5128,81 @@
           }
         }
       },
+      "BudgetView": {
+        "type": "object",
+        "description": "The budget of one team, user, key or of the gateway for one period.",
+        "required": [
+          "id",
+          "scope",
+          "scope_id",
+          "label",
+          "amount_micros",
+          "period",
+          "action",
+          "period_start",
+          "spent_micros"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`block` refuses calls once the amount is spent; `alert` allows them\nand writes one audit entry per period."
+          },
+          "amount_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The amount, in millionths of a dollar.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "label": {
+            "type": "string",
+            "description": "How a message names it: `gateway`, `team 'Platform'`,\n`user 'lena@example.com'` or `key 'ci'`."
+          },
+          "period": {
+            "type": "string",
+            "description": "`daily`, `weekly` (from Monday) or `monthly`; UTC calendar periods."
+          },
+          "period_start": {
+            "type": "string",
+            "description": "The UTC date the current period began on, `YYYY-MM-DD`."
+          },
+          "scope": {
+            "type": "string",
+            "description": "`gateway`, `team`, `user` or `key`."
+          },
+          "scope_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The id of the team, user or key; `null` for the gateway."
+          },
+          "spent_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What the gateway counted as spent in the current period, in\nmillionths of a dollar.",
+            "minimum": 0
+          }
+        }
+      },
+      "BudgetsPage": {
+        "type": "object",
+        "required": [
+          "budgets"
+        ],
+        "properties": {
+          "budgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BudgetView"
+            }
+          }
+        }
+      },
       "ChangePasswordRequest": {
         "type": "object",
         "required": [
@@ -6108,6 +6423,43 @@
           }
         }
       },
+      "SetBudgetRequest": {
+        "type": "object",
+        "required": [
+          "scope",
+          "amount_micros",
+          "period",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`block` or `alert`."
+          },
+          "amount_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The amount in millionths of a dollar: 1 to 1 000 000 000 000 000."
+          },
+          "period": {
+            "type": "string",
+            "description": "`daily`, `weekly` or `monthly`."
+          },
+          "scope": {
+            "type": "string",
+            "description": "`gateway`, `team`, `user` or `key`."
+          },
+          "scope_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The id of the team, user or key. Not sent for the gateway."
+          }
+        },
+        "additionalProperties": false
+      },
       "SetLimitRequest": {
         "type": "object",
         "required": [
@@ -6764,6 +7116,10 @@
     {
       "name": "limits",
       "description": "Rate limits of /v1."
+    },
+    {
+      "name": "budgets",
+      "description": "Spending budgets of /v1."
     },
     {
       "name": "logs",
