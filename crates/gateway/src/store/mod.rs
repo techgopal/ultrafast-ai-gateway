@@ -124,6 +124,8 @@ pub struct SnapshotRows {
     pub limits: Vec<LimitRow>,
     pub budgets: Vec<BudgetRow>,
     pub teams: std::collections::HashMap<i64, Vec<UserTeam>>,
+    /// `(id, created_at)` of every team.
+    pub team_stamps: Vec<(i64, String)>,
 }
 
 #[derive(Clone)]
@@ -195,6 +197,7 @@ impl Store {
         let users = users::list_users_in(conn).await?;
         let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
         let teams = teams::teams_of_users_in(conn, &ids).await?;
+        let team_stamps = teams::team_stamps_in(conn).await?;
         let limits = limits::list_limits_in(conn).await?;
         let budgets = budgets::list_budgets_in(conn).await?;
         tx.commit().await?;
@@ -210,6 +213,7 @@ impl Store {
             limits,
             budgets,
             teams,
+            team_stamps,
         })
     }
 

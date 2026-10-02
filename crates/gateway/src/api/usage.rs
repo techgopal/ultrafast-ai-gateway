@@ -45,6 +45,8 @@ pub struct UsageRow {
     pub requests: i64,
     /// Calls answered with a status of 400 or more.
     pub errors: i64,
+    /// Includes the tokens of cached answers (`cached` rows of the logs),
+    /// which cost nothing.
     pub input_tokens: i64,
     pub output_tokens: i64,
     /// In millionths of a dollar.

@@ -133,12 +133,22 @@ impl Cached {
     /// About how many bytes it holds, for the bound of the cache.
     pub fn size(&self) -> usize {
         let answer = match &self.answer {
-            Answer::Chat(r) => r.id.len() + r.model.len() + r.content.len(),
+            Answer::Chat(r) => {
+                r.id.len()
+                    + r.model.len()
+                    + r.content.len()
+                    + std::mem::size_of_val(&r.finish_reason)
+                    + std::mem::size_of_val(&r.usage)
+            }
             Answer::Embeddings(r) => {
                 r.model.len() + r.vectors.iter().map(|v| v.len() * 4 + 24).sum::<usize>()
             }
         };
-        std::mem::size_of::<Self>() + self.provider.len() + self.model.len() + answer
+        // The key, the map slot and the order slot are held too.
+        let overhead = std::mem::size_of::<CacheKey>() * 2
+            + std::mem::size_of::<Entry>()
+            + 2 * std::mem::size_of::<u64>() * 4;
+        std::mem::size_of::<Self>() + overhead + self.provider.len() + self.model.len() + answer
     }
 }
 
@@ -148,6 +158,8 @@ pub trait ResponseCache: Send + Sync {
     fn get(&self, key: &CacheKey, now: Instant) -> Option<Cached>;
     /// Keeps `value` for `ttl`, replacing what the key had.
     fn put(&self, key: CacheKey, value: Cached, ttl: Duration, now: Instant);
+    /// Forgets every answer.
+    fn clear(&self);
 }
 
 struct Entry {
@@ -224,6 +236,10 @@ impl MemoryCache {
 }
 
 impl ResponseCache for MemoryCache {
+    fn clear(&self) {
+        *self.lock() = Shared::default();
+    }
+
     fn get(&self, key: &CacheKey, now: Instant) -> Option<Cached> {
         let mut shared = self.lock();
         let entry = shared.entries.get(key)?;

@@ -874,6 +874,11 @@ export interface components {
             /** @description UTC, `YYYY-MM-DD HH:MM:SS`. */
             at: string;
             attempts: components["schemas"]["LogAttempt"][];
+            /**
+             * @description Answered from the response cache: `cost_micros` is 0 and `priced`
+             *     is true, and the tokens are those of the cached answer, so usage
+             *     reports count them; no provider was called.
+             */
             cached: boolean;
             /**
              * Format: int64
@@ -919,6 +924,11 @@ export interface components {
         LogView: {
             /** @description UTC, `YYYY-MM-DD HH:MM:SS`. */
             at: string;
+            /**
+             * @description Answered from the response cache: `cost_micros` is 0 and `priced`
+             *     is true, and the tokens are those of the cached answer, so usage
+             *     reports count them; no provider was called.
+             */
             cached: boolean;
             /**
              * Format: int64
@@ -1379,7 +1389,11 @@ export interface components {
              *     total row.
              */
             group: string;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Includes the tokens of cached answers (`cached` rows of the logs),
+             *     which cost nothing.
+             */
             input_tokens: number;
             /**
              * @description What to show: the day, the model name, the key or team name, the

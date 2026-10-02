@@ -72,6 +72,9 @@ pub struct LogView {
     /// Cost in millionths of a dollar; 0 when `priced` is false.
     pub cost_micros: i64,
     pub priced: bool,
+    /// Answered from the response cache: `cost_micros` is 0 and `priced`
+    /// is true, and the tokens are those of the cached answer, so usage
+    /// reports count them; no provider was called.
     pub cached: bool,
     pub duration_ms: i64,
 }
@@ -127,6 +130,9 @@ pub struct LogDetailView {
     /// Cost in millionths of a dollar; 0 when `priced` is false.
     pub cost_micros: i64,
     pub priced: bool,
+    /// Answered from the response cache: `cost_micros` is 0 and `priced`
+    /// is true, and the tokens are those of the cached answer, so usage
+    /// reports count them; no provider was called.
     pub cached: bool,
     pub duration_ms: i64,
     pub attempts: Vec<LogAttempt>,

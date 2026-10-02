@@ -13,6 +13,8 @@ use anyhow::Result;
 use ultrafast_translate::provider::ProviderKind;
 
 use crate::budgets::Budget;
+use sha2::{Digest, Sha256};
+
 use crate::cache::RouteCache;
 use crate::identity::{Role, UserStatus};
 use crate::limits::{LimitScope, Subject, Subjects};
@@ -136,6 +138,32 @@ pub struct Snapshot {
     limits: HashMap<(LimitScope, i64), Arc<Subject>>,
     /// The budgets, by what they are set on (id 0 for the gateway).
     budgets: HashMap<(LimitScope, i64), Vec<Arc<Budget>>>,
+    /// See [`Snapshot::cache_fingerprint`].
+    cache_fingerprint: [u8; 32],
+}
+
+/// Feeds a hash with tagged, length-prefixed parts, so no two different
+/// sequences of parts give the same bytes.
+struct Fingerprint(Sha256);
+
+impl Fingerprint {
+    fn part(&mut self, bytes: &[u8]) {
+        self.0.update((bytes.len() as u64).to_le_bytes());
+        self.0.update(bytes);
+    }
+
+    fn text(&mut self, s: &str) {
+        self.part(s.as_bytes());
+    }
+
+    fn num(&mut self, n: i64) {
+        self.part(&n.to_le_bytes());
+    }
+
+    fn section(&mut self, name: &str, count: usize) {
+        self.text(name);
+        self.num(count as i64);
+    }
 }
 
 /// Grants are few; a list keeps each id once.
@@ -151,6 +179,55 @@ impl Snapshot {
     pub async fn load(store: &Store, cipher: &Cipher) -> Result<Snapshot> {
         // One read transaction: the tables are never read at different moments.
         let rows = store.snapshot_rows().await?;
+        // Everything a cached answer depends on besides the call itself.
+        let mut fp = Fingerprint(Sha256::new());
+        fp.section("teams", rows.team_stamps.len());
+        for (id, created) in &rows.team_stamps {
+            fp.num(*id);
+            fp.text(created);
+        }
+        fp.section("users", rows.users.len());
+        for u in &rows.users {
+            fp.num(u.id);
+            fp.text(&u.created_at);
+        }
+        // A key is told apart by its hash: ids are given out again.
+        fp.section("keys", rows.keys.len());
+        for k in &rows.keys {
+            fp.num(k.id);
+            fp.text(&k.hash);
+            fp.num(k.user_id.unwrap_or(-1));
+            fp.num(k.team_id.unwrap_or(-1));
+        }
+        fp.section("models", rows.models.len());
+        for m in &rows.models {
+            fp.num(m.id);
+            fp.text(&m.provider_name);
+            fp.text(&m.name);
+            fp.num(i64::from(m.enabled));
+        }
+        fp.section("grants", rows.model_grants.len());
+        for g in &rows.model_grants {
+            fp.num(g.model_id);
+            fp.num(g.team_id.unwrap_or(-1));
+            fp.num(g.user_id.unwrap_or(-1));
+        }
+        fp.section("routes", rows.routes.len());
+        for r in &rows.routes {
+            fp.num(r.id);
+            fp.text(&r.name);
+            fp.num(i64::from(r.cache.enabled));
+            fp.num(r.cache.ttl_s);
+            fp.text(r.cache.scope.as_str());
+        }
+        fp.section("targets", rows.route_targets.len());
+        for t in &rows.route_targets {
+            fp.num(t.route_id);
+            fp.text(&t.provider_name);
+            fp.text(&t.model_name);
+            fp.num(i64::from(t.primary));
+            fp.num(t.weight);
+        }
         let keys = rows
             .keys
             .into_iter()
@@ -197,6 +274,24 @@ impl Snapshot {
             };
             providers.insert(p.name, provider);
         }
+
+        let mut names: Vec<&String> = providers.keys().collect();
+        names.sort();
+        fp.section("providers", names.len());
+        for name in names {
+            let p = &providers[name];
+            fp.num(p.id);
+            fp.text(&p.name);
+            fp.text(p.kind.as_str());
+            fp.text(&p.base_url);
+            fp.text(p.api_version.as_deref().unwrap_or(""));
+            // The credential itself never leaves this hash.
+            match &p.api_key {
+                Some(k) => fp.part(&Sha256::digest(k.as_bytes())),
+                None => fp.part(&[]),
+            }
+        }
+        let cache_fingerprint: [u8; 32] = fp.0.finalize().into();
 
         let mut models: HashMap<String, HashMap<String, SnapModel>> = HashMap::new();
         let mut by_id: HashMap<i64, (String, String)> = HashMap::new();
@@ -355,7 +450,17 @@ impl Snapshot {
             users,
             limits,
             budgets,
+            cache_fingerprint,
         })
+    }
+
+    /// A hash of the configuration a cached answer depends on: which teams,
+    /// users and keys exist (an id given out again is another one), the
+    /// routes and their targets and cache settings, the providers with a hash
+    /// of their credentials, and the models that may be called. When it
+    /// changes the cache is cleared.
+    pub fn cache_fingerprint(&self) -> [u8; 32] {
+        self.cache_fingerprint
     }
 
     /// The key for this hash, unless it has expired as of `now` (UTC,

@@ -5698,7 +5698,8 @@
             }
           },
           "cached": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Answered from the response cache: `cost_micros` is 0 and `priced`\nis true, and the tokens are those of the cached answer, so usage\nreports count them; no provider was called."
           },
           "cost_micros": {
             "type": "integer",
@@ -5845,7 +5846,8 @@
             "description": "UTC, `YYYY-MM-DD HH:MM:SS`."
           },
           "cached": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Answered from the response cache: `cost_micros` is 0 and `priced`\nis true, and the tokens are those of the cached answer, so usage\nreports count them; no provider was called."
           },
           "cost_micros": {
             "type": "integer",
@@ -6969,7 +6971,8 @@
           },
           "input_tokens": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "description": "Includes the tokens of cached answers (`cached` rows of the logs),\nwhich cost nothing."
           },
           "label": {
             "type": "string",

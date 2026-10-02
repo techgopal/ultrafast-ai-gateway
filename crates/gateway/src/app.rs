@@ -70,6 +70,8 @@ pub struct AppState {
     pub health: Arc<dyn HealthStore>,
     /// How many snapshots have been swapped in since the start.
     refreshes: AtomicU64,
+    /// The fingerprint of the configuration the cache was filled under.
+    cache_fingerprint: std::sync::Mutex<[u8; 32]>,
     /// Held while a snapshot is loaded and swapped in, so an older one
     /// can never replace a newer one.
     refreshing: Mutex<()>,
@@ -80,6 +82,7 @@ impl AppState {
     /// Loads the first snapshot.
     pub async fn new(store: Store, cipher: Cipher) -> anyhow::Result<Self> {
         let snapshot = Snapshot::load(&store, &cipher).await?;
+        let snapshot_fingerprint = snapshot.cache_fingerprint();
         Ok(Self {
             snapshot: ArcSwap::from_pointee(snapshot),
             refresh_interval: DEFAULT_REFRESH_INTERVAL,
@@ -90,6 +93,7 @@ impl AppState {
             budgets: Arc::new(MemoryBudgets::new()),
             health: Arc::new(InMemoryHealth::new()),
             refreshes: AtomicU64::new(0),
+            cache_fingerprint: std::sync::Mutex::new(snapshot_fingerprint),
             refreshing: Mutex::new(()),
             store,
             cipher,
@@ -113,7 +117,22 @@ impl AppState {
         // A deleted budget (or one whose team or user is gone) loses its counter.
         let budget_ids: Vec<i64> = snapshot.all_budgets().iter().map(|b| b.id).collect();
         self.budgets.retain(&budget_ids);
+        let fingerprint = snapshot.cache_fingerprint();
         self.snapshot.store(Arc::new(snapshot));
+        // Answers kept under the old configuration are not given under a new
+        // one: a team, user or key id may be another one now, a route or a
+        // provider may have changed. A refresh that finds nothing changed
+        // keeps them.
+        {
+            let mut seen = self
+                .cache_fingerprint
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *seen != fingerprint {
+                *seen = fingerprint;
+                self.cache.clear();
+            }
+        }
         self.refreshes.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

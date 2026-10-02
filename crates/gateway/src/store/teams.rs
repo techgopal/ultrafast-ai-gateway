@@ -286,6 +286,19 @@ impl Tx<'_> {
     }
 }
 
+pub(crate) async fn team_stamps_in(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Vec<(i64, String)>> {
+    let rows = sqlx::query("SELECT id, created_at FROM teams WHERE org_id = ? ORDER BY id")
+        .bind(DEFAULT_ORG)
+        .fetch_all(conn)
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get("id"), r.get("created_at")))
+        .collect())
+}
+
 pub(crate) async fn teams_of_users_in(
     conn: &mut sqlx::SqliteConnection,
     user_ids: &[i64],

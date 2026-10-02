@@ -590,3 +590,128 @@ async fn embeddings_are_kept_too() {
     assert_eq!(records[1].usage.unwrap().input_tokens, 6);
     assert_eq!(records[1].endpoint, "embeddings");
 }
+
+// ---- ids that are reused, and configuration that changes ------------------
+
+/// The reviewer's probe: team A (id 1) has an answer cached; A is deleted;
+/// team B is created and gets id 1; B's identical request must reach the
+/// provider.
+#[tokio::test]
+async fn a_new_team_with_the_id_of_a_deleted_team_is_not_given_its_answers() {
+    let w = world(CacheScope::Team).await;
+    let a = seed_team(&w.h.store, "A", &[]).await;
+    let ka = w.key("a", None, Some(a)).await;
+    w.chat(&ka, BODY).await;
+    assert_eq!(w.provider_calls().await, 1);
+    let mut tx = w.h.store.begin().await.unwrap();
+    assert!(tx.delete_team(a).await.unwrap());
+    tx.commit().await.unwrap();
+    let b = seed_team(&w.h.store, "B", &[]).await;
+    assert_eq!(a, b, "the database hands the id out again");
+    let kb = w.key("b", None, Some(b)).await;
+    assert_eq!(w.chat(&kb, BODY).await, StatusCode::OK);
+    assert_eq!(w.provider_calls().await, 2, "B was given A's answer");
+    // B's own answer is kept.
+    w.chat(&kb, BODY).await;
+    assert_eq!(w.provider_calls().await, 2);
+}
+
+#[tokio::test]
+async fn a_new_user_with_the_id_of_a_deleted_user_is_not_given_its_answers() {
+    let w = world(CacheScope::User).await;
+    let a = seed_user(&w.h.store, "a@example.com", Role::Member, PASSWORD).await;
+    let ka = w.key("a", Some(a), None).await;
+    w.chat(&ka, BODY).await;
+    let mut tx = w.h.store.begin().await.unwrap();
+    assert!(tx.delete_user(a).await.unwrap());
+    tx.commit().await.unwrap();
+    let b = seed_user(&w.h.store, "b@example.com", Role::Member, PASSWORD).await;
+    assert_eq!(a, b);
+    let kb = w.key("b", Some(b), None).await;
+    w.chat(&kb, BODY).await;
+    assert_eq!(w.provider_calls().await, 2, "B was given A's answer");
+}
+
+#[tokio::test]
+async fn a_revoked_key_does_not_hand_its_answers_to_a_new_key() {
+    let w = world(CacheScope::Key).await;
+    let a = w.key("a", None, None).await;
+    w.chat(&a, BODY).await;
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.revoke_key(a.id).await.unwrap();
+    tx.commit().await.unwrap();
+    let b = w.key("b", None, None).await;
+    w.chat(&b, BODY).await;
+    assert_eq!(w.provider_calls().await, 2);
+}
+
+async fn set_cache(w: &World, cache: RouteCache) {
+    let route = w.h.store.list_routes().await.unwrap().remove(0);
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.set_route_cache(route.id, &cache).await.unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+}
+
+#[tokio::test]
+async fn switching_the_cache_off_and_on_again_does_not_bring_old_answers_back() {
+    let w = world(CacheScope::Team).await;
+    let (a, _) = w.two_teams().await;
+    w.chat(&a, BODY).await;
+    let on = RouteCache {
+        enabled: true,
+        ttl_s: 300,
+        scope: CacheScope::Team,
+    };
+    set_cache(
+        &w,
+        RouteCache {
+            enabled: false,
+            ..on
+        },
+    )
+    .await;
+    set_cache(&w, on).await;
+    w.chat(&a, BODY).await;
+    assert_eq!(w.provider_calls().await, 2);
+}
+
+#[tokio::test]
+async fn a_provider_that_changes_its_address_or_credential_loses_its_answers() {
+    for change in ["base_url", "credential"] {
+        let w = world(CacheScope::Team).await;
+        let (a, _) = w.two_teams().await;
+        w.chat(&a, BODY).await;
+        let provider = w.h.store.provider_by_name("p").await.unwrap().unwrap();
+        let mut tx = w.h.store.begin().await.unwrap();
+        if change == "base_url" {
+            let url = format!("{}/", w.h.upstream.uri());
+            tx.update_provider(provider.id, Some(&url), None)
+                .await
+                .unwrap();
+        } else {
+            let cipher = &w.h.state.cipher;
+            let c = cipher.encrypt(b"another-secret");
+            tx.update_provider(provider.id, None, Some(Some(&c)))
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+        w.h.state.refresh().await.unwrap();
+        let before = w.provider_calls().await;
+        w.chat(&a, BODY).await;
+        assert_eq!(w.provider_calls().await, before + 1, "{change}");
+    }
+}
+
+#[tokio::test]
+async fn a_refresh_that_changes_nothing_keeps_the_answers() {
+    let w = world(CacheScope::Team).await;
+    let (a, _) = w.two_teams().await;
+    w.chat(&a, BODY).await;
+    for _ in 0..3 {
+        w.h.state.refresh().await.unwrap();
+    }
+    w.chat(&a, BODY).await;
+    assert_eq!(w.provider_calls().await, 1);
+}
