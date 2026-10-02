@@ -416,6 +416,100 @@ describe("the fixtures have the forms of the gateway", () => {
     ).toBe(true);
   });
 
+  test("routes", () => {
+    const names = fixtures.routeList.map((r) => r.name);
+    expect(new Set(names).size).toBe(names.length);
+    for (const route of fixtures.routeList) {
+      // crates/gateway/src/api/routes.rs, check: the name, the limits, the weights.
+      expect(route.name, route.name).toMatch(/^[a-z0-9][a-z0-9._-]{0,63}$/);
+      expect(route.created_at).toMatch(TIMESTAMP);
+      expect(route.primaries.length, route.name).toBeGreaterThan(0);
+      expect(route.retries).toBeGreaterThanOrEqual(0);
+      expect(route.retries).toBeLessThanOrEqual(5);
+      expect(route.first_token_timeout_ms).toBeGreaterThanOrEqual(1_000);
+      expect(route.first_token_timeout_ms).toBeLessThanOrEqual(300_000);
+      expect(route.total_timeout_ms).toBeGreaterThanOrEqual(route.first_token_timeout_ms);
+      expect(route.total_timeout_ms).toBeLessThanOrEqual(3_600_000);
+      expect(route.breaker_failures).toBeGreaterThanOrEqual(1);
+      expect(route.breaker_window_s).toBeGreaterThanOrEqual(5);
+      expect(route.breaker_open_s).toBeGreaterThanOrEqual(5);
+      // A model appears once in a route; a target is a model of the catalog, as the gateway names it.
+      const targets = [...route.primaries, ...route.fallbacks];
+      expect(new Set(targets.map((t) => t.model_id)).size, route.name).toBe(targets.length);
+      for (const target of targets) {
+        const model = fixtures.modelList.find((m) => m.id === target.model_id);
+        expect(model, route.name).toBeDefined();
+        expect(target.model).toBe(`${model?.provider_name ?? ""}/${model?.name ?? ""}`);
+        expect(target.enabled).toBe(model?.enabled);
+      }
+      for (const primary of route.primaries) {
+        expect(primary.weight).toBeGreaterThanOrEqual(1);
+        expect(primary.weight).toBeLessThanOrEqual(1000);
+      }
+      // Broken: no target of the route is enabled.
+      expect(route.broken, route.name).toBe(!targets.some((t) => t.enabled));
+      // Everyone is not combined with teams.
+      if (route.everyone) expect(route.team_ids, route.name).toEqual([]);
+      for (const id of route.team_ids) {
+        expect(fixtures.teamList.map((t) => t.id), route.name).toContain(id);
+      }
+    }
+    // Covers every state of the page: for everyone, for teams, for admins only, broken.
+    expect(fixtures.routeList.some((r) => r.everyone)).toBe(true);
+    expect(fixtures.routeList.some((r) => r.team_ids.length > 0)).toBe(true);
+    expect(fixtures.routeList.some((r) => !r.everyone && r.team_ids.length === 0)).toBe(true);
+    expect(fixtures.routeList.some((r) => r.broken)).toBe(true);
+    expect(fixtures.routeList.some((r) => r.fallbacks.length > 0)).toBe(true);
+  });
+
+  test("what a member is given of the routes: names and flags only", () => {
+    // api/routes.rs, view_of: ids, weights, settings, everyone and team_ids read as 0, false or empty.
+    for (const route of fixtures.routesForMember) {
+      for (const target of [...route.primaries, ...route.fallbacks]) {
+        expect(target.model_id).toBe(0);
+        expect(target.model).toMatch(/^[^/]+\/.+$/);
+      }
+      expect(route.primaries.map((p) => p.weight).every((w) => w === 0)).toBe(true);
+      expect([
+        route.retries,
+        route.first_token_timeout_ms,
+        route.total_timeout_ms,
+        route.breaker_failures,
+        route.breaker_window_s,
+        route.breaker_open_s,
+      ]).toEqual([0, 0, 0, 0, 0, 0]);
+      expect(route.everyone).toBe(false);
+      expect(route.team_ids).toEqual([]);
+    }
+    // A member of Platform may use the routes of everyone and of their teams, not those for admins.
+    expect(fixtures.routesForMember.map((r) => r.name)).toEqual(["support-chat", "research"]);
+  });
+
+  test("the health of the targets", () => {
+    // api/health.rs and `TargetState`: closed, open, half_open.
+    expect(fixtures.healthList.map((t) => t.state).sort()).toEqual([
+      "closed",
+      "closed",
+      "half_open",
+      "open",
+    ]);
+    for (const target of fixtures.healthList) {
+      expect(target.successes).toBeGreaterThanOrEqual(0);
+      expect(target.failures).toBeGreaterThanOrEqual(0);
+      // No failure: no time and no status.
+      if (target.failures === 0) {
+        expect(target.last_failure_at).toBeNull();
+        expect(target.last_status).toBeNull();
+      } else {
+        expect(target.last_failure_at ?? "").toMatch(TIMESTAMP);
+      }
+      const model = fixtures.modelList.find(
+        (m) => m.provider_name === target.provider && m.name === target.model,
+      );
+      expect(model, `${target.provider}/${target.model}`).toBeDefined();
+    }
+  });
+
   test("what a member is given of the models", () => {
     // api/models.rs, list: the enabled models they may call, with empty grants.
     for (const model of fixtures.callableModels) {

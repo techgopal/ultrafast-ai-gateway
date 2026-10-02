@@ -73,6 +73,9 @@ describe("queries", () => {
         keys: q.useKeys(),
         providers: q.useProviders(),
         tokens: q.useTokens(),
+        routes: q.useRoutes(),
+        route: q.useRoute(fixtures.routes.research.id),
+        health: q.useRoutingHealth(),
         audit: q.useAuditPages(),
       }),
       { wrapper },
@@ -89,6 +92,9 @@ describe("queries", () => {
     expect(result.current.keys.data).toEqual({ keys: fixtures.keyList });
     expect(result.current.providers.data).toEqual({ providers: fixtures.providerList });
     expect(result.current.tokens.data).toEqual({ tokens: fixtures.tokenList });
+    expect(result.current.routes.data).toEqual({ routes: fixtures.routeList });
+    expect(result.current.route.data).toEqual(fixtures.routes.research);
+    expect(result.current.health.data).toEqual({ targets: fixtures.healthList });
     expect(result.current.audit.data?.pages).toEqual([{ entries: fixtures.auditEntries }]);
   });
 
@@ -1199,6 +1205,41 @@ describe("what a mutation says is gone", () => {
   });
 });
 
+describe("what a route shows", () => {
+  const changes: [string, () => { mutateAsync: (v: never) => Promise<unknown> }, unknown][] = [
+    ["a model is enabled or disabled", q.useUpdateModel, { id: 3, body: { enabled: true } }],
+    ["a model is deleted", q.useDeleteModel, { id: 3 }],
+    ["a provider is deleted", q.useDeleteProvider, { id: 2 }],
+    ["a team is renamed", q.useRenameTeam, { id: 2, body: { name: "R" } }],
+    ["a team is deleted", q.useDeleteTeam, { id: 3 }],
+    ["a route is made", q.useCreateRoute, {}],
+    ["a route is changed", q.useUpdateRoute, { id: 2, body: {} }],
+    ["a route is deleted", q.useDeleteRoute, { id: 3 }],
+  ];
+
+  test.each(changes)("is read again when %s", async (_, useChange, variables) => {
+    let reads = 0;
+    override("get", "/api/routes", () => {
+      reads += 1;
+      return ok("get", "/api/routes", 200, { routes: fixtures.routeList });
+    });
+    const client = appClient();
+    const { result } = renderHook(() => ({ routes: q.useRoutes(), change: useChange() }), {
+      wrapper: wrapperOf(client),
+    });
+    await waitFor(() => {
+      expect(result.current.routes.isSuccess).toBe(true);
+    });
+    expect(reads).toBe(1);
+    await act(async () => {
+      await result.current.change.mutateAsync(variables as never);
+    });
+    await waitFor(() => {
+      expect(reads).toBe(2);
+    });
+  });
+});
+
 describe("every mutation calls its operation", () => {
   const cases: [string, string, () => { mutateAsync: (v: never) => Promise<unknown> }, unknown][] =
     [
@@ -1225,16 +1266,19 @@ describe("every mutation calls its operation", () => {
       ["useUpdateModel", "PATCH /api/models/3", q.useUpdateModel, { id: 3, body: { enabled: true } }],
       ["usePutModelGrants", "PUT /api/models/3/grants", q.usePutModelGrants, { id: 3, body: { everyone: true, team_ids: [], user_ids: [] } }],
       ["useDeleteModel", "DELETE /api/models/3", q.useDeleteModel, { id: 3 }],
+      ["useCreateRoute", "POST /api/routes", q.useCreateRoute, { name: "r", everyone: true, primaries: [], fallbacks: [], retries: 2, first_token_timeout_ms: 30000, total_timeout_ms: 300000, breaker_failures: 5, breaker_window_s: 60, breaker_open_s: 30, team_ids: [] }],
+      ["useUpdateRoute", "PUT /api/routes/2", q.useUpdateRoute, { id: 2, body: { name: "r", everyone: true, primaries: [], fallbacks: [], retries: 2, first_token_timeout_ms: 30000, total_timeout_ms: 300000, breaker_failures: 5, breaker_window_s: 60, breaker_open_s: 30, team_ids: [] } }],
+      ["useDeleteRoute", "DELETE /api/routes/3", q.useDeleteRoute, { id: 3 }],
       ["useCreateToken", "POST /api/tokens", q.useCreateToken, { name: "t" }],
       ["useRevokeToken", "DELETE /api/tokens/1", q.useRevokeToken, { id: 1 }],
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 25 of them, 11 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(25);
+  test("there are 28 of them, 14 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(28);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(37);
+    expect(hooks).toHaveLength(43);
     // What only tests used is not kept: a key read by its id, the audit log
     // read as one page, and `me`, which the session reads itself.
     for (const gone of ["useKey", "keyOptions", "useAuditLog", "auditLogOptions", "useMe"]) {

@@ -78,6 +78,7 @@ describe("sidebar", () => {
       ["Overview", "/"],
       ["Providers", "/providers"],
       ["Models", "/models"],
+      ["Routing", "/routes"],
       ["Virtual keys", "/keys"],
       ["Users", "/users"],
       ["Teams", "/teams"],

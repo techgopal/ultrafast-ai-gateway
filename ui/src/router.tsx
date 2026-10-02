@@ -23,6 +23,8 @@ import { PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
 import { Overview } from "@/pages/Overview";
 import { Models } from "@/pages/Models";
+import { Routes } from "@/pages/Routes";
+import { RoutesEdit } from "@/pages/RoutesEdit";
 import { Providers } from "@/pages/Providers";
 import { Setup } from "@/pages/Setup";
 import { TeamDetail } from "@/pages/TeamDetail";
@@ -219,6 +221,33 @@ const modelsRoute = createRoute({
   component: Models,
 });
 
+const routesRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/routes",
+  staticData: { title: "Routing" },
+  component: Routes,
+});
+
+const routeNewRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/routes/new",
+  staticData: { title: "New route" },
+  component: function RouteNewRoute() {
+    return <RoutesEdit id={null} />;
+  },
+});
+
+const routeRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/routes/$id",
+  staticData: { title: "Route" },
+  component: function RouteRoute() {
+    const { id } = routeRoute.useParams();
+    // Another route is another page: its form and its state do not carry over.
+    return <RoutesEdit key={id} id={id} />;
+  },
+});
+
 const keysRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/keys",
@@ -301,6 +330,9 @@ const routeTree = rootRoute.addChildren([
     overviewRoute,
     providersRoute,
     modelsRoute,
+    routesRoute,
+    routeNewRoute,
+    routeRoute,
     keysRoute,
     usersRoute,
     userRoute,

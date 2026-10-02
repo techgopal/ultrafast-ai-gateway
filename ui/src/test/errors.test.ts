@@ -33,6 +33,7 @@ const statuses: Record<ErrorName, number> = {
   team_exists: 409,
   provider_exists: 409,
   model_exists: 409,
+  route_exists: 409,
   sync_unsupported: 422,
   sync_failed: 502,
 };
@@ -150,4 +151,26 @@ test("the messages of the models are in the gateway source", () => {
     errors.sync_failed.body.error.message,
   ];
   for (const message of messages) expect(source).toContain(`"${message}`);
+});
+
+test("the messages of the routes are in the gateway source", () => {
+  const path = fileURLToPath(new URL("../../../crates/gateway/src/api/routes.rs", import.meta.url));
+  // A Rust string goes on in the next line after a quote and a break.
+  const source = readFileSync(path, "utf8").replace(/\n\s*/g, "");
+  const messages = [
+    fieldMessages.routeName,
+    fieldMessages.routePrimariesNeeded,
+    fieldMessages.routeWeight,
+    fieldMessages.routeOnce,
+    fieldMessages.routeModelMissing,
+    fieldMessages.routeTeamMissing,
+    fieldMessages.routeTotalBelowFirst,
+    fieldMessages.grantsEveryone,
+    errors.route_exists.body.error.message,
+  ];
+  for (const message of messages) expect(source).toContain(`"${message}`);
+  // The range messages are made from the limits: "must be {lo} to {hi}".
+  expect(source).toContain('"must be {lo} to {hi}"');
+  expect(fieldMessages.routeRetries).toBe("must be 0 to 5");
+  expect(fieldMessages.routeFirstToken).toBe("must be 1000 to 300000");
 });

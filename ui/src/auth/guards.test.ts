@@ -93,6 +93,8 @@ describe("guards", () => {
     ["revoke a key whose owner is gone", { type: "revokeKey", ownerId: null, teamId: null }, [true, false, false, false]],
     ["manage providers", { type: "manageProviders" }, [true, false, false, false]],
     ["manage models", { type: "manageModels" }, [true, false, false, false]],
+    ["manage routes", { type: "manageRoutes" }, [true, false, false, false]],
+    ["view routing health", { type: "viewRoutingHealth" }, [true, false, false, false]],
     ["view audit", { type: "viewAudit" }, [true, false, false, false]],
     // The overview counts users and teams for who manages some: admins, and leads.
     ["view the counts of users and teams", { type: "viewUserAndTeamCounts" }, [true, true, false, false]],
@@ -123,6 +125,8 @@ describe("guards", () => {
       revokeKey: true,
       manageProviders: true,
       manageModels: true,
+      manageRoutes: true,
+      viewRoutingHealth: true,
       viewAudit: true,
       viewUserAndTeamCounts: true,
     };

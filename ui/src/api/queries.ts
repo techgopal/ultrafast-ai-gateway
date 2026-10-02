@@ -77,6 +77,12 @@ export const queryKeys = {
     all: () => ["models"] as const,
     list: () => ["models", "list"] as const,
   },
+  routes: {
+    all: () => ["routes"] as const,
+    list: () => ["routes", "list"] as const,
+    detail: detailOf("routes"),
+  },
+  routingHealth: () => ["routing", "health"] as const,
   tokens: {
     all: () => ["tokens"] as const,
     list: () => ["tokens", "list"] as const,
@@ -229,6 +235,24 @@ export const modelsOptions = () =>
     queryFn: ({ signal }) => api.get("/api/models", { signal }),
   });
 
+export const routesOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.routes.list(),
+    queryFn: ({ signal }) => api.get("/api/routes", { signal }),
+  });
+
+export const routeOptions = (id: number) =>
+  queryOptions({
+    queryKey: queryKeys.routes.detail(id),
+    queryFn: ({ signal }) => api.get("/api/routes/{id}", { params: { id }, signal }),
+  });
+
+export const routingHealthOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.routingHealth(),
+    queryFn: ({ signal }) => api.get("/api/routing/health", { signal }),
+  });
+
 export const tokensOptions = () =>
   queryOptions({
     queryKey: queryKeys.tokens.list(),
@@ -251,6 +275,11 @@ export const useKeys = () => useQuery(keysOptions());
 export const useProviders = () => useQuery(providersOptions());
 /** An admin gets every model with its grants; anybody else the models they may call. */
 export const useModels = () => useQuery(modelsOptions());
+/** An admin gets every route in full; anybody else the routes they may use, with their models only. */
+export const useRoutes = () => useQuery(routesOptions());
+export const useRoute = (id: number) => useQuery(routeOptions(id));
+/** Admin only. What the gateway saw of the targets in real traffic since it started. */
+export const useRoutingHealth = () => useQuery(routingHealthOptions());
 export const useTokens = () => useQuery(tokensOptions());
 
 /** How many entries a page of the audit log has. A page with fewer is the last. */
@@ -454,7 +483,14 @@ export const useDeleteUser = () =>
 // teams
 
 // A team's name shows in keys, and the caller's teams are in `me`.
-const aTeamChanged = [queryKeys.teams.all(), queryKeys.keys.all(), queryKeys.me(), audit];
+// (A route shows the teams that may use it.)
+const aTeamChanged = [
+  queryKeys.teams.all(),
+  queryKeys.keys.all(),
+  queryKeys.me(),
+  queryKeys.routes.all(),
+  audit,
+];
 const membersChanged = [queryKeys.teams.all(), queryKeys.me(), audit];
 
 export const useCreateTeam = () =>
@@ -546,7 +582,8 @@ export const useUpdateProvider = () =>
 export const useDeleteProvider = () =>
   useApiMutation(
     ({ id }: { id: number }) => api.delete("/api/providers/{id}", { params: { id } }),
-    () => ({ stale: [queryKeys.providers.all(), audit] }),
+    // The models of the provider go with it, and so do their targets in routes.
+    () => ({ stale: [queryKeys.providers.all(), queryKeys.routes.all(), audit] }),
     providerIsGone,
   );
 
@@ -576,7 +613,8 @@ export const useUpdateModel = () =>
   useApiMutation(
     ({ id, body }: { id: number; body: BodyOf<"/api/models/{id}", "patch"> }) =>
       api.patch("/api/models/{id}", { params: { id }, body }),
-    () => ({ stale: [queryKeys.models.all(), audit] }),
+    // A route is broken when none of its targets is enabled.
+    () => ({ stale: [queryKeys.models.all(), queryKeys.routes.all(), audit] }),
     modelIsGone,
   );
 
@@ -592,8 +630,36 @@ export const usePutModelGrants = () =>
 export const useDeleteModel = () =>
   useApiMutation(
     ({ id }: { id: number }) => api.delete("/api/models/{id}", { params: { id } }),
-    () => ({ stale: [queryKeys.models.all(), audit] }),
+    // A deleted model leaves its targets with it.
+    () => ({ stale: [queryKeys.models.all(), queryKeys.routes.all(), audit] }),
     modelIsGone,
+  );
+
+// routes
+
+// The route was deleted meanwhile: the list still shows it.
+const routeIsGone = (error: unknown) => (isNotFound(error) ? [queryKeys.routes.all()] : []);
+
+export const useCreateRoute = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/routes", "post">) => api.post("/api/routes", { body }),
+    () => ({ stale: [queryKeys.routes.all(), audit] }),
+  );
+
+/** Replaces the route: the body is the whole of it. */
+export const useUpdateRoute = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/routes/{id}", "put"> }) =>
+      api.put("/api/routes/{id}", { params: { id }, body }),
+    () => ({ stale: [queryKeys.routes.all(), audit] }),
+    routeIsGone,
+  );
+
+export const useDeleteRoute = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/routes/{id}", { params: { id } }),
+    ({ id }) => ({ stale: [queryKeys.routes.all(), audit], gone: [queryKeys.routes.detail(id)] }),
+    routeIsGone,
   );
 
 // tokens

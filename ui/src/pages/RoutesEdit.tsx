@@ -1,0 +1,450 @@
+import { useForm, useSelector } from "@tanstack/react-form";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { useMemo, useRef, useState } from "react";
+import {
+  useCreateRoute,
+  useModels,
+  useRoute,
+  useTeams,
+  useUpdateRoute,
+} from "@/api/queries";
+import type { components } from "@/api/schema";
+import { can } from "@/auth/guards";
+import { useSession } from "@/auth/session";
+import { Checks } from "@/components/CheckList";
+import { control } from "@/components/classes";
+import { ErrorState } from "@/components/ErrorState";
+import { Field } from "@/components/Field";
+import {
+  applyApiError,
+  onField,
+  useFocusOnFailure,
+  useFormFailure,
+  useSubmit,
+} from "@/components/form";
+import { FormError } from "@/components/FormError";
+import { NotAvailableContent } from "@/components/NotAvailableContent";
+import { NotFoundContent } from "@/components/NotFoundContent";
+import { PageHeader } from "@/components/PageHeader";
+import { QueryProblem } from "@/components/QueryProblem";
+import { useToast } from "@/components/toast";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Skeleton } from "@/components/ui/skeleton";
+import { idOf } from "@/lib/id";
+import { sortModels } from "@/lib/models";
+import {
+  check,
+  DEFAULTS,
+  emptyForm,
+  formOf,
+  hasProblems,
+  inFormWords,
+  requestOf,
+  type Audience,
+  type FieldName,
+} from "@/lib/routes";
+import { Fallbacks, Primaries } from "@/pages/RoutesEditTargets";
+import { RoutesHealth } from "@/pages/RoutesHealth";
+
+type Route = components["schemas"]["RouteView"];
+
+export const DONE = {
+  create: "Route created.",
+  update: "Route saved.",
+} as const;
+
+export const NAME_HINT = "Clients call the route by this name. It cannot contain a slash.";
+export const PRIMARIES_HINT = "Calls are spread over the primary targets by their weights.";
+export const FALLBACKS_HINT = "Tried in this order when the primary targets fail.";
+export const FIX_THE_FIELDS = "Some fields are not valid. They are marked below.";
+
+const AUDIENCES: readonly [Audience, string][] = [
+  ["all", "All teams"],
+  ["chosen", "Chosen teams"],
+  ["admins", "Admins only"],
+];
+
+/** The settings: the field of the form, its label, and what is said under it. */
+const SETTINGS = [
+  ["retries", "Retries", `Default ${DEFAULTS.retries}. 0 to 5.`, "numeric"],
+  [
+    "first_token_s",
+    "First token timeout (s)",
+    `Default ${DEFAULTS.first_token_s}. 1 to 300 seconds.`,
+    "decimal",
+  ],
+  [
+    "total_s",
+    "Total timeout (s)",
+    `Default ${DEFAULTS.total_s}. 1 to 3600 seconds, not below the first token timeout.`,
+    "decimal",
+  ],
+  [
+    "breaker_failures",
+    "Breaker failures",
+    `Default ${DEFAULTS.breaker_failures}. Failures within the window that open the breaker. 1 to 100.`,
+    "numeric",
+  ],
+  [
+    "breaker_window_s",
+    "Breaker window (s)",
+    `Default ${DEFAULTS.breaker_window_s}. 5 to 3600 seconds.`,
+    "numeric",
+  ],
+  [
+    "breaker_open_s",
+    "Breaker open (s)",
+    `Default ${DEFAULTS.breaker_open_s}. How long a target is left alone once the breaker opens. 5 to 3600 seconds.`,
+    "numeric",
+  ],
+] as const;
+
+interface EditorProps {
+  /** `null` for a new route. */
+  route: Route | null;
+}
+
+function Editor({ route }: EditorProps) {
+  const models = useModels();
+  const teams = useTeams();
+  const create = useCreateRoute();
+  const update = useUpdateRoute();
+  const toast = useToast();
+  const navigate = useNavigate();
+  const [attempted, setAttempted] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
+
+  // The models a target can be: the enabled ones, and those the route has already.
+  const choices = useMemo(() => {
+    const own = new Set([...(route?.primaries ?? []), ...(route?.fallbacks ?? [])].map((t) => t.model_id));
+    return sortModels((models.data?.models ?? []).filter((m) => m.enabled || own.has(m.id)));
+  }, [models.data, route]);
+  const teamList = useMemo(() => teams.data?.teams ?? null, [teams.data]);
+  const offered = useMemo(
+    () => ({ models: choices.map((m) => m.id), teams: (teamList ?? []).map((t) => t.id) }),
+    [choices, teamList],
+  );
+  // The teams are not read when they are not asked for: a route for all is saved without them.
+  const pending = create.isPending || update.isPending;
+
+  const form = useForm({
+    defaultValues: route === null ? emptyForm() : formOf(route),
+    onSubmit: async ({ value }) => {
+      if (hasProblems(check(value, offered))) {
+        setAttempted(true);
+        failed();
+        return;
+      }
+      const body = requestOf(value, offered);
+      try {
+        if (route === null) {
+          await create.mutateAsync(body);
+          create.reset();
+          toast(DONE.create);
+        } else {
+          await update.mutateAsync({ id: route.id, body });
+          update.reset();
+          toast(DONE.update);
+        }
+        await navigate({ to: "/routes" });
+      } catch (error) {
+        create.reset();
+        update.reset();
+        applyApiError(form, onField(inFormWords(error), "route_exists", "name"));
+      }
+    },
+  });
+  const formRef = useRef<HTMLFormElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const failure = useFormFailure(form, formRef, errorRef);
+  const failed = useFocusOnFailure(formRef, errorRef);
+  const onSubmit = useSubmit(form);
+  const values = useSelector(form.store, (state) => state.values);
+
+  // After a first attempt the form says what is wrong while it is mended.
+  const live = useMemo(() => (attempted ? check(values, offered) : null), [attempted, values, offered]);
+  const errorOf = (name: FieldName | "audience"): string | undefined =>
+    failure.fieldError(name) ?? (live === null || name === "audience" ? undefined : live.fields[name]);
+  const settingProblem = SETTINGS.some(([name]) => errorOf(name) !== undefined);
+  const showAdvanced = advanced || settingProblem;
+  const waiting = values.audience === "chosen" && teamList === null;
+
+  return (
+    <form
+      ref={formRef}
+      aria-label="Route"
+      noValidate
+      className="flex max-w-2xl flex-col gap-6"
+      onSubmit={onSubmit}
+    >
+      <FormError
+        ref={errorRef}
+        messages={
+          failure.messages.length > 0 || live === null || !hasProblems(live)
+            ? failure.messages
+            : [FIX_THE_FIELDS]
+        }
+      />
+      <form.Field name="name">
+        {(field) => (
+          <Field label="Name" name={field.name} required hint={NAME_HINT} error={errorOf("name")}>
+            {({ id, name, ...described }) => (
+              <Input
+                {...described}
+                id={id}
+                name={name}
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                className={`${control} font-mono`}
+                value={field.state.value}
+                onBlur={field.handleBlur}
+                onChange={(event) => {
+                  field.handleChange(event.target.value);
+                }}
+              />
+            )}
+          </Field>
+        )}
+      </form.Field>
+
+      <form.Field name="primaries">
+        {(field) => (
+          <Field
+            group
+            required
+            label="Primary targets"
+            name={field.name}
+            hint={PRIMARIES_HINT}
+            error={errorOf("primaries")}
+          >
+            {(wiring) => (
+              <Primaries
+                wiring={wiring}
+                models={choices}
+                rows={field.state.value}
+                fallbacks={values.fallbacks}
+                problems={live?.primaries ?? []}
+                onChange={field.handleChange}
+              />
+            )}
+          </Field>
+        )}
+      </form.Field>
+
+      <form.Field name="fallbacks">
+        {(field) => (
+          <Field
+            group
+            label="Fallbacks"
+            name={field.name}
+            hint={FALLBACKS_HINT}
+            error={failure.fieldError(field.name)}
+          >
+            {(wiring) => (
+              <Fallbacks
+                wiring={wiring}
+                models={choices}
+                rows={field.state.value}
+                primaries={values.primaries.map((row) => row.model)}
+                problems={live?.fallbacks ?? []}
+                onChange={field.handleChange}
+              />
+            )}
+          </Field>
+        )}
+      </form.Field>
+
+      <form.Field name="audience">
+        {(field) => (
+          <Field group label="Teams" name={field.name} error={errorOf("audience")}>
+            {({ id, name, ...described }) => (
+              <RadioGroup
+                {...described}
+                id={id}
+                name={name}
+                value={field.state.value}
+                onValueChange={(next) => {
+                  field.handleChange(next === "all" || next === "chosen" ? next : "admins");
+                }}
+              >
+                {AUDIENCES.map(([value, label]) => (
+                  <Label key={value} htmlFor={`${id}-${value}`} className={control}>
+                    <RadioGroupItem id={`${id}-${value}`} value={value} />
+                    {label}
+                  </Label>
+                ))}
+              </RadioGroup>
+            )}
+          </Field>
+        )}
+      </form.Field>
+      {values.audience === "chosen" ? (
+        <form.Field name="team_ids">
+          {(field) => (
+            <Field group label="Chosen teams" name={field.name} error={errorOf("team_ids")}>
+              {(wiring) => (
+                <Checks
+                  wiring={wiring}
+                  items={teamList}
+                  error={teams.error}
+                  retry={() => {
+                    void teams.refetch();
+                  }}
+                  loading="Loading the teams"
+                  none="There are no teams yet."
+                  checked={field.state.value}
+                  onChange={field.handleChange}
+                  label={(team) => <span>{team.name}</span>}
+                />
+              )}
+            </Field>
+          )}
+        </form.Field>
+      ) : null}
+
+      <section className="flex flex-col gap-4">
+        <h2 className="text-base font-medium">
+          <button
+            type="button"
+            aria-expanded={showAdvanced}
+            aria-controls="route-advanced"
+            className={`${control} -mx-2 rounded-md px-2 outline-none focus-visible:ring-3 focus-visible:ring-ring/50`}
+            onClick={() => {
+              setAdvanced(!showAdvanced);
+            }}
+          >
+            Advanced
+          </button>
+        </h2>
+        <div id="route-advanced" hidden={!showAdvanced} className="grid gap-4 sm:grid-cols-2">
+          {SETTINGS.map(([name, label, hint, mode]) => (
+            <form.Field key={name} name={name}>
+              {(field) => (
+                <Field label={label} name={field.name} hint={hint} error={errorOf(name)}>
+                  {({ id, name: fieldName, ...described }) => (
+                    <Input
+                      {...described}
+                      id={id}
+                      name={fieldName}
+                      inputMode={mode}
+                      autoComplete="off"
+                      className={control}
+                      value={field.state.value}
+                      onBlur={field.handleBlur}
+                      onChange={(event) => {
+                        field.handleChange(event.target.value);
+                      }}
+                    />
+                  )}
+                </Field>
+              )}
+            </form.Field>
+          ))}
+        </div>
+      </section>
+
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" className={control} disabled={pending || waiting}>
+          {pending ? "Saving" : route === null ? "Create route" : "Save route"}
+        </Button>
+        <Button asChild variant="outline" className={control}>
+          <Link to="/routes">Cancel</Link>
+        </Button>
+      </div>
+      {models.error !== null && models.data === undefined ? (
+        <ErrorState error={models.error} />
+      ) : null}
+    </form>
+  );
+}
+
+function BackLink() {
+  return (
+    <Link
+      to="/routes"
+      className="inline-flex min-h-11 w-fit items-center rounded-sm text-sm text-muted-foreground underline-offset-4 outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-8"
+    >
+      Back to routing
+    </Link>
+  );
+}
+
+function Loading({ label }: { label: string }) {
+  return (
+    <div role="status" aria-busy="true" aria-label={label} className="flex flex-col gap-4">
+      <Skeleton className="h-8 w-48" />
+      <Skeleton className="h-4 w-full max-w-md" />
+      <Skeleton className="h-4 w-full max-w-md" />
+      <Skeleton className="h-4 w-full max-w-md" />
+    </div>
+  );
+}
+
+/** The models are needed to choose targets: until they are read there is nothing to choose from. */
+function WithModels({ route }: { route: Route | null }) {
+  const models = useModels();
+  if (models.data === undefined) {
+    if (models.error !== null) {
+      return (
+        <QueryProblem
+          title="Routing"
+          error={models.error}
+          onRetry={() => {
+            void models.refetch();
+          }}
+        />
+      );
+    }
+    return <Loading label="Loading the models" />;
+  }
+  return (
+    <>
+      <BackLink />
+      <PageHeader
+        title={route === null ? "New route" : "Edit route"}
+        {...(route === null ? {} : { subtitle: route.name })}
+      />
+      <Editor route={route} />
+      {route === null ? null : <RoutesHealth title="Health of this route" route={route} />}
+    </>
+  );
+}
+
+function Existing({ id }: { id: number }) {
+  const route = useRoute(id);
+  if (route.data === undefined) {
+    if (route.error !== null) {
+      return (
+        <QueryProblem
+          notFound
+          title="Routing"
+          error={route.error}
+          onRetry={() => {
+            void route.refetch();
+          }}
+        />
+      );
+    }
+    return <Loading label="Loading the route" />;
+  }
+  return <WithModels route={route.data} />;
+}
+
+/**
+ * The page of a new route (`id` is `null`) or of one route, as the address
+ * has its id. Only an admin changes routes.
+ */
+export function RoutesEdit({ id }: { id: string | null }) {
+  const session = useSession();
+  if (session.status !== "signedIn") return null;
+  if (!can(session.me, { type: "manageRoutes" })) return <NotAvailableContent />;
+  if (id === null) return <WithModels route={null} />;
+  const number = idOf(id);
+  // Not an id: the API is not asked.
+  if (number === null) return <NotFoundContent />;
+  return <Existing id={number} />;
+}

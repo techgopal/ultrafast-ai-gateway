@@ -40,6 +40,10 @@ export type ConsoleAction =
   | { type: "manageProviders" }
   /** Adds, syncs, enables, grants and deletes models: what only an admin may. */
   | { type: "manageModels" }
+  /** Creates, changes and deletes routes: what only an admin may. Everybody sees the routes they may use. */
+  | { type: "manageRoutes" }
+  /** Reads the health of the targets of the routes. */
+  | { type: "viewRoutingHealth" }
   | { type: "viewAudit" }
   /**
    * Sees how many users and teams there are, on the overview: who manages
@@ -80,6 +84,8 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "createKeyForAnyone":
     case "manageProviders":
     case "manageModels":
+    case "manageRoutes":
+    case "viewRoutingHealth":
     case "viewAudit":
       return false;
     case "renameUser":

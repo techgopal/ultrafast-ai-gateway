@@ -53,6 +53,17 @@ export const fieldMessages = {
   grantsEveryone: "must not be combined with teams or users",
   teamsMissing: "a team does not exist",
   usersMissing: "a user does not exist",
+  // A route (`api/routes.rs`).
+  routeName:
+    "must be 1 to 64 characters of a-z, 0-9, '.', '_' and '-', starting with a letter or digit",
+  routePrimariesNeeded: "needs at least one model",
+  routeWeight: "a weight must be 1 to 1000",
+  routeOnce: "a model may appear only once in a route",
+  routeModelMissing: "a model does not exist",
+  routeTeamMissing: "a team does not exist",
+  routeRetries: "must be 0 to 5",
+  routeFirstToken: "must be 1000 to 300000",
+  routeTotalBelowFirst: "must not be below the first token timeout",
 } as const;
 
 /** A 422 of the gateway for these fields. */
@@ -123,6 +134,7 @@ export const errors = {
     "model_exists",
     "This provider already has a model of this name.",
   ),
+  route_exists: error(409, "route_exists", "A route of this name already exists."),
   sync_unsupported: error(422, "sync_unsupported", "Add Azure deployments as models by name."),
   sync_failed: error(502, "sync_failed", "The provider did not return its models."),
 } as const satisfies Record<string, GatewayError>;

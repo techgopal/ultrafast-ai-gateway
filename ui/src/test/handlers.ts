@@ -176,6 +176,26 @@ export const handlers = [
     byId(fixtures.modelList, call) === undefined ? notFound() : noContent(),
   ),
 
+  // routes
+  handler("get", "/api/routes", () =>
+    ok("get", "/api/routes", 200, { routes: fixtures.routeList }),
+  ),
+  handler("post", "/api/routes", () => ok("post", "/api/routes", 201, fixtures.routes.support)),
+  handler("get", "/api/routes/{id}", (call) => {
+    const route = byId(fixtures.routeList, call);
+    return route === undefined ? notFound() : ok("get", "/api/routes/{id}", 200, route);
+  }),
+  handler("put", "/api/routes/{id}", (call) => {
+    const route = byId(fixtures.routeList, call);
+    return route === undefined ? notFound() : ok("put", "/api/routes/{id}", 200, route);
+  }),
+  handler("delete", "/api/routes/{id}", (call) =>
+    byId(fixtures.routeList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("get", "/api/routing/health", () =>
+    ok("get", "/api/routing/health", 200, { targets: fixtures.healthList }),
+  ),
+
   // tokens
   handler("get", "/api/tokens", () =>
     ok("get", "/api/tokens", 200, { tokens: fixtures.tokenList }),

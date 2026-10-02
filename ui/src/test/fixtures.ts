@@ -17,6 +17,8 @@ export type SyncResult = Schemas["SyncResult"];
 export type Token = Schemas["TokenView"];
 export type AuditEntry = Schemas["AuditRow"];
 export type Me = Schemas["MeResponse"];
+export type Route = Schemas["RouteView"];
+export type TargetHealth = Schemas["TargetHealth"];
 
 /**
  * The time of the fixtures: what they call past (the expired key and token,
@@ -297,6 +299,133 @@ export const callableModels: Model[] = [models.openaiMini, models.openaiFull].ma
   ...model,
   grants: { everyone: false, team_ids: [], user_ids: [] },
 }));
+
+/** The settings a route has when it is made without any (the migration of the routes). */
+const defaultSettings = {
+  retries: 2,
+  first_token_timeout_ms: 30_000,
+  total_timeout_ms: 300_000,
+  breaker_failures: 5,
+  breaker_window_s: 60,
+  breaker_open_s: 30,
+} as const;
+
+export const routes = {
+  /** For everyone; two primaries and a fallback. */
+  support: {
+    id: 1,
+    name: "support-chat",
+    primaries: [
+      { model_id: models.openaiMini.id, model: "openai/gpt-4o-mini", weight: 3, enabled: true },
+      { model_id: models.openaiFull.id, model: "openai/gpt-4o", weight: 1, enabled: true },
+    ],
+    fallbacks: [{ model_id: models.localLlama.id, model: "local-llm/llama3.1:8b", enabled: true }],
+    ...defaultSettings,
+    everyone: true,
+    team_ids: [],
+    broken: false,
+    created_at: "2026-09-10 09:00:00",
+  },
+  /** For two teams; settings that are not the defaults. */
+  research: {
+    id: 2,
+    name: "research",
+    primaries: [{ model_id: models.openaiFull.id, model: "openai/gpt-4o", weight: 1, enabled: true }],
+    fallbacks: [],
+    retries: 0,
+    first_token_timeout_ms: 10_000,
+    total_timeout_ms: 120_000,
+    breaker_failures: 3,
+    breaker_window_s: 30,
+    breaker_open_s: 15,
+    everyone: false,
+    team_ids: [teams.platform.id, teams.research.id],
+    broken: false,
+    created_at: "2026-09-11 09:00:00",
+  },
+  /** For admins only, and no target of it is enabled. */
+  legacy: {
+    id: 3,
+    name: "legacy.v1",
+    primaries: [
+      { model_id: models.openaiDisabled.id, model: "openai/o3-mini", weight: 1, enabled: false },
+    ],
+    fallbacks: [],
+    ...defaultSettings,
+    everyone: false,
+    team_ids: [],
+    broken: true,
+    created_at: "2026-09-12 09:00:00",
+  },
+} satisfies Record<string, Route>;
+
+export const routeList: Route[] = Object.values(routes);
+
+/**
+ * What the gateway shows of a route to somebody who is not an admin: ids,
+ * weights, settings, `everyone` and `team_ids` read as 0, false or empty.
+ */
+export function asMemberSees(route: Route): Route {
+  return {
+    ...route,
+    primaries: route.primaries.map((p) => ({ ...p, model_id: 0, weight: 0 })),
+    fallbacks: route.fallbacks.map((f) => ({ ...f, model_id: 0 })),
+    retries: 0,
+    first_token_timeout_ms: 0,
+    total_timeout_ms: 0,
+    breaker_failures: 0,
+    breaker_window_s: 0,
+    breaker_open_s: 0,
+    everyone: false,
+    team_ids: [],
+  };
+}
+
+/** What a member of Platform gets of the routes: those their teams or everyone may use. */
+export const routesForMember: Route[] = [routes.support, routes.research].map(asMemberSees);
+
+/** What `GET /api/routing/health` answers: the targets that were called, one in each state. */
+export const healthTargets = {
+  healthy: {
+    provider: "openai",
+    model: "gpt-4o-mini",
+    state: "closed",
+    successes: 120,
+    failures: 2,
+    last_failure_at: "2026-09-30 11:00:00",
+    last_status: 503,
+  },
+  failing: {
+    provider: "openai",
+    model: "gpt-4o",
+    state: "open",
+    successes: 40,
+    failures: 9,
+    last_failure_at: "2026-09-30 11:30:00",
+    last_status: 429,
+  },
+  testing: {
+    provider: "local-llm",
+    model: "llama3.1:8b",
+    state: "half_open",
+    successes: 5,
+    failures: 5,
+    last_failure_at: "2026-09-30 11:45:00",
+    last_status: null,
+  },
+  /** Never failed. */
+  clean: {
+    provider: "openai",
+    model: "o3-mini",
+    state: "closed",
+    successes: 7,
+    failures: 0,
+    last_failure_at: null,
+    last_status: null,
+  },
+} satisfies Record<string, TargetHealth>;
+
+export const healthList: TargetHealth[] = Object.values(healthTargets);
 
 /** What the sync of a provider answers when the provider listed new names. */
 export const syncResult: SyncResult = { added: ["gpt-4.1", "gpt-4.1-mini"], existing: 4 };
