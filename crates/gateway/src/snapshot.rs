@@ -13,6 +13,7 @@ use anyhow::Result;
 use ultrafast_translate::provider::ProviderKind;
 
 use crate::identity::{Role, UserStatus};
+use crate::limits::{LimitScope, Subject, Subjects};
 use crate::routing::{BreakerSettings, TargetRef};
 use crate::secrets::Cipher;
 use crate::store::Store;
@@ -127,6 +128,8 @@ pub struct Snapshot {
     routes: HashMap<String, SnapRoute>,
     /// Active users, by id.
     users: HashMap<i64, SnapUser>,
+    /// The rate limits, by what they are set on (id 0 for the gateway).
+    limits: HashMap<(LimitScope, i64), Arc<Subject>>,
 }
 
 /// Grants are few; a list keeps each id once.
@@ -305,12 +308,29 @@ impl Snapshot {
                 )
             })
             .collect();
+        // A limit whose team, user or key is gone has nothing to limit.
+        let limits = rows
+            .limits
+            .into_iter()
+            .filter(|l| l.has_subject() && !l.limit.is_none())
+            .map(|l| {
+                let id = l.scope_id.unwrap_or(0);
+                let subject = Subject {
+                    scope: l.scope,
+                    id,
+                    label: l.label(),
+                    limit: l.limit,
+                };
+                ((l.scope, id), Arc::new(subject))
+            })
+            .collect();
         Ok(Snapshot {
             keys,
             providers,
             models,
             routes,
             users,
+            limits,
         })
     }
 
@@ -345,6 +365,33 @@ impl Snapshot {
     /// An active user.
     pub fn user(&self, id: i64) -> Option<&SnapUser> {
         self.users.get(&id)
+    }
+
+    /// The limits that apply to a call of this key: its own, its owner's, those
+    /// of the owner's teams and of the key's team, and the gateway's. Only
+    /// subjects that have a limit are in it.
+    pub fn subjects(&self, key: &SnapKey) -> Subjects {
+        if self.limits.is_empty() {
+            return Subjects::default();
+        }
+        let get = |scope, id| self.limits.get(&(scope, id)).cloned();
+        let mut team_ids: Vec<i64> = key
+            .user_id
+            .and_then(|u| self.users.get(&u))
+            .map(|u| u.team_ids.clone())
+            .unwrap_or_default();
+        if let Some(team) = key.team_id {
+            push_new(&mut team_ids, team);
+        }
+        Subjects {
+            key: get(LimitScope::Key, key.id),
+            user: key.user_id.and_then(|u| get(LimitScope::User, u)),
+            teams: team_ids
+                .into_iter()
+                .filter_map(|t| get(LimitScope::Team, t))
+                .collect(),
+            gateway: get(LimitScope::Gateway, 0),
+        }
     }
 
     /// How many keys are held, expired ones included.

@@ -1,12 +1,15 @@
 //! Error responses for `/v1`, in the shape of the endpoint's API: OpenAI's,
 //! or Anthropic's for `/v1/messages`.
 
+use axum::http::header::RETRY_AFTER;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use ultrafast_translate::error::TranslateError;
 use ultrafast_translate::ingress::anthropic;
 use ultrafast_translate::ingress::openai::render_error;
+
+use crate::limits::Refusal;
 
 /// Which API's error body a caller expects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +29,20 @@ impl Shape {
             )
                 .into_response(),
         }
+    }
+
+    /// A call refused by a rate limit: 429 naming the limit, and when to
+    /// come back.
+    pub fn rate_limited(self, refusal: &Refusal) -> Response {
+        let mut response = self.error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+            &refusal.message(),
+        );
+        response
+            .headers_mut()
+            .insert(RETRY_AFTER, refusal.retry_after_seconds().into());
+        response
     }
 
     pub fn translate_error(self, e: &TranslateError) -> Response {

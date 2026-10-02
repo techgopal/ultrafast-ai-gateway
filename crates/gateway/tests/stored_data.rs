@@ -127,7 +127,8 @@ async fn a_database_written_by_the_earlier_build_opens_and_reads() {
             (3, "catalog", true),
             (4, "routes", true),
             (5, "route everyone", true),
-            (6, "logs", true)
+            (6, "logs", true),
+            (7, "limits", true)
         ]
     );
 

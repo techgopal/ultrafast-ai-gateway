@@ -136,6 +136,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The limits that apply to the caller: all of them for an admin; for anyone
+         *     else the gateway's, those of their teams and of themselves, and those of
+         *     their keys.
+         */
+        get: operations["limits_list"];
+        /**
+         * Sets the limits of a team, a user, a key or the gateway, replacing the
+         *     ones it had: a limit that is not sent is removed. Admin only. The change
+         *     reaches `/v1` at once.
+         */
+        put: operations["limits_set"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/limits/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Removes the limits of one subject. Admin only. The change reaches `/v1`
+         *     at once.
+         */
+        delete: operations["limits_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/logs": {
         parameters: {
             query?: never;
@@ -693,6 +739,35 @@ export interface components {
             team_id: number | null;
             team_name: string | null;
         };
+        /**
+         * @description The limits of one team, user, key or of the gateway. A limit that is
+         *     `null` is not set.
+         */
+        LimitView: {
+            /** Format: int64 */
+            concurrent: number | null;
+            /** Format: int64 */
+            id: number;
+            /**
+             * @description How a refusal names it: `gateway`, `team 'Platform'`,
+             *     `user 'lena@example.com'` or `key 'ci'`.
+             */
+            label: string;
+            /** Format: int64 */
+            requests_per_minute: number | null;
+            /** @description `gateway`, `team`, `user` or `key`. */
+            scope: string;
+            /**
+             * Format: int64
+             * @description The id of the team, user or key; `null` for the gateway.
+             */
+            scope_id: number | null;
+            /** Format: int64 */
+            tokens_per_minute: number | null;
+        };
+        LimitsPage: {
+            limits: components["schemas"]["LimitView"][];
+        };
         /** @description One target tried for a call. */
         LogAttempt: {
             /** Format: int64 */
@@ -994,6 +1069,30 @@ export interface components {
         };
         RoutingHealth: {
             targets: components["schemas"]["TargetHealth"][];
+        };
+        SetLimitRequest: {
+            /**
+             * Format: int64
+             * @description 1 to 1 000 000. Not sent: no limit.
+             */
+            concurrent?: number | null;
+            /**
+             * Format: int64
+             * @description 1 to 1 000 000. Not sent: no limit.
+             */
+            requests_per_minute?: number | null;
+            /** @description `gateway`, `team`, `user` or `key`. */
+            scope: string;
+            /**
+             * Format: int64
+             * @description The id of the team, user or key. Not sent for the gateway.
+             */
+            scope_id?: number | null;
+            /**
+             * Format: int64
+             * @description 1 to 1 000 000 000 000. Not sent: no limit.
+             */
+            tokens_per_minute?: number | null;
         };
         SettingsView: {
             /**
@@ -1807,6 +1906,185 @@ export interface operations {
                 };
             };
             /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    limits_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The limits that apply to the caller. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LimitsPage"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    limits_set: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetLimitRequest"];
+            };
+        };
+        responses: {
+            /** @description The limits of the subject after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LimitView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description A value is not valid, or the team, user or key does not exist; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    limits_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the limit. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The limits are removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
             404: {
                 headers: {
                     [name: string]: unknown;

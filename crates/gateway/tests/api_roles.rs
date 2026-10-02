@@ -184,6 +184,19 @@ async fn world() -> World {
         .insert_logs(&[log(org.lena, org.platform), log(org.tomas, org.research)])
         .await
         .unwrap();
+    // Limit 1, which the table's DELETE row removes.
+    let mut tx = org.api.store.begin().await.unwrap();
+    tx.upsert_limit(
+        ultrafast_gateway::limits::LimitScope::Gateway,
+        None,
+        &ultrafast_gateway::limits::RateLimit {
+            requests_per_minute: Some(100),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     let lena_key = seed_key(&org, "lena", org.lena, org.platform).await;
     let tomas_key = seed_key(&org, "tomas", org.tomas, org.research).await;
     let maya_token = seed_token(&org, org.maya).await;
@@ -412,6 +425,13 @@ fn table() -> Vec<Row> {
         row(51, "GET", "/api/logs/{id}", "tomas's", |_, _| "/api/logs/2".into(), no_body,
             [200, 404, 404, 401]),
         row(52, "GET", "/api/usage", "", |_, _| "/api/usage".into(), no_body, [200, 200, 200, 401]),
+        row(53, "GET", "/api/limits", "", |_, _| "/api/limits".into(), no_body, [200, 200, 200, 401]),
+        row(54, "PUT", "/api/limits", "", |_, _| "/api/limits".into(),
+            || Some(json!({ "scope": "gateway", "concurrent": 10 })),
+            [200, 403, 403, 401]),
+        // Limit 1 exists in the world's store for the table: see `world`.
+        row(55, "DELETE", "/api/limits/{id}", "the gateway's limit", |_, _| "/api/limits/1".into(), no_body,
+            [204, 403, 403, 401]),
     ]
 }
 
@@ -478,7 +498,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=52).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=55).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -604,7 +624,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 50);
+    assert_eq!(operations, 53);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

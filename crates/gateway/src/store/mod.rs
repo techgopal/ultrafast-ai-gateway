@@ -2,6 +2,7 @@
 
 mod audit;
 mod keys;
+mod limits;
 mod logs;
 mod models;
 mod providers;
@@ -27,6 +28,7 @@ use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 pub use audit::{AuditEntry, AuditRow};
 pub use keys::{parse_allowed, KeyRow, LiveKey};
+pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use providers::ProviderRow;
@@ -110,6 +112,7 @@ pub struct SnapshotRows {
     pub route_targets: Vec<TargetRow>,
     pub route_grants: Vec<(i64, i64)>,
     pub users: Vec<UserRow>,
+    pub limits: Vec<LimitRow>,
     pub teams: std::collections::HashMap<i64, Vec<UserTeam>>,
 }
 
@@ -180,6 +183,7 @@ impl Store {
         let users = users::list_users_in(conn).await?;
         let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
         let teams = teams::teams_of_users_in(conn, &ids).await?;
+        let limits = limits::list_limits_in(conn).await?;
         tx.commit().await?;
         Ok(SnapshotRows {
             keys,
@@ -190,6 +194,7 @@ impl Store {
             route_targets,
             route_grants,
             users,
+            limits,
             teams,
         })
     }

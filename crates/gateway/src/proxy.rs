@@ -85,6 +85,9 @@ const NO_PROVIDER: &str = "No provider could serve this request.";
 const NO_MODEL: &str = "No model is available for this request.";
 const TIMED_OUT: &str = "The request timed out.";
 
+/// What a chat call that names no `max_tokens` is expected to answer with.
+const DEFAULT_MAX_TOKENS_ESTIMATE: u32 = 1_000;
+
 /// The three calls of `/v1` that reach a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Endpoint {
@@ -135,6 +138,22 @@ impl Call {
 
     fn stream(&self) -> bool {
         matches!(self, Call::Chat(r) if r.stream)
+    }
+
+    /// What the call is expected to use, for the rate limit: the most it may
+    /// answer (`max_tokens`, or 1 000 when it names none) and its input at
+    /// four characters to a token. An embedding has no answer to count.
+    fn estimated_tokens(&self) -> u64 {
+        fn tokens(chars: usize) -> u64 {
+            chars.div_ceil(4) as u64
+        }
+        match self {
+            Call::Chat(r) => {
+                let input: usize = r.messages.iter().map(|m| m.content.chars().count()).sum();
+                u64::from(r.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS_ESTIMATE)) + tokens(input)
+            }
+            Call::Embed(r) => tokens(r.input.iter().map(|s| s.chars().count()).sum()),
+        }
     }
 
     /// Whether a provider of this kind can serve it.
@@ -284,6 +303,17 @@ async fn dispatch(
         Err(Denied::Unknown) => return not_found(shape, call.model()),
         Err(Denied::Forbidden) => return forbidden(shape, call.model()),
     };
+    // 3b. The rate limits of the key, its owner, their teams and the gateway.
+    // The permit goes with the scope, which a stream carries to its end; a
+    // call that is refused counts nowhere.
+    let subjects = snapshot.subjects(key);
+    match state
+        .rate
+        .acquire(&subjects, call.estimated_tokens(), Instant::now())
+    {
+        Ok(permit) => record.hold(permit),
+        Err(refusal) => return shape.rate_limited(&refusal),
+    }
     // Seeded from the thread's generator (itself seeded once per thread), not
     // from the operating system on every request. It is `Send`: it lives
     // across awaits.

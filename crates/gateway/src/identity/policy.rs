@@ -1,6 +1,7 @@
 //! Authorization policy: the one place that decides what a principal may do.
 
 use super::{Principal, Role, TeamRole};
+use crate::limits::LimitScope;
 
 /// What a request wants to do, with the facts needed to decide.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +80,11 @@ pub enum Action {
     ViewRoutingHealth,
     // settings: viewing and changing both
     ManageSettings,
+    // rate limits
+    /// Everyone may ask; what they get is cut by `limit_applies_to`.
+    ListLimits,
+    /// Setting and removing limits. Only an admin may.
+    ManageLimits,
     // request logs
     /// Everyone may ask; what they get is cut to `list_scope`.
     ListLogs,
@@ -134,6 +140,7 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ListModels
         | Action::ListRoutes
         | Action::ListLogs
+        | Action::ListLimits
         | Action::ListUsage => Allow,
 
         Action::InviteUser { role: _ }
@@ -143,7 +150,8 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ManageRoutes
         | Action::ViewAudit
         | Action::ViewRoutingHealth
-        | Action::ManageSettings => Forbidden,
+        | Action::ManageSettings
+        | Action::ManageLimits => Forbidden,
 
         Action::ViewUser {
             user_id,
@@ -241,6 +249,26 @@ fn by_team_role(p: &Principal, team_id: i64, lead: Decision, member: Decision) -
         Some(TeamRole::Lead) => lead,
         Some(TeamRole::Member) => member,
         None => Decision::Hidden,
+    }
+}
+
+/// Whether a limit applies to `p`, which is what a non-admin sees of the
+/// limits: the gateway's, those of their teams (in any role), their own, and
+/// those of their keys. `key_owner` is the owner of the key, for a key limit.
+pub fn limit_applies_to(
+    p: &Principal,
+    scope: LimitScope,
+    scope_id: Option<i64>,
+    key_owner: Option<i64>,
+) -> bool {
+    if p.is_admin() {
+        return true;
+    }
+    match scope {
+        LimitScope::Gateway => true,
+        LimitScope::Team => scope_id.is_some_and(|t| p.team_role(t).is_some()),
+        LimitScope::User => scope_id == Some(p.user_id),
+        LimitScope::Key => key_owner == Some(p.user_id),
     }
 }
 
@@ -1048,6 +1076,22 @@ mod tests {
             ("list_logs: lead", lead, Action::ListLogs, Allow),
             ("list_logs: member", member, Action::ListLogs, Allow),
             ("list_logs: loner", loner, Action::ListLogs, Allow),
+            ("list_limits: lead", lead, Action::ListLimits, Allow),
+            ("list_limits: member", member, Action::ListLimits, Allow),
+            ("list_limits: loner", loner, Action::ListLimits, Allow),
+            ("manage_limits: lead", lead, Action::ManageLimits, Forbidden),
+            (
+                "manage_limits: member",
+                member,
+                Action::ManageLimits,
+                Forbidden,
+            ),
+            (
+                "manage_limits: loner",
+                loner,
+                Action::ManageLimits,
+                Forbidden,
+            ),
             ("list_usage: lead", lead, Action::ListUsage, Allow),
             ("list_usage: member", member, Action::ListUsage, Allow),
             ("list_usage: loner", loner, Action::ListUsage, Allow),
@@ -1202,5 +1246,31 @@ mod tests {
         );
         assert_eq!(list_scope(&f.member), Scope::Own { user_id: 3 });
         assert_eq!(list_scope(&f.loner), Scope::Own { user_id: 4 });
+    }
+
+    #[test]
+    fn limits_that_apply_to_a_caller() {
+        let f = fixture();
+        // lead (2): leads 10, member of 20. member (3): member of 10.
+        let applies = |p: &Principal, scope, id, owner| limit_applies_to(p, scope, id, owner);
+        for p in [&f.admin, &f.lead, &f.member, &f.loner] {
+            assert!(applies(p, LimitScope::Gateway, None, None));
+        }
+        assert!(applies(&f.admin, LimitScope::Team, Some(99), None));
+        assert!(applies(&f.admin, LimitScope::Key, Some(99), Some(77)));
+        // Teams in any role.
+        assert!(applies(&f.lead, LimitScope::Team, Some(10), None));
+        assert!(applies(&f.lead, LimitScope::Team, Some(20), None));
+        assert!(!applies(&f.lead, LimitScope::Team, Some(30), None));
+        assert!(applies(&f.member, LimitScope::Team, Some(10), None));
+        assert!(!applies(&f.member, LimitScope::Team, Some(20), None));
+        assert!(!applies(&f.loner, LimitScope::Team, Some(10), None));
+        // Themselves, not their team's members.
+        assert!(applies(&f.member, LimitScope::User, Some(3), None));
+        assert!(!applies(&f.lead, LimitScope::User, Some(3), None));
+        // Their own keys, not those of the people they lead.
+        assert!(applies(&f.member, LimitScope::Key, Some(5), Some(3)));
+        assert!(!applies(&f.lead, LimitScope::Key, Some(5), Some(3)));
+        assert!(!applies(&f.member, LimitScope::Key, Some(5), None));
     }
 }

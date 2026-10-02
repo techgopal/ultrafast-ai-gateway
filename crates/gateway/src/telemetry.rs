@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use ultrafast_translate::types::Usage;
 
+use crate::limits::Permit;
 use crate::store;
 
 /// How one try at a target ended.
@@ -81,6 +82,9 @@ pub struct Scope {
     /// when the record is emitted are recorded as skipped.
     targets: Vec<(String, String)>,
     started: Instant,
+    /// The rate-limit permit of the call. It goes with the scope: released
+    /// when the call is recorded, whether it ended, failed or was dropped.
+    permit: Option<Permit>,
 }
 
 impl Scope {
@@ -95,6 +99,7 @@ impl Scope {
             sink,
             targets: Vec::new(),
             started: Instant::now(),
+            permit: None,
             record: Some(RequestRecord {
                 key_id,
                 user_id,
@@ -170,7 +175,16 @@ impl Scope {
         self.targets = targets;
     }
 
+    /// Makes the call hold a rate-limit permit until it is recorded.
+    pub fn hold(&mut self, permit: Permit) {
+        self.permit = Some(permit);
+    }
+
     pub fn usage(&mut self, usage: Option<Usage>) {
+        // The tokens the call used replace the estimate it was charged.
+        if let (Some(permit), Some(u)) = (self.permit.as_mut(), usage) {
+            permit.settle(u64::from(u.input_tokens) + u64::from(u.output_tokens));
+        }
         self.record_mut().usage = usage;
     }
 
@@ -212,8 +226,16 @@ impl Scope {
             }
             record.status = status;
             record.duration_ms = elapsed_ms(self.started);
+            // A call that failed before any tokens were used gives its
+            // estimate back. A caller that went away may have used some.
+            if let Some(permit) = self.permit.as_mut() {
+                if record.usage.is_none() && status >= 400 && status != CALLER_GONE {
+                    permit.settle(0);
+                }
+            }
             self.sink.record(record);
         }
+        self.permit = None;
     }
 }
 

@@ -19,6 +19,7 @@ use tokio::task::JoinHandle;
 use crate::api;
 use crate::errors::error_response;
 use crate::identity::limiter::LoginLimiter;
+use crate::limits::{Limiter, MemoryLimiter};
 use crate::proxy;
 use crate::routing::{HealthStore, InMemoryHealth};
 use crate::secrets::Cipher;
@@ -57,6 +58,8 @@ pub struct AppState {
     pub trusted_proxies: Vec<IpNet>,
     /// Receives one record per authenticated `/v1` call.
     pub sink: Arc<dyn RequestSink>,
+    /// The rate limits of `/v1`: requests, tokens and concurrency.
+    pub rate: Arc<dyn Limiter>,
     /// The circuit breaker of every target that was called.
     pub health: Arc<dyn HealthStore>,
     /// How many snapshots have been swapped in since the start.
@@ -76,6 +79,7 @@ impl AppState {
             refresh_interval: DEFAULT_REFRESH_INTERVAL,
             trusted_proxies: Vec::new(),
             sink: Arc::new(NoopSink),
+            rate: Arc::new(MemoryLimiter::new()),
             health: Arc::new(InMemoryHealth::new()),
             refreshes: AtomicU64::new(0),
             refreshing: Mutex::new(()),

@@ -801,6 +801,246 @@
         ]
       }
     },
+    "/api/limits": {
+      "get": {
+        "tags": [
+          "limits"
+        ],
+        "summary": "The limits that apply to the caller: all of them for an admin; for anyone\nelse the gateway's, those of their teams and of themselves, and those of\ntheir keys.",
+        "operationId": "limits_list",
+        "responses": {
+          "200": {
+            "description": "The limits that apply to the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LimitsPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "limits"
+        ],
+        "summary": "Sets the limits of a team, a user, a key or the gateway, replacing the\nones it had: a limit that is not sent is removed. Admin only. The change\nreaches `/v1` at once.",
+        "operationId": "limits_set",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetLimitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The limits of the subject after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LimitView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value is not valid, or the team, user or key does not exist; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/limits/{id}": {
+      "delete": {
+        "tags": [
+          "limits"
+        ],
+        "summary": "Removes the limits of one subject. Admin only. The change reaches `/v1`\nat once.",
+        "operationId": "limits_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the limit.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The limits are removed."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/logs": {
       "get": {
         "tags": [
@@ -4997,6 +5237,79 @@
           }
         }
       },
+      "LimitView": {
+        "type": "object",
+        "description": "The limits of one team, user, key or of the gateway. A limit that is\n`null` is not set.",
+        "required": [
+          "id",
+          "scope",
+          "scope_id",
+          "label",
+          "requests_per_minute",
+          "tokens_per_minute",
+          "concurrent"
+        ],
+        "properties": {
+          "concurrent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "label": {
+            "type": "string",
+            "description": "How a refusal names it: `gateway`, `team 'Platform'`,\n`user 'lena@example.com'` or `key 'ci'`."
+          },
+          "requests_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "scope": {
+            "type": "string",
+            "description": "`gateway`, `team`, `user` or `key`."
+          },
+          "scope_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The id of the team, user or key; `null` for the gateway."
+          },
+          "tokens_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "LimitsPage": {
+        "type": "object",
+        "required": [
+          "limits"
+        ],
+        "properties": {
+          "limits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LimitView"
+            }
+          }
+        }
+      },
       "LogAttempt": {
         "type": "object",
         "description": "One target tried for a call.",
@@ -5795,6 +6108,51 @@
           }
         }
       },
+      "SetLimitRequest": {
+        "type": "object",
+        "required": [
+          "scope"
+        ],
+        "properties": {
+          "concurrent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "1 to 1 000 000. Not sent: no limit."
+          },
+          "requests_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "1 to 1 000 000. Not sent: no limit."
+          },
+          "scope": {
+            "type": "string",
+            "description": "`gateway`, `team`, `user` or `key`."
+          },
+          "scope_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The id of the team, user or key. Not sent for the gateway."
+          },
+          "tokens_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "1 to 1 000 000 000 000. Not sent: no limit."
+          }
+        },
+        "additionalProperties": false
+      },
       "SettingsView": {
         "type": "object",
         "required": [
@@ -6402,6 +6760,10 @@
     {
       "name": "settings",
       "description": "Settings of the gateway."
+    },
+    {
+      "name": "limits",
+      "description": "Rate limits of /v1."
     },
     {
       "name": "logs",

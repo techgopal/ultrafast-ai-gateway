@@ -171,6 +171,7 @@ pub struct RoutingHealth {
         (name = "audit", description = "The audit log."),
         (name = "routing", description = "How calls are routed to providers."),
         (name = "settings", description = "Settings of the gateway."),
+        (name = "limits", description = "Rate limits of /v1."),
         (name = "logs", description = "Request logs."),
         (name = "usage", description = "Usage sums over the request logs."),
     )
@@ -252,9 +253,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 50. Its fallbacks are not
+    /// Every route of `api::router`, which has 53. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 50] = [
+    const ROUTES: [(&str, &str); 53] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -302,6 +303,9 @@ mod tests {
         ("GET", "/api/routing/health"),
         ("GET", "/api/settings"),
         ("PATCH", "/api/settings"),
+        ("GET", "/api/limits"),
+        ("PUT", "/api/limits"),
+        ("DELETE", "/api/limits/{id}"),
         ("GET", "/api/logs"),
         ("GET", "/api/logs/{id}"),
         ("GET", "/api/usage"),
@@ -396,7 +400,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 50);
+        assert_eq!(routes.len(), 53);
         assert_eq!(documented, routes);
     }
 
@@ -418,7 +422,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 50);
+        assert_eq!(ids.len(), 53);
     }
 
     #[test]
