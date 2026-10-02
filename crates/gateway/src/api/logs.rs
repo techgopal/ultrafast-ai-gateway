@@ -215,7 +215,7 @@ fn bound(raw: &str, end: bool) -> Option<String> {
 }
 
 /// The scope as the store takes it.
-fn store_scope(scope: Scope) -> LogScope {
+pub(super) fn store_scope(scope: Scope) -> LogScope {
     match scope {
         Scope::All => LogScope::All,
         Scope::Teams {
@@ -231,6 +231,13 @@ fn store_scope(scope: Scope) -> LogScope {
 
 /// Newest first. `before` is the id of the last row of the page before.
 /// Filters only narrow what the caller may see.
+///
+/// What a caller sees depends on who they are. An admin sees every row. A
+/// team lead sees the rows of the teams they lead, the rows of the users who
+/// are members of those teams, and their own. Anyone else sees their own
+/// rows. A lead's scope uses the CURRENT membership: a row linked to a team
+/// only by its user leaves the lead's view when that user leaves the team.
+/// Rows of keys without an owner are visible to admins only.
 #[utoipa::path(
     get,
     path = "/logs",
@@ -331,6 +338,10 @@ pub async fn list(
     Ok(Json(json!({ "logs": logs })).into_response())
 }
 
+/// One call with its attempts. The same scope as the list applies; a call
+/// the caller may not see is answered like one that does not exist. A lead's
+/// view uses the current team membership, and rows of keys without an owner
+/// are visible to admins only.
 #[utoipa::path(
     get,
     path = "/logs/{id}",

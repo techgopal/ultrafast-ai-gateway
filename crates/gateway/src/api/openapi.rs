@@ -18,6 +18,7 @@ use super::keys::KeyView;
 use super::logs::LogView;
 use super::providers::ProviderView;
 use super::tokens::TokenView;
+use super::usage::UsageRow;
 use super::{CSRF_HEADER, SESSION_COOKIE};
 use crate::routing::TargetHealth;
 use crate::store::{AuditRow, MemberDetail, TeamSummary};
@@ -137,6 +138,17 @@ pub struct LogPage {
 }
 
 #[derive(ToSchema)]
+pub struct UsagePage {
+    /// First day of the range, `YYYY-MM-DD`, UTC.
+    pub from: String,
+    /// Last day of the range, `YYYY-MM-DD`, UTC.
+    pub to: String,
+    /// The sums over every group.
+    pub total: UsageRow,
+    pub rows: Vec<UsageRow>,
+}
+
+#[derive(ToSchema)]
 pub struct RoutingHealth {
     pub targets: Vec<TargetHealth>,
 }
@@ -160,6 +172,7 @@ pub struct RoutingHealth {
         (name = "routing", description = "How calls are routed to providers."),
         (name = "settings", description = "Settings of the gateway."),
         (name = "logs", description = "Request logs."),
+        (name = "usage", description = "Usage sums over the request logs."),
     )
 )]
 struct AdminApi;
@@ -239,9 +252,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 49. Its fallbacks are not
+    /// Every route of `api::router`, which has 50. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 49] = [
+    const ROUTES: [(&str, &str); 50] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -291,6 +304,7 @@ mod tests {
         ("PATCH", "/api/settings"),
         ("GET", "/api/logs"),
         ("GET", "/api/logs/{id}"),
+        ("GET", "/api/usage"),
     ];
 
     const SECRET_REQUEST_FIELDS: [&str; 5] = [
@@ -382,7 +396,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 49);
+        assert_eq!(routes.len(), 50);
         assert_eq!(documented, routes);
     }
 
@@ -404,7 +418,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 49);
+        assert_eq!(ids.len(), 50);
     }
 
     #[test]

@@ -807,6 +807,7 @@
           "logs"
         ],
         "summary": "Newest first. `before` is the id of the last row of the page before.\nFilters only narrow what the caller may see.",
+        "description": "What a caller sees depends on who they are. An admin sees every row. A\nteam lead sees the rows of the teams they lead, the rows of the users who\nare members of those teams, and their own. Anyone else sees their own\nrows. A lead's scope uses the CURRENT membership: a row linked to a team\nonly by its user leaves the lead's view when that user leaves the team.\nRows of keys without an owner are visible to admins only.",
         "operationId": "logs_list",
         "parameters": [
           {
@@ -964,6 +965,7 @@
         "tags": [
           "logs"
         ],
+        "summary": "One call with its attempts. The same scope as the list applies; a call\nthe caller may not see is answered like one that does not exist. A lead's\nview uses the current team membership, and rows of keys without an owner\nare visible to admins only.",
         "operationId": "logs_view",
         "parameters": [
           {
@@ -3859,6 +3861,105 @@
         ]
       }
     },
+    "/api/usage": {
+      "get": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "Sums of the calls in a range of days, by day, model, key, user or team.",
+        "description": "What a caller sees depends on who they are, as in the log list. An admin\nsees every call. A team lead sees the calls of the teams they lead, the\ncalls of the users who are members of those teams, and their own. Anyone\nelse sees their own calls, so grouping by user or team shows only\nthemselves and the teams on their own calls. A lead's scope uses the\nCURRENT membership: a call linked to a team only by its user leaves the\nlead's totals when that user leaves the team. Calls of keys without an\nowner count for admins only. Days are UTC. The range is at most 366 days;\nit defaults to the last 30 days.",
+        "operationId": "usage_view",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "First day, `YYYY-MM-DD` (UTC). 29 days before `to` when left out.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Last day, `YYYY-MM-DD` (UTC), counted whole. Today when left out.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "description": "`day` (the default), `model`, `key`, `user` or `team`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The sums, one row per group, and their total.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsagePage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some parameters are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/users": {
       "get": {
         "tags": [
@@ -6070,6 +6171,86 @@
         },
         "additionalProperties": false
       },
+      "UsagePage": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "total",
+          "rows"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "First day of the range, `YYYY-MM-DD`, UTC."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageRow"
+            }
+          },
+          "to": {
+            "type": "string",
+            "description": "Last day of the range, `YYYY-MM-DD`, UTC."
+          },
+          "total": {
+            "$ref": "#/components/schemas/UsageRow",
+            "description": "The sums over every group."
+          }
+        }
+      },
+      "UsageRow": {
+        "type": "object",
+        "description": "Sums over one group of calls.",
+        "required": [
+          "group",
+          "label",
+          "requests",
+          "errors",
+          "input_tokens",
+          "output_tokens",
+          "cost_micros",
+          "unpriced_requests"
+        ],
+        "properties": {
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "In millionths of a dollar."
+          },
+          "errors": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Calls answered with a status of 400 or more."
+          },
+          "group": {
+            "type": "string",
+            "description": "The day (`YYYY-MM-DD`), the model name, or the id of the key, user or\nteam. Empty for calls that have no key, user or team. `total` in the\ntotal row."
+          },
+          "input_tokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "label": {
+            "type": "string",
+            "description": "What to show: the day, the model name, the key or team name, the\nuser's email, `(none)` for calls without a key, user or team,\n`(deleted)` when that object is gone, `Total` in the total row."
+          },
+          "output_tokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "requests": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "unpriced_requests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Calls that reported token usage but could not be priced, so their\ncost is missing from `cost_micros`."
+          }
+        }
+      },
       "UserList": {
         "type": "object",
         "required": [
@@ -6225,6 +6406,10 @@
     {
       "name": "logs",
       "description": "Request logs."
+    },
+    {
+      "name": "usage",
+      "description": "Usage sums over the request logs."
     }
   ]
 }

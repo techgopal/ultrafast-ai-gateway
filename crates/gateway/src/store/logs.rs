@@ -91,6 +91,33 @@ pub struct LogFilter {
     pub status: Option<i64>,
 }
 
+/// What `usage` groups by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageGroup {
+    Day,
+    Model,
+    Key,
+    User,
+    Team,
+}
+
+/// Sums over the rows of one group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageSums {
+    /// The day, the model name, or the id of the key, user or team;
+    /// empty for rows that have none.
+    pub group: String,
+    /// What to show for the group: the name, `(none)` for rows without an
+    /// owner, `(deleted)` when the object is gone.
+    pub label: String,
+    pub requests: i64,
+    pub errors: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_micros: i64,
+    pub unpriced_requests: i64,
+}
+
 const DETAIL_SELECT: &str = "SELECT l.*, k.name AS key_name, u.email AS user_email,
             t.name AS team_name
      FROM request_logs l
@@ -261,6 +288,78 @@ impl Store {
         Ok(rows.iter().map(detail_from).collect())
     }
 
+    /// Sums of the rows in `scope` between the days `from` and `to` (both
+    /// `YYYY-MM-DD`, inclusive, UTC), one row per group, in one statement.
+    /// `day` is ordered by day, the others by requests, most first.
+    pub async fn usage(
+        &self,
+        scope: &LogScope,
+        from: &str,
+        to: &str,
+        group: UsageGroup,
+    ) -> Result<Vec<UsageSums>> {
+        let (scope_clause, scope_ints) = scope_sql(scope);
+        // (group expression, joined table with its name column)
+        let (expr, names) = match group {
+            UsageGroup::Day => ("substr(l.at, 1, 10)", None),
+            UsageGroup::Model => ("coalesce(l.provider || '/' || l.model, l.requested)", None),
+            UsageGroup::Key => ("l.key_id", Some(("virtual_keys", "name"))),
+            UsageGroup::User => ("l.user_id", Some(("users", "email"))),
+            UsageGroup::Team => ("l.team_id", Some(("teams", "name"))),
+        };
+        let (label, join) = match names {
+            None => ("a.gid".to_string(), String::new()),
+            Some((table, column)) => (
+                format!("CASE WHEN a.gid IS NULL THEN '(none)' ELSE coalesce(n.{column}, '(deleted)') END"),
+                format!("LEFT JOIN {table} n ON n.id = a.gid AND n.org_id = {DEFAULT_ORG}"),
+            ),
+        };
+        let order = if group == UsageGroup::Day {
+            "a.gid"
+        } else {
+            "a.requests DESC, a.gid"
+        };
+        // Both bounds are text over the `at` index; the day after `to`
+        // is excluded, so a whole last day counts.
+        let sql = format!(
+            "SELECT coalesce(CAST(a.gid AS TEXT), '') AS grp, {label} AS label,
+                    a.requests, a.errors, a.input_tokens, a.output_tokens,
+                    a.cost_micros, a.unpriced
+             FROM (SELECT {expr} AS gid,
+                          COUNT(*) AS requests,
+                          coalesce(SUM(l.status >= 400), 0) AS errors,
+                          coalesce(SUM(l.input_tokens), 0) AS input_tokens,
+                          coalesce(SUM(l.output_tokens), 0) AS output_tokens,
+                          coalesce(SUM(l.cost_micros), 0) AS cost_micros,
+                          coalesce(SUM(l.priced = 0 AND
+                              (l.input_tokens IS NOT NULL OR l.output_tokens IS NOT NULL)), 0)
+                              AS unpriced
+                   FROM request_logs l
+                   WHERE l.org_id = ? AND {scope_clause} AND l.at >= ? AND l.at < date(?, '+1 day')
+                   GROUP BY gid) a
+             {join}
+             ORDER BY {order}"
+        );
+        let mut query = sqlx::query(AssertSqlSafe(sql)).bind(DEFAULT_ORG);
+        for v in &scope_ints {
+            query = query.bind(*v);
+        }
+        let rows = query.bind(from).bind(to).fetch_all(self.pool()).await?;
+        Ok(rows
+            .iter()
+            .map(|r| UsageSums {
+                group: r.get("grp"),
+                label: r.get("label"),
+                requests: r.get("requests"),
+                errors: r.get("errors"),
+                input_tokens: r.get("input_tokens"),
+                output_tokens: r.get("output_tokens"),
+                cost_micros: r.get("cost_micros"),
+                unpriced_requests: r.get("unpriced"),
+            })
+            .collect())
+    }
+
     /// One row with its names, whatever its scope. The caller decides
     /// whether the reader may see it.
     pub async fn log_by_id(&self, id: i64) -> Result<Option<LogDetail>> {
@@ -305,5 +404,56 @@ impl Store {
         .execute(self.pool())
         .await?;
         Ok(r.rows_affected())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(i: i64) -> NewLog {
+        NewLog {
+            at: "2026-01-01 10:00:00".into(),
+            key_id: Some(i % 3),
+            user_id: Some(i % 7),
+            team_id: None,
+            requested: "m".into(),
+            endpoint: "chat".into(),
+            stream: false,
+            status: 200,
+            provider: None,
+            model: None,
+            input_tokens: None,
+            output_tokens: None,
+            cost_micros: 0,
+            priced: false,
+            cached: false,
+            duration_ms: 1,
+            attempts: "[]".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn optimize_gives_the_planner_statistics_for_the_logs() {
+        let store = Store::open_in_memory().await.unwrap();
+        let rows: Vec<NewLog> = (0..500).map(row).collect();
+        store.insert_logs(&rows).await.unwrap();
+        // A read through the indexes, as the API does, then the pragma.
+        store
+            .usage(
+                &LogScope::Own { user_id: 1 },
+                "2026-01-01",
+                "2026-01-02",
+                UsageGroup::Day,
+            )
+            .await
+            .unwrap();
+        store.optimize().await.unwrap();
+        let stats: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM sqlite_stat1 WHERE tbl = 'request_logs'")
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert!(stats > 0, "no statistics for request_logs");
     }
 }

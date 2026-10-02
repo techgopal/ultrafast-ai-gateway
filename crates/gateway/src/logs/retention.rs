@@ -94,6 +94,10 @@ pub fn spawn(
                 () = stopped(&mut stop) => return,
                 done = pass(&store, &config) => done,
             };
+            // Statistics follow the table as it grows and shrinks.
+            if let Err(e) = store.optimize().await {
+                tracing::warn!(error = %e, "could not optimize the database");
+            }
             match done {
                 Ok(p) if p.rows > 0 => tracing::info!(rows = p.rows, "deleted old request logs"),
                 Ok(_) => {}

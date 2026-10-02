@@ -82,6 +82,8 @@ pub enum Action {
     // request logs
     /// Everyone may ask; what they get is cut to `list_scope`.
     ListLogs,
+    /// Everyone may ask; the sums are cut to `list_scope`, as the log list is.
+    ListUsage,
     /// `user_in_led_team`: the row's user is a member of a team the caller
     /// leads. It only counts for a caller who leads a team.
     ViewLog {
@@ -131,7 +133,8 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ListProviders
         | Action::ListModels
         | Action::ListRoutes
-        | Action::ListLogs => Allow,
+        | Action::ListLogs
+        | Action::ListUsage => Allow,
 
         Action::InviteUser { role: _ }
         | Action::CreateTeam
@@ -1045,6 +1048,9 @@ mod tests {
             ("list_logs: lead", lead, Action::ListLogs, Allow),
             ("list_logs: member", member, Action::ListLogs, Allow),
             ("list_logs: loner", loner, Action::ListLogs, Allow),
+            ("list_usage: lead", lead, Action::ListUsage, Allow),
+            ("list_usage: member", member, Action::ListUsage, Allow),
+            ("list_usage: loner", loner, Action::ListUsage, Allow),
             (
                 "view_log: lead, own row",
                 lead,

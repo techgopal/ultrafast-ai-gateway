@@ -27,7 +27,7 @@ use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 pub use audit::{AuditEntry, AuditRow};
 pub use keys::{parse_allowed, KeyRow, LiveKey};
-pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog};
+pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use providers::ProviderRow;
 pub use routes::{is_missing_reference, RouteRow, RouteSettings, TargetRow, TargetsInput};
@@ -146,10 +146,23 @@ impl Store {
     async fn connect(opts: SqliteConnectOptions, pool: SqlitePoolOptions) -> Result<Self> {
         let pool = pool.connect_with(opts).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        Ok(Self {
+        let store = Self {
             pool,
             teams_of_users_calls: Arc::default(),
-        })
+        };
+        // So the planner has statistics for `request_logs` from the first
+        // call on (without them the lead's scope OR chose a temporary
+        // b-tree sort on a fresh database).
+        store.optimize().await?;
+        Ok(store)
+    }
+
+    /// Lets SQLite refresh the statistics the planner uses. Cheap; it only
+    /// analyzes what changed enough to matter. The log list is meant to walk
+    /// the primary key downwards and stop at its limit.
+    pub async fn optimize(&self) -> Result<()> {
+        sqlx::query("PRAGMA optimize").execute(&self.pool).await?;
+        Ok(())
     }
 
     /// Reads every table the snapshot needs inside one read transaction, so

@@ -146,6 +146,12 @@ export interface paths {
         /**
          * Newest first. `before` is the id of the last row of the page before.
          *     Filters only narrow what the caller may see.
+         * @description What a caller sees depends on who they are. An admin sees every row. A
+         *     team lead sees the rows of the teams they lead, the rows of the users who
+         *     are members of those teams, and their own. Anyone else sees their own
+         *     rows. A lead's scope uses the CURRENT membership: a row linked to a team
+         *     only by its user leaves the lead's view when that user leaves the team.
+         *     Rows of keys without an owner are visible to admins only.
          */
         get: operations["logs_list"];
         put?: never;
@@ -163,6 +169,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * One call with its attempts. The same scope as the list applies; a call
+         *     the caller may not see is answered like one that does not exist. A lead's
+         *     view uses the current team membership, and rows of keys without an owner
+         *     are visible to admins only.
+         */
         get: operations["logs_view"];
         put?: never;
         post?: never;
@@ -443,6 +455,34 @@ export interface paths {
         put?: never;
         post?: never;
         delete: operations["tokens_revoke"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sums of the calls in a range of days, by day, model, key, user or team.
+         * @description What a caller sees depends on who they are, as in the log list. An admin
+         *     sees every call. A team lead sees the calls of the teams they lead, the
+         *     calls of the users who are members of those teams, and their own. Anyone
+         *     else sees their own calls, so grouping by user or team shows only
+         *     themselves and the teams on their own calls. A lead's scope uses the
+         *     CURRENT membership: a call linked to a team only by its user leaves the
+         *     lead's totals when that user leaves the team. Calls of keys without an
+         *     owner count for admins only. Days are UTC. The range is at most 366 days;
+         *     it defaults to the last 30 days.
+         */
+        get: operations["usage_view"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1084,6 +1124,52 @@ export interface components {
              * @description 1 to 3650.
              */
             log_retention_days: number;
+        };
+        UsagePage: {
+            /** @description First day of the range, `YYYY-MM-DD`, UTC. */
+            from: string;
+            rows: components["schemas"]["UsageRow"][];
+            /** @description Last day of the range, `YYYY-MM-DD`, UTC. */
+            to: string;
+            /** @description The sums over every group. */
+            total: components["schemas"]["UsageRow"];
+        };
+        /** @description Sums over one group of calls. */
+        UsageRow: {
+            /**
+             * Format: int64
+             * @description In millionths of a dollar.
+             */
+            cost_micros: number;
+            /**
+             * Format: int64
+             * @description Calls answered with a status of 400 or more.
+             */
+            errors: number;
+            /**
+             * @description The day (`YYYY-MM-DD`), the model name, or the id of the key, user or
+             *     team. Empty for calls that have no key, user or team. `total` in the
+             *     total row.
+             */
+            group: string;
+            /** Format: int64 */
+            input_tokens: number;
+            /**
+             * @description What to show: the day, the model name, the key or team name, the
+             *     user's email, `(none)` for calls without a key, user or team,
+             *     `(deleted)` when that object is gone, `Total` in the total row.
+             */
+            label: string;
+            /** Format: int64 */
+            output_tokens: number;
+            /** Format: int64 */
+            requests: number;
+            /**
+             * Format: int64
+             * @description Calls that reported token usage but could not be priced, so their
+             *     cost is missing from `cost_micros`.
+             */
+            unpriced_requests: number;
         };
         UserList: {
             users: components["schemas"]["UserView"][];
@@ -3980,6 +4066,69 @@ export interface operations {
             };
             /** @description It does not exist, or it is hidden from the caller. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    usage_view: {
+        parameters: {
+            query?: {
+                /** @description First day, `YYYY-MM-DD` (UTC). 29 days before `to` when left out. */
+                from?: string;
+                /** @description Last day, `YYYY-MM-DD` (UTC), counted whole. Today when left out. */
+                to?: string;
+                /** @description `day` (the default), `model`, `key`, `user` or `team`. */
+                group?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The sums, one row per group, and their total. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsagePage"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some parameters are not valid; `fields` names each of them. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

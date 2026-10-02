@@ -13,6 +13,7 @@ pub mod routes;
 pub mod settings;
 pub mod teams;
 pub mod tokens;
+pub mod usage;
 pub mod users;
 
 use std::collections::BTreeMap;
@@ -89,6 +90,7 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(settings::view, settings::update))
         .routes(routes!(logs::list))
         .routes(routes!(logs::view))
+        .routes(routes!(usage::usage_view))
 }
 
 pub fn router() -> Router<Arc<AppState>> {
