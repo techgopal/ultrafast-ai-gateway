@@ -412,9 +412,11 @@ async fn the_console_and_v1_agree_on_who_may_call_what() {
             assert!(console_routes.contains(route), "{who}: route {route}");
         }
 
-        // What a key may name: what the console shows, no more.
+        // What a key may name: the models the console shows and the routes
+        // /v1 would let the owner call (open to them, with a callable
+        // target), no more.
         for name in &everything {
-            let shown = console_models.contains(name) || console_routes.contains(name);
+            let shown = console_models.contains(name) || v1.contains(name);
             let (status, body) = org
                 .call(
                     Some(&me),
@@ -431,6 +433,42 @@ async fn the_console_and_v1_agree_on_who_may_call_what() {
             assert_eq!(status, expected, "{who} may name {name}: {body}");
         }
     }
+
+    // A key whose owner the snapshot does not hold agrees with the
+    // predicates: nothing is usable or callable for a missing owner.
+    use ultrafast_gateway::access::{
+        callable_names, model_callable, route_usable, ModelFacts, RouteFacts, Viewer,
+    };
+    use ultrafast_gateway::snapshot::{SnapKey, Snapshot};
+    let snapshot = Snapshot::load(&w.org.api.store, &w.org.api.state.cipher)
+        .await
+        .unwrap();
+    let ghost = SnapKey {
+        id: 1,
+        name: "k".into(),
+        user_id: Some(999_999),
+        team_id: None,
+        expires_at: None,
+        allowed: None,
+    };
+    assert!(callable_names(&snapshot, &ghost).is_empty());
+    assert!(!route_usable(
+        Viewer::Missing,
+        &RouteFacts {
+            everyone: true,
+            team_ids: &[],
+        }
+    ));
+    assert!(!model_callable(
+        Viewer::Missing,
+        &ModelFacts {
+            enabled: true,
+            provider_present: true,
+            everyone: true,
+            team_ids: &[],
+            user_ids: &[],
+        }
+    ));
 }
 
 #[tokio::test]

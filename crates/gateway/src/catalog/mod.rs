@@ -30,6 +30,25 @@ pub struct ModelAdded {
     pub created: bool,
 }
 
+/// The line `ultrafast model add` prints.
+pub fn describe_model_add(
+    out: &ModelAdded,
+    provider: &str,
+    model: &str,
+    enable: bool,
+    everyone: bool,
+) -> String {
+    if !out.created && !enable && !everyone {
+        return format!("Model {provider}/{model} is already in the catalog.");
+    }
+    let state = if out.created { "Added" } else { "Updated" };
+    format!(
+        "{state} model '{model}' of '{provider}'{}{}. A running gateway picks this up within 30 seconds.",
+        if enable { ", enabled" } else { "" },
+        if everyone { ", granted to everyone" } else { "" },
+    )
+}
+
 /// `ultrafast model add`: puts the provider's model in the catalog when it is
 /// missing, enables it when `enable`, and grants it to everyone when
 /// `everyone`. The same name validation as the API. Audited as the CLI.

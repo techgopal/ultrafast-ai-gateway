@@ -77,6 +77,13 @@ async fn checked_allowed(
     for (route, team) in store.list_route_grants().await.map_err(failed)? {
         route_teams.entry(route).or_default().push(team);
     }
+    let mut route_targets: std::collections::HashMap<i64, Vec<String>> = Default::default();
+    for t in store.list_route_targets().await.map_err(failed)? {
+        route_targets
+            .entry(t.route_id)
+            .or_default()
+            .push(format!("{}/{}", t.provider_name, t.model_name));
+    }
     let routes: HashSet<String> = store
         .list_routes()
         .await
@@ -84,7 +91,13 @@ async fn checked_allowed(
         .into_iter()
         .filter(|r| {
             let teams = route_teams.remove(&r.id).unwrap_or_default();
-            admin || super::routes::may_use(me, r.everyone, &teams)
+            // As on /v1: the route is open to the caller and at least one
+            // of its targets is a model they can call.
+            admin
+                || (super::routes::may_use(me, r.everyone, &teams)
+                    && route_targets
+                        .get(&r.id)
+                        .is_some_and(|names| names.iter().any(|n| models.contains(n))))
         })
         .map(|r| r.name)
         .collect();

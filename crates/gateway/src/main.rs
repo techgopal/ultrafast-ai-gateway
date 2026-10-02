@@ -8,7 +8,7 @@ use ultrafast_gateway::api::auth::bootstrap_admin;
 use ultrafast_gateway::api::openapi::spec;
 use ultrafast_gateway::api::trimmed_name;
 use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
-use ultrafast_gateway::catalog::{add_model, validate_model_name};
+use ultrafast_gateway::catalog::{add_model, describe_model_add, validate_model_name};
 use ultrafast_gateway::config::{
     db_path, load_master_key, parse_trusted_proxies, restrict_permissions, validate_api_version,
     validate_base_url, validate_provider_name,
@@ -311,15 +311,9 @@ async fn main() -> Result<()> {
                 },
         } => {
             let out = add_model(&store, &provider, &model, enable, everyone).await?;
-            let state = if out.created { "Added" } else { "Updated" };
             println!(
-                "{state} model '{model}' of '{provider}'{}{}.",
-                if enable { ", enabled" } else { "" },
-                if everyone {
-                    ", granted to everyone"
-                } else {
-                    ""
-                },
+                "{}",
+                describe_model_add(&out, &provider, &model, enable, everyone)
             );
         }
         Command::Key {

@@ -3,7 +3,7 @@
 mod common;
 
 use common::api;
-use ultrafast_gateway::catalog::{add_model, ModelAdded};
+use ultrafast_gateway::catalog::{add_model, describe_model_add, ModelAdded};
 
 #[tokio::test]
 async fn model_add_creates_enables_grants_and_is_audited_as_the_cli() {
@@ -47,4 +47,27 @@ async fn model_add_creates_enables_grants_and_is_audited_as_the_cli() {
     let audit = store.list_audit(50, None).await.unwrap();
     let entry = audit.iter().find(|r| r.action == "model.add").unwrap();
     assert_eq!(entry.actor_email, "cli");
+}
+
+#[test]
+fn model_add_says_what_happened_and_when_it_takes_effect() {
+    let created = ModelAdded { created: true };
+    let existing = ModelAdded { created: false };
+    assert_eq!(
+        describe_model_add(&created, "p", "m", true, true),
+        "Added model 'm' of 'p', enabled, granted to everyone. A running gateway picks this up within 30 seconds."
+    );
+    assert_eq!(
+        describe_model_add(&created, "p", "m", false, false),
+        "Added model 'm' of 'p'. A running gateway picks this up within 30 seconds."
+    );
+    assert_eq!(
+        describe_model_add(&existing, "p", "m", true, false),
+        "Updated model 'm' of 'p', enabled. A running gateway picks this up within 30 seconds."
+    );
+    // Nothing changed: no flags and already there.
+    assert_eq!(
+        describe_model_add(&existing, "p", "m", false, false),
+        "Model p/m is already in the catalog."
+    );
 }
