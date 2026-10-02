@@ -94,7 +94,7 @@ fn a_block_budget_refuses_from_the_amount_on_and_names_itself() {
         "budget 'monthly $50.00' of team 'Platform' reached"
     );
     // Until the first of the next month, 2999-02-01 00:00.
-    assert_eq!(refusal.retry_after_seconds(), 86_400);
+    assert_eq!(refusal.retry_after_seconds(), 21 * 86_400 + 43_200);
     let near_end = datetime!(2999-01-31 23:59:30 UTC);
     assert_eq!(
         b.check(&who, near_end).unwrap_err().retry_after_seconds(),
@@ -103,21 +103,98 @@ fn a_block_budget_refuses_from_the_amount_on_and_names_itself() {
 }
 
 #[test]
-fn the_wait_is_capped_at_a_day_and_is_at_least_a_second() {
+fn the_wait_runs_to_the_end_of_the_period_and_is_at_least_a_second() {
     let b = MemoryBudgets::new();
-    let weekly = budget(1, 10, Period::Weekly, BudgetAction::Block);
-    let who = [weekly];
-    // Midnight Monday: nearly a week away, told as a day.
+    let weekly = [budget(1, 10, Period::Weekly, BudgetAction::Block)];
+    // Midnight Monday: the whole week is left.
     let monday = datetime!(2999-01-07 00:00:00 UTC);
-    b.spend(&who, 10, monday);
+    b.spend(&weekly, 10, monday);
     assert_eq!(
-        b.check(&who, monday).unwrap_err().retry_after_seconds(),
-        86_400
+        b.check(&weekly, monday).unwrap_err().retry_after_seconds(),
+        7 * 86_400
     );
     // Half a second before the reset is told as one second.
     let late = datetime!(2999-01-13 23:59:59.5 UTC);
-    b.spend(&who, 10, late);
-    assert_eq!(b.check(&who, late).unwrap_err().retry_after_seconds(), 1);
+    b.spend(&weekly, 10, late);
+    assert_eq!(b.check(&weekly, late).unwrap_err().retry_after_seconds(), 1);
+    // A month, from the 10th at noon to the 1st: 21 days and 12 hours.
+    let monthly = [budget(2, 10, Period::Monthly, BudgetAction::Block)];
+    let mid = datetime!(2999-01-10 12:00:00 UTC);
+    b.spend(&monthly, 10, mid);
+    assert_eq!(
+        b.check(&monthly, mid).unwrap_err().retry_after_seconds(),
+        21 * 86_400 + 43_200
+    );
+}
+
+#[test]
+fn seed_merges_with_a_counter_that_a_spend_created_first() {
+    let b = MemoryBudgets::new();
+    let who = [budget(1, 5_000_000, Period::Monthly, BudgetAction::Block)];
+    let now = datetime!(2999-01-10 12:00:00 UTC);
+    // A priced record lands between the refresh and the read of the logs.
+    b.spend(&who, 10, now);
+    b.seed(&who[0], "2999-01-01", 4_000_000, false);
+    assert!(
+        b.spent(&who[0], now) >= 4_000_000,
+        "{}",
+        b.spent(&who[0], now)
+    );
+    // A counter that is ahead of the logs is not lowered.
+    b.spend(&who, 2_000_000, now);
+    let ahead = b.spent(&who[0], now);
+    b.seed(&who[0], "2999-01-01", 4_000_000, false);
+    assert_eq!(b.spent(&who[0], now), ahead);
+    // Merging keeps an alert that was already raised.
+    let alert = [budget(2, 100, Period::Daily, BudgetAction::Alert)];
+    let day = datetime!(2999-01-10 08:00:00 UTC);
+    b.spend(&alert, 150, day);
+    assert_eq!(b.drain().alerts.len(), 1);
+    b.seed(&alert[0], "2999-01-10", 150, false);
+    assert!(b.drain().alerts.is_empty(), "alerted once already");
+}
+
+#[test]
+fn alert_fires_once_under_concurrent_spend() {
+    let b = Arc::new(MemoryBudgets::new());
+    let who = [budget(1, 100, Period::Daily, BudgetAction::Alert)];
+    let now = datetime!(2999-01-10 08:00:00 UTC);
+    let threads: Vec<_> = (0..32)
+        .map(|_| {
+            let (b, who) = (b.clone(), who.clone());
+            std::thread::spawn(move || {
+                for _ in 0..50 {
+                    b.spend(&who, 1, now);
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    assert_eq!(b.spent(&who[0], now), 1_600);
+    assert_eq!(b.drain().alerts.len(), 1);
+}
+
+#[test]
+fn spend_that_arrives_during_a_flush_is_kept_and_written_next() {
+    let b = MemoryBudgets::new();
+    let who = [budget(1, 1_000_000, Period::Daily, BudgetAction::Block)];
+    let now = datetime!(2999-01-10 08:00:00 UTC);
+    b.spend(&who, 5, now);
+    let drained = b.drain();
+    // The write is running; more spend arrives, then the write fails.
+    b.spend(&who, 7, now);
+    b.requeue(drained);
+    let next = b.drain();
+    assert_eq!(next.usage.len(), 1);
+    assert_eq!(next.usage[0].spent_micros, 12);
+    // And when the write succeeds, the spend of the meantime is still dirty.
+    b.spend(&who, 1, now);
+    let drained = b.drain();
+    b.spend(&who, 2, now);
+    drop(drained);
+    assert_eq!(b.drain().usage[0].spent_micros, 15);
 }
 
 #[test]
@@ -384,7 +461,7 @@ async fn a_block_budget_refuses_at_every_scope() {
         assert_eq!(v["error"]["type"], "rate_limit_error");
         assert_eq!(v["error"]["code"], "budget_exceeded");
         let wait: u64 = headers["retry-after"].to_str().unwrap().parse().unwrap();
-        assert!((1..=86_400).contains(&wait), "{label}: {wait}");
+        assert!((1..=31 * 86_400).contains(&wait), "{label}: {wait}");
     }
 }
 
@@ -784,4 +861,136 @@ async fn the_cached_usage_covers_logs_that_retention_deleted() {
         .load()
         .budgets_of(w.key_id, Some(w.user), Some(w.team));
     assert_eq!(state.budgets.spent(&b[0], now), 4_000_000);
+}
+
+#[tokio::test]
+async fn a_late_alert_does_not_lower_the_cached_spend() {
+    let w = world().await;
+    let id = w
+        .budget(
+            LimitScope::Team,
+            1_000_000,
+            Period::Daily,
+            BudgetAction::Alert,
+        )
+        .await;
+    // The alert is raised at 1.0M; 0.5M more arrives before the flush.
+    w.spend(1_000_000);
+    w.spend(500_000);
+    budgets::flush(&w.h.state).await;
+    assert_eq!(
+        usage_row(&w.h.store, id, Period::Daily).await,
+        Some((1_500_000, true))
+    );
+    // A write of an older, lower value never lowers the row.
+    let start = Period::Daily.start_string(OffsetDateTime::now_utc());
+    w.h.store
+        .write_budget_usage(&[ultrafast_gateway::store::UsageRow {
+            budget_id: id,
+            period_start: start,
+            spent_micros: 10,
+        }])
+        .await
+        .unwrap();
+    assert_eq!(
+        usage_row(&w.h.store, id, Period::Daily).await,
+        Some((1_500_000, true))
+    );
+}
+
+#[tokio::test]
+async fn a_call_that_crosses_midnight_is_counted_in_the_period_it_started_in() {
+    let w = world().await;
+    let id = w
+        .budget(
+            LimitScope::Gateway,
+            5_000_000,
+            Period::Daily,
+            BudgetAction::Block,
+        )
+        .await;
+    let mut record = w.record();
+    record.started_at = "2999-01-10 23:59:59".into();
+    // The writer finishes the record after midnight: it uses started_at.
+    budgets::accountant(w.h.state.clone())(&record, 1_000);
+    let b =
+        w.h.state
+            .snapshot
+            .load()
+            .budgets_of(w.key_id, Some(w.user), Some(w.team));
+    assert_eq!(b[0].id, id);
+    assert_eq!(
+        w.h.state
+            .budgets
+            .spent(&b[0], datetime!(2999-01-10 12:00 UTC)),
+        1_000
+    );
+    assert_eq!(
+        w.h.state
+            .budgets
+            .spent(&b[0], datetime!(2999-01-11 00:00 UTC)),
+        0
+    );
+}
+
+#[tokio::test]
+async fn a_spend_between_the_refresh_and_the_read_of_the_logs_is_merged() {
+    let w = world().await;
+    let id = w
+        .budget(
+            LimitScope::Gateway,
+            5_000_000,
+            Period::Monthly,
+            BudgetAction::Block,
+        )
+        .await;
+    w.h.store
+        .insert_logs(&[log(&store_now(), w.key_id, w.user, w.team, 4_000_000)])
+        .await
+        .unwrap();
+    w.spend(10);
+    let b =
+        w.h.state
+            .snapshot
+            .load()
+            .budgets_of(w.key_id, Some(w.user), Some(w.team));
+    assert_eq!(b[0].id, id);
+    let now = OffsetDateTime::now_utc();
+    budgets::seed_from_logs(&w.h.state, &b[0], now)
+        .await
+        .unwrap();
+    assert!(w.h.state.budgets.spent(&b[0], now) >= 4_000_000);
+}
+
+#[tokio::test]
+async fn spend_during_flushes_is_all_written_in_the_end() {
+    let w = world().await;
+    let id = w
+        .budget(
+            LimitScope::Key,
+            900_000_000,
+            Period::Daily,
+            BudgetAction::Block,
+        )
+        .await;
+    let state = w.h.state.clone();
+    let flusher = tokio::spawn({
+        let state = state.clone();
+        async move {
+            for _ in 0..20 {
+                budgets::flush(&state).await;
+                tokio::task::yield_now().await;
+            }
+        }
+    });
+    for _ in 0..200 {
+        w.spend(3);
+        tokio::task::yield_now().await;
+    }
+    flusher.await.unwrap();
+    budgets::flush(&state).await;
+    assert_eq!(
+        usage_row(&w.h.store, id, Period::Daily).await.unwrap().0,
+        600
+    );
 }

@@ -201,12 +201,13 @@ impl Store {
 
 impl Tx<'_> {
     async fn write_usage(&mut self, period_start: &str, budget_id: i64, spent: u64) -> Result<()> {
-        // The WHERE clause keeps a budget that was deleted meanwhile from
+        // Within a period spend only grows, so a late or older write never
+        // lowers what the row holds. The WHERE clause keeps a budget that was deleted meanwhile from
         // failing the foreign key.
         sqlx::query(
             "INSERT INTO budget_usage (budget_id, period_start, spent_micros)
              SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM budgets WHERE id = ?)
-             ON CONFLICT (budget_id, period_start) DO UPDATE SET spent_micros = excluded.spent_micros",
+             ON CONFLICT (budget_id, period_start) DO UPDATE SET spent_micros = MAX(spent_micros, excluded.spent_micros)",
         )
         .bind(budget_id)
         .bind(period_start)

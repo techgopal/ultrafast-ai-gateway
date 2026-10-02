@@ -28,9 +28,6 @@ use crate::telemetry::RequestRecord;
 /// How often counters are written to the database.
 pub const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// The longest a refused caller is told to wait.
-const MAX_RETRY_AFTER: u64 = 86_400;
-
 /// How long a budget lasts before its counter starts again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Period {
@@ -164,10 +161,10 @@ impl BudgetRefusal {
     }
 
     /// For the `Retry-After` header: whole seconds until the period
-    /// resets, at least one and at most a day.
+    /// resets, at least one.
     pub fn retry_after_seconds(&self) -> u64 {
         let d = self.retry_after;
-        (d.as_secs() + u64::from(d.subsec_nanos() > 0)).clamp(1, MAX_RETRY_AFTER)
+        (d.as_secs() + u64::from(d.subsec_nanos() > 0)).max(1)
     }
 }
 
@@ -208,8 +205,9 @@ pub trait Budgets: Send + Sync {
     /// What the budget has spent in the period of `now`.
     fn spent(&self, budget: &Budget, now: OffsetDateTime) -> u64;
 
-    /// Sets what a budget had spent in a period, when it has no counter of
-    /// that period yet. An `alert` budget over its amount that was not
+    /// Merges what a budget had spent in a period (from the logs or the
+    /// cache) into its counter: the larger of the two is kept, and a counter
+    /// that was alerted stays alerted. An `alert` budget over its amount that was not
     /// alerted raises its alert.
     fn seed(&self, budget: &Budget, period_start: &str, spent_micros: u64, alerted: bool);
 
@@ -275,15 +273,30 @@ fn alert_of(budget: &Budget, period_start: &str, spent: u64) -> Alert {
 
 impl Budgets for MemoryBudgets {
     fn check(&self, budgets: &[Arc<Budget>], now: OffsetDateTime) -> Result<(), BudgetRefusal> {
-        let inner = self.lock();
+        // Strings are made before the lock is taken, which only reads.
+        let blocking: Vec<(&Arc<Budget>, String)> = budgets
+            .iter()
+            .filter(|b| b.action == BudgetAction::Block)
+            .map(|b| (b, b.period.start_string(now)))
+            .collect();
+        if blocking.is_empty() {
+            return Ok(());
+        }
+        let spent: Vec<u64> = {
+            let inner = self.lock();
+            blocking
+                .iter()
+                .map(|(b, start)| {
+                    inner
+                        .counters
+                        .get(&b.id)
+                        .filter(|c| &c.period_start == start)
+                        .map_or(0, |c| c.spent)
+                })
+                .collect()
+        };
         let mut worst: Option<BudgetRefusal> = None;
-        for b in budgets.iter().filter(|b| b.action == BudgetAction::Block) {
-            let start = b.period.start_string(now);
-            let spent = inner
-                .counters
-                .get(&b.id)
-                .filter(|c| c.period_start == start)
-                .map_or(0, |c| c.spent);
+        for ((b, _), spent) in blocking.iter().zip(spent) {
             if spent < b.amount_micros {
                 continue;
             }
@@ -305,10 +318,20 @@ impl Budgets for MemoryBudgets {
         if micros == 0 {
             return;
         }
+        let starts: Vec<String> = budgets.iter().map(|b| b.period.start_string(now)).collect();
         let mut guard = self.lock();
         let inner = &mut *guard;
-        for b in budgets {
-            let start = b.period.start_string(now);
+        for (b, start) in budgets.iter().zip(starts) {
+            // A call that began in a period that is over (it ran across the
+            // turn) belongs to that period; the counter has moved on and the
+            // logs hold it.
+            if inner
+                .counters
+                .get(&b.id)
+                .is_some_and(|c| c.period_start > start)
+            {
+                continue;
+            }
             let counter = inner.counters.entry(b.id).or_insert_with(|| Counter {
                 period_start: start.clone(),
                 spent: 0,
@@ -347,25 +370,34 @@ impl Budgets for MemoryBudgets {
     fn seed(&self, budget: &Budget, period_start: &str, spent_micros: u64, alerted: bool) {
         let mut guard = self.lock();
         let inner = &mut *guard;
-        if inner
-            .counters
-            .get(&budget.id)
-            .is_some_and(|c| c.period_start == period_start)
-        {
-            return;
-        }
-        let mut counter = Counter {
-            period_start: period_start.to_string(),
-            spent: spent_micros,
-            alerted,
-            dirty: true,
+        let counter = match inner.counters.remove(&budget.id) {
+            // Of the same period: merged, so a spend that landed before the
+            // logs were read is not lost, nor is one the logs lack.
+            Some(c) if c.period_start == period_start => Counter {
+                spent: c.spent.max(spent_micros),
+                alerted: c.alerted || alerted,
+                dirty: true,
+                ..c
+            },
+            // A counter of a later period is the live one.
+            Some(c) if c.period_start.as_str() > period_start => c,
+            _ => Counter {
+                period_start: period_start.to_string(),
+                spent: spent_micros,
+                alerted,
+                dirty: true,
+            },
         };
-        if budget.action == BudgetAction::Alert && !alerted && spent_micros >= budget.amount_micros
+        let mut counter = counter;
+        if counter.period_start == period_start
+            && budget.action == BudgetAction::Alert
+            && !counter.alerted
+            && counter.spent >= budget.amount_micros
         {
             counter.alerted = true;
             inner
                 .alerts
-                .push(alert_of(budget, period_start, spent_micros));
+                .push(alert_of(budget, period_start, counter.spent));
         }
         inner.counters.insert(budget.id, counter);
     }
@@ -430,7 +462,13 @@ pub fn account(state: &AppState, record: &RequestRecord, micros: u64, now: Offse
 
 /// What the log writer calls for every record it priced.
 pub fn accountant(state: Arc<AppState>) -> Accountant {
-    Arc::new(move |record, micros| account(&state, record, micros, OffsetDateTime::now_utc()))
+    Arc::new(move |record, micros| {
+        // The period the call began in, as `request_logs.at` has it, so the
+        // live counters and the rebuild agree for a call across midnight.
+        let at = crate::store::parse_timestamp(&record.started_at)
+            .unwrap_or_else(OffsetDateTime::now_utc);
+        account(&state, record, micros, at)
+    })
 }
 
 /// Sets every counter to what the logs say was spent in its current period

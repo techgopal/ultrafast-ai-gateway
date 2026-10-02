@@ -55,6 +55,13 @@ pub fn check_timestamp(value: &str) -> Result<()> {
     bail!("timestamp must be a real UTC date and time in the form YYYY-MM-DD HH:MM:SS")
 }
 
+/// A timestamp written by [`now`], read back as a UTC time.
+pub fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
+    PrimitiveDateTime::parse(value, TIMESTAMP)
+        .ok()
+        .map(PrimitiveDateTime::assume_utc)
+}
+
 /// The current UTC time as `YYYY-MM-DD HH:MM:SS`.
 pub fn now() -> String {
     after(0)
