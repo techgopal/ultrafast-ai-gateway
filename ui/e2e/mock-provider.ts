@@ -11,6 +11,16 @@ export interface MockCall {
   model: unknown;
 }
 
+/** How the provider misbehaves, set by a test at any time. */
+export interface MockMode {
+  /** Answers every call with this status and an error body. */
+  status?: number;
+  /** Waits this long before the first byte of the answer. */
+  delayMs?: number;
+  /** For a streaming call: sends one chunk, then drops the connection. */
+  breakAfterFirstChunk?: boolean;
+}
+
 export interface MockProvider {
   /** The base URL to give the gateway, ending in `/v1`. */
   baseUrl: string;
@@ -18,7 +28,13 @@ export interface MockProvider {
   apiKey: string;
   /** What every completion answers. */
   answer: string;
+  /** The models `GET /v1/models` lists. */
+  models: string[];
+  /** Completions asked for, in order. */
   calls: MockCall[];
+  /** How many times the model list was asked for. */
+  listCalls: number;
+  mode: MockMode;
   close: () => Promise<void>;
 }
 
@@ -32,10 +48,13 @@ async function bodyOf(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-export async function startMockProvider(): Promise<MockProvider> {
+export async function startMockProvider(
+  models: string[] = ["e2e-model", "e2e-other"],
+): Promise<MockProvider> {
   const apiKey = `mock-${randomBytes(16).toString("hex")}`;
   const answer = `Hello from the mock provider ${randomBytes(4).toString("hex")}.`;
   const calls: MockCall[] = [];
+  const state = { listCalls: 0, mode: {} as MockMode };
 
   const server = createServer((request, response) => {
     void (async () => {
@@ -44,17 +63,67 @@ export async function startMockProvider(): Promise<MockProvider> {
         response.writeHead(status, { "content-type": "application/json" });
         response.end(JSON.stringify(value));
       };
-      if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
-        send(404, { error: { message: "Unknown path.", type: "invalid_request_error" } });
+      const authorized = request.headers.authorization === `Bearer ${apiKey}`;
+      if (request.method === "GET" && request.url === "/v1/models") {
+        state.listCalls += 1;
+        if (!authorized) {
+          send(401, {
+            error: {
+              message: "Incorrect API key.",
+              type: "invalid_request_error",
+            },
+          });
+          return;
+        }
+        send(200, {
+          object: "list",
+          data: models.map((id) => ({ id, object: "model" })),
+        });
         return;
       }
-      const authorized = request.headers.authorization === `Bearer ${apiKey}`;
-      const model = typeof body === "object" && body !== null && "model" in body ? body.model : null;
+      if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+        send(404, {
+          error: { message: "Unknown path.", type: "invalid_request_error" },
+        });
+        return;
+      }
+      const model =
+        typeof body === "object" && body !== null && "model" in body
+          ? body.model
+          : null;
+      const streaming =
+        typeof body === "object" &&
+        body !== null &&
+        "stream" in body &&
+        body.stream === true;
       calls.push({ authorized, model });
       if (!authorized) {
         send(401, {
-          error: { message: "Incorrect API key.", type: "invalid_request_error", code: "invalid_api_key" },
+          error: {
+            message: "Incorrect API key.",
+            type: "invalid_request_error",
+            code: "invalid_api_key",
+          },
         });
+        return;
+      }
+      const { mode } = state;
+      if (mode.delayMs !== undefined)
+        await new Promise((done) => setTimeout(done, mode.delayMs));
+      if (mode.status !== undefined) {
+        send(mode.status, {
+          error: { message: "The mock fails.", type: "server_error" },
+        });
+        return;
+      }
+      if (mode.breakAfterFirstChunk === true && streaming) {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(
+          `data: ${JSON.stringify({ id: "chatcmpl-e2e", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { role: "assistant", content: "Hel" } }] })}\n\n`,
+          () => {
+            request.socket.destroy();
+          },
+        );
         return;
       }
       send(200, {
@@ -62,7 +131,13 @@ export async function startMockProvider(): Promise<MockProvider> {
         object: "chat.completion",
         created: Math.floor(Date.now() / 1000),
         model,
-        choices: [{ index: 0, message: { role: "assistant", content: answer }, finish_reason: "stop" }],
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: answer },
+            finish_reason: "stop",
+          },
+        ],
         usage: { prompt_tokens: 3, completion_tokens: 7, total_tokens: 10 },
       });
     })();
@@ -75,13 +150,24 @@ export async function startMockProvider(): Promise<MockProvider> {
     });
   });
   const address = server.address();
-  if (typeof address !== "object" || address === null) throw new Error("The mock provider has no port.");
+  if (typeof address !== "object" || address === null)
+    throw new Error("The mock provider has no port.");
 
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     apiKey,
     answer,
+    models,
     calls,
+    get listCalls() {
+      return state.listCalls;
+    },
+    get mode() {
+      return state.mode;
+    },
+    set mode(value: MockMode) {
+      state.mode = value;
+    },
     close: () =>
       new Promise<void>((done) => {
         server.closeAllConnections();

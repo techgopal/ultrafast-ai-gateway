@@ -73,10 +73,20 @@ async function content(api: GatewayApi) {
   const user = await api.activeUser("Christina-Alexandra Montgomery-Weatherby");
   const team = await api.createTeam("Platform infrastructure and developer experience");
   await api.putMember(team, user.id, "lead");
-  await api.send("POST", "/api/providers", {
+  const provider = (await api.send("POST", "/api/providers", {
     name: "a-provider-with-a-name-of-forty-letters",
     kind: "openai",
     base_url: "https://a-rather-long-host-name.inference.example.test/api/openai/compatible/v1",
+  })) as { id: number };
+  const model = (await api.send("POST", "/api/models", {
+    provider_id: provider.id,
+    name: "a-model-with-a-very-long-name-of-the-newest-generation-v2",
+  })) as { id: number };
+  await api.enable(model.id);
+  await api.createRoute({
+    name: "a-route-with-a-long-name-for-the-nightly-summaries",
+    primaries: [{ model_id: model.id, weight: 1 }],
+    everyone: true,
   });
   await api.send("POST", "/api/keys", {
     name: "The key of the nightly batch job that summarises support tickets",
@@ -118,6 +128,8 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     ["Teams", "developer experience"],
     ["Virtual keys", "nightly batch job"],
     ["Providers", "a-rather-long-host-name"],
+    ["Models", "a-model-with-a-very-long-name"],
+    ["Routing", "a-route-with-a-long-name"],
     ["Account", "Access tokens"],
     ["Audit log", "auth.login"],
   ];
@@ -135,7 +147,7 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     .getByRole("listitem")
     .filter({ hasText: "nightly batch job" });
   await expect(card).toBeVisible();
-  await expect(card.getByRole("term")).toHaveText(["Name", "Key", "Owner", "Team", "Expires", "Status"]);
+  await expect(card.getByRole("term")).toHaveText(["Name", "Key", "Owner", "Team", "Models", "Expires", "Status"]);
 
   // The create-key dialog fits the screen, and its submit button can be reached.
   await page.getByRole("button", { name: "Create key" }).click();

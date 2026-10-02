@@ -22,7 +22,7 @@ test.afterEach(async () => {
   await mock.close();
 });
 
-test("a provider, a key, a call through the gateway, and the key revoked", async ({
+test("a provider, its models, a key, calls through the gateway, and the key revoked", async ({
   page,
   admin,
   request,
@@ -44,6 +44,31 @@ test("a provider, a key, a call through the gateway, and the key revoked", async
   await expect(provider).toContainText("Set");
   await expectNowhere(page, mock.apiKey, "the provider's API key");
 
+  // The models of the provider are read; they start disabled. One is enabled
+  // and given to everyone: only then can a key call it.
+  await goTo(page, "Models");
+  await page.getByRole("button", { name: "Sync models" }).click();
+  const sync = page.getByRole("dialog", { name: "Sync models" });
+  await sync.getByRole("radio", { name: "mock" }).check();
+  await sync.getByRole("button", { name: "Sync" }).click();
+  await expect(sync).toBeHidden();
+  await expect(
+    page.getByText("Added 2 models. They start disabled."),
+  ).toBeVisible();
+  expect(mock.listCalls).toBe(1);
+  const model = itemOf(page, "Models", "e2e-model");
+  await expect(model).toContainText("Disabled");
+  await model.getByRole("switch", { name: "e2e-model" }).click();
+  await expect(model).toContainText("Enabled");
+  await expect(model).toContainText("Enabled, but nobody has access yet.");
+  await model.getByRole("button", { name: "Edit access" }).click();
+  const access = page.getByRole("dialog", { name: "Edit access" });
+  await access.getByRole("switch", { name: "Everyone" }).click();
+  await access.getByRole("button", { name: "Save access" }).click();
+  await expect(access).toBeHidden();
+  await expect(page.getByText("Access updated.")).toBeVisible();
+  await expect(model).not.toContainText("nobody has access yet");
+
   // A key, copied from the dialog that shows it once.
   await goTo(page, "Virtual keys");
   await page.getByRole("button", { name: "Create key" }).click();
@@ -56,9 +81,10 @@ test("a provider, a key, a call through the gateway, and the key revoked", async
   await expect(shown.getByRole("status")).toHaveText("Copied");
   const key = await page.evaluate(() => navigator.clipboard.readText());
   expectForm(key, KEY_SECRET, "the key");
-  expect(key === (await shown.getByRole("textbox", { name: "Your new key" }).inputValue())).toBe(
-    true,
-  );
+  expect(
+    key ===
+      (await shown.getByRole("textbox", { name: "Your new key" }).inputValue()),
+  ).toBe(true);
   await shown.getByRole("button", { name: "Done" }).click();
   await page
     .getByRole("alertdialog", { name: "Close this dialog?" })
@@ -78,13 +104,51 @@ test("a provider, a key, a call through the gateway, and the key revoked", async
   const call = () =>
     request.post("/v1/chat/completions", {
       headers: { authorization: `Bearer ${key}` },
-      data: { model: "mock/e2e-model", messages: [{ role: "user", content: "Hello" }] },
+      data: {
+        model: "mock/e2e-model",
+        messages: [{ role: "user", content: "Hello" }],
+      },
     });
   const answered = await call();
   expect(answered.status()).toBe(200);
-  const body = (await answered.json()) as { choices: { message: { content: string } }[] };
+  const body = (await answered.json()) as {
+    choices: { message: { content: string } }[];
+  };
   expect(body.choices[0]?.message.content).toBe(mock.answer);
   expect(mock.calls).toEqual([{ authorized: true, model: "e2e-model" }]);
+
+  // The Anthropic form: the key goes in `x-api-key`, and the answer is a message.
+  const asked = await request.post("/v1/messages", {
+    headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
+    data: {
+      model: "mock/e2e-model",
+      max_tokens: 64,
+      messages: [{ role: "user", content: "Hello" }],
+    },
+  });
+  expect(asked.status()).toBe(200);
+  const message = (await asked.json()) as {
+    type: string;
+    role: string;
+    content: { type: string; text: string }[];
+    stop_reason: string;
+  };
+  expect(message.type).toBe("message");
+  expect(message.role).toBe("assistant");
+  expect(message.content[0]).toEqual({ type: "text", text: mock.answer });
+  expect(message.stop_reason).toBe("end_turn");
+  expect(mock.calls).toHaveLength(2);
+
+  // A model that is not enabled is refused.
+  const refusedModel = await request.post("/v1/chat/completions", {
+    headers: { authorization: `Bearer ${key}` },
+    data: {
+      model: "mock/e2e-other",
+      messages: [{ role: "user", content: "Hello" }],
+    },
+  });
+  expect(refusedModel.status()).toBe(403);
+  expect(mock.calls).toHaveLength(2);
 
   // Revoked, the key is refused, and the mock is not called again.
   await row.getByRole("button", { name: "Revoke" }).click();
@@ -98,7 +162,16 @@ test("a provider, a key, a call through the gateway, and the key revoked", async
 
   const refused = await call();
   expect(refused.status()).toBe(401);
-  expect(mock.calls).toHaveLength(1);
+  const refusedMessage = await request.post("/v1/messages", {
+    headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
+    data: {
+      model: "mock/e2e-model",
+      max_tokens: 64,
+      messages: [{ role: "user", content: "Hello" }],
+    },
+  });
+  expect(refusedMessage.status()).toBe(401);
+  expect(mock.calls).toHaveLength(2);
 
   // The audit log has what was done, in the gateway's own action names and
   // summaries (the forms the unit fixtures pin: src/test/fixtures.test.ts).
