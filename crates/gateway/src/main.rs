@@ -8,6 +8,7 @@ use ultrafast_gateway::api::auth::bootstrap_admin;
 use ultrafast_gateway::api::openapi::spec;
 use ultrafast_gateway::api::trimmed_name;
 use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
+use ultrafast_gateway::catalog::{add_model, validate_model_name};
 use ultrafast_gateway::config::{
     db_path, load_master_key, parse_trusted_proxies, restrict_permissions, validate_api_version,
     validate_base_url, validate_provider_name,
@@ -49,8 +50,8 @@ enum Command {
         /// address. Repeat the flag, or separate with commas in
         /// UF_TRUSTED_PROXIES. Each of these proxies must set or overwrite
         /// `CF-Connecting-IP` and `X-Forwarded-For` itself, never pass on what
-        /// the client sent, or the client can choose its own address. Never list a network that clients can reach
-        /// directly.
+        /// the client sent, or the client can choose its own address. Never
+        /// list a network that clients can reach directly.
         #[arg(
             long = "trusted-proxy",
             env = "UF_TRUSTED_PROXIES",
@@ -64,6 +65,11 @@ enum Command {
         #[command(subcommand)]
         command: ProviderCommand,
     },
+    /// Manage the model catalog.
+    Model {
+        #[command(subcommand)]
+        command: ModelCommand,
+    },
     /// Manage virtual keys.
     Key {
         #[command(subcommand)]
@@ -75,7 +81,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum ProviderCommand {
-    /// Add a provider. Call its models as NAME/MODEL.
+    /// Add a provider. Call its models as NAME/MODEL once enabled and granted.
     Add {
         #[arg(long)]
         name: String,
@@ -93,6 +99,26 @@ enum ProviderCommand {
         /// Azure OpenAI only, like 2024-10-21. That is the default.
         #[arg(long)]
         api_version: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelCommand {
+    /// Put a model of a provider in the catalog (when it is missing), and
+    /// optionally enable it and grant it to everyone.
+    Add {
+        /// The provider, as named when it was added.
+        #[arg(long)]
+        provider: String,
+        /// The provider's own id for the model.
+        #[arg(long)]
+        model: String,
+        /// Enable the model so it can be called.
+        #[arg(long)]
+        enable: bool,
+        /// Grant the model to everyone (replaces its other grants).
+        #[arg(long)]
+        everyone: bool,
     },
 }
 
@@ -154,6 +180,11 @@ fn validate(command: &mut Command) -> Result<()> {
             if api_key.as_deref().is_some_and(|k| k.trim().is_empty()) {
                 bail!("the API key must not be empty; leave it out for a provider without one");
             }
+        }
+        Command::Model {
+            command: ModelCommand::Add { model, .. },
+        } => {
+            validate_model_name(model).map_err(anyhow::Error::msg)?;
         }
         Command::Key {
             command: KeyCommand::Create { name },
@@ -266,7 +297,30 @@ async fn main() -> Result<()> {
             .await
             .with_context(|| format!("could not add provider '{name}' (is the name taken?)"))?;
             tx.commit().await.context("could not save the provider")?;
-            println!("Added provider '{name}'. Call its models as {name}/<model>.");
+            println!(
+                "Added provider '{name}'. Add and enable models with `ultrafast model add`, then call them as {name}/<model>."
+            );
+        }
+        Command::Model {
+            command:
+                ModelCommand::Add {
+                    provider,
+                    model,
+                    enable,
+                    everyone,
+                },
+        } => {
+            let out = add_model(&store, &provider, &model, enable, everyone).await?;
+            let state = if out.created { "Added" } else { "Updated" };
+            println!(
+                "{state} model '{model}' of '{provider}'{}{}.",
+                if enable { ", enabled" } else { "" },
+                if everyone {
+                    ", granted to everyone"
+                } else {
+                    ""
+                },
+            );
         }
         Command::Key {
             command: KeyCommand::Create { name },

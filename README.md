@@ -16,17 +16,31 @@ UF_PROVIDER_API_KEY=sk-... ./target/release/ultrafast provider add \
 UF_PROVIDER_API_KEY=sk-ant-... ./target/release/ultrafast provider add \
   --name anthropic --kind anthropic --base-url https://api.anthropic.com
 
+# Put models in the catalog, enable them and let everyone call them.
+# Without this a provider's models answer 404/403: nothing is callable until
+# it is enabled and granted.
+./target/release/ultrafast model add --provider openai --model gpt-4o --enable --everyone
+
 # Create a key for your app. It is printed once.
 ./target/release/ultrafast key create --name my-app
 
 ./target/release/ultrafast serve
 ```
 
+Then call it with the key (see below). Models can also be synced from a
+provider, enabled and granted to teams or users in the console (Models page).
+
+**Upgrading from alpha.1.** Existing providers keep working only after an
+admin syncs, enables and grants their models: from the console (Models page)
+or with `ultrafast model add --provider NAME --model ID --enable --everyone`.
+Until then calls to `NAME/MODEL` are refused.
+
 Changes made through the admin API under `/api` apply at once. Changes made
 with the CLI reach a running gateway within 30 seconds.
 
-Call it with any OpenAI SDK by setting the base URL to `http://127.0.0.1:3000/v1`
-and the model to `provider/model`, for example `anthropic/claude-sonnet-5`.
+Call it with any OpenAI SDK by setting the base URL to
+`http://127.0.0.1:3000/v1` and the model to `provider/model`, for example
+`anthropic/claude-sonnet-5`, or to the name of a route.
 
 ### Console
 
@@ -41,8 +55,8 @@ Anthropic, Gemini and Azure OpenAI: add, edit, sync models, delete); models
 may use each, and the health of their targets); virtual keys (create, shown
 once, limit to chosen models and routes, revoke, filter); users (invite, role,
 status, teams, new invite link, delete); teams (create, rename, delete,
-members added by email, and leads); your account (name, password, access tokens); and the audit log, for
-admins.
+members added by email, and leads); your account (name, password, access
+tokens); and the audit log, for admins.
 What a user sees depends on their role, and the API decides. Light and dark
 themes, following the device until one is chosen, and a layout for phones.
 
@@ -88,13 +102,20 @@ Known limits:
   the sign-in page says so. On a trusted network, start the gateway with
   `--insecure-cookies` instead.
 - No usage, spend, request logs or budgets: their backends do not exist yet.
-- Sign-in limiting behind a reverse proxy counts the address of the proxy,
-  so 20 failed sign-ins from anyone block sign-in for everyone for 15 minutes,
-  until forwarded addresses are supported.
+- Behind a reverse proxy, start the gateway with `--trusted-proxy CIDR` (or
+  `UF_TRUSTED_PROXIES`) so sign-in limiting counts the client's address, not
+  the proxy's. The proxy must set or overwrite `CF-Connecting-IP` and
+  `X-Forwarded-For` itself and never pass on what the client sent; the
+  gateway believes those headers from the listed networks. Never list a
+  network that clients can reach directly. Without the flag, 20 failed
+  sign-ins from anyone behind a proxy block sign-in for everyone for 15
+  minutes.
 
-What works today: chat completions, streaming, OpenAI-compatible, Anthropic,
-Gemini and Azure OpenAI providers, models and routing, and the console. Not
-yet: tools, images, limits and budgets.
+What works today: `/v1/chat/completions`, `/v1/messages` (Anthropic format),
+`/v1/embeddings` and `/v1/models`, streaming, OpenAI-compatible, Anthropic,
+Gemini and Azure OpenAI providers, a model catalog with grants, routes with
+fallbacks and circuit breakers, and the console. Not yet: tools, images,
+limits and budgets.
 
 > **A high-performance AI gateway built in Rust** that provides a unified interface to 10+ LLM providers with advanced routing, caching, and monitoring capabilities.
 

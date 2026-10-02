@@ -61,6 +61,19 @@ impl Tx<'_> {
         Ok(row.as_ref().map(model_from))
     }
 
+    /// The id of the provider's model of this name, if it has one.
+    pub async fn model_id_by_name(&mut self, provider_id: i64, name: &str) -> Result<Option<i64>> {
+        let id = sqlx::query_scalar(
+            "SELECT id FROM models WHERE provider_id = ? AND name = ? AND org_id = ?",
+        )
+        .bind(provider_id)
+        .bind(name)
+        .bind(DEFAULT_ORG)
+        .fetch_optional(self.conn())
+        .await?;
+        Ok(id)
+    }
+
     /// The names the provider already has.
     pub async fn model_names_of(&mut self, provider_id: i64) -> Result<HashSet<String>> {
         let names: Vec<String> =
