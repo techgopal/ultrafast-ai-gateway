@@ -316,6 +316,9 @@ const defaultSettings = {
   breaker_failures: 5,
   breaker_window_s: 60,
   breaker_open_s: 30,
+  cache_enabled: false,
+  cache_ttl_s: 300,
+  cache_scope: "team",
 } as const;
 
 export const routes = {
@@ -346,6 +349,9 @@ export const routes = {
     breaker_failures: 3,
     breaker_window_s: 30,
     breaker_open_s: 15,
+    cache_enabled: true,
+    cache_ttl_s: 600,
+    cache_scope: "user",
     everyone: false,
     team_ids: [teams.platform.id, teams.research.id],
     broken: false,
@@ -371,7 +377,7 @@ export const routeList: Route[] = Object.values(routes);
 
 /**
  * What the gateway shows of a route to somebody who is not an admin: ids,
- * weights, settings, `everyone` and `team_ids` read as 0, false or empty.
+ * weights, settings, the cache, `everyone` and `team_ids` read as 0, false or empty.
  */
 export function asMemberSees(route: Route): Route {
   return {
@@ -384,6 +390,9 @@ export function asMemberSees(route: Route): Route {
     breaker_failures: 0,
     breaker_window_s: 0,
     breaker_open_s: 0,
+    cache_enabled: false,
+    cache_ttl_s: 0,
+    cache_scope: "team",
     everyone: false,
     team_ids: [],
   };

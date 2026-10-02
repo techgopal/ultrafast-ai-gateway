@@ -5645,7 +5645,7 @@
           },
           "outcome": {
             "type": "string",
-            "description": "`ok`, `retryable`, `fatal`, `circuit_open` or `skipped`."
+            "description": "`ok`, `retryable`, `fatal`, `circuit_open`, `skipped` or `cached` (answered from the response cache, no provider called)."
           },
           "provider": {
             "type": "string"
@@ -6276,6 +6276,19 @@
             "format": "int64",
             "description": "5 to 3 600."
           },
+          "cache_enabled": {
+            "type": "boolean",
+            "description": "Keep the answers of calls to this route and give them again to the\nsame call, without a provider. Streams and calls with a temperature\nabove 0.5 are never kept. Not sent: off."
+          },
+          "cache_scope": {
+            "type": "string",
+            "description": "Whom a kept answer is given to: `team` (the team of the key; a key\nwith no team uses `user`, then `key`), `key` or `user`. Never across\nteams. Not sent: `team`."
+          },
+          "cache_ttl_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long an answer is kept, 1 to 86 400 seconds. Not sent: 300."
+          },
           "everyone": {
             "type": "boolean",
             "description": "Every user may use the route. It cannot be combined with teams.\nWithout it and without teams only admins may use the route."
@@ -6341,6 +6354,9 @@
           "breaker_open_s",
           "everyone",
           "team_ids",
+          "cache_enabled",
+          "cache_ttl_s",
+          "cache_scope",
           "broken",
           "created_at"
         ],
@@ -6360,6 +6376,19 @@
           "broken": {
             "type": "boolean",
             "description": "No target of the route is enabled, so it cannot serve a request."
+          },
+          "cache_enabled": {
+            "type": "boolean",
+            "description": "The route keeps answers. Hidden (false) for a non-admin."
+          },
+          "cache_scope": {
+            "type": "string",
+            "description": "`team`, `key` or `user`. Hidden (`team`) for a non-admin."
+          },
+          "cache_ttl_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seconds an answer is kept. Hidden (0) for a non-admin."
           },
           "created_at": {
             "type": "string"

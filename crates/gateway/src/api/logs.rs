@@ -81,7 +81,7 @@ pub struct LogView {
 pub struct LogAttempt {
     pub provider: String,
     pub model: String,
-    /// `ok`, `retryable`, `fatal`, `circuit_open` or `skipped`.
+    /// `ok`, `retryable`, `fatal`, `circuit_open`, `skipped` or `cached` (answered from the response cache, no provider called).
     pub outcome: String,
     /// What the provider answered, when it did.
     #[schema(required)]

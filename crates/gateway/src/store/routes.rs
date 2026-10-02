@@ -6,6 +6,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::Row;
 
 use super::{write_error, Store, Tx, DEFAULT_ORG};
+use crate::cache::{CacheScope, RouteCache};
 
 /// The settings of a route, as stored and as written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +26,7 @@ pub struct RouteRow {
     pub settings: RouteSettings,
     /// Every user may use the route. Otherwise only its teams, and admins.
     pub everyone: bool,
+    pub cache: RouteCache,
     pub created_at: String,
 }
 
@@ -61,6 +63,13 @@ fn route_from(r: &SqliteRow) -> RouteRow {
             breaker_open_s: r.get("breaker_open_s"),
         },
         everyone: r.get::<i64, _>("everyone") != 0,
+        cache: RouteCache {
+            enabled: r.get::<i64, _>("cache_enabled") != 0,
+            ttl_s: r.get("cache_ttl_s"),
+            // The column is checked; a value that is not known is the default.
+            scope: CacheScope::parse(&r.get::<String, _>("cache_scope"))
+                .unwrap_or(CacheScope::Team),
+        },
         created_at: r.get("created_at"),
     }
 }
@@ -78,7 +87,8 @@ fn target_from(r: &SqliteRow) -> TargetRow {
 }
 
 const ROUTE_COLUMNS: &str = "id, name, retries, first_token_timeout_ms, total_timeout_ms,
-            breaker_failures, breaker_window_s, breaker_open_s, everyone, created_at";
+            breaker_failures, breaker_window_s, breaker_open_s, everyone,
+            cache_enabled, cache_ttl_s, cache_scope, created_at";
 
 const TARGET_SELECT: &str = "SELECT t.route_id, t.model_id, t.tier, t.weight,
             p.name AS provider_name, m.name AS model_name, m.enabled
@@ -147,6 +157,24 @@ impl Tx<'_> {
         .bind(s.breaker_window_s)
         .bind(s.breaker_open_s)
         .bind(everyone)
+        .bind(id)
+        .bind(DEFAULT_ORG)
+        .execute(self.conn())
+        .await
+        .map_err(write_error)?;
+        Ok(r.rows_affected() == 1)
+    }
+
+    /// Sets the response cache of a route. Returns `false` if there is no
+    /// such route.
+    pub async fn set_route_cache(&mut self, id: i64, cache: &RouteCache) -> Result<bool> {
+        let r = sqlx::query(
+            "UPDATE routes SET cache_enabled = ?, cache_ttl_s = ?, cache_scope = ?
+             WHERE id = ? AND org_id = ?",
+        )
+        .bind(cache.enabled)
+        .bind(cache.ttl_s)
+        .bind(cache.scope.as_str())
         .bind(id)
         .bind(DEFAULT_ORG)
         .execute(self.conn())

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::access;
 use crate::app::AppState;
+use crate::cache::{CacheScope, RouteCache, DEFAULT_TTL_S, TTL_RANGE};
 use crate::identity::policy::Action;
 use crate::identity::Principal;
 use crate::store::{
@@ -57,6 +58,27 @@ pub struct RouteRequest {
     pub everyone: bool,
     /// Teams that may use the route.
     pub team_ids: Vec<i64>,
+    /// Keep the answers of calls to this route and give them again to the
+    /// same call, without a provider. Streams and calls with a temperature
+    /// above 0.5 are never kept. Not sent: off.
+    #[serde(default)]
+    pub cache_enabled: bool,
+    /// How long an answer is kept, 1 to 86 400 seconds. Not sent: 300.
+    #[serde(default = "default_cache_ttl_s")]
+    pub cache_ttl_s: i64,
+    /// Whom a kept answer is given to: `team` (the team of the key; a key
+    /// with no team uses `user`, then `key`), `key` or `user`. Never across
+    /// teams. Not sent: `team`.
+    #[serde(default = "default_cache_scope")]
+    pub cache_scope: String,
+}
+
+fn default_cache_ttl_s() -> i64 {
+    DEFAULT_TTL_S
+}
+
+fn default_cache_scope() -> String {
+    CacheScope::Team.as_str().to_string()
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -99,6 +121,12 @@ pub struct RouteView {
     pub everyone: bool,
     /// Hidden (empty) for a non-admin.
     pub team_ids: Vec<i64>,
+    /// The route keeps answers. Hidden (false) for a non-admin.
+    pub cache_enabled: bool,
+    /// Seconds an answer is kept. Hidden (0) for a non-admin.
+    pub cache_ttl_s: i64,
+    /// `team`, `key` or `user`. Hidden (`team`) for a non-admin.
+    pub cache_scope: String,
     /// No target of the route is enabled, so it cannot serve a request.
     pub broken: bool,
     pub created_at: String,
@@ -143,6 +171,15 @@ fn view_of(row: RouteRow, targets: Vec<TargetRow>, team_ids: Vec<i64>, admin: bo
             breaker_open_s: 0,
         }
     };
+    let cache = if admin {
+        row.cache
+    } else {
+        RouteCache {
+            enabled: false,
+            ttl_s: 0,
+            scope: CacheScope::Team,
+        }
+    };
     RouteView {
         id: row.id,
         name: row.name,
@@ -156,6 +193,9 @@ fn view_of(row: RouteRow, targets: Vec<TargetRow>, team_ids: Vec<i64>, admin: bo
         breaker_open_s: s.breaker_open_s,
         everyone: admin && row.everyone,
         team_ids: if admin { team_ids } else { Vec::new() },
+        cache_enabled: cache.enabled,
+        cache_ttl_s: cache.ttl_s,
+        cache_scope: cache.scope.as_str().to_string(),
         broken,
         created_at: row.created_at,
     }
@@ -282,6 +322,18 @@ fn check(req: &RouteRequest) -> BTreeMap<String, String> {
         &mut fields,
     );
     in_range("breaker_open_s", req.breaker_open_s, 5, 3_600, &mut fields);
+    if !TTL_RANGE.contains(&req.cache_ttl_s) {
+        fields.insert(
+            "cache_ttl_s".to_string(),
+            format!("must be {} to {}", TTL_RANGE.start(), TTL_RANGE.end()),
+        );
+    }
+    if CacheScope::parse(&req.cache_scope).is_none() {
+        fields.insert(
+            "cache_scope".to_string(),
+            "must be team, key or user".to_string(),
+        );
+    }
     if req.everyone && !req.team_ids.is_empty() {
         fields.insert(
             "everyone".to_string(),
@@ -508,6 +560,17 @@ async fn write_parts(
     tx.replace_route_grants(id, team_ids)
         .await
         .map_err(|e| gone(e, "team_ids"))?;
+    // Checked by `check`: a scope that does not parse never gets here.
+    let scope = CacheScope::parse(&req.cache_scope).unwrap_or(CacheScope::Team);
+    tx.set_route_cache(
+        id,
+        &RouteCache {
+            enabled: req.cache_enabled,
+            ttl_s: req.cache_ttl_s,
+            scope,
+        },
+    )
+    .await?;
     Ok(())
 }
 

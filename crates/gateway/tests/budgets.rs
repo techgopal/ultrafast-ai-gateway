@@ -319,6 +319,7 @@ impl World {
             status: 200,
             usage: None,
             attempts: Vec::new(),
+            cached: false,
             started_at: ultrafast_gateway::store::now(),
             duration_ms: 1,
         }

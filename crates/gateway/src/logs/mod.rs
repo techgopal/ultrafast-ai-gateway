@@ -130,6 +130,7 @@ fn outcome_name(outcome: AttemptOutcome) -> &'static str {
         AttemptOutcome::Fatal => "fatal",
         AttemptOutcome::CircuitOpen => "circuit_open",
         AttemptOutcome::Skipped => "skipped",
+        AttemptOutcome::Cached => "cached",
     }
 }
 
@@ -143,7 +144,12 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
         .find(|a| a.outcome == AttemptOutcome::Ok)
         .or_else(|| record.attempts.last());
     let price = answered.and_then(|a| prices(&a.provider, &a.model));
-    let (cost_micros, priced) = cost(record.usage, price);
+    // A hit used no provider: it is free, and known to be.
+    let (cost_micros, priced) = if record.cached {
+        (0, true)
+    } else {
+        cost(record.usage, price)
+    };
     let attempts: Vec<serde_json::Value> = record
         .attempts
         .iter()
@@ -172,7 +178,7 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
         output_tokens: record.usage.map(|u| i64::from(u.output_tokens)),
         cost_micros,
         priced,
-        cached: false,
+        cached: record.cached,
         duration_ms: i64::try_from(record.duration_ms).unwrap_or(i64::MAX),
         attempts: serde_json::Value::Array(attempts).to_string(),
     }

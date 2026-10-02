@@ -24,6 +24,9 @@ pub enum AttemptOutcome {
     CircuitOpen,
     /// The target was passed over: an earlier one answered.
     Skipped,
+    /// The answer came from the response cache; no provider was called.
+    /// The target is the one that gave the answer that was kept.
+    Cached,
 }
 
 /// One target of a call.
@@ -53,6 +56,9 @@ pub struct RequestRecord {
     pub status: u16,
     pub usage: Option<Usage>,
     pub attempts: Vec<Attempt>,
+    /// Answered from the response cache: the usage is that of the answer
+    /// that was kept, and the call cost nothing.
+    pub cached: bool,
     pub started_at: String,
     pub duration_ms: u64,
 }
@@ -110,6 +116,7 @@ impl Scope {
                 status: CALLER_GONE,
                 usage: None,
                 attempts: Vec::new(),
+                cached: false,
                 started_at: store::now(),
                 duration_ms: 0,
             }),
@@ -186,6 +193,37 @@ impl Scope {
             permit.settle(u64::from(u.input_tokens) + u64::from(u.output_tokens));
         }
         self.record_mut().usage = usage;
+    }
+
+    /// The target that answered the call: the last attempt that was `Ok`.
+    pub fn answered_by(&self) -> Option<(String, String)> {
+        self.record
+            .as_ref()?
+            .attempts
+            .iter()
+            .rev()
+            .find(|a| a.outcome == AttemptOutcome::Ok)
+            .map(|a| (a.provider.clone(), a.model.clone()))
+    }
+
+    /// The call was answered from the cache by the answer that `provider`
+    /// and `model` gave. A hit used no provider tokens: the tokens the call
+    /// was charged against the rate limit are given back, and `usage` is
+    /// that of the answer, for the record.
+    pub fn cache_hit(&mut self, provider: &str, model: &str, usage: Option<Usage>) {
+        if let Some(permit) = self.permit.as_mut() {
+            permit.settle(0);
+        }
+        let r = self.record_mut();
+        r.cached = true;
+        r.usage = usage;
+        r.attempts.push(Attempt {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            outcome: AttemptOutcome::Cached,
+            status: None,
+            duration_ms: 0,
+        });
     }
 
     /// Changes the outcome of the last attempt: a stream whose end is not

@@ -203,6 +203,7 @@ mod tests {
             status: 200,
             usage: None,
             attempts: Vec::new(),
+            cached: false,
             started_at: "2999-01-01 00:00:00".into(),
             duration_ms: 1,
         }

@@ -579,3 +579,124 @@ async fn provider_delete_removes_targets_and_breaks_the_route() {
     assert_eq!(v["fallbacks"].as_array().unwrap().len(), 2);
     assert_eq!(v["broken"], false);
 }
+
+#[tokio::test]
+async fn the_cache_of_a_route_defaults_off_is_set_replaced_and_reaches_the_snapshot() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let m = seed_models(&org, "openai", &["a"], true).await;
+    // Callers that do not send the fields get the defaults.
+    let (status, v) = create(&org, &maya, body("plain", &[(m[0], 1)], &[], &[])).await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    assert_eq!(v["cache_enabled"], false);
+    assert_eq!(v["cache_ttl_s"], 300);
+    assert_eq!(v["cache_scope"], "team");
+    assert!(
+        !org.api
+            .state
+            .snapshot
+            .load()
+            .route("plain")
+            .unwrap()
+            .cache
+            .enabled
+    );
+
+    let mut b = body("cached", &[(m[0], 1)], &[], &[]);
+    b["cache_enabled"] = json!(true);
+    b["cache_ttl_s"] = json!(86_400);
+    b["cache_scope"] = json!("user");
+    let (status, v) = create(&org, &maya, b).await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    let id = v["id"].as_i64().unwrap();
+    assert_eq!(v["cache_enabled"], true);
+    assert_eq!(v["cache_ttl_s"], 86_400);
+    assert_eq!(v["cache_scope"], "user");
+    let snap = org.api.state.snapshot.load();
+    let cache = snap.route("cached").unwrap().cache;
+    assert!(cache.enabled);
+    assert_eq!(cache.ttl_s, 86_400);
+    assert_eq!(cache.scope.as_str(), "user");
+    drop(snap);
+    let (_, got) = org
+        .call(Some(&maya), "GET", &format!("/api/routes/{id}"), None)
+        .await;
+    assert_eq!(got, v);
+
+    // A full replace: not sending them again turns the cache off again.
+    let (status, u) = org
+        .call(
+            Some(&maya),
+            "PUT",
+            &format!("/api/routes/{id}"),
+            Some(body("cached", &[(m[0], 1)], &[], &[])),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{u}");
+    assert_eq!(u["cache_enabled"], false);
+    assert_eq!(u["cache_ttl_s"], 300);
+    assert_eq!(u["cache_scope"], "team");
+    assert!(
+        !org.api
+            .state
+            .snapshot
+            .load()
+            .route("cached")
+            .unwrap()
+            .cache
+            .enabled
+    );
+}
+
+#[tokio::test]
+async fn the_cache_fields_are_validated() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let m = seed_models(&org, "openai", &["a"], true).await;
+    let with = |k: &str, v: Value| {
+        let mut b = body("r", &[(m[0], 1)], &[], &[]);
+        b[k] = v;
+        b
+    };
+    for (field, b) in [
+        ("cache_ttl_s", with("cache_ttl_s", json!(0))),
+        ("cache_ttl_s", with("cache_ttl_s", json!(-5))),
+        ("cache_ttl_s", with("cache_ttl_s", json!(86_401))),
+        ("cache_scope", with("cache_scope", json!("gateway"))),
+        ("cache_scope", with("cache_scope", json!(""))),
+        ("cache_scope", with("cache_scope", json!("Team"))),
+    ] {
+        let (status, e) = create(&org, &maya, b.clone()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{b}");
+        assert!(e["error"]["fields"][field].is_string(), "{e}");
+    }
+    // Wrong types are a malformed request.
+    let (status, _) = create(&org, &maya, with("cache_enabled", json!("yes"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    for (name, ttl) in [("one", 1), ("day", 86_400)] {
+        let mut b = body(name, &[(m[0], 1)], &[], &[]);
+        b["cache_ttl_s"] = json!(ttl);
+        let (status, e) = create(&org, &maya, b).await;
+        assert_eq!(status, StatusCode::CREATED, "{e}");
+    }
+    assert_eq!(routes(&org, &maya).await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_non_admin_does_not_see_the_cache_settings() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let m = seed_models(&org, "openai", &["a"], true).await;
+    let mut b = body("cached", &[(m[0], 1)], &[], &[]);
+    b["cache_enabled"] = json!(true);
+    b["cache_ttl_s"] = json!(60);
+    b["cache_scope"] = json!("key");
+    let (status, _) = create(&org, &maya, b).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let lena = org.sign_in("lena").await;
+    let seen = routes(&org, &lena).await;
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0]["cache_enabled"], false);
+    assert_eq!(seen[0]["cache_ttl_s"], 0);
+    assert_eq!(seen[0]["cache_scope"], "team");
+}

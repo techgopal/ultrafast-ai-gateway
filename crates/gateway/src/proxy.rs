@@ -2,6 +2,7 @@
 //! embeddings. They share authentication, body reading, resolution, the
 //! routing engine and recording; only the caller's format differs.
 
+use std::cmp::Ordering;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -34,6 +35,7 @@ use ultrafast_translate::types::{ChatRequest, ChatResponse, StreamEvent, Usage};
 use crate::access::{self, Denied, Resolved};
 use crate::app::AppState;
 use crate::auth::authenticate;
+use crate::cache::{Answer, CacheKey, Cached, KeyParts, ScopeId};
 use crate::errors::{caller_message, Shape};
 use crate::routing::{
     self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
@@ -246,6 +248,87 @@ fn plan_of(
     (candidates, settings)
 }
 
+/// The warmest a call may be and still be kept: above it the answer is
+/// meant to differ from one call to the next.
+const MAX_CACHED_TEMPERATURE: f32 = 0.5;
+
+/// What a call is kept and looked up under.
+struct CachePlan {
+    key: CacheKey,
+    ttl: Duration,
+}
+
+/// The cache of a call, when it has one: it goes to a route with the cache
+/// on, it is not a stream, and it is not random. The key names the targets
+/// of the route this key may call, so an answer a target gave is never
+/// given to a key that may not call that target.
+fn cache_plan(
+    key: &SnapKey,
+    call: &Call,
+    resolved: &Resolved<'_>,
+    candidates: &[Candidate],
+) -> Option<CachePlan> {
+    let Resolved::Route(route) = resolved else {
+        return None;
+    };
+    if !route.cache.enabled || call.stream() {
+        return None;
+    }
+    if let Call::Chat(r) = call {
+        // A temperature that is not a number is not "at most" anything.
+        let kept = |t: f32| {
+            matches!(
+                t.partial_cmp(&MAX_CACHED_TEMPERATURE),
+                Some(Ordering::Less | Ordering::Equal)
+            )
+        };
+        if r.temperature.is_some_and(|t| !kept(t)) {
+            return None;
+        }
+    }
+    let mut targets: Vec<(String, String)> = candidates
+        .iter()
+        .filter(|c| c.callable)
+        .map(|c| (c.target.provider.clone(), c.target.model.clone()))
+        .collect();
+    targets.sort();
+    targets.dedup();
+    if targets.is_empty() {
+        return None;
+    }
+    let parts = KeyParts {
+        route: &route.name,
+        targets: &targets,
+        scope: ScopeId::of(route.cache.scope, key.team_id, key.user_id, key.id),
+    };
+    let cache_key = match call {
+        Call::Chat(r) => CacheKey::chat(&parts, r),
+        Call::Embed(r) => CacheKey::embeddings(&parts, r),
+    };
+    let seconds = u64::try_from(route.cache.ttl_s).unwrap_or(0).max(1);
+    Some(CachePlan {
+        key: cache_key,
+        ttl: Duration::from_secs(seconds),
+    })
+}
+
+/// The kept answer in the shape the caller asked in, or `None` when it is
+/// of the other kind of call (which a key never allows).
+fn render_cached(endpoint: Endpoint, cached: &Cached) -> Option<Response> {
+    match (&cached.answer, endpoint) {
+        (Answer::Chat(r), Endpoint::Messages) => {
+            Some(Json(anthropic::render_response(r)).into_response())
+        }
+        (Answer::Chat(r), Endpoint::Chat) => {
+            Some(Json(openai::render_response(r, now_secs())).into_response())
+        }
+        (Answer::Embeddings(r), Endpoint::Embeddings) => {
+            Some(Json(embeddings::render_response(r)).into_response())
+        }
+        _ => None,
+    }
+}
+
 /// Whether the key may call some target of the plan, and a provider of that
 /// target cannot serve this call: nothing is wrong with the key or the
 /// providers, the model is of the wrong kind.
@@ -339,6 +422,19 @@ async fn dispatch(
         return shape.error(StatusCode::SERVICE_UNAVAILABLE, "upstream_error", NO_MODEL);
     }
 
+    // 3d. The response cache of the route: after access, limits and budgets,
+    // so a hit is refused as a call would be. A hit calls no provider.
+    let cache = cache_plan(key, &call, &resolved, &candidates);
+    if let Some(plan) = &cache {
+        let now = tokio::time::Instant::now().into_std();
+        if let Some(hit) = state.cache.get(&plan.key, now) {
+            if let Some(response) = render_cached(endpoint, &hit) {
+                record.cache_hit(&hit.provider, &hit.model, hit.usage());
+                return response;
+            }
+        }
+    }
+
     // 4. Try the targets in order.
     let served = routing::run(
         &*state.health,
@@ -362,23 +458,21 @@ async fn dispatch(
     .await;
     match served {
         Ok(Served::Whole(response)) => {
-            scope
-                .as_mut()
-                .expect("a whole answer keeps the scope")
-                .usage(response.usage);
+            let record = scope.as_mut().expect("a whole answer keeps the scope");
+            record.usage(response.usage);
+            keep(state, &cache, record, Answer::Chat(response.clone()));
             match endpoint {
                 Endpoint::Messages => Json(anthropic::render_response(&response)).into_response(),
                 _ => Json(openai::render_response(&response, now_secs())).into_response(),
             }
         }
         Ok(Served::Embeddings(response)) => {
-            scope
-                .as_mut()
-                .expect("a whole answer keeps the scope")
-                .usage(Some(Usage {
-                    input_tokens: response.prompt_tokens,
-                    output_tokens: 0,
-                }));
+            let record = scope.as_mut().expect("a whole answer keeps the scope");
+            record.usage(Some(Usage {
+                input_tokens: response.prompt_tokens,
+                output_tokens: 0,
+            }));
+            keep(state, &cache, record, Answer::Embeddings(response.clone()));
             Json(embeddings::render_response(&response)).into_response()
         }
         Ok(Served::Stream(committed)) => {
@@ -399,6 +493,21 @@ async fn dispatch(
         ),
         Err(Stop::Exhausted(ex)) => exhausted_response(shape, ex),
     }
+}
+
+/// Keeps the answer of a call under the key of its cache plan, with the
+/// target that gave it.
+fn keep(state: &AppState, plan: &Option<CachePlan>, record: &Scope, answer: Answer) {
+    let (Some(plan), Some((provider, model))) = (plan, record.answered_by()) else {
+        return;
+    };
+    let now = tokio::time::Instant::now().into_std();
+    let value = Cached {
+        answer,
+        provider,
+        model,
+    };
+    state.cache.put(plan.key, value, plan.ttl, now);
 }
 
 /// The longest wait a caller is told to keep.

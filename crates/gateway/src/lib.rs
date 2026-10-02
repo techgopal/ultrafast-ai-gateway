@@ -5,6 +5,7 @@ pub mod api;
 pub mod app;
 pub mod auth;
 pub mod budgets;
+pub mod cache;
 pub mod catalog;
 pub mod config;
 pub mod errors;

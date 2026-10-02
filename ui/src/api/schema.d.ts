@@ -857,7 +857,7 @@ export interface components {
             /** Format: int64 */
             duration_ms: number;
             model: string;
-            /** @description `ok`, `retryable`, `fatal`, `circuit_open` or `skipped`. */
+            /** @description `ok`, `retryable`, `fatal`, `circuit_open`, `skipped` or `cached` (answered from the response cache, no provider called). */
             outcome: string;
             provider: string;
             /**
@@ -1089,6 +1089,23 @@ export interface components {
              */
             breaker_window_s: number;
             /**
+             * @description Keep the answers of calls to this route and give them again to the
+             *     same call, without a provider. Streams and calls with a temperature
+             *     above 0.5 are never kept. Not sent: off.
+             */
+            cache_enabled?: boolean;
+            /**
+             * @description Whom a kept answer is given to: `team` (the team of the key; a key
+             *     with no team uses `user`, then `key`), `key` or `user`. Never across
+             *     teams. Not sent: `team`.
+             */
+            cache_scope?: string;
+            /**
+             * Format: int64
+             * @description How long an answer is kept, 1 to 86 400 seconds. Not sent: 300.
+             */
+            cache_ttl_s?: number;
+            /**
              * @description Every user may use the route. It cannot be combined with teams.
              *     Without it and without teams only admins may use the route.
              */
@@ -1134,6 +1151,15 @@ export interface components {
             breaker_window_s: number;
             /** @description No target of the route is enabled, so it cannot serve a request. */
             broken: boolean;
+            /** @description The route keeps answers. Hidden (false) for a non-admin. */
+            cache_enabled: boolean;
+            /** @description `team`, `key` or `user`. Hidden (`team`) for a non-admin. */
+            cache_scope: string;
+            /**
+             * Format: int64
+             * @description Seconds an answer is kept. Hidden (0) for a non-admin.
+             */
+            cache_ttl_s: number;
             created_at: string;
             /** @description Every user may use the route. Hidden (false) for a non-admin. */
             everyone: boolean;

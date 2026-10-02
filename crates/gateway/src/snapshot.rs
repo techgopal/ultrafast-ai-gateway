@@ -13,6 +13,7 @@ use anyhow::Result;
 use ultrafast_translate::provider::ProviderKind;
 
 use crate::budgets::Budget;
+use crate::cache::RouteCache;
 use crate::identity::{Role, UserStatus};
 use crate::limits::{LimitScope, Subject, Subjects};
 use crate::routing::{BreakerSettings, TargetRef};
@@ -62,6 +63,8 @@ pub struct SnapRoute {
     pub first_token_timeout: Duration,
     pub total_timeout: Duration,
     pub breaker: BreakerSettings,
+    /// Whether and how the route keeps answers.
+    pub cache: RouteCache,
 }
 
 impl SnapRoute {
@@ -252,6 +255,7 @@ impl Snapshot {
                     retries: u32::try_from(st.retries).unwrap_or(0),
                     first_token_timeout: Duration::from_millis(secs(st.first_token_timeout_ms)),
                     total_timeout: Duration::from_millis(secs(st.total_timeout_ms)),
+                    cache: r.cache,
                     breaker: BreakerSettings {
                         failures: u32::try_from(st.breaker_failures).unwrap_or(0).max(1),
                         window: Duration::from_secs(secs(st.breaker_window_s)),

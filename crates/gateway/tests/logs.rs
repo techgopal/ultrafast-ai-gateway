@@ -38,6 +38,7 @@ fn record(requested: &str) -> RequestRecord {
             status: Some(200),
             duration_ms: 12,
         }],
+        cached: false,
         started_at: "2999-01-01 00:00:00".into(),
         duration_ms: 20,
     }
@@ -146,6 +147,49 @@ async fn cost_is_tokens_times_price_per_million_rounded_half_up() {
     assert_eq!(by("priced").cost_micros, 7_500);
     assert!(by("priced").priced);
     assert_eq!(by("half").cost_micros, 3);
+}
+
+#[tokio::test]
+async fn a_call_answered_from_the_cache_is_logged_cached_at_zero_cost() {
+    let store = Store::open_in_memory().await.unwrap();
+    let (sink, rx) = LogSink::channel(100);
+    let stats = sink.stats();
+    let (stop, stopped) = watch::channel(false);
+    let writer = spawn(
+        store.clone(),
+        rx,
+        // A price that would make the 1 000 + 500 tokens cost 7 500.
+        prices(Some(2_500_000), Some(10_000_000)),
+        stats,
+        config(500, 20),
+        stopped,
+    );
+    let mut hit = record("hit");
+    hit.cached = true;
+    hit.attempts[0].outcome = AttemptOutcome::Cached;
+    hit.attempts[0].status = None;
+    sink.record(hit);
+    sink.record(record("miss"));
+    stop.send(true).unwrap();
+    writer.await.unwrap();
+    let rows = store.recent_logs(10).await.unwrap();
+    let by = |name: &str| rows.iter().find(|r| r.requested == name).unwrap().clone();
+    let hit = by("hit");
+    assert!(hit.cached);
+    assert_eq!(hit.cost_micros, 0);
+    // Free, and known to be: not an unpriced call.
+    assert!(hit.priced);
+    // The tokens of the answer are logged, with the target that gave it.
+    assert_eq!(
+        (hit.input_tokens, hit.output_tokens),
+        (Some(1_000), Some(500))
+    );
+    assert_eq!(hit.provider.as_deref(), Some("p"));
+    let attempts: serde_json::Value = serde_json::from_str(&hit.attempts).unwrap();
+    assert_eq!(attempts[0]["outcome"], "cached");
+    let miss = by("miss");
+    assert!(!miss.cached);
+    assert_eq!(miss.cost_micros, 7_500);
 }
 
 #[tokio::test]
