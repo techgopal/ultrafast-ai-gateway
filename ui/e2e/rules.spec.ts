@@ -52,6 +52,26 @@ test("the rules of the browser tests see what breaks them", async ({ page, rules
   });
   await expectSeen(/^console error: Failed to load resource: .* 405/);
 
+  // A refusal a test expects is let through for its path and status only,
+  // once, and the test fails when it never came.
+  rules.expectRefusal(404, /\/api\/expected-missing$/);
+  expect(rules.unmet()).toHaveLength(1);
+  await page.evaluate(async () => {
+    await fetch("/api/other-missing");
+  });
+  await expectSeen(/^console error: Failed to load resource: .* 404/);
+  expect(rules.unmet()).toHaveLength(1);
+  await page.evaluate(async () => {
+    await fetch("/api/expected-missing");
+  });
+  await expect.poll(() => rules.unmet()).toEqual([]);
+  expect(rules.problems).toEqual([]);
+  // A second answer of the same kind was not expected: it is a problem.
+  await page.evaluate(async () => {
+    await fetch("/api/expected-missing");
+  });
+  await expectSeen(/^console error: Failed to load resource: .* 404/);
+
   // An error the page logs, and one it throws.
   await page.evaluate(() => {
     console.error("an error of the page");

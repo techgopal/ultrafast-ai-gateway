@@ -76,7 +76,14 @@ test("a failing primary is covered by the fallback, shows as Failing, and the ro
   expect(beta.calls).toHaveLength(0);
 
   // A member of no team of the route is refused, and nothing is called.
-  expect((await call(outsideKey)).status()).toBe(403);
+  const refused = await call(outsideKey);
+  expect(refused.status()).toBe(403);
+  expect(await refused.json()).toMatchObject({
+    error: {
+      type: "permission_error",
+      message: "You do not have access to model 'main'.",
+    },
+  });
   expect(alpha.calls).toHaveLength(1);
   expect(beta.calls).toHaveLength(0);
 

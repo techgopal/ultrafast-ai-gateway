@@ -27,17 +27,48 @@ const API_REFUSAL =
  */
 export class BrowserRules {
   readonly problems: string[] = [];
+  /** The refusals this test expects on purpose, each until it is seen. */
+  private readonly expected: { status: number; path: RegExp; seen: boolean }[] = [];
 
   constructor(private readonly origin: string) {}
 
+  /**
+   * This test provokes an answer `status` of the gateway's `/api` at a path
+   * that matches `path`, and the console handles it: the console error
+   * Chromium logs for it is let through, for this test only and for no other
+   * path or status. The test fails when it never happened (`unmet`).
+   */
+  expectRefusal(status: number, path: RegExp): void {
+    this.expected.push({ status, path, seen: false });
+  }
+
+  /** What the test expected with `expectRefusal` and did not get. */
+  unmet(): string[] {
+    return this.expected
+      .filter((one) => !one.seen)
+      .map((one) => `expected refusal ${String(one.status)} at ${String(one.path)} never happened`);
+  }
+
   private isApiRefusal(message: ConsoleMessage): boolean {
-    if (!API_REFUSAL.test(message.text())) return false;
+    let url: URL;
     try {
-      const url = new URL(message.location().url);
-      return url.origin === this.origin && url.pathname.startsWith("/api/");
+      url = new URL(message.location().url);
     } catch {
       return false;
     }
+    if (url.origin !== this.origin || !url.pathname.startsWith("/api/")) return false;
+    const text = message.text();
+    const wanted = this.expected.find(
+      (one) =>
+        !one.seen &&
+        text.startsWith(`Failed to load resource: the server responded with a status of ${String(one.status)}`) &&
+        one.path.test(url.pathname),
+    );
+    if (wanted !== undefined) {
+      wanted.seen = true;
+      return true;
+    }
+    return API_REFUSAL.test(text);
   }
 
   async watch(context: BrowserContext): Promise<void> {

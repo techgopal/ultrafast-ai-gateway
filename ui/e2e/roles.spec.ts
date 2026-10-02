@@ -140,6 +140,7 @@ test("a lead adds a member by email, and neither makes a lead nor removes anothe
   page,
   admin,
   apiAs,
+  rules,
 }) => {
   const api = await apiAs(admin);
   const { lead, led } = await people(api);
@@ -157,7 +158,18 @@ test("a lead adds a member by email, and neither makes a lead nor removes anothe
   const dialog = page.getByRole("dialog", { name: "Add member" });
   // A lead reads no list of users: the email is typed.
   await expect(dialog.getByLabel("Choose a user")).toHaveCount(0);
-  await dialog.getByLabel("Email", { exact: true }).fill(newcomer.email);
+  // An email nobody has: said on the field, nothing is added. The console
+  // error of the answer 404 is the one this test expects.
+  rules.expectRefusal(404, /\/api\/teams\/\d+\/members$/);
+  const email = dialog.getByLabel("Email", { exact: true });
+  await email.fill("nobody-has-this@example.test");
+  await dialog.getByRole("button", { name: "Add member" }).click();
+  await expect(email).toHaveAccessibleDescription(
+    /^No active user with that email\./,
+  );
+  await expect(dialog).toBeVisible();
+  await expect(itemOf(page, "Members", "Nina")).toHaveCount(0);
+  await email.fill(newcomer.email);
   await dialog.getByRole("button", { name: "Add member" }).click();
   await expect(dialog).toBeHidden();
   await expect(itemOf(page, "Members", "Nina")).toContainText("Member");

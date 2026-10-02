@@ -68,6 +68,11 @@ export const test = base.extend<Fixtures>({
   rules: async ({ gateway }, provide) => {
     const rules = new BrowserRules(gateway.origin);
     await provide(rules);
+    if (rules.unmet().length > 0) {
+      // The console line arrives a moment after the answer.
+      await new Promise((done) => setTimeout(done, 300));
+    }
+    rules.problems.push(...rules.unmet());
     expect(rules.problems, "console errors, CSP violations, other origins, 5xx").toEqual([]);
   },
 
