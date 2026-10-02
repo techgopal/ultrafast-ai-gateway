@@ -850,6 +850,7 @@ describe("what is wrong with the form", () => {
       validationFailed({
         primaries: fieldMessages.routeOnce,
         first_token_timeout_ms: fieldMessages.routeFirstToken,
+        fallbacks: fieldMessages.routeModelMissing,
         team_ids: fieldMessages.routeTeamMissing,
       }),
     );
@@ -859,16 +860,73 @@ describe("what is wrong with the form", () => {
     await waitFor(() => {
       expect(descriptionOf(group)).toContain(fieldMessages.routeOnce);
     });
+    expect(descriptionOf(screen.getByRole("group", { name: "Fallbacks" }))).toContain(
+      fieldMessages.routeModelMissing,
+    );
     // The time is in seconds in the form; the gateway's range is in milliseconds.
     expect(button("Advanced")).toHaveAttribute("aria-expanded", "true");
     expect(descriptionOf(screen.getByLabelText("First token timeout (s)"))).toContain(
       "Enter seconds from 1 to 300.",
     );
     expect(descriptionOf(screen.getByLabelText("First token timeout (s)"))).not.toContain("1000");
-    // `team_ids` is no field of this form while it is for all: it is said at the top.
-    expect(screen.getByRole("form", { name: "Route" })).toBeInTheDocument();
+    // `team_ids` is no field of this form while the route is not for chosen
+    // teams: it is said in the alert at the top, not lost.
+    expect(screen.queryByRole("group", { name: "Chosen teams" })).toBeNull();
+    const note = screen.getByText(`Chosen teams: ${fieldMessages.routeTeamMissing}`);
+    expect(note.closest('[role="alert"]')).not.toBeNull();
     expect(toasts()).toEqual([]);
     expect(state.updated).toHaveLength(1);
+  });
+
+  test("the advanced settings say the breaker is shared", async () => {
+    keeps();
+    await editor("/routes/1");
+    await advanced();
+    expect(
+      screen.getByText(
+        "Circuit breaker settings apply per provider model and are shared by every route that uses it.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test("renaming a route says that keys listing it by name stop working", async () => {
+    keeps();
+    const hint = "Keys that list this route by name stop working when it is renamed.";
+    await editor("/routes/1");
+    const name = screen.getByLabelText("Name");
+    expect(descriptionOf(name)).not.toContain(hint);
+    await paste(name, "-2");
+    expect(descriptionOf(name)).toContain(hint);
+    await userEvent.clear(name);
+    await paste(name, "support-chat");
+    expect(descriptionOf(name)).not.toContain(hint);
+  });
+
+  test("a new route is not told it is renamed", async () => {
+    keeps();
+    await editor("/routes/new");
+    await paste(screen.getByLabelText("Name"), "x");
+    expect(descriptionOf(screen.getByLabelText("Name"))).not.toContain("stop working");
+  });
+
+  test("after a target row is removed the focus goes to the next row, or to Add", async () => {
+    const two: fixtures.Route = {
+      ...support,
+      fallbacks: [
+        { model_id: 4, model: "local-llm/llama3.1:8b", enabled: true },
+        { model_id: 3, model: "openai/o3-mini", enabled: false },
+      ],
+    };
+    keeps([two]);
+    await editor("/routes/1");
+    await userEvent.click(button("Remove fallback 1"));
+    expect(select("Model of fallback 1")).toHaveFocus();
+    await userEvent.click(button("Remove fallback 1"));
+    expect(button("Add fallback")).toHaveFocus();
+    await userEvent.click(button("Remove primary target 1"));
+    expect(select("Model of primary target 1")).toHaveFocus();
+    await userEvent.click(button("Remove primary target 1"));
+    expect(button("Add primary target")).toHaveFocus();
   });
 
   test("a name that is taken is said on the name", async () => {

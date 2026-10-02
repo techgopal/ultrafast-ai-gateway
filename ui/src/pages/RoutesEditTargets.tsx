@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp } from "lucide-react";
+import { useEffect, useRef } from "react";
 import type { components } from "@/api/schema";
 import { control, cutLongChoice, selectList } from "@/components/classes";
 import type { FieldWiring } from "@/components/Field";
@@ -86,6 +87,31 @@ function RowProblems({ id, messages }: { id: string; messages: readonly (string 
   );
 }
 
+/**
+ * After a row is removed the focus goes to the model select of the row that
+ * took its place, or to "Add" when none is left. Without it the focus is lost
+ * with the removed button.
+ */
+function useFocusAfterRemove() {
+  const list = useRef<HTMLUListElement & HTMLOListElement>(null);
+  const add = useRef<HTMLButtonElement>(null);
+  const at = useRef<number | null>(null);
+  useEffect(() => {
+    if (at.current === null) return;
+    const index = at.current;
+    at.current = null;
+    const selects = list.current?.querySelectorAll<HTMLElement>('[role="combobox"]');
+    (selects?.[index] ?? add.current)?.focus();
+  });
+  return {
+    list,
+    add,
+    removed: (index: number) => {
+      at.current = index;
+    },
+  };
+}
+
 interface PrimariesProps {
   wiring: FieldWiring;
   models: readonly Model[];
@@ -98,6 +124,7 @@ interface PrimariesProps {
 
 export function Primaries({ wiring, models, rows, fallbacks, problems, onChange }: PrimariesProps) {
   const { id } = wiring;
+  const { list, add, removed } = useFocusAfterRemove();
   const change = (index: number, patch: Partial<PrimaryRow>) => {
     onChange(rows.map((row, at) => (at === index ? { ...row, ...patch } : row)));
   };
@@ -110,7 +137,7 @@ export function Primaries({ wiring, models, rows, fallbacks, problems, onChange 
       className="flex flex-col gap-2"
     >
       {models.length === 0 ? <p className="text-sm text-muted-foreground">{NO_MODELS}</p> : null}
-      <ul className="flex flex-col gap-2">
+      <ul ref={list} className="flex flex-col gap-2">
         {rows.map((row, index) => {
           const number = index + 1;
           const problem = problems[index] ?? {};
@@ -149,6 +176,7 @@ export function Primaries({ wiring, models, rows, fallbacks, problems, onChange 
                 className={control}
                 aria-label={`Remove primary target ${String(number)}`}
                 onClick={() => {
+                  removed(index);
                   onChange(rows.filter((_, at) => at !== index));
                 }}
               >
@@ -160,6 +188,7 @@ export function Primaries({ wiring, models, rows, fallbacks, problems, onChange 
         })}
       </ul>
       <Button
+        ref={add}
         type="button"
         variant="outline"
         className={`${control} w-fit`}
@@ -185,6 +214,7 @@ interface FallbacksProps {
 
 export function Fallbacks({ wiring, models, rows, primaries, problems, onChange }: FallbacksProps) {
   const { id } = wiring;
+  const { list, add, removed } = useFocusAfterRemove();
   return (
     <div
       role="group"
@@ -193,7 +223,7 @@ export function Fallbacks({ wiring, models, rows, primaries, problems, onChange 
       aria-describedby={wiring["aria-describedby"]}
       className="flex flex-col gap-2"
     >
-      <ol className="flex flex-col gap-2">
+      <ol ref={list} className="flex flex-col gap-2">
         {rows.map((row, index) => {
           const number = index + 1;
           const problem = problems[index];
@@ -242,6 +272,7 @@ export function Fallbacks({ wiring, models, rows, primaries, problems, onChange 
                 className={control}
                 aria-label={`Remove fallback ${String(number)}`}
                 onClick={() => {
+                  removed(index);
                   onChange(rows.filter((_, at) => at !== index));
                 }}
               >
@@ -253,6 +284,7 @@ export function Fallbacks({ wiring, models, rows, primaries, problems, onChange 
         })}
       </ol>
       <Button
+        ref={add}
         type="button"
         variant="outline"
         className={`${control} w-fit`}

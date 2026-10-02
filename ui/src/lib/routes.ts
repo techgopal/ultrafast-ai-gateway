@@ -301,3 +301,20 @@ export function inFormWords(error: unknown): unknown {
   if (!(error instanceof ApiError) || Object.keys(error.fields).length === 0) return error;
   return new ApiError(error.status, error.code, error.message, gatewayFields(error.fields));
 }
+
+/**
+ * A gateway error about `team_ids`, while the form does not ask for teams
+ * (the audience is not "chosen"): no field shows it, so it is named by the
+ * words of the choice and said with the form's other messages. Any other
+ * error is returned as it is.
+ */
+export function teamsErrorAside(error: unknown, audience: Audience): unknown {
+  if (audience === "chosen" || !(error instanceof ApiError) || !("team_ids" in error.fields)) {
+    return error;
+  }
+  const { team_ids: text, ...rest } = error.fields;
+  return new ApiError(error.status, error.code, error.message, {
+    ...rest,
+    "Chosen teams": text,
+  });
+}

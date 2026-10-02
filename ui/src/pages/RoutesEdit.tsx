@@ -43,6 +43,7 @@ import {
   hasProblems,
   inFormWords,
   requestOf,
+  teamsErrorAside,
   type Audience,
   type FieldName,
 } from "@/lib/routes";
@@ -59,6 +60,9 @@ export const DONE = {
 export const NAME_HINT = "Clients call the route by this name. It cannot contain a slash.";
 export const PRIMARIES_HINT = "Calls are spread over the primary targets by their weights.";
 export const FALLBACKS_HINT = "Tried in this order when the primary targets fail.";
+export const RENAME_HINT = "Keys that list this route by name stop working when it is renamed.";
+export const BREAKER_HINT =
+  "Circuit breaker settings apply per provider model and are shared by every route that uses it.";
 export const FIX_THE_FIELDS = "Some fields are not valid. They are marked below.";
 
 const AUDIENCES: readonly [Audience, string][] = [
@@ -127,7 +131,6 @@ function Editor({ route }: EditorProps) {
     () => ({ models: choices.map((m) => m.id), teams: (teamList ?? []).map((t) => t.id) }),
     [choices, teamList],
   );
-  // The teams are not read when they are not asked for: a route for all is saved without them.
   const pending = create.isPending || update.isPending;
 
   const form = useForm({
@@ -153,7 +156,14 @@ function Editor({ route }: EditorProps) {
       } catch (error) {
         create.reset();
         update.reset();
-        applyApiError(form, onField(inFormWords(error), "route_exists", "name"));
+        applyApiError(
+          form,
+          onField(
+            teamsErrorAside(inFormWords(error), value.audience),
+            "route_exists",
+            "name",
+          ),
+        );
       }
     },
   });
@@ -190,7 +200,17 @@ function Editor({ route }: EditorProps) {
       />
       <form.Field name="name">
         {(field) => (
-          <Field label="Name" name={field.name} required hint={NAME_HINT} error={errorOf("name")}>
+          <Field
+            label="Name"
+            name={field.name}
+            required
+            hint={
+              route !== null && field.state.value.trim() !== route.name
+                ? `${NAME_HINT} ${RENAME_HINT}`
+                : NAME_HINT
+            }
+            error={errorOf("name")}
+          >
             {({ id, name, ...described }) => (
               <Input
                 {...described}
@@ -344,6 +364,7 @@ function Editor({ route }: EditorProps) {
               )}
             </form.Field>
           ))}
+          <p className="text-sm text-muted-foreground sm:col-span-2">{BREAKER_HINT}</p>
         </div>
       </section>
 
