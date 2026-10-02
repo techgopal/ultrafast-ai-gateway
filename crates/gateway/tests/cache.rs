@@ -715,3 +715,37 @@ async fn a_refresh_that_changes_nothing_keeps_the_answers() {
     w.chat(&a, BODY).await;
     assert_eq!(w.provider_calls().await, 1);
 }
+
+/// A call that began under the old configuration stores its answer after the
+/// configuration changed (and the cache was cleared): the new team with the
+/// reused id must not find it.
+#[tokio::test]
+async fn an_answer_stored_after_the_configuration_changed_is_not_found_under_the_new_one() {
+    let w = world(CacheScope::Team).await;
+    w.h.upstream.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ok("hello").set_delay(Duration::from_millis(600)))
+        .mount(&w.h.upstream)
+        .await;
+    let a = seed_team(&w.h.store, "A", &[]).await;
+    let ka = w.key("a", None, Some(a)).await;
+    let in_flight = w.chat(&ka, BODY);
+    let change = async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut tx = w.h.store.begin().await.unwrap();
+        assert!(tx.delete_team(a).await.unwrap());
+        tx.commit().await.unwrap();
+        let b = seed_team(&w.h.store, "B", &[]).await;
+        assert_eq!(a, b);
+        let kb = w.key("b", None, Some(b)).await;
+        w.h.state.refresh().await.unwrap();
+        kb
+    };
+    let (status, kb) = tokio::join!(in_flight, change);
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(w.provider_calls().await, 1);
+    // A's answer was stored after the clear; B must not be given it.
+    assert_eq!(w.chat(&kb, BODY).await, StatusCode::OK);
+    assert_eq!(w.provider_calls().await, 2, "B was given A's answer");
+}

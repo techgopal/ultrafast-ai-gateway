@@ -26,6 +26,9 @@ pub struct KeyParts<'a> {
     /// call, sorted.
     pub targets: &'a [(String, String)],
     pub scope: ScopeId,
+    /// The fingerprint of the configuration the call was made under, so an
+    /// answer is only found under the configuration that gave it.
+    pub config: [u8; 32],
 }
 
 /// Fields are tagged and variable parts are length-prefixed, so no two
@@ -76,6 +79,7 @@ impl Encoder {
         }
         self.field(5, parts.scope.scope.as_str().as_bytes());
         self.number(6, parts.scope.id as u64);
+        self.field(7, &parts.config);
     }
 
     fn finish(self) -> CacheKey {
@@ -204,6 +208,7 @@ mod tests {
                 route: "r",
                 targets: &t,
                 scope: scope(CacheScope::Team, 1),
+                config: [0; 32],
             },
             request,
         )
@@ -279,6 +284,7 @@ mod tests {
                     route,
                     targets,
                     scope,
+                    config: [0; 32],
                 },
                 &request,
             )
@@ -344,6 +350,7 @@ mod tests {
             route: "r",
             targets: &t,
             scope: scope(CacheScope::Team, 1),
+            config: [0; 32],
         };
         let request = EmbeddingsRequest {
             model: "r".into(),

@@ -332,6 +332,7 @@ mod tests {
                     scope: CacheScope::Team,
                     id: 1,
                 },
+                config: [0; 32],
             },
             &request,
         )

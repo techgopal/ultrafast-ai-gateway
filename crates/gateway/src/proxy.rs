@@ -263,6 +263,7 @@ struct CachePlan {
 /// of the route this key may call, so an answer a target gave is never
 /// given to a key that may not call that target.
 fn cache_plan(
+    snapshot: &Snapshot,
     key: &SnapKey,
     call: &Call,
     resolved: &Resolved<'_>,
@@ -300,6 +301,7 @@ fn cache_plan(
         route: &route.name,
         targets: &targets,
         scope: ScopeId::of(route.cache.scope, key.team_id, key.user_id, key.id),
+        config: snapshot.cache_fingerprint(),
     };
     let cache_key = match call {
         Call::Chat(r) => CacheKey::chat(&parts, r),
@@ -424,7 +426,7 @@ async fn dispatch(
 
     // 3d. The response cache of the route: after access, limits and budgets,
     // so a hit is refused as a call would be. A hit calls no provider.
-    let cache = cache_plan(key, &call, &resolved, &candidates);
+    let cache = cache_plan(snapshot, key, &call, &resolved, &candidates);
     if let Some(plan) = &cache {
         let now = tokio::time::Instant::now().into_std();
         if let Some(hit) = state.cache.get(&plan.key, now) {
