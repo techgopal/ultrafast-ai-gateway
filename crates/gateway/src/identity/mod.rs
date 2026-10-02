@@ -102,6 +102,11 @@ impl Principal {
         self.role == Role::Admin
     }
 
+    /// The ids of the teams the user belongs to.
+    pub fn team_ids(&self) -> Vec<i64> {
+        self.teams.iter().map(|(id, _)| *id).collect()
+    }
+
     pub fn team_role(&self, team_id: i64) -> Option<TeamRole> {
         self.teams
             .iter()

@@ -37,8 +37,8 @@ pub struct SnapModel {
     pub name: String,
     pub enabled: bool,
     pub everyone: bool,
-    pub team_ids: HashSet<i64>,
-    pub user_ids: HashSet<i64>,
+    pub team_ids: Vec<i64>,
+    pub user_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +47,7 @@ pub struct SnapRoute {
     pub name: String,
     /// Every user may use the route. Otherwise its teams and admins.
     pub everyone: bool,
-    pub team_ids: HashSet<i64>,
+    pub team_ids: Vec<i64>,
     /// The primaries in order, with their weights. Targets whose model is
     /// gone from the catalog or whose provider cannot be used are left out.
     pub primaries: Vec<(TargetRef, u32)>,
@@ -77,7 +77,7 @@ impl SnapRoute {
 #[derive(Debug, Clone)]
 pub struct SnapUser {
     pub role: Role,
-    pub team_ids: HashSet<i64>,
+    pub team_ids: Vec<i64>,
 }
 
 /// A provider with its credential in the clear. It is never serialized.
@@ -117,12 +117,20 @@ pub struct Snapshot {
     keys: HashMap<String, Arc<SnapKey>>,
     /// By name.
     providers: HashMap<String, SnapProvider>,
-    /// By provider name and model name.
-    models: HashMap<(String, String), SnapModel>,
+    /// By provider name, then model name: a call looks it up by `&str`
+    /// without building a key.
+    models: HashMap<String, HashMap<String, SnapModel>>,
     /// By name.
     routes: HashMap<String, SnapRoute>,
     /// Active users, by id.
     users: HashMap<i64, SnapUser>,
+}
+
+/// Grants are few; a list keeps each id once.
+fn push_new(ids: &mut Vec<i64>, id: i64) {
+    if !ids.contains(&id) {
+        ids.push(id);
+    }
 }
 
 impl Snapshot {
@@ -178,7 +186,7 @@ impl Snapshot {
             providers.insert(p.name, provider);
         }
 
-        let mut models: HashMap<(String, String), SnapModel> = HashMap::new();
+        let mut models: HashMap<String, HashMap<String, SnapModel>> = HashMap::new();
         let mut by_id: HashMap<i64, (String, String)> = HashMap::new();
         for m in rows.models {
             // A model of a provider that cannot be used is not there.
@@ -192,25 +200,24 @@ impl Snapshot {
                 name: m.name.clone(),
                 enabled: m.enabled,
                 everyone: false,
-                team_ids: HashSet::new(),
-                user_ids: HashSet::new(),
+                team_ids: Vec::new(),
+                user_ids: Vec::new(),
             };
-            models.insert((m.provider_name, m.name), model);
+            models
+                .entry(m.provider_name)
+                .or_default()
+                .insert(m.name, model);
         }
         for g in rows.model_grants {
             let Some(name) = by_id.get(&g.model_id) else {
                 continue;
             };
-            let Some(model) = models.get_mut(name) else {
+            let Some(model) = models.get_mut(&name.0).and_then(|m| m.get_mut(&name.1)) else {
                 continue;
             };
             match (g.team_id, g.user_id) {
-                (Some(team), _) => {
-                    model.team_ids.insert(team);
-                }
-                (None, Some(user)) => {
-                    model.user_ids.insert(user);
-                }
+                (Some(team), _) => push_new(&mut model.team_ids, team),
+                (None, Some(user)) => push_new(&mut model.user_ids, user),
                 (None, None) => model.everyone = true,
             }
         }
@@ -228,7 +235,7 @@ impl Snapshot {
                     id: r.id,
                     name: r.name,
                     everyone: r.everyone,
-                    team_ids: HashSet::new(),
+                    team_ids: Vec::new(),
                     primaries: Vec::new(),
                     fallbacks: Vec::new(),
                     retries: u32::try_from(st.retries).unwrap_or(0),
@@ -244,17 +251,19 @@ impl Snapshot {
         }
         for (route_id, team_id) in rows.route_grants {
             if let Some(route) = route_names.get(&route_id).and_then(|n| routes.get_mut(n)) {
-                route.team_ids.insert(team_id);
+                push_new(&mut route.team_ids, team_id);
             }
         }
         for t in rows.route_targets {
-            let key = (t.provider_name, t.model_name);
-            let Some(model) = models.get(&key) else {
+            let Some(model) = models
+                .get(&t.provider_name)
+                .and_then(|m| m.get(&t.model_name))
+            else {
                 continue;
             };
             let target = TargetRef {
-                provider: key.0,
-                model: key.1,
+                provider: t.provider_name,
+                model: t.model_name,
                 model_id: model.id,
             };
             if let Some(route) = route_names.get(&t.route_id).and_then(|n| routes.get_mut(n)) {
@@ -313,11 +322,11 @@ impl Snapshot {
     }
 
     pub fn model(&self, provider: &str, name: &str) -> Option<&SnapModel> {
-        self.models.get(&(provider.to_string(), name.to_string()))
+        self.models.get(provider)?.get(name)
     }
 
     pub fn models(&self) -> impl Iterator<Item = &SnapModel> {
-        self.models.values()
+        self.models.values().flat_map(|m| m.values())
     }
 
     pub fn route(&self, name: &str) -> Option<&SnapRoute> {

@@ -69,7 +69,7 @@ async fn checked_allowed(
         .into_iter()
         .filter(|m| {
             let g = grants.remove(&m.id).unwrap_or_default();
-            admin || (m.enabled && super::models::may_call(me, &g))
+            admin || super::models::may_call(me, m.enabled, &g)
         })
         .map(|m| format!("{}/{}", m.provider_name, m.name))
         .collect();

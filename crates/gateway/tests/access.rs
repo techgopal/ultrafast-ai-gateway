@@ -338,6 +338,101 @@ async fn a_role_change_takes_effect_on_v1_without_a_refresh() {
     assert_eq!(w.status(&secret, "p/private").await, StatusCode::FORBIDDEN);
 }
 
+/// One table drives the console's lists, its allowlist check and `/v1`: they
+/// answer from the same predicates, so for every user what the console shows
+/// as callable is what `/v1` lists, and what a key may name.
+#[tokio::test]
+async fn the_console_and_v1_agree_on_who_may_call_what() {
+    let w = world().await;
+    let grants = [Grant::Everyone, Grant::Team, Grant::User, Grant::Nobody];
+    let mut ids = Vec::new();
+    for enabled in [true, false] {
+        for grant in grants {
+            let name = format!("m-{enabled}-{grant:?}").to_lowercase();
+            ids.push((name.clone(), w.model(&name, enabled, grant).await));
+        }
+    }
+    let org = &w.org;
+    let first = ids[0].1;
+    let platform_only = ids[1].1;
+    w.route("open", &[first], &[], None).await;
+    w.route("platform", &[first], &[], Some(&[org.platform]))
+        .await;
+    w.route("research", &[platform_only], &[], Some(&[org.research]))
+        .await;
+    w.route("admins", &[first], &[], Some(&[])).await;
+    w.refresh().await;
+
+    let everything: Vec<String> = ids
+        .iter()
+        .map(|(n, _)| format!("p/{n}"))
+        .chain(["open", "platform", "research", "admins"].map(String::from))
+        .collect();
+
+    for (who, owner) in [
+        ("arjun", org.arjun),
+        ("lena", org.lena),
+        ("tomas", org.tomas),
+        ("priya", org.priya),
+    ] {
+        let me = org.sign_in(who).await;
+        let (status, body) = org.call(Some(&me), "GET", "/api/models", None).await;
+        assert_eq!(status, StatusCode::OK, "{who}: {body}");
+        let mut console_models: Vec<String> = body["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| {
+                format!(
+                    "{}/{}",
+                    m["provider_name"].as_str().unwrap(),
+                    m["name"].as_str().unwrap()
+                )
+            })
+            .collect();
+        console_models.sort();
+        let (status, body) = org.call(Some(&me), "GET", "/api/routes", None).await;
+        assert_eq!(status, StatusCode::OK, "{who}: {body}");
+        let console_routes: Vec<String> = body["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect();
+
+        let key = w.key(Some(owner), None).await;
+        w.refresh().await;
+        let v1 = w.listed_ids(&key).await;
+        let v1_models: Vec<String> = v1.iter().filter(|n| n.contains('/')).cloned().collect();
+        assert_eq!(console_models, v1_models, "{who}: models");
+        // Every route /v1 lists is one the console shows as usable (a route
+        // whose targets cannot be called is shown, as broken or not, but not
+        // listed by /v1).
+        for route in v1.iter().filter(|n| !n.contains('/')) {
+            assert!(console_routes.contains(route), "{who}: route {route}");
+        }
+
+        // What a key may name: what the console shows, no more.
+        for name in &everything {
+            let shown = console_models.contains(name) || console_routes.contains(name);
+            let (status, body) = org
+                .call(
+                    Some(&me),
+                    "POST",
+                    "/api/keys",
+                    Some(json!({ "name": "t", "allowed": [name] })),
+                )
+                .await;
+            let expected = if shown {
+                StatusCode::CREATED
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            };
+            assert_eq!(status, expected, "{who} may name {name}: {body}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn route_access() {
     let w = world().await;
@@ -410,7 +505,16 @@ async fn route_access() {
         w.status(&tomas, "platform-model").await,
         StatusCode::FORBIDDEN
     );
-    assert_eq!(w.status(&admin, "dead").await, StatusCode::FORBIDDEN);
+    // Nothing in it is enabled: unavailable, not refused (the console shows
+    // it as broken). Refused is a route with an enabled model that this key
+    // may not call.
+    let (status, body) = w.call(&admin, "dead").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["error"]["type"], "upstream_error");
+    assert_eq!(
+        w.status(&lena, "dead").await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
 
     assert_eq!(
         w.status(&lena, "no-such-route").await,

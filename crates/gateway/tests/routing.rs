@@ -155,7 +155,7 @@ async fn retries_on_429_and_5xx_not_on_400() {
     }
 
     // A 400 is the caller's to fix: the provider's answer, at once.
-    for status in [400, 404, 422] {
+    for status in [400, 422] {
         let h = harness("openai").await;
         let (a, m) = provider(&h, "a").await;
         let (b, mb) = provider(&h, "b").await;
@@ -1122,5 +1122,85 @@ mod fix_round_1 {
             .map(|t| t.provider)
             .collect();
         assert_eq!(names, ["p"]);
+    }
+}
+
+mod final_wave {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_provider_404_fails_over_without_a_retry_and_counts_for_the_breaker() {
+        let h = harness("openai").await;
+        let (a, ma) = provider(&h, "a").await;
+        let (b, mb) = provider(&h, "b").await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(json!({ "error": { "message": "model retired" } })),
+            )
+            .mount(&a)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ok("b"))
+            .mount(&b)
+            .await;
+        route(&h, "r", &[ma], &[mb], DEFAULTS).await;
+        let (s, body) = post_chat(&h.app, Some(&h.key), &chat("r", false)).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert_eq!(hits(&a).await, 1, "no retry of a 404");
+        let r = &h.sink.records()[0];
+        assert_eq!(
+            seen(r),
+            [
+                ("a".into(), AttemptOutcome::Retryable, Some(404)),
+                ("b".into(), AttemptOutcome::Ok, Some(200)),
+            ]
+        );
+        let health = h.state.health.view();
+        assert_eq!(
+            health.iter().find(|t| t.provider == "a").unwrap().failures,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn every_target_answering_404_is_502_without_the_provider_body() {
+        let h = harness("openai").await;
+        let (a, ma) = provider(&h, "a").await;
+        let (b, mb) = provider(&h, "b").await;
+        for up in [&a, &b] {
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(404).set_body_json(
+                        json!({ "error": { "message": "no deployment dep-secret" } }),
+                    ),
+                )
+                .mount(up)
+                .await;
+        }
+        route(&h, "r", &[ma], &[mb], DEFAULTS).await;
+        let (s, body) = post_chat(&h.app, Some(&h.key), &chat("r", false)).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY);
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"]["type"], "upstream_error");
+        assert_eq!(
+            v["error"]["message"],
+            "The provider does not know this model."
+        );
+        assert!(!body.contains("dep-secret"));
+        assert_eq!((hits(&a).await, hits(&b).await), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn a_direct_call_the_provider_answers_404_is_502() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("gone-detail"))
+            .mount(&h.upstream)
+            .await;
+        let (s, body) = post_chat(&h.app, Some(&h.key), &chat("p/gpt-4o", false)).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY);
+        assert!(body.contains("The provider does not know this model."));
+        assert!(!body.contains("gone-detail"));
     }
 }

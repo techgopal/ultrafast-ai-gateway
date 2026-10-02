@@ -19,6 +19,7 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use http_body_util::LengthLimitError;
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use ultrafast_translate::embeddings::{
     self, EmbeddingsRequest, EmbeddingsResponse, NOT_SUPPORTED as EMBEDDINGS_NOT_SUPPORTED,
 };
@@ -189,7 +190,7 @@ fn plan_of(
     key: &SnapKey,
     call: &Call,
     resolved: &Resolved<'_>,
-    rng: &mut StdRng,
+    rng: &mut impl Rng,
 ) -> (Vec<Candidate>, Settings) {
     let (order, settings) = match resolved {
         Resolved::Model(model) => (
@@ -283,7 +284,10 @@ async fn dispatch(
         Err(Denied::Unknown) => return not_found(shape, call.model()),
         Err(Denied::Forbidden) => return forbidden(shape, call.model()),
     };
-    let mut rng: StdRng = rand::make_rng();
+    // Seeded from the thread's generator (itself seeded once per thread), not
+    // from the operating system on every request. It is `Send`: it lives
+    // across awaits.
+    let mut rng = StdRng::from_rng(&mut rand::rng());
     let (candidates, settings) = plan_of(snapshot, key, &call, &resolved, &mut rng);
     record.targets(
         candidates
@@ -400,6 +404,10 @@ fn retry_after_of(headers: &axum::http::HeaderMap) -> Option<Duration> {
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds));
     }
+    // Digits too many for a number are a very long wait: the cap.
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(RETRY_AFTER_CAP);
+    }
     let at =
         time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc2822).ok()?;
     let wait = (at - time::OffsetDateTime::now_utc()).whole_seconds();
@@ -412,6 +420,8 @@ enum CallError {
     Translate(TranslateError),
     Redirect(String),
     TooLarge,
+    /// The provider answered 404. The caller is not shown its body.
+    UnknownModel,
     /// Retryable: the caller sees only that no provider could serve it.
     Lost,
 }
@@ -429,6 +439,11 @@ impl CallError {
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",
                 "The provider response was too large.",
+            ),
+            CallError::UnknownModel => shape.error(
+                StatusCode::BAD_GATEWAY,
+                "upstream_error",
+                "The provider does not know this model.",
             ),
             CallError::Lost => shape.error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -468,8 +483,9 @@ fn retryable<E>(error: E, status: Option<u16>) -> Failure<E> {
 }
 
 /// Whether another try could do better after this error of the provider.
-/// A rejected credential is the gateway's problem with this target, not the
-/// caller's: the next target is tried.
+/// A rejected credential, or a model the provider does not know, is the
+/// gateway's problem with this target, not the caller's: the next target is
+/// tried.
 fn failure_of(
     e: TranslateError,
     status: Option<u16>,
@@ -488,6 +504,12 @@ fn failure_of(
             status: 401 | 403, ..
         } => Failure::Failover {
             error: CallError::Translate(e),
+            status,
+        },
+        // The provider does not know the model (retired, or an Azure
+        // deployment that is missing): another target may.
+        TranslateError::Provider { status: 404, .. } => Failure::Failover {
+            error: CallError::UnknownModel,
             status,
         },
         e => Failure::Fatal {
@@ -970,6 +992,12 @@ mod tests {
         assert_eq!(retry_after_of(&HeaderMap::new()), None);
         assert_eq!(retry_after_of(&with("soon")), None);
         assert_eq!(retry_after_of(&with("-3")), None);
+        // Too many digits for a number: the cap, not no hint.
+        assert_eq!(
+            retry_after_of(&with("99999999999999999999999999")),
+            Some(RETRY_AFTER_CAP)
+        );
+        assert_eq!(RETRY_AFTER_CAP, Duration::from_secs(60));
         // A date in the past is no wait; one far ahead is a long one.
         assert_eq!(
             retry_after_of(&with("Mon, 01 Jan 1990 00:00:00 GMT")),

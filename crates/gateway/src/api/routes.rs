@@ -11,6 +11,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
+use crate::access;
 use crate::app::AppState;
 use crate::identity::policy::Action;
 use crate::identity::Principal;
@@ -160,12 +161,18 @@ fn view_of(row: RouteRow, targets: Vec<TargetRow>, team_ids: Vec<i64>, admin: bo
     }
 }
 
-/// A route is for everyone, or for its teams.
+/// Whether the principal may use a route open to everyone or to these teams:
+/// the same rule `/v1` applies (`access::route_usable`).
 pub(super) fn may_use(p: &Principal, everyone: bool, team_ids: &[i64]) -> bool {
-    everyone
-        || team_ids
-            .iter()
-            .any(|t| p.teams.iter().any(|(id, _)| id == t))
+    let teams = p.team_ids();
+    access::route_usable(
+        access::Viewer::User {
+            id: p.user_id,
+            admin: p.is_admin(),
+            team_ids: &teams,
+        },
+        &access::RouteFacts { everyone, team_ids },
+    )
 }
 
 /// The view of one route as this caller sees it; `None` when it is hidden.

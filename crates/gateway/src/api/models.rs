@@ -11,6 +11,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
+use crate::access;
 use crate::app::AppState;
 use ultrafast_translate::provider::ProviderKind;
 
@@ -108,14 +109,25 @@ pub struct UpdateModelRequest {
     enabled: bool,
 }
 
-/// Whether the principal may call a model granted like this.
-pub(super) fn may_call(p: &Principal, grants: &Grants) -> bool {
-    grants.everyone
-        || grants.user_ids.contains(&p.user_id)
-        || grants
-            .team_ids
-            .iter()
-            .any(|t| p.teams.iter().any(|(id, _)| id == t))
+/// Whether a non-admin principal may call a model that is `enabled` and
+/// granted like this: the same rule `/v1` applies (`access::model_callable`).
+/// The provider of a stored model is always present.
+pub(super) fn may_call(p: &Principal, enabled: bool, grants: &Grants) -> bool {
+    let teams = p.team_ids();
+    access::model_callable(
+        access::Viewer::User {
+            id: p.user_id,
+            admin: p.is_admin(),
+            team_ids: &teams,
+        },
+        &access::ModelFacts {
+            enabled,
+            provider_present: true,
+            everyone: grants.everyone,
+            team_ids: &grants.team_ids,
+            user_ids: &grants.user_ids,
+        },
+    )
 }
 
 pub(super) fn grouped(rows: Vec<GrantRow>) -> HashMap<i64, Grants> {
@@ -180,7 +192,7 @@ pub async fn list(
             let g = grants.remove(&m.id).unwrap_or_default();
             if me.is_admin() {
                 Some(ModelView::of(m, g.into()))
-            } else if m.enabled && may_call(me, &g) {
+            } else if may_call(me, m.enabled, &g) {
                 Some(ModelView::of(m, GrantsView::empty()))
             } else {
                 None

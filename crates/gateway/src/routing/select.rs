@@ -41,7 +41,6 @@ mod tests {
     use crate::routing::BreakerSettings;
     use rand::rngs::StdRng;
     use rand::SeedableRng;
-    use std::collections::HashSet;
     use std::time::Duration;
 
     fn target(name: &str) -> TargetRef {
@@ -57,7 +56,7 @@ mod tests {
             id: 1,
             name: "r".into(),
             everyone: true,
-            team_ids: HashSet::new(),
+            team_ids: Vec::new(),
             primaries: primaries.iter().map(|(n, w)| (target(n), *w)).collect(),
             fallbacks: fallbacks.iter().map(|n| target(n)).collect(),
             retries: 2,
