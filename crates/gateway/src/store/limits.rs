@@ -20,6 +20,8 @@ pub struct LimitRow {
     pub name: Option<String>,
     /// For a key, the user that owns it.
     pub key_owner: Option<i64>,
+    /// For a key, the team it belongs to.
+    pub key_team: Option<i64>,
 }
 
 impl LimitRow {
@@ -37,7 +39,8 @@ impl LimitRow {
 const SELECT: &str = "SELECT l.id, l.scope, l.scope_id,
             l.requests_per_minute, l.tokens_per_minute, l.concurrent,
             CASE l.scope WHEN 'key' THEN k.name WHEN 'user' THEN u.email WHEN 'team' THEN t.name END AS name,
-            k.user_id AS key_owner
+            k.user_id AS key_owner,
+            k.team_id AS key_team
      FROM rate_limits l
      LEFT JOIN virtual_keys k ON l.scope = 'key' AND k.id = l.scope_id AND k.org_id = l.org_id
      LEFT JOIN users u ON l.scope = 'user' AND u.id = l.scope_id AND u.org_id = l.org_id
@@ -64,6 +67,7 @@ fn limit_from(r: &SqliteRow) -> Result<LimitRow> {
         },
         name: r.get("name"),
         key_owner: r.get("key_owner"),
+        key_team: r.get("key_team"),
     })
 }
 

@@ -120,7 +120,9 @@ pub async fn list(
         .list_budgets()
         .await?
         .iter()
-        .filter(|b| b.has_subject() && limit_applies_to(me, b.scope, b.scope_id, b.key_owner))
+        .filter(|b| {
+            b.has_subject() && limit_applies_to(me, b.scope, b.scope_id, b.key_owner, b.key_team)
+        })
         .map(|b| view(&state, b, now))
         .collect();
     Ok(Json(BudgetsPage { budgets }).into_response())

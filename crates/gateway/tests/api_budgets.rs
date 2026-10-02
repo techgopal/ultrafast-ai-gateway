@@ -189,7 +189,13 @@ async fn who_sees_which_budgets() {
     let arjun = w.org.sign_in("arjun").await;
     assert_eq!(
         labels(&w, &arjun).await,
-        ["gateway", "team 'Platform'", "team 'Research'"]
+        [
+            "gateway",
+            "key 'lena-key'",
+            "key 'tomas-key'",
+            "team 'Platform'",
+            "team 'Research'"
+        ]
     );
     let priya = w.org.sign_in("priya").await;
     assert_eq!(labels(&w, &priya).await, ["gateway"]);

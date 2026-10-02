@@ -23,6 +23,8 @@ pub struct BudgetRow {
     pub name: Option<String>,
     /// For a key, the user that owns it.
     pub key_owner: Option<i64>,
+    /// For a key, the team it belongs to.
+    pub key_team: Option<i64>,
 }
 
 impl BudgetRow {
@@ -48,7 +50,8 @@ pub struct UsageRow {
 
 const SELECT: &str = "SELECT b.id, b.scope, b.scope_id, b.amount_micros, b.period, b.action,
             CASE b.scope WHEN 'key' THEN k.name WHEN 'user' THEN u.email WHEN 'team' THEN t.name END AS name,
-            k.user_id AS key_owner
+            k.user_id AS key_owner,
+            k.team_id AS key_team
      FROM budgets b
      LEFT JOIN virtual_keys k ON b.scope = 'key' AND k.id = b.scope_id AND k.org_id = b.org_id
      LEFT JOIN users u ON b.scope = 'user' AND u.id = b.scope_id AND u.org_id = b.org_id
@@ -71,6 +74,7 @@ fn budget_from(r: &SqliteRow) -> Result<BudgetRow> {
             .ok_or_else(|| anyhow!("stored budget action is not known"))?,
         name: r.get("name"),
         key_owner: r.get("key_owner"),
+        key_team: r.get("key_team"),
     })
 }
 

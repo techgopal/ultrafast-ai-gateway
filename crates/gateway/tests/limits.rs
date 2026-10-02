@@ -3,16 +3,23 @@
 
 mod common;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{allow_model, hanging_upstream, harness, post_to, seed_team, seed_user, Harness};
+use common::{
+    allow_model, hanging_upstream, harness, harness_with_rate, post_to, seed_team, seed_user,
+    Harness,
+};
 use futures::StreamExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 use ultrafast_gateway::identity::{Role, TeamRole};
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
+use ultrafast_gateway::limits::{
+    LimitScope, Limiter, MemoryLimiter, Permit, RateLimit, Refusal, Subjects,
+};
 use ultrafast_gateway::secrets::generate_key;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
@@ -29,7 +36,10 @@ struct World {
 }
 
 async fn world() -> World {
-    let h = harness("openai").await;
+    world_on(harness("openai").await).await
+}
+
+async fn world_on(h: Harness) -> World {
     let user = seed_user(&h.store, "lena@example.com", Role::Member, PASSWORD).await;
     let team = seed_team(&h.store, "Platform", &[(user, TeamRole::Member)]).await;
     let key = generate_key();
@@ -531,4 +541,80 @@ async fn a_limit_written_to_the_store_applies_after_the_snapshot_refresh() {
     // The two calls above were not counted: the limit was not there yet.
     assert_eq!(w.chat(BODY).await.0, StatusCode::OK);
     assert_eq!(w.chat(BODY).await.0, StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// A limiter whose clock the test sets: every call is counted at
+/// `base + at` seconds, whatever the time is.
+struct SetClock {
+    inner: MemoryLimiter,
+    base: Instant,
+    at: AtomicU64,
+}
+
+impl Limiter for SetClock {
+    fn acquire(&self, who: &Subjects, estimate: u64, _now: Instant) -> Result<Permit, Refusal> {
+        let at = Duration::from_secs(self.at.load(Ordering::SeqCst));
+        self.inner.acquire(who, estimate, self.base + at)
+    }
+}
+
+#[tokio::test]
+async fn retry_after_is_the_exact_wait_for_the_window_to_empty() {
+    let inner = MemoryLimiter::new();
+    let clock = Arc::new(SetClock {
+        inner,
+        base: Instant::now() + Duration::from_secs(1),
+        at: AtomicU64::new(0),
+    });
+    let w = world_on(harness_with_rate("openai", clock.clone()).await).await;
+    upstream(&w, ok(1, 2)).await;
+    w.limit(LimitScope::Key, Some(1), None, None).await;
+    // The one request is counted at second 0; at second 20 it leaves the
+    // window at second 60: 40 seconds to wait.
+    assert_eq!(w.chat(BODY).await.0, StatusCode::OK);
+    clock.at.store(20, Ordering::SeqCst);
+    let (status, headers, _) = w.chat(BODY).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(headers["retry-after"], "40");
+    // At second 59 one second is left; at 60 the call goes through.
+    clock.at.store(59, Ordering::SeqCst);
+    let (_, headers, _) = w.chat(BODY).await;
+    assert_eq!(headers["retry-after"], "1");
+    clock.at.store(60, Ordering::SeqCst);
+    assert_eq!(w.chat(BODY).await.0, StatusCode::OK);
+}
+
+/// A key of a team throttles by the team's limit whoever owns it: its owner
+/// need not be a member, and it need not have an owner.
+#[tokio::test]
+async fn a_team_key_is_throttled_by_its_teams_limit_without_membership() {
+    for owned in [true, false] {
+        let w = world().await;
+        let outsider = seed_user(&w.h.store, "omar@example.com", Role::Member, PASSWORD).await;
+        let key = generate_key();
+        let mut tx = w.h.store.begin().await.unwrap();
+        tx.insert_key(
+            "team-key",
+            &key.hash,
+            &key.display,
+            None,
+            owned.then_some(outsider),
+            Some(w.team),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        w.limit(LimitScope::Team, Some(1), None, None).await;
+        upstream(&w, ok(1, 2)).await;
+        let bearer = format!("Bearer {}", key.full);
+        let headers = [("authorization", bearer.as_str())];
+        let call = || post_to(&w.h.app, "/v1/chat/completions", &headers, BODY);
+        assert_eq!(call().await.0, StatusCode::OK, "owned: {owned}");
+        let (status, _, body) = call().await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "owned: {owned}");
+        assert_eq!(
+            message(&body),
+            "rate limit 'requests per minute' of team 'Platform' reached"
+        );
+    }
 }

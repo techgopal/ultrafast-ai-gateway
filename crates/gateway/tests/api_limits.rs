@@ -160,15 +160,65 @@ async fn who_sees_which_limits() {
             "user 'lena@example.com'"
         ]
     );
-    // arjun leads Platform and is in Research; he owns no key and has no limit of his own.
+    // arjun leads Platform and is in Research; he owns no key and has no
+    // limit of his own, but the keys of both his teams throttle him.
     let arjun = w.org.sign_in("arjun").await;
     assert_eq!(
         labels(&w, &arjun).await,
-        ["gateway", "team 'Platform'", "team 'Research'"]
+        [
+            "gateway",
+            "key 'lena-key'",
+            "key 'tomas-key'",
+            "team 'Platform'",
+            "team 'Research'"
+        ]
     );
     // priya is in no team.
     let priya = w.org.sign_in("priya").await;
     assert_eq!(labels(&w, &priya).await, ["gateway"]);
+}
+
+/// A key of a team is listed to the members of that team, and to its owner
+/// even when the owner has left the team.
+#[tokio::test]
+async fn a_team_key_limit_is_listed_to_the_teams_members() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    // lena owns a key of Research, a team she is not in.
+    let key = generate_key();
+    let mut tx = w.org.api.store.begin().await.unwrap();
+    let id = tx
+        .insert_key(
+            "lena-research",
+            &key.hash,
+            &key.display,
+            None,
+            Some(w.org.lena),
+            Some(w.org.research),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let (status, _) = put(
+        &w,
+        &maya,
+        json!({ "scope": "key", "scope_id": id, "concurrent": 1 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let seen = |who: &'static str| {
+        let w = &w;
+        async move {
+            let who = w.org.sign_in(who).await;
+            labels(w, &who)
+                .await
+                .contains(&"key 'lena-research'".to_string())
+        }
+    };
+    assert!(seen("lena").await, "the owner");
+    assert!(seen("tomas").await, "a member of the key's team");
+    assert!(seen("arjun").await, "a member of the key's team");
+    assert!(!seen("priya").await, "in no team");
 }
 
 #[tokio::test]

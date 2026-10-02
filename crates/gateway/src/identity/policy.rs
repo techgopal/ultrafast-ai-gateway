@@ -261,12 +261,15 @@ fn by_team_role(p: &Principal, team_id: i64, lead: Decision, member: Decision) -
 
 /// Whether a limit applies to `p`, which is what a non-admin sees of the
 /// limits: the gateway's, those of their teams (in any role), their own, and
-/// those of their keys. `key_owner` is the owner of the key, for a key limit.
+/// those of their keys and of keys of their teams (which throttle them).
+/// `key_owner` and `key_team` are the owner and the team of the key, for a
+/// key limit.
 pub fn limit_applies_to(
     p: &Principal,
     scope: LimitScope,
     scope_id: Option<i64>,
     key_owner: Option<i64>,
+    key_team: Option<i64>,
 ) -> bool {
     if p.is_admin() {
         return true;
@@ -275,7 +278,9 @@ pub fn limit_applies_to(
         LimitScope::Gateway => true,
         LimitScope::Team => scope_id.is_some_and(|t| p.team_role(t).is_some()),
         LimitScope::User => scope_id == Some(p.user_id),
-        LimitScope::Key => key_owner == Some(p.user_id),
+        LimitScope::Key => {
+            key_owner == Some(p.user_id) || key_team.is_some_and(|t| p.team_role(t).is_some())
+        }
     }
 }
 
@@ -1280,7 +1285,7 @@ mod tests {
     fn limits_that_apply_to_a_caller() {
         let f = fixture();
         // lead (2): leads 10, member of 20. member (3): member of 10.
-        let applies = |p: &Principal, scope, id, owner| limit_applies_to(p, scope, id, owner);
+        let applies = |p: &Principal, scope, id, owner| limit_applies_to(p, scope, id, owner, None);
         for p in [&f.admin, &f.lead, &f.member, &f.loner] {
             assert!(applies(p, LimitScope::Gateway, None, None));
         }
@@ -1300,5 +1305,13 @@ mod tests {
         assert!(applies(&f.member, LimitScope::Key, Some(5), Some(3)));
         assert!(!applies(&f.lead, LimitScope::Key, Some(5), Some(3)));
         assert!(!applies(&f.member, LimitScope::Key, Some(5), None));
+        // A key of one of their teams throttles them, whoever owns it.
+        let of_team = |p: &Principal, team| {
+            limit_applies_to(p, LimitScope::Key, Some(5), Some(77), Some(team))
+        };
+        assert!(of_team(&f.member, 10));
+        assert!(of_team(&f.lead, 20));
+        assert!(!of_team(&f.member, 20));
+        assert!(!of_team(&f.loner, 10));
     }
 }

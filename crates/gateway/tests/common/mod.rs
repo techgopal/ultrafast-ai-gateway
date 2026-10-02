@@ -12,6 +12,7 @@ use ultrafast_gateway::app::{
 };
 use ultrafast_gateway::identity::password::{hash_password, warm_up};
 use ultrafast_gateway::identity::{Role, TeamRole, UserStatus};
+use ultrafast_gateway::limits::Limiter;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
 use ultrafast_gateway::store::{Grants, NewUser, Store};
 use ultrafast_gateway::telemetry::{RequestRecord, RequestSink};
@@ -79,6 +80,19 @@ pub async fn harness_with_sink(kind: &str, sink: Arc<dyn RequestSink>) -> Harnes
         DEFAULT_MAX_BODY_BYTES,
         DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
         Some(sink),
+        None,
+    )
+    .await
+}
+
+/// Like [`harness`], with `rate` as the limiter of `/v1`.
+pub async fn harness_with_rate(kind: &str, rate: Arc<dyn Limiter>) -> Harness {
+    build_harness(
+        kind,
+        DEFAULT_MAX_BODY_BYTES,
+        DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+        None,
+        Some(rate),
     )
     .await
 }
@@ -88,7 +102,14 @@ async fn harness_with_limits(
     max_body_bytes: usize,
     max_provider_response_bytes: usize,
 ) -> Harness {
-    build_harness(kind, max_body_bytes, max_provider_response_bytes, None).await
+    build_harness(
+        kind,
+        max_body_bytes,
+        max_provider_response_bytes,
+        None,
+        None,
+    )
+    .await
 }
 
 async fn build_harness(
@@ -96,6 +117,7 @@ async fn build_harness(
     max_body_bytes: usize,
     max_provider_response_bytes: usize,
     own_sink: Option<Arc<dyn RequestSink>>,
+    rate: Option<Arc<dyn Limiter>>,
 ) -> Harness {
     let upstream = MockServer::start().await;
     let store = Store::open_in_memory().await.unwrap();
@@ -120,6 +142,9 @@ async fn build_harness(
     state.max_provider_response_bytes = max_provider_response_bytes;
     let sink = Arc::new(MemorySink::default());
     state.sink = own_sink.unwrap_or_else(|| sink.clone());
+    if let Some(rate) = rate {
+        state.rate = rate;
+    }
     let state = Arc::new(state);
     Harness {
         sink,

@@ -101,7 +101,9 @@ pub async fn list(
         .list_limits()
         .await?
         .iter()
-        .filter(|l| l.has_subject() && limit_applies_to(me, l.scope, l.scope_id, l.key_owner))
+        .filter(|l| {
+            l.has_subject() && limit_applies_to(me, l.scope, l.scope_id, l.key_owner, l.key_team)
+        })
         .map(LimitView::from)
         .collect();
     Ok(Json(LimitsPage { limits }).into_response())
