@@ -1,0 +1,49 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-10-01-models-and-routing.md
+
+Branch: v2. Plan commit: abb564f. Baseline: 1301 console unit tests, 428 Rust tests, 44 E2E.
+Agents: uf-implementer/uf-reviewer (Sonnet), uf-final-reviewer (Opus). Run mode: back-to-back (owner, 2026-10-01).
+
+Preflight: tasks 1-8 gateway (1 independent; 2→3→4→6; 5 before 6; 7,8 after 6), 9-11 console after their APIs, 12 last. Shared files: api/openapi.rs ROUTES + tests/api_roles.rs touched by 1,2,3,6 (sequential, no conflict); snapshot.rs by 4,6; proxy.rs by 4,5,6,8.
+Ruling: tasks run in plan order, one implementer at a time — cost if wrong: none.
+Ruling: project agents (.claude/agents) load only at session start; this session dispatches general-purpose agents with model sonnet that read and follow the agent files — cost if wrong: none (same instructions, same model).
+Task 1: dispatched (BASE abb564f), report task-1-report.md.
+Task 1 implemented: 4234678 (DONE_WITH_CONCERNS). Deviations ACCEPTED: 201 body reuses MemberDetail; PutMember stays 404 for outsiders (hidden teams); RemoveMember carries target role; refresh_count() for refresh test; ipnet dependency; TeamView renamed UserTeamView. Task 1 review dispatched (copy). Task 2 dispatched, BASE 4234678.
+Task 1 review: spec PASS, quality Approved with one Important (UserView.teams leaks other teams to a lead) + Minors. Ruling: fix round 1 (task-1-fix-round-1.md: items 1-5) runs after Task 2 commits, by resuming the Task 1 implementer — cost if wrong: leak stays a few hours on an unpushed branch. PARKED: bind limit >32766 users (note); me duplication (ACCEPT).
+Task 2 implemented: 58236af (DONE_WITH_CONCERNS; readings: grants everyone+ids → 422; sync audits every call; invalid listed names skipped, cap 10000; credential from snapshot; stored_data test updated for migration 0003). Task 2 review dispatched; Task 1 fix round 1 dispatched (resume), BASE 58236af.
+Task 1 fix round 1: 7149c26. Re-review dispatched. Task 3 dispatched, BASE 7149c26.
+Task 2 review: spec PASS, quality Approved; Important test gap (4 MiB cap unpinned) + 3 Minor. Ruling: Task 2 fix round 1 (task-2-fix-round-1.md) queued after Task 3 (checkout busy) — resume the Task 2 implementer. Task 1 fix round re-review pending.
+Task 1 re-review: all 5 ADDRESSED. Minor PARKED (final wave): long help comment line in main.rs. Task 1: complete (7149c26).
+Task 3 implemented: 43b9e22 (DONE). Task 3 review dispatched; Task 2 fix round 1 dispatched (resume), BASE 43b9e22.
+Task 3 review: spec PASS, Approved; Important design hazard (deleting a route's only team opens it to all). Ruling: explicit routes.everyone flag (task-3-fix-round-1.md) — why: same model as model_grants, fail-closed — cost if wrong: one more column. ACCEPT: non-admins see target model names of usable routes. Fix round queued after Task 2 fix round.
+Task 2 fix round 1: f8f55c1. Re-review dispatched. Task 3 fix round 1 dispatched (resume), BASE f8f55c1.
+Task 2 re-review: all 4 ADDRESSED, no new findings. Task 2: complete (f8f55c1).
+Task 3 fix round 1: 860c0b7. Re-review dispatched. Task 4 dispatched, BASE 860c0b7.
+Task 3 re-review: all 4 ADDRESSED. Minor PARKED (final wave): FK race on a fallback reported under fields.primaries; non-admin sees everyone=false (documented hidden, ACCEPT). Task 3: complete (860c0b7).
+Task 4 implemented: 063c084 (gates re-run after a stall: green). Readings: [] allowlist 422; all-gone route 503, none-callable 403; owner not active → ownerless; snapshot load not atomic. Task 4 review dispatched; Task 5 dispatched, BASE 063c084.
+Task 5 implemented: 03c9f59 (DONE). Task 5 review dispatched. Ruling: Task 6 waits for the Task 4 review (both touch access.rs/snapshot.rs/proxy.rs) — cost if wrong: some idle time.
+Task 4 review (in message; reviewer could not write the file): spec PASS; Important: key whose owner is missing from the snapshot (disable race during non-atomic load) served like an ownerless key → can call everyone-granted models. Ruling: fix round 1 (task-4-fix-round-1.md, items 1-5) by resuming the Task 4 implementer now; Task 6 after it. ACCEPT: body parsed before access check.
+Task 5 review: spec PASS, Approved; 3 Minor (attempt shape on in-flight drop / build error / abandoned stream; weak test) → folded into Task 6 (task-6-additions.md). Task 5: complete (03c9f59). Note: I killed the reviewer's test run by mistake; it re-ran green.
+Task 4 fix round 1: 7d3fbce. Re-review dispatched. Task 6 dispatched, BASE 7d3fbce (with task-6-additions.md).
+Task 4 re-review: all 5 ADDRESSED, no new findings (ghost-owner probe now denied; one read tx confirmed). Task 4: complete (7d3fbce).
+Task 6 implemented: 552399a..5b917a2 (5 commits; DONE_WITH_CONCERNS). Ruling pending review: exhausted route answers 503 even when every attempt was a 429 — reviewer asked to weigh; my lean: all-429 → 429 (+Retry-After) so SDK backoff works. Task 6 review dispatched; Task 7 dispatched, BASE 5b917a2.
+Task 6 review: COMPLIANT, Approved; 2 Important (401/403 no failover; all-429 → 503 loses Retry-After) + Minors. Rulings (task-6-fix-round-1.md): provider 401/403 fails over and counts for the breaker — why: it is the gateway's credential, a fallback with a good key should serve — cost if wrong: one wasted attempt per call on a bad key until the breaker opens; all-429 → 429 with capped Retry-After (60 s), engine honours Retry-After up to 4 s — why: clients need the wait hint — cost if wrong: none significant. Fix round queued after Task 7 commits.
+Task 7 implemented: 218ce29 (DONE). Task 7 review dispatched; Task 6 fix round 1 dispatched (resume), BASE 218ce29.
+Task 7 review: PASS, Approved; 6 Minor Gemini items → folded into Task 8 (task-8-additions.md). Task 7: complete (218ce29).
+Task 6 fix round 1: 4a229f7. Re-review dispatched. Task 8 dispatched (with task-8-additions.md), BASE 4a229f7.
+Task 6 re-review: all 6 ADDRESSED, Approved. Minor PARKED (final wave): N2 overflowing all-digit Retry-After → clamp to 60; N1 retain before swap (harmless, ACCEPT); N3 429 with circuit-open skips (ACCEPT). Task 6: complete (4a229f7).
+Task 8 implemented: a52523e, 4d83874 (DONE_WITH_CONCERNS: no RED for ingress/embeddings — reviewer to probe by mutation). Task 8 review dispatched; Task 9 dispatched, BASE 4d83874.
+Task 8 review: PASS, Approved; 2 Important test gaps (embeddings access/shape unpinned; stop_reason mapping unasserted) + Minors. Ruling: fix round 1 (task-8-fix-round-1.md) after Task 9 commits — resume Task 8 implementer.
+Task 9 implemented: a251d6c (DONE_WITH_CONCERNS; radio/checkbox lists for selects; failed toggle → page alert; FilterSelect shared; hand-written shadcn switch). Task 9 review dispatched; Task 8 fix round 1 dispatched (resume), BASE a251d6c.
+Task 9 review: compliant, Approved; Minors folded into Task 10 (task-10-additions.md); LATER: searchable grant lists. Task 9: complete (a251d6c).
+Task 8 fix round 1: e8a64e7 (each new test RED under its mutant). Re-review dispatched. Task 10 dispatched (with task-10-additions.md), BASE e8a64e7.
+Task 8 re-review: all 7 ADDRESSED; 4 previously surviving mutants now fail. Task 8: complete (e8a64e7). Gateway backend of plan 5 complete.
+Task 10 implemented: 853b7ab, d3a2a8f (DONE_WITH_CONCERNS: page tests written after pages). Ruling: new route defaults to 'Admins only' — consistent with new models disabled by default, fail-closed — cost if wrong: admins must pick teams once. Task 10 review dispatched; Task 11 dispatched, BASE d3a2a8f.
+Task 10 review: PASS, Approved; Minors 2-5 PARKED to the final fix wave (console). Task 10: complete (d3a2a8f).
+Task 11 implemented: 29ea270 (DONE_WITH_CONCERNS: one commit; allowlist component tests after code). Task 11 review dispatched; Task 12 dispatched, BASE 29ea270.
+Task 11 review: PASS, Approved; Minors 1-4 PARKED to the final fix wave. Task 11: complete (29ea270).
+Task 12 implemented: 01a92f3 (E2E 3x green 56 passed/4 skipped; cargo/ui gates green; binary 21.4 MB; JS 228 kB gz). Task 12 review + final whole-branch review dispatched in parallel (review-abb564f..01a92f3.diff).
+Task 12 review: PASS, Approved (3 mutations killed; E2E 2x green). Minor PARKED to final wave: restore unknown-email E2E with a scoped per-test rules allowance (rules.expectRefusal), assert 403 body code in routing.spec; prettier noise ACCEPT (already committed); 4 skips are the desktop-only launcher spec on phone (known). Task 12: complete (01a92f3). All 12 tasks complete; final review running.
+Final review (Opus): ready after fixes. Important: role change doesn't refresh snapshot (demoted admin keeps admin access ≤30 s); CLI/README quickstart and upgrade path broken by the catalog (404 until enable+grant). Minors 3-10. Rulings: FIX A1-A7, B1-B3, C1-C2 (final-fix-wave.md). ACCEPT: 403 (not 404) for invisible models — spec 8 mandates 403 — cost if wrong: catalog names visible to key holders; ACCEPT: CF-Connecting-IP trust, documented. LATER: grant-list filter (next console plan); bind-limit chunking (with users pagination); key team_id narrowing grants (owner question, plan 6). Final fix wave dispatched, BASE 01a92f3.
+Final fix wave: dcf7786, 37d9cec, 51a8900, ee57dea, 8db7c9d, bbdba9b (cargo 659, ui 1491, E2E 3x 56/4). A5 disagreements resolved as listed in its reply (admins see/name disabled models on management surfaces; route usable by grant alone on console). Scoped re-review dispatched.
+Final fix wave re-review: all items ADDRESSED; cargo 683, ui 1491, E2E 56/4. Residual Minors PARKED → plan 6 Task 1 carry-over: (1) `model add` output says a running gateway picks it up within 30 s; (2) "already in the catalog" when nothing changed; (3) console route usability by grant alone vs /v1 needing a callable target — show such routes as not nameable in key allowlists for non-admins (use route_usable + callable check); (4) agreement test covers a missing owner.
+Plan 5 COMPLETE at bbdba9b.

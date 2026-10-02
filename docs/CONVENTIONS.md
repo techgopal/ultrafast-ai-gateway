@@ -60,6 +60,11 @@ and briefs add to these; they do not repeat them.
   background writer.
 - Every admin route is declared once with utoipa; `openapi/admin.json` is
   generated from it and every operation has a unique `operationId`.
+- Access to models and routes is decided only by the shared predicates in
+  `crates/gateway/src/access.rs` (`model_callable`, `route_usable`); /v1 and the
+  admin API's lists use the same functions. Every admin write that can change
+  access (grants, enabled, routes, membership, role, status, key allowlist,
+  provider delete) calls `refresh_snapshot` after commit.
 - Stateful features (rate limits, budgets, cache) sit behind traits so a shared
   store can replace the in-memory one.
 - Errors to clients use the gateway's error shape; never leak provider keys or
@@ -108,6 +113,8 @@ and briefs add to these; they do not repeat them.
   can appear; a "list shows it afterwards" test must fail without the
   invalidation; one session-over test per form. Fill forms with `paste` where
   typing is not what is tested; one test per form types for real.
+- E2E (`ui/e2e/`): an expected API refusal is allowed per test with
+  `rules.expectRefusal(status, pathRegex)`, which fails if it never happens.
 - E2E (`ui/e2e/`): every spec fails on a console error, a CSP violation or a
   request to another origin; the launcher in `e2e/gateway.ts` is the only way to
   start a gateway.
