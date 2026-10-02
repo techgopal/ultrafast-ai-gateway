@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/banner.png" alt="ultrafast — one small binary between your apps and every model" width="100%"></p>
+
 # Ultrafast Gateway 🚀
 
 > **v2 is in development on this branch.** The v1 code under `ultrafast-gateway/`
