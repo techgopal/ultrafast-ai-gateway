@@ -66,6 +66,13 @@ pub struct ModelView {
     pub enabled: bool,
     pub grants: GrantsView,
     pub created_at: String,
+    /// What a million input tokens cost, in millionths of a dollar. `null`
+    /// is unknown: calls of the model are logged with cost 0, unpriced.
+    #[schema(required)]
+    pub input_price_micros: Option<i64>,
+    /// What a million output tokens cost, in millionths of a dollar.
+    #[schema(required)]
+    pub output_price_micros: Option<i64>,
 }
 
 impl ModelView {
@@ -78,6 +85,8 @@ impl ModelView {
             enabled: m.enabled,
             grants,
             created_at: m.created_at,
+            input_price_micros: m.input_price_micros,
+            output_price_micros: m.output_price_micros,
         }
     }
 }
@@ -106,7 +115,25 @@ pub struct CreateModelRequest {
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateModelRequest {
-    enabled: bool,
+    /// Left out, the model stays as it is.
+    enabled: Option<bool>,
+    /// Millionths of a dollar per million input tokens, 0 or more. Left
+    /// out, the price stays; `null` makes it unknown.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<i64>, minimum = 0)]
+    input_price_micros: Option<Option<i64>>,
+    /// Like `input_price_micros`, for output tokens.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<i64>, minimum = 0)]
+    output_price_micros: Option<Option<i64>>,
+}
+
+/// Reads a field that is there, so `null` differs from a missing field.
+fn present<'de, D>(deserializer: D) -> Result<Option<Option<i64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<i64>::deserialize(deserializer).map(Some)
 }
 
 /// Whether a non-admin principal may call a model that is `enabled` and
@@ -287,6 +314,7 @@ pub async fn create(
         (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
         (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
         (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "A price is negative; `fields` names each of them.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
     security(("session" = []), ("token" = [])),
@@ -303,19 +331,68 @@ pub async fn update(
     require(me, &Action::ManageModels)?;
     let id = model_exists(&state, &raw_id).await?;
 
+    if req.enabled.is_none()
+        && req.input_price_micros.is_none()
+        && req.output_price_micros.is_none()
+    {
+        return Err(ApiError::bad_request(
+            "Send at least one of enabled, input_price_micros and output_price_micros.",
+        ));
+    }
+    let mut fields = BTreeMap::new();
+    for (name, price) in [
+        ("input_price_micros", req.input_price_micros),
+        ("output_price_micros", req.output_price_micros),
+    ] {
+        if price.flatten().is_some_and(|p| p < 0) {
+            fields.insert(name.to_string(), "must be 0 or more".to_string());
+        }
+    }
+    if !fields.is_empty() {
+        return Err(ApiError::validation(fields));
+    }
+
     let mut tx = state.store.begin().await?;
     let model = tx.model_by_id(id).await?.ok_or_else(ApiError::not_found)?;
-    if !tx.set_model_enabled(id, req.enabled).await? {
-        return Err(ApiError::not_found());
+    let mut did = Vec::new();
+    if let Some(enabled) = req.enabled {
+        if !tx.set_model_enabled(id, enabled).await? {
+            return Err(ApiError::not_found());
+        }
+        did.push(format!(
+            "{} {}",
+            if enabled { "Enabled" } else { "Disabled" },
+            model.name
+        ));
     }
-    let verb = if req.enabled { "Enabled" } else { "Disabled" };
+    let mut prices = Vec::new();
+    let price_text = |p: Option<i64>| p.map_or("unknown".to_string(), |p| p.to_string());
+    if let Some(price) = req.input_price_micros {
+        if !tx.set_model_input_price(id, price).await? {
+            return Err(ApiError::not_found());
+        }
+        prices.push(format!("input {}", price_text(price)));
+    }
+    if let Some(price) = req.output_price_micros {
+        if !tx.set_model_output_price(id, price).await? {
+            return Err(ApiError::not_found());
+        }
+        prices.push(format!("output {}", price_text(price)));
+    }
+    if !prices.is_empty() {
+        did.push(format!(
+            "Set price of {}: {} micro-dollars per million tokens",
+            model.name,
+            prices.join(", ")
+        ));
+    }
     tx.audit(AuditEntry {
         actor_user_id: Some(me.user_id),
         actor_email: &me.email,
         action: "model.update",
         target_type: "model",
         target_id: Some(id),
-        summary: &format!("{verb} {}", model.name),
+        summary: &did.join("; "),
     })
     .await?;
     tx.commit().await?;

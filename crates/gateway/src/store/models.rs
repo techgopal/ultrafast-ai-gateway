@@ -9,7 +9,7 @@ use sqlx::{AssertSqlSafe, Row};
 use super::{write_error, Store, Tx, DEFAULT_ORG};
 
 const MODEL_SELECT: &str = "SELECT m.id, m.provider_id, p.name AS provider_name, m.name,
-            m.enabled, m.created_at
+            m.enabled, m.created_at, m.input_price_micros, m.output_price_micros
      FROM models m
      JOIN providers p ON p.id = m.provider_id AND p.org_id = m.org_id";
 
@@ -21,6 +21,9 @@ pub struct ModelRow {
     pub name: String,
     pub enabled: bool,
     pub created_at: String,
+    /// Per million tokens, in millionths of a dollar; `None` is unknown.
+    pub input_price_micros: Option<i64>,
+    pub output_price_micros: Option<i64>,
 }
 
 fn model_from(r: &SqliteRow) -> ModelRow {
@@ -31,6 +34,8 @@ fn model_from(r: &SqliteRow) -> ModelRow {
         name: r.get("name"),
         enabled: r.get::<i64, _>("enabled") != 0,
         created_at: r.get("created_at"),
+        input_price_micros: r.get("input_price_micros"),
+        output_price_micros: r.get("output_price_micros"),
     }
 }
 
@@ -116,6 +121,30 @@ impl Tx<'_> {
             .bind(DEFAULT_ORG)
             .execute(self.conn())
             .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
+    /// Sets the price of input tokens; `None` makes it unknown. Returns
+    /// `false` if there is no such model.
+    pub async fn set_model_input_price(&mut self, id: i64, price: Option<i64>) -> Result<bool> {
+        let r = sqlx::query("UPDATE models SET input_price_micros = ? WHERE id = ? AND org_id = ?")
+            .bind(price)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
+    /// Like `set_model_input_price`, for output tokens.
+    pub async fn set_model_output_price(&mut self, id: i64, price: Option<i64>) -> Result<bool> {
+        let r =
+            sqlx::query("UPDATE models SET output_price_micros = ? WHERE id = ? AND org_id = ?")
+                .bind(price)
+                .bind(id)
+                .bind(DEFAULT_ORG)
+                .execute(self.conn())
+                .await?;
         Ok(r.rows_affected() == 1)
     }
 

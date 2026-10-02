@@ -284,6 +284,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["settings_view"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["settings_update"];
+        trace?: never;
+    };
     "/api/setup": {
         parameters: {
             query?: never;
@@ -642,8 +658,19 @@ export interface components {
             grants: components["schemas"]["GrantsView"];
             /** Format: int64 */
             id: number;
+            /**
+             * Format: int64
+             * @description What a million input tokens cost, in millionths of a dollar. `null`
+             *     is unknown: calls of the model are logged with cost 0, unpriced.
+             */
+            input_price_micros: number | null;
             /** @description The provider's own id for the model. */
             name: string;
+            /**
+             * Format: int64
+             * @description What a million output tokens cost, in millionths of a dollar.
+             */
+            output_price_micros: number | null;
             /** Format: int64 */
             provider_id: number;
             provider_name: string;
@@ -787,6 +814,13 @@ export interface components {
         RoutingHealth: {
             targets: components["schemas"]["TargetHealth"][];
         };
+        SettingsView: {
+            /**
+             * Format: int64
+             * @description How many days request logs are kept before they are deleted.
+             */
+            log_retention_days: number;
+        };
         SetupRequest: {
             email: string;
             name: string;
@@ -877,7 +911,19 @@ export interface components {
             status: components["schemas"]["TokenStatus"];
         };
         UpdateModelRequest: {
-            enabled: boolean;
+            /** @description Left out, the model stays as it is. */
+            enabled?: boolean | null;
+            /**
+             * Format: int64
+             * @description Millionths of a dollar per million input tokens, 0 or more. Left
+             *     out, the price stays; `null` makes it unknown.
+             */
+            input_price_micros?: number | null;
+            /**
+             * Format: int64
+             * @description Like `input_price_micros`, for output tokens.
+             */
+            output_price_micros?: number | null;
         };
         UpdateProviderRequest: {
             /** @description Absent leaves the key, `null` removes it, a string replaces it. */
@@ -890,6 +936,13 @@ export interface components {
             name?: string | null;
             role?: string | null;
             status?: string | null;
+        };
+        UpdateSettingsRequest: {
+            /**
+             * Format: int64
+             * @description 1 to 3650.
+             */
+            log_retention_days: number;
         };
         UserList: {
             users: components["schemas"]["UserView"][];
@@ -1807,6 +1860,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
+            /** @description A price is negative; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
             /** @description Something went wrong. */
             500: {
                 headers: {
@@ -2641,6 +2703,134 @@ export interface operations {
             };
             /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    settings_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    settings_update: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description The settings after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description A value is out of range; `fields` names each of them. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

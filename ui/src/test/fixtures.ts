@@ -259,6 +259,8 @@ export const models = {
     enabled: true,
     grants: { everyone: true, team_ids: [], user_ids: [] },
     created_at: "2026-09-01 10:00:00",
+    input_price_micros: null,
+    output_price_micros: null,
   },
   /** Enabled, granted to two teams and a user. */
   openaiFull: {
@@ -269,6 +271,8 @@ export const models = {
     enabled: true,
     grants: { everyone: false, team_ids: [teams.platform.id, teams.research.id], user_ids: [users.priya.id] },
     created_at: "2026-09-01 10:00:01",
+    input_price_micros: null,
+    output_price_micros: null,
   },
   /** Disabled, as a synced model starts: granted to nobody. */
   openaiDisabled: {
@@ -279,6 +283,8 @@ export const models = {
     enabled: false,
     grants: { everyone: false, team_ids: [], user_ids: [] },
     created_at: "2026-09-01 10:00:02",
+    input_price_micros: null,
+    output_price_micros: null,
   },
   /** Enabled, and nobody has access: only an admin can call it. */
   localLlama: {
@@ -289,6 +295,8 @@ export const models = {
     enabled: true,
     grants: { everyone: false, team_ids: [], user_ids: [] },
     created_at: "2026-09-02 08:00:00",
+    input_price_micros: null,
+    output_price_micros: null,
   },
 } satisfies Record<string, Model>;
 

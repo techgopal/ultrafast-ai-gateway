@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod config;
 pub mod errors;
 pub mod identity;
+pub mod logs;
 pub mod proxy;
 pub mod routing;
 pub mod secrets;

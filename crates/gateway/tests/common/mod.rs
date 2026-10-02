@@ -71,10 +71,31 @@ pub async fn harness_with_response_limit(kind: &str, max_response_bytes: usize) 
     harness_with_limits(kind, DEFAULT_MAX_BODY_BYTES, max_response_bytes).await
 }
 
+/// Like [`harness`], with `sink` receiving the records instead of the
+/// harness's own memory sink (which then stays empty).
+pub async fn harness_with_sink(kind: &str, sink: Arc<dyn RequestSink>) -> Harness {
+    build_harness(
+        kind,
+        DEFAULT_MAX_BODY_BYTES,
+        DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+        Some(sink),
+    )
+    .await
+}
+
 async fn harness_with_limits(
     kind: &str,
     max_body_bytes: usize,
     max_provider_response_bytes: usize,
+) -> Harness {
+    build_harness(kind, max_body_bytes, max_provider_response_bytes, None).await
+}
+
+async fn build_harness(
+    kind: &str,
+    max_body_bytes: usize,
+    max_provider_response_bytes: usize,
+    own_sink: Option<Arc<dyn RequestSink>>,
 ) -> Harness {
     let upstream = MockServer::start().await;
     let store = Store::open_in_memory().await.unwrap();
@@ -98,7 +119,7 @@ async fn harness_with_limits(
     state.max_body_bytes = max_body_bytes;
     state.max_provider_response_bytes = max_provider_response_bytes;
     let sink = Arc::new(MemorySink::default());
-    state.sink = sink.clone();
+    state.sink = own_sink.unwrap_or_else(|| sink.clone());
     let state = Arc::new(state);
     Harness {
         sink,

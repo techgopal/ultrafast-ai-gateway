@@ -106,6 +106,8 @@ function keeps(start: readonly fixtures.Model[] = fixtures.modelList) {
       enabled: false,
       grants: { everyone: false, team_ids: [], user_ids: [] },
       created_at: "2026-09-30 09:00:00",
+      input_price_micros: null,
+      output_price_micros: null,
     };
     state.models = [...state.models, model];
     return ok("post", "/api/models", 201, model);

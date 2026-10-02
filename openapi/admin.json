@@ -1144,6 +1144,16 @@
               }
             }
           },
+          "422": {
+            "description": "A price is negative; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Something went wrong.",
             "content": {
@@ -2259,6 +2269,171 @@
           },
           "403": {
             "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "settings_view",
+        "responses": {
+          "200": {
+            "description": "The settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "settings_update",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value is out of range; `fields` names each of them.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4612,7 +4787,9 @@
           "name",
           "enabled",
           "grants",
-          "created_at"
+          "created_at",
+          "input_price_micros",
+          "output_price_micros"
         ],
         "properties": {
           "created_at": {
@@ -4628,9 +4805,25 @@
             "type": "integer",
             "format": "int64"
           },
+          "input_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What a million input tokens cost, in millionths of a dollar. `null`\nis unknown: calls of the model are logged with cost 0, unpriced."
+          },
           "name": {
             "type": "string",
             "description": "The provider's own id for the model."
+          },
+          "output_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What a million output tokens cost, in millionths of a dollar."
           },
           "provider_id": {
             "type": "integer",
@@ -4951,6 +5144,19 @@
           }
         }
       },
+      "SettingsView": {
+        "type": "object",
+        "required": [
+          "log_retention_days"
+        ],
+        "properties": {
+          "log_retention_days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many days request logs are kept before they are deleted."
+          }
+        }
+      },
       "SetupRequest": {
         "type": "object",
         "required": [
@@ -5220,12 +5426,31 @@
       },
       "UpdateModelRequest": {
         "type": "object",
-        "required": [
-          "enabled"
-        ],
         "properties": {
           "enabled": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Left out, the model stays as it is."
+          },
+          "input_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Millionths of a dollar per million input tokens, 0 or more. Left\nout, the price stays; `null` makes it unknown.",
+            "minimum": 0
+          },
+          "output_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Like `input_price_micros`, for output tokens.",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -5277,6 +5502,20 @@
               "string",
               "null"
             ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpdateSettingsRequest": {
+        "type": "object",
+        "required": [
+          "log_retention_days"
+        ],
+        "properties": {
+          "log_retention_days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "1 to 3650."
           }
         },
         "additionalProperties": false
@@ -5428,6 +5667,10 @@
     {
       "name": "routing",
       "description": "How calls are routed to providers."
+    },
+    {
+      "name": "settings",
+      "description": "Settings of the gateway."
     }
   ]
 }

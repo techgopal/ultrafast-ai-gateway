@@ -2,10 +2,12 @@
 
 mod audit;
 mod keys;
+mod logs;
 mod models;
 mod providers;
 mod routes;
 mod sessions;
+mod settings;
 mod teams;
 mod users;
 
@@ -25,10 +27,12 @@ use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 pub use audit::{AuditEntry, AuditRow};
 pub use keys::{parse_allowed, KeyRow, LiveKey};
+pub use logs::{LogRow, NewLog};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use providers::ProviderRow;
 pub use routes::{is_missing_reference, RouteRow, RouteSettings, TargetRow, TargetsInput};
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
+pub use settings::DEFAULT_LOG_RETENTION_DAYS;
 pub use teams::{MemberDetail, MemberRow, TeamRow, TeamSummary, UserTeam};
 pub use users::{InviteRow, NewUser, UserRow};
 

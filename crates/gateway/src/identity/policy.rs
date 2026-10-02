@@ -77,6 +77,8 @@ pub enum Action {
     ViewAudit,
     // routing
     ViewRoutingHealth,
+    // settings: viewing and changing both
+    ManageSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +128,8 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ManageModels
         | Action::ManageRoutes
         | Action::ViewAudit
-        | Action::ViewRoutingHealth => Forbidden,
+        | Action::ViewRoutingHealth
+        | Action::ManageSettings => Forbidden,
 
         Action::ViewUser {
             user_id,

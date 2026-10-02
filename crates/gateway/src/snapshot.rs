@@ -39,6 +39,9 @@ pub struct SnapModel {
     pub everyone: bool,
     pub team_ids: Vec<i64>,
     pub user_ids: Vec<i64>,
+    /// Per million tokens, in millionths of a dollar; `None` is unknown.
+    pub input_price_micros: Option<i64>,
+    pub output_price_micros: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +205,8 @@ impl Snapshot {
                 everyone: false,
                 team_ids: Vec::new(),
                 user_ids: Vec::new(),
+                input_price_micros: m.input_price_micros,
+                output_price_micros: m.output_price_micros,
             };
             models
                 .entry(m.provider_name)

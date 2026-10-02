@@ -14,6 +14,7 @@ use ultrafast_gateway::config::{
     validate_base_url, validate_provider_name,
 };
 use ultrafast_gateway::identity::password;
+use ultrafast_gateway::logs::{self, LogSink, QUEUE_CAPACITY};
 use ultrafast_gateway::secrets::{generate_key, Cipher};
 use ultrafast_gateway::store::Store;
 use ultrafast_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
@@ -242,6 +243,9 @@ async fn main() -> Result<()> {
             let expired = store.delete_expired_sessions().await?;
             tracing::debug!(expired, "removed expired sessions");
             let mut state = AppState::new(store, cipher).await?;
+            let (log_sink, log_queue) = LogSink::channel(QUEUE_CAPACITY);
+            let log_stats = log_sink.stats();
+            state.sink = Arc::new(log_sink);
             state.cookie_secure = !insecure_cookies;
             state.trusted_proxies = parse_trusted_proxies(&trusted_proxies)?;
             if !state.trusted_proxies.is_empty() {
@@ -259,7 +263,20 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("could not listen on {addr}"))?;
             tracing::info!(%addr, "gateway listening");
             let (stop, stopped) = tokio::sync::watch::channel(false);
-            let refresher = spawn_refresher(state.clone(), stopped);
+            let refresher = spawn_refresher(state.clone(), stopped.clone());
+            let log_writer = logs::writer::spawn(
+                state.store.clone(),
+                log_queue,
+                logs::snapshot_prices(state.clone()),
+                log_stats,
+                logs::writer::WriterConfig::default(),
+                stopped.clone(),
+            );
+            let log_retention = logs::retention::spawn(
+                state.store.clone(),
+                logs::retention::RetentionConfig::default(),
+                stopped,
+            );
             let service = router(state).into_make_service_with_connect_info::<SocketAddr>();
             let served = axum::serve(listener, service)
                 .with_graceful_shutdown(shutdown_signal())
@@ -267,6 +284,9 @@ async fn main() -> Result<()> {
             // Also when serving failed, so the task never outlives the server.
             let _ = stop.send(true);
             let _ = refresher.await;
+            // The writer writes what is still queued before the process ends.
+            let _ = log_writer.await;
+            let _ = log_retention.await;
             served?;
         }
         Command::Provider {

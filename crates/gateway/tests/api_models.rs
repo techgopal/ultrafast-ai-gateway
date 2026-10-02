@@ -648,3 +648,130 @@ async fn azure_sync_is_unsupported() {
     );
     assert!(models(&org, &maya).await.is_empty());
 }
+
+#[tokio::test]
+async fn prices_are_set_cleared_validated_and_audited() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let lena = org.sign_in("lena").await;
+    seed_provider(&org, "main", "openai", "https://api.openai.com/v1").await;
+    let (_, created) = org
+        .call(
+            Some(&maya),
+            "POST",
+            "/api/models",
+            Some(json!({ "provider_id": 1, "name": "gpt-4o" })),
+        )
+        .await;
+    let id = created["id"].as_i64().unwrap();
+    // Unknown until set.
+    assert_eq!(created["input_price_micros"], Value::Null);
+    assert_eq!(created["output_price_micros"], Value::Null);
+
+    let patch = |body: Value| {
+        let org = &org;
+        let maya = &maya;
+        async move {
+            org.call(
+                Some(maya),
+                "PATCH",
+                &format!("/api/models/{id}"),
+                Some(body),
+            )
+            .await
+        }
+    };
+    let (status, body) =
+        patch(json!({ "input_price_micros": 2_500_000, "output_price_micros": 10_000_000 })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["input_price_micros"], 2_500_000);
+    assert_eq!(body["output_price_micros"], 10_000_000);
+    assert_eq!(body["enabled"], false, "prices alone do not enable");
+    assert_eq!(
+        org.last_summary("model.update").await,
+        "Set price of gpt-4o: input 2500000, output 10000000 micro-dollars per million tokens"
+    );
+
+    // A field that is left out is left alone; null clears; 0 is a price.
+    let (_, body) = patch(json!({ "output_price_micros": null, "input_price_micros": 0 })).await;
+    assert_eq!(body["input_price_micros"], 0);
+    assert_eq!(body["output_price_micros"], Value::Null);
+    let (_, body) = patch(json!({ "enabled": true })).await;
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["input_price_micros"], 0);
+    assert_eq!(org.last_summary("model.update").await, "Enabled gpt-4o");
+
+    // The list shows them.
+    let (_, list) = org.call(Some(&maya), "GET", "/api/models", None).await;
+    assert_eq!(list["models"][0]["input_price_micros"], 0);
+
+    // Validation: nothing is changed by a refused request.
+    for bad in [
+        json!({ "input_price_micros": -1 }),
+        json!({ "output_price_micros": -5, "input_price_micros": 7 }),
+    ] {
+        let (status, body) = patch(bad.clone()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {body}");
+        assert_eq!(error_code(&body), "validation_failed");
+        let field = bad
+            .as_object()
+            .unwrap()
+            .keys()
+            .find(|k| bad[*k].as_i64() == Some(-1) || bad[*k].as_i64() == Some(-5))
+            .unwrap();
+        assert!(body["error"]["fields"][field].is_string(), "{body}");
+    }
+    let (_, body) = org.call(Some(&maya), "GET", "/api/models", None).await;
+    assert_eq!(body["models"][0]["input_price_micros"], 0);
+    // Not numbers, or nothing to change.
+    let (status, _) = patch(json!({ "input_price_micros": "free" })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = patch(json!({ "input_price_micros": 1.5 })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = patch(json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Only an admin sets prices.
+    let (status, _) = org
+        .call(
+            Some(&lena),
+            "PATCH",
+            &format!("/api/models/{id}"),
+            Some(json!({ "input_price_micros": 1 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_price_reaches_the_gateway_snapshot() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    seed_provider(&org, "main", "openai", "https://api.openai.com/v1").await;
+    let (_, created) = org
+        .call(
+            Some(&maya),
+            "POST",
+            "/api/models",
+            Some(json!({ "provider_id": 1, "name": "gpt-4o" })),
+        )
+        .await;
+    let id = created["id"].as_i64().unwrap();
+    let before = org.api.state.refresh_count();
+    let (status, _) = org
+        .call(
+            Some(&maya),
+            "PATCH",
+            &format!("/api/models/{id}"),
+            Some(json!({ "input_price_micros": 5, "output_price_micros": 6 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(org.api.state.refresh_count() > before);
+    let snapshot = org.api.state.snapshot.load();
+    let model = snapshot.model("main", "gpt-4o").unwrap();
+    assert_eq!(
+        (model.input_price_micros, model.output_price_micros),
+        (Some(5), Some(6))
+    );
+}
