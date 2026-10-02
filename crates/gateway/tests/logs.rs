@@ -56,6 +56,7 @@ fn config(max_batch: usize, max_wait_ms: u64) -> WriterConfig {
     WriterConfig {
         max_batch,
         max_wait: Duration::from_millis(max_wait_ms),
+        retry_delay: Duration::from_millis(10),
     }
 }
 
@@ -527,4 +528,56 @@ async fn the_retention_setting_is_stored_and_read_back() {
     tx.set_log_retention_days(7).await.unwrap();
     tx.commit().await.unwrap();
     assert_eq!(store.log_retention_days().await.unwrap(), 7);
+}
+
+#[tokio::test]
+async fn retention_stops_at_once_in_the_middle_of_a_long_pass() {
+    let store = Store::open_in_memory().await.unwrap();
+    let rows: Vec<NewLog> = (0..5)
+        .map(|i| log_at("2000-01-01 00:00:00", &format!("old{i}")))
+        .collect();
+    store.insert_logs(&rows).await.unwrap();
+    let (stop, stopped) = watch::channel(false);
+    // One row per batch and a pause of a minute: the pass takes minutes.
+    let task = retention::spawn(
+        store.clone(),
+        RetentionConfig {
+            interval: Duration::from_secs(3600),
+            batch: 1,
+            pause: Duration::from_secs(60),
+        },
+        stopped,
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("shutdown does not wait for the pass")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_batch_the_writer_holds_when_stop_arrives_is_written() {
+    let store = Store::open_in_memory().await.unwrap();
+    let (sink, rx) = LogSink::channel(100);
+    let stats = sink.stats();
+    let (stop, stopped) = watch::channel(false);
+    let writer = spawn(
+        store.clone(),
+        rx,
+        prices(None, None),
+        stats.clone(),
+        config(500, 60_000),
+        stopped,
+    );
+    sink.record(record("held"));
+    // The writer has taken it and waits for more.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), writer)
+        .await
+        .expect("the writer ends")
+        .unwrap();
+    assert_eq!(store.recent_logs(10).await.unwrap().len(), 1);
+    assert_eq!(stats.written.load(Ordering::Relaxed), 1);
 }

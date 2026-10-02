@@ -18,6 +18,8 @@ use crate::telemetry::RequestRecord;
 pub struct WriterConfig {
     pub max_batch: usize,
     pub max_wait: Duration,
+    /// How long to wait before the one retry of a failed write.
+    pub retry_delay: Duration,
 }
 
 impl Default for WriterConfig {
@@ -25,6 +27,7 @@ impl Default for WriterConfig {
         Self {
             max_batch: 500,
             max_wait: Duration::from_secs(1),
+            retry_delay: Duration::from_millis(200),
         }
     }
 }
@@ -41,12 +44,25 @@ async fn stopped(stop: &mut watch::Receiver<bool>) {
     }
 }
 
-async fn flush(store: &Store, prices: &PriceLookup, stats: &LogStats, batch: &[RequestRecord]) {
+async fn flush(
+    store: &Store,
+    prices: &PriceLookup,
+    stats: &LogStats,
+    retry_delay: Duration,
+    batch: &[RequestRecord],
+) {
     if batch.is_empty() {
         return;
     }
     let rows: Vec<_> = batch.iter().map(|r| row_of(r, prices)).collect();
-    match store.insert_logs(&rows).await {
+    // One retry with the same rows: a busy database is usually free again.
+    let mut result = store.insert_logs(&rows).await;
+    if let Err(e) = &result {
+        tracing::warn!(error = %e, "could not write request logs, trying once more");
+        tokio::time::sleep(retry_delay).await;
+        result = store.insert_logs(&rows).await;
+    }
+    match result {
         Ok(()) => {
             stats
                 .written
@@ -56,7 +72,7 @@ async fn flush(store: &Store, prices: &PriceLookup, stats: &LogStats, batch: &[R
         Err(e) => {
             // The batch is lost; the calls it describes were answered.
             stats
-                .dropped
+                .write_failures
                 .fetch_add(rows.len() as u64, Ordering::Relaxed);
             tracing::error!(error = %e, lost = rows.len(), "could not write request logs");
         }
@@ -100,7 +116,7 @@ pub fn spawn(
                     },
                 }
             }
-            flush(&store, &prices, &stats, &batch).await;
+            flush(&store, &prices, &stats, config.retry_delay, &batch).await;
         }
         // Drain: nothing new is accepted, what is queued is written.
         queue.close();
@@ -115,7 +131,91 @@ pub fn spawn(
             if batch.is_empty() {
                 return;
             }
-            flush(&store, &prices, &stats, &batch).await;
+            flush(&store, &prices, &stats, config.retry_delay, &batch).await;
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logs::LogSink;
+    use crate::telemetry::RequestSink;
+
+    fn record() -> RequestRecord {
+        RequestRecord {
+            key_id: 1,
+            user_id: None,
+            team_id: None,
+            requested: "r".into(),
+            endpoint: "chat",
+            stream: false,
+            status: 200,
+            usage: None,
+            attempts: Vec::new(),
+            started_at: "2999-01-01 00:00:00".into(),
+            duration_ms: 1,
+        }
+    }
+
+    async fn rename(store: &Store, from: &str, to: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "ALTER TABLE {from} RENAME TO {to}"
+        )))
+        .execute(store.pool())
+        .await
+        .unwrap();
+    }
+
+    fn start(store: &Store, retry_ms: u64) -> (LogSink, watch::Sender<bool>, JoinHandle<()>) {
+        let (sink, rx) = LogSink::channel(10);
+        let (stop, stopped) = watch::channel(false);
+        let writer = spawn(
+            store.clone(),
+            rx,
+            Arc::new(|_, _| None),
+            sink.stats(),
+            WriterConfig {
+                max_batch: 10,
+                max_wait: Duration::from_millis(10),
+                retry_delay: Duration::from_millis(retry_ms),
+            },
+            stopped,
+        );
+        (sink, stop, writer)
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_is_retried_once_with_the_same_rows() {
+        let store = Store::open_in_memory().await.unwrap();
+        rename(&store, "request_logs", "away").await;
+        let (sink, stop, writer) = start(&store, 400);
+        sink.record(record());
+        // The first try fails; the table is back before the retry.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        rename(&store, "away", "request_logs").await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        stop.send(true).unwrap();
+        writer.await.unwrap();
+        let stats = sink.stats();
+        assert_eq!(stats.written.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.write_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.dropped.load(Ordering::Relaxed), 0);
+        assert_eq!(store.recent_logs(10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_failure_is_counted_apart_from_queue_drops() {
+        let store = Store::open_in_memory().await.unwrap();
+        rename(&store, "request_logs", "away").await;
+        let (sink, stop, writer) = start(&store, 20);
+        sink.record(record());
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        stop.send(true).unwrap();
+        writer.await.unwrap();
+        let stats = sink.stats();
+        assert_eq!(stats.write_failures.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.dropped.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.written.load(Ordering::Relaxed), 0);
+    }
 }

@@ -69,6 +69,15 @@ async fn pass(store: &Store, config: &RetentionConfig) -> Result<Purged> {
     .await
 }
 
+/// Resolves when `stop` is true or its sender is gone.
+async fn stopped(stop: &mut watch::Receiver<bool>) {
+    loop {
+        if *stop.borrow() || stop.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Runs a pass at the start and then every `interval`, until `stop`
 /// becomes true or its sender is dropped. A failed pass is logged.
 pub fn spawn(
@@ -78,7 +87,14 @@ pub fn spawn(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            match pass(&store, &config).await {
+            // A pass can be long; shutdown does not wait for it. Dropping it
+            // between statements loses nothing: the next start continues.
+            let done = tokio::select! {
+                biased;
+                () = stopped(&mut stop) => return,
+                done = pass(&store, &config) => done,
+            };
+            match done {
                 Ok(p) if p.rows > 0 => tracing::info!(rows = p.rows, "deleted old request logs"),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "could not delete old request logs"),

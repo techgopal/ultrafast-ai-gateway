@@ -27,9 +27,11 @@ pub const QUEUE_CAPACITY: usize = 10_000;
 /// Counters of the log pipeline. They are for `/metrics` and for tests.
 #[derive(Debug, Default)]
 pub struct LogStats {
-    /// Records that were not written: the queue was full or closed, or the
-    /// database refused the batch.
+    /// Records the queue did not take: it was full or closed.
     pub dropped: AtomicU64,
+    /// Records of batches the database refused twice (a write is retried
+    /// once).
+    pub write_failures: AtomicU64,
     /// Records written.
     pub written: AtomicU64,
     /// Batches written.
