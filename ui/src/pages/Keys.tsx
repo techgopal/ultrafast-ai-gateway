@@ -7,6 +7,7 @@ import { control, longText } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
+import { FilterSelect } from "@/components/FilterSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
 import { SecretDialog, useSecretOnce } from "@/components/SecretDialog";
@@ -22,7 +23,6 @@ import { CreateDialog } from "@/pages/KeysCreate";
 import {
   ANY,
   chosen,
-  FilterSelect,
   matches,
   statusChoices,
   teamChoices,

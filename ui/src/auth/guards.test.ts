@@ -92,6 +92,7 @@ describe("guards", () => {
     ["revoke the loner's key", { type: "revokeKey", ownerId: lonerId, teamId: null }, [true, false, false, true]],
     ["revoke a key whose owner is gone", { type: "revokeKey", ownerId: null, teamId: null }, [true, false, false, false]],
     ["manage providers", { type: "manageProviders" }, [true, false, false, false]],
+    ["manage models", { type: "manageModels" }, [true, false, false, false]],
     ["view audit", { type: "viewAudit" }, [true, false, false, false]],
     // The overview counts users and teams for who manages some: admins, and leads.
     ["view the counts of users and teams", { type: "viewUserAndTeamCounts" }, [true, true, false, false]],
@@ -121,6 +122,7 @@ describe("guards", () => {
       createKeyForAnyone: true,
       revokeKey: true,
       manageProviders: true,
+      manageModels: true,
       viewAudit: true,
       viewUserAndTeamCounts: true,
     };

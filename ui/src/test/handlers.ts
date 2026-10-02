@@ -153,6 +153,29 @@ export const handlers = [
     byId(fixtures.providerList, call) === undefined ? notFound() : noContent(),
   ),
 
+  handler("post", "/api/providers/{id}/sync", (call) =>
+    byId(fixtures.providerList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/providers/{id}/sync", 200, fixtures.syncResult),
+  ),
+
+  // models
+  handler("get", "/api/models", () =>
+    ok("get", "/api/models", 200, { models: fixtures.modelList }),
+  ),
+  handler("post", "/api/models", () => ok("post", "/api/models", 201, fixtures.models.openaiMini)),
+  handler("patch", "/api/models/{id}", (call) => {
+    const model = byId(fixtures.modelList, call);
+    return model === undefined ? notFound() : ok("patch", "/api/models/{id}", 200, model);
+  }),
+  handler("put", "/api/models/{id}/grants", (call) => {
+    const model = byId(fixtures.modelList, call);
+    return model === undefined ? notFound() : ok("put", "/api/models/{id}/grants", 200, model);
+  }),
+  handler("delete", "/api/models/{id}", (call) =>
+    byId(fixtures.modelList, call) === undefined ? notFound() : noContent(),
+  ),
+
   // tokens
   handler("get", "/api/tokens", () =>
     ok("get", "/api/tokens", 200, { tokens: fixtures.tokenList }),

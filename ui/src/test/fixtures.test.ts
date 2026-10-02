@@ -51,6 +51,12 @@ const AUDIT_ACTIONS: Readonly<Record<string, string>> = {
   "provider.create": "provider",
   "provider.update": "provider",
   "provider.delete": "provider",
+  "provider.sync": "provider",
+  // crates/gateway/src/api/models.rs
+  "model.create": "model",
+  "model.update": "model",
+  "model.grants": "model",
+  "model.delete": "model",
   // crates/gateway/src/api/tokens.rs
   "token.create": "token",
   "token.revoke": "token",
@@ -373,5 +379,46 @@ describe("the fixtures have the forms of the gateway", () => {
       expect(provider.base_url).toMatch(/^https?:\/\/[^/:@?#\s][^@?#\s]*$/);
     }
     expect(fixtures.providerList.map((p) => p.has_credential).sort()).toEqual([false, true]);
+  });
+
+  test("models", () => {
+    const pairs = fixtures.modelList.map((m) => `${String(m.provider_id)}/${m.name}`);
+    expect(new Set(pairs).size).toBe(pairs.length);
+    const ids = fixtures.modelList.map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const model of fixtures.modelList) {
+      // crates/gateway/src/catalog/mod.rs, validate_model_name.
+      expect(model.name).toMatch(/^\S{1,200}$/);
+      expect(model.created_at).toMatch(TIMESTAMP);
+      const provider = fixtures.providerList.find((p) => p.id === model.provider_id);
+      expect(provider?.name, model.name).toBe(model.provider_name);
+      // crates/gateway/src/api/models.rs, put_grants: everyone is not combined.
+      const { everyone, team_ids, user_ids } = model.grants;
+      if (everyone) expect([...team_ids, ...user_ids], model.name).toEqual([]);
+      for (const id of team_ids) {
+        expect(fixtures.teamList.map((t) => t.id), model.name).toContain(id);
+      }
+      for (const id of user_ids) {
+        expect(fixtures.userList.map((u) => u.id), model.name).toContain(id);
+      }
+    }
+    // Covers every state of the page: enabled and disabled, every kind of grant, no grant.
+    expect(fixtures.modelList.map((m) => m.enabled)).toContain(false);
+    expect(fixtures.modelList.some((m) => m.grants.everyone)).toBe(true);
+    expect(fixtures.modelList.some((m) => m.enabled && !m.grants.everyone && m.grants.team_ids.length === 0 && m.grants.user_ids.length === 0)).toBe(true);
+  });
+
+  test("what a member is given of the models", () => {
+    // api/models.rs, list: the enabled models they may call, with empty grants.
+    for (const model of fixtures.callableModels) {
+      expect(model.enabled).toBe(true);
+      expect(model.grants).toEqual({ everyone: false, team_ids: [], user_ids: [] });
+    }
+  });
+
+  test("a sync result", () => {
+    // api/models.rs, SyncResult: the new names, and how many were there already.
+    expect(fixtures.syncResult.added.every((name) => /^\S{1,200}$/.test(name))).toBe(true);
+    expect(Number.isInteger(fixtures.syncResult.existing)).toBe(true);
   });
 });

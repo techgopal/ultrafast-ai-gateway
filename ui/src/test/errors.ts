@@ -46,6 +46,13 @@ export const fieldMessages = {
   baseUrlHost: "base URL must include a host",
   apiKey: "must not be empty",
   positive: "must be a positive integer",
+  // The name of a model (`crates/gateway/src/catalog/mod.rs`) and its grants (`api/models.rs`).
+  modelName: "name must be 1 to 200 characters",
+  modelNameWhitespace: "name must not contain whitespace or control characters",
+  providerMissing: "provider does not exist",
+  grantsEveryone: "must not be combined with teams or users",
+  teamsMissing: "a team does not exist",
+  usersMissing: "a user does not exist",
 } as const;
 
 /** A 422 of the gateway for these fields. */
@@ -111,6 +118,13 @@ export const errors = {
   user_disabled: error(409, "user_disabled", "A disabled user cannot be added to a team."),
   team_exists: error(409, "team_exists", "A team with this name already exists."),
   provider_exists: error(409, "provider_exists", "A provider with this name already exists."),
+  model_exists: error(
+    409,
+    "model_exists",
+    "This provider already has a model of this name.",
+  ),
+  sync_unsupported: error(422, "sync_unsupported", "Add Azure deployments as models by name."),
+  sync_failed: error(502, "sync_failed", "The provider did not return its models."),
 } as const satisfies Record<string, GatewayError>;
 
 export type ErrorName = keyof typeof errors;

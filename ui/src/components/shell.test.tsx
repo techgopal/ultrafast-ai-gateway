@@ -77,6 +77,7 @@ describe("sidebar", () => {
     expect(hrefs).toEqual([
       ["Overview", "/"],
       ["Providers", "/providers"],
+      ["Models", "/models"],
       ["Virtual keys", "/keys"],
       ["Users", "/users"],
       ["Teams", "/teams"],

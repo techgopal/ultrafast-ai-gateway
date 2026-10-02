@@ -22,6 +22,7 @@ import { Keys } from "@/pages/Keys";
 import { PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
 import { Overview } from "@/pages/Overview";
+import { Models } from "@/pages/Models";
 import { Providers } from "@/pages/Providers";
 import { Setup } from "@/pages/Setup";
 import { TeamDetail } from "@/pages/TeamDetail";
@@ -211,6 +212,13 @@ const providersRoute = createRoute({
   component: Providers,
 });
 
+const modelsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/models",
+  staticData: { title: "Models" },
+  component: Models,
+});
+
 const keysRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/keys",
@@ -292,6 +300,7 @@ const routeTree = rootRoute.addChildren([
   shellRoute.addChildren([
     overviewRoute,
     providersRoute,
+    modelsRoute,
     keysRoute,
     usersRoute,
     userRoute,

@@ -73,6 +73,10 @@ export const queryKeys = {
     all: () => ["providers"] as const,
     list: () => ["providers", "list"] as const,
   },
+  models: {
+    all: () => ["models"] as const,
+    list: () => ["models", "list"] as const,
+  },
   tokens: {
     all: () => ["tokens"] as const,
     list: () => ["tokens", "list"] as const,
@@ -219,6 +223,12 @@ export const providersOptions = () =>
     queryFn: ({ signal }) => api.get("/api/providers", { signal }),
   });
 
+export const modelsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.models.list(),
+    queryFn: ({ signal }) => api.get("/api/models", { signal }),
+  });
+
 export const tokensOptions = () =>
   queryOptions({
     queryKey: queryKeys.tokens.list(),
@@ -239,6 +249,8 @@ export const useTeamDetails = (ids: readonly number[]) =>
   useQueries({ queries: ids.map((id) => teamOptions(id)) });
 export const useKeys = () => useQuery(keysOptions());
 export const useProviders = () => useQuery(providersOptions());
+/** An admin gets every model with its grants; anybody else the models they may call. */
+export const useModels = () => useQuery(modelsOptions());
 export const useTokens = () => useQuery(tokensOptions());
 
 /** How many entries a page of the audit log has. A page with fewer is the last. */
@@ -536,6 +548,52 @@ export const useDeleteProvider = () =>
     ({ id }: { id: number }) => api.delete("/api/providers/{id}", { params: { id } }),
     () => ({ stale: [queryKeys.providers.all(), audit] }),
     providerIsGone,
+  );
+
+// models
+
+// The model was deleted meanwhile: the list still shows it.
+const modelIsGone = (error: unknown) => (isNotFound(error) ? [queryKeys.models.all()] : []);
+
+/**
+ * Reads the models the provider lists and adds the new ones, disabled. The
+ * answer says which were added.
+ */
+export const useSyncProvider = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.post("/api/providers/{id}/sync", { params: { id } }),
+    () => ({ stale: [queryKeys.models.all(), audit] }),
+    (error) => (isNotFound(error) ? [queryKeys.providers.all()] : []),
+  );
+
+export const useCreateModel = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/models", "post">) => api.post("/api/models", { body }),
+    () => ({ stale: [queryKeys.models.all(), audit] }),
+  );
+
+export const useUpdateModel = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/models/{id}", "patch"> }) =>
+      api.patch("/api/models/{id}", { params: { id }, body }),
+    () => ({ stale: [queryKeys.models.all(), audit] }),
+    modelIsGone,
+  );
+
+/** Replaces the grants of the model: who may call it. */
+export const usePutModelGrants = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/models/{id}/grants", "put"> }) =>
+      api.put("/api/models/{id}/grants", { params: { id }, body }),
+    () => ({ stale: [queryKeys.models.all(), audit] }),
+    modelIsGone,
+  );
+
+export const useDeleteModel = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/models/{id}", { params: { id } }),
+    () => ({ stale: [queryKeys.models.all(), audit] }),
+    modelIsGone,
   );
 
 // tokens

@@ -11,6 +11,9 @@ export type Team = Schemas["TeamSummary"];
 export type TeamDetail = Schemas["TeamDetail"];
 export type Key = Schemas["KeyView"];
 export type Provider = Schemas["ProviderView"];
+export type Model = Schemas["ModelView"];
+export type Grants = Schemas["GrantsView"];
+export type SyncResult = Schemas["SyncResult"];
 export type Token = Schemas["TokenView"];
 export type AuditEntry = Schemas["AuditRow"];
 export type Me = Schemas["MeResponse"];
@@ -243,6 +246,60 @@ export const providers = {
 } satisfies Record<string, Provider>;
 
 export const providerList: Provider[] = Object.values(providers);
+
+export const models = {
+  /** Enabled, granted to everyone. */
+  openaiMini: {
+    id: 1,
+    provider_id: providers.withCredential.id,
+    provider_name: providers.withCredential.name,
+    name: "gpt-4o-mini",
+    enabled: true,
+    grants: { everyone: true, team_ids: [], user_ids: [] },
+    created_at: "2026-09-01 10:00:00",
+  },
+  /** Enabled, granted to two teams and a user. */
+  openaiFull: {
+    id: 2,
+    provider_id: providers.withCredential.id,
+    provider_name: providers.withCredential.name,
+    name: "gpt-4o",
+    enabled: true,
+    grants: { everyone: false, team_ids: [teams.platform.id, teams.research.id], user_ids: [users.priya.id] },
+    created_at: "2026-09-01 10:00:01",
+  },
+  /** Disabled, as a synced model starts: granted to nobody. */
+  openaiDisabled: {
+    id: 3,
+    provider_id: providers.withCredential.id,
+    provider_name: providers.withCredential.name,
+    name: "o3-mini",
+    enabled: false,
+    grants: { everyone: false, team_ids: [], user_ids: [] },
+    created_at: "2026-09-01 10:00:02",
+  },
+  /** Enabled, and nobody has access: only an admin can call it. */
+  localLlama: {
+    id: 4,
+    provider_id: providers.withoutCredential.id,
+    provider_name: providers.withoutCredential.name,
+    name: "llama3.1:8b",
+    enabled: true,
+    grants: { everyone: false, team_ids: [], user_ids: [] },
+    created_at: "2026-09-02 08:00:00",
+  },
+} satisfies Record<string, Model>;
+
+export const modelList: Model[] = Object.values(models);
+
+/** What a member gets of the models: those they may call, with empty grants. */
+export const callableModels: Model[] = [models.openaiMini, models.openaiFull].map((model) => ({
+  ...model,
+  grants: { everyone: false, team_ids: [], user_ids: [] },
+}));
+
+/** What the sync of a provider answers when the provider listed new names. */
+export const syncResult: SyncResult = { added: ["gpt-4.1", "gpt-4.1-mini"], existing: 4 };
 
 export const tokens = {
   /** The token that `POST /api/tokens` answers with; its display ends as `newTokenSecret` does. */

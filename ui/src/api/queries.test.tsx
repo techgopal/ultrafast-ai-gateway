@@ -1220,16 +1220,21 @@ describe("every mutation calls its operation", () => {
       ["useCreateProvider", "POST /api/providers", q.useCreateProvider, { name: "p", kind: "openai", base_url: "u" }],
       ["useUpdateProvider", "PATCH /api/providers/2", q.useUpdateProvider, { id: 2, body: { api_key: null } }],
       ["useDeleteProvider", "DELETE /api/providers/2", q.useDeleteProvider, { id: 2 }],
+      ["useSyncProvider", "POST /api/providers/2/sync", q.useSyncProvider, { id: 2 }],
+      ["useCreateModel", "POST /api/models", q.useCreateModel, { provider_id: 1, name: "m" }],
+      ["useUpdateModel", "PATCH /api/models/3", q.useUpdateModel, { id: 3, body: { enabled: true } }],
+      ["usePutModelGrants", "PUT /api/models/3/grants", q.usePutModelGrants, { id: 3, body: { everyone: true, team_ids: [], user_ids: [] } }],
+      ["useDeleteModel", "DELETE /api/models/3", q.useDeleteModel, { id: 3 }],
       ["useCreateToken", "POST /api/tokens", q.useCreateToken, { name: "t" }],
       ["useRevokeToken", "DELETE /api/tokens/1", q.useRevokeToken, { id: 1 }],
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 20 of them, 10 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(20);
+  test("there are 25 of them, 11 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(25);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(31);
+    expect(hooks).toHaveLength(37);
     // What only tests used is not kept: a key read by its id, the audit log
     // read as one page, and `me`, which the session reads itself.
     for (const gone of ["useKey", "keyOptions", "useAuditLog", "auditLogOptions", "useMe"]) {

@@ -38,6 +38,8 @@ export type ConsoleAction =
   | { type: "createKeyForAnyone" }
   | { type: "revokeKey"; ownerId: number | null; teamId: number | null }
   | { type: "manageProviders" }
+  /** Adds, syncs, enables, grants and deletes models: what only an admin may. */
+  | { type: "manageModels" }
   | { type: "viewAudit" }
   /**
    * Sees how many users and teams there are, on the overview: who manages
@@ -77,6 +79,7 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "makeLead":
     case "createKeyForAnyone":
     case "manageProviders":
+    case "manageModels":
     case "viewAudit":
       return false;
     case "renameUser":

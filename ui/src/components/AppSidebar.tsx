@@ -23,6 +23,7 @@ import { ThemeSwitch } from "@/theme/theme";
 type Path =
   | "/"
   | "/providers"
+  | "/models"
   | "/keys"
   | "/users"
   | "/teams"
@@ -55,7 +56,7 @@ const sections: NavSection[] = [
     label: "Configure",
     items: [
       { label: "Providers", to: "/providers" },
-      { label: "Models" },
+      { label: "Models", to: "/models" },
       { label: "Routing" },
       { label: "Virtual keys", to: "/keys" },
     ],

@@ -32,6 +32,9 @@ const statuses: Record<ErrorName, number> = {
   user_disabled: 409,
   team_exists: 409,
   provider_exists: 409,
+  model_exists: 409,
+  sync_unsupported: 422,
+  sync_failed: 502,
 };
 
 const all = Object.entries(errors);
@@ -128,4 +131,23 @@ test("every message of a provider's name and base URL is in the gateway source",
   for (const name of names) {
     expect(source).toContain(`"${String(Reflect.get(fieldMessages, name))}"`);
   }
+});
+
+test("the messages of the models are in the gateway source", () => {
+  const dir = fileURLToPath(new URL("../../../crates/gateway/src/", import.meta.url));
+  const source = ["api/models.rs", "catalog/mod.rs"]
+    .map((file) => readFileSync(dir + file, "utf8"))
+    .join("\n");
+  const messages = [
+    fieldMessages.modelName,
+    fieldMessages.modelNameWhitespace,
+    fieldMessages.providerMissing,
+    fieldMessages.grantsEveryone,
+    fieldMessages.teamsMissing,
+    fieldMessages.usersMissing,
+    errors.model_exists.body.error.message,
+    errors.sync_unsupported.body.error.message,
+    errors.sync_failed.body.error.message,
+  ];
+  for (const message of messages) expect(source).toContain(`"${message}`);
 });
