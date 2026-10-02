@@ -79,6 +79,16 @@ pub enum Action {
     ViewRoutingHealth,
     // settings: viewing and changing both
     ManageSettings,
+    // request logs
+    /// Everyone may ask; what they get is cut to `list_scope`.
+    ListLogs,
+    /// `user_in_led_team`: the row's user is a member of a team the caller
+    /// leads. It only counts for a caller who leads a team.
+    ViewLog {
+        user_id: Option<i64>,
+        team_id: Option<i64>,
+        user_in_led_team: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +130,8 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ManageOwnTokens
         | Action::ListProviders
         | Action::ListModels
-        | Action::ListRoutes => Allow,
+        | Action::ListRoutes
+        | Action::ListLogs => Allow,
 
         Action::InviteUser { role: _ }
         | Action::CreateTeam
@@ -181,6 +192,21 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
                 Allow
             };
             by_team_role(p, *team_id, lead, Forbidden)
+        }
+
+        Action::ViewLog {
+            user_id,
+            team_id,
+            user_in_led_team,
+        } => {
+            if *user_id == Some(p.user_id)
+                || team_id.is_some_and(|t| p.leads(t))
+                || (*user_in_led_team && !p.led_teams().is_empty())
+            {
+                Allow
+            } else {
+                Hidden
+            }
         }
 
         Action::CreateKey { owner_id, team_id } => {
@@ -1010,6 +1036,82 @@ mod tests {
                 Forbidden,
             ),
         ];
+        let view_log = |user_id, team_id, user_in_led_team| Action::ViewLog {
+            user_id,
+            team_id,
+            user_in_led_team,
+        };
+        cases.extend([
+            ("list_logs: lead", lead, Action::ListLogs, Allow),
+            ("list_logs: member", member, Action::ListLogs, Allow),
+            ("list_logs: loner", loner, Action::ListLogs, Allow),
+            (
+                "view_log: lead, own row",
+                lead,
+                view_log(Some(2), None, false),
+                Allow,
+            ),
+            (
+                "view_log: lead, led team's row",
+                lead,
+                view_log(Some(9), Some(10), false),
+                Allow,
+            ),
+            (
+                "view_log: lead, no-user row of led team",
+                lead,
+                view_log(None, Some(10), false),
+                Allow,
+            ),
+            (
+                "view_log: lead, row of a member of a led team",
+                lead,
+                view_log(Some(3), None, true),
+                Allow,
+            ),
+            (
+                "view_log: lead, team they only belong to",
+                lead,
+                view_log(Some(9), Some(20), false),
+                Hidden,
+            ),
+            (
+                "view_log: lead, row without user or team",
+                lead,
+                view_log(None, None, false),
+                Hidden,
+            ),
+            (
+                "view_log: member, own row",
+                member,
+                view_log(Some(3), Some(10), false),
+                Allow,
+            ),
+            (
+                "view_log: member, team row of another user",
+                member,
+                view_log(Some(2), Some(10), false),
+                Hidden,
+            ),
+            (
+                "view_log: member, shared-team flag does not count",
+                member,
+                view_log(Some(2), None, true),
+                Hidden,
+            ),
+            (
+                "view_log: loner, own row",
+                loner,
+                view_log(Some(4), None, false),
+                Allow,
+            ),
+            (
+                "view_log: loner, other row",
+                loner,
+                view_log(Some(3), None, false),
+                Hidden,
+            ),
+        ]);
         cases.extend(key_cases(f, true, |owner_id, team_id| Action::ViewKey {
             owner_id,
             team_id,

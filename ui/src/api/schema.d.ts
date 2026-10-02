@@ -136,6 +136,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Newest first. `before` is the id of the last row of the page before.
+         *     Filters only narrow what the caller may see.
+         */
+        get: operations["logs_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/logs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["logs_view"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/models": {
         parameters: {
             query?: never;
@@ -616,6 +652,111 @@ export interface components {
             /** Format: int64 */
             team_id: number | null;
             team_name: string | null;
+        };
+        /** @description One target tried for a call. */
+        LogAttempt: {
+            /** Format: int64 */
+            duration_ms: number;
+            model: string;
+            /** @description `ok`, `retryable`, `fatal`, `circuit_open` or `skipped`. */
+            outcome: string;
+            provider: string;
+            /**
+             * Format: int64
+             * @description What the provider answered, when it did.
+             */
+            status: number | null;
+        };
+        /**
+         * @description A call with the targets it tried, in order. The fields of a
+         *     [`LogView`], and `attempts`.
+         */
+        LogDetailView: {
+            /** @description UTC, `YYYY-MM-DD HH:MM:SS`. */
+            at: string;
+            attempts: components["schemas"]["LogAttempt"][];
+            cached: boolean;
+            /**
+             * Format: int64
+             * @description Cost in millionths of a dollar; 0 when `priced` is false.
+             */
+            cost_micros: number;
+            /** Format: int64 */
+            duration_ms: number;
+            endpoint: string;
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            input_tokens: number | null;
+            /** Format: int64 */
+            key_id: number | null;
+            /** @description `null` when the key was deleted. */
+            key_name: string | null;
+            model: string | null;
+            /** Format: int64 */
+            output_tokens: number | null;
+            priced: boolean;
+            /** @description The provider that answered, else the last one tried. */
+            provider: string | null;
+            /** @description The model or route name the caller asked for. */
+            requested: string;
+            /**
+             * Format: int64
+             * @description What the caller was answered.
+             */
+            status: number;
+            stream: boolean;
+            /** Format: int64 */
+            team_id: number | null;
+            team_name: string | null;
+            user_email: string | null;
+            /** Format: int64 */
+            user_id: number | null;
+        };
+        LogPage: {
+            logs: components["schemas"]["LogView"][];
+        };
+        /** @description One logged call, as `/api` shows it. */
+        LogView: {
+            /** @description UTC, `YYYY-MM-DD HH:MM:SS`. */
+            at: string;
+            cached: boolean;
+            /**
+             * Format: int64
+             * @description Cost in millionths of a dollar; 0 when `priced` is false.
+             */
+            cost_micros: number;
+            /** Format: int64 */
+            duration_ms: number;
+            endpoint: string;
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            input_tokens: number | null;
+            /** Format: int64 */
+            key_id: number | null;
+            /** @description `null` when the key was deleted. */
+            key_name: string | null;
+            model: string | null;
+            /** Format: int64 */
+            output_tokens: number | null;
+            priced: boolean;
+            /** @description The provider that answered, else the last one tried. */
+            provider: string | null;
+            /** @description The model or route name the caller asked for. */
+            requested: string;
+            /**
+             * Format: int64
+             * @description What the caller was answered.
+             */
+            status: number;
+            stream: boolean;
+            /** Format: int64 */
+            team_id: number | null;
+            team_name: string | null;
+            user_email: string | null;
+            /** Format: int64 */
+            user_id: number | null;
         };
         LoginRequest: {
             email: string;
@@ -1580,6 +1721,131 @@ export interface operations {
                 };
             };
             /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    logs_list: {
+        parameters: {
+            query?: {
+                /** @description How many rows to return, 1 to 200. 50 when left out. */
+                limit?: number;
+                /** @description The id of the last row of the page before. */
+                before?: number;
+                /** @description Only calls at or after this time: RFC 3339, or a date `YYYY-MM-DD` (UTC, from its start). */
+                from?: string;
+                /** @description Only calls at or before this time: RFC 3339, or a date `YYYY-MM-DD` (UTC, to its end). */
+                to?: string;
+                /** @description Only calls made with this key. */
+                key_id?: number;
+                /** @description Only calls of this user. */
+                user_id?: number;
+                /** @description Only calls of this team. */
+                team_id?: number;
+                /** @description Only calls answered by, or asking for, this model name. */
+                model?: string;
+                /** @description Only calls answered with this HTTP status, 100 to 599. */
+                status?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The calls the caller may see, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogPage"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some parameters are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    logs_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id of the log row. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The call with its attempts. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogDetailView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description There is no such call, or the caller may not see it. */
             404: {
                 headers: {
                     [name: string]: unknown;

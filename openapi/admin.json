@@ -801,6 +801,234 @@
         ]
       }
     },
+    "/api/logs": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "Newest first. `before` is the id of the last row of the page before.\nFilters only narrow what the caller may see.",
+        "operationId": "logs_list",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many rows to return, 1 to 200. 50 when left out.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "The id of the last row of the page before.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Only calls at or after this time: RFC 3339, or a date `YYYY-MM-DD` (UTC, from its start).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Only calls at or before this time: RFC 3339, or a date `YYYY-MM-DD` (UTC, to its end).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key_id",
+            "in": "query",
+            "description": "Only calls made with this key.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Only calls of this user.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "team_id",
+            "in": "query",
+            "description": "Only calls of this team.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "description": "Only calls answered by, or asking for, this model name.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Only calls answered with this HTTP status, 100 to 599.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The calls the caller may see, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some parameters are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/logs/{id}": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "operationId": "logs_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the log row.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The call with its attempts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogDetailView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no such call, or the caller may not see it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/models": {
       "get": {
         "tags": [
@@ -4668,6 +4896,328 @@
           }
         }
       },
+      "LogAttempt": {
+        "type": "object",
+        "description": "One target tried for a call.",
+        "required": [
+          "provider",
+          "model",
+          "outcome",
+          "status",
+          "duration_ms"
+        ],
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "model": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`ok`, `retryable`, `fatal`, `circuit_open` or `skipped`."
+          },
+          "provider": {
+            "type": "string"
+          },
+          "status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What the provider answered, when it did."
+          }
+        }
+      },
+      "LogDetailView": {
+        "type": "object",
+        "description": "A call with the targets it tried, in order. The fields of a\n[`LogView`], and `attempts`.",
+        "required": [
+          "id",
+          "at",
+          "key_id",
+          "key_name",
+          "user_id",
+          "user_email",
+          "team_id",
+          "team_name",
+          "requested",
+          "endpoint",
+          "stream",
+          "status",
+          "provider",
+          "model",
+          "input_tokens",
+          "output_tokens",
+          "cost_micros",
+          "priced",
+          "cached",
+          "duration_ms",
+          "attempts"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "UTC, `YYYY-MM-DD HH:MM:SS`."
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogAttempt"
+            }
+          },
+          "cached": {
+            "type": "boolean"
+          },
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Cost in millionths of a dollar; 0 when `priced` is false."
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "input_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "key_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "key_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` when the key was deleted."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "priced": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider that answered, else the last one tried."
+          },
+          "requested": {
+            "type": "string",
+            "description": "The model or route name the caller asked for."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What the caller was answered."
+          },
+          "stream": {
+            "type": "boolean"
+          },
+          "team_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "team_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "LogPage": {
+        "type": "object",
+        "required": [
+          "logs"
+        ],
+        "properties": {
+          "logs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogView"
+            }
+          }
+        }
+      },
+      "LogView": {
+        "type": "object",
+        "description": "One logged call, as `/api` shows it.",
+        "required": [
+          "id",
+          "at",
+          "key_id",
+          "key_name",
+          "user_id",
+          "user_email",
+          "team_id",
+          "team_name",
+          "requested",
+          "endpoint",
+          "stream",
+          "status",
+          "provider",
+          "model",
+          "input_tokens",
+          "output_tokens",
+          "cost_micros",
+          "priced",
+          "cached",
+          "duration_ms"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "UTC, `YYYY-MM-DD HH:MM:SS`."
+          },
+          "cached": {
+            "type": "boolean"
+          },
+          "cost_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Cost in millionths of a dollar; 0 when `priced` is false."
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "input_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "key_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "key_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` when the key was deleted."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "priced": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider that answered, else the last one tried."
+          },
+          "requested": {
+            "type": "string",
+            "description": "The model or route name the caller asked for."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What the caller was answered."
+          },
+          "stream": {
+            "type": "boolean"
+          },
+          "team_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "team_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -5671,6 +6221,10 @@
     {
       "name": "settings",
       "description": "Settings of the gateway."
+    },
+    {
+      "name": "logs",
+      "description": "Request logs."
     }
   ]
 }

@@ -160,6 +160,30 @@ async fn world() -> World {
     tx.commit().await.unwrap();
     org.api.state.refresh().await.unwrap();
 
+    let log = |user: i64, team: i64| ultrafast_gateway::store::NewLog {
+        at: "2026-01-01 10:00:00".into(),
+        key_id: None,
+        user_id: Some(user),
+        team_id: Some(team),
+        requested: "gpt-4o".into(),
+        endpoint: "chat".into(),
+        stream: false,
+        status: 200,
+        provider: Some("main".into()),
+        model: Some("gpt-4o".into()),
+        input_tokens: Some(1),
+        output_tokens: Some(1),
+        cost_micros: 0,
+        priced: false,
+        cached: false,
+        duration_ms: 1,
+        attempts: "[]".into(),
+    };
+    org.api
+        .store
+        .insert_logs(&[log(org.lena, org.platform), log(org.tomas, org.research)])
+        .await
+        .unwrap();
     let lena_key = seed_key(&org, "lena", org.lena, org.platform).await;
     let tomas_key = seed_key(&org, "tomas", org.tomas, org.research).await;
     let maya_token = seed_token(&org, org.maya).await;
@@ -381,6 +405,12 @@ fn table() -> Vec<Row> {
         row(48, "PATCH", "/api/settings", "", |_, _| "/api/settings".into(),
             || Some(json!({ "log_retention_days": 30 })),
             [200, 403, 403, 401]),
+        row(49, "GET", "/api/logs", "", |_, _| "/api/logs".into(), no_body, [200, 200, 200, 401]),
+        // Log 1 is lena's, in Platform; log 2 is tomas's, in Research.
+        row(50, "GET", "/api/logs/{id}", "lena's", |_, _| "/api/logs/1".into(), no_body,
+            [200, 200, 200, 401]),
+        row(51, "GET", "/api/logs/{id}", "tomas's", |_, _| "/api/logs/2".into(), no_body,
+            [200, 404, 404, 401]),
     ]
 }
 
@@ -447,7 +477,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=48).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=51).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -573,7 +603,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 47);
+    assert_eq!(operations, 49);
 
     for (method, path) in [
         ("GET", "/api/nothing"),
