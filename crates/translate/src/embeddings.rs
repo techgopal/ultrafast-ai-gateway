@@ -8,6 +8,9 @@ use crate::error::TranslateError;
 use crate::provider::DEFAULT_AZURE_API_VERSION;
 use crate::provider::{path_segment, provider_error, saturate, HttpRequest, ProviderKind, Target};
 
+/// Gemini's `batchEmbedContents` takes at most this many texts.
+pub const GEMINI_MAX_INPUTS: usize = 100;
+
 /// What a caller is told when the target cannot embed.
 pub const NOT_SUPPORTED: &str = "This model does not support embeddings.";
 
@@ -165,6 +168,11 @@ pub fn build_request(
             body: to_body(&openai_body(None))?,
         }),
         ProviderKind::Gemini => {
+            if req.input.len() > GEMINI_MAX_INPUTS {
+                return Err(TranslateError::InvalidRequest(format!(
+                    "Gemini accepts at most {GEMINI_MAX_INPUTS} inputs per request."
+                )));
+            }
             let model = target
                 .model
                 .strip_prefix("models/")
@@ -214,10 +222,13 @@ fn vector(v: &Value) -> Result<Vec<f32>, TranslateError> {
         .collect()
 }
 
+/// `model` is the one the target was asked for: the answer says so when the
+/// provider does not name a model.
 pub fn parse_response(
     kind: ProviderKind,
     status: u16,
     body: &[u8],
+    model: &str,
 ) -> Result<EmbeddingsResponse, TranslateError> {
     if status >= 400 {
         return Err(provider_error(status, body));
@@ -251,7 +262,7 @@ pub fn parse_response(
                 .map(|e| vector(&e["values"]))
                 .collect::<Result<_, _>>()?;
             Ok(EmbeddingsResponse {
-                model: String::new(),
+                model: model.to_string(),
                 vectors,
                 prompt_tokens: 0,
             })
@@ -362,6 +373,21 @@ mod tests {
     }
 
     #[test]
+    fn gemini_takes_at_most_a_hundred_inputs() {
+        let mut r = req();
+        r.input = vec!["x".into(); GEMINI_MAX_INPUTS];
+        assert!(build_request(&target(ProviderKind::Gemini), &r).is_ok());
+        r.input.push("x".into());
+        let e = build_request(&target(ProviderKind::Gemini), &r).unwrap_err();
+        assert_eq!(
+            e,
+            TranslateError::InvalidRequest("Gemini accepts at most 100 inputs per request.".into())
+        );
+        // The limit is Gemini's.
+        assert!(build_request(&target(ProviderKind::OpenAi), &r).is_ok());
+    }
+
+    #[test]
     fn anthropic_cannot_embed() {
         assert!(!ProviderKind::Anthropic.supports_embeddings());
         assert!(matches!(
@@ -374,14 +400,16 @@ mod tests {
     fn parses_answers() {
         let openai = br#"{"data":[{"index":1,"embedding":[3.0]},{"index":0,"embedding":[1.5,2.0]}],"model":"emb-v1","usage":{"prompt_tokens":4,"total_tokens":4}}"#;
         for kind in [ProviderKind::OpenAi, ProviderKind::Azure] {
-            let r = parse_response(kind, 200, openai).unwrap();
+            let r = parse_response(kind, 200, openai, "asked").unwrap();
             assert_eq!(r.vectors, vec![vec![1.5, 2.0], vec![3.0]]);
             assert_eq!(r.prompt_tokens, 4);
             assert_eq!(r.model, "emb-v1");
         }
         let gemini = br#"{"embeddings":[{"values":[0.5]},{"values":[0.25]}]}"#;
-        let r = parse_response(ProviderKind::Gemini, 200, gemini).unwrap();
+        let r = parse_response(ProviderKind::Gemini, 200, gemini, "asked").unwrap();
         assert_eq!(r.vectors, vec![vec![0.5], vec![0.25]]);
+        // The provider names no model: the one asked for is given.
+        assert_eq!(r.model, "asked");
         let v = render_response(&r);
         assert_eq!(v["data"][1]["index"], 1);
         assert_eq!(v["data"][1]["embedding"][0], 0.25);
@@ -394,6 +422,7 @@ mod tests {
             ProviderKind::OpenAi,
             429,
             br#"{"error":{"message":"slow"}}"#,
+            "m",
         )
         .unwrap_err();
         assert!(matches!(
@@ -406,7 +435,7 @@ mod tests {
         ));
         for bad in [&b"x"[..], b"{}", br#"{"data":[{"embedding":"no"}]}"#] {
             assert!(matches!(
-                parse_response(ProviderKind::OpenAi, 200, bad),
+                parse_response(ProviderKind::OpenAi, 200, bad, "m"),
                 Err(TranslateError::Malformed(_))
             ));
         }

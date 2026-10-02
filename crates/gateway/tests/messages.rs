@@ -3,7 +3,8 @@ mod common;
 use axum::http::StatusCode;
 use common::{allow_model, harness, post_to, Harness};
 use serde_json::{json, Value};
-use ultrafast_gateway::store::Grants;
+use ultrafast_gateway::store::{Grants, RouteSettings, TargetsInput};
+use ultrafast_gateway::telemetry::AttemptOutcome;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -327,4 +328,69 @@ async fn a_rejected_provider_credential_is_an_api_error_not_the_callers() {
     assert_eq!(s, StatusCode::BAD_GATEWAY);
     assert_eq!(json_of(&body)["error"]["type"], "api_error");
     assert!(!body.contains("sk-abc"));
+}
+
+#[tokio::test]
+async fn a_route_skips_a_target_the_key_may_not_call() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(openai_ok())
+        .mount(&h.upstream)
+        .await;
+    let hidden = allow_model(&h.store, "p", "hidden").await;
+    let mut tx = h.store.begin().await.unwrap();
+    tx.replace_grants(hidden, &Grants::default()).await.unwrap();
+    let visible = tx.insert_model(1, "visible").await.unwrap();
+    assert!(tx.set_model_enabled(visible, true).await.unwrap());
+    tx.replace_grants(
+        visible,
+        &Grants {
+            everyone: true,
+            ..Grants::default()
+        },
+    )
+    .await
+    .unwrap();
+    let route = tx
+        .insert_route(
+            "r",
+            &RouteSettings {
+                retries: 0,
+                first_token_timeout_ms: 30_000,
+                total_timeout_ms: 300_000,
+                breaker_failures: 5,
+                breaker_window_s: 60,
+                breaker_open_s: 30,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    tx.replace_targets(
+        route,
+        &TargetsInput {
+            primaries: vec![(hidden, 1)],
+            fallbacks: vec![visible],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    let (s, _, body) = messages(&h, &BODY.replace("p/m", "r")).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let seen: Vec<_> = h.sink.records()[0]
+        .attempts
+        .iter()
+        .map(|a| (a.model.clone(), a.outcome))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("hidden".to_string(), AttemptOutcome::Skipped),
+            ("visible".to_string(), AttemptOutcome::Ok)
+        ]
+    );
+    assert_eq!(h.upstream.received_requests().await.unwrap().len(), 1);
 }

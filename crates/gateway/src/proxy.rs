@@ -610,9 +610,8 @@ async fn try_target(
     };
     let parsed = match call {
         Call::Chat(_) => parse_response(provider.kind, status, &bytes).map(Served::Whole),
-        Call::Embed(_) => {
-            embeddings::parse_response(provider.kind, status, &bytes).map(Served::Embeddings)
-        }
+        Call::Embed(_) => embeddings::parse_response(provider.kind, status, &bytes, &target.model)
+            .map(Served::Embeddings),
     };
     match parsed {
         Ok(value) => Ok(Success {
@@ -862,7 +861,8 @@ impl Drop for StreamRecord {
     }
 }
 
-/// Forwards the provider's stream to the caller as OpenAI server-sent events.
+/// Forwards the provider's stream to the caller as server-sent events in the
+/// format of the endpoint it came in on.
 ///
 /// The body owns the upstream response, so when the caller disconnects and the
 /// body is dropped, the provider request is dropped with it.

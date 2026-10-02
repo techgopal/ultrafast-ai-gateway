@@ -325,6 +325,35 @@ mod tests {
     }
 
     #[test]
+    fn every_finish_reason_has_its_stop_reason() {
+        for (reason, want) in [
+            (Some(FinishReason::Stop), json!("end_turn")),
+            (Some(FinishReason::Length), json!("max_tokens")),
+            (Some(FinishReason::ContentFilter), json!("refusal")),
+            (Some(FinishReason::ToolCalls), json!("tool_use")),
+            (None, Value::Null),
+        ] {
+            let r = ChatResponse {
+                id: "i".into(),
+                model: "m".into(),
+                content: String::new(),
+                finish_reason: reason,
+                usage: None,
+            };
+            assert_eq!(render_response(&r)["stop_reason"], want, "{reason:?}");
+            let mut s = StreamRenderer::new("i", "m");
+            let done = s.render(&StreamEvent::Done {
+                finish_reason: reason,
+                usage: None,
+            });
+            assert!(
+                done.contains(&format!(r#""stop_reason":{want}"#)),
+                "{reason:?}: {done}"
+            );
+        }
+    }
+
+    #[test]
     fn error_types_follow_the_status() {
         for (status, kind) in [
             (400, "invalid_request_error"),

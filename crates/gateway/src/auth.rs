@@ -38,6 +38,9 @@ pub fn authenticate(
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
         .map(str::trim);
+    // The first value that looks like a gateway key is the one checked: a
+    // client that sends two different keys is misconfigured, and a bad
+    // `Authorization` key is not rescued by a good `x-api-key`.
     let key = bearer
         .into_iter()
         .chain(x_api_key)
