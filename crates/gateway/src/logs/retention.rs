@@ -69,6 +69,16 @@ async fn pass(store: &Store, config: &RetentionConfig) -> Result<Purged> {
     .await
 }
 
+/// A pass, then the planner's statistics, which follow the table as it grows
+/// and shrinks. A failed optimize is only logged.
+async fn pass_and_optimize(store: &Store, config: &RetentionConfig) -> Result<Purged> {
+    let done = pass(store, config).await;
+    if let Err(e) = store.optimize().await {
+        tracing::warn!(error = %e, "could not optimize the database");
+    }
+    done
+}
+
 /// Resolves when `stop` is true or its sender is gone.
 async fn stopped(stop: &mut watch::Receiver<bool>) {
     loop {
@@ -92,12 +102,8 @@ pub fn spawn(
             let done = tokio::select! {
                 biased;
                 () = stopped(&mut stop) => return,
-                done = pass(&store, &config) => done,
+                done = pass_and_optimize(&store, &config) => done,
             };
-            // Statistics follow the table as it grows and shrinks.
-            if let Err(e) = store.optimize().await {
-                tracing::warn!(error = %e, "could not optimize the database");
-            }
             match done {
                 Ok(p) if p.rows > 0 => tracing::info!(rows = p.rows, "deleted old request logs"),
                 Ok(_) => {}

@@ -164,17 +164,23 @@ pub async fn usage_view(
             (today - span, today)
         }
     };
+    // Blame the bound the caller sent; the other one was filled in.
+    let blamed = if q.to.is_some() { "to" } else { "from" };
     if to < from {
         return Err(ApiError::invalid_field(
-            "to",
-            "must not be before the first day",
+            blamed,
+            "the range must not end before it starts",
         ));
     }
     if (to - from).whole_days() + 1 > MAX_DAYS {
         return Err(ApiError::invalid_field(
-            "to",
+            blamed,
             "the range must be at most 366 days",
         ));
+    }
+    // The store counts the whole last day by looking at the day after it.
+    if to.next_day().is_none() {
+        return Err(ApiError::invalid_field("to", "must be before 9999-12-31"));
     }
     let (from, to) = (
         from.format(DAY).map_err(|e| anyhow::anyhow!(e))?,

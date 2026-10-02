@@ -427,3 +427,27 @@ async fn needs_a_session() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(error_code(&body), "unauthenticated");
 }
+
+#[tokio::test]
+async fn an_error_names_the_field_the_caller_sent() {
+    let s = seeded().await;
+    let o = &s.org;
+    let maya = o.sign_in("maya").await;
+    for (query, field) in [
+        // Only `from`, too far back: the error is on `from`.
+        ("?from=2000-01-01", "from"),
+        // Only `from`, in the far future: after today.
+        ("?from=2999-01-01", "from"),
+        // Both sent: `to` is the one out of range.
+        ("?from=2026-01-05&to=2026-01-04", "to"),
+        // The last day there is cannot be counted whole.
+        ("?from=9999-12-01&to=9999-12-31", "to"),
+    ] {
+        let (status, body) = o
+            .call(Some(&maya), "GET", &format!("/api/usage{query}"), None)
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}: {body}");
+        let fields = body["error"]["fields"].as_object().unwrap();
+        assert_eq!(fields.keys().collect::<Vec<_>>(), [field], "{query}");
+    }
+}

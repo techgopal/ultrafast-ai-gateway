@@ -156,7 +156,9 @@ impl Store {
         // So the planner has statistics for `request_logs` from the first
         // call on (without them the lead's scope OR chose a temporary
         // b-tree sort on a fresh database).
-        store.optimize().await?;
+        if let Err(e) = store.optimize().await {
+            tracing::warn!(error = %e, "could not optimize the database");
+        }
         Ok(store)
     }
 

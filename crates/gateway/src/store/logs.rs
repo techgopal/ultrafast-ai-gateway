@@ -145,11 +145,12 @@ fn scope_sql(scope: &LogScope) -> (String, Vec<i64>) {
         } => {
             let marks = vec!["?"; team_ids.len()].join(", ");
             let marks = if marks.is_empty() { "NULL" } else { &marks };
-            // Members come from one subquery, not one lookup per row.
+            // Members come from one subquery that does not depend on the
+            // row (the org is a constant), so SQLite runs it once, not per row.
             let sql = format!(
                 "(l.user_id = ? OR l.team_id IN ({marks}) OR l.user_id IN
                   (SELECT m.user_id FROM team_members m
-                   WHERE m.org_id = l.org_id AND m.team_id IN ({marks})))"
+                   WHERE m.org_id = {DEFAULT_ORG} AND m.team_id IN ({marks})))"
             );
             let mut binds = vec![*own_user_id];
             binds.extend(team_ids);
@@ -431,6 +432,36 @@ mod tests {
             duration_ms: 1,
             attempts: "[]".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn the_lead_scope_has_no_correlated_subquery() {
+        let store = Store::open_in_memory().await.unwrap();
+        let scope = LogScope::Teams {
+            team_ids: vec![1, 2],
+            own_user_id: 3,
+        };
+        let (clause, binds) = scope_sql(&scope);
+        let sql = format!("EXPLAIN QUERY PLAN SELECT 1 FROM request_logs l WHERE {clause}");
+        let mut q = sqlx::query(AssertSqlSafe(sql));
+        for b in binds {
+            q = q.bind(b);
+        }
+        let plan: Vec<String> = q
+            .fetch_all(store.pool())
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get::<String, _>("detail"))
+            .collect();
+        assert!(
+            plan.iter().any(|d| d.contains("SUBQUERY")),
+            "unexpected plan: {plan:?}"
+        );
+        assert!(
+            plan.iter().all(|d| !d.contains("CORRELATED")),
+            "correlated subquery: {plan:?}"
+        );
     }
 
     #[tokio::test]
