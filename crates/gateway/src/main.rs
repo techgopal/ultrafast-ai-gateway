@@ -61,6 +61,12 @@ enum Command {
             value_delimiter = ','
         )]
         trusted_proxies: Vec<String>,
+        /// Serve Prometheus metrics at `GET /metrics` to callers that send
+        /// this token as `Authorization: Bearer <token>`. Unset (or empty):
+        /// `/metrics` does not exist. Prefer the UF_METRICS_TOKEN environment
+        /// variable: a flag value is visible in the process list.
+        #[arg(long, env = "UF_METRICS_TOKEN", hide_env_values = true)]
+        metrics_token: Option<String>,
     },
     /// Manage providers.
     Provider {
@@ -233,6 +239,7 @@ async fn main() -> Result<()> {
             port,
             insecure_cookies,
             trusted_proxies,
+            metrics_token,
         } => {
             let addr = serve_address(&host, port)?;
             tokio::task::spawn_blocking(password::warm_up)
@@ -247,6 +254,10 @@ async fn main() -> Result<()> {
             let (log_sink, log_queue) = LogSink::channel(QUEUE_CAPACITY);
             let log_stats = log_sink.stats();
             state.sink = Arc::new(log_sink);
+            state.metrics.attach_logs(log_stats.clone());
+            state.metrics_token = metrics_token
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty());
             state.cookie_secure = !insecure_cookies;
             state.trusted_proxies = parse_trusted_proxies(&trusted_proxies)?;
             if !state.trusted_proxies.is_empty() {

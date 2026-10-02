@@ -22,6 +22,7 @@ use crate::cache::{MemoryCache, ResponseCache};
 use crate::errors::error_response;
 use crate::identity::limiter::LoginLimiter;
 use crate::limits::{Limiter, MemoryLimiter};
+use crate::metrics::{self, Metrics};
 use crate::proxy;
 use crate::routing::{HealthStore, InMemoryHealth};
 use crate::secrets::Cipher;
@@ -68,6 +69,10 @@ pub struct AppState {
     pub budgets: Arc<dyn Budgets>,
     /// The circuit breaker of every target that was called.
     pub health: Arc<dyn HealthStore>,
+    /// The counters `/metrics` shows.
+    pub metrics: Arc<Metrics>,
+    /// The bearer token of `/metrics`. None: the path does not exist.
+    pub metrics_token: Option<String>,
     /// How many snapshots have been swapped in since the start.
     refreshes: AtomicU64,
     /// The fingerprint of the configuration the cache was filled under.
@@ -92,6 +97,8 @@ impl AppState {
             cache: Arc::new(MemoryCache::new()),
             budgets: Arc::new(MemoryBudgets::new()),
             health: Arc::new(InMemoryHealth::new()),
+            metrics: Arc::new(Metrics::new()),
+            metrics_token: None,
             refreshes: AtomicU64::new(0),
             cache_fingerprint: std::sync::Mutex::new(snapshot_fingerprint),
             refreshing: Mutex::new(()),
@@ -176,6 +183,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     // The chat handler enforces `max_body_bytes` itself, after authentication.
     Router::new()
         .route("/health", get(|| async { Json(json!({ "status": "ok" })) }))
+        .route("/metrics", get(metrics::serve))
         .route("/v1/chat/completions", post(proxy::chat_completions))
         .route("/v1/messages", post(proxy::messages))
         .route("/v1/embeddings", post(proxy::embeddings))

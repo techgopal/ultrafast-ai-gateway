@@ -81,6 +81,20 @@ pub async fn harness_with_sink(kind: &str, sink: Arc<dyn RequestSink>) -> Harnes
         DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
         Some(sink),
         None,
+        None,
+    )
+    .await
+}
+
+/// Like [`harness`], with `/metrics` guarded by `token` (none: no `/metrics`).
+pub async fn harness_with_metrics_token(kind: &str, token: Option<&str>) -> Harness {
+    build_harness(
+        kind,
+        DEFAULT_MAX_BODY_BYTES,
+        DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+        None,
+        None,
+        token,
     )
     .await
 }
@@ -93,6 +107,7 @@ pub async fn harness_with_rate(kind: &str, rate: Arc<dyn Limiter>) -> Harness {
         DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
         None,
         Some(rate),
+        None,
     )
     .await
 }
@@ -108,6 +123,7 @@ async fn harness_with_limits(
         max_provider_response_bytes,
         None,
         None,
+        None,
     )
     .await
 }
@@ -118,6 +134,7 @@ async fn build_harness(
     max_provider_response_bytes: usize,
     own_sink: Option<Arc<dyn RequestSink>>,
     rate: Option<Arc<dyn Limiter>>,
+    metrics_token: Option<&str>,
 ) -> Harness {
     let upstream = MockServer::start().await;
     let store = Store::open_in_memory().await.unwrap();
@@ -145,6 +162,7 @@ async fn build_harness(
     if let Some(rate) = rate {
         state.rate = rate;
     }
+    state.metrics_token = metrics_token.map(str::to_string);
     let state = Arc::new(state);
     Harness {
         sink,

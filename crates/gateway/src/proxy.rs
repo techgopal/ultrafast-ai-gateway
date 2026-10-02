@@ -191,13 +191,15 @@ async fn handle(state: Arc<AppState>, request: Request, endpoint: Endpoint) -> R
     };
     // From here on the call is recorded, once: when it is answered, when the
     // stream ends, or when the caller goes away (the scope is dropped).
-    let mut scope = Some(Scope::begin(
+    let mut begun = Scope::begin(
         state.sink.clone(),
         key.id,
         key.user_id,
         key.team_id,
         endpoint.name(),
-    ));
+    );
+    begun.metered(state.metrics.clone());
+    let mut scope = Some(begun);
     let response = dispatch(&state, &snapshot, &key, body, endpoint, &mut scope).await;
     // A stream took the scope with it and records itself.
     if let Some(scope) = scope {
@@ -398,7 +400,10 @@ async fn dispatch(
         .acquire(&subjects, call.estimated_tokens(), Instant::now())
     {
         Ok(permit) => record.hold(permit),
-        Err(refusal) => return shape.rate_limited(&refusal),
+        Err(refusal) => {
+            state.metrics.rate_limited(refusal.limit_name);
+            return shape.rate_limited(&refusal);
+        }
     }
     // 3c. The budgets of the same subjects: a spent `block` budget refuses
     // the call. Spend is counted when the log writer prices a call, so what
@@ -406,6 +411,7 @@ async fn dispatch(
     let budgets = snapshot.budgets_of(key.id, key.user_id, key.team_id);
     if !budgets.is_empty() {
         if let Err(refusal) = state.budgets.check(&budgets, OffsetDateTime::now_utc()) {
+            state.metrics.budget_blocked();
             return shape.budget_exceeded(&refusal);
         }
     }
@@ -431,10 +437,12 @@ async fn dispatch(
         let now = tokio::time::Instant::now().into_std();
         if let Some(hit) = state.cache.get(&plan.key, now) {
             if let Some(response) = render_cached(endpoint, &hit) {
+                state.metrics.cache_hit();
                 record.cache_hit(&hit.provider, &hit.model, hit.usage());
                 return response;
             }
         }
+        state.metrics.cache_miss();
     }
 
     // 4. Try the targets in order.

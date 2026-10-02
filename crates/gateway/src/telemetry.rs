@@ -10,6 +10,7 @@ use std::time::Instant;
 use ultrafast_translate::types::Usage;
 
 use crate::limits::Permit;
+use crate::metrics::Metrics;
 use crate::store;
 
 /// How one try at a target ended.
@@ -91,6 +92,8 @@ pub struct Scope {
     /// The rate-limit permit of the call. It goes with the scope: released
     /// when the call is recorded, whether it ended, failed or was dropped.
     permit: Option<Permit>,
+    /// Counts the call when it is emitted.
+    metrics: Option<Arc<Metrics>>,
 }
 
 impl Scope {
@@ -106,6 +109,7 @@ impl Scope {
             targets: Vec::new(),
             started: Instant::now(),
             permit: None,
+            metrics: None,
             record: Some(RequestRecord {
                 key_id,
                 user_id,
@@ -121,6 +125,11 @@ impl Scope {
                 duration_ms: 0,
             }),
         }
+    }
+
+    /// The call is counted in `metrics` when it is recorded.
+    pub fn metered(&mut self, metrics: Arc<Metrics>) {
+        self.metrics = Some(metrics);
     }
 
     fn record_mut(&mut self) -> &mut RequestRecord {
@@ -270,6 +279,9 @@ impl Scope {
                 if record.usage.is_none() && status >= 400 && status != CALLER_GONE {
                     permit.settle(0);
                 }
+            }
+            if let Some(metrics) = &self.metrics {
+                metrics.record(&record);
             }
             self.sink.record(record);
         }

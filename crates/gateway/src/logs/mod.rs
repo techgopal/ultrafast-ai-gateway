@@ -36,6 +36,9 @@ pub struct LogStats {
     pub written: AtomicU64,
     /// Batches written.
     pub batches: AtomicU64,
+    /// Micro-dollars of the priced records of the batches, whether or not
+    /// the write succeeded: the money was spent either way.
+    pub cost_micros: AtomicU64,
 }
 
 /// The sink of the gateway: a bounded queue in front of the writer.

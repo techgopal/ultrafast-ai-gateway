@@ -12,6 +12,7 @@ pub mod errors;
 pub mod identity;
 pub mod limits;
 pub mod logs;
+pub mod metrics;
 pub mod proxy;
 pub mod routing;
 pub mod secrets;

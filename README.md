@@ -66,6 +66,32 @@ Not yet: logs, the playground, budgets and limits,
 guardrails and MCP tools (shown as coming in the navigation), and a Settings
 page (retention, sign-in settings, backup, configuration export and import).
 
+### Metrics
+
+`GET /metrics` serves Prometheus metrics (text format 0.0.4). It exists only
+when a token is set: start the gateway with `UF_METRICS_TOKEN` (or
+`--metrics-token`; the variable is safer, a flag shows in the process list)
+and scrape with `Authorization: Bearer <token>`. Without a token the path
+answers 404; a missing or wrong token answers 401.
+
+```yaml
+scrape_configs:
+  - job_name: ultrafast
+    authorization: { credentials_file: /etc/prometheus/ultrafast-token }
+    static_configs: [{ targets: ["127.0.0.1:3000"] }]
+```
+
+Metrics: `uf_requests_total{endpoint,status_class}` (endpoint `chat`,
+`messages`, `embeddings`; class `2xx`, `4xx`, `5xx`, `499` for a caller that
+went away, `other`), `uf_tokens_total{direction}` (answers from the cache are
+not counted), `uf_cost_micros_total`, `uf_upstream_duration_seconds{provider}`
+(histogram), `uf_log_records_dropped_total`, `uf_log_write_failures_total`,
+`uf_cache_hits_total`, `uf_cache_misses_total`,
+`uf_rate_limited_total{limit}` (`requests_per_minute`, `tokens_per_minute`,
+`concurrent`), `uf_budget_blocked_total` and `uf_circuit_open{provider,model}`
+(1 while a breaker is open). Counters start at zero when the gateway starts.
+No label names a key, user, team or prompt.
+
 Build: the console is compiled into the binary from `ui/dist`, so build the
 console first, then the gateway:
 
@@ -75,7 +101,7 @@ pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build && cargo build --
 
 This needs Node 22 and pnpm. `cargo build` alone never runs Node and works
 without it: the binary then serves a page at `/` that says the console was not
-built, and `/api`, `/v1` and `/health` work as usual. The Docker image builds
+built, and `/api`, `/v1`, `/health` and `/metrics` work as usual. The Docker image builds
 both.
 
 Develop: run a gateway on port 3900 with `--insecure-cookies` (plain HTTP on

@@ -65,7 +65,9 @@ async fn flush(
     // was spent either way.
     for (record, row) in batch.iter().zip(&rows) {
         if row.priced && row.cost_micros > 0 {
-            account(record, u64::try_from(row.cost_micros).unwrap_or(0));
+            let micros = u64::try_from(row.cost_micros).unwrap_or(0);
+            stats.cost_micros.fetch_add(micros, Ordering::Relaxed);
+            account(record, micros);
         }
     }
     // One retry with the same rows: a busy database is usually free again.
