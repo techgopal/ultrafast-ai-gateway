@@ -64,7 +64,7 @@ fn target_of(target_json: &str, model: &str) -> Result<(WireTarget, bool), Failu
         serde_json::from_str(target_json).map_err(|e| invalid(format!("target: {e}")))?;
     let gateway = t.kind == "gateway";
     let base_url = if gateway {
-        format!("{}/v1", t.base_url.trim_end_matches('/'))
+        provider::gateway_base(&t.base_url)
     } else {
         t.base_url
     };
@@ -253,6 +253,20 @@ pub fn scrub(message: &str, key: &str) -> String {
     ultrafast_translate::classify::scrub(message, key)
 }
 
+/// An error JSON (as thrown by any function here) with the key removed from
+/// its message. The match is on the decoded text, so a key that JSON escapes
+/// is still found. Anything that is not an error JSON is scrubbed as text.
+pub fn scrub_error(error_json: &str, key: &str) -> String {
+    match serde_json::from_str::<Value>(error_json) {
+        Ok(mut v) if v.get("message").is_some_and(Value::is_string) => {
+            let clean = scrub(v["message"].as_str().unwrap_or_default(), key);
+            v["message"] = Value::String(clean);
+            v.to_string()
+        }
+        _ => scrub(error_json, key),
+    }
+}
+
 /// The `x-uf-tags` value for a JSON object of tags; None when empty.
 pub fn tags_header(tags_json: &str) -> Result<Option<String>, Failure> {
     let t: BTreeMap<String, String> =
@@ -279,29 +293,46 @@ fn events_json(events: &[StreamEvent]) -> String {
 }
 
 /// Decodes a provider's event stream, chunk by chunk.
-pub struct Decoder(StreamDecoder);
+pub struct Decoder {
+    inner: StreamDecoder,
+    done: bool,
+}
 
 impl Decoder {
     pub fn new(kind: &str) -> Result<Decoder, Failure> {
-        Ok(Decoder(StreamDecoder::new(kind_of(kind)?)))
+        Ok(Decoder {
+            inner: StreamDecoder::new(kind_of(kind)?),
+            done: false,
+        })
     }
 
     /// Events (a JSON array) completed by `chunk`. Errs when the stream
     /// failed before any event came out of this chunk; an error after events
     /// is held for `take_error`.
     pub fn feed(&mut self, chunk: &[u8]) -> Result<String, Failure> {
-        self.0
-            .feed(chunk)
-            .map(|e| events_json(&e))
-            .map_err(|e| classified(e, None))
+        let events = self.inner.feed(chunk).map_err(|e| classified(e, None))?;
+        self.note(&events);
+        Ok(events_json(&events))
     }
 
     /// The events held back until the provider closed the stream.
     pub fn finish(&mut self) -> String {
-        events_json(&self.0.finish())
+        let events = self.inner.finish();
+        self.note(&events);
+        events_json(&events)
+    }
+
+    /// Whether a `done` event has come out. A stream that closes without
+    /// one was cut short and the host must raise a `malformed` error.
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+
+    fn note(&mut self, events: &[StreamEvent]) {
+        self.done |= events.iter().any(|e| matches!(e, StreamEvent::Done { .. }));
     }
 
     pub fn take_error(&mut self) -> Option<String> {
-        self.0.take_error().map(|e| classified(e, None))
+        self.inner.take_error().map(|e| classified(e, None))
     }
 }

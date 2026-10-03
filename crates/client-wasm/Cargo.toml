@@ -17,3 +17,6 @@ serde.workspace = true
 serde_json.workspace = true
 # Pinned: the wasm-bindgen CLI that builds the package must be this version.
 wasm-bindgen = "=0.2.129"
+
+[dev-dependencies]
+ultrafast-translate = { path = "../translate" }

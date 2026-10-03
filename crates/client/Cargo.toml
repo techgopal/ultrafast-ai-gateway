@@ -17,5 +17,6 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
+ultrafast-client-wasm = { path = "../client-wasm" }
 reqwest.workspace = true
 tokio = { workspace = true, features = ["full"] }

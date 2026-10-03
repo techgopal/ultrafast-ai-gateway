@@ -45,6 +45,14 @@ impl ProviderKind {
     }
 }
 
+/// Where a gateway's OpenAI API lives: the address a caller gave, without a
+/// trailing `/` or `/v1`, plus `/v1`.
+pub fn gateway_base(base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let root = base.strip_suffix("/v1").unwrap_or(base);
+    format!("{}/v1", root.trim_end_matches('/'))
+}
+
 /// Escapes everything but the characters that are safe in a URL path segment.
 pub(crate) fn path_segment(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
@@ -279,6 +287,20 @@ impl StreamDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gateway_base_is_its_root_plus_v1_whatever_the_caller_wrote() {
+        for given in [
+            "http://gw:3900",
+            "http://gw:3900/",
+            "http://gw:3900/v1",
+            "http://gw:3900/v1/",
+        ] {
+            assert_eq!(gateway_base(given), "http://gw:3900/v1", "{given}");
+        }
+        assert_eq!(gateway_base("http://gw/api/v1"), "http://gw/api/v1");
+        assert_eq!(gateway_base("http://gw/api"), "http://gw/api/v1");
+    }
 
     #[test]
     fn target_debug_never_prints_the_api_key() {

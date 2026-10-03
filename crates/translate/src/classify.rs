@@ -7,6 +7,9 @@ use std::fmt;
 use crate::error::TranslateError;
 use crate::provider::provider_error;
 
+/// What every client says about an answer with a 3xx status.
+pub const REDIRECT_MESSAGE: &str = "the server answered with a redirect";
+
 /// A `Retry-After` longer than this is capped (seconds).
 pub const RETRY_AFTER_CAP_SECS: u64 = 24 * 60 * 60;
 
@@ -146,6 +149,9 @@ pub fn scrub(message: &str, key: &str) -> String {
 /// An HTTP error answer (any provider's, or a gateway's) from its status,
 /// body and `Retry-After` header value.
 pub fn classify_answer(status: u16, body: &[u8], retry_after: Option<&str>) -> Classified {
+    if (300..400).contains(&status) {
+        return Classified::from_status(status, REDIRECT_MESSAGE, None);
+    }
     Classified::from_translate(
         provider_error(status, body),
         retry_after.and_then(parse_retry_after),
@@ -209,6 +215,17 @@ mod tests {
         for bad in ["", "-1", "1.5", "Wed, 21 Oct 2015 07:28:00 GMT", "+3"] {
             assert_eq!(parse_retry_after(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_redirect_has_one_message_for_every_client() {
+        for status in [301, 302, 307, 399] {
+            let c = classify_answer(status, b"<html>moved</html>", Some("5"));
+            assert_eq!(c.message, REDIRECT_MESSAGE);
+            assert_eq!(c.retry_after_secs, None);
+            assert_eq!((c.kind, c.retryable), (ErrorKind::InvalidRequest, false));
+        }
+        assert_ne!(classify_answer(400, b"x", None).message, REDIRECT_MESSAGE);
     }
 
     #[test]

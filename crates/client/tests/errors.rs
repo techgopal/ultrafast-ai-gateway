@@ -319,3 +319,37 @@ async fn a_provider_503_with_retry_after_carries_it() {
     assert!(e.retryable);
     assert_eq!(e.retry_after, Some(Duration::from_secs(5)));
 }
+
+#[tokio::test]
+async fn the_cap_applies_to_embed_and_to_the_stream_error_body() {
+    let big = format!(r#"{{"pad":"{}"}}"#, "x".repeat(4000));
+    let s = serve(Script::json(200, &big)).await;
+    let c = Client::new(gateway(&s.url)).with_max_response_bytes(1000);
+    let e = c
+        .embed(EmbeddingsRequest::new("m", ["x"]))
+        .await
+        .unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Malformed, "{e}");
+
+    let s = serve(Script::json(502, &big)).await;
+    let c = Client::new(gateway(&s.url)).with_max_response_bytes(1000);
+    let e = c.chat_stream(req()).await.err().expect("an error");
+    assert_eq!(e.kind, ErrorKind::Malformed, "{e}");
+    assert!(e.message.contains("1000"), "{e}");
+}
+
+#[tokio::test]
+async fn a_declared_length_over_the_cap_is_refused_without_reading() {
+    // 3 bytes sent, 5000 promised, then silence: only the early check can
+    // answer before the timeout.
+    for status in [200u16, 500] {
+        let s = serve(Script::json(status, "abc").declared_len(5000)).await;
+        let c = Client::new(gateway(&s.url))
+            .with_max_response_bytes(1000)
+            .with_timeout(Duration::from_secs(20));
+        let started = Instant::now();
+        let e = c.chat(req()).await.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Malformed, "{status}: {e}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{status}");
+    }
+}

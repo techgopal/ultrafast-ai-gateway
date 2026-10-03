@@ -90,6 +90,13 @@ try {
     { kind: "rate_limited", retryable: true, status: 429, retry_after_secs: 7, message: "slow down" },
   );
   assert.equal(w.scrub("bad key sk-abc here", "sk-abc"), "bad key [redacted] here");
+  const thrown = w.classifyError(401, new TextEncoder().encode('{"error":{"message":"bad sk-abc"}}'), undefined);
+  assert.equal(JSON.parse(w.scrubError(thrown, "sk-abc")).message, "bad [redacted]");
+  const probe = new w.StreamDecoder("openai");
+  probe.feed(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"x"}}]}\n\n'));
+  assert.equal(probe.isDone(), false);
+  probe.feed(new TextEncoder().encode("data: [DONE]\n\n"));
+  assert.equal(probe.isDone(), true);
   console.log("smoke ok: chat, stream, refusal, scrub");
 } finally {
   server.close();

@@ -64,6 +64,14 @@ pub fn scrub(message: &str, key: &str) -> String {
     api::scrub(message, key)
 }
 
+/// An error JSON thrown by this module with the key removed from its
+/// message: run every thrown error through it with the target's key, so a
+/// provider that echoes the credential never leaks it.
+#[wasm_bindgen(js_name = scrubError)]
+pub fn scrub_error(error_json: &str, key: &str) -> String {
+    api::scrub_error(error_json, key)
+}
+
 /// The `x-uf-tags` header value for a JSON object of tags; `undefined` when
 /// there are none.
 #[wasm_bindgen(js_name = tagsHeader)]
@@ -92,6 +100,11 @@ impl StreamDecoder {
     }
 
     /// The error that ended the stream after events were returned, once.
+    #[wasm_bindgen(js_name = isDone)]
+    pub fn is_done(&self) -> bool {
+        self.0.is_done()
+    }
+
     #[wasm_bindgen(js_name = takeError)]
     pub fn take_error(&mut self) -> Option<String> {
         self.0.take_error()

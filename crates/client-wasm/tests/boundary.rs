@@ -275,3 +275,100 @@ fn scrub_is_shared_and_retry_after_is_read_on_429_and_503() {
     );
     assert!(j(&api::classify_error(500, b"{}", Some("5")))["retry_after_secs"].is_null());
 }
+
+#[test]
+fn a_gateway_base_ending_in_v1_is_not_doubled() {
+    for base in ["http://gw:3900/v1", "http://gw:3900/v1/", "http://gw:3900"] {
+        let out = j(
+            &api::build_request(&target("gateway", base), &chat("m", false).to_string()).unwrap(),
+        );
+        assert_eq!(out["url"], "http://gw:3900/v1/chat/completions", "{base}");
+    }
+}
+
+#[test]
+fn a_gateway_builds_embeddings_under_v1_with_tags_and_never_for_a_provider() {
+    let req = json!({"model": "te3", "input": ["a", "b"], "dimensions": 8, "tags": {"team": "x"}});
+    let out = j(&api::build_embeddings_request(
+        &target("gateway", "http://gw:3900"),
+        &req.to_string(),
+    )
+    .unwrap());
+    assert_eq!(out["url"], "http://gw:3900/v1/embeddings");
+    assert_eq!(out["headers"]["authorization"], "Bearer sk-test-key-123");
+    assert_eq!(out["headers"]["x-uf-tags"], r#"{"team":"x"}"#);
+    let body = j(out["body"].as_str().unwrap());
+    assert_eq!(body["model"], "te3");
+    assert_eq!(body["input"], json!(["a", "b"]));
+    assert_eq!(body["dimensions"], 8);
+    let out = j(&api::build_embeddings_request(
+        &target("openai", "https://p.example/v1"),
+        &req.to_string(),
+    )
+    .unwrap());
+    assert!(out["headers"].get("x-uf-tags").is_none());
+}
+
+#[test]
+fn scrub_error_removes_the_key_from_thrown_json() {
+    let key = "sk-test-key-123";
+    let body = format!(r#"{{"error":{{"message":"bad key {key} ({key})"}}}}"#);
+    let thrown = api::classify_error(401, body.as_bytes(), None);
+    assert!(thrown.contains(key));
+    let clean = api::scrub_error(&thrown, key);
+    assert!(!clean.contains(key), "{clean}");
+    let e = j(&clean);
+    assert_eq!(e["message"], "bad key [redacted] ([redacted])");
+    assert_eq!(e["kind"], "auth");
+    assert_eq!(e["status"], 401);
+    // A key with characters JSON escapes is still removed.
+    let odd = "k\"ey\\1";
+    let thrown = api::host_error("network", &format!("saw {odd} here")).unwrap();
+    assert_eq!(
+        j(&api::scrub_error(&thrown, odd))["message"],
+        "saw [redacted] here"
+    );
+    // Anything that is not an error JSON is scrubbed as text.
+    assert_eq!(
+        api::scrub_error("oops sk-test-key-123", key),
+        "oops [redacted]"
+    );
+    assert_eq!(api::scrub_error(&thrown, ""), thrown);
+}
+
+#[test]
+fn the_decoder_says_whether_the_stream_completed() {
+    let mut d = api::Decoder::new("openai").unwrap();
+    assert!(!d.is_done());
+    d.feed(b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+        .unwrap();
+    d.finish();
+    assert!(!d.is_done(), "text alone is not a complete stream");
+    d.feed(b"data: [DONE]\n\n").unwrap();
+    assert!(d.is_done());
+    // Gemini's Done comes from finish().
+    let mut g = api::Decoder::new("gemini").unwrap();
+    g.feed(b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hi\"}]},\"finishReason\":\"STOP\"}]}\n\n").unwrap();
+    assert!(!g.is_done());
+    assert!(j(&g.finish())
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["type"] == "done"));
+    assert!(g.is_done());
+}
+
+#[test]
+fn a_redirect_answer_says_the_same_thing_everywhere() {
+    let e = j(&api::classify_error(302, b"<html></html>", Some("5")));
+    assert_eq!(
+        e["message"],
+        ultrafast_translate::classify::REDIRECT_MESSAGE
+    );
+    assert_eq!(e["kind"], "invalid_request");
+    let e = j(&api::parse_response("openai", 301, b"", None).unwrap_err());
+    assert_eq!(
+        e["message"],
+        ultrafast_translate::classify::REDIRECT_MESSAGE
+    );
+}

@@ -2,7 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use futures::Stream;
-use ultrafast_translate::classify::parse_retry_after;
+use ultrafast_translate::classify::{parse_retry_after, REDIRECT_MESSAGE};
 use ultrafast_translate::embeddings;
 use ultrafast_translate::embeddings::EmbeddingsResponse;
 use ultrafast_translate::provider::{self, HttpRequest};
@@ -200,11 +200,7 @@ impl Client {
 
 fn check_redirect(status: u16) -> Result<(), Error> {
     if (300..400).contains(&status) {
-        return Err(Error::from_status(
-            status,
-            "the server answered with a redirect",
-            None,
-        ));
+        return Err(Error::from_status(status, REDIRECT_MESSAGE, None));
     }
     Ok(())
 }
