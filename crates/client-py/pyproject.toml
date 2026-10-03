@@ -9,6 +9,7 @@ description = "Python client for the Ultrafast gateway and for LLM providers dir
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
+license-files = ["LICENSE"]
 classifiers = ["Programming Language :: Rust", "Programming Language :: Python :: 3"]
 
 [project.optional-dependencies]

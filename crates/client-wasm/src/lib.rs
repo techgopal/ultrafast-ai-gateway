@@ -99,12 +99,13 @@ impl StreamDecoder {
         self.0.finish()
     }
 
-    /// The error that ended the stream after events were returned, once.
+    /// Whether the stream has ended (a terminal event or an error was seen).
     #[wasm_bindgen(js_name = isDone)]
     pub fn is_done(&self) -> bool {
         self.0.is_done()
     }
 
+    /// The error that ended the stream after events were returned, once.
     #[wasm_bindgen(js_name = takeError)]
     pub fn take_error(&mut self) -> Option<String> {
         self.0.take_error()

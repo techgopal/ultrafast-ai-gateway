@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ultrafast-translate = { path = "../translate" }
+ultrafast-translate = { version = "2.0.0-alpha.1", path = "../translate" }
 serde.workspace = true
 serde_json.workspace = true
 # Pinned: the wasm-bindgen CLI that builds the package must be this version.
