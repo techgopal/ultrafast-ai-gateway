@@ -76,7 +76,7 @@ test("a member's key calls only what is enabled and granted to them", async ({
   await signInFromStart(page, member);
   await goTo(page, "Models");
   const usable = page.getByRole("list", { name: "Models you can use" });
-  await expect(usable.getByRole("listitem")).toHaveText(["mock/e2e-openCopy"]);
+  await expect(usable.getByRole("listitem")).toHaveText([/^mock\/e2e-openInput Not set · Output Not set per 1M tokensCopy$/]);
 
   // Granted to the member's team, the model can be called, and is listed everywhere.
   await api.grant(teamModel, { team_ids: [team] });
@@ -88,8 +88,8 @@ test("a member's key calls only what is enabled and granted to them", async ({
   expect(await listed()).toEqual(["mock/e2e-open", "mock/e2e-team"]);
   await page.reload();
   await expect(usable.getByRole("listitem")).toHaveText([
-    "mock/e2e-openCopy",
-    "mock/e2e-teamCopy",
+    /^mock\/e2e-openInput Not set · Output Not set per 1M tokensCopy$/,
+    /^mock\/e2e-teamInput Not set · Output Not set per 1M tokensCopy$/,
   ]);
   await expect(page.getByRole("switch")).toHaveCount(0);
 

@@ -111,7 +111,8 @@ test("a spent block budget refuses calls with budget_exceeded, and the Budgets p
   await expect(row).toContainText("$1.00");
   await expect(row).toContainText("Block");
   await expect(row.getByRole("progressbar", { name: "Spent this period" })).toBeVisible();
-  const spent = (await api.budgets())[0]?.spent_micros ?? 0;
+  const budget = (await api.budgets()).find((one) => one.scope === "key" && one.scope_id === keyId);
+  const spent = budget?.spent_micros ?? 0;
   expect(spent).toBeGreaterThanOrEqual(1_000_000);
   await expect(row).toContainText(/\$\d+\.\d\d \((?:[1-9]\d{2,})%\)/);
 });

@@ -217,10 +217,12 @@ export class GatewayApi {
     return ((await this.get("/api/logs?limit=200")) as { logs: LogRow[] }).logs;
   }
 
-  async budgets(): Promise<{ id: number; spent_micros: number }[]> {
+  async budgets(): Promise<
+    { id: number; scope: string; scope_id: number | null; spent_micros: number }[]
+  > {
     return (
       (await this.get("/api/budgets")) as {
-        budgets: { id: number; spent_micros: number }[];
+        budgets: { id: number; scope: string; scope_id: number | null; spent_micros: number }[];
       }
     ).budgets;
   }
@@ -235,9 +237,15 @@ export class GatewayApi {
     return found.id;
   }
 
-  /** A key of the signed-in user; the secret is returned to the test only. */
-  async createKey(name: string): Promise<string> {
-    const made = (await this.send("POST", "/api/keys", { name })) as {
+  /**
+   * A key of the signed-in user, of a team of theirs when `teamId` is given;
+   * the secret is returned to the test only.
+   */
+  async createKey(name: string, teamId?: number): Promise<string> {
+    const made = (await this.send("POST", "/api/keys", {
+      name,
+      ...(teamId === undefined ? {} : { team_id: teamId }),
+    })) as {
       secret: string;
     };
     return made.secret;

@@ -63,7 +63,7 @@ test("priced calls show in the logs with their cost and attempts, in the Overvie
 
   // Overview: the tiles of the last 30 days.
   const tile = (title: string) => page.getByRole("group", { name: title, exact: true });
-  await expect(tile("Requests")).toContainText("3");
+  await expect(tile("Requests").getByText("3", { exact: true })).toBeVisible();
   await expect(tile("Spend")).toContainText("$15.00");
   await expect(tile("Tokens")).toContainText("300,000 in");
   await expect(tile("Tokens")).toContainText("600,000 out");
