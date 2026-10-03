@@ -36,6 +36,7 @@ fn log(
         cost_micros: cost,
         priced,
         cached: false,
+        estimated: false,
         duration_ms: 12,
         attempts: "[]".into(),
     }

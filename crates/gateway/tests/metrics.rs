@@ -387,6 +387,7 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
             attempt(AttemptOutcome::Cached),
         ],
         cached: false,
+        estimated: false,
         started_at: ultrafast_gateway::store::now(),
         duration_ms: 1,
     };
@@ -557,6 +558,7 @@ async fn a_budget_refusal_is_counted() {
         usage: None,
         attempts: Vec::new(),
         cached: false,
+        estimated: false,
         started_at: ultrafast_gateway::store::now(),
         duration_ms: 1,
     };

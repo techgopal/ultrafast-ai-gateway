@@ -25,6 +25,7 @@ fn log(at: &str, user: Option<i64>, team: Option<i64>, requested: &str) -> NewLo
         cost_micros: 70,
         priced: true,
         cached: false,
+        estimated: false,
         duration_ms: 12,
         attempts: json!([{
             "provider": "main", "model": "gpt-4o", "outcome": "ok",
@@ -125,7 +126,7 @@ async fn the_row_has_names_and_every_field() {
             "requested": "r1", "endpoint": "chat", "stream": false, "status": 200,
             "provider": "main", "model": "gpt-4o",
             "input_tokens": 10, "output_tokens": 5,
-            "cost_micros": 70, "priced": true, "cached": false, "duration_ms": 12,
+            "cost_micros": 70, "priced": true, "cached": false, "estimated": false, "duration_ms": 12,
         })
     );
     // A key that is gone and a row without user or team: ids stay, names are null.
@@ -368,4 +369,26 @@ async fn a_lead_loses_rows_when_removed_from_the_team() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     // He now sees only his own rows.
     assert_eq!(ids(o, "arjun", "").await, vec![6]);
+}
+
+#[tokio::test]
+async fn an_estimated_row_says_so_in_the_list_and_the_detail() {
+    let s = seeded().await;
+    let o = &s.org;
+    let mut est = log("2026-01-09 10:00:00", Some(o.lena), Some(o.platform), "r9");
+    est.estimated = true;
+    est.status = 499;
+    o.api.store.insert_logs(&[est]).await.unwrap();
+    let lena = o.sign_in("lena").await;
+    let (_, list) = o.call(Some(&lena), "GET", "/api/logs", None).await;
+    let flags: Vec<(i64, bool)> = list["logs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| (l["id"].as_i64().unwrap(), l["estimated"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(flags, [(9, true), (5, false), (1, false)]);
+    let (_, detail) = o.call(Some(&lena), "GET", "/api/logs/9", None).await;
+    assert_eq!(detail["estimated"], true);
+    assert_eq!(detail["priced"], true);
 }

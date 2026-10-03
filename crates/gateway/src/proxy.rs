@@ -147,14 +147,23 @@ impl Call {
     /// answer (`max_tokens`, or 1 000 when it names none) and its input at
     /// four characters to a token. An embedding has no answer to count.
     fn estimated_tokens(&self) -> u64 {
+        match self {
+            Call::Chat(r) => {
+                u64::from(r.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS_ESTIMATE))
+                    + self.input_estimate()
+            }
+            Call::Embed(_) => self.input_estimate(),
+        }
+    }
+
+    /// The input of the call in tokens, at four characters to a token: what
+    /// a stream that ends without a usage report is charged for its input.
+    fn input_estimate(&self) -> u64 {
         fn tokens(chars: usize) -> u64 {
             chars.div_ceil(4) as u64
         }
         match self {
-            Call::Chat(r) => {
-                let input: usize = r.messages.iter().map(|m| m.content.chars().count()).sum();
-                u64::from(r.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS_ESTIMATE)) + tokens(input)
-            }
+            Call::Chat(r) => tokens(r.messages.iter().map(|m| m.content.chars().count()).sum()),
             Call::Embed(r) => tokens(r.input.iter().map(|s| s.chars().count()).sum()),
         }
     }
@@ -490,6 +499,9 @@ async fn dispatch(
             Json(embeddings::render_response(&response)).into_response()
         }
         Ok(Served::Stream(committed)) => {
+            if let Some(scope) = scope.as_mut() {
+                scope.begin_stream(call.input_estimate());
+            }
             let guard = StreamRecord {
                 scope: scope.take(),
                 started: committed.started,
@@ -1006,6 +1018,13 @@ impl StreamRecord {
     /// usage if it was reported. The caller was answered 200. The success of
     /// the first event is already with the breaker; a failure after it is
     /// reported now, and counts when another try could have done better.
+    /// `chars` characters of the answer went to the caller.
+    fn streamed(&mut self, chars: usize) {
+        if let Some(scope) = self.scope.as_mut() {
+            scope.streamed(chars);
+        }
+    }
+
     fn end(self, outcome: AttemptOutcome, usage: Option<Usage>) {
         self.finish(outcome, usage, true);
     }
@@ -1053,7 +1072,7 @@ impl Drop for StreamRecord {
 /// body is dropped, the provider request is dropped with it.
 fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoint) -> Response {
     let body = async_stream::stream! {
-        let record = record;
+        let mut record = record;
         let Committed {
             target,
             started: _,
@@ -1107,6 +1126,9 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
                 }
             };
             for ev in events {
+                if let StreamEvent::Delta { text } = &ev {
+                    record.streamed(text.chars().count());
+                }
                 let usage = match &ev {
                     StreamEvent::Done { usage, .. } => Some(*usage),
                     _ => None,

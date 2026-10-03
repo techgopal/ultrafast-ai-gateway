@@ -891,6 +891,13 @@ export interface components {
             /** Format: int64 */
             duration_ms: number;
             endpoint: string;
+            /**
+             * @description The tokens and cost are an estimate: a stream that ended without the
+             *     provider's report (the caller went away, or an error came after
+             *     content was sent) is charged the input of the call and the streamed
+             *     characters / 4, and `priced` stays true when the model has a price.
+             */
+            estimated: boolean;
             /** Format: int64 */
             id: number;
             /** Format: int64 */
@@ -941,6 +948,13 @@ export interface components {
             /** Format: int64 */
             duration_ms: number;
             endpoint: string;
+            /**
+             * @description The tokens and cost are an estimate: a stream that ended without the
+             *     provider's report (the caller went away, or an error came after
+             *     content was sent) is charged the input of the call and the streamed
+             *     characters / 4, and `priced` stays true when the model has a price.
+             */
+            estimated: boolean;
             /** Format: int64 */
             id: number;
             /** Format: int64 */

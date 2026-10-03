@@ -599,6 +599,7 @@ function log(
     cost_micros: 1_250_000,
     priced: true,
     cached: false,
+    estimated: false,
     duration_ms: 850,
     ...call,
   };
@@ -646,6 +647,19 @@ export const logs = {
 } satisfies Record<string, Log>;
 
 export const logList: Log[] = Object.values(logs);
+
+/**
+ * A stream the caller left: charged an estimate, priced, and marked. It is
+ * not in `logList`, so the counts of the list do not move.
+ */
+export const estimatedLog: Log = log(6, "2026-09-30 11:58:00", platformCall, {
+  stream: true,
+  status: 499,
+  input_tokens: 10,
+  output_tokens: 30,
+  cost_micros: 2_000,
+  estimated: true,
+});
 
 /** What `GET /api/logs/{id}` adds: the targets tried, in order. */
 export const logAttempts: Record<number, LogAttempt[]> = {

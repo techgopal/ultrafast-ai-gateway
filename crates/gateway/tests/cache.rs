@@ -493,6 +493,7 @@ async fn a_hit_still_passes_the_budgets() {
         usage: None,
         attempts: Vec::new(),
         cached: false,
+        estimated: false,
         started_at: ultrafast_gateway::store::now(),
         duration_ms: 1,
     };

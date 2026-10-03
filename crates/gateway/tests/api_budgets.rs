@@ -247,6 +247,7 @@ async fn spent_is_shown_only_where_the_caller_may_see_it() {
         usage: None,
         attempts: Vec::new(),
         cached: false,
+        estimated: false,
         started_at: ultrafast_gateway::store::now(),
         duration_ms: 1,
     };
@@ -423,6 +424,7 @@ fn log(at: &str, key_id: i64, user_id: i64, team_id: i64, cost: i64) -> NewLog {
         cost_micros: cost,
         priced: true,
         cached: false,
+        estimated: false,
         duration_ms: 1,
         attempts: "[]".into(),
     }

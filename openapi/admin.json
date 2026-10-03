@@ -5695,6 +5695,7 @@
           "cost_micros",
           "priced",
           "cached",
+          "estimated",
           "duration_ms",
           "attempts"
         ],
@@ -5724,6 +5725,10 @@
           },
           "endpoint": {
             "type": "string"
+          },
+          "estimated": {
+            "type": "boolean",
+            "description": "The tokens and cost are an estimate: a stream that ended without the\nprovider's report (the caller went away, or an error came after\ncontent was sent) is charged the input of the call and the streamed\ncharacters / 4, and `priced` stays true when the model has a price."
           },
           "id": {
             "type": "integer",
@@ -5850,6 +5855,7 @@
           "cost_micros",
           "priced",
           "cached",
+          "estimated",
           "duration_ms"
         ],
         "properties": {
@@ -5872,6 +5878,10 @@
           },
           "endpoint": {
             "type": "string"
+          },
+          "estimated": {
+            "type": "boolean",
+            "description": "The tokens and cost are an estimate: a stream that ended without the\nprovider's report (the caller went away, or an error came after\ncontent was sent) is charged the input of the call and the streamed\ncharacters / 4, and `priced` stays true when the model has a price."
           },
           "id": {
             "type": "integer",

@@ -140,6 +140,7 @@ fn log(user: i64, team: Option<i64>, cost: i64) -> NewLog {
         cost_micros: cost,
         priced: true,
         cached: false,
+        estimated: false,
         duration_ms: 1,
         attempts: "[]".into(),
     }

@@ -182,6 +182,7 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
         cost_micros,
         priced,
         cached: record.cached,
+        estimated: record.estimated,
         duration_ms: i64::try_from(record.duration_ms).unwrap_or(i64::MAX),
         attempts: serde_json::Value::Array(attempts).to_string(),
     }
@@ -232,5 +233,45 @@ mod tests {
         assert_eq!(cost(usage(0, 0), price(Some(1), Some(1))), (0, false));
         assert_eq!(cost(usage(5, 5), price(Some(1), None)), (0, false));
         assert_eq!(cost(usage(5, 0), price(Some(1_000_000), None)), (5, true));
+    }
+
+    #[test]
+    fn an_estimated_record_is_priced_like_a_reported_one_and_marked() {
+        use crate::telemetry::{Attempt, AttemptOutcome};
+        let record = RequestRecord {
+            key_id: 1,
+            user_id: None,
+            team_id: None,
+            requested: "p/m".into(),
+            endpoint: "chat",
+            stream: true,
+            status: 499,
+            usage: usage(1_000, 500),
+            attempts: vec![Attempt {
+                provider: "p".into(),
+                model: "m".into(),
+                outcome: AttemptOutcome::Retryable,
+                status: Some(200),
+                duration_ms: 1,
+            }],
+            cached: false,
+            estimated: true,
+            started_at: "2999-01-01 00:00:00".into(),
+            duration_ms: 1,
+        };
+        let prices: PriceLookup = Arc::new(|_, _| price(Some(2_000_000), Some(4_000_000)));
+        let row = row_of(&record, &prices);
+        assert!(row.estimated);
+        assert!(row.priced);
+        assert_eq!(row.cost_micros, 4_000);
+        assert_eq!(
+            (row.input_tokens, row.output_tokens),
+            (Some(1_000), Some(500))
+        );
+        let reported = RequestRecord {
+            estimated: false,
+            ..record
+        };
+        assert!(!row_of(&reported, &prices).estimated);
     }
 }

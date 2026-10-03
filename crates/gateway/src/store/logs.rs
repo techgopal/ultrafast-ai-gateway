@@ -24,6 +24,9 @@ pub struct NewLog {
     pub cost_micros: i64,
     pub priced: bool,
     pub cached: bool,
+    /// The tokens and cost are an estimate (a stream that ended without the
+    /// provider's usage report).
+    pub estimated: bool,
     pub duration_ms: i64,
     /// A JSON array.
     pub attempts: String,
@@ -48,6 +51,9 @@ pub struct LogRow {
     pub cost_micros: i64,
     pub priced: bool,
     pub cached: bool,
+    /// The tokens and cost are an estimate (a stream that ended without the
+    /// provider's usage report).
+    pub estimated: bool,
     pub duration_ms: i64,
     pub attempts: String,
 }
@@ -180,6 +186,7 @@ fn log_from(r: &SqliteRow) -> LogRow {
         cost_micros: r.get("cost_micros"),
         priced: r.get::<i64, _>("priced") != 0,
         cached: r.get::<i64, _>("cached") != 0,
+        estimated: r.get::<i64, _>("estimated") != 0,
         duration_ms: r.get("duration_ms"),
         attempts: r.get("attempts"),
     }
@@ -194,8 +201,8 @@ impl Store {
                 "INSERT INTO request_logs
                  (org_id, at, key_id, user_id, team_id, requested, endpoint, stream, status,
                   provider, model, input_tokens, output_tokens, cost_micros, priced, cached,
-                  duration_ms, attempts)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  estimated, duration_ms, attempts)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(DEFAULT_ORG)
             .bind(&r.at)
@@ -213,6 +220,7 @@ impl Store {
             .bind(r.cost_micros)
             .bind(r.priced)
             .bind(r.cached)
+            .bind(r.estimated)
             .bind(r.duration_ms)
             .bind(&r.attempts)
             .execute(&mut *tx)
@@ -434,6 +442,7 @@ mod tests {
             cost_micros: 0,
             priced: false,
             cached: false,
+            estimated: false,
             duration_ms: 1,
             attempts: "[]".into(),
         }

@@ -39,6 +39,7 @@ fn record(requested: &str) -> RequestRecord {
             duration_ms: 12,
         }],
         cached: false,
+        estimated: false,
         started_at: "2999-01-01 00:00:00".into(),
         duration_ms: 20,
     }
@@ -479,6 +480,7 @@ fn log_at(at: &str, requested: &str) -> NewLog {
         cost_micros: 0,
         priced: false,
         cached: false,
+        estimated: false,
         duration_ms: 1,
         attempts: "[]".into(),
     }

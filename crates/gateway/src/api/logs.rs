@@ -77,6 +77,11 @@ pub struct LogView {
     /// is true, and the tokens are those of the cached answer, so usage
     /// reports count them; no provider was called.
     pub cached: bool,
+    /// The tokens and cost are an estimate: a stream that ended without the
+    /// provider's report (the caller went away, or an error came after
+    /// content was sent) is charged the input of the call and the streamed
+    /// characters / 4, and `priced` stays true when the model has a price.
+    pub estimated: bool,
     pub duration_ms: i64,
 }
 
@@ -135,6 +140,11 @@ pub struct LogDetailView {
     /// is true, and the tokens are those of the cached answer, so usage
     /// reports count them; no provider was called.
     pub cached: bool,
+    /// The tokens and cost are an estimate: a stream that ended without the
+    /// provider's report (the caller went away, or an error came after
+    /// content was sent) is charged the input of the call and the streamed
+    /// characters / 4, and `priced` stays true when the model has a price.
+    pub estimated: bool,
     pub duration_ms: i64,
     pub attempts: Vec<LogAttempt>,
 }
@@ -161,6 +171,7 @@ impl LogDetailView {
             cost_micros: l.cost_micros,
             priced: l.priced,
             cached: l.cached,
+            estimated: l.estimated,
             duration_ms: l.duration_ms,
             attempts,
         }
@@ -190,6 +201,7 @@ impl From<&LogDetail> for LogView {
             cost_micros: r.cost_micros,
             priced: r.priced,
             cached: r.cached,
+            estimated: r.estimated,
             duration_ms: r.duration_ms,
         }
     }

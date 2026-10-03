@@ -89,6 +89,7 @@ function Details({ id }: { id: number }) {
       <span key="s" className="inline-flex flex-wrap items-center gap-1.5">
         <Badge variant={log.status >= 400 ? "destructive" : "secondary"}>{log.status}</Badge>
         {log.cached ? <Badge variant="outline">Cached</Badge> : null}
+        {log.estimated ? <Badge variant="outline">Estimated</Badge> : null}
       </span>,
     ],
     ["Asked for", log.requested],

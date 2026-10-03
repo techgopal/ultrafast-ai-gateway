@@ -119,6 +119,17 @@ describe("the list", () => {
     expectOneH1("Logs");
   });
 
+  test("a call charged an estimate says so", async () => {
+    logsAre([fixtures.estimatedLog, ...fixtures.logList]);
+    await page();
+    await table();
+    const found = rows();
+    expect(found[0]?.[4]).toContain("499");
+    expect(found[0]?.[4]).toContain("Estimated");
+    expect(found[1]?.[4]).not.toContain("Estimated");
+    expect(found[0]?.[6]).toBe("<$0.01");
+  });
+
   test("asks for the last 24 hours, newest page of 50", async () => {
     theClockIs(fixtures.now);
     const asked = logsAre(fixtures.logList);
@@ -446,6 +457,14 @@ describe("the detail", () => {
     const attempts = await screen.findByRole("table", { name: "Routing attempts" });
     expect(within(attempts).getByText("Cached")).toBeInTheDocument();
     expect(screen.getByLabelText("Details")).toHaveTextContent("$0.00");
+  });
+
+  test("a call charged an estimate says so", async () => {
+    override("get", "/api/logs/{id}", () =>
+      ok("get", "/api/logs/{id}", 200, { ...fixtures.estimatedLog, attempts: [] }),
+    );
+    await page({ route: "/logs/6" });
+    expect(await screen.findByLabelText("Details")).toHaveTextContent("Estimated");
   });
 
   test("while the call loads, the page has its heading", async () => {

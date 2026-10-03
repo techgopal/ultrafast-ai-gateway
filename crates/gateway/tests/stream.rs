@@ -362,6 +362,10 @@ mod records {
         assert_eq!(r.status, 200);
         let usage = r.usage.expect("usage from the final event");
         assert_eq!((usage.input_tokens, usage.output_tokens), (3, 4));
+        assert!(
+            !r.estimated,
+            "what the provider reported is not an estimate"
+        );
         assert_eq!(r.attempts.len(), 1);
         assert_eq!(r.attempts[0].outcome, AttemptOutcome::Ok);
     }
@@ -381,8 +385,48 @@ mod records {
         let records = h.sink.wait_for(1).await;
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(h.sink.records().len(), 1);
-        assert!(records[0].usage.is_none());
         assert_eq!(records[0].attempts[0].outcome, AttemptOutcome::Retryable);
+        // Content was sent before the error, so it is charged an estimate:
+        // "hi" is one token in, "one" is one token out.
+        let usage = records[0].usage.expect("an estimate");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (1, 1));
+        assert!(records[0].estimated);
+    }
+
+    #[tokio::test]
+    async fn an_estimate_counts_four_characters_to_a_token_in_and_out() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(sse(concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"abcdefgh\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ijkl\"},\"finish_reason\":null}]}\n\n",
+            )))
+            .mount(&h.upstream)
+            .await;
+        let body = r#"{"model":"p/gpt-4o","stream":true,"messages":[{"role":"user","content":"12345678"}]}"#;
+        post_chat(&h.app, Some(&h.key), body).await;
+        let records = h.sink.wait_for(1).await;
+        let usage = records[0].usage.expect("an estimate");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (2, 3));
+        assert!(records[0].estimated);
+        assert_eq!(records[0].status, 200);
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_fails_before_any_content_is_not_charged() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(sse(
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":null}]}\n\n",
+            ))
+            .mount(&h.upstream)
+            .await;
+        let body =
+            r#"{"model":"p/gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
+        post_chat(&h.app, Some(&h.key), body).await;
+        let records = h.sink.wait_for(1).await;
+        assert!(records[0].usage.is_none());
+        assert!(!records[0].estimated);
     }
 
     #[tokio::test]
@@ -436,7 +480,10 @@ mod records {
             attempts,
             [("hang", "m", AttemptOutcome::Retryable, Some(200))]
         );
-        assert!(records[0].usage.is_none());
+        // A caller that leaves is charged an estimate: "hi" in, "one" out.
+        let usage = records[0].usage.expect("an estimate");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (1, 1));
+        assert!(records[0].estimated);
     }
 }
 

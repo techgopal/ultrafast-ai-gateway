@@ -176,6 +176,7 @@ async fn world() -> World {
         cost_micros: 0,
         priced: false,
         cached: false,
+        estimated: false,
         duration_ms: 1,
         attempts: "[]".into(),
     };

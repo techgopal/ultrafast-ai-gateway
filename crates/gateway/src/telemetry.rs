@@ -60,6 +60,9 @@ pub struct RequestRecord {
     /// Answered from the response cache: the usage is that of the answer
     /// that was kept, and the call cost nothing.
     pub cached: bool,
+    /// `usage` is an estimate: a stream ended without the provider's report
+    /// (the caller went away, or an error came after content was sent).
+    pub estimated: bool,
     pub started_at: String,
     pub duration_ms: u64,
 }
@@ -94,6 +97,11 @@ pub struct Scope {
     permit: Option<Permit>,
     /// Counts the call when it is emitted.
     metrics: Option<Arc<Metrics>>,
+    /// Set when a stream is handed to the caller: the input tokens it is
+    /// estimated at, for a stream that ends without a usage report.
+    stream_input: Option<u64>,
+    /// Characters of answer streamed to the caller so far.
+    streamed_chars: u64,
 }
 
 impl Scope {
@@ -110,6 +118,8 @@ impl Scope {
             started: Instant::now(),
             permit: None,
             metrics: None,
+            stream_input: None,
+            streamed_chars: 0,
             record: Some(RequestRecord {
                 key_id,
                 user_id,
@@ -121,6 +131,7 @@ impl Scope {
                 usage: None,
                 attempts: Vec::new(),
                 cached: false,
+                estimated: false,
                 started_at: store::now(),
                 duration_ms: 0,
             }),
@@ -204,6 +215,18 @@ impl Scope {
         }
     }
 
+    /// A stream is handed to the caller. If it ends without the provider's
+    /// usage after content, or the caller leaves, the call is charged an
+    /// estimate: `input_tokens` in, and the streamed characters / 4 out.
+    pub fn begin_stream(&mut self, input_tokens: u64) {
+        self.stream_input = Some(input_tokens);
+    }
+
+    /// `chars` characters of the answer were sent to the caller.
+    pub fn streamed(&mut self, chars: usize) {
+        self.streamed_chars = self.streamed_chars.saturating_add(chars as u64);
+    }
+
     pub fn usage(&mut self, usage: Option<Usage>) {
         // The tokens the call used replace the estimate it was charged.
         if let (Some(permit), Some(u)) = (self.permit.as_mut(), usage) {
@@ -281,6 +304,29 @@ impl Scope {
             }
             record.status = status;
             record.duration_ms = elapsed_ms(self.started);
+            // A stream that ended without the provider's report, because the
+            // caller left or an error came after content, was still paid for:
+            // it is charged an estimate, marked as one.
+            if let (None, Some(input)) = (record.usage, self.stream_input) {
+                let ended_early = status == CALLER_GONE
+                    || record
+                        .attempts
+                        .last()
+                        .is_some_and(|a| a.outcome != AttemptOutcome::Ok);
+                if ended_early && (status == CALLER_GONE || self.streamed_chars > 0) {
+                    let to_u32 = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
+                    let usage = Usage {
+                        input_tokens: to_u32(input),
+                        output_tokens: to_u32(self.streamed_chars.div_ceil(4)),
+                    };
+                    record.usage = Some(usage);
+                    record.estimated = true;
+                    if let Some(permit) = self.permit.as_mut() {
+                        permit
+                            .settle(u64::from(usage.input_tokens) + u64::from(usage.output_tokens));
+                    }
+                }
+            }
             // A call that failed before any tokens were used gives its
             // estimate back. A caller that went away may have used some.
             if let Some(permit) = self.permit.as_mut() {
