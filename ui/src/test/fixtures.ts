@@ -24,6 +24,9 @@ export type LogDetail = Schemas["LogDetailView"];
 export type LogAttempt = Schemas["LogAttempt"];
 export type UsageRow = Schemas["UsageRow"];
 export type UsagePage = Schemas["UsagePage"];
+export type Limit = Schemas["LimitView"];
+export type Budget = Schemas["BudgetView"];
+export type Settings = Schemas["SettingsView"];
 
 /**
  * The time of the fixtures: what they call past (the expired key and token,
@@ -264,8 +267,8 @@ export const models = {
     enabled: true,
     grants: { everyone: true, team_ids: [], user_ids: [] },
     created_at: "2026-09-01 10:00:00",
-    input_price_micros: null,
-    output_price_micros: null,
+    input_price_micros: 150_000,
+    output_price_micros: 600_000,
   },
   /** Enabled, granted to two teams and a user. */
   openaiFull: {
@@ -276,8 +279,8 @@ export const models = {
     enabled: true,
     grants: { everyone: false, team_ids: [teams.platform.id, teams.research.id], user_ids: [users.priya.id] },
     created_at: "2026-09-01 10:00:01",
-    input_price_micros: null,
-    output_price_micros: null,
+    input_price_micros: 2_500_000,
+    output_price_micros: 10_000_000,
   },
   /** Disabled, as a synced model starts: granted to nobody. */
   openaiDisabled: {
@@ -748,3 +751,92 @@ export function usageOf(group: string): UsagePage {
   if (group === "key") return usageByKey;
   return usageByDay;
 }
+
+/** `GET /api/limits` for an admin: one of each scope; a number that is not set is `null`. */
+export const limits = {
+  gateway: {
+    id: 1,
+    scope: "gateway",
+    scope_id: null,
+    label: "gateway",
+    requests_per_minute: 6000,
+    tokens_per_minute: null,
+    concurrent: 200,
+  },
+  team: {
+    id: 2,
+    scope: "team",
+    scope_id: teams.platform.id,
+    label: `team '${teams.platform.name}'`,
+    requests_per_minute: 600,
+    tokens_per_minute: 1_000_000,
+    concurrent: null,
+  },
+  user: {
+    id: 3,
+    scope: "user",
+    scope_id: users.arjun.id,
+    label: `user '${users.arjun.email}'`,
+    requests_per_minute: null,
+    tokens_per_minute: 50_000,
+    concurrent: 4,
+  },
+  key: {
+    id: 4,
+    scope: "key",
+    scope_id: keys.active.id,
+    label: `key '${keys.active.name}'`,
+    requests_per_minute: 60,
+    tokens_per_minute: null,
+    concurrent: null,
+  },
+} satisfies Record<string, Limit>;
+
+export const limitList: Limit[] = Object.values(limits);
+
+/** What `GET /api/limits` gives a member of Platform: the limits that apply to them. */
+export const limitsForMember: Limit[] = [limits.gateway, limits.team];
+
+/** `GET /api/budgets`: `period_start` is the UTC date the period began on. */
+export const budgets = {
+  gateway: {
+    id: 1,
+    scope: "gateway",
+    scope_id: null,
+    label: "gateway",
+    amount_micros: 100_000_000,
+    period: "monthly",
+    action: "block",
+    period_start: "2026-09-01",
+    spent_micros: 12_500_000,
+  },
+  team: {
+    id: 2,
+    scope: "team",
+    scope_id: teams.platform.id,
+    label: `team '${teams.platform.name}'`,
+    amount_micros: 10_000_000,
+    period: "weekly",
+    action: "alert",
+    period_start: "2026-09-28",
+    spent_micros: 12_000_000,
+  },
+  key: {
+    id: 3,
+    scope: "key",
+    scope_id: keys.active.id,
+    label: `key '${keys.active.name}'`,
+    amount_micros: 2_500_000,
+    period: "daily",
+    action: "block",
+    period_start: "2026-09-30",
+    spent_micros: 0,
+  },
+} satisfies Record<string, Budget>;
+
+export const budgetList: Budget[] = Object.values(budgets);
+
+/** What a member of Platform gets of the budgets. */
+export const budgetsForMember: Budget[] = [budgets.gateway, budgets.team];
+
+export const settings: Settings = { log_retention_days: 30 };

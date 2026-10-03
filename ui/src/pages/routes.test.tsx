@@ -145,6 +145,9 @@ function sentAs(body: Partial<RouteRequest>): RouteRequest {
     breaker_failures: 5,
     breaker_window_s: 60,
     breaker_open_s: 30,
+    cache_enabled: false,
+    cache_ttl_s: 300,
+    cache_scope: "team",
     team_ids: [],
     ...body,
   };
@@ -499,6 +502,9 @@ describe("making a route", () => {
         breaker_failures: 7,
         breaker_window_s: 20,
         breaker_open_s: 45,
+        cache_enabled: false,
+        cache_ttl_s: 300,
+        cache_scope: "team",
         team_ids: [1, 3],
       },
     ]);
@@ -506,6 +512,85 @@ describe("making a route", () => {
     // The list shows it afterwards.
     expect(await screen.findByRole("cell", { name: "chat.v2" })).toBeInTheDocument();
     expect(state.lists).toBeGreaterThanOrEqual(1);
+  });
+
+  test("the cache fields: off by default, with a hint; a route's own values are shown", async () => {
+    keeps();
+    await editor("/routes/new");
+    await advanced();
+    const cache = screen.getByRole("switch", { name: "Cache answers" });
+    expect(cache).not.toBeChecked();
+    expect(cache).toBeVisible();
+    expect(screen.getByLabelText("TTL (s)")).toHaveValue("300");
+    expect(select("Scope")).toHaveTextContent("Team");
+    expect(await optionsOf(select("Scope"))).toEqual(["Team", "Key", "User"]);
+    expect(descriptionOf(cache)).toContain(
+      "Streams and requests with temperature above 0.5 are never cached.",
+    );
+    expect(descriptionOf(screen.getByLabelText("TTL (s)"))).toContain("1 to 86400");
+  });
+
+  test("a route with the cache on shows its values, and saving sends them", async () => {
+    const state = keeps();
+    await editor("/routes/2");
+    // The route's settings are the ones it has: the form opens its Advanced part by itself only on a problem.
+    await advanced();
+    expect(screen.getByRole("switch", { name: "Cache answers" })).toBeChecked();
+    expect(screen.getByLabelText("TTL (s)")).toHaveValue("600");
+    expect(select("Scope")).toHaveTextContent("User");
+    await userEvent.clear(screen.getByLabelText("TTL (s)"));
+    await userEvent.type(screen.getByLabelText("TTL (s)"), "86400");
+    await choose(select("Scope"), "Key");
+    await userEvent.click(button("Save route"));
+    await waitFor(() => {
+      expect(state.updated).toHaveLength(1);
+    });
+    expect(state.updated[0]?.body).toMatchObject({
+      cache_enabled: true,
+      cache_ttl_s: 86_400,
+      cache_scope: "key",
+    });
+  });
+
+  test("turning the cache on sends it", async () => {
+    const state = keeps();
+    await editor("/routes/1");
+    await advanced();
+    await userEvent.click(screen.getByRole("switch", { name: "Cache answers" }));
+    await userEvent.click(button("Save route"));
+    await waitFor(() => {
+      expect(state.updated).toHaveLength(1);
+    });
+    expect(state.updated[0]?.body).toMatchObject({
+      cache_enabled: true,
+      cache_ttl_s: 300,
+      cache_scope: "team",
+    });
+  });
+
+  test.each(["0", "86401", "1.5", "abc", ""])("a TTL of %j is refused on its field, nothing is sent", async (ttl) => {
+    const state = keeps();
+    await editor("/routes/1");
+    await advanced();
+    await userEvent.clear(screen.getByLabelText("TTL (s)"));
+    if (ttl !== "") await userEvent.type(screen.getByLabelText("TTL (s)"), ttl);
+    await userEvent.click(button("Save route"));
+    expect(await screen.findByText("Enter a whole number from 1 to 86400.")).toBeInTheDocument();
+    expect(screen.getByLabelText("TTL (s)")).toHaveAttribute("aria-invalid", "true");
+    expect(state.updated).toEqual([]);
+  });
+
+  test("the gateway's refusal of the cache fields is shown on them", async () => {
+    const state = keeps();
+    state.refuse.push(
+      validationFailed({ cache_ttl_s: "must be from 1 to 86400", cache_scope: "must be team, key or user" }),
+    );
+    await editor("/routes/1");
+    await userEvent.click(button("Save route"));
+    expect(await screen.findByText("Enter a whole number from 1 to 86400.")).toBeInTheDocument();
+    expect(screen.getByText("must be team, key or user")).toBeInTheDocument();
+    // The part with the problem is open.
+    expect(screen.getByLabelText("TTL (s)")).toBeVisible();
   });
 
   test("a new route starts as admins only, with the defaults shown and collapsed", async () => {
@@ -659,6 +744,10 @@ describe("changing a route", () => {
           breaker_failures: 3,
           breaker_window_s: 30,
           breaker_open_s: 15,
+          // The route of the fixtures caches for 10 minutes, per user.
+          cache_enabled: true,
+          cache_ttl_s: 600,
+          cache_scope: "user",
           team_ids: [1, 2],
         }),
       },

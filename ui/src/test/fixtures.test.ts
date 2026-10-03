@@ -561,4 +561,44 @@ describe("the fixtures have the forms of the gateway", () => {
     const requests = fixtures.usageByModel.rows.map((row) => row.requests);
     expect(requests).toEqual([...requests].sort((a, b) => b - a));
   });
+
+  // crates/gateway/src/api/limits.rs and budgets.rs, and store/limits.rs: label.
+  test("limits and budgets", () => {
+    const label = (row: { scope: string; scope_id: number | null; label: string }) => {
+      if (row.scope === "gateway") return "gateway";
+      const name =
+        row.scope === "team"
+          ? fixtures.teamList.find((t) => t.id === row.scope_id)?.name
+          : row.scope === "user"
+            ? fixtures.userList.find((u) => u.id === row.scope_id)?.email
+            : fixtures.keyList.find((k) => k.id === row.scope_id)?.name;
+      return `${row.scope} '${name ?? "?"}'`;
+    };
+    for (const row of [...fixtures.limitList, ...fixtures.budgetList]) {
+      expect(row.label).toBe(label(row));
+      // The gateway has no id; the others have one.
+      expect(row.scope_id === null).toBe(row.scope === "gateway");
+    }
+    for (const row of fixtures.limitList) {
+      const counts = [row.requests_per_minute, row.tokens_per_minute, row.concurrent];
+      expect(counts.some((count) => count !== null)).toBe(true);
+      for (const count of counts) expect(count === null || count >= 1).toBe(true);
+    }
+    for (const row of fixtures.budgetList) {
+      expect(["daily", "weekly", "monthly"]).toContain(row.period);
+      expect(["block", "alert"]).toContain(row.action);
+      expect(row.amount_micros).toBeGreaterThanOrEqual(1);
+      expect(row.period_start).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+    // An alert budget may be spent beyond its amount; the fixtures have one.
+    expect(fixtures.budgetList.some((row) => row.spent_micros > row.amount_micros)).toBe(true);
+    expect(fixtures.settings.log_retention_days).toBeGreaterThanOrEqual(1);
+    // A price is 0 or more, or unknown.
+    expect(fixtures.modelList.some((m) => m.input_price_micros !== null)).toBe(true);
+    for (const m of fixtures.modelList) {
+      for (const price of [m.input_price_micros, m.output_price_micros]) {
+        expect(price === null || price >= 0).toBe(true);
+      }
+    }
+  });
 });

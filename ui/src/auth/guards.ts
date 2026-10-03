@@ -50,6 +50,14 @@ export type ConsoleAction =
   | { type: "viewRoutingHealth" }
   | { type: "viewAudit" }
   /**
+   * Sets and deletes rate limits and budgets, and changes the settings: what
+   * only an admin may. Everybody else reads the limits and budgets that apply
+   * to them, and nothing else.
+   */
+  | { type: "manageLimits" }
+  | { type: "manageBudgets" }
+  | { type: "manageSettings" }
+  /**
    * Sees how many users and teams there are, on the overview: who manages
    * some, which is an admin and the lead of a team. The gateway lists users
    * and teams for everybody, as far as they are theirs to see; to a member
@@ -97,6 +105,9 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "manageRoutes":
     case "viewRoutingHealth":
     case "viewAudit":
+    case "manageLimits":
+    case "manageBudgets":
+    case "manageSettings":
       return false;
     case "renameUser":
       return action.userId === me.user.id;

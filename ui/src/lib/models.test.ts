@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { ConsoleRefusal } from "@/api/errors";
 import * as fixtures from "@/test/fixtures";
 import {
   ANY,
@@ -7,6 +8,10 @@ import {
   grantsOf,
   hasNoAccess,
   matches,
+  PRICE_RULE,
+  priceFormOf,
+  pricesRequestOf,
+  priceText,
   providerChoices,
   refOf,
   sortModels,
@@ -113,5 +118,45 @@ describe("grantsOf", () => {
     expect(
       grantsOf({ everyone: false, team_ids: ["1", "9"], user_ids: ["5", "8"] }, teams, users),
     ).toEqual({ everyone: false, team_ids: [1], user_ids: [5] });
+  });
+});
+
+describe("prices", () => {
+  test("a price is said in dollars, and unknown says so", () => {
+    expect([priceText(2_500_000), priceText(0), priceText(1), priceText(null)]).toEqual([
+      "$2.50",
+      "$0.00",
+      "$0.000001",
+      "Not set",
+    ]);
+  });
+
+  test("the form starts from the model, an unknown price empty", () => {
+    expect(priceFormOf({ input_price_micros: 2_500_000, output_price_micros: null })).toEqual({
+      input_price_micros: "2.5",
+      output_price_micros: "",
+    });
+  });
+
+  test("the request has both prices in micros; empty is null; 0 is a price", () => {
+    expect(pricesRequestOf({ input_price_micros: " 0 ", output_price_micros: "" })).toEqual({
+      input_price_micros: 0,
+      output_price_micros: null,
+    });
+    expect(pricesRequestOf({ input_price_micros: "0.15", output_price_micros: "12.345678" })).toEqual({
+      input_price_micros: 150_000,
+      output_price_micros: 12_345_678,
+    });
+  });
+
+  test.each(["-1", "abc", "1.2345678", "1e3"])("%j is refused on its field", (text) => {
+    try {
+      pricesRequestOf({ input_price_micros: "1", output_price_micros: text });
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConsoleRefusal);
+      expect(error).toMatchObject({ message: PRICE_RULE, field: "output_price_micros" });
+      return;
+    }
+    throw new Error("nothing was refused");
   });
 });

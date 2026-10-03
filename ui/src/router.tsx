@@ -19,6 +19,7 @@ import { AcceptInvite } from "@/pages/AcceptInvite";
 import { Account } from "@/pages/Account";
 import { Audit } from "@/pages/Audit";
 import { Keys } from "@/pages/Keys";
+import { Limits } from "@/pages/Limits";
 import { Logs } from "@/pages/Logs";
 import { LogsDetail } from "@/pages/LogsDetail";
 import { PageProblem } from "@/pages/NotAvailable";
@@ -28,6 +29,7 @@ import { Models } from "@/pages/Models";
 import { Routes } from "@/pages/Routes";
 import { RoutesEdit } from "@/pages/RoutesEdit";
 import { Providers } from "@/pages/Providers";
+import { Settings } from "@/pages/Settings";
 import { Setup } from "@/pages/Setup";
 import { TeamDetail } from "@/pages/TeamDetail";
 import { Teams } from "@/pages/Teams";
@@ -167,6 +169,7 @@ function ShellLayout() {
             role: me.user.role,
             teams: me.teams,
             mayViewAudit: can(me, { type: "viewAudit" }),
+            maySetSettings: can(me, { type: "manageSettings" }),
           },
     [me],
   );
@@ -217,6 +220,20 @@ const logRoute = createRoute({
     const { id } = logRoute.useParams();
     return <LogsDetail key={id} id={id} />;
   },
+});
+
+const limitsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/limits",
+  staticData: { title: "Budgets and limits" },
+  component: Limits,
+});
+
+const settingsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings",
+  staticData: { title: "Settings" },
+  component: Settings,
 });
 
 const accountRoute = createRoute({
@@ -360,6 +377,8 @@ const routeTree = rootRoute.addChildren([
     teamsRoute,
     teamRoute,
     auditRoute,
+    limitsRoute,
+    settingsRoute,
     accountRoute,
   ]),
 ]);

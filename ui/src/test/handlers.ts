@@ -223,6 +223,22 @@ export const handlers = [
     byId(fixtures.tokenList, call) === undefined ? notFound() : noContent(),
   ),
 
+  // limits, budgets and settings
+  handler("get", "/api/limits", () => ok("get", "/api/limits", 200, { limits: fixtures.limitList })),
+  handler("put", "/api/limits", () => ok("put", "/api/limits", 200, fixtures.limits.gateway)),
+  handler("delete", "/api/limits/{id}", (call) =>
+    byId(fixtures.limitList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("get", "/api/budgets", () =>
+    ok("get", "/api/budgets", 200, { budgets: fixtures.budgetList }),
+  ),
+  handler("put", "/api/budgets", () => ok("put", "/api/budgets", 200, fixtures.budgets.gateway)),
+  handler("delete", "/api/budgets/{id}", (call) =>
+    byId(fixtures.budgetList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("get", "/api/settings", () => ok("get", "/api/settings", 200, fixtures.settings)),
+  handler("patch", "/api/settings", () => ok("patch", "/api/settings", 200, fixtures.settings)),
+
   // logs and usage
   handler("get", "/api/logs", () => ok("get", "/api/logs", 200, { logs: fixtures.logList })),
   handler("get", "/api/logs/{id}", (call) => {

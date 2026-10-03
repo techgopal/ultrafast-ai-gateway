@@ -1302,16 +1302,21 @@ describe("every mutation calls its operation", () => {
       ["useCreateRoute", "POST /api/routes", q.useCreateRoute, { name: "r", everyone: true, primaries: [], fallbacks: [], retries: 2, first_token_timeout_ms: 30000, total_timeout_ms: 300000, breaker_failures: 5, breaker_window_s: 60, breaker_open_s: 30, team_ids: [] }],
       ["useUpdateRoute", "PUT /api/routes/2", q.useUpdateRoute, { id: 2, body: { name: "r", everyone: true, primaries: [], fallbacks: [], retries: 2, first_token_timeout_ms: 30000, total_timeout_ms: 300000, breaker_failures: 5, breaker_window_s: 60, breaker_open_s: 30, team_ids: [] } }],
       ["useDeleteRoute", "DELETE /api/routes/3", q.useDeleteRoute, { id: 3 }],
+      ["useSetLimit", "PUT /api/limits", q.useSetLimit, { scope: "gateway", concurrent: 1 }],
+      ["useDeleteLimit", "DELETE /api/limits/1", q.useDeleteLimit, { id: 1 }],
+      ["useSetBudget", "PUT /api/budgets", q.useSetBudget, { scope: "gateway", amount_micros: 1, period: "daily", action: "block" }],
+      ["useDeleteBudget", "DELETE /api/budgets/1", q.useDeleteBudget, { id: 1 }],
+      ["useUpdateSettings", "PATCH /api/settings", q.useUpdateSettings, { log_retention_days: 30 }],
       ["useCreateToken", "POST /api/tokens", q.useCreateToken, { name: "t" }],
       ["useRevokeToken", "DELETE /api/tokens/1", q.useRevokeToken, { id: 1 }],
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 29 of them, 14 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(29);
+  test("there are 34 of them, 17 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(34);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(46);
+    expect(hooks).toHaveLength(54);
     // What only tests used is not kept: a key read by its id, the audit log
     // read as one page, and `me`, which the session reads itself.
     for (const gone of ["useKey", "keyOptions", "useAuditLog", "auditLogOptions", "useMe"]) {
@@ -1323,6 +1328,8 @@ describe("every mutation calls its operation", () => {
     expect(hooks).toContain("useAuditFromTheStart");
     // The request logs, one of them, and the usage sums: three more.
     for (const name of ["useLogsPages", "useLog", "useUsage"]) expect(hooks).toContain(name);
+    // The limits, the budgets and the settings: three queries, and their five mutations.
+    for (const name of ["useLimits", "useBudgets", "useSettings"]) expect(hooks).toContain(name);
     expect(Object.keys(q)).not.toContain("useTeamDetails");
     expect(hooks).toContain("useAddTeamMember");
     expect(hooks).not.toContain("useLogout");

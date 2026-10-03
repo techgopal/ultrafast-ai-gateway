@@ -119,7 +119,16 @@ function keeps(start: readonly fixtures.Model[] = fixtures.modelList) {
     if (refusal !== undefined) return refuse(refusal);
     const was = state.models.find((m) => String(m.id) === params.id);
     if (was === undefined) return refuse(errors.not_found);
-    const now = { ...was, enabled: read(body, "enabled") === true };
+    const enabled = read(body, "enabled");
+    const input = read(body, "input_price_micros");
+    const output = read(body, "output_price_micros");
+    // What is left out stays; a price may be set to `null`.
+    const now = {
+      ...was,
+      ...(typeof enabled === "boolean" ? { enabled } : {}),
+      ...(input !== undefined ? { input_price_micros: input as number | null } : {}),
+      ...(output !== undefined ? { output_price_micros: output as number | null } : {}),
+    };
     state.models = state.models.map((m) => (m.id === was.id ? now : m));
     return ok("patch", "/api/models/{id}", 200, now);
   });
@@ -198,6 +207,8 @@ describe("the list of models", () => {
       "Provider",
       "Status",
       "Access",
+      "Input $/1M",
+      "Output $/1M",
       "Actions",
     ]);
     // By provider, then by name.
@@ -213,7 +224,7 @@ describe("the list of models", () => {
     expect(rowOf(openaiMini)).toHaveTextContent("Everyone");
     expect(rowOf(openaiFull)).toHaveTextContent("2 teams, 1 user");
     expect(rowOf(openaiDisabled)).toHaveTextContent("No one");
-    expect(buttons(rowOf(openaiMini))).toEqual(["Edit access", "Delete"]);
+    expect(buttons(rowOf(openaiMini))).toEqual(["Edit access", "Edit price", "Delete"]);
     expect(screen.getByRole("button", { name: "Sync models" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add model" })).toBeInTheDocument();
     expectOneMain();
@@ -309,9 +320,11 @@ describe("the list of models", () => {
       "Provider",
       "Status",
       "Access",
+      "Input $/1M",
+      "Output $/1M",
     ]);
     for (const control of [
-      ...screen.getAllByRole("button", { name: /Sync models|Add model|Edit access|Delete/ }),
+      ...screen.getAllByRole("button", { name: /Sync models|Add model|Edit access|Edit price|Delete/ }),
       ...screen.getAllByRole("switch").map((toggle) => toggle.closest("label") ?? toggle),
       screen.getByRole("searchbox", { name: "Search" }),
       screen.getByRole("combobox", { name: "Provider" }),
@@ -797,6 +810,7 @@ describe("who sees what", () => {
       "Sync models",
       "Add model",
       "Edit access",
+      "Edit price",
       "Delete",
     ]) {
       expect(screen.queryByRole("button", { name })).toBeNull();
@@ -892,5 +906,128 @@ describe("who sees what", () => {
     await screen.findByRole("alert");
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("list", { name: "Models you can use" })).toBeInTheDocument();
+  });
+});
+
+describe("prices", () => {
+  const cellsOf = (model: fixtures.Model) =>
+    within(rowOf(model))
+      .getAllByRole("cell")
+      .map((cell) => cell.textContent);
+
+  async function openPrice(model: fixtures.Model): Promise<HTMLElement> {
+    await table();
+    await userEvent.click(within(rowOf(model)).getByRole("button", { name: "Edit price" }));
+    return screen.findByRole("dialog", { name: "Edit price" });
+  }
+
+  const input = (dialog: HTMLElement) => within(dialog).getByLabelText("Input price ($ per 1M tokens)");
+  const output = (dialog: HTMLElement) => within(dialog).getByLabelText("Output price ($ per 1M tokens)");
+  const paste = (field: HTMLElement, text: string) =>
+    userEvent.click(field).then(() => userEvent.paste(text));
+
+  test("the table shows the prices in dollars, and a price that is unknown says so", async () => {
+    await page();
+    await table();
+    expect(cellsOf(openaiFull).slice(4, 6)).toEqual(["$2.50", "$10.00"]);
+    expect(cellsOf(openaiMini).slice(4, 6)).toEqual(["$0.15", "$0.60"]);
+    expect(cellsOf(openaiDisabled).slice(4, 6)).toEqual(["Not set", "Not set"]);
+  });
+
+  test("a price of 0 is shown as free, not as unknown", async () => {
+    keeps([{ ...openaiMini, input_price_micros: 0, output_price_micros: 1 }]);
+    await page();
+    await table();
+    expect(cellsOf(openaiMini).slice(4, 6)).toEqual(["$0.00", "$0.000001"]);
+  });
+
+  test("the dialog starts from the prices in dollars; saving sends micros, and only prices", async () => {
+    const state = keeps();
+    await page();
+    const dialog = await openPrice(openaiFull);
+    expect(input(dialog)).toHaveValue("2.5");
+    expect(output(dialog)).toHaveValue("10");
+    await userEvent.clear(input(dialog));
+    await paste(input(dialog), "0.000001");
+    await userEvent.clear(output(dialog));
+    await paste(output(dialog), "12.345678");
+    await press(dialog, "Save price");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(state.patched).toEqual([
+      {
+        id: String(openaiFull.id),
+        body: { input_price_micros: 1, output_price_micros: 12_345_678 },
+      },
+    ]);
+    expect(toasts()).toEqual(["Price saved."]);
+    // The list is read again and shows the new prices.
+    await waitFor(() => {
+      expect(cellsOf(openaiFull).slice(4, 6)).toEqual(["$0.000001", "$12.345678"]);
+    });
+    // The model stays as enabled as it was.
+    expect(within(rowOf(openaiFull)).getByRole("switch")).toBeChecked();
+  });
+
+  test("an empty price is sent as null: the price becomes unknown", async () => {
+    const state = keeps();
+    await page();
+    const dialog = await openPrice(openaiMini);
+    await userEvent.clear(input(dialog));
+    await press(dialog, "Save price");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(state.patched).toEqual([
+      { id: String(openaiMini.id), body: { input_price_micros: null, output_price_micros: 600_000 } },
+    ]);
+  });
+
+  test.each(["-1", "1.2345678", "abc", "1e3", "$2"])("%j is refused on its field, nothing is sent", async (text) => {
+    const state = keeps();
+    await page();
+    const dialog = await openPrice(openaiMini);
+    await userEvent.clear(output(dialog));
+    await paste(output(dialog), text);
+    await press(dialog, "Save price");
+    expect(
+      await within(dialog).findByText("Enter dollars, 0 or more, with up to 6 decimals."),
+    ).toBeInTheDocument();
+    expect(output(dialog)).toHaveAttribute("aria-invalid", "true");
+    expect(state.patched).toEqual([]);
+  });
+
+  test("a field error of the gateway is shown on its field", async () => {
+    const state = keeps();
+    state.refuse.push(validationFailed({ input_price_micros: "must be 0 or more" }));
+    await page();
+    const dialog = await openPrice(openaiMini);
+    await press(dialog, "Save price");
+    expect(await within(dialog).findByText("must be 0 or more")).toBeInTheDocument();
+    expect(input(dialog)).toHaveAttribute("aria-invalid", "true");
+    expect(input(dialog)).toHaveValue("0.15");
+  });
+
+  test("the dialog stays while the request runs", async () => {
+    keeps();
+    const request = held("patch", "/api/models/{id}");
+    await page();
+    const dialog = await openPrice(openaiMini);
+    await expectOneRequestWhileTheDialogStays(dialog, input(dialog), "Saving", request);
+  });
+
+  test("a second opening starts from the prices as they are", async () => {
+    keeps();
+    await page();
+    const first = await openPrice(openaiMini);
+    await userEvent.clear(input(first));
+    await paste(input(first), "99");
+    await press(first, "Cancel");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    const second = await openPrice(openaiMini);
+    expect(input(second)).toHaveValue("0.15");
   });
 });

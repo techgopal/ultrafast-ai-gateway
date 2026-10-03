@@ -30,6 +30,8 @@ type Path =
   | "/users"
   | "/teams"
   | "/audit"
+  | "/limits"
+  | "/settings"
   | "/account";
 
 interface NavItem {
@@ -38,6 +40,8 @@ interface NavItem {
   to?: Path;
   /** Shown only to who may read the audit log. */
   audit?: boolean;
+  /** Shown only to who may change the settings. */
+  settings?: boolean;
 }
 
 interface NavSection {
@@ -68,7 +72,7 @@ const sections: NavSection[] = [
     items: [
       { label: "Users", to: "/users" },
       { label: "Teams", to: "/teams" },
-      { label: "Budgets and limits" },
+      { label: "Budgets and limits", to: "/limits" },
       { label: "Guardrails" },
       { label: "MCP tools" },
     ],
@@ -77,6 +81,7 @@ const sections: NavSection[] = [
 
 const footerItems: NavItem[] = [
   { label: "Audit log", to: "/audit", audit: true },
+  { label: "Settings", to: "/settings", settings: true },
   { label: "Account", to: "/account" },
 ];
 
@@ -152,7 +157,11 @@ export function AppSidebar({ user, onSignOut }: AppSidebarProps) {
         <SidebarFooter>
           <SidebarMenu>
             {footerItems
-              .filter((item) => item.audit !== true || user?.mayViewAudit === true)
+              .filter(
+                (item) =>
+                  (item.audit !== true || user?.mayViewAudit === true) &&
+                  (item.settings !== true || user?.maySetSettings === true),
+              )
               .map((item) => (
                 <NavEntry key={item.label} item={item} pathname={pathname} />
               ))}

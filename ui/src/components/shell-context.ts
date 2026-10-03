@@ -7,6 +7,8 @@ export interface ShellUser {
   teams: readonly { name: string }[];
   /** Whether the audit log is theirs to read: `can(me, { type: "viewAudit" })`. */
   mayViewAudit: boolean;
+  /** Whether the settings are theirs to change: `can(me, { type: "manageSettings" })`. */
+  maySetSettings: boolean;
 }
 
 /**

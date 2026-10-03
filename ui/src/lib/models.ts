@@ -1,6 +1,8 @@
 // What the console knows of the catalog of models: how it is filtered and
 // sorted, how access is said in words, and what is sent as grants.
+import { ConsoleRefusal } from "@/api/errors";
 import type { components } from "@/api/schema";
+import { dollarsToMicros, formatDollars, microsToDollars } from "@/lib/money";
 
 type Model = components["schemas"]["ModelView"];
 type Grants = components["schemas"]["GrantsView"];
@@ -121,4 +123,45 @@ export function grantsOf(
     team_ids: only(choice.team_ids, offeredTeams),
     user_ids: only(choice.user_ids, offeredUsers),
   };
+}
+
+export const PRICE_RULE = "Enter dollars, 0 or more, with up to 6 decimals.";
+export const NO_PRICE = "Not set";
+
+/** A price for the table: dollars per 1M tokens, or that it is not set. */
+export function priceText(micros: number | null): string {
+  return micros === null ? NO_PRICE : formatDollars(micros);
+}
+
+/** What the price dialog holds: dollars as typed; empty is unknown. */
+export interface PriceForm {
+  input_price_micros: string;
+  output_price_micros: string;
+}
+
+export function priceFormOf(model: Pick<Model, "input_price_micros" | "output_price_micros">): PriceForm {
+  const text = (micros: number | null) => (micros === null ? "" : microsToDollars(micros));
+  return {
+    input_price_micros: text(model.input_price_micros),
+    output_price_micros: text(model.output_price_micros),
+  };
+}
+
+/**
+ * The request of the form: both prices, in micros; an empty one is `null`,
+ * which makes the price unknown. A `ConsoleRefusal` about the first field
+ * that is no price.
+ */
+export function pricesRequestOf(form: PriceForm): {
+  input_price_micros: number | null;
+  output_price_micros: number | null;
+} {
+  const one = (name: keyof PriceForm): number | null => {
+    const typed = form[name].trim();
+    if (typed === "") return null;
+    const micros = dollarsToMicros(typed);
+    if (micros === null) throw new ConsoleRefusal(PRICE_RULE, name);
+    return micros;
+  };
+  return { input_price_micros: one("input_price_micros"), output_price_micros: one("output_price_micros") };
 }

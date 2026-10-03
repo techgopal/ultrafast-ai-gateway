@@ -44,6 +44,9 @@ describe("the form of a route", () => {
       breaker_failures: "5",
       breaker_window_s: "60",
       breaker_open_s: "30",
+      cache_enabled: false,
+      cache_ttl_s: "300",
+      cache_scope: "team",
     });
     expect(DEFAULTS).toEqual({
       retries: "2",
@@ -52,6 +55,7 @@ describe("the form of a route", () => {
       breaker_failures: "5",
       breaker_window_s: "60",
       breaker_open_s: "30",
+      cache_ttl_s: "300",
     });
   });
 
@@ -66,6 +70,8 @@ describe("the form of a route", () => {
       audience: "all",
       team_ids: [],
       ...DEFAULTS,
+      cache_enabled: false,
+      cache_scope: "team",
     });
     expect(formOf(research)).toMatchObject({
       audience: "chosen",
@@ -76,6 +82,9 @@ describe("the form of a route", () => {
       breaker_failures: "3",
       breaker_window_s: "30",
       breaker_open_s: "15",
+      cache_enabled: true,
+      cache_ttl_s: "600",
+      cache_scope: "user",
     });
     expect(formOf(legacy).audience).toBe("admins");
     for (const route of fixtures.routeList) {
@@ -90,6 +99,9 @@ describe("the form of a route", () => {
         breaker_failures: route.breaker_failures,
         breaker_window_s: route.breaker_window_s,
         breaker_open_s: route.breaker_open_s,
+        cache_enabled: route.cache_enabled,
+        cache_ttl_s: route.cache_ttl_s,
+        cache_scope: route.cache_scope,
         team_ids: route.team_ids,
       });
     }
@@ -116,6 +128,30 @@ describe("the form of a route", () => {
     expect(
       requestOf(valid({ audience: "chosen", team_ids: ["3", "99", "1"] }), offered),
     ).toMatchObject({ everyone: false, team_ids: [3, 1] });
+  });
+
+  test("the cache is sent as the form has it; a scope that is not offered is not sent", () => {
+    expect(
+      requestOf(valid({ cache_enabled: true, cache_ttl_s: "86400", cache_scope: "key" }), offered),
+    ).toMatchObject({ cache_enabled: true, cache_ttl_s: 86_400, cache_scope: "key" });
+    expect(requestOf(valid({ cache_scope: "everyone" }), offered).cache_scope).toBe("team");
+  });
+
+  test.each(["0", "86401", "1.5", "", "abc", "-1"])("a cache TTL of %j is refused", (ttl) => {
+    expect(check(valid({ cache_ttl_s: ttl }), offered).fields.cache_ttl_s).toBe(
+      "Enter a whole number from 1 to 86400.",
+    );
+  });
+
+  test.each(["1", "86400", "300"])("a cache TTL of %j is fine, also with the cache off", (ttl) => {
+    expect(check(valid({ cache_ttl_s: ttl, cache_enabled: false }), offered).fields.cache_ttl_s).toBeUndefined();
+  });
+
+  test("the gateway's words for the TTL are the form's", () => {
+    expect(gatewayFields({ cache_ttl_s: "must be from 1 to 86400", cache_scope: "must be team, key or user" })).toEqual({
+      cache_ttl_s: "Enter a whole number from 1 to 86400.",
+      cache_scope: "must be team, key or user",
+    });
   });
 
   test("the name is sent without the spaces around it", () => {

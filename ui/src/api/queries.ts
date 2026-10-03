@@ -97,6 +97,15 @@ export const queryKeys = {
     pages: (filter: LogsFilter, run: number) => ["logs", "pages", filter, run] as const,
     detail: detailOf("logs"),
   },
+  limits: {
+    all: () => ["limits"] as const,
+    list: () => ["limits", "list"] as const,
+  },
+  budgets: {
+    all: () => ["budgets"] as const,
+    list: () => ["budgets", "list"] as const,
+  },
+  settings: () => ["settings"] as const,
   usage: {
     all: () => ["usage"] as const,
     sums: (group: UsageGroup) => ["usage", group] as const,
@@ -281,6 +290,24 @@ export const tokensOptions = () =>
     queryFn: ({ signal }) => api.get("/api/tokens", { signal }),
   });
 
+export const limitsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.limits.list(),
+    queryFn: ({ signal }) => api.get("/api/limits", { signal }),
+  });
+
+export const budgetsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.budgets.list(),
+    queryFn: ({ signal }) => api.get("/api/budgets", { signal }),
+  });
+
+export const settingsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.settings(),
+    queryFn: ({ signal }) => api.get("/api/settings", { signal }),
+  });
+
 export const useSetupStatus = () => useQuery(setupStatusOptions());
 export const useUsers = () => useQuery(usersOptions());
 export const useUser = (id: number) => useQuery(userOptions(id));
@@ -296,6 +323,12 @@ export const useRoute = (id: number) => useQuery(routeOptions(id));
 /** Admin only. What the gateway saw of the targets in real traffic since it started. */
 export const useRoutingHealth = () => useQuery(routingHealthOptions());
 export const useTokens = () => useQuery(tokensOptions());
+/** The limits that apply to the caller: an admin gets every one. */
+export const useLimits = () => useQuery(limitsOptions());
+/** The budgets that apply to the caller, with what each has spent this period. */
+export const useBudgets = () => useQuery(budgetsOptions());
+/** Admin only. */
+export const useSettings = () => useQuery(settingsOptions());
 
 /** How many entries a page of the audit log has. A page with fewer is the last. */
 export const AUDIT_PAGE_SIZE = 50;
@@ -515,6 +548,8 @@ export const useReinviteUser = () =>
 // `suspended`) and, for the caller, in `me`.
 const aUserChanged = [
   queryKeys.users.all(),
+  queryKeys.limits.all(),
+  queryKeys.budgets.all(),
   queryKeys.teams.all(),
   queryKeys.keys.all(),
   queryKeys.me(),
@@ -540,12 +575,20 @@ export const useDeleteUser = () =>
 // (A route shows the teams that may use it.)
 const aTeamChanged = [
   queryKeys.teams.all(),
+  queryKeys.limits.all(),
+  queryKeys.budgets.all(),
   queryKeys.keys.all(),
   queryKeys.me(),
   queryKeys.routes.all(),
   audit,
 ];
-const membersChanged = [queryKeys.teams.all(), queryKeys.me(), audit];
+const membersChanged = [
+  queryKeys.teams.all(),
+  queryKeys.limits.all(),
+  queryKeys.budgets.all(),
+  queryKeys.me(),
+  audit,
+];
 
 export const useCreateTeam = () =>
   useApiMutation(
@@ -623,7 +666,7 @@ export const useCreateKey = () =>
 export const useRevokeKey = () =>
   useApiMutation(
     ({ id }: { id: number }) => api.delete("/api/keys/{id}", { params: { id } }),
-    () => ({ stale: [queryKeys.keys.all(), audit] }),
+    () => ({ stale: [queryKeys.keys.all(), queryKeys.limits.all(), queryKeys.budgets.all(), audit] }),
     // The key is not the caller's to see any more: the list shows what is not so.
     (error) => (isNotFound(error) ? [queryKeys.keys.all()] : []),
   );
@@ -728,6 +771,47 @@ export const useDeleteRoute = () =>
     ({ id }: { id: number }) => api.delete("/api/routes/{id}", { params: { id } }),
     ({ id }) => ({ stale: [queryKeys.routes.all(), audit], gone: [queryKeys.routes.detail(id)] }),
     routeIsGone,
+  );
+
+// limits, budgets and settings
+
+const aLimitChanged = [queryKeys.limits.all(), audit];
+const aBudgetChanged = [queryKeys.budgets.all(), audit];
+// The limit or budget was deleted meanwhile, or its subject was: the list shows what is not so.
+const limitIsGone = (error: unknown) => (isNotFound(error) ? [queryKeys.limits.all()] : []);
+const budgetIsGone = (error: unknown) => (isNotFound(error) ? [queryKeys.budgets.all()] : []);
+
+/** Sets the limits of a team, user, key or the gateway: the request replaces all three. */
+export const useSetLimit = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/limits", "put">) => api.put("/api/limits", { body }),
+    () => ({ stale: aLimitChanged }),
+  );
+
+export const useDeleteLimit = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/limits/{id}", { params: { id } }),
+    () => ({ stale: aLimitChanged }),
+    limitIsGone,
+  );
+
+export const useSetBudget = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/budgets", "put">) => api.put("/api/budgets", { body }),
+    () => ({ stale: aBudgetChanged }),
+  );
+
+export const useDeleteBudget = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/budgets/{id}", { params: { id } }),
+    () => ({ stale: aBudgetChanged }),
+    budgetIsGone,
+  );
+
+export const useUpdateSettings = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/settings", "patch">) => api.patch("/api/settings", { body }),
+    () => ({ stale: [queryKeys.settings(), audit] }),
   );
 
 // tokens

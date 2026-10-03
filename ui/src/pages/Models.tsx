@@ -30,6 +30,7 @@ import {
   chosen,
   hasNoAccess,
   matches,
+  priceText,
   providerChoices,
   refOf,
   sortModels,
@@ -38,6 +39,7 @@ import {
 } from "@/lib/models";
 import { AccessDialog } from "@/pages/ModelsAccess";
 import { AddDialog, SyncDialog } from "@/pages/ModelsAdd";
+import { PriceDialog } from "@/pages/ModelsPrice";
 
 type Model = components["schemas"]["ModelView"];
 
@@ -49,12 +51,13 @@ export const EMPTY_FOR_MEMBER = "No models are available to you yet. Ask an admi
 export const DONE = {
   add: "Model added.",
   access: "Access updated.",
+  price: "Price saved.",
   delete: "Model deleted.",
   copied: "Copied.",
   notCopied: "Could not copy. Select the name and copy it by hand.",
 } as const;
 
-type Asking = "sync" | "add" | "access" | "delete";
+type Asking = "sync" | "add" | "access" | "price" | "delete";
 
 function AdminModels() {
   const models = useModels();
@@ -112,7 +115,7 @@ function AdminModels() {
     reset();
   }
 
-  function askAbout(what: "access" | "delete", model: Model) {
+  function askAbout(what: "access" | "price" | "delete", model: Model) {
     return () => {
       setTarget(model);
       setAsking(what);
@@ -170,6 +173,18 @@ function AdminModels() {
           ) : null}
         </span>
       ),
+    },
+    {
+      id: "input_price",
+      header: "Input $/1M",
+      cell: (model) => <span className="tabular-nums">{priceText(model.input_price_micros)}</span>,
+      sortValue: (model) => model.input_price_micros,
+    },
+    {
+      id: "output_price",
+      header: "Output $/1M",
+      cell: (model) => <span className="tabular-nums">{priceText(model.output_price_micros)}</span>,
+      sortValue: (model) => model.output_price_micros,
     },
   ];
 
@@ -299,6 +314,14 @@ function AdminModels() {
                   type="button"
                   variant="outline"
                   className={control}
+                  onClick={askAbout("price", model)}
+                >
+                  Edit price
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className={control}
                   onClick={askAbout("delete", model)}
                 >
                   Delete
@@ -340,6 +363,18 @@ function AdminModels() {
         onDone={() => {
           closing(grants.reset);
           toast(DONE.access);
+        }}
+      />
+      <PriceDialog
+        open={asking === "price"}
+        model={target}
+        update={update}
+        onCancel={() => {
+          closing(update.reset);
+        }}
+        onDone={() => {
+          closing(update.reset);
+          toast(DONE.price);
         }}
       />
       <ConfirmDialog

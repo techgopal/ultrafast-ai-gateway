@@ -34,7 +34,21 @@ export interface RouteForm {
   breaker_failures: string;
   breaker_window_s: string;
   breaker_open_s: string;
+  /** Answers are kept for a time, and given again to the same asking. */
+  cache_enabled: boolean;
+  cache_ttl_s: string;
+  /** Whose asking counts as the same: see `CACHE_SCOPES`. */
+  cache_scope: string;
 }
+
+/** Whose calls share a cached answer, in the order they are offered. */
+export const CACHE_SCOPES = [
+  ["team", "Team"],
+  ["key", "Key"],
+  ["user", "User"],
+] as const;
+
+const DEFAULT_CACHE_SCOPE = "team";
 
 /** The settings of a route that is made without any: what the gateway has. */
 export const DEFAULTS = {
@@ -44,6 +58,7 @@ export const DEFAULTS = {
   breaker_failures: "5",
   breaker_window_s: "60",
   breaker_open_s: "30",
+  cache_ttl_s: "300",
 } as const;
 
 /** A new route is for admins alone, as a new model is granted to nobody. */
@@ -55,6 +70,8 @@ export function emptyForm(): RouteForm {
     audience: "admins",
     team_ids: [],
     ...DEFAULTS,
+    cache_enabled: false,
+    cache_scope: "team",
   };
 }
 
@@ -76,6 +93,9 @@ export function formOf(route: Route): RouteForm {
     breaker_failures: String(route.breaker_failures),
     breaker_window_s: String(route.breaker_window_s),
     breaker_open_s: String(route.breaker_open_s),
+    cache_enabled: route.cache_enabled,
+    cache_ttl_s: String(route.cache_ttl_s),
+    cache_scope: route.cache_scope,
   };
 }
 
@@ -102,6 +122,8 @@ const LIMITS = {
   breaker_failures: { kind: "whole", min: 1, max: 100 },
   breaker_window_s: { kind: "seconds", min: 5, max: 3600 },
   breaker_open_s: { kind: "seconds", min: 5, max: 3600 },
+  // The gateway checks it whether the cache is on or not.
+  cache_ttl_s: { kind: "whole", min: 1, max: 86_400 },
 } as const;
 
 type Setting = keyof typeof LIMITS;
@@ -135,7 +157,7 @@ export interface RowProblem {
   weight?: string;
 }
 
-export type FieldName = "name" | "primaries" | "team_ids" | Setting;
+export type FieldName = "name" | "primaries" | "team_ids" | "cache_scope" | Setting;
 
 export interface Problems {
   fields: Partial<Record<FieldName, string>>;
@@ -220,6 +242,12 @@ export function requestOf(form: RouteForm, offered: Offered): RouteRequest {
     breaker_failures: Number(form.breaker_failures),
     breaker_window_s: Number(form.breaker_window_s),
     breaker_open_s: Number(form.breaker_open_s),
+    cache_enabled: form.cache_enabled,
+    cache_ttl_s: Number(form.cache_ttl_s),
+    // A scope that is not offered is not sent.
+    cache_scope: CACHE_SCOPES.some(([value]) => value === form.cache_scope)
+      ? form.cache_scope
+      : DEFAULT_CACHE_SCOPE,
     team_ids: teams,
   };
 }

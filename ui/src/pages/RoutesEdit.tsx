@@ -32,10 +32,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { idOf } from "@/lib/id";
 import { sortModels } from "@/lib/models";
 import {
+  CACHE_SCOPES,
   check,
   DEFAULTS,
   emptyForm,
@@ -63,6 +72,8 @@ export const FALLBACKS_HINT = "Tried in this order when the primary targets fail
 export const RENAME_HINT = "Keys that list this route by name stop working when it is renamed.";
 export const BREAKER_HINT =
   "Circuit breaker settings apply per provider model and are shared by every route that uses it.";
+export const CACHE_HINT = "Streams and requests with temperature above 0.5 are never cached.";
+export const CACHE_SCOPE_HINT = "Whose calls share a cached answer.";
 export const FIX_THE_FIELDS = "Some fields are not valid. They are marked below.";
 
 const AUDIENCES: readonly [Audience, string][] = [
@@ -178,7 +189,10 @@ function Editor({ route }: EditorProps) {
   const live = useMemo(() => (attempted ? check(values, offered) : null), [attempted, values, offered]);
   const errorOf = (name: FieldName | "audience"): string | undefined =>
     failure.fieldError(name) ?? (live === null || name === "audience" ? undefined : live.fields[name]);
-  const settingProblem = SETTINGS.some(([name]) => errorOf(name) !== undefined);
+  const settingProblem =
+    SETTINGS.some(([name]) => errorOf(name) !== undefined) ||
+    errorOf("cache_ttl_s") !== undefined ||
+    errorOf("cache_scope") !== undefined;
   const showAdvanced = advanced || settingProblem;
   const waiting = values.audience === "chosen" && teamList === null;
 
@@ -365,6 +379,80 @@ function Editor({ route }: EditorProps) {
             </form.Field>
           ))}
           <p className="text-sm text-muted-foreground sm:col-span-2">{BREAKER_HINT}</p>
+          <div className="sm:col-span-2">
+            <form.Field name="cache_enabled">
+              {(field) => (
+                <Field
+                  label="Cache answers"
+                  name={field.name}
+                  hint={CACHE_HINT}
+                  error={failure.fieldError(field.name)}
+                >
+                  {({ id, name, ...described }) => (
+                    <Switch
+                      {...described}
+                      id={id}
+                      name={name}
+                      className="relative after:absolute after:-inset-x-2 after:-inset-y-3"
+                      checked={field.state.value}
+                      onCheckedChange={field.handleChange}
+                    />
+                  )}
+                </Field>
+              )}
+            </form.Field>
+          </div>
+          <form.Field name="cache_ttl_s">
+            {(field) => (
+              <Field
+                label="TTL (s)"
+                name={field.name}
+                hint={`Default ${DEFAULTS.cache_ttl_s}. How long an answer is kept. 1 to 86400 seconds.`}
+                error={errorOf("cache_ttl_s")}
+              >
+                {({ id, name, ...described }) => (
+                  <Input
+                    {...described}
+                    id={id}
+                    name={name}
+                    inputMode="numeric"
+                    autoComplete="off"
+                    className={control}
+                    value={field.state.value}
+                    onBlur={field.handleBlur}
+                    onChange={(event) => {
+                      field.handleChange(event.target.value);
+                    }}
+                  />
+                )}
+              </Field>
+            )}
+          </form.Field>
+          <form.Field name="cache_scope">
+            {(field) => (
+              <Field
+                label="Scope"
+                name={field.name}
+                hint={CACHE_SCOPE_HINT}
+                error={errorOf("cache_scope")}
+              >
+                {({ id, name, ...described }) => (
+                  <Select name={name} value={field.state.value} onValueChange={field.handleChange}>
+                    <SelectTrigger id={id} {...described} className={`${control} w-full`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CACHE_SCOPES.map(([value, label]) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </Field>
+            )}
+          </form.Field>
         </div>
       </section>
 

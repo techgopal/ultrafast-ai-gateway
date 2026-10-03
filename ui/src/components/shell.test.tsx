@@ -19,6 +19,7 @@ const items = [
   "Guardrails",
   "MCP tools",
   "Audit log",
+  "Settings",
   "Account",
 ];
 
@@ -61,6 +62,7 @@ describe("sidebar", () => {
       "Guardrails",
       "MCP tools",
       "Audit log",
+      "Settings",
       "Account",
     ]);
     for (const el of within(nav).getAllByTestId("nav-item")) {
@@ -83,7 +85,9 @@ describe("sidebar", () => {
       ["Virtual keys", "/keys"],
       ["Users", "/users"],
       ["Teams", "/teams"],
+      ["Budgets and limits", "/limits"],
       ["Audit log", "/audit"],
+      ["Settings", "/settings"],
       ["Account", "/account"],
     ]);
   });
@@ -112,6 +116,21 @@ describe("sidebar", () => {
     ).toHaveAttribute("aria-current", "page");
     const current = nav.querySelectorAll("[aria-current]");
     expect(current).toHaveLength(1);
+  });
+
+  test("settings is for admins, and budgets and limits is for everybody", async () => {
+    const first = await renderWithApp(null, { user: memberUser });
+    expect(within(sidebar()).queryByRole("link", { name: "Settings" })).toBeNull();
+    expect(within(sidebar()).getByRole("link", { name: "Budgets and limits" })).toHaveAttribute(
+      "href",
+      "/limits",
+    );
+    first.unmount();
+    await renderWithApp(null, { user: adminUser });
+    expect(within(sidebar()).getByRole("link", { name: "Settings" })).toHaveAttribute(
+      "href",
+      "/settings",
+    );
   });
 
   test("audit item is for admins", async () => {

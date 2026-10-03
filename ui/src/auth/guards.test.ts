@@ -99,6 +99,9 @@ describe("guards", () => {
     ["manage routes", { type: "manageRoutes" }, [true, false, false, false]],
     ["view routing health", { type: "viewRoutingHealth" }, [true, false, false, false]],
     ["view audit", { type: "viewAudit" }, [true, false, false, false]],
+    ["set and delete limits", { type: "manageLimits" }, [true, false, false, false]],
+    ["set and delete budgets", { type: "manageBudgets" }, [true, false, false, false]],
+    ["change the settings", { type: "manageSettings" }, [true, false, false, false]],
     // The overview counts users and teams for who manages some: admins, and leads.
     ["view the counts of users and teams", { type: "viewUserAndTeamCounts" }, [true, true, false, false]],
     // Logs and usage of others: filters by key, user and team, and the top keys.
@@ -133,6 +136,9 @@ describe("guards", () => {
       manageRoutes: true,
       viewRoutingHealth: true,
       viewAudit: true,
+      manageLimits: true,
+      manageBudgets: true,
+      manageSettings: true,
       viewUserAndTeamCounts: true,
       viewOthersUsage: true,
     };
