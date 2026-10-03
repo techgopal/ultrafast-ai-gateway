@@ -2705,6 +2705,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "tokio",
+ "ultrafast-client-wasm",
  "ultrafast-translate",
 ]
 
