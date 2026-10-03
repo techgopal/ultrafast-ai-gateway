@@ -465,6 +465,61 @@ async fn a_block_budget_refuses_at_every_scope() {
     }
 }
 
+/// A call that a budget refuses before it is dispatched gives back its
+/// request-per-minute slot and its token estimate at every scope: the
+/// next refusals are still budget refusals, never rate-limit ones.
+#[tokio::test]
+async fn a_budget_refusal_gives_back_the_request_slot_and_the_tokens() {
+    use ultrafast_gateway::limits::RateLimit;
+    let w = world().await;
+    let mut tx = w.h.store.begin().await.unwrap();
+    for scope in [
+        LimitScope::Gateway,
+        LimitScope::Team,
+        LimitScope::User,
+        LimitScope::Key,
+    ] {
+        tx.upsert_limit(
+            scope,
+            w.scope_id(scope),
+            &RateLimit {
+                requests_per_minute: Some(1),
+                tokens_per_minute: Some(1_000),
+                concurrent: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+    w.budget(
+        LimitScope::Gateway,
+        5_000_000,
+        Period::Monthly,
+        BudgetAction::Block,
+    )
+    .await;
+    w.spend(5_000_000);
+    for round in 0..4 {
+        let (status, _, body) = w.chat().await;
+        assert_eq!(status, 429, "{round}: {body}");
+        assert!(body.contains("budget_exceeded"), "{round}: {body}");
+        assert!(!body.contains("rate limit"), "{round}: {body}");
+    }
+    // Once the budget is gone, the slot is there for one call.
+    let budgets = w.h.store.list_budgets().await.unwrap();
+    let mut tx = w.h.store.begin().await.unwrap();
+    for b in budgets {
+        tx.delete_budget(b.id).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    assert_eq!(w.chat().await.0, 200);
+    let (status, _, body) = w.chat().await;
+    assert_eq!(status, 429);
+    assert!(body.contains("rate limit"), "{body}");
+}
+
 #[tokio::test]
 async fn the_refusal_has_the_anthropic_shape_on_messages() {
     let w = world().await;

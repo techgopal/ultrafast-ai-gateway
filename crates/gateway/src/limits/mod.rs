@@ -138,6 +138,9 @@ pub struct Permit(Option<Box<dyn Held>>);
 
 pub trait Held: Send {
     fn settle(&mut self, actual_tokens: u64);
+    /// The call was refused before it was dispatched: gives back the request
+    /// and the token estimate it was counted for.
+    fn refund(&mut self);
 }
 
 impl Permit {
@@ -155,6 +158,18 @@ impl Permit {
     pub fn settle(&mut self, actual_tokens: u64) {
         if let Some(held) = self.0.as_mut() {
             held.settle(actual_tokens);
+        }
+    }
+}
+
+impl Permit {
+    /// For a call that is refused after the limits let it in but before any
+    /// provider is called (a spent budget, no usable model): the request it
+    /// was counted for and its token estimate are given back at every scope.
+    /// Its concurrency slot is given back when the permit is dropped.
+    pub fn refund(&mut self) {
+        if let Some(held) = self.0.as_mut() {
+            held.refund();
         }
     }
 }
@@ -241,6 +256,8 @@ struct Hold {
     slot: bool,
     /// The second and amount of the tokens charged.
     charged: Option<(u64, u64)>,
+    /// The second a request was counted in.
+    requested: Option<u64>,
 }
 
 struct MemoryPermit {
@@ -262,6 +279,24 @@ impl Held for MemoryPermit {
             };
             if let Some(state) = shared.subjects.get_mut(&hold.key) {
                 state.window.correct_tokens(at, charged, actual, now);
+            }
+        }
+    }
+
+    fn refund(&mut self) {
+        let first = !std::mem::replace(&mut self.settled, true);
+        let mut shared = self.inner.lock();
+        let now = shared.latest.max(self.inner.second(Instant::now()));
+        for hold in &mut self.holds {
+            let Some(state) = shared.subjects.get_mut(&hold.key) else {
+                continue;
+            };
+            // Only once, and the tokens only if they were not settled yet.
+            if let Some(at) = hold.requested.take() {
+                state.window.take_request(at, now);
+            }
+            if let (true, Some((at, charged))) = (first, hold.charged) {
+                state.window.correct_tokens(at, charged, 0, now);
             }
         }
     }
@@ -351,6 +386,7 @@ impl Limiter for MemoryLimiter {
                 key,
                 slot: false,
                 charged: None,
+                requested: None,
             };
             if limit.concurrent.is_some() {
                 state.in_flight += 1;
@@ -358,6 +394,7 @@ impl Limiter for MemoryLimiter {
             }
             if limit.requests_per_minute.is_some() {
                 state.window.add(second, 1, 0);
+                hold.requested = Some(second);
             }
             if let Some(max) = limit.tokens_per_minute {
                 let charge = estimate_tokens.min(max);

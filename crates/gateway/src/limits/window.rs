@@ -69,6 +69,15 @@ impl Window {
         bucket.tokens = bucket.tokens.saturating_add(tokens);
     }
 
+    /// Takes back one request counted at `at`, if that second is still in
+    /// the window as of `now`.
+    pub fn take_request(&mut self, at: u64, now: u64) {
+        let bucket = &mut self.buckets[index(at)];
+        if bucket.second == at && bucket.live(now) {
+            bucket.requests = bucket.requests.saturating_sub(1);
+        }
+    }
+
     /// Corrects tokens charged at `charged_at` to what they came to: less
     /// is taken back from that second, if it is still in the window; more
     /// is added to `now`.

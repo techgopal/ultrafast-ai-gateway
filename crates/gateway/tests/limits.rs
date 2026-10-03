@@ -618,3 +618,39 @@ async fn a_team_key_is_throttled_by_its_teams_limit_without_membership() {
         );
     }
 }
+
+/// A call that finds no usable model is refused before it is dispatched and
+/// gives back its request slot: the next call is a 503 again, not a 429.
+#[tokio::test]
+async fn a_call_with_no_usable_model_gives_back_its_request_slot() {
+    use ultrafast_gateway::store::RouteSettings;
+    let w = world().await;
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.insert_route(
+        "empty",
+        &RouteSettings {
+            retries: 0,
+            first_token_timeout_ms: 30_000,
+            total_timeout_ms: 300_000,
+            breaker_failures: 5,
+            breaker_window_s: 60,
+            breaker_open_s: 30,
+        },
+        true,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.limit(LimitScope::Key, Some(1), Some(1_000), None).await;
+    w.limit(LimitScope::Team, Some(1), Some(1_000), None).await;
+    w.limit(LimitScope::Gateway, Some(1), Some(1_000), None)
+        .await;
+    for round in 0..4 {
+        let (status, _, body) = w
+            .chat(
+                r#"{"model":"empty","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}"#,
+            )
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{round}: {body}");
+    }
+}

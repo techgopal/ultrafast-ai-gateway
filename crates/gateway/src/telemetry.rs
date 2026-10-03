@@ -196,6 +196,14 @@ impl Scope {
         self.permit = Some(permit);
     }
 
+    /// The call is refused before any provider is called: its request and
+    /// token estimate are given back to the rate limits.
+    pub fn refund_permit(&mut self) {
+        if let Some(permit) = self.permit.as_mut() {
+            permit.refund();
+        }
+    }
+
     pub fn usage(&mut self, usage: Option<Usage>) {
         // The tokens the call used replace the estimate it was charged.
         if let (Some(permit), Some(u)) = (self.permit.as_mut(), usage) {

@@ -392,8 +392,10 @@ async fn dispatch(
         Err(Denied::Forbidden) => return forbidden(shape, call.model()),
     };
     // 3b. The rate limits of the key, its owner, their teams and the gateway.
-    // The permit goes with the scope, which a stream carries to its end; a
-    // call that is refused counts nowhere.
+    // The permit goes with the scope, which a stream carries to its end. A
+    // call that a limit refuses counts nowhere; one that is refused after
+    // this (a spent budget, no usable model) gives back its request and its
+    // token estimate at every scope.
     let subjects = snapshot.subjects(key);
     match state
         .rate
@@ -412,6 +414,7 @@ async fn dispatch(
     if !budgets.is_empty() {
         if let Err(refusal) = state.budgets.check(&budgets, OffsetDateTime::now_utc()) {
             state.metrics.budget_blocked();
+            record.refund_permit();
             return shape.budget_exceeded(&refusal);
         }
     }
@@ -427,6 +430,7 @@ async fn dispatch(
             .collect(),
     );
     if candidates.is_empty() {
+        record.refund_permit();
         return shape.error(StatusCode::SERVICE_UNAVAILABLE, "upstream_error", NO_MODEL);
     }
 
