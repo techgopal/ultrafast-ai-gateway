@@ -12,7 +12,7 @@
 mod key;
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 pub use key::{CacheKey, KeyParts};
@@ -155,7 +155,8 @@ impl Cached {
 /// Keeps answers. `now` is passed in, so no implementation reads a clock.
 pub trait ResponseCache: Send + Sync {
     /// The answer kept under `key`, unless it has expired.
-    fn get(&self, key: &CacheKey, now: Instant) -> Option<Cached>;
+    /// A hit is shared, not copied: the answer is cloned by reference.
+    fn get(&self, key: &CacheKey, now: Instant) -> Option<Arc<Cached>>;
     /// Keeps `value` for `ttl`, replacing what the key had.
     fn put(&self, key: CacheKey, value: Cached, ttl: Duration, now: Instant);
     /// Forgets every answer.
@@ -163,7 +164,7 @@ pub trait ResponseCache: Send + Sync {
 }
 
 struct Entry {
-    value: Cached,
+    value: Arc<Cached>,
     expires: Instant,
     bytes: usize,
     /// When it was last used: its place in `order`.
@@ -240,14 +241,15 @@ impl ResponseCache for MemoryCache {
         *self.lock() = Shared::default();
     }
 
-    fn get(&self, key: &CacheKey, now: Instant) -> Option<Cached> {
+    fn get(&self, key: &CacheKey, now: Instant) -> Option<Arc<Cached>> {
         let mut shared = self.lock();
         let entry = shared.entries.get(key)?;
         if entry.expires <= now {
             shared.remove(key);
             return None;
         }
-        let value = entry.value.clone();
+        // The Arc is cloned under the lock; the answer is not.
+        let value = Arc::clone(&entry.value);
         shared.tick += 1;
         let tick = shared.tick;
         let used = std::mem::replace(&mut shared.entries.get_mut(key)?.used, tick);
@@ -282,7 +284,7 @@ impl ResponseCache for MemoryCache {
         shared.entries.insert(
             key,
             Entry {
-                value,
+                value: Arc::new(value),
                 expires: now + ttl,
                 bytes,
                 used,
@@ -346,12 +348,22 @@ mod tests {
         let now = Instant::now();
         assert!(cache.get(&key(1), now).is_none());
         cache.put(key(1), answer("a"), TTL, now);
-        assert_eq!(cache.get(&key(1), now), Some(answer("a")));
+        assert_eq!(cache.get(&key(1), now).as_deref(), Some(&answer("a")));
         assert!(cache.get(&key(1), now + Duration::from_secs(59)).is_some());
         // Not after its time, and the entry is gone.
         assert!(cache.get(&key(1), now + TTL).is_none());
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.bytes(), 0);
+    }
+
+    #[test]
+    fn a_hit_shares_the_answer_and_does_not_copy_it() {
+        let cache = MemoryCache::new();
+        let now = Instant::now();
+        cache.put(key(1), answer(&"x".repeat(10_000)), TTL, now);
+        let a = cache.get(&key(1), now).unwrap();
+        let b = cache.get(&key(1), now).unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "both hits hold the one stored answer");
     }
 
     #[test]
@@ -363,8 +375,10 @@ mod tests {
         cache.put(key(1), answer("bb"), TTL, later);
         assert_eq!(cache.len(), 1);
         assert_eq!(
-            cache.get(&key(1), now + Duration::from_secs(100)),
-            Some(answer("bb"))
+            cache
+                .get(&key(1), now + Duration::from_secs(100))
+                .as_deref(),
+            Some(&answer("bb"))
         );
         assert_eq!(cache.bytes(), answer("bb").size());
     }
