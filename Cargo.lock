@@ -2709,6 +2709,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ultrafast-client-wasm"
+version = "2.0.0-alpha.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ultrafast-translate",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "ultrafast-gateway"
 version = "2.0.0-alpha.1"
 dependencies = [

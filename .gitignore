@@ -93,3 +93,4 @@ ui/node_modules
 ui/dist
 ui/test-results
 ui/playwright-report
+crates/client-wasm/pkg/
