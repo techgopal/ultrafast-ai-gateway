@@ -719,7 +719,7 @@ describe("usage on the overview", () => {
     await page();
     for (const name of ["Requests", "Errors", "Tokens", "Spend"]) await usageLoaded(name);
     expect(lines("Requests")).toEqual(["150"]);
-    expect(lines("Errors")).toEqual(["6", "4% of requests"]);
+    expect(lines("Errors")).toEqual(["6", "4% of requests", "3 cancelled"]);
     expect(lines("Tokens")).toEqual(["15,000 in", "6,000 out"]);
     expect(lines("Spend").slice(0, 1)).toEqual(["$12.34"]);
     // Thirty days; a day with no row is a day with nothing; the name says lowest and highest.
@@ -764,7 +764,7 @@ describe("usage on the overview", () => {
   });
 
   test("a gateway with no calls shows zeros, a flat line and no rate", async () => {
-    const empty = { ...fixtures.usageByDay, rows: [], total: { ...fixtures.usageByDay.total, requests: 0, errors: 0, input_tokens: 0, output_tokens: 0, cost_micros: 0, unpriced_requests: 0 } };
+    const empty = { ...fixtures.usageByDay, rows: [], total: { ...fixtures.usageByDay.total, requests: 0, errors: 0, cancelled: 0, input_tokens: 0, output_tokens: 0, cost_micros: 0, unpriced_requests: 0 } };
     override("get", "/api/usage", () => ok("get", "/api/usage", 200, empty));
     await page();
     await usageLoaded("Spend");

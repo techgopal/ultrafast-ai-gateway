@@ -1392,12 +1392,18 @@ export interface components {
         UsageRow: {
             /**
              * Format: int64
+             * @description Calls the caller abandoned before they were answered (status 499): not
+             *     errors of the gateway or of a provider.
+             */
+            cancelled: number;
+            /**
+             * Format: int64
              * @description In millionths of a dollar.
              */
             cost_micros: number;
             /**
              * Format: int64
-             * @description Calls answered with a status of 400 or more.
+             * @description Calls answered with a status of 400 or more, except 499.
              */
             errors: number;
             /**

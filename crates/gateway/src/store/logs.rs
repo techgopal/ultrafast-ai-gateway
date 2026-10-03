@@ -119,7 +119,10 @@ pub struct UsageSums {
     /// owner, `(deleted)` when the object is gone.
     pub label: String,
     pub requests: i64,
+    /// Calls answered with 400 or more, except 499 (the caller went away).
     pub errors: i64,
+    /// Calls the caller abandoned (status 499).
+    pub cancelled: i64,
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cost_micros: i64,
@@ -337,11 +340,12 @@ impl Store {
         // is excluded, so a whole last day counts.
         let sql = format!(
             "SELECT coalesce(CAST(a.gid AS TEXT), '') AS grp, {label} AS label,
-                    a.requests, a.errors, a.input_tokens, a.output_tokens,
+                    a.requests, a.errors, a.cancelled, a.input_tokens, a.output_tokens,
                     a.cost_micros, a.unpriced
              FROM (SELECT {expr} AS gid,
                           COUNT(*) AS requests,
-                          coalesce(SUM(l.status >= 400), 0) AS errors,
+                          coalesce(SUM(l.status >= 400 AND l.status <> 499), 0) AS errors,
+                          coalesce(SUM(l.status = 499), 0) AS cancelled,
                           coalesce(SUM(l.input_tokens), 0) AS input_tokens,
                           coalesce(SUM(l.output_tokens), 0) AS output_tokens,
                           coalesce(SUM(l.cost_micros), 0) AS cost_micros,
@@ -366,6 +370,7 @@ impl Store {
                 label: r.get("label"),
                 requests: r.get("requests"),
                 errors: r.get("errors"),
+                cancelled: r.get("cancelled"),
                 input_tokens: r.get("input_tokens"),
                 output_tokens: r.get("output_tokens"),
                 cost_micros: r.get("cost_micros"),

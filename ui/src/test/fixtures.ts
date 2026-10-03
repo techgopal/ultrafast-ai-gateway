@@ -688,6 +688,7 @@ function usageRow(group: string, label: string, rest: Partial<UsageRow>): UsageR
     label,
     requests: 0,
     errors: 0,
+    cancelled: 0,
     input_tokens: 0,
     output_tokens: 0,
     cost_micros: 0,
@@ -703,6 +704,7 @@ export const usageByDay: UsagePage = {
   total: usageRow("total", "Total", {
     requests: 150,
     errors: 6,
+    cancelled: 3,
     input_tokens: 15_000,
     output_tokens: 6_000,
     cost_micros: 12_340_000,
@@ -712,6 +714,7 @@ export const usageByDay: UsagePage = {
     usageRow("2026-09-28", "2026-09-28", {
       requests: 50,
       errors: 1,
+      cancelled: 2,
       input_tokens: 5_000,
       output_tokens: 2_000,
       cost_micros: 4_000_000,
@@ -720,6 +723,7 @@ export const usageByDay: UsagePage = {
     usageRow("2026-09-29", "2026-09-29", {
       requests: 30,
       errors: 5,
+      cancelled: 1,
       input_tokens: 3_000,
       output_tokens: 1_000,
       cost_micros: 2_340_000,

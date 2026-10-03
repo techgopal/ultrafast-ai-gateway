@@ -553,7 +553,7 @@ describe("the fixtures have the forms of the gateway", () => {
       expect(page.total.label).toBe("Total");
     }
     const days = fixtures.usageByDay;
-    for (const field of ["requests", "errors", "input_tokens", "output_tokens", "cost_micros", "unpriced_requests"] as const) {
+    for (const field of ["requests", "errors", "cancelled", "input_tokens", "output_tokens", "cost_micros", "unpriced_requests"] as const) {
       expect(days.rows.reduce((sum, row) => sum + row[field], 0), field).toBe(days.total[field]);
     }
     for (const row of days.rows) expect(row.group).toMatch(/^\d{4}-\d{2}-\d{2}$/);

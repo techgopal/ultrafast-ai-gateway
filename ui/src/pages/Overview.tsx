@@ -257,6 +257,11 @@ function Usage({ me }: { me: Me }) {
               <p className="text-sm text-muted-foreground">
                 {errorRate(page.total.errors, page.total.requests)} of requests
               </p>
+              {page.total.cancelled > 0 ? (
+                <p className="text-sm text-muted-foreground tabular-nums">
+                  {page.total.cancelled} cancelled
+                </p>
+              ) : null}
               <Series label="Errors" page={page} of={(row) => row.errors} format={String} />
             </>
           )}

@@ -69,6 +69,7 @@ export function perDay(from: string, to: string, rows: readonly UsageRow[]): Usa
         label: day,
         requests: 0,
         errors: 0,
+        cancelled: 0,
         input_tokens: 0,
         output_tokens: 0,
         cost_micros: 0,

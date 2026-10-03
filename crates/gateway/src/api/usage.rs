@@ -43,8 +43,11 @@ pub struct UsageRow {
     /// `(deleted)` when that object is gone, `Total` in the total row.
     pub label: String,
     pub requests: i64,
-    /// Calls answered with a status of 400 or more.
+    /// Calls answered with a status of 400 or more, except 499.
     pub errors: i64,
+    /// Calls the caller abandoned before they were answered (status 499): not
+    /// errors of the gateway or of a provider.
+    pub cancelled: i64,
     /// Includes the tokens of cached answers (`cached` rows of the logs),
     /// which cost nothing.
     pub input_tokens: i64,
@@ -63,6 +66,7 @@ impl From<UsageSums> for UsageRow {
             label: s.label,
             requests: s.requests,
             errors: s.errors,
+            cancelled: s.cancelled,
             input_tokens: s.input_tokens,
             output_tokens: s.output_tokens,
             cost_micros: s.cost_micros,
@@ -198,6 +202,7 @@ pub async fn usage_view(
         label: "Total".into(),
         requests: 0,
         errors: 0,
+        cancelled: 0,
         input_tokens: 0,
         output_tokens: 0,
         cost_micros: 0,
@@ -206,6 +211,7 @@ pub async fn usage_view(
     for s in &sums {
         total.requests += s.requests;
         total.errors += s.errors;
+        total.cancelled += s.cancelled;
         total.input_tokens += s.input_tokens;
         total.output_tokens += s.output_tokens;
         total.cost_micros += s.cost_micros;

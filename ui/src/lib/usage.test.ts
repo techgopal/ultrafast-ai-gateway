@@ -46,6 +46,7 @@ describe("days", () => {
     label: group,
     requests,
     errors: 0,
+    cancelled: 0,
     input_tokens: 0,
     output_tokens: 0,
     cost_micros: 0,

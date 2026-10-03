@@ -180,7 +180,7 @@ fn row(group: &str, label: &str, v: [i64; 6]) -> Value {
     json!({
         "group": group, "label": label,
         "requests": v[0], "errors": v[1], "input_tokens": v[2], "output_tokens": v[3],
-        "cost_micros": v[4], "unpriced_requests": v[5],
+        "cost_micros": v[4], "unpriced_requests": v[5], "cancelled": 0,
     })
 }
 
@@ -369,8 +369,11 @@ async fn totals_equal_the_sum_of_the_logs_list() {
         assert_eq!(total["input_tokens"], sum("input_tokens"), "{who}");
         assert_eq!(total["output_tokens"], sum("output_tokens"), "{who}");
         assert_eq!(total["cost_micros"], sum("cost_micros"), "{who}");
-        let errors = logs.iter().filter(|l| l["status"].as_i64().unwrap() >= 400);
+        let status = |l: &&Value| l["status"].as_i64().unwrap();
+        let errors = logs.iter().filter(|l| status(l) >= 400 && status(l) != 499);
         assert_eq!(total["errors"], errors.count() as i64, "{who}");
+        let cancelled = logs.iter().filter(|l| status(l) == 499);
+        assert_eq!(total["cancelled"], cancelled.count() as i64, "{who}");
     }
 }
 
@@ -450,5 +453,81 @@ async fn an_error_names_the_field_the_caller_sent() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}: {body}");
         let fields = body["error"]["fields"].as_object().unwrap();
         assert_eq!(fields.keys().collect::<Vec<_>>(), [field], "{query}");
+    }
+}
+
+/// A caller that went away (499) is not an error of the gateway or the
+/// provider: it is counted apart, as `cancelled`, in every row and the total.
+#[tokio::test]
+async fn a_caller_that_went_away_is_cancelled_not_an_error() {
+    let s = seeded().await;
+    let o = &s.org;
+    let at = "2026-03-05 10:00:00";
+    let mut gone = log(
+        at,
+        Some(o.lena),
+        Some(o.platform),
+        "gone",
+        499,
+        Some("gpt-4o"),
+        None,
+        0,
+        false,
+    );
+    gone.stream = true;
+    let failed = log(
+        at,
+        Some(o.lena),
+        Some(o.platform),
+        "bad",
+        500,
+        None,
+        None,
+        0,
+        false,
+    );
+    let ok = log(
+        at,
+        Some(o.lena),
+        Some(o.platform),
+        "ok",
+        200,
+        Some("gpt-4o"),
+        Some((1, 1)),
+        5,
+        true,
+    );
+    let mut again = log(
+        at,
+        Some(o.lena),
+        Some(o.platform),
+        "gone2",
+        499,
+        Some("gpt-4o"),
+        None,
+        0,
+        false,
+    );
+    again.stream = true;
+    o.api
+        .store
+        .insert_logs(&[gone, failed, ok, again])
+        .await
+        .unwrap();
+    for group in ["day", "model", "user", "team", "key"] {
+        let body = usage(
+            o,
+            "maya",
+            &format!("?from=2026-03-01&to=2026-03-31&group={group}"),
+        )
+        .await;
+        let total = &body["total"];
+        assert_eq!(total["requests"], 4, "{group}");
+        assert_eq!(total["errors"], 1, "{group}");
+        assert_eq!(total["cancelled"], 2, "{group}");
+        let rows = body["rows"].as_array().unwrap();
+        let sum = |f: &str| -> i64 { rows.iter().map(|r| r[f].as_i64().unwrap()).sum() };
+        assert_eq!(sum("errors"), 1, "{group}");
+        assert_eq!(sum("cancelled"), 2, "{group}");
     }
 }
