@@ -51,20 +51,50 @@ into the binary, with no Node process and no request to any other host at
 runtime.
 
 What is in it: setting up the first admin, signing in, accepting an invite;
-an overview with a getting-started guide; providers (OpenAI-compatible,
-Anthropic, Gemini and Azure OpenAI: add, edit, sync models, delete); models
-(enable, who may call each, add by name); routing (routes with fallbacks, who
-may use each, and the health of their targets); virtual keys (create, shown
-once, limit to chosen models and routes, revoke, filter); users (invite, role,
-status, teams, new invite link, delete); teams (create, rename, delete,
-members added by email, and leads); your account (name, password, access
-tokens); and the audit log, for admins.
+an overview with a getting-started guide and the last 30 days of requests,
+errors, tokens and spend; request logs (a list with filters and a detail of
+each call, with the targets tried; no prompt or answer is stored); providers
+(OpenAI-compatible, Anthropic, Gemini and Azure OpenAI: add, edit, sync
+models, delete); models (enable, who may call each, add by name, set prices);
+routing (routes with fallbacks, a response cache, who may use each, and the
+health of their targets); virtual keys (create, shown once, limit to chosen
+models and routes, revoke, filter); users (invite, role, status, teams, new
+invite link, delete); teams (create, rename, delete, members added by email,
+and leads); budgets and limits (admins set them; everyone sees what applies
+to them); your account (name, password, access tokens); the audit log, for
+admins; and a Settings page for admins (how long request logs are kept).
 What a user sees depends on their role, and the API decides. Light and dark
 themes, following the device until one is chosen, and a layout for phones.
 
-Not yet: logs, the playground, budgets and limits,
-guardrails and MCP tools (shown as coming in the navigation), and a Settings
-page (retention, sign-in settings, backup, configuration export and import).
+Not yet: the playground, guardrails and MCP tools (shown as coming in the
+navigation), and the rest of Settings (sign-in settings, backup,
+configuration export and import).
+
+#### Prices, cache, limits, budgets and retention
+
+All of these are set by an admin in the console, or with the admin API under
+`/api` (`openapi/admin.json` lists every route).
+
+- **Prices.** Models page, Price on a model: dollars per one million input
+  tokens and per one million output tokens. A model without a price is
+  logged without a cost (and shown as Unpriced), so spend and budgets are a
+  lower bound while any model in use has none. Prices are public (not secret).
+- **Route cache.** Routing page, on a route: Cache answers, how long an
+  answer is kept (TTL, 1 to 86 400 seconds) and whose calls share an answer
+  (team, key or user). Streams and requests with a temperature above 0.5 are
+  never cached. A cached answer costs nothing and calls no provider.
+- **Limits.** Budgets and limits page, Set limit: requests per minute, tokens
+  per minute and concurrent requests, for the gateway, a team, a user or a
+  key. The strictest applies; a refused call gets 429 with `Retry-After`.
+- **Budgets.** Same page, Set budget: an amount per UTC day, week (from
+  Monday) or month for the gateway, a team, a user or a key. `Block` refuses
+  calls once the amount is spent (429, `budget_exceeded`); `Alert` allows them
+  and writes one audit entry per period.
+- **Who is counted.** A call counts against the limits and budgets of its key,
+  the key's owner, the gateway and the team of the key; a key without a team
+  counts against all of its owner's teams.
+- **Retention.** Settings page: request logs older than the number of days
+  (1 to 3 650, 30 at first) are deleted.
 
 ### Metrics
 
@@ -107,13 +137,16 @@ without it: the binary then serves a page at `/` that says the console was not
 built, and `/api`, `/v1`, `/health` and `/metrics` work as usual. The Docker image builds
 both.
 
-Develop: run a gateway on port 3900 with `--insecure-cookies` (plain HTTP on
-your own machine only) and the Vite dev server next to it, which passes
-`/api`, `/v1` and `/health` on to that gateway:
+Develop: run a gateway of your own on a port that nothing else uses (here
+3001; never the port of a gateway that is in use) with `--insecure-cookies`
+(plain HTTP on your own machine only), and the Vite dev server next to it. The
+dev server passes `/api`, `/v1` and `/health` on to `http://127.0.0.1:3001`,
+or to the address in `UF_DEV_GATEWAY` when you use another port:
 
 ```bash
-cargo run -p ultrafast-gateway -- serve --port 3900 --insecure-cookies
+cargo run -p ultrafast-gateway -- serve --port 3001 --insecure-cookies
 pnpm --dir ui dev
+# another port: UF_DEV_GATEWAY=http://127.0.0.1:3002 pnpm --dir ui dev
 ```
 
 Test: `pnpm --dir ui test` runs the unit and component tests. The browser
@@ -132,7 +165,27 @@ Known limits:
   `Secure`, so over plain HTTP at any other address the browser drops it and
   the sign-in page says so. On a trusted network, start the gateway with
   `--insecure-cookies` instead.
-- No usage, spend, request logs or budgets: their backends do not exist yet.
+- Rate limits, budgets, the response cache and the health of routing targets
+  live in the memory of one gateway process: they start empty when it starts
+  (budgets are counted again from the request logs) and are not shared
+  between processes.
+- A `block` budget can be overshot: spend is counted when the log writer has
+  priced a call (batches of about a second), so calls already running, and
+  concurrent ones, are not stopped, and a long call is charged when it ends.
+- A stream whose caller left, or that failed after content was sent, is
+  charged an estimate (the input at four characters to a token, and the
+  streamed characters / 4 for the output), marked Estimated in the logs.
+- Any key created or revoked, and any change to what a cached answer depends
+  on (teams and users created or deleted, routes with their targets and cache
+  settings, providers, models, grants), clears the whole response cache.
+  There is no single-flight: calls that miss together all go to the provider.
+- Request logs keep metadata only: the prompt and the answer are not stored.
+- Only admins set limits and budgets. Team leads see those of their team, and
+  members see the gateway's and their teams' without what was spent (their
+  own user's and keys' with it); nobody sees another person's spend.
+- A budget alert is an audit entry, not an email or a webhook.
+- Logs of a deleted user or team stay, with no owner; the id of a deleted
+  user or team may be given out again and does not inherit them.
 - Behind a reverse proxy, start the gateway with `--trusted-proxy CIDR` (or
   `UF_TRUSTED_PROXIES`) so sign-in limiting counts the client's address, not
   the proxy's. The proxy must set or overwrite `CF-Connecting-IP` and
@@ -144,9 +197,11 @@ Known limits:
 
 What works today: `/v1/chat/completions`, `/v1/messages` (Anthropic format),
 `/v1/embeddings` and `/v1/models`, streaming, OpenAI-compatible, Anthropic,
-Gemini and Azure OpenAI providers, a model catalog with grants, routes with
-fallbacks and circuit breakers, and the console. Not yet: tools, images,
-limits and budgets.
+Gemini and Azure OpenAI providers, a model catalog with grants and prices,
+routes with fallbacks, circuit breakers and a response cache, request logs
+with retention, usage and spend reports, rate limits and budgets, Prometheus
+metrics, and the console. Not yet: tools, images, the playground and
+guardrails.
 
 > **A high-performance AI gateway built in Rust** that provides a unified interface to 10+ LLM providers with advanced routing, caching, and monitoring capabilities.
 

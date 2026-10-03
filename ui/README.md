@@ -5,7 +5,7 @@ The gateway embeds the build output (`dist/`) and serves it at `/`.
 
 ```
 pnpm install
-pnpm dev         # dev server; /api, /v1 and /health go to a gateway on 127.0.0.1:3900
+pnpm dev         # dev server; /api, /v1 and /health go to a gateway on 127.0.0.1:3001 (or the one in UF_DEV_GATEWAY)
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
 ```
 

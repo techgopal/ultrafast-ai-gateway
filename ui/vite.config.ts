@@ -37,7 +37,10 @@ const sonnerWithoutStyleInjection = editedLibrary("sonner-without-style-injectio
   what: "the call that injects its stylesheet (__insertCSS)",
 });
 
-const gateway = "http://127.0.0.1:3900";
+// The gateway the dev server passes /api, /v1 and /health on to. Never the
+// port of a gateway that is in use: run one of your own on this port, or name
+// another with UF_DEV_GATEWAY.
+const gateway = process.env.UF_DEV_GATEWAY ?? "http://127.0.0.1:3001";
 
 export default defineConfig({
   base: "/",
