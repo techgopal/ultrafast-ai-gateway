@@ -5,10 +5,9 @@ use std::collections::BTreeMap;
 use ultrafast_translate::embeddings::EmbeddingsRequest as Wire;
 use ultrafast_translate::types::{self, Message, Role};
 
-use crate::error::{Error, ErrorKind};
+use crate::error::Error;
 
-/// The most the `x-uf-tags` header may hold.
-pub const MAX_TAGS_BYTES: usize = 1024;
+pub use ultrafast_translate::tags::MAX_TAGS_BYTES;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatRequest {
@@ -135,30 +134,7 @@ impl From<Wire> for EmbeddingsRequest {
     }
 }
 
-/// The `x-uf-tags` value: compact JSON in ASCII, at most 1 KiB. None when
-/// there are no tags.
+/// The `x-uf-tags` value; see [`ultrafast_translate::tags::tags_header`].
 pub(crate) fn tags_header(tags: &BTreeMap<String, String>) -> Result<Option<String>, Error> {
-    if tags.is_empty() {
-        return Ok(None);
-    }
-    let json = serde_json::to_string(tags)
-        .map_err(|_| Error::new(ErrorKind::InvalidRequest, "tags could not be encoded"))?;
-    let mut out = String::with_capacity(json.len());
-    for c in json.chars() {
-        if (' '..'\u{7f}').contains(&c) {
-            out.push(c);
-        } else {
-            let mut units = [0u16; 2];
-            for u in c.encode_utf16(&mut units) {
-                out.push_str(&format!("\\u{u:04x}"));
-            }
-        }
-    }
-    if out.len() > MAX_TAGS_BYTES {
-        return Err(Error::new(
-            ErrorKind::InvalidRequest,
-            format!("tags exceed {MAX_TAGS_BYTES} bytes"),
-        ));
-    }
-    Ok(Some(out))
+    ultrafast_translate::tags::tags_header(tags).map_err(|c| Error::new(c.kind, c.message))
 }
