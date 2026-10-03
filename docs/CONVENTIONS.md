@@ -47,6 +47,10 @@ and briefs add to these; they do not repeat them.
 - Before reporting done: `git status --ignored` shows no source file ignored, and a
   clean `git archive HEAD` extracted to a temp dir builds (`cargo check`), so what
   is committed is what was tested.
+- Disk is limited: build with `CARGO_INCREMENTAL=0` in scratch copies and delete
+  every scratch target dir when done.
+- `sqlx::migrate!` embeds migrations at compile time and does not rebuild when only a
+  migration file changes: touch `crates/gateway/src/store/mod.rs` after adding one.
 - If a full run fails even once, do not commit over it: record the output,
   find the cause. Other sessions load this machine; note `uptime` with runs.
   Load timeouts are not proof of correctness or of a defect.
