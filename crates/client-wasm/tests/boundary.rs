@@ -154,7 +154,7 @@ fn classify_error_matches_the_rust_client_mapping() {
         (400, "invalid_request", false),
         (429, "rate_limited", true),
         (500, "upstream", true),
-        (302, "upstream", true),
+        (302, "invalid_request", false),
     ] {
         let e = j(&api::classify_error(status, b"{}", None));
         assert_eq!(
@@ -263,4 +263,15 @@ fn host_errors_use_the_shared_kinds() {
     let e = j(&api::host_error("malformed", "cut").unwrap());
     assert_eq!(e["retryable"], false);
     assert!(api::host_error("bogus", "x").is_err());
+}
+
+#[test]
+fn scrub_is_shared_and_retry_after_is_read_on_429_and_503() {
+    assert_eq!(api::scrub("bad key-1", "key-1"), "bad [redacted]");
+    assert_eq!(api::scrub("untouched", ""), "untouched");
+    assert_eq!(
+        j(&api::classify_error(503, b"{}", Some("5")))["retry_after_secs"],
+        5
+    );
+    assert!(j(&api::classify_error(500, b"{}", Some("5")))["retry_after_secs"].is_null());
 }

@@ -57,6 +57,13 @@ pub fn host_error(kind: &str, message: &str) -> Result<String, String> {
     api::host_error(kind, message)
 }
 
+/// `message` with every occurrence of the key replaced by `[redacted]`; run
+/// every error message through it before showing it.
+#[wasm_bindgen]
+pub fn scrub(message: &str, key: &str) -> String {
+    api::scrub(message, key)
+}
+
 /// The `x-uf-tags` header value for a JSON object of tags; `undefined` when
 /// there are none.
 #[wasm_bindgen(js_name = tagsHeader)]

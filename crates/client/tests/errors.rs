@@ -1,6 +1,8 @@
 mod common;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use futures::StreamExt;
 
 use common::*;
 use ultrafast_client::{ChatRequest, Client, EmbeddingsRequest, Error, ErrorKind, Target};
@@ -70,6 +72,7 @@ async fn statuses_map_to_kinds() {
         (403, ErrorKind::Permission, false),
         (404, ErrorKind::NotFound, false),
         (408, ErrorKind::Timeout, true),
+        (302, ErrorKind::InvalidRequest, false),
         (500, ErrorKind::Upstream, true),
         (502, ErrorKind::Upstream, true),
         (503, ErrorKind::Upstream, true),
@@ -219,4 +222,100 @@ fn the_default_cap_is_32_mib() {
         ultrafast_client::DEFAULT_MAX_RESPONSE_BYTES,
         32 * 1024 * 1024
     );
+}
+
+#[tokio::test]
+async fn a_stream_error_body_that_stalls_times_out() {
+    // A 500 that promises 100 bytes, sends 3 and goes quiet.
+    let s = serve(Script::json(500, "abc").declared_len(100)).await;
+    let c = Client::new(gateway(&s.url)).with_timeout(Duration::from_millis(300));
+    let started = Instant::now();
+    let e = c.chat_stream(req()).await.err().expect("an error");
+    assert_eq!(e.kind, ErrorKind::Timeout, "{e:?}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn a_redirect_is_refused_and_never_followed() {
+    let other = serve(Script::json(200, OPENAI_CHAT)).await;
+    let first = serve(
+        Script::json(302, "").header("location", &format!("{}/v1/chat/completions", other.url)),
+    )
+    .await;
+    let c = Client::new(gateway(&first.url));
+    let e = c.chat(req()).await.unwrap_err();
+    assert_eq!(
+        (e.kind, e.retryable, e.status),
+        (ErrorKind::InvalidRequest, false, Some(302))
+    );
+    let e = c.chat_stream(req()).await.err().expect("refused");
+    assert_eq!(
+        (e.kind, e.retryable, e.status),
+        (ErrorKind::InvalidRequest, false, Some(302))
+    );
+    let e = c
+        .embed(EmbeddingsRequest::new("m", ["x"]))
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, Some(302));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        other.requests().is_empty(),
+        "the second server was contacted"
+    );
+    assert_eq!(first.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn a_stream_that_stalls_after_text_times_out_after_the_text() {
+    let part = "data: {\"choices\":[{\"delta\":{\"content\":\"par\"},\"finish_reason\":null}]}\n\n";
+    let s = serve(Script::sse(vec![part.as_bytes().to_vec()]).stall()).await;
+    let c = Client::new(gateway(&s.url)).with_timeout(Duration::from_millis(300));
+    let mut st = Box::pin(c.chat_stream(req()).await.unwrap());
+    let first = st.next().await.unwrap().unwrap();
+    assert_eq!(
+        first,
+        ultrafast_client::types::StreamEvent::Delta { text: "par".into() }
+    );
+    let e = st.next().await.unwrap().unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Timeout);
+    assert!(e.retryable);
+    assert!(st.next().await.is_none());
+}
+
+#[tokio::test]
+async fn nothing_is_retried() {
+    for status in [500, 503, 429] {
+        let s = serve(Script::json(status, "{}")).await;
+        let c = Client::new(gateway(&s.url));
+        c.chat(req()).await.unwrap_err();
+        let _ = c.chat_stream(req()).await.err();
+        assert_eq!(
+            s.requests().len(),
+            2,
+            "status {status}: one request per call"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_short_key_is_scrubbed_too() {
+    let s = serve(Script::json(
+        401,
+        r#"{"error":{"message":"bad key abc","type":"x"}}"#,
+    ))
+    .await;
+    let e = Client::new(Target::gateway(&s.url, "abc"))
+        .chat(req())
+        .await
+        .unwrap_err();
+    assert_eq!(e.message, "bad key [redacted]");
+}
+
+#[tokio::test]
+async fn a_provider_503_with_retry_after_carries_it() {
+    let e = chat_error(Script::json(503, "{}").header("retry-after", "5"), openai).await;
+    assert_eq!(e.kind, ErrorKind::Upstream);
+    assert!(e.retryable);
+    assert_eq!(e.retry_after, Some(Duration::from_secs(5)));
 }

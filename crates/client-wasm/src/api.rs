@@ -248,6 +248,11 @@ pub fn host_error(kind: &str, message: &str) -> Result<String, Failure> {
     Ok(error_json(&Classified::new(kind, message)))
 }
 
+/// `message` with the key replaced by `[redacted]`.
+pub fn scrub(message: &str, key: &str) -> String {
+    ultrafast_translate::classify::scrub(message, key)
+}
+
 /// The `x-uf-tags` value for a JSON object of tags; None when empty.
 pub fn tags_header(tags_json: &str) -> Result<Option<String>, Failure> {
     let t: BTreeMap<String, String> =

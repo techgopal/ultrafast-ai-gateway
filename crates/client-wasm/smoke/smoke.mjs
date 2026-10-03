@@ -89,7 +89,8 @@ try {
     { kind: err.kind, retryable: err.retryable, status: err.status, retry_after_secs: err.retry_after_secs, message: err.message },
     { kind: "rate_limited", retryable: true, status: 429, retry_after_secs: 7, message: "slow down" },
   );
-  console.log("smoke ok: chat, stream, refusal");
+  assert.equal(w.scrub("bad key sk-abc here", "sk-abc"), "bad key [redacted] here");
+  console.log("smoke ok: chat, stream, refusal, scrub");
 } finally {
   server.close();
 }

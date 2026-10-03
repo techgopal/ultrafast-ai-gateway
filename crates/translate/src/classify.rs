@@ -55,8 +55,9 @@ impl ErrorKind {
             408 => ErrorKind::Timeout,
             429 => ErrorKind::RateLimited,
             500.. => ErrorKind::Upstream,
-            // Redirects are not followed (they would carry the key onward).
-            300..=399 => ErrorKind::Upstream,
+            // Redirects are not followed (they would carry the key onward):
+            // the target is wrong, and asking again will not change it.
+            300..=399 => ErrorKind::InvalidRequest,
             _ => ErrorKind::InvalidRequest,
         }
     }
@@ -76,7 +77,7 @@ pub struct Classified {
     pub retryable: bool,
     pub status: Option<u16>,
     pub message: String,
-    /// Whole seconds; set for `RateLimited` only.
+    /// Whole seconds; set for 429 and 503 answers only.
     pub retry_after_secs: Option<u64>,
 }
 
@@ -95,7 +96,7 @@ impl Classified {
         let kind = ErrorKind::of_status(status);
         Classified {
             status: Some(status),
-            retry_after_secs: if kind == ErrorKind::RateLimited {
+            retry_after_secs: if kind == ErrorKind::RateLimited || status == 503 {
                 retry_after
             } else {
                 None
@@ -132,6 +133,16 @@ pub fn parse_retry_after(value: &str) -> Option<u64> {
     )
 }
 
+/// `message` with every occurrence of `key` replaced; any non-empty key.
+/// Every client runs its error messages through this, so a server that
+/// echoes the credential back does not leak it.
+pub fn scrub(message: &str, key: &str) -> String {
+    if key.is_empty() {
+        return message.to_string();
+    }
+    message.replace(key, "[redacted]")
+}
+
 /// An HTTP error answer (any provider's, or a gateway's) from its status,
 /// body and `Retry-After` header value.
 pub fn classify_answer(status: u16, body: &[u8], retry_after: Option<&str>) -> Classified {
@@ -157,7 +168,7 @@ mod tests {
             (429, ErrorKind::RateLimited, true),
             (500, ErrorKind::Upstream, true),
             (503, ErrorKind::Upstream, true),
-            (302, ErrorKind::Upstream, true),
+            (302, ErrorKind::InvalidRequest, false),
         ];
         for (status, kind, retry) in cases {
             let c = classify_answer(status, b"{}", None);
@@ -180,9 +191,16 @@ mod tests {
             Some(7)
         );
         assert_eq!(
-            classify_answer(503, b"{}", Some("7")).retry_after_secs,
-            None
+            classify_answer(503, b"{}", Some("5")).retry_after_secs,
+            Some(5)
         );
+        for status in [400, 401, 500, 502] {
+            assert_eq!(
+                classify_answer(status, b"{}", Some("7")).retry_after_secs,
+                None,
+                "{status}"
+            );
+        }
         assert_eq!(parse_retry_after("999999999"), Some(RETRY_AFTER_CAP_SECS));
         assert_eq!(
             parse_retry_after("99999999999999999999999"),
@@ -191,6 +209,17 @@ mod tests {
         for bad in ["", "-1", "1.5", "Wed, 21 Oct 2015 07:28:00 GMT", "+3"] {
             assert_eq!(parse_retry_after(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn scrub_replaces_every_occurrence_of_any_non_empty_key() {
+        assert_eq!(
+            scrub("bad k-1 and k-1", "k-1"),
+            "bad [redacted] and [redacted]"
+        );
+        assert_eq!(scrub("a=b", "b"), "a=[redacted]");
+        assert_eq!(scrub("nothing here", "zz"), "nothing here");
+        assert_eq!(scrub("keep", ""), "keep");
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub enum Target {
 }
 
 impl Target {
+    /// `base_url` is the gateway's address; a trailing `/v1` is accepted and ignored.
     pub fn gateway(base_url: impl Into<String>, key: impl Into<String>) -> Self {
         Target::Gateway {
             base_url: base_url.into(),
@@ -96,7 +97,7 @@ impl Target {
         match self {
             Target::Gateway { base_url, key: k } => ultrafast_translate::provider::Target {
                 kind: ProviderKind::OpenAi,
-                base_url: format!("{}/v1", base_url.trim_end_matches('/')),
+                base_url: format!("{}/v1", gateway_root(base_url)),
                 api_key: key(k),
                 model: model.to_string(),
                 api_version: None,
@@ -122,6 +123,15 @@ impl Target {
             Target::Provider { kind, .. } => *kind,
         }
     }
+}
+
+/// The gateway's address without a trailing `/` or `/v1`, so both
+/// `http://host` and `http://host/v1` work.
+fn gateway_root(base_url: &str) -> &str {
+    let base = base_url.trim_end_matches('/');
+    base.strip_suffix("/v1")
+        .unwrap_or(base)
+        .trim_end_matches('/')
 }
 
 /// Never prints the key.

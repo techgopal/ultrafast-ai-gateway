@@ -29,7 +29,7 @@ let vectors = client.embed(EmbeddingsRequest::new("text-embedding-3-small", ["a"
 
 | Constructor | Notes |
 | --- | --- |
-| `Target::gateway(base_url, key)` | OpenAI wire format against `{base_url}/v1`. Sends `tags`. |
+| `Target::gateway(base_url, key)` | OpenAI wire format against `{base_url}/v1`; a trailing `/v1` on `base_url` is ignored. Sends `tags`. |
 | `Target::openai(key)` | `https://api.openai.com/v1`; `.with_base_url(..)` replaces it. |
 | `Target::openai_compatible(base_url, key)` | Groq, Mistral, OpenRouter, Ollama; `base_url` includes `/v1`. |
 | `Target::anthropic(key)` | |
@@ -45,7 +45,7 @@ Every call returns `Error { kind, message, status, retryable, retry_after }`.
 `kind` is one of `auth`, `permission`, `not_found`, `invalid_request`,
 `rate_limited`, `upstream`, `network`, `timeout`, `malformed`. `retryable` is
 true for `rate_limited`, `upstream`, `network` and `timeout`. `retry_after`
-is set from a `Retry-After` header in seconds (an HTTP date is not read).
+is set from a `Retry-After` header on 429 and 503 answers, in seconds (an HTTP date is not read), capped at 24 h. A redirect is refused as `invalid_request` and never followed.
 The client does not retry, route, cache or break circuits.
 
 A stream yields its events and then, if something went wrong, one error: a

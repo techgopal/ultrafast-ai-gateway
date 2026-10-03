@@ -169,3 +169,16 @@ async fn a_translate_request_converts() {
     };
     check(&c.chat(t).await.unwrap());
 }
+
+#[tokio::test]
+async fn a_gateway_base_url_ending_in_v1_is_not_doubled() {
+    for suffix in ["/v1", "/v1/", "/", ""] {
+        let s = serve(Script::json(200, OPENAI_CHAT)).await;
+        let c = Client::new(Target::gateway(format!("{}{suffix}", s.url), "k"));
+        check(&c.chat(req("m")).await.unwrap());
+        assert!(
+            s.only().starts_with("post /v1/chat/completions "),
+            "suffix {suffix:?}"
+        );
+    }
+}

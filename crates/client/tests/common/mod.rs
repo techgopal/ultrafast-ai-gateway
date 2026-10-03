@@ -17,6 +17,10 @@ pub struct Script {
     pub clean_end: bool,
     /// Never answer at all.
     pub hang: bool,
+    /// After the parts, keep the connection open and silent.
+    pub stall: bool,
+    /// Send `content-length` of this size instead of chunking (the parts may be shorter).
+    pub declared_len: Option<usize>,
 }
 
 impl Script {
@@ -27,6 +31,8 @@ impl Script {
             parts: vec![body.as_bytes().to_vec()],
             clean_end: true,
             hang: false,
+            stall: false,
+            declared_len: None,
         }
     }
 
@@ -37,11 +43,23 @@ impl Script {
             parts,
             clean_end: true,
             hang: false,
+            stall: false,
+            declared_len: None,
         }
     }
 
     pub fn header(mut self, k: &str, v: &str) -> Self {
         self.headers.push((k.into(), v.into()));
+        self
+    }
+
+    pub fn stall(mut self) -> Self {
+        self.stall = true;
+        self
+    }
+
+    pub fn declared_len(mut self, n: usize) -> Self {
+        self.declared_len = Some(n);
         self
     }
 
@@ -116,6 +134,16 @@ pub async fn serve(script: Script) -> Server {
                 for (k, v) in &script.headers {
                     out.push_str(&format!("{k}: {v}\r\n"));
                 }
+                if let Some(n) = script.declared_len {
+                    out.push_str(&format!("content-length: {n}\r\nconnection: close\r\n\r\n"));
+                    let _ = sock.write_all(out.as_bytes()).await;
+                    for part in &script.parts {
+                        let _ = sock.write_all(part).await;
+                    }
+                    let _ = sock.flush().await;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    return;
+                }
                 out.push_str("transfer-encoding: chunked\r\nconnection: close\r\n\r\n");
                 let _ = sock.write_all(out.as_bytes()).await;
                 for (i, part) in script.parts.iter().enumerate() {
@@ -128,6 +156,10 @@ pub async fn serve(script: Script) -> Server {
                     }
                     let _ = sock.flush().await;
                     tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                if script.stall {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    return;
                 }
                 if script.clean_end {
                     let _ = sock.write_all(b"0\r\n\r\n").await;

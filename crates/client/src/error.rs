@@ -3,7 +3,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use ultrafast_translate::classify::Classified;
+use ultrafast_translate::classify::{scrub, Classified};
 use ultrafast_translate::error::TranslateError;
 
 pub use ultrafast_translate::classify::ErrorKind;
@@ -78,8 +78,8 @@ impl Error {
 
     /// Replaces every occurrence of the key in the message.
     pub(crate) fn scrubbed(mut self, key: Option<&str>) -> Self {
-        if let Some(k) = key.filter(|k| k.len() >= 8) {
-            self.message = self.message.replace(k, "[redacted]");
+        if let Some(k) = key {
+            self.message = scrub(&self.message, k);
         }
         self
     }

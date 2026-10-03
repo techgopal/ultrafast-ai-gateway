@@ -42,7 +42,7 @@ impl Client {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_default();
+            .expect("the HTTP client could not be built (TLS backend)");
         Client {
             target,
             http,
@@ -119,7 +119,13 @@ impl Client {
         };
         let status = resp.status().as_u16();
         if status >= 300 {
-            let (status, retry_after, body) = read(resp, self.max_response_bytes).await?;
+            // The error body is bounded by the timeout too: a server that
+            // promises a body and stalls must not hold the caller.
+            let read = read(resp, self.max_response_bytes);
+            let (status, retry_after, body) = match tokio::time::timeout(self.timeout, read).await {
+                Ok(r) => r?,
+                Err(_) => return Err(Error::new(ErrorKind::Timeout, "the request timed out")),
+            };
             check_redirect(status)?;
             return Err(
                 match provider::parse_response(self.target.kind(), status, &body) {
