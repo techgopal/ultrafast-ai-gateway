@@ -1,28 +1,30 @@
 # ultrafast-client
 
 Rust client for an Ultrafast gateway, or for a provider directly. Built on
-`ultrafast-translate` (the same request/response translation the gateway
-uses) and `reqwest` with rustls.
+`ultrafast-translate` (request building and response parsing are the code
+the gateway uses; error classification and stream decoding are shared with the
+other clients) and `reqwest` with rustls.
 
 ```rust
 use futures::StreamExt;
 use ultrafast_client::{ChatRequest, Client, EmbeddingsRequest, Target};
 
-# async fn run() -> Result<(), ultrafast_client::Error> {
-let client = Client::new(Target::gateway("http://127.0.0.1:8080", "uf-key"));
+async fn run() -> Result<(), ultrafast_client::Error> {
+    let client = Client::new(Target::gateway("http://127.0.0.1:3000", "uf-key"));
 
-let reply = client
-    .chat(ChatRequest::new("gpt-4o").system("Be brief.").user("Hello").tag("team", "search"))
-    .await?;
-println!("{}", reply.content);
+    let reply = client
+        .chat(ChatRequest::new("gpt-4o").system("Be brief.").user("Hello").tag("team", "search"))
+        .await?;
+    println!("{}", reply.content);
 
-let mut events = Box::pin(client.chat_stream(ChatRequest::new("gpt-4o").user("Hello")).await?);
-while let Some(event) = events.next().await {
-    println!("{:?}", event?);
+    let mut events = Box::pin(client.chat_stream(ChatRequest::new("gpt-4o").user("Hello")).await?);
+    while let Some(event) = events.next().await {
+        println!("{:?}", event?);
+    }
+
+    let vectors = client.embed(EmbeddingsRequest::new("text-embedding-3-small", ["a", "b"])).await?;
+    Ok(())
 }
-
-let vectors = client.embed(EmbeddingsRequest::new("text-embedding-3-small", ["a", "b"])).await?;
-# Ok(()) }
 ```
 
 ## Targets

@@ -158,11 +158,13 @@ limits and budgets.
 ## Clients
 
 Rust, Python and TypeScript clients for the gateway (or for a provider
-directly). All three share one core: request building, response parsing,
-error classification and stream decoding are the same Rust code the gateway
-uses (the TypeScript client runs it as WebAssembly), and one set of fixtures
-(`clients/fixtures/`) is run by all three test suites so they cannot drift
-apart. They do not retry, route, cache or break circuits: an error says
+directly). All three share one Rust core, `ultrafast-translate`: request
+building and response parsing are the code the gateway itself uses, and error
+classification and stream decoding are shared by the three clients (the
+gateway does not use those two). The TypeScript client runs the core as
+WebAssembly. One set of fixtures (`clients/fixtures/`) is run by all three
+test suites, so the behaviour those fixtures cover is checked to be the same
+in all three. They do not retry, route, cache or break circuits: an error says
 whether trying again could help (`retryable`) and how long to wait
 (`retry_after`). Every example below uses a key made with `ultrafast key
 create` and a model written `provider/model`, or the name of a route.

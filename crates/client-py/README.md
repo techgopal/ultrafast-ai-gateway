@@ -64,5 +64,9 @@ the same files the Rust and TypeScript clients run.
 No Python headers or sudo are needed on Linux. Publishing wheels needs the
 owner's credentials; `.github/workflows/clients.yml` only builds them.
 
-The blocking client releases the GIL while it waits; a Ctrl-C is seen after
-the call returns or times out.
+The blocking client releases the GIL while it waits and checks for signals
+every 100 ms, so Ctrl-C interrupts a call that is waiting on the network.
+
+Do not share a client across `os.fork()`: the child would inherit the
+runtime's threads in a state they cannot be used in. Create the client after
+the fork (for example in each worker process).

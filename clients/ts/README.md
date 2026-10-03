@@ -1,8 +1,9 @@
 # @ultrafast/client (TypeScript)
 
 Client for the Ultrafast gateway, or for a provider directly. Request building,
-response parsing and stream decoding are the same Rust code the gateway and the
-Rust and Python clients use, compiled to WebAssembly (`crates/client-wasm`); the
+response parsing and stream decoding are the Rust code the Rust and Python
+clients use (the translation part is the gateway's own), compiled to
+WebAssembly (`crates/client-wasm`); the
 network is the runtime's own `fetch`. No runtime dependencies, no Node-specific
 APIs in `src/`: it runs in Node 20+, Bun, Deno and browsers with no setup, and on
 edge runtimes that forbid compiling WebAssembly at run time with one extra call
@@ -32,7 +33,7 @@ const { vectors } = await client.embed({ model: "text-embedding-3-small", input:
 | `anthropic({ key, baseUrl? })` | |
 | `gemini({ key, baseUrl? })` | |
 | `azure({ endpoint, key, apiVersion? })` | The request's `model` is the deployment name. |
-| `openaiCompatible({ baseUrl, key })` | Groq, Mistral, OpenRouter, Ollama; `baseUrl` includes `/v1`. |
+| `openaiCompatible({ baseUrl, key? })` | Groq, Mistral, OpenRouter, Ollama; `baseUrl` includes `/v1`. The key may be empty or left out (keyless Ollama): no Authorization header is sent. |
 
 ## Options
 
@@ -41,6 +42,13 @@ const { vectors } = await client.embed({ model: "text-embedding-3-small", input:
 - `fetch`: your own (tests, proxies, edge runtimes). Requests are sent with `redirect: "manual"`; a redirect is an error and is never followed (the credential would go with it). If you supply a `fetch`, do not make it follow redirects with credentials.
 - `timeoutMs` (default 120000): for the whole of `chat`/`embed`, for the answer to start a stream, and for each silent stretch inside a stream. The client enforces it itself (an abort plus a race), so a `fetch` that ignores `AbortSignal` is still bounded.
 - `maxResponseBytes` (default 32 MiB): the most a `chat`/`embed` answer or any error body may hold; a larger one is a `malformed` error. Streams are not capped in total.
+
+## Browsers
+
+The gateway sends no CORS headers, so a page can call it only from the same
+origin or through a proxy you run. A key in browser code is public to anyone
+who opens the page: use a key meant to be exposed (tight allowlist and limits),
+or keep the key in your proxy and send none from the page.
 
 ## Errors
 
