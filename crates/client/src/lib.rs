@@ -10,7 +10,7 @@ mod request;
 mod stream;
 mod target;
 
-pub use client::Client;
+pub use client::{Client, DEFAULT_MAX_RESPONSE_BYTES};
 pub use error::{Error, ErrorKind};
 pub use request::{ChatRequest, EmbeddingsRequest, MAX_TAGS_BYTES};
 pub use target::Target;

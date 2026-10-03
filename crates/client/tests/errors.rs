@@ -191,3 +191,32 @@ fn error_displays_kind_and_message() {
     assert_eq!(e.to_string(), "auth: bad key");
     assert!(std::error::Error::source(&e).is_none());
 }
+
+#[tokio::test]
+async fn a_body_over_the_cap_is_a_malformed_error_not_a_read_to_the_end() {
+    // Chunked, so no Content-Length warns first: the cap must stop the read.
+    let big = format!(r#"{{"pad":"{}"}}"#, "x".repeat(4000));
+    for status in [200u16, 502] {
+        let s = serve(Script::json(status, &big)).await;
+        let c = Client::new(gateway(&s.url)).with_max_response_bytes(1000);
+        let e = c.chat(req()).await.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Malformed, "{status}: {e}");
+        assert!(!e.retryable);
+        assert!(e.message.contains("1000"), "{e}");
+    }
+}
+
+#[tokio::test]
+async fn a_body_at_the_cap_is_read() {
+    let s = serve(Script::json(200, OPENAI_CHAT)).await;
+    let c = Client::new(gateway(&s.url)).with_max_response_bytes(OPENAI_CHAT.len());
+    assert_eq!(c.chat(req()).await.unwrap().content, "hello");
+}
+
+#[test]
+fn the_default_cap_is_32_mib() {
+    assert_eq!(
+        ultrafast_client::DEFAULT_MAX_RESPONSE_BYTES,
+        32 * 1024 * 1024
+    );
+}

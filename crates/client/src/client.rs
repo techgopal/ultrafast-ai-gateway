@@ -14,6 +14,8 @@ use crate::target::Target;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// A `Retry-After` longer than this is capped.
+/// The most a non-streaming answer (or an error body) may hold, as in the gateway.
+pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const RETRY_AFTER_CAP: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone)]
@@ -21,6 +23,7 @@ pub struct Client {
     target: Target,
     http: reqwest::Client,
     timeout: Duration,
+    max_response_bytes: usize,
 }
 
 /// Never prints the key.
@@ -29,6 +32,7 @@ impl fmt::Debug for Client {
         f.debug_struct("Client")
             .field("target", &self.target)
             .field("timeout", &self.timeout)
+            .field("max_response_bytes", &self.max_response_bytes)
             .finish()
     }
 }
@@ -44,6 +48,7 @@ impl Client {
             target,
             http,
             timeout: DEFAULT_TIMEOUT,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         }
     }
 
@@ -51,6 +56,14 @@ impl Client {
     /// for the answer and the longest silence between two chunks.
     pub fn with_timeout(mut self, timeout: Duration) -> Client {
         self.timeout = timeout;
+        self
+    }
+
+    /// The most a `chat` or `embed` answer, or any error body, may hold
+    /// (default 32 MiB). A larger one is a `Malformed` error. Streams are
+    /// not capped in total; each event is.
+    pub fn with_max_response_bytes(mut self, max: usize) -> Client {
+        self.max_response_bytes = max;
         self
     }
 
@@ -74,7 +87,7 @@ impl Client {
             .map_err(|e| Error::from_translate(e, None))?;
         let tags = self.tags(&request.tags)?;
         let resp = self.send(http, tags, Some(self.timeout), false).await?;
-        let (status, retry_after, body) = read(resp).await?;
+        let (status, retry_after, body) = read(resp, self.max_response_bytes).await?;
         check_redirect(status)?;
         provider::parse_response(self.target.kind(), status, &body)
             .map_err(|e| Error::from_translate(e, retry_after))
@@ -107,7 +120,7 @@ impl Client {
         };
         let status = resp.status().as_u16();
         if status >= 300 {
-            let (status, retry_after, body) = read(resp).await?;
+            let (status, retry_after, body) = read(resp, self.max_response_bytes).await?;
             check_redirect(status)?;
             return Err(
                 match provider::parse_response(self.target.kind(), status, &body) {
@@ -135,7 +148,7 @@ impl Client {
             .map_err(|e| Error::from_translate(e, None))?;
         let tags = self.tags(&request.tags)?;
         let resp = self.send(http, tags, Some(self.timeout), false).await?;
-        let (status, retry_after, body) = read(resp).await?;
+        let (status, retry_after, body) = read(resp, self.max_response_bytes).await?;
         check_redirect(status)?;
         embeddings::parse_response(self.target.kind(), status, &body, &request.inner.model)
             .map_err(|e| Error::from_translate(e, retry_after))
@@ -191,11 +204,29 @@ fn check_redirect(status: u16) -> Result<(), Error> {
     Ok(())
 }
 
-async fn read(resp: reqwest::Response) -> Result<(u16, Option<Duration>, bytes::Bytes), Error> {
+async fn read(
+    mut resp: reqwest::Response,
+    max: usize,
+) -> Result<(u16, Option<Duration>, bytes::Bytes), Error> {
     let status = resp.status().as_u16();
     let retry_after = retry_after_of(resp.headers());
-    let body = resp.bytes().await.map_err(Error::from_reqwest)?;
-    Ok((status, retry_after, body))
+    let too_big = || {
+        Error::new(
+            ErrorKind::Malformed,
+            format!("the response is larger than the limit of {max} bytes"),
+        )
+    };
+    if resp.content_length().is_some_and(|n| n > max as u64) {
+        return Err(too_big());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(Error::from_reqwest)? {
+        if body.len() + chunk.len() > max {
+            return Err(too_big());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((status, retry_after, body.into()))
 }
 
 /// `Retry-After` as seconds; an HTTP date is not read.
