@@ -57,4 +57,7 @@ pnpm lint && pnpm typecheck && pnpm test
 pnpm build        # build:wasm + tsc into dist/
 ```
 
+`tests/fixtures.test.ts` runs the parity fixtures in `../fixtures/*.json`, the same
+files the Rust and Python clients run (tests only; `src/` reads no files).
+
 The `.wasm` is embedded as base64 in the package and loaded with `WebAssembly.instantiate`, so loading needs no file, URL or `fetch` access, and works the same everywhere. Tests use an injected fake `fetch`, plus one smoke test with the real `fetch` against a local HTTP server.

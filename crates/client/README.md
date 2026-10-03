@@ -67,3 +67,15 @@ key header cannot be forwarded to another host; if you pass your own
 `with_timeout` bounds a whole `chat`/`embed` call (default 120 s); for
 `chat_stream` it bounds the wait for the answer and the silence between two
 chunks.
+
+## Test
+
+```
+cargo test -p ultrafast-client
+```
+
+`tests/fixtures.rs` runs the parity fixtures in `clients/fixtures/*.json`
+(request to wire request, answer to parsed result or error, stream chunks to
+events) against a local mock server. The Python and TypeScript clients run the
+same files, so all three agree on the wire format, error kinds, retry rules and
+stream events.

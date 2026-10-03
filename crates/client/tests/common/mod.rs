@@ -72,12 +72,20 @@ impl Script {
 pub struct Server {
     pub url: String,
     requests: Arc<Mutex<Vec<String>>>,
+    raw: Arc<Mutex<Vec<String>>>,
 }
 
 impl Server {
     /// Every request received so far, as head + body text, lower-cased heads.
     pub fn requests(&self) -> Vec<String> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /// The one request received, head + body with the head's case kept.
+    pub fn only_raw(&self) -> String {
+        let r = self.raw.lock().unwrap().clone();
+        assert_eq!(r.len(), 1, "expected exactly one request: {r:?}");
+        r[0].clone()
     }
 
     pub fn only(&self) -> String {
@@ -92,6 +100,8 @@ pub async fn serve(script: Script) -> Server {
     let url = format!("http://{}", listener.local_addr().unwrap());
     let requests = Arc::new(Mutex::new(Vec::new()));
     let log = requests.clone();
+    let raw = Arc::new(Mutex::new(Vec::new()));
+    let raw_log = raw.clone();
     tokio::spawn(async move {
         loop {
             let Ok((mut sock, _)) = listener.accept().await else {
@@ -100,6 +110,7 @@ pub async fn serve(script: Script) -> Server {
             let _ = sock.set_nodelay(true);
             let script = script.clone();
             let log = log.clone();
+            let raw_log = raw_log.clone();
             tokio::spawn(async move {
                 let mut buf = Vec::new();
                 let mut tmp = [0u8; 4096];
@@ -119,6 +130,10 @@ pub async fn serve(script: Script) -> Server {
                             .unwrap_or(0);
                         if buf.len() >= end + 4 + len {
                             let body = String::from_utf8_lossy(&buf[end + 4..end + 4 + len]);
+                            raw_log
+                                .lock()
+                                .unwrap()
+                                .push(format!("{head}\r\n\r\n{body}"));
                             log.lock()
                                 .unwrap()
                                 .push(format!("{}\r\n\r\n{body}", head.to_lowercase()));
@@ -168,7 +183,7 @@ pub async fn serve(script: Script) -> Server {
             });
         }
     });
-    Server { url, requests }
+    Server { url, requests, raw }
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {

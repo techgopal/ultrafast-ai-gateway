@@ -155,6 +155,59 @@ limits and budgets.
 [![Build Status](https://img.shields.io/github/actions/workflow/status/ultrafast-ai/ultrafast-gateway/ci.yml?branch=main)](https://github.com/ultrafast-ai/ultrafast-gateway/actions)
 
 
+## Clients
+
+Rust, Python and TypeScript clients for the gateway (or for a provider
+directly). All three share one core: request building, response parsing,
+error classification and stream decoding are the same Rust code the gateway
+uses (the TypeScript client runs it as WebAssembly), and one set of fixtures
+(`clients/fixtures/`) is run by all three test suites so they cannot drift
+apart. They do not retry, route, cache or break circuits: an error says
+whether trying again could help (`retryable`) and how long to wait
+(`retry_after`). Every example below uses a key made with `ultrafast key
+create` and a model written `provider/model`, or the name of a route.
+
+Rust ([`crates/client`](crates/client/README.md)):
+
+```rust
+use ultrafast_client::{ChatRequest, Client, Target};
+
+let client = Client::new(Target::gateway("http://127.0.0.1:3000", key));
+let reply = client
+    .chat(ChatRequest::new("anthropic/claude-sonnet-5").user("Say hi."))
+    .await?;
+println!("{}", reply.content);
+```
+
+Python ([`crates/client-py`](crates/client-py/README.md)):
+
+```python
+import ultrafast
+
+client = ultrafast.Client(ultrafast.gateway("http://127.0.0.1:3000", key))
+reply = client.chat("anthropic/claude-sonnet-5", [{"role": "user", "content": "Say hi."}])
+print(reply.content)
+```
+
+TypeScript ([`clients/ts`](clients/ts/README.md)):
+
+```ts
+import { Client, gateway } from "@ultrafast/client";
+
+const client = new Client(gateway({ baseUrl: "http://127.0.0.1:3000", key }));
+const reply = await client.chat({
+  model: "anthropic/claude-sonnet-5",
+  messages: [{ role: "user", content: "Say hi." }],
+});
+console.log(reply.content);
+```
+
+Each client also streams (`chat_stream` / `chatStream`) and makes
+embeddings; see its README. Wheels and an npm package are configured but not
+published yet: build from source as each README says. Text content only, as
+in the gateway; the optional `tags` are sent as `x-uf-tags` and ignored until
+the gateway stores them.
+
 ## ✨ Features
 
 ### 🎯 **Dual Mode Operation**

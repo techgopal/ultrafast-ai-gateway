@@ -1,0 +1,762 @@
+{
+  "description": "Each case: a target and a request, and the HTTP request every client must put on the wire. {base} is replaced by the address of a local server. Headers are those that must be present with exactly these values (names lower-case); auth_header names the header that must hold the key; x-uf-tags must be absent unless listed. Body is compared as JSON. sent=false: an error is raised and nothing is sent.",
+  "key": "sk-fixture-key-0001",
+  "cases": [
+    {
+      "name": "gateway chat with every option and tags",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "request": {
+        "model": "gpt-4o",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "max_tokens": 16,
+        "temperature": 0.5,
+        "top_p": 0.5,
+        "stop": [
+          "x"
+        ],
+        "tags": {
+          "team": "search",
+          "env": "prod"
+        }
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "auth_header": "authorization",
+        "headers": {
+          "content-type": "application/json",
+          "x-uf-tags": "{\"env\":\"prod\",\"team\":\"search\"}"
+        },
+        "body": {
+          "max_tokens": 16,
+          "messages": [
+            {
+              "content": "be brief",
+              "role": "system"
+            },
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "gpt-4o",
+          "stop": [
+            "x"
+          ],
+          "temperature": 0.5,
+          "top_p": 0.5
+        }
+      }
+    },
+    {
+      "name": "gateway base with a trailing /v1 and slash",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}/v1/"
+      },
+      "request": {
+        "model": "m",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "auth_header": "authorization",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "messages": [
+            {
+              "content": "be brief",
+              "role": "system"
+            },
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "m"
+        }
+      }
+    },
+    {
+      "name": "gateway embeddings with dimensions and tags",
+      "op": "embed",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "request": {
+        "model": "text-embedding-3-small",
+        "input": [
+          "a",
+          "b"
+        ],
+        "dimensions": 8,
+        "tags": {
+          "team": "search"
+        }
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "auth_header": "authorization",
+        "headers": {
+          "content-type": "application/json",
+          "x-uf-tags": "{\"team\":\"search\"}"
+        },
+        "body": {
+          "dimensions": 8,
+          "encoding_format": "float",
+          "input": [
+            "a",
+            "b"
+          ],
+          "model": "text-embedding-3-small"
+        }
+      }
+    },
+    {
+      "name": "gateway streaming chat",
+      "op": "chat_stream",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "request": {
+        "model": "m",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "auth_header": "authorization",
+        "headers": {
+          "accept": "text/event-stream",
+          "content-type": "application/json"
+        },
+        "body": {
+          "messages": [
+            {
+              "content": "be brief",
+              "role": "system"
+            },
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "m",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          }
+        }
+      }
+    },
+    {
+      "name": "gateway route name as the model",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "request": {
+        "model": "fast-route",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "auth_header": "authorization",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "messages": [
+            {
+              "content": "be brief",
+              "role": "system"
+            },
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "fast-route"
+        }
+      }
+    },
+    {
+      "name": "openai chat never sends tags",
+      "op": "chat",
+      "target": {
+        "kind": "openai",
+        "base_url": "{base}/v1"
+      },
+      "request": {
+        "model": "gpt-4o",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "max_tokens": 16,
+        "temperature": 0.5,
+        "top_p": 0.5,
+        "stop": [
+          "x"
+        ],
+        "tags": {
+          "team": "search",
+          "env": "prod"
+        }
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "auth_header": "authorization",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "max_tokens": 16,
+          "messages": [
+            {
+              "content": "be brief",
+              "role": "system"
+            },
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "gpt-4o",
+          "stop": [
+            "x"
+          ],
+          "temperature": 0.5,
+          "top_p": 0.5
+        }
+      }
+    },
+    {
+      "name": "openai streaming chat",
+      "op": "chat_stream",
+      "target": {
+        "kind": "openai",
+        "base_url": "{base}/v1"
+      },
+      "request": {
+        "model": "gpt-4o",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "auth_header": "authorization",
+        "headers": {
+          "accept": "text/event-stream",
+          "content-type": "application/json"
+        },
+        "body": {
+          "messages": [
+            {
+              "content": "be brief",
+              "role": "system"
+            },
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "gpt-4o",
+          "stream": true,
+          "stream_options": {
+            "include_usage": true
+          }
+        }
+      }
+    },
+    {
+      "name": "openai embeddings",
+      "op": "embed",
+      "target": {
+        "kind": "openai",
+        "base_url": "{base}/v1"
+      },
+      "request": {
+        "model": "text-embedding-3-small",
+        "input": [
+          "a",
+          "b"
+        ]
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/embeddings",
+        "auth_header": "authorization",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "encoding_format": "float",
+          "input": [
+            "a",
+            "b"
+          ],
+          "model": "text-embedding-3-small"
+        }
+      }
+    },
+    {
+      "name": "openai-compatible chat",
+      "op": "chat",
+      "target": {
+        "kind": "openai_compatible",
+        "base_url": "{base}/v1"
+      },
+      "request": {
+        "model": "llama-3",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "max_tokens": 8
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "auth_header": "authorization",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "max_tokens": 8,
+          "messages": [
+            {
+              "content": "be brief",
+              "role": "system"
+            },
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "llama-3"
+        }
+      }
+    },
+    {
+      "name": "anthropic chat with system and turns",
+      "op": "chat",
+      "target": {
+        "kind": "anthropic",
+        "base_url": "{base}"
+      },
+      "request": {
+        "model": "claude-sonnet-5",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": "hello"
+          },
+          {
+            "role": "user",
+            "content": "again"
+          }
+        ],
+        "max_tokens": 32,
+        "temperature": 0.25,
+        "stop": [
+          "END"
+        ]
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/messages",
+        "auth_header": "x-api-key",
+        "headers": {
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json"
+        },
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "hi",
+              "role": "user"
+            },
+            {
+              "content": "hello",
+              "role": "assistant"
+            },
+            {
+              "content": "again",
+              "role": "user"
+            }
+          ],
+          "model": "claude-sonnet-5",
+          "stop_sequences": [
+            "END"
+          ],
+          "system": "be brief",
+          "temperature": 0.25
+        }
+      }
+    },
+    {
+      "name": "anthropic streaming chat",
+      "op": "chat_stream",
+      "target": {
+        "kind": "anthropic",
+        "base_url": "{base}"
+      },
+      "request": {
+        "model": "claude-sonnet-5",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "max_tokens": 32
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1/messages",
+        "auth_header": "x-api-key",
+        "headers": {
+          "accept": "text/event-stream",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json"
+        },
+        "body": {
+          "max_tokens": 32,
+          "messages": [
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "claude-sonnet-5",
+          "stream": true,
+          "system": "be brief"
+        }
+      }
+    },
+    {
+      "name": "gemini chat",
+      "op": "chat",
+      "target": {
+        "kind": "gemini",
+        "base_url": "{base}"
+      },
+      "request": {
+        "model": "gemini-2.0-flash",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": "hello"
+          },
+          {
+            "role": "user",
+            "content": "again"
+          }
+        ],
+        "max_tokens": 32
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1beta/models/gemini-2.0-flash:generateContent",
+        "auth_header": "x-goog-api-key",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "contents": [
+            {
+              "parts": [
+                {
+                  "text": "hi"
+                }
+              ],
+              "role": "user"
+            },
+            {
+              "parts": [
+                {
+                  "text": "hello"
+                }
+              ],
+              "role": "model"
+            },
+            {
+              "parts": [
+                {
+                  "text": "again"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "generationConfig": {
+            "maxOutputTokens": 32
+          },
+          "systemInstruction": {
+            "parts": [
+              {
+                "text": "be brief"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "gemini streaming chat",
+      "op": "chat_stream",
+      "target": {
+        "kind": "gemini",
+        "base_url": "{base}"
+      },
+      "request": {
+        "model": "gemini-2.0-flash",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse",
+        "auth_header": "x-goog-api-key",
+        "headers": {
+          "accept": "text/event-stream",
+          "content-type": "application/json"
+        },
+        "body": {
+          "contents": [
+            {
+              "parts": [
+                {
+                  "text": "hi"
+                }
+              ],
+              "role": "user"
+            }
+          ],
+          "systemInstruction": {
+            "parts": [
+              {
+                "text": "be brief"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "azure chat with api version",
+      "op": "chat",
+      "target": {
+        "kind": "azure",
+        "base_url": "{base}",
+        "api_version": "2024-06-01"
+      },
+      "request": {
+        "model": "my-deployment",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      "expect": {
+        "sent": true,
+        "method": "POST",
+        "path": "/openai/deployments/my-deployment/chat/completions?api-version=2024-06-01",
+        "auth_header": "api-key",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": {
+          "messages": [
+            {
+              "content": "be brief",
+              "role": "system"
+            },
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "anthropic has no embeddings",
+      "op": "embed",
+      "target": {
+        "kind": "anthropic",
+        "base_url": "{base}"
+      },
+      "request": {
+        "model": "x",
+        "input": [
+          "a"
+        ]
+      },
+      "expect": {
+        "sent": false,
+        "error": {
+          "kind": "invalid_request",
+          "retryable": false,
+          "status": null,
+          "retry_after": null,
+          "message": "This model does not support embeddings."
+        }
+      }
+    },
+    {
+      "name": "tags over 1 KiB are refused before sending",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "request": {
+        "model": "m",
+        "messages": [
+          {
+            "role": "system",
+            "content": "be brief"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "tags": {
+          "k": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+        }
+      },
+      "expect": {
+        "sent": false,
+        "error": {
+          "kind": "invalid_request",
+          "retryable": false,
+          "status": null,
+          "retry_after": null,
+          "message": "tags exceed 1024 bytes"
+        }
+      }
+    }
+  ]
+}

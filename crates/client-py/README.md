@@ -58,6 +58,9 @@ maturin develop
 pytest
 ```
 
+`tests/test_fixtures.py` runs the parity fixtures in `clients/fixtures/*.json`,
+the same files the Rust and TypeScript clients run.
+
 No Python headers or sudo are needed on Linux. Publishing wheels needs the
 owner's credentials; `.github/workflows/clients.yml` only builds them.
 
