@@ -20,6 +20,20 @@ describe("chat", () => {
     expect(body.stream).not.toBe(true);
   });
 
+  it("openaiCompatible works without a key (keyless Ollama): no Authorization header", async () => {
+    for (const mk of [() => openaiCompatible({ baseUrl: "http://ollama.test/v1", key: "" }), () => openaiCompatible({ baseUrl: "http://ollama.test/v1" })]) {
+      const { fetch, seen } = fakeFetch(json(200, OPENAI_CHAT));
+      const r = await new Client(mk(), { fetch }).chat({ model: "m", messages: MSGS });
+      expect(r.content).toBe("hello");
+      expect(seen[0]!.headers["authorization"]).toBeUndefined();
+    }
+  });
+
+  it("the gateway and the other providers still need a key", () => {
+    expect(() => gateway({ baseUrl: "http://gw.test", key: "" })).toThrow(TypeError);
+    expect(() => openai({ key: "" })).toThrow(TypeError);
+  });
+
   it("a trailing /v1 on the gateway address is accepted", async () => {
     const { fetch, seen } = fakeFetch(json(200, OPENAI_CHAT));
     await new Client(gateway({ baseUrl: "http://gw.test/v1/", key: KEY }), { fetch }).chat({ model: "m", messages: MSGS });

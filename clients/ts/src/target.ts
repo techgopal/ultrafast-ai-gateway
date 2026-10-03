@@ -76,7 +76,12 @@ export function azure(o: { endpoint: string; key: string; apiVersion?: string })
   return new Target(spec);
 }
 
-/** Any API speaking OpenAI's format (Groq, Mistral, OpenRouter, Ollama); `baseUrl` includes `/v1`. */
-export function openaiCompatible(o: { baseUrl: string; key: string }): Target {
-  return new Target({ kind: "openai", baseUrl: need("baseUrl", o.baseUrl), key: need("key", o.key) });
+/**
+ * Any API speaking OpenAI's format (Groq, Mistral, OpenRouter, Ollama); `baseUrl` includes `/v1`.
+ * The key may be empty or left out for a server that needs none (Ollama): no Authorization header is sent.
+ */
+export function openaiCompatible(o: { baseUrl: string; key?: string }): Target {
+  const key = o.key ?? "";
+  if (typeof key !== "string") throw new TypeError("key is a string");
+  return new Target({ kind: "openai", baseUrl: need("baseUrl", o.baseUrl), key });
 }
