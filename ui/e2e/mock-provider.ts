@@ -34,6 +34,8 @@ export interface MockProvider {
   calls: MockCall[];
   /** How many times the model list was asked for. */
   listCalls: number;
+  /** The token usage every completion reports; a test may change it at any time. */
+  usage: { prompt: number; completion: number };
   mode: MockMode;
   close: () => Promise<void>;
 }
@@ -54,7 +56,11 @@ export async function startMockProvider(
   const apiKey = `mock-${randomBytes(16).toString("hex")}`;
   const answer = `Hello from the mock provider ${randomBytes(4).toString("hex")}.`;
   const calls: MockCall[] = [];
-  const state = { listCalls: 0, mode: {} as MockMode };
+  const state = {
+    listCalls: 0,
+    mode: {} as MockMode,
+    usage: { prompt: 3, completion: 7 },
+  };
 
   const server = createServer((request, response) => {
     void (async () => {
@@ -138,7 +144,11 @@ export async function startMockProvider(
             finish_reason: "stop",
           },
         ],
-        usage: { prompt_tokens: 3, completion_tokens: 7, total_tokens: 10 },
+        usage: {
+          prompt_tokens: state.usage.prompt,
+          completion_tokens: state.usage.completion,
+          total_tokens: state.usage.prompt + state.usage.completion,
+        },
       });
     })();
   });
@@ -161,6 +171,12 @@ export async function startMockProvider(
     calls,
     get listCalls() {
       return state.listCalls;
+    },
+    get usage() {
+      return state.usage;
+    },
+    set usage(value: { prompt: number; completion: number }) {
+      state.usage = value;
     },
     get mode() {
       return state.mode;

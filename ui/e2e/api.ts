@@ -170,6 +170,71 @@ export class GatewayApi {
     return made.id;
   }
 
+  /** Prices a model, in millionths of a dollar per million tokens. */
+  async setPrice(modelId: number, input: number, output: number) {
+    await this.send("PATCH", `/api/models/${String(modelId)}`, {
+      input_price_micros: input,
+      output_price_micros: output,
+    });
+  }
+
+  async updateRoute(routeId: number, route: RouteSetup) {
+    await this.send("PUT", `/api/routes/${String(routeId)}`, {
+      retries: 0,
+      first_token_timeout_ms: 30_000,
+      total_timeout_ms: 60_000,
+      breaker_failures: 5,
+      breaker_window_s: 60,
+      breaker_open_s: 30,
+      everyone: false,
+      team_ids: [],
+      fallbacks: [],
+      ...route,
+    });
+  }
+
+  async setLimit(limit: {
+    scope: "gateway" | "team" | "user" | "key";
+    scope_id?: number;
+    requests_per_minute?: number;
+    tokens_per_minute?: number;
+    concurrent?: number;
+  }) {
+    await this.send("PUT", "/api/limits", limit);
+  }
+
+  async setBudget(budget: {
+    scope: "gateway" | "team" | "user" | "key";
+    scope_id?: number;
+    amount_micros: number;
+    period: "daily" | "weekly" | "monthly";
+    action: "block" | "alert";
+  }) {
+    await this.send("PUT", "/api/budgets", budget);
+  }
+
+  async logs(): Promise<LogRow[]> {
+    return ((await this.get("/api/logs?limit=200")) as { logs: LogRow[] }).logs;
+  }
+
+  async budgets(): Promise<{ id: number; spent_micros: number }[]> {
+    return (
+      (await this.get("/api/budgets")) as {
+        budgets: { id: number; spent_micros: number }[];
+      }
+    ).budgets;
+  }
+
+  /** The id of a key of the signed-in user, by its name. */
+  async keyId(name: string): Promise<number> {
+    const list = (await this.get("/api/keys")) as {
+      keys: { id: number; name: string }[];
+    };
+    const found = list.keys.find((k) => k.name === name);
+    if (found === undefined) throw new Error(`No key ${name}.`);
+    return found.id;
+  }
+
   /** A key of the signed-in user; the secret is returned to the test only. */
   async createKey(name: string): Promise<string> {
     const made = (await this.send("POST", "/api/keys", { name })) as {
@@ -177,6 +242,14 @@ export class GatewayApi {
     };
     return made.secret;
   }
+}
+
+export interface LogRow {
+  id: number;
+  status: number;
+  cached: boolean;
+  cost_micros: number;
+  key_name: string | null;
 }
 
 export interface ModelRow {
@@ -190,9 +263,25 @@ export interface RouteSetup {
   name: string;
   primaries: { model_id: number; weight: number }[];
   fallbacks?: number[];
+  cache_enabled?: boolean;
+  cache_scope?: string;
+  cache_ttl_s?: number;
   retries?: number;
   breaker_failures?: number;
   first_token_timeout_ms?: number;
   everyone?: boolean;
   team_ids?: number[];
+}
+
+/** A chat completion to the route or model, with the key; the answer as it came. */
+export async function chat(
+  request: APIRequestContext,
+  key: string,
+  model: string,
+  content = "Hello",
+) {
+  return request.post("/v1/chat/completions", {
+    headers: { authorization: `Bearer ${key}` },
+    data: { model, messages: [{ role: "user", content }] },
+  });
 }

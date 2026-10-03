@@ -21,7 +21,7 @@ import { BrowserRules } from "./rules";
 
 export { expect };
 export type { Account };
-export { GatewayApi, newAccount } from "./api";
+export { GatewayApi, newAccount, chat } from "./api";
 export { BrowserRules } from "./rules";
 export * from "./steps";
 
