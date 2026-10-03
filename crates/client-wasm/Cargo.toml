@@ -1,0 +1,22 @@
+[package]
+name = "ultrafast-client-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The translate crate for WebAssembly: the TypeScript client's wire format, JSON in and JSON out."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ultrafast-translate = { version = "2.0.0-alpha.1", path = "../translate" }
+serde.workspace = true
+serde_json.workspace = true
+# Pinned: the wasm-bindgen CLI that builds the package must be this version.
+wasm-bindgen = "=0.2.129"
+
+[dev-dependencies]
+ultrafast-translate = { path = "../translate" }

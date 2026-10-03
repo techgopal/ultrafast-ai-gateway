@@ -10,3 +10,7 @@ ui/node_modules
 ui/dist
 ui/test-results
 ui/playwright-report
+crates/client-py/.venv
+crates/client-wasm/pkg
+clients/ts/node_modules
+clients/ts/dist

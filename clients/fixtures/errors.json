@@ -1,0 +1,405 @@
+{
+  "description": "Each case: an HTTP answer with status 300 or more, and the error every client must raise: kind, retryable, status, retry_after (seconds or null) and message.",
+  "key": "sk-fixture-key-0001",
+  "cases": [
+    {
+      "name": "400 openai error body",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 400,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"nope\",\"type\":\"invalid_request_error\"}}",
+      "expect": {
+        "error": {
+          "kind": "invalid_request",
+          "retryable": false,
+          "status": 400,
+          "retry_after": null,
+          "message": "nope"
+        }
+      }
+    },
+    {
+      "name": "401",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 401,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"bad key\",\"type\":\"authentication_error\"}}",
+      "expect": {
+        "error": {
+          "kind": "auth",
+          "retryable": false,
+          "status": 401,
+          "retry_after": null,
+          "message": "bad key"
+        }
+      }
+    },
+    {
+      "name": "403",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 403,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"not allowed\",\"type\":\"permission_error\"}}",
+      "expect": {
+        "error": {
+          "kind": "permission",
+          "retryable": false,
+          "status": 403,
+          "retry_after": null,
+          "message": "not allowed"
+        }
+      }
+    },
+    {
+      "name": "404",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 404,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"no such model\",\"type\":\"not_found\"}}",
+      "expect": {
+        "error": {
+          "kind": "not_found",
+          "retryable": false,
+          "status": 404,
+          "retry_after": null,
+          "message": "no such model"
+        }
+      }
+    },
+    {
+      "name": "408 is a retryable timeout",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 408,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"nope\",\"type\":\"invalid_request_error\"}}",
+      "expect": {
+        "error": {
+          "kind": "timeout",
+          "retryable": true,
+          "status": 408,
+          "retry_after": null,
+          "message": "nope"
+        }
+      }
+    },
+    {
+      "name": "422",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 422,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"error\":{\"message\":\"nope\",\"type\":\"invalid_request_error\"}}",
+      "expect": {
+        "error": {
+          "kind": "invalid_request",
+          "retryable": false,
+          "status": 422,
+          "retry_after": null,
+          "message": "nope"
+        }
+      }
+    },
+    {
+      "name": "429 with Retry-After seconds",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 429,
+      "headers": {
+        "content-type": "application/json",
+        "retry-after": "7"
+      },
+      "body": "{\"error\":{\"message\":\"slow down\",\"type\":\"rate_limit_error\"}}",
+      "expect": {
+        "error": {
+          "kind": "rate_limited",
+          "retryable": true,
+          "status": 429,
+          "retry_after": 7,
+          "message": "slow down"
+        }
+      }
+    },
+    {
+      "name": "429 with Retry-After as a date is not read",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 429,
+      "headers": {
+        "content-type": "application/json",
+        "retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"
+      },
+      "body": "{\"error\":{\"message\":\"slow down\"}}",
+      "expect": {
+        "error": {
+          "kind": "rate_limited",
+          "retryable": true,
+          "status": 429,
+          "retry_after": null,
+          "message": "slow down"
+        }
+      }
+    },
+    {
+      "name": "429 with an enormous Retry-After is capped at 24 h",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 429,
+      "headers": {
+        "content-type": "application/json",
+        "retry-after": "99999999999"
+      },
+      "body": "{\"error\":{\"message\":\"slow down\"}}",
+      "expect": {
+        "error": {
+          "kind": "rate_limited",
+          "retryable": true,
+          "status": 429,
+          "retry_after": 86400,
+          "message": "slow down"
+        }
+      }
+    },
+    {
+      "name": "503 with Retry-After",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 503,
+      "headers": {
+        "content-type": "application/json",
+        "retry-after": "3"
+      },
+      "body": "{\"error\":{\"message\":\"busy\"}}",
+      "expect": {
+        "error": {
+          "kind": "upstream",
+          "retryable": true,
+          "status": 503,
+          "retry_after": 3,
+          "message": "busy"
+        }
+      }
+    },
+    {
+      "name": "500 anthropic error body",
+      "op": "chat",
+      "target": {
+        "kind": "anthropic",
+        "base_url": "{base}"
+      },
+      "status": 500,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"internal\"}}",
+      "expect": {
+        "error": {
+          "kind": "upstream",
+          "retryable": true,
+          "status": 500,
+          "retry_after": null,
+          "message": "internal"
+        }
+      }
+    },
+    {
+      "name": "529 overloaded",
+      "op": "chat",
+      "target": {
+        "kind": "anthropic",
+        "base_url": "{base}"
+      },
+      "status": 529,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}",
+      "expect": {
+        "error": {
+          "kind": "upstream",
+          "retryable": true,
+          "status": 529,
+          "retry_after": null,
+          "message": "Overloaded"
+        }
+      }
+    },
+    {
+      "name": "502 html body",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 502,
+      "headers": {
+        "content-type": "text/html"
+      },
+      "body": "<html>bad gateway</html>",
+      "expect": {
+        "error": {
+          "kind": "upstream",
+          "retryable": true,
+          "status": 502,
+          "retry_after": null,
+          "message": "<html>bad gateway</html>"
+        }
+      }
+    },
+    {
+      "name": "504 empty body",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 504,
+      "headers": {},
+      "body": "",
+      "expect": {
+        "error": {
+          "kind": "upstream",
+          "retryable": true,
+          "status": 504,
+          "retry_after": null,
+          "message": ""
+        }
+      }
+    },
+    {
+      "name": "flat message body",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 400,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": "{\"message\":\"flat message\"}",
+      "expect": {
+        "error": {
+          "kind": "invalid_request",
+          "retryable": false,
+          "status": 400,
+          "retry_after": null,
+          "message": "flat message"
+        }
+      }
+    },
+    {
+      "name": "a long body is cut",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 500,
+      "headers": {
+        "content-type": "text/plain"
+      },
+      "body": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "expect": {
+        "error": {
+          "kind": "upstream",
+          "retryable": true,
+          "status": 500,
+          "retry_after": null,
+          "message": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        }
+      }
+    },
+    {
+      "name": "a redirect is refused",
+      "op": "chat",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 302,
+      "headers": {
+        "location": "http://elsewhere.invalid/"
+      },
+      "body": "",
+      "expect": {
+        "error": {
+          "kind": "invalid_request",
+          "retryable": false,
+          "status": 302,
+          "retry_after": null,
+          "message": "the server answered with a redirect"
+        }
+      }
+    },
+    {
+      "name": "embeddings 429",
+      "op": "embed",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "status": 429,
+      "headers": {
+        "content-type": "application/json",
+        "retry-after": "5"
+      },
+      "body": "{\"error\":{\"message\":\"slow\"}}",
+      "expect": {
+        "error": {
+          "kind": "rate_limited",
+          "retryable": true,
+          "status": 429,
+          "retry_after": 5,
+          "message": "slow"
+        }
+      }
+    }
+  ]
+}

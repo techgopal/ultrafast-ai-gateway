@@ -93,3 +93,10 @@ ui/node_modules
 ui/dist
 ui/test-results
 ui/playwright-report
+crates/client-wasm/pkg/
+
+# Python client
+crates/client-py/.venv/
+crates/client-py/python/ultrafast/*.so
+__pycache__/
+.pytest_cache/

@@ -1,0 +1,23 @@
+[package]
+name = "ultrafast-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust client for the Ultrafast gateway and for LLM providers directly."
+
+[dependencies]
+ultrafast-translate = { version = "2.0.0-alpha.1", path = "../translate" }
+async-stream.workspace = true
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+# Only the timer: not the workspace's "full" feature set.
+tokio = { version = "1", default-features = false, features = ["time"] }
+
+[dev-dependencies]
+ultrafast-client-wasm = { path = "../client-wasm" }
+reqwest.workspace = true
+tokio = { workspace = true, features = ["full"] }
