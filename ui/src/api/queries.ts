@@ -111,6 +111,7 @@ export interface LogsFilter {
   user_id?: number;
   team_id?: number;
   model?: string;
+  errors?: boolean;
 }
 
 export type UsageGroup = "day" | "model" | "key" | "user" | "team";

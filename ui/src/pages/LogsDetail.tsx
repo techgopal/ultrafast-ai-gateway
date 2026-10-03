@@ -53,11 +53,14 @@ const columns: Column<Attempt>[] = [
 
 function Loading() {
   return (
-    <div role="status" aria-busy="true" aria-label="Loading the call" className="flex flex-col gap-4">
-      <Skeleton className="h-8 w-48" />
-      <Skeleton className="h-4 w-full max-w-md" />
-      <Skeleton className="h-4 w-full max-w-md" />
-    </div>
+    <>
+      <PageHeader title={"Call"} />
+      <div role="status" aria-busy="true" aria-label="Loading the call" className="flex flex-col gap-4">
+        <Skeleton className="h-4 w-full max-w-md" />
+        <Skeleton className="h-4 w-full max-w-md" />
+        <Skeleton className="h-4 w-full max-w-md" />
+      </div>
+    </>
   );
 }
 

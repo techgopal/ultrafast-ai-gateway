@@ -242,12 +242,14 @@ function Controls({ me, user }: { me: Me; user: User }) {
 
 function Loading() {
   return (
-    <div role="status" aria-busy="true" aria-label="Loading the user" className="flex flex-col gap-4">
-      <Skeleton className="h-8 w-48" />
-      <Skeleton className="h-4 w-full max-w-md" />
-      <Skeleton className="h-4 w-full max-w-md" />
-      <Skeleton className="h-4 w-full max-w-md" />
-    </div>
+    <>
+      <PageHeader title={"User"} />
+      <div role="status" aria-busy="true" aria-label="Loading the user" className="flex flex-col gap-4">
+        <Skeleton className="h-4 w-full max-w-md" />
+        <Skeleton className="h-4 w-full max-w-md" />
+        <Skeleton className="h-4 w-full max-w-md" />
+      </div>
+    </>
   );
 }
 

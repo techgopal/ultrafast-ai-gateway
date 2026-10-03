@@ -900,7 +900,7 @@ export interface components {
             /** Format: int64 */
             output_tokens: number | null;
             priced: boolean;
-            /** @description The provider that answered, else the last one tried. */
+            /** @description The provider that answered; null when nothing answered (the model is then null too). */
             provider: string | null;
             /** @description The model or route name the caller asked for. */
             requested: string;
@@ -950,7 +950,7 @@ export interface components {
             /** Format: int64 */
             output_tokens: number | null;
             priced: boolean;
-            /** @description The provider that answered, else the last one tried. */
+            /** @description The provider that answered; null when nothing answered (the model is then null too). */
             provider: string | null;
             /** @description The model or route name the caller asked for. */
             requested: string;

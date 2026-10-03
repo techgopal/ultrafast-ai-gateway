@@ -19,6 +19,7 @@ import {
   theWindowGetsTheFocus,
   toasts,
 } from "@/test/pages";
+import { gate } from "@/test/gateway";
 import { renderWithApp, type AppRenderResult } from "@/test/render";
 import { queryKeys } from "@/api/queries";
 
@@ -42,7 +43,11 @@ function logsAre(all: readonly fixtures.Log[]) {
     state.asked.push(query);
     const limit = Number(query.get("limit") ?? 50);
     const before = query.get("before");
-    const logs = all.filter((row) => before === null || row.id < Number(before)).slice(0, limit);
+    const errorsOnly = query.get("errors") === "true";
+    const logs = all
+      .filter((row) => before === null || row.id < Number(before))
+      .filter((row) => !errorsOnly || row.status >= 400)
+      .slice(0, limit);
     return ok("get", "/api/logs", 200, { logs });
   });
   return state;
@@ -253,29 +258,46 @@ describe("the filters", () => {
     });
   });
 
-  test("errors only shows the calls answered with 400 or more, of those loaded", async () => {
+  test("errors only asks the API for errors, and shows what it answers", async () => {
+    const asked = logsAre(fixtures.logList);
     await page();
     await table();
+    expect(asked.asked[0]?.has("errors")).toBe(false);
     expect(await optionsOf(control("Status"))).toEqual(["All statuses", "Errors only"]);
     await choose(control("Status"), "Errors only");
-    expect(rows().map((cells) => cells[4])).toEqual(["502"]);
-    // No older calls: what is shown is all there is.
-    expect(screen.queryByText(/loaded calls only/)).toBeNull();
+    await waitFor(() => {
+      expect(asked.asked.at(-1)?.get("errors")).toBe("true");
+    });
+    await waitFor(() => {
+      expect(rows().map((cells) => cells[4])).toEqual(["502"]);
+    });
     await choose(control("Status"), "All statuses");
-    expect(rows()).toHaveLength(5);
+    await waitFor(() => {
+      expect(rows()).toHaveLength(5);
+    });
+    expect(asked.asked.at(-1)?.has("errors")).toBe(false);
   });
 
-  test("errors only says it looks at the loaded calls while there are older ones", async () => {
-    logsAre(manyLogs(120, 70));
+  test("errors only finds errors beyond the first page and says nothing about loaded calls", async () => {
+    // 70 calls without an error, then 3 errors older than the first 50.
+    const all = [
+      ...manyLogs(120, 70),
+      ...Array.from({ length: 3 }, (_, index) => ({
+        ...fixtures.logs.answered,
+        id: 40 - index,
+        status: 502,
+      })),
+    ];
+    logsAre(all);
     await page();
     await waitFor(() => {
       expect(rows()).toHaveLength(50);
     });
     await choose(control("Status"), "Errors only");
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Showing the errors among the loaded calls only. Load older to look further.",
-    );
-    expect(screen.getByText("No calls match")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(rows()).toHaveLength(3);
+    });
+    expect(screen.queryByText(/loaded calls only/)).toBeNull();
   });
 });
 
@@ -381,8 +403,8 @@ describe("states", () => {
 describe("the detail", () => {
   test("shows every field and the routing attempts in order, with their outcomes", async () => {
     await page({ route: "/logs/4" });
-    expect(await screen.findByRole("heading", { level: 1, name: "Call" })).toBeInTheDocument();
     const details = await screen.findByLabelText("Details");
+    expect(screen.getByRole("heading", { level: 1, name: "Call" })).toBeInTheDocument();
     const text = details.textContent;
     for (const part of [
       "chat-fast",
@@ -424,6 +446,23 @@ describe("the detail", () => {
     const attempts = await screen.findByRole("table", { name: "Routing attempts" });
     expect(within(attempts).getByText("Cached")).toBeInTheDocument();
     expect(screen.getByLabelText("Details")).toHaveTextContent("$0.00");
+  });
+
+  test("while the call loads, the page has its heading", async () => {
+    const door = gate();
+    override("get", "/api/logs/{id}", async () => {
+      await door.opened;
+      return ok("get", "/api/logs/{id}", 200, { ...fixtures.logs.answered, attempts: [] });
+    });
+    await page({ route: "/logs/5" });
+    await screen.findByRole("status", { name: "Loading the call" });
+    expectOneMain();
+    expectOneH1("Call");
+    act(() => {
+      door.open();
+    });
+    expect(await screen.findByLabelText("Details")).toBeInTheDocument();
+    expectOneH1("Call");
   });
 
   test("a call that is not there, or not the viewer's, is not found", async () => {

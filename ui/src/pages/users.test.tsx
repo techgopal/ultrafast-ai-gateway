@@ -982,6 +982,8 @@ describe("the page of a user", () => {
     });
     await detail(lena);
     const loading = screen.getByRole("status", { name: "Loading the user" });
+    expectOneMain();
+    expectOneH1("User");
     expect(loading).toHaveAttribute("aria-busy", "true");
     expect(loading.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(0);
     act(() => {

@@ -1,10 +1,10 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { components } from "@/api/schema";
 import { errors, fieldMessages, validationFailed, type GatewayError } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
-import { startGateway } from "@/test/gateway";
+import { gate, startGateway } from "@/test/gateway";
 import { noContent, ok, override, refuse } from "@/test/handlers";
 import {
   choose,
@@ -738,6 +738,42 @@ describe("changing a route", () => {
     expect(select("Model of primary target 2")).toHaveAttribute("aria-invalid", "true");
     await settle();
     expect(state.updated).toEqual([]);
+  });
+
+  test("while the route and the models load, the page has its heading", async () => {
+    keeps();
+    const route = gate();
+    override("get", "/api/routes/{id}", async () => {
+      await route.opened;
+      return ok("get", "/api/routes/{id}", 200, fixtures.routes.research);
+    });
+    await open("/routes/2");
+    await screen.findByRole("status", { name: "Loading the route" });
+    expectOneMain();
+    expectOneH1("Edit route");
+    act(() => {
+      route.open();
+    });
+    await screen.findByRole("form", { name: "Route" });
+    expectOneH1("Edit route");
+  });
+
+  test("while the models load for a new route, the page has its heading", async () => {
+    keeps();
+    const models = gate();
+    override("get", "/api/models", async () => {
+      await models.opened;
+      return ok("get", "/api/models", 200, { models: fixtures.modelList });
+    });
+    await open("/routes/new");
+    await screen.findByRole("status", { name: "Loading the models" });
+    expectOneMain();
+    expectOneH1("New route");
+    act(() => {
+      models.open();
+    });
+    await screen.findByRole("form", { name: "Route" });
+    expectOneH1("New route");
   });
 
   test("a route that is not there is not found", async () => {

@@ -651,6 +651,8 @@ describe("the page of a team", () => {
     });
     await detail(platform);
     const loading = screen.getByRole("status", { name: "Loading the team" });
+    expectOneMain();
+    expectOneH1("Team");
     expect(loading).toHaveAttribute("aria-busy", "true");
     expect(loading.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(0);
     act(() => {

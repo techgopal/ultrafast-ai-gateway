@@ -5768,7 +5768,7 @@
               "string",
               "null"
             ],
-            "description": "The provider that answered, else the last one tried."
+            "description": "The provider that answered; null when nothing answered (the model is then null too)."
           },
           "requested": {
             "type": "string",
@@ -5916,7 +5916,7 @@
               "string",
               "null"
             ],
-            "description": "The provider that answered, else the last one tried."
+            "description": "The provider that answered; null when nothing answered (the model is then null too)."
           },
           "requested": {
             "type": "string",

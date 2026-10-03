@@ -26,8 +26,6 @@ import {
 
 type Log = components["schemas"]["LogView"];
 
-export const ERRORS_LOADED_ONLY =
-  "Showing the errors among the loaded calls only. Load older to look further.";
 const NONE = "—";
 
 /** The model that answered, or the name that was asked for when none did. */
@@ -66,6 +64,7 @@ function queryOf(filters: Filters, now: number, offered: ReturnType<typeof useOf
   if (user !== ANY) query.user_id = Number(user);
   if (team !== ANY) query.team_id = Number(team);
   if (filters.model !== "") query.model = filters.model;
+  if (filters.errorsOnly) query.errors = true;
   return query;
 }
 
@@ -123,10 +122,6 @@ function LogsOf({ others }: { others: boolean }) {
   const query = queryOf(filters, now, offered);
   const log = useLogsPages(query, run);
   const loaded = useMemo(() => log.data?.pages.flatMap((page) => page.logs) ?? [], [log.data]);
-  const rows = useMemo(
-    () => (filters.errorsOnly ? loaded.filter((one) => one.status >= 400) : loaded),
-    [loaded, filters.errorsOnly],
-  );
 
   const change = (patch: Partial<Filters>) => {
     setFilters((before) => ({ ...before, ...patch }));
@@ -169,28 +164,18 @@ function LogsOf({ others }: { others: boolean }) {
     );
   }
 
-  const errorsOfLoaded = filters.errorsOnly && log.hasNextPage;
   return (
     <>
       {header}
       <LogsFilters filters={filters} offered={offered} others={others} onChange={change} />
-      <div role="status" className="not-empty:-mt-2">
-        {errorsOfLoaded ? (
-          <p className="text-sm text-muted-foreground">{ERRORS_LOADED_ONLY}</p>
-        ) : null}
-      </div>
       <DataTable
         caption="Request logs"
         columns={columns}
-        rows={rows}
+        rows={loaded}
         loading={log.isPending}
         getRowId={(one) => String(one.id)}
         empty={
-          loaded.length === 0 ? (
-            <EmptyState title="No calls" description="No calls were logged for these filters." />
-          ) : (
-            <EmptyState title="No calls match" description="Change the filters to see more calls." />
-          )
+          <EmptyState title="No calls" description="No calls were logged for these filters." />
         }
       />
       {log.isFetchNextPageError && !log.isFetchingNextPage ? (

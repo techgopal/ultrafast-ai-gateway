@@ -61,7 +61,7 @@ pub struct LogView {
     pub stream: bool,
     /// What the caller was answered.
     pub status: i64,
-    /// The provider that answered, else the last one tried.
+    /// The provider that answered; null when nothing answered (the model is then null too).
     #[schema(required)]
     pub provider: Option<String>,
     #[schema(required)]
@@ -119,7 +119,7 @@ pub struct LogDetailView {
     pub stream: bool,
     /// What the caller was answered.
     pub status: i64,
-    /// The provider that answered, else the last one tried.
+    /// The provider that answered; null when nothing answered (the model is then null too).
     #[schema(required)]
     pub provider: Option<String>,
     #[schema(required)]

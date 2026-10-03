@@ -394,14 +394,16 @@ function BackLink() {
   );
 }
 
-function Loading({ label }: { label: string }) {
+function Loading({ label, title }: { label: string; title: string }) {
   return (
-    <div role="status" aria-busy="true" aria-label={label} className="flex flex-col gap-4">
-      <Skeleton className="h-8 w-48" />
-      <Skeleton className="h-4 w-full max-w-md" />
-      <Skeleton className="h-4 w-full max-w-md" />
-      <Skeleton className="h-4 w-full max-w-md" />
-    </div>
+    <>
+      <PageHeader title={title} />
+      <div role="status" aria-busy="true" aria-label={label} className="flex flex-col gap-4">
+        <Skeleton className="h-4 w-full max-w-md" />
+        <Skeleton className="h-4 w-full max-w-md" />
+        <Skeleton className="h-4 w-full max-w-md" />
+      </div>
+    </>
   );
 }
 
@@ -420,7 +422,7 @@ function WithModels({ route }: { route: Route | null }) {
         />
       );
     }
-    return <Loading label="Loading the models" />;
+    return <Loading label="Loading the models" title={route === null ? "New route" : "Edit route"} />;
   }
   return (
     <>
@@ -450,7 +452,7 @@ function Existing({ id }: { id: number }) {
         />
       );
     }
-    return <Loading label="Loading the route" />;
+    return <Loading label="Loading the route" title="Edit route" />;
   }
   return <WithModels route={route.data} />;
 }
