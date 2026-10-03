@@ -497,7 +497,8 @@ impl Snapshot {
     }
 
     /// The limits that apply to a call of this key: its own, its owner's, those
-    /// of the owner's teams and of the key's team, and the gateway's. Only
+    /// of the key's team (all the owner's teams for a key without one), and the
+    /// gateway's. Only
     /// subjects that have a limit are in it.
     pub fn subjects(&self, key: &SnapKey) -> Subjects {
         if self.limits.is_empty() {
@@ -516,21 +517,21 @@ impl Snapshot {
         }
     }
 
-    /// The teams a call counts for: those of the key's owner and the key's
-    /// own team.
+    /// The teams a call counts for: the key's own team, or, for a key
+    /// without a team, all of its owner's teams. A call made with the key
+    /// of one team does not touch the limits of the owner's other teams.
     fn team_ids_of(&self, user_id: Option<i64>, team_id: Option<i64>) -> Vec<i64> {
-        let mut team_ids: Vec<i64> = user_id
-            .and_then(|u| self.users.get(&u))
-            .map(|u| u.team_ids.clone())
-            .unwrap_or_default();
-        if let Some(team) = team_id {
-            push_new(&mut team_ids, team);
+        match team_id {
+            Some(team) => vec![team],
+            None => user_id
+                .and_then(|u| self.users.get(&u))
+                .map(|u| u.team_ids.clone())
+                .unwrap_or_default(),
         }
-        team_ids
     }
 
     /// The budgets that apply to a call of this key, owner and team: those
-    /// of the key, its owner, their teams (as for [`Snapshot::subjects`])
+    /// of the key, its owner, its team or teams (as for [`Snapshot::subjects`])
     /// and the gateway, in that order. The log writer calls it with the
     /// ids of a record, so a key that is gone still counts.
     pub fn budgets_of(

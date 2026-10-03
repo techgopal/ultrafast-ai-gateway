@@ -117,7 +117,8 @@ impl Store {
 
     /// The cost of the logged calls since `since` (`YYYY-MM-DD HH:MM:SS`,
     /// UTC) that count for a subject. A team counts the calls of its keys
-    /// and of its members, as the live counters do.
+    /// and those of its members' keys that have no team, as the live
+    /// counters do.
     pub async fn spend_since(
         &self,
         scope: LimitScope,
@@ -129,7 +130,8 @@ impl Store {
             LimitScope::Key => ("key_id = ?", 1),
             LimitScope::User => ("user_id = ?", 1),
             LimitScope::Team => (
-                "(team_id = ? OR user_id IN (SELECT user_id FROM team_members WHERE team_id = ?))",
+                "(team_id = ? OR (team_id IS NULL AND user_id IN
+                  (SELECT user_id FROM team_members WHERE team_id = ?)))",
                 2,
             ),
         };
