@@ -1376,6 +1376,15 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          {
+            "name": "errors",
+            "in": "query",
+            "description": "`true`: only calls answered with a status of 400 or more. Combines with the other filters.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {

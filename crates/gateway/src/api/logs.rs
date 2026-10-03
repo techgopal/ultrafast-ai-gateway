@@ -33,6 +33,7 @@ pub struct LogsQuery {
     team_id: Option<String>,
     model: Option<String>,
     status: Option<String>,
+    errors: Option<String>,
 }
 
 /// One logged call, as `/api` shows it.
@@ -259,6 +260,7 @@ pub(super) fn store_scope(scope: Scope) -> LogScope {
         ("team_id" = Option<i64>, Query, description = "Only calls of this team."),
         ("model" = Option<String>, Query, description = "Only calls answered by, or asking for, this model name."),
         ("status" = Option<i64>, Query, description = "Only calls answered with this HTTP status, 100 to 599."),
+        ("errors" = Option<bool>, Query, description = "`true`: only calls answered with a status of 400 or more. Combines with the other filters."),
     ),
     responses(
         (status = 200, description = "The calls the caller may see, newest first.", body = super::openapi::LogPage),
@@ -322,11 +324,20 @@ pub async fn list(
             None
         }
     };
+    let errors = match q.errors.as_deref() {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => {
+            fields.insert("errors".into(), "must be true or false".into());
+            false
+        }
+    };
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
 
     let filter = LogFilter {
+        errors,
         before,
         from,
         to,

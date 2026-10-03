@@ -2446,6 +2446,8 @@ export interface operations {
                 model?: string;
                 /** @description Only calls answered with this HTTP status, 100 to 599. */
                 status?: number;
+                /** @description `true`: only calls answered with a status of 400 or more. Combines with the other filters. */
+                errors?: boolean;
             };
             header?: never;
             path?: never;

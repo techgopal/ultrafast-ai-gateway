@@ -89,6 +89,8 @@ pub struct LogFilter {
     /// Matches the model that answered or the name that was asked for.
     pub model: Option<String>,
     pub status: Option<i64>,
+    /// Only calls answered with status 400 or more.
+    pub errors: bool,
 }
 
 /// What `usage` groups by.
@@ -256,6 +258,9 @@ impl Store {
                 clauses.push(clause.to_string());
                 ints.push(v);
             }
+        }
+        if filter.errors {
+            clauses.push("l.status >= 400".into());
         }
         let mut text_values: Vec<&str> = Vec::new();
         if let Some(v) = &filter.from {

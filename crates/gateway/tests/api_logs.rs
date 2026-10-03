@@ -156,6 +156,14 @@ async fn filters() {
     );
     assert_eq!(ids(o, "maya", "?model=other").await, vec![8]);
     assert_eq!(ids(o, "maya", "?status=500").await, vec![8]);
+    // Errors only: status 400 and above, combinable with the others.
+    assert_eq!(ids(o, "maya", "?errors=true").await, vec![8]);
+    assert_eq!(ids(o, "maya", "?errors=true&status=500").await, vec![8]);
+    assert_eq!(
+        ids(o, "maya", &format!("?errors=true&user_id={}", o.lena)).await,
+        Vec::<i64>::new()
+    );
+    assert_eq!(ids(o, "maya", "?errors=false").await.len(), 8);
     // Both bounds are inclusive; a date is a whole UTC day.
     assert_eq!(
         ids(o, "maya", "?from=2026-01-03&to=2026-01-05").await,
@@ -256,6 +264,8 @@ async fn bad_parameters_are_422_with_fields() {
         ("status=99", "status"),
         ("status=600", "status"),
         ("status=ok", "status"),
+        ("errors=maybe", "errors"),
+        ("errors=", "errors"),
     ] {
         let (status, body) = s
             .org

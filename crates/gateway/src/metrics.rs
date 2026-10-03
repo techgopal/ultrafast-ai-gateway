@@ -41,7 +41,7 @@ const BUCKETS_MS: [u64; 12] = [
     50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000,
 ];
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Histogram {
     /// Not cumulative: the calls whose duration fell in each bucket.
     buckets: [u64; BUCKETS_MS.len()],
@@ -107,13 +107,12 @@ impl Metrics {
             self.tokens_out
                 .fetch_add(u64::from(u.output_tokens), Ordering::Relaxed);
         }
-        // Calls that reached a provider; one that never settled (the caller
-        // went away) has neither an answer nor a time.
+        // Calls that reached a provider, by outcome only.
         let mut calls = record.attempts.iter().filter(|a| {
             matches!(
                 a.outcome,
                 AttemptOutcome::Ok | AttemptOutcome::Retryable | AttemptOutcome::Fatal
-            ) && (a.status.is_some() || a.duration_ms > 0)
+            )
         });
         if let Some(first) = calls.next() {
             let mut upstream = self
@@ -143,7 +142,11 @@ impl Metrics {
         let i = match limit_name {
             "requests per minute" => 0,
             "tokens per minute" => 1,
-            _ => 2,
+            "concurrent requests" => 2,
+            other => {
+                tracing::warn!(limit = other, "rate limit of an unknown kind not counted");
+                return;
+            }
         };
         self.rate_limited[i].fetch_add(1, Ordering::Relaxed);
     }
@@ -189,7 +192,7 @@ impl Metrics {
             &mut out,
             "uf_cost_micros_total",
             "counter",
-            "Cost of priced calls in millionths of a dollar, as written to the request logs.",
+            "Cost in millionths of a dollar, as priced by the log writer.",
         );
         let cost = self.logs.get().map_or(0, |l| n(&l.cost_micros));
         let _ = writeln!(out, "uf_cost_micros_total {cost}");
@@ -201,11 +204,13 @@ impl Metrics {
             "Time of each call to a provider, by provider.",
         );
         {
+            // Copied so the lock is not held while formatting.
             let upstream = self
                 .upstream
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (provider, h) in upstream.iter() {
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            for (provider, h) in &upstream {
                 let provider = escape_label(provider);
                 let mut cumulative = 0;
                 for (i, le) in BUCKETS_MS.iter().enumerate() {
@@ -399,6 +404,21 @@ mod tests {
         assert_eq!(seconds(2_500), "2.5");
         assert_eq!(seconds(1_234), "1.234");
         assert_eq!(seconds(0), "0");
+    }
+
+    #[test]
+    fn rate_limits_are_counted_by_their_exact_name() {
+        let m = Metrics::new();
+        m.rate_limited("requests per minute");
+        m.rate_limited("tokens per minute");
+        m.rate_limited("concurrent requests");
+        m.rate_limited("something new");
+        let counts: Vec<u64> = m
+            .rate_limited
+            .iter()
+            .map(|a| a.load(Ordering::Relaxed))
+            .collect();
+        assert_eq!(counts, [1, 1, 1]);
     }
 
     #[test]

@@ -71,8 +71,9 @@ page (retention, sign-in settings, backup, configuration export and import).
 `GET /metrics` serves Prometheus metrics (text format 0.0.4). It exists only
 when a token is set: start the gateway with `UF_METRICS_TOKEN` (or
 `--metrics-token`; the variable is safer, a flag shows in the process list)
-and scrape with `Authorization: Bearer <token>`. Without a token the path
-answers 404; a missing or wrong token answers 401.
+and scrape with `Authorization: Bearer <token>`. Without a token `/metrics`
+is not served (the path is answered like any other the console does not know);
+a missing or wrong token answers 401.
 
 ```yaml
 scrape_configs:
@@ -89,7 +90,9 @@ not counted), `uf_cost_micros_total`, `uf_upstream_duration_seconds{provider}`
 `uf_cache_hits_total`, `uf_cache_misses_total`,
 `uf_rate_limited_total{limit}` (`requests_per_minute`, `tokens_per_minute`,
 `concurrent`), `uf_budget_blocked_total` and `uf_circuit_open{provider,model}`
-(1 while a breaker is open). Counters start at zero when the gateway starts.
+(1 while a breaker is open). `uf_requests_total` counts authenticated chat, messages and embeddings calls
+only (not `/v1/models`, not calls refused before authentication);
+`uf_cost_micros_total` is the cost as priced by the log writer. Counters start at zero when the gateway starts.
 No label names a key, user, team or prompt.
 
 Build: the console is compiled into the binary from `ui/dist`, so build the

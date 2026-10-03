@@ -90,11 +90,38 @@ async fn mount_ok(h: &Harness) {
 }
 
 #[tokio::test]
-async fn without_a_token_configured_there_is_no_metrics_route() {
+async fn without_a_token_configured_metrics_is_any_other_unknown_path() {
     let h = harness_with_metrics_token("openai", None).await;
+    let get = |uri: &'static str, auth: Option<&'static str>| {
+        let app = h.app.clone();
+        async move {
+            let mut req = Request::builder().method("GET").uri(uri);
+            if let Some(a) = auth {
+                req = req.header("authorization", a);
+            }
+            let resp = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+            let (parts, body) = resp.into_parts();
+            let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+            // The page carries a nonce that differs on every response.
+            let page = String::from_utf8_lossy(&bytes)
+                .lines()
+                .filter(|l| !l.contains("csp-nonce"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            (
+                parts.status,
+                parts.headers.get("content-type").cloned(),
+                page,
+            )
+        }
+    };
+    let other = get("/no-such-page", None).await;
     for auth in [None, Some("Bearer anything")] {
-        let (status, _, _) = scrape(&h.app, auth).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        let metrics = get("/metrics", auth).await;
+        assert_eq!(metrics.0, other.0);
+        assert_eq!(metrics.1, other.1);
+        assert_eq!(metrics.2, other.2);
+        assert!(!metrics.2.contains("uf_requests_total"));
     }
 }
 
@@ -330,6 +357,46 @@ async fn requests_tokens_and_upstream_time_move_with_traffic() {
         2.0
     );
     assert!(sample(&text, r#"uf_upstream_duration_seconds_sum{provider="p"}"#) >= 0.0);
+}
+
+#[tokio::test]
+async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
+    use ultrafast_gateway::telemetry::{Attempt, AttemptOutcome};
+    let metrics = ultrafast_gateway::metrics::Metrics::new();
+    let attempt = |outcome| Attempt {
+        provider: "p".into(),
+        model: "m".into(),
+        outcome,
+        status: None,
+        duration_ms: 0,
+    };
+    let mut record = RequestRecord {
+        key_id: 1,
+        user_id: None,
+        team_id: None,
+        requested: "p/m".into(),
+        endpoint: "chat",
+        stream: false,
+        status: 200,
+        usage: None,
+        attempts: vec![
+            attempt(AttemptOutcome::Ok),
+            attempt(AttemptOutcome::Fatal),
+            attempt(AttemptOutcome::Skipped),
+            attempt(AttemptOutcome::CircuitOpen),
+            attempt(AttemptOutcome::Cached),
+        ],
+        cached: false,
+        started_at: ultrafast_gateway::store::now(),
+        duration_ms: 1,
+    };
+    record.attempts[1].status = Some(400);
+    metrics.record(&record);
+    let text = metrics.render(&[]);
+    assert_eq!(
+        sample(&text, r#"uf_upstream_duration_seconds_count{provider="p"}"#),
+        2.0
+    );
 }
 
 #[tokio::test]

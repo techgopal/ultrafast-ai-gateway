@@ -181,10 +181,13 @@ pub fn spawn_refresher(state: Arc<AppState>, mut stop: watch::Receiver<bool>) ->
 
 pub fn router(state: Arc<AppState>) -> Router {
     // The chat handler enforces `max_body_bytes` itself, after authentication.
-    Router::new()
-        .route("/health", get(|| async { Json(json!({ "status": "ok" })) }))
-        .route("/metrics", get(metrics::serve))
-        .route("/v1/chat/completions", post(proxy::chat_completions))
+    let mut app = Router::new().route("/health", get(|| async { Json(json!({ "status": "ok" })) }));
+    // Without a token the path is not routed at all: it is answered like any
+    // other path the console does not know.
+    if state.metrics_token.is_some() {
+        app = app.route("/metrics", get(metrics::serve));
+    }
+    app.route("/v1/chat/completions", post(proxy::chat_completions))
         .route("/v1/messages", post(proxy::messages))
         .route("/v1/embeddings", post(proxy::embeddings))
         .route("/v1/models", get(proxy::list_models))
