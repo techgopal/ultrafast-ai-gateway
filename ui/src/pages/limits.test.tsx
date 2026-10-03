@@ -3,18 +3,21 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { errors, validationFailed } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
-import { gate } from "@/test/gateway";
+import { gate, startGateway } from "@/test/gateway";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
 import {
+  aCallFindsTheSessionEnded,
   choose,
   counted,
   expectOneH1,
   expectOneMain,
   forgetToasts,
   held,
+  href,
   installSelect,
   expectOneRequestWhileTheDialogStays,
   optionsOf,
+  SESSION_ENDED,
   settle,
   toasts,
 } from "@/test/pages";
@@ -492,7 +495,9 @@ describe("setting a budget", () => {
     await userEvent.click(within(rowIn("Budgets", "key 'platform-prod'")).getByRole("button", { name: "Edit" }));
     const dialog = await screen.findByRole("dialog", { name: "Edit budget" });
     expect(within(dialog).getByLabelText("Amount (USD)")).toHaveValue("2.5");
-    expect(within(dialog).getByRole("combobox", { name: "Period" })).toHaveTextContent("Daily");
+    // The period is the budget's own, as its target is: the gateway keeps one budget for each.
+    expect(within(dialog).queryByRole("combobox", { name: "Period" })).toBeNull();
+    expect(within(dialog).getByText("Daily")).toBeInTheDocument();
     expect(within(dialog).getByRole("radio", { name: "Blocks" })).toBeChecked();
     await userEvent.click(within(dialog).getByRole("button", { name: "Save budget" }));
     await waitFor(() => {
@@ -522,5 +527,113 @@ describe("setting a budget", () => {
     });
     expect(toasts()).toEqual(["Budget deleted."]);
     await settle();
+  });
+});
+
+describe("the scope", () => {
+  test("a team that was chosen is no target of the user scope", async () => {
+    const put = counted("put", "/api/limits", () => ok("put", "/api/limits", 200, fixtures.limits.team));
+    await page();
+    await table("Limits");
+    const dialog = await openDialog("Set limit", "Set limit");
+    const scope = within(dialog).getByRole("combobox", { name: "Scope" });
+    await choose(scope, "Team");
+    await choose(await within(dialog).findByRole("combobox", { name: "Team" }), platform.name);
+    await choose(scope, "User");
+    const user = await within(dialog).findByRole("combobox", { name: "User" });
+    expect(user).toHaveTextContent("Choose a user");
+    await paste(within(dialog).getByLabelText("Concurrent requests"), "2");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save limit" }));
+    expect(await within(dialog).findByText("Choose a user.")).toBeInTheDocument();
+    expect(put.calls).toBe(0);
+  });
+});
+
+describe("at width 390: the budgets", () => {
+  test("a row is a card with its labels, the bar and touchable controls", async () => {
+    await page({ width: 390 });
+    const cards = await screen.findByRole("list", { name: "Budgets" });
+    await waitFor(() => {
+      expect(cards).toHaveAttribute("aria-busy", "false");
+    });
+    const items = within(cards).getAllByRole("listitem");
+    expect(items).toHaveLength(fixtures.budgetList.length);
+    const [first] = items;
+    if (first === undefined) throw new Error("no card");
+    expect([...first.querySelectorAll("dt")].map((label) => label.textContent)).toEqual([
+      "Scope",
+      "Period",
+      "Amount",
+      "Spent this period",
+      "Action",
+    ]);
+    expect(within(first).getByRole("progressbar", { name: "Spent this period" })).toBeInTheDocument();
+    for (const one of within(first).getAllByRole("button")) {
+      expect(one.className.split(/\s+/)).toContain("min-h-11");
+    }
+    const dialog = await openDialog("Set budget", "Set budget");
+    for (const field of [
+      within(dialog).getByLabelText("Amount (USD)"),
+      within(dialog).getByRole("combobox", { name: "Period" }),
+      within(dialog).getByRole("combobox", { name: "Scope" }),
+    ]) {
+      expect(field.className.split(/\s+/)).toContain("min-h-11");
+    }
+  });
+});
+
+describe("the forms as they are used", () => {
+  test("a limit is typed, key by key, and sent", async () => {
+    const put = counted("put", "/api/limits", () => ok("put", "/api/limits", 200, fixtures.limits.gateway));
+    await page();
+    await table("Limits");
+    const dialog = await openDialog("Set limit", "Set limit");
+    await userEvent.type(within(dialog).getByLabelText("Requests per minute"), "250");
+    await userEvent.type(within(dialog).getByLabelText("Tokens per minute"), "9000{Enter}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(put.bodies).toEqual([{ scope: "gateway", requests_per_minute: 250, tokens_per_minute: 9000 }]);
+  });
+
+  test("a budget is typed, key by key, and sent; an amount may start or end with the point", async () => {
+    const put = counted("put", "/api/budgets", () => ok("put", "/api/budgets", 200, fixtures.budgets.gateway));
+    await page();
+    await table("Budgets");
+    const dialog = await openDialog("Set budget", "Set budget");
+    await userEvent.type(within(dialog).getByLabelText("Amount (USD)"), ".5{Enter}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(put.bodies).toEqual([
+      { scope: "gateway", amount_micros: 500_000, period: "monthly", action: "block" },
+    ]);
+  });
+
+  test.each([
+    ["Set limit", "Requests per minute", "put", "/api/limits"],
+    ["Set budget", "Amount (USD)", "put", "/api/budgets"],
+  ] as const)("%s: an answer for a session that is over says nothing", async (opener, field, method, path) => {
+    startGateway({ signedIn: true });
+    const door = gate();
+    override(method, path, async () => {
+      await door.opened;
+      return path === "/api/limits"
+        ? ok("put", "/api/limits", 200, fixtures.limits.gateway)
+        : ok("put", "/api/budgets", 200, fixtures.budgets.gateway);
+    });
+    const app = await page();
+    await table("Limits");
+    const dialog = await openDialog(opener, opener);
+    await paste(within(dialog).getByLabelText(field), "5");
+    await userEvent.click(within(dialog).getByRole("button", { name: /^Save/ }));
+    await aCallFindsTheSessionEnded("/api/providers");
+    door.open();
+    await settle();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(toasts()).toEqual([]);
+    expect(href(app)).toBe(`/sign-in?next=${encodeURIComponent("/limits")}`);
+    expect(screen.getByRole("status")).toHaveTextContent(SESSION_ENDED);
   });
 });

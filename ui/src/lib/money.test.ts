@@ -12,6 +12,10 @@ describe("dollarsToMicros", () => {
     ["12.345678", 12_345_678],
     ["0.1", 100_000],
     ["1234567.1", 1_234_567_100_000],
+    [".5", 500_000],
+    ["5.", 5_000_000],
+    [".000001", 1],
+    ["00.5", 500_000],
   ])("%s is %i micros", (text, micros) => {
     expect(dollarsToMicros(text)).toBe(micros);
   });
@@ -22,7 +26,7 @@ describe("dollarsToMicros", () => {
     expect(dollarsToMicros("4.35")).toBe(4_350_000);
   });
 
-  test.each(["", " ", "-1", "1.", ".5", "1.2345678", "abc", "1e3", "1,5", "$2", "2 .5", "0x10", "+1"])(
+  test.each(["", " ", ".", "-1", "1.2345678", ".1234567", "abc", "1e3", "1,5", "$2", "2 .5", "0x10", "+1"])(
     "%j is not dollars",
     (text) => {
       expect(dollarsToMicros(text)).toBeNull();

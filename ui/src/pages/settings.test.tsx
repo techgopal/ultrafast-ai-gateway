@@ -62,6 +62,19 @@ describe("the settings page", () => {
     });
   });
 
+  test("the number is typed, key by key, and sent with Enter", async () => {
+    const patch = counted("patch", "/api/settings", () =>
+      ok("patch", "/api/settings", 200, { log_retention_days: 365 }),
+    );
+    await page();
+    const field = await days();
+    await userEvent.clear(field);
+    await userEvent.type(field, "365{Enter}");
+    await waitFor(() => {
+      expect(patch.bodies).toEqual([{ log_retention_days: 365 }]);
+    });
+  });
+
   test.each(["", "0", "3651", "1.5", "abc", "-1"])("%j is refused on the field, nothing is sent", async (text) => {
     const patch = counted("patch", "/api/settings", () =>
       ok("patch", "/api/settings", 200, fixtures.settings),

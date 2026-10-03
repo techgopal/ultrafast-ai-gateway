@@ -1,10 +1,10 @@
 // Dollars as people type them and micros as the gateway has them (millionths
 // of a dollar). Pure; whole numbers only, so that no float decides a price.
 
-const DOLLARS = /^(\d+)(?:\.(\d{1,6}))?$/;
+const DOLLARS = /^(?=\.?\d)(\d*)(?:\.(\d{0,6}))?$/;
 
 /**
- * The micros of an amount in dollars, up to 6 decimals ("2.5" is 2500000),
+ * The micros of an amount in dollars, up to 6 decimals ("2.5" is 2500000; ".5" and "5." are fine),
  * or `null` when the text is no such amount or is beyond what a number holds
  * exactly. No sign, no currency symbol, no exponent.
  */

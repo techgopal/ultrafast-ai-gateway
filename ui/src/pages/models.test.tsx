@@ -5,9 +5,10 @@ import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { queryKeys } from "@/api/queries";
 import { errors, fieldMessages, validationFailed, type GatewayError } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
-import { startGateway } from "@/test/gateway";
+import { gate, startGateway } from "@/test/gateway";
 import { noContent, ok, override, refuse } from "@/test/handlers";
 import {
+  aCallFindsTheSessionEnded,
   choose,
   counted,
   expectLabelsNameControls,
@@ -802,8 +803,8 @@ describe("who sees what", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Models you can use" })).toBeInTheDocument();
     const items = within(list).getAllByRole("listitem");
     expect(items.map((item) => item.textContent.replace("Copy", ""))).toEqual([
-      "openai/gpt-4o",
-      "openai/gpt-4o-mini",
+      "openai/gpt-4oInput $2.50 · Output $10.00 per 1M tokens",
+      "openai/gpt-4o-miniInput $0.15 · Output $0.60 per 1M tokens",
     ]);
     expect(within(list).getByText("openai/gpt-4o-mini").className).toContain("font-mono");
     for (const name of [
@@ -823,6 +824,18 @@ describe("who sees what", () => {
     expect(teams.calls + users.calls).toBe(0);
     expectOneMain();
     expectOneH1("Models");
+  });
+
+  test("a member sees the prices read-only; one that is not set says so", async () => {
+    override("get", "/api/models", () =>
+      ok("get", "/api/models", 200, {
+        models: [{ ...fixtures.callableModels[0] as fixtures.Model, input_price_micros: null, output_price_micros: 0 }],
+      }),
+    );
+    await page({ user: fixtures.me.tomas });
+    const list = await screen.findByRole("list", { name: "Models you can use" });
+    expect(list).toHaveTextContent("Input Not set · Output $0.00 per 1M tokens");
+    expect(screen.queryByRole("button", { name: "Edit price" })).toBeNull();
   });
 
   test("the copy button copies provider/model", async () => {
@@ -1015,6 +1028,42 @@ describe("prices", () => {
     await page();
     const dialog = await openPrice(openaiMini);
     await expectOneRequestWhileTheDialogStays(dialog, input(dialog), "Saving", request);
+  });
+
+  test("a price is typed, key by key, and sent", async () => {
+    const state = keeps();
+    await page();
+    const dialog = await openPrice(openaiMini);
+    await userEvent.clear(input(dialog));
+    await userEvent.type(input(dialog), "1.25");
+    await userEvent.clear(output(dialog));
+    await userEvent.type(output(dialog), ".5{Enter}");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(state.patched).toEqual([
+      { id: String(openaiMini.id), body: { input_price_micros: 1_250_000, output_price_micros: 500_000 } },
+    ]);
+  });
+
+  test("an answer for a session that is over says nothing", async () => {
+    startGateway({ signedIn: true });
+    const door = gate();
+    override("patch", "/api/models/{id}", async () => {
+      await door.opened;
+      return ok("patch", "/api/models/{id}", 200, openaiMini);
+    });
+    const app = await page();
+    const dialog = await openPrice(openaiMini);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save price" }));
+    await aCallFindsTheSessionEnded("/api/users");
+    door.open();
+    await settle();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(toasts()).toEqual([]);
+    expect(href(app)).toBe(`/sign-in?next=${encodeURIComponent("/models")}`);
+    expect(screen.getByRole("status")).toHaveTextContent(SESSION_ENDED);
   });
 
   test("a second opening starts from the prices as they are", async () => {

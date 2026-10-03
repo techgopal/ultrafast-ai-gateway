@@ -25,6 +25,7 @@ import {
   inFormWords,
   offeredWith,
   PERIODS,
+  periodText,
 } from "@/lib/limits";
 import { ScopeField, TargetField, useTargets } from "@/pages/LimitsTarget";
 
@@ -132,6 +133,7 @@ function BudgetForm({ row, put, onDone, onCancel }: FormProps) {
           </Field>
         )}
       </form.Field>
+      {row === null ? (
       <form.Field name="period">
         {(field) => (
           <Field label="Period" name={field.name} error={failure.fieldError(field.name)}>
@@ -152,6 +154,12 @@ function BudgetForm({ row, put, onDone, onCancel }: FormProps) {
           </Field>
         )}
       </form.Field>
+      ) : (
+        <p className="flex flex-col gap-1 text-sm">
+          <span className="text-muted-foreground">Period</span>
+          <span>{periodText(row.period)}</span>
+        </p>
+      )}
       <form.Field name="action">
         {(field) => (
           <Field

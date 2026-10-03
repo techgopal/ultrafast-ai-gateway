@@ -438,7 +438,13 @@ function MemberModels() {
                 key={model.id}
                 className="flex items-center justify-between gap-3 rounded-lg border bg-card p-3"
               >
-                <span className="min-w-0 font-mono break-all">{refOf(model)}</span>
+                <span className="flex min-w-0 flex-col gap-1">
+                  <span className="font-mono break-all">{refOf(model)}</span>
+                  <span className="text-xs text-muted-foreground">
+                    Input {priceText(model.input_price_micros)} · Output{" "}
+                    {priceText(model.output_price_micros)} per 1M tokens
+                  </span>
+                </span>
                 <Button
                   type="button"
                   variant="outline"
