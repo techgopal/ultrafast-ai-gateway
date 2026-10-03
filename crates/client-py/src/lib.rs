@@ -7,6 +7,7 @@
 //! errors come from the Rust client already scrubbed of it.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -21,6 +22,25 @@ use ultrafast_client::{
     ChatRequest, Client as RustClient, EmbeddingsRequest, EmbeddingsResponse, Error,
     Target as RustTarget,
 };
+
+/// How long a blocking call waits before it lets Python handle a signal.
+const SIGNAL_SLICE: Duration = Duration::from_millis(100);
+
+/// Waits for `fut` on the shared runtime with the GIL released, in short
+/// slices; between slices Python's signal handlers run, so Ctrl-C raises
+/// `KeyboardInterrupt` and the call (and its request) is dropped.
+fn wait<T: Send>(py: Python<'_>, fut: impl Future<Output = T> + Send) -> PyResult<T> {
+    let mut fut = Box::pin(fut);
+    loop {
+        let slice = py.detach(|| {
+            get_runtime().block_on(async { tokio::time::timeout(SIGNAL_SLICE, fut.as_mut()).await })
+        });
+        match slice {
+            Ok(out) => return Ok(out),
+            Err(_) => py.check_signals()?,
+        }
+    }
+}
 
 type BoxStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, Error>> + Send>>;
 
@@ -299,8 +319,8 @@ impl Client {
     ) -> PyResult<ChatOut> {
         let req = chat_request(model, messages, max_tokens, temperature, top_p, stop, tags)?;
         let client = self.inner.clone();
-        // The GIL is released for the whole wait on the network.
-        let r = py.detach(move || get_runtime().block_on(client.chat(req)));
+        // The GIL is released while waiting on the network; signals are checked between slices.
+        let r = wait(py, client.chat(req))?;
         r.map(chat_out).map_err(|e| to_py(py, &e))
     }
 
@@ -318,7 +338,7 @@ impl Client {
     ) -> PyResult<SyncStream> {
         let req = chat_request(model, messages, max_tokens, temperature, top_p, stop, tags)?;
         let client = self.inner.clone();
-        let r = py.detach(move || get_runtime().block_on(open_stream(client, req)));
+        let r = wait(py, open_stream(client, req))?;
         r.map(|shared| SyncStream { shared })
             .map_err(|e| to_py(py, &e))
     }
@@ -333,7 +353,7 @@ impl Client {
     ) -> PyResult<EmbedOut> {
         let req = embed_request(model, input, dimensions, tags);
         let client = self.inner.clone();
-        let r = py.detach(move || get_runtime().block_on(client.embed(req)));
+        let r = wait(py, client.embed(req))?;
         r.map(embed_out).map_err(|e| to_py(py, &e))
     }
 }
@@ -348,7 +368,7 @@ impl SyncStream {
     /// The next event as a tuple, or `None` at the end; raises the stream's error.
     fn next(&self, py: Python<'_>) -> PyResult<Option<EventOut>> {
         let shared = self.shared.clone();
-        let r = py.detach(move || get_runtime().block_on(async move { shared.next().await }));
+        let r = wait(py, async move { shared.next().await })?;
         r.map_err(|e| to_py(py, &e))
     }
 

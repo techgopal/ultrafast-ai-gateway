@@ -98,3 +98,11 @@ async def test_cancellation_does_not_break_the_client(serve):
 async def test_repr_has_no_key():
     c = ultrafast.AsyncClient(ultrafast.openai(KEY))
     assert KEY not in repr(c)
+
+
+async def test_concurrent_first_reads_open_the_stream_once(serve):
+    s = serve(Script.sse(OPENAI_STREAM))
+    stream = gw(s.url).chat_stream("m", MSGS)
+    first, second = await asyncio.gather(stream.__anext__(), stream.__anext__())
+    assert {first, second} == {EXPECTED[0], EXPECTED[1]}
+    assert len(s.requests) == 1

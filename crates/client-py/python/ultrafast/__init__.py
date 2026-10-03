@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
+import asyncio
+
 from . import _native
 from ._errors import (
     AuthenticationError,
@@ -135,13 +137,26 @@ def _tags(tags: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
     return dict(tags)
 
 
+_U32_MAX = 2**32 - 1
+
+
+def _u32(name: str, value: Optional[int]) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} is an int")
+    if not 0 <= value <= _U32_MAX:
+        raise ValueError(f"{name} is between 0 and {_U32_MAX}")
+    return value
+
+
 def _chat_args(model, messages, max_tokens, temperature, top_p, stop, tags):
     if not isinstance(model, str):
         raise TypeError("model is a string")
     return (
         model,
         _messages(messages),
-        max_tokens,
+        _u32("max_tokens", max_tokens),
         None if temperature is None else float(temperature),
         None if top_p is None else float(top_p),
         _stop(stop),
@@ -155,7 +170,7 @@ def _embed_args(model, input, dimensions, tags):
     inputs = [input] if isinstance(input, str) else list(input)
     if not all(isinstance(i, str) for i in inputs):
         raise TypeError("input is a string or a list of strings")
-    return model, inputs, dimensions, _tags(tags)
+    return model, inputs, _u32("dimensions", dimensions), _tags(tags)
 
 
 def _usage(u) -> Optional[Usage]:
@@ -282,10 +297,16 @@ class AsyncChatStream:
     def __init__(self, open_native):
         self._open = open_native
         self._native = None
+        self._opening = None
 
     async def _ensure(self):
-        if self._native is None:
-            self._native = await self._open()
+        if self._native is not None:
+            return
+        # One opening, however many callers arrive first; shielded so one
+        # caller being cancelled does not cancel the others' opening.
+        if self._opening is None:
+            self._opening = asyncio.ensure_future(self._open())
+        self._native = await asyncio.shield(self._opening)
 
     def __await__(self):
         async def opened():

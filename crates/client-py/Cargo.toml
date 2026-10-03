@@ -11,7 +11,8 @@ publish = false
 [lib]
 name = "_native"
 crate-type = ["cdylib"]
-# No Rust tests: the suite is pytest, and a test binary would need libpython to link.
+# The tests are pytest (crates/client-py/tests); a Rust test binary would have
+# to link libpython, which the abi3 extension module deliberately does not.
 test = false
 doctest = false
 

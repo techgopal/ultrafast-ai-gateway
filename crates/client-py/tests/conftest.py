@@ -62,11 +62,12 @@ OPENAI_STREAM = sse(
 class Script:
     """What the server answers: a status, headers, then body chunks (bytes)."""
 
-    def __init__(self, status=200, chunks=(), headers=None, hang=False, content_type=None):
+    def __init__(self, status=200, chunks=(), headers=None, hang=False, content_type=None, hang_after=False):
         self.status = status
         self.chunks = [c.encode() if isinstance(c, str) else c for c in chunks]
         self.headers = dict(headers or {})
         self.hang = hang
+        self.hang_after = hang_after  # send the chunks, then stall instead of ending
         self.content_type = content_type
 
     @classmethod
@@ -113,6 +114,8 @@ class Server:
                     self.wfile.write(chunk)
                     self.wfile.flush()
                     time.sleep(0.01)
+                if s.hang_after:
+                    server.stop.wait(30)
                 # HTTP/1.0: closing the connection ends the body.
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
