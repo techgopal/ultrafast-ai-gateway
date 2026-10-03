@@ -4,7 +4,9 @@ Client for the Ultrafast gateway, or for a provider directly. Request building,
 response parsing and stream decoding are the same Rust code the gateway and the
 Rust and Python clients use, compiled to WebAssembly (`crates/client-wasm`); the
 network is the runtime's own `fetch`. No runtime dependencies, no Node-specific
-APIs in `src/`: it runs in Node 20+, Bun, Deno, browsers and edge runtimes.
+APIs in `src/`: it runs in Node 20+, Bun, Deno and browsers with no setup, and on
+edge runtimes that forbid compiling WebAssembly at run time with one extra call
+(see below).
 
 ```ts
 import { Client, gateway } from "@ultrafast/client";
@@ -15,7 +17,7 @@ const reply = await client.chat({ model: "gpt-4o", messages: [{ role: "user", co
 console.log(reply.content, reply.usage);
 
 for await (const event of client.chatStream({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] })) {
-  if (event.type === "delta") process.stdout.write(event.text);
+  if (event.type === "delta") console.log(event.text);
 }
 
 const { vectors } = await client.embed({ model: "text-embedding-3-small", input: ["a", "b"] });
@@ -45,6 +47,30 @@ const { vectors } = await client.embed({ model: "text-embedding-3-small", input:
 Every failure is an `UltrafastError` with `kind` (`auth | permission | not_found | invalid_request | rate_limited | upstream | network | timeout | malformed`), `status` (when there was an HTTP answer), `retryable` and `retryAfter` (seconds, when the server sent `Retry-After`). There are subclasses per kind (`RateLimitError`, `RequestTimeoutError`, ...). The client does not retry, route, cache or break circuits. The key is removed from every message and is not on `Target`, `Client` or the error when printed or serialised.
 
 A stream yields its events in order, then at most one error: a provider error event, a broken connection, a silent stretch, or a close before the end (`malformed`, "the stream ended before it was complete") arrives after the text already received, never as a silent end. `chatStream` starts the request on the first `next()`; leaving the loop early cancels the request.
+
+## Edge runtimes (Cloudflare Workers, Vercel Edge, strict CSP)
+
+By default the first call compiles the WebAssembly module embedded in the
+package with `WebAssembly.instantiate(bytes)`. Runtimes that forbid compiling
+at run time (Cloudflare Workers, Vercel Edge) and pages whose
+Content-Security-Policy lacks `wasm-unsafe-eval` refuse that. There, call
+`initWasm` once, before the first use, with a precompiled `WebAssembly.Module`
+that the platform or your bundler provides:
+
+```ts
+// Cloudflare Workers: wrangler turns a .wasm import into a compiled module.
+import wasmModule from "@ultrafast/client/wasm/ultrafast_client_wasm_bg.wasm";
+import { Client, gateway, initWasm } from "@ultrafast/client";
+
+await initWasm(wasmModule);
+const client = new Client(gateway({ baseUrl, key }));
+```
+
+`initWasm` also accepts bytes, a URL or a `Response`. After the module has
+loaded (or a load has started) it does nothing. If loading fails, the error is
+a `malformed` `UltrafastError` whose message ends with the cause's name and
+message (`the WebAssembly module could not be loaded: CompileError: ...`), and
+a later `initWasm` or call tries again.
 
 ## Build and test
 

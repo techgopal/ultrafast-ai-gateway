@@ -13,6 +13,8 @@ import type {
 import { wasm, type Wasm } from "./wasm.js";
 
 export const DEFAULT_TIMEOUT_MS = 120_000;
+/** The most a timer can hold (a larger delay fires at once). */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 export const DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 export interface ClientOptions {
@@ -20,7 +22,8 @@ export interface ClientOptions {
   fetch?: typeof fetch;
   /**
    * Milliseconds for the whole of a `chat` or `embed`, for the answer to
-   * start a stream, and for each silent stretch inside a stream (default 120000).
+   * start a stream, and for each silent stretch inside a stream (default
+   * 120000). A finite number from 1 to 2^31-1; anything else is a TypeError.
    */
   timeoutMs?: number;
   /** The most a `chat` or `embed` answer, or any error body, may hold (default 32 MiB). Streams are not capped in total. */
@@ -64,8 +67,16 @@ export class Client {
     specOf(target);
     this.#target = target;
     this.#fetch = options.fetch ?? ((...a) => globalThis.fetch(...a));
-    this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.#max = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    const t = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    if (typeof t !== "number" || !Number.isFinite(t) || t <= 0 || t > MAX_TIMEOUT_MS) {
+      throw new TypeError(`timeoutMs must be a number from 1 to ${MAX_TIMEOUT_MS} (no timeout is not offered)`);
+    }
+    const max = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    if (typeof max !== "number" || !Number.isFinite(max) || max <= 0) {
+      throw new TypeError("maxResponseBytes must be a positive number");
+    }
+    this.#timeoutMs = t;
+    this.#max = max;
   }
 
   toJSON(): Record<string, unknown> {

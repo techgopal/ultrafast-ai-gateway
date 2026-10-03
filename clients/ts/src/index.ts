@@ -1,3 +1,4 @@
+export { initWasm, type WasmSource } from "./wasm.js";
 export { Client, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_TIMEOUT_MS, type ClientOptions } from "./client.js";
 export {
   AuthenticationError,

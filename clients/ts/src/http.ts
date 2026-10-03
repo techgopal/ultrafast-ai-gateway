@@ -12,6 +12,15 @@ export class HostFailure extends Error {
   }
 }
 
+/** An abort or timeout raised by the runtime itself. */
+function isAbort(e: unknown): boolean {
+  const name = (e as { name?: unknown } | null)?.name;
+  return name === "AbortError" || name === "TimeoutError";
+}
+
+const broke = (e: unknown, message: string): HostFailure =>
+  isAbort(e) ? new HostFailure("timeout", "the request timed out") : new HostFailure("network", message);
+
 /** `p`, or a `timeout` failure (and an abort of the request) after `ms`, even if `p` ignores the abort. */
 export function timed<T>(p: Promise<T>, ms: number, ctl: AbortController, message = "the request timed out"): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -66,9 +75,11 @@ export async function send(fetchFn: typeof fetch, req: Request, ctl: AbortContro
         signal: ctl.signal,
         redirect: "manual",
       });
-    } catch {
-      // The runtime's own message can hold the URL; the caller gets a fixed one.
-      throw new HostFailure("network", "could not reach the server");
+    } catch (e) {
+      // The runtime's own message can hold the URL; the caller gets a fixed one
+      // (the Rust client's wording).
+      if (isAbort(e)) throw new HostFailure("timeout", "the request timed out");
+      throw new HostFailure("network", "could not connect to the server");
     }
   })();
   return timed(attempt, ms, ctl);
@@ -103,8 +114,8 @@ export async function readAnswer(resp: Response, max: number, deadline: number, 
     try {
       for (;;) {
         const next = await timed(
-          reader.read().catch(() => {
-            throw new HostFailure("network", "the connection broke while reading the answer");
+          reader.read().catch((e: unknown) => {
+            throw broke(e, "network error: the connection broke while reading the answer");
           }),
           deadline - Date.now(),
           ctl,

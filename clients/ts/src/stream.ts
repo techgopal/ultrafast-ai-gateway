@@ -42,8 +42,11 @@ export async function* decode(
     if (reader) {
       for (;;) {
         const next = await timed(
-          reader.read().catch(() => {
-            throw new HostFailure("network", "the connection broke during the stream");
+          reader.read().catch((e: unknown) => {
+            const aborted = (e as { name?: unknown } | null)?.name;
+            throw aborted === "AbortError" || aborted === "TimeoutError"
+              ? new HostFailure("timeout", "the request timed out")
+              : new HostFailure("network", "network error: the connection broke during the stream");
           }),
           idleMs,
           ctl,

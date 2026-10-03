@@ -11,16 +11,23 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./wasm/ultrafast_client_wasm_bg.wasm": "./dist/wasm/ultrafast_client_wasm_bg.wasm"
   },
-  "files": ["dist", "README.md"],
-  "engines": { "node": ">=20" },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build:wasm": "bash scripts/build-wasm.sh",
     "lint": "eslint src tests --max-warnings 0",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "build": "pnpm build:wasm && rm -rf dist && tsc -p tsconfig.build.json && node scripts/copy-wasm-glue.mjs"
+    "build": "pnpm build:wasm && rm -rf dist && tsc -p tsconfig.build.json && node scripts/copy-wasm-glue.mjs",
+    "prepack": "pnpm build"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
