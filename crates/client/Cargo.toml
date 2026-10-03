@@ -1,0 +1,21 @@
+[package]
+name = "ultrafast-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust client for the Ultrafast gateway and for LLM providers directly."
+
+[dependencies]
+ultrafast-translate = { path = "../translate" }
+async-stream.workspace = true
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+reqwest.workspace = true
+tokio = { workspace = true, features = ["full"] }

@@ -2696,6 +2696,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "ultrafast-client"
+version = "2.0.0-alpha.1"
+dependencies = [
+ "async-stream",
+ "bytes",
+ "futures",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "ultrafast-translate",
+]
+
+[[package]]
 name = "ultrafast-gateway"
 version = "2.0.0-alpha.1"
 dependencies = [

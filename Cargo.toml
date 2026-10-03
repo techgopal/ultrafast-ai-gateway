@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/translate", "crates/gateway"]
+members = ["crates/translate", "crates/gateway", "crates/client"]
 exclude = ["ultrafast-gateway", "ultrafast-models-sdk"]
 
 [workspace.package]
