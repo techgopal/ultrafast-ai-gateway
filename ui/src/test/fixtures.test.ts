@@ -591,7 +591,7 @@ describe("the fixtures have the forms of the gateway", () => {
       expect(row.period_start).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     }
     // An alert budget may be spent beyond its amount; the fixtures have one.
-    expect(fixtures.budgetList.some((row) => row.spent_micros > row.amount_micros)).toBe(true);
+    expect(fixtures.budgetList.some((row) => (row.spent_micros ?? 0) > row.amount_micros)).toBe(true);
     expect(fixtures.settings.log_retention_days).toBeGreaterThanOrEqual(1);
     // A price is 0 or more, or unknown.
     expect(fixtures.modelList.some((m) => m.input_price_micros !== null)).toBe(true);

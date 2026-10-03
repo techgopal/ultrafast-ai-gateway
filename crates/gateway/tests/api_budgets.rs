@@ -186,19 +186,110 @@ async fn who_sees_which_budgets() {
             "user 'lena@example.com'"
         ]
     );
+    // arjun leads Platform and is in Research; he owns no key, and no one
+    // else's key or user is his to see.
     let arjun = w.org.sign_in("arjun").await;
     assert_eq!(
         labels(&w, &arjun).await,
-        [
-            "gateway",
-            "key 'lena-key'",
-            "key 'tomas-key'",
-            "team 'Platform'",
-            "team 'Research'"
-        ]
+        ["gateway", "team 'Platform'", "team 'Research'"]
     );
     let priya = w.org.sign_in("priya").await;
     assert_eq!(labels(&w, &priya).await, ["gateway"]);
+}
+
+/// The spent figure of each budget, by label, as a caller sees it.
+async fn spent(w: &World, who: &Signed) -> Vec<(String, Value)> {
+    let (_, body) = w.org.call(Some(who), "GET", "/api/budgets", None).await;
+    let mut rows: Vec<(String, Value)> = body["budgets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| {
+            (
+                b["label"].as_str().unwrap().to_string(),
+                b["spent_micros"].clone(),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+/// A member sees what was spent by their own user and keys only; a lead also
+/// by the teams they lead; the gateway's and the other teams' budgets show
+/// the amount, period and action but no spend; an admin sees all.
+#[tokio::test]
+async fn spent_is_shown_only_where_the_caller_may_see_it() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    for (scope, id) in [
+        ("gateway", None),
+        ("team", Some(w.org.platform)),
+        ("team", Some(w.org.research)),
+        ("user", Some(w.org.lena)),
+        ("key", Some(w.lena_key)),
+    ] {
+        let mut body = json!({ "scope": scope, "amount_micros": 5_000_000, "period": "monthly", "action": "alert" });
+        if let Some(id) = id {
+            body["scope_id"] = json!(id);
+        }
+        assert_eq!(put(&w, &maya, body).await.0, StatusCode::OK);
+    }
+    // Everything lena's key spent is counted by every budget.
+    let record = ultrafast_gateway::telemetry::RequestRecord {
+        key_id: w.lena_key,
+        user_id: Some(w.org.lena),
+        team_id: Some(w.org.platform),
+        requested: "p/m".into(),
+        endpoint: "chat",
+        stream: false,
+        status: 200,
+        usage: None,
+        attempts: Vec::new(),
+        cached: false,
+        started_at: ultrafast_gateway::store::now(),
+        duration_ms: 1,
+    };
+    ultrafast_gateway::budgets::account(
+        &w.org.api.state,
+        &record,
+        1_000_000,
+        time::OffsetDateTime::now_utc(),
+    );
+    let n = Value::Null;
+    let m = |v: u64| json!(v);
+    assert_eq!(
+        spent(&w, &maya).await,
+        [
+            ("gateway".to_string(), m(1_000_000)),
+            ("key 'lena-key'".to_string(), m(1_000_000)),
+            ("team 'Platform'".to_string(), m(1_000_000)),
+            ("team 'Research'".to_string(), m(0)),
+            ("user 'lena@example.com'".to_string(), m(1_000_000)),
+        ]
+    );
+    // lena, a member of Platform: her user and key with the spend, the
+    // gateway and her team without.
+    let lena = w.org.sign_in("lena").await;
+    assert_eq!(
+        spent(&w, &lena).await,
+        [
+            ("gateway".to_string(), n.clone()),
+            ("key 'lena-key'".to_string(), m(1_000_000)),
+            ("team 'Platform'".to_string(), n.clone()),
+            ("user 'lena@example.com'".to_string(), m(1_000_000)),
+        ]
+    );
+    // arjun leads Platform and is a member of Research.
+    let arjun = w.org.sign_in("arjun").await;
+    assert_eq!(
+        spent(&w, &arjun).await,
+        [
+            ("gateway".to_string(), n.clone()),
+            ("team 'Platform'".to_string(), m(1_000_000)),
+            ("team 'Research'".to_string(), n),
+        ]
+    );
 }
 
 #[tokio::test]

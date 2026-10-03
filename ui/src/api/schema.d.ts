@@ -112,9 +112,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The budgets that apply to the caller, with what each has spent in its
-         *     current period: all of them for an admin; for anyone else the gateway's,
-         *     those of their teams and of themselves, and those of their keys.
+         * The budgets the caller may see: all of them, with what each has spent in
+         *     its current period, for an admin. Anyone else sees the gateway's and
+         *     those of their teams without the spend (with it for a team they lead),
+         *     and those of themselves and their own keys with the spend.
          */
         get: operations["budgets_list"];
         /**
@@ -188,9 +189,9 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The limits that apply to the caller: all of them for an admin; for anyone
-         *     else the gateway's, those of their teams and of themselves, and those of
-         *     their keys.
+         * The limits the caller may see: all of them for an admin; for anyone else
+         *     the gateway's, those of their teams and of themselves, and those of their
+         *     own keys.
          */
         get: operations["limits_list"];
         /**
@@ -702,9 +703,11 @@ export interface components {
             /**
              * Format: int64
              * @description What the gateway counted as spent in the current period, in
-             *     millionths of a dollar.
+             *     millionths of a dollar. `null` when the caller may not see it: a
+             *     member sees the spend of their own user and keys and of no one else's,
+             *     nor of the gateway or of a team they do not lead.
              */
-            spent_micros: number;
+            spent_micros: number | null;
         };
         BudgetsPage: {
             budgets: components["schemas"]["BudgetView"][];

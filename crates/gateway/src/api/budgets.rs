@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::budgets::{seed_from_logs, usd, Budget, BudgetAction, Period};
-use crate::identity::policy::{limit_applies_to, Action};
+use crate::identity::policy::{limit_access, Action, LimitAccess};
 use crate::limits::LimitScope;
 use crate::store::{AuditEntry, BudgetRow};
 
@@ -42,8 +42,11 @@ pub struct BudgetView {
     /// The UTC date the current period began on, `YYYY-MM-DD`.
     pub period_start: String,
     /// What the gateway counted as spent in the current period, in
-    /// millionths of a dollar.
-    pub spent_micros: u64,
+    /// millionths of a dollar. `null` when the caller may not see it: a
+    /// member sees the spend of their own user and keys and of no one else's,
+    /// nor of the gateway or of a team they do not lead.
+    #[schema(required)]
+    pub spent_micros: Option<u64>,
 }
 
 fn view(state: &AppState, r: &BudgetRow, now: OffsetDateTime) -> BudgetView {
@@ -57,7 +60,7 @@ fn view(state: &AppState, r: &BudgetRow, now: OffsetDateTime) -> BudgetView {
         period: r.period.as_str().to_string(),
         action: r.action.as_str().to_string(),
         period_start: r.period.start_string(now),
-        spent_micros: state.budgets.spent(&budget, now),
+        spent_micros: Some(state.budgets.spent(&budget, now)),
     }
 }
 
@@ -93,9 +96,10 @@ pub struct SetBudgetRequest {
     action: String,
 }
 
-/// The budgets that apply to the caller, with what each has spent in its
-/// current period: all of them for an admin; for anyone else the gateway's,
-/// those of their teams and of themselves, and those of their keys.
+/// The budgets the caller may see: all of them, with what each has spent in
+/// its current period, for an admin. Anyone else sees the gateway's and
+/// those of their teams without the spend (with it for a team they lead),
+/// and those of themselves and their own keys with the spend.
 #[utoipa::path(
     get,
     path = "/budgets",
@@ -120,10 +124,17 @@ pub async fn list(
         .list_budgets()
         .await?
         .iter()
-        .filter(|b| {
-            b.has_subject() && limit_applies_to(me, b.scope, b.scope_id, b.key_owner, b.key_team)
-        })
-        .map(|b| view(&state, b, now))
+        .filter(|b| b.has_subject())
+        .filter_map(
+            |b| match limit_access(me, b.scope, b.scope_id, b.key_owner) {
+                LimitAccess::Hidden => None,
+                LimitAccess::Spent => Some(view(&state, b, now)),
+                LimitAccess::Figures => Some(BudgetView {
+                    spent_micros: None,
+                    ..view(&state, b, now)
+                }),
+            },
+        )
         .collect();
     Ok(Json(BudgetsPage { budgets }).into_response())
 }

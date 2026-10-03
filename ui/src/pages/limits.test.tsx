@@ -147,6 +147,37 @@ describe("the page", () => {
     expect(users.calls).toBe(0);
   });
 
+  test("a member sees the spend of their own key only; the others say it is not shown", async () => {
+    override("get", "/api/budgets", () =>
+      ok("get", "/api/budgets", 200, { budgets: fixtures.budgetsForMember }),
+    );
+    await page({ user: fixtures.me.lena });
+    const budgets = await table("Budgets");
+    expect(within(budgets).getByRole("columnheader", { name: "Spent this period" })).toBeInTheDocument();
+    expect(cellsOf(rowIn("Budgets", "gateway"))[3]).toBe("Not shown");
+    expect(cellsOf(rowIn("Budgets", "team 'Platform'"))[3]).toBe("Not shown");
+    expect(cellsOf(rowIn("Budgets", "key 'platform-prod'"))[3]).toBe("$0.00 (0%)");
+    // Nothing of the gateway's or the team's spend is in the page.
+    expect(within(budgets).queryByText(/12\.50|12\.00/)).toBeNull();
+  });
+
+  test("a member whose budgets show no spend gets no Spent column", async () => {
+    override("get", "/api/budgets", () =>
+      ok("get", "/api/budgets", 200, {
+        budgets: fixtures.budgetsForMember.filter((row) => row.spent_micros === null),
+      }),
+    );
+    await page({ user: fixtures.me.lena });
+    const budgets = await table("Budgets");
+    expect(within(budgets).getAllByRole("columnheader").map((th) => th.textContent)).toEqual([
+      "Scope",
+      "Period",
+      "Amount",
+      "Action",
+    ]);
+    expect(within(budgets).queryByRole("progressbar")).toBeNull();
+  });
+
   test("empty lists say so, differently for a member", async () => {
     override("get", "/api/limits", () => ok("get", "/api/limits", 200, { limits: [] }));
     override("get", "/api/budgets", () => ok("get", "/api/budgets", 200, { budgets: [] }));

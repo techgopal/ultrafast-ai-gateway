@@ -81,12 +81,12 @@ pub enum Action {
     // settings: viewing and changing both
     ManageSettings,
     // rate limits
-    /// Everyone may ask; what they get is cut by `limit_applies_to`.
+    /// Everyone may ask; what they get is cut by `limit_access`.
     ListLimits,
     /// Setting and removing limits. Only an admin may.
     ManageLimits,
     // budgets
-    /// Everyone may ask; what they get is cut by `limit_applies_to`.
+    /// Everyone may ask; what they get is cut by `limit_access`.
     ListBudgets,
     /// Setting and removing budgets. Only an admin may.
     ManageBudgets,
@@ -259,28 +259,44 @@ fn by_team_role(p: &Principal, team_id: i64, lead: Decision, member: Decision) -
     }
 }
 
-/// Whether a limit applies to `p`, which is what a non-admin sees of the
-/// limits: the gateway's, those of their teams (in any role), their own, and
-/// those of their keys and of keys of their teams (which throttle them).
-/// `key_owner` and `key_team` are the owner and the team of the key, for a
-/// key limit.
-pub fn limit_applies_to(
+/// What a caller may see of a limit or budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitAccess {
+    /// Not listed.
+    Hidden,
+    /// Listed with what was set (amount, period, action) but not what was
+    /// spent: the gateway's and the caller's teams', unless they lead the team.
+    Figures,
+    /// Listed with what was spent: the caller's own user and keys, the teams
+    /// they lead, and everything for an admin.
+    Spent,
+}
+
+/// What `p` sees of a limit or budget. An admin sees all with the spend.
+/// Anyone else sees the gateway's and those of their teams without the
+/// spend (with it for a team they lead), and their own user's and own keys'
+/// with the spend; nothing of another person's user or keys, so no one's
+/// spend is shown to a colleague. `key_owner` is the owner of the key, for
+/// a key limit.
+pub fn limit_access(
     p: &Principal,
     scope: LimitScope,
     scope_id: Option<i64>,
     key_owner: Option<i64>,
-    key_team: Option<i64>,
-) -> bool {
+) -> LimitAccess {
     if p.is_admin() {
-        return true;
+        return LimitAccess::Spent;
     }
     match scope {
-        LimitScope::Gateway => true,
-        LimitScope::Team => scope_id.is_some_and(|t| p.team_role(t).is_some()),
-        LimitScope::User => scope_id == Some(p.user_id),
-        LimitScope::Key => {
-            key_owner == Some(p.user_id) || key_team.is_some_and(|t| p.team_role(t).is_some())
-        }
+        LimitScope::Gateway => LimitAccess::Figures,
+        LimitScope::Team => match scope_id.and_then(|t| p.team_role(t)) {
+            Some(TeamRole::Lead) => LimitAccess::Spent,
+            Some(TeamRole::Member) => LimitAccess::Figures,
+            None => LimitAccess::Hidden,
+        },
+        LimitScope::User if scope_id == Some(p.user_id) => LimitAccess::Spent,
+        LimitScope::Key if key_owner == Some(p.user_id) => LimitAccess::Spent,
+        LimitScope::User | LimitScope::Key => LimitAccess::Hidden,
     }
 }
 
@@ -304,6 +320,7 @@ pub fn list_scope(p: &Principal) -> Scope {
 mod tests {
     use super::*;
     use Decision::{Allow, Forbidden, Hidden};
+    use LimitAccess::{Figures, Hidden as Hide, Spent};
 
     type Case<'a> = (&'static str, &'a Principal, Action, Decision);
 
@@ -1285,33 +1302,29 @@ mod tests {
     fn limits_that_apply_to_a_caller() {
         let f = fixture();
         // lead (2): leads 10, member of 20. member (3): member of 10.
-        let applies = |p: &Principal, scope, id, owner| limit_applies_to(p, scope, id, owner, None);
+        let access = |p: &Principal, scope, id, owner| limit_access(p, scope, id, owner);
         for p in [&f.admin, &f.lead, &f.member, &f.loner] {
-            assert!(applies(p, LimitScope::Gateway, None, None));
+            let want = if p.is_admin() { Spent } else { Figures };
+            assert_eq!(access(p, LimitScope::Gateway, None, None), want);
         }
-        assert!(applies(&f.admin, LimitScope::Team, Some(99), None));
-        assert!(applies(&f.admin, LimitScope::Key, Some(99), Some(77)));
-        // Teams in any role.
-        assert!(applies(&f.lead, LimitScope::Team, Some(10), None));
-        assert!(applies(&f.lead, LimitScope::Team, Some(20), None));
-        assert!(!applies(&f.lead, LimitScope::Team, Some(30), None));
-        assert!(applies(&f.member, LimitScope::Team, Some(10), None));
-        assert!(!applies(&f.member, LimitScope::Team, Some(20), None));
-        assert!(!applies(&f.loner, LimitScope::Team, Some(10), None));
-        // Themselves, not their team's members.
-        assert!(applies(&f.member, LimitScope::User, Some(3), None));
-        assert!(!applies(&f.lead, LimitScope::User, Some(3), None));
-        // Their own keys, not those of the people they lead.
-        assert!(applies(&f.member, LimitScope::Key, Some(5), Some(3)));
-        assert!(!applies(&f.lead, LimitScope::Key, Some(5), Some(3)));
-        assert!(!applies(&f.member, LimitScope::Key, Some(5), None));
-        // A key of one of their teams throttles them, whoever owns it.
-        let of_team = |p: &Principal, team| {
-            limit_applies_to(p, LimitScope::Key, Some(5), Some(77), Some(team))
-        };
-        assert!(of_team(&f.member, 10));
-        assert!(of_team(&f.lead, 20));
-        assert!(!of_team(&f.member, 20));
-        assert!(!of_team(&f.loner, 10));
+        assert_eq!(access(&f.admin, LimitScope::Team, Some(99), None), Spent);
+        assert_eq!(access(&f.admin, LimitScope::Key, Some(99), Some(77)), Spent);
+        // Their teams in any role, with the figures spent only for a lead.
+        assert_eq!(access(&f.lead, LimitScope::Team, Some(10), None), Spent);
+        assert_eq!(access(&f.lead, LimitScope::Team, Some(20), None), Figures);
+        assert_eq!(access(&f.lead, LimitScope::Team, Some(30), None), Hide);
+        assert_eq!(access(&f.member, LimitScope::Team, Some(10), None), Figures);
+        assert_eq!(access(&f.member, LimitScope::Team, Some(20), None), Hide);
+        assert_eq!(access(&f.loner, LimitScope::Team, Some(10), None), Hide);
+        // Themselves, with the figures spent; not their team's members.
+        assert_eq!(access(&f.member, LimitScope::User, Some(3), None), Spent);
+        assert_eq!(access(&f.lead, LimitScope::User, Some(3), None), Hide);
+        // Their own keys, with the figures spent; no one else's, not even
+        // those of the people they lead or of a team they are in.
+        assert_eq!(access(&f.member, LimitScope::Key, Some(5), Some(3)), Spent);
+        assert_eq!(access(&f.lead, LimitScope::Key, Some(5), Some(3)), Hide);
+        assert_eq!(access(&f.member, LimitScope::Key, Some(5), None), Hide);
+        assert_eq!(access(&f.member, LimitScope::Key, Some(5), Some(77)), Hide);
+        assert_eq!(access(&f.loner, LimitScope::Key, Some(5), Some(77)), Hide);
     }
 }

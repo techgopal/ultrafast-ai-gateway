@@ -39,6 +39,7 @@ export const LIMIT_DELETE_CONSEQUENCE = "Calls are no longer limited by this.";
 export const BUDGET_DELETE_CONSEQUENCE = "Spend is no longer capped by this budget.";
 
 const NOT_SET = "Not set";
+const NOT_SHOWN = "Not shown";
 
 const count = (value: number | null) => (value === null ? NOT_SET : formatTokens(value));
 
@@ -70,7 +71,7 @@ const limitColumns: Column<Limit>[] = [
   },
 ];
 
-const budgetColumns: Column<Budget>[] = [
+const budgetColumnsBeforeSpent: Column<Budget>[] = [
   { ...scopeColumn, sortValue: (row) => row.label },
   {
     id: "period",
@@ -89,10 +90,16 @@ const budgetColumns: Column<Budget>[] = [
     cell: (row) => <span className="tabular-nums">{formatDollars(row.amount_micros)}</span>,
     sortValue: (row) => row.amount_micros,
   },
-  {
+];
+
+const spentColumn: Column<Budget> = {
     id: "spent",
     header: "Spent this period",
     cell: (row) => {
+      // The gateway does not give this viewer that spend.
+      if (row.spent_micros === null) {
+        return <span className="text-muted-foreground">{NOT_SHOWN}</span>;
+      }
       const percent = percentOf(row.spent_micros, row.amount_micros);
       const over = row.spent_micros >= row.amount_micros;
       return (
@@ -113,8 +120,11 @@ const budgetColumns: Column<Budget>[] = [
         </span>
       );
     },
-    sortValue: (row) => percentOf(row.spent_micros, row.amount_micros),
-  },
+    sortValue: (row) =>
+      row.spent_micros === null ? null : percentOf(row.spent_micros, row.amount_micros),
+  };
+
+const budgetColumnsAfterSpent: Column<Budget>[] = [
   {
     id: "action",
     header: "Action",
@@ -247,6 +257,13 @@ function BudgetsSection({ admin }: { admin: boolean }) {
   const [target, setTarget] = useState<Budget | null>(null);
   const rows = budgets.data?.budgets ?? [];
   const failed = budgets.error !== null && budgets.data === undefined;
+  // A member's list has no spent figure for the gateway or a team: the
+  // column is left out when no row has one.
+  const columns =
+    rows.length > 0 && rows.every((row) => row.spent_micros === null)
+      ? [...budgetColumnsBeforeSpent, ...budgetColumnsAfterSpent]
+      : [...budgetColumnsBeforeSpent, spentColumn, ...budgetColumnsAfterSpent];
+
 
   function ask(what: Asking, row: Budget | null) {
     return () => {
@@ -281,7 +298,7 @@ function BudgetsSection({ admin }: { admin: boolean }) {
       ) : (
         <DataTable
           caption="Budgets"
-          columns={budgetColumns}
+          columns={columns}
           rows={rows}
           loading={budgets.isPending}
           getRowId={(row) => String(row.id)}

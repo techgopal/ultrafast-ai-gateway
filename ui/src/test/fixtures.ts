@@ -836,7 +836,14 @@ export const budgets = {
 
 export const budgetList: Budget[] = Object.values(budgets);
 
-/** What a member of Platform gets of the budgets. */
-export const budgetsForMember: Budget[] = [budgets.gateway, budgets.team];
+/**
+ * What a member of Platform gets of the budgets: the gateway's and their
+ * team's without the spend, their own key's with it.
+ */
+export const budgetsForMember: Budget[] = [
+  { ...budgets.gateway, spent_micros: null },
+  { ...budgets.team, spent_micros: null },
+  budgets.key,
+];
 
 export const settings: Settings = { log_retention_days: 30 };

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
-use crate::identity::policy::{limit_applies_to, Action};
+use crate::identity::policy::{limit_access, Action, LimitAccess};
 use crate::limits::{LimitScope, RateLimit};
 use crate::store::{AuditEntry, LimitRow};
 
@@ -75,9 +75,9 @@ pub struct SetLimitRequest {
     concurrent: Option<i64>,
 }
 
-/// The limits that apply to the caller: all of them for an admin; for anyone
-/// else the gateway's, those of their teams and of themselves, and those of
-/// their keys.
+/// The limits the caller may see: all of them for an admin; for anyone else
+/// the gateway's, those of their teams and of themselves, and those of their
+/// own keys.
 #[utoipa::path(
     get,
     path = "/limits",
@@ -102,7 +102,8 @@ pub async fn list(
         .await?
         .iter()
         .filter(|l| {
-            l.has_subject() && limit_applies_to(me, l.scope, l.scope_id, l.key_owner, l.key_team)
+            l.has_subject()
+                && limit_access(me, l.scope, l.scope_id, l.key_owner) != LimitAccess::Hidden
         })
         .map(LimitView::from)
         .collect();

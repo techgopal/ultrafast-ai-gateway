@@ -161,27 +161,21 @@ async fn who_sees_which_limits() {
         ]
     );
     // arjun leads Platform and is in Research; he owns no key and has no
-    // limit of his own, but the keys of both his teams throttle him.
+    // limit of his own, and no one else's key is his to see.
     let arjun = w.org.sign_in("arjun").await;
     assert_eq!(
         labels(&w, &arjun).await,
-        [
-            "gateway",
-            "key 'lena-key'",
-            "key 'tomas-key'",
-            "team 'Platform'",
-            "team 'Research'"
-        ]
+        ["gateway", "team 'Platform'", "team 'Research'"]
     );
     // priya is in no team.
     let priya = w.org.sign_in("priya").await;
     assert_eq!(labels(&w, &priya).await, ["gateway"]);
 }
 
-/// A key of a team is listed to the members of that team, and to its owner
-/// even when the owner has left the team.
+/// A key limit is listed to the key's owner, even when the owner has left
+/// the team of the key, and to no one else but an admin.
 #[tokio::test]
-async fn a_team_key_limit_is_listed_to_the_teams_members() {
+async fn a_key_limit_is_listed_to_its_owner_only() {
     let w = world().await;
     let maya = w.org.sign_in("maya").await;
     // lena owns a key of Research, a team she is not in.
@@ -215,9 +209,10 @@ async fn a_team_key_limit_is_listed_to_the_teams_members() {
                 .contains(&"key 'lena-research'".to_string())
         }
     };
+    assert!(seen("maya").await, "an admin");
     assert!(seen("lena").await, "the owner");
-    assert!(seen("tomas").await, "a member of the key's team");
-    assert!(seen("arjun").await, "a member of the key's team");
+    assert!(!seen("tomas").await, "a member of the key's team");
+    assert!(!seen("arjun").await, "a member of the key's team");
     assert!(!seen("priya").await, "in no team");
 }
 

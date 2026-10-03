@@ -501,7 +501,7 @@
         "tags": [
           "budgets"
         ],
-        "summary": "The budgets that apply to the caller, with what each has spent in its\ncurrent period: all of them for an admin; for anyone else the gateway's,\nthose of their teams and of themselves, and those of their keys.",
+        "summary": "The budgets the caller may see: all of them, with what each has spent in\nits current period, for an admin. Anyone else sees the gateway's and\nthose of their teams without the spend (with it for a team they lead),\nand those of themselves and their own keys with the spend.",
         "operationId": "budgets_list",
         "responses": {
           "200": {
@@ -1046,7 +1046,7 @@
         "tags": [
           "limits"
         ],
-        "summary": "The limits that apply to the caller: all of them for an admin; for anyone\nelse the gateway's, those of their teams and of themselves, and those of\ntheir keys.",
+        "summary": "The limits the caller may see: all of them for an admin; for anyone else\nthe gateway's, those of their teams and of themselves, and those of their\nown keys.",
         "operationId": "limits_list",
         "responses": {
           "200": {
@@ -5191,9 +5191,12 @@
             "description": "The id of the team, user or key; `null` for the gateway."
           },
           "spent_micros": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
-            "description": "What the gateway counted as spent in the current period, in\nmillionths of a dollar.",
+            "description": "What the gateway counted as spent in the current period, in\nmillionths of a dollar. `null` when the caller may not see it: a\nmember sees the spend of their own user and keys and of no one else's,\nnor of the gateway or of a team they do not lead.",
             "minimum": 0
           }
         }
