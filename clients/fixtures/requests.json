@@ -311,7 +311,10 @@
             "role": "user",
             "content": "hi"
           }
-        ]
+        ],
+        "tags": {
+          "team": "search"
+        }
       },
       "expect": {
         "sent": true,
@@ -353,7 +356,10 @@
         "input": [
           "a",
           "b"
-        ]
+        ],
+        "tags": {
+          "team": "search"
+        }
       },
       "expect": {
         "sent": true,
@@ -392,7 +398,10 @@
             "content": "hi"
           }
         ],
-        "max_tokens": 8
+        "max_tokens": 8,
+        "tags": {
+          "team": "search"
+        }
       },
       "expect": {
         "sent": true,
@@ -449,7 +458,10 @@
         "temperature": 0.25,
         "stop": [
           "END"
-        ]
+        ],
+        "tags": {
+          "team": "search"
+        }
       },
       "expect": {
         "sent": true,
@@ -504,7 +516,10 @@
             "content": "hi"
           }
         ],
-        "max_tokens": 32
+        "max_tokens": 32,
+        "tags": {
+          "team": "search"
+        }
       },
       "expect": {
         "sent": true,
@@ -557,7 +572,10 @@
             "content": "again"
           }
         ],
-        "max_tokens": 32
+        "max_tokens": 32,
+        "tags": {
+          "team": "search"
+        }
       },
       "expect": {
         "sent": true,
@@ -625,7 +643,10 @@
             "role": "user",
             "content": "hi"
           }
-        ]
+        ],
+        "tags": {
+          "team": "search"
+        }
       },
       "expect": {
         "sent": true,
@@ -676,7 +697,10 @@
             "role": "user",
             "content": "hi"
           }
-        ]
+        ],
+        "tags": {
+          "team": "search"
+        }
       },
       "expect": {
         "sent": true,
