@@ -12,6 +12,17 @@ serves a built-in web console, with SQLite for storage and nothing else to
 run. It is for small teams who host it themselves. This is v2; the v1 code is
 tagged `v1-final`. Design: [`docs/superpowers/specs/2026-09-28-gateway-v2-design.md`](docs/superpowers/specs/2026-09-28-gateway-v2-design.md).
 
+## Screenshots
+
+The console is built into the binary. Overview, routing and the playground;
+more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
+
+![The Overview page: counts, requests, errors, tokens and spend, top models and keys](docs/images/console-overview.png)
+
+![The routing editor: weighted primary targets and an ordered fallback](docs/images/console-routing.png)
+
+![The playground: a chat with a route, with tokens and cost](docs/images/console-playground.png)
+
 ## Features
 
 - **Endpoints.** `/v1/chat/completions`, `/v1/messages` (Anthropic format),
@@ -344,7 +355,7 @@ pnpm --dir ui exec playwright install chromium
 pnpm --dir ui build && cargo build --release -p ultrafast-gateway && pnpm --dir ui test:e2e
 ```
 
-CI (`.github/workflows/`): `ci.yml` (lint, tests, OpenAPI is current, image),
+CI (`.github/workflows/`): `ci.yml` (lint, tests, OpenAPI is current, image, secret scan),
 `clients.yml`, and `release.yml` (a tag `v*` that names the version in
 `Cargo.toml` makes a draft GitHub release with binaries for Linux x86_64 and
 aarch64, macOS x86_64 and arm64 and Windows x64, and pushes
@@ -361,7 +372,7 @@ Layout:
 | `openapi/admin.json` | Generated admin API description |
 | `docs/` | [`CONVENTIONS.md`](docs/CONVENTIONS.md), design spec, plans, brand |
 
-Contributors: read [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) first. After
+Contributors: read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) first. After
 changing an admin route, regenerate the spec with
 `cargo run -p ultrafast-gateway -- openapi > openapi/admin.json`. Security
 reports: see [`SECURITY.md`](SECURITY.md).
