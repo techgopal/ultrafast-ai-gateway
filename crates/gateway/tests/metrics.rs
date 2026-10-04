@@ -445,6 +445,30 @@ fn a_call_the_caller_abandoned_counts_as_499_and_not_as_a_4xx() {
     );
 }
 
+#[test]
+fn a_playground_call_has_its_own_endpoint_in_the_counts() {
+    let metrics = Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    // A call of a user, with no key.
+    let mut scope = Scope::begin(Arc::new(NoopSink), None, Some(1), None, "playground");
+    scope.metered(metrics.clone());
+    scope.finish(200);
+    let text = metrics.render(&[]);
+    assert_eq!(
+        sample(
+            &text,
+            r#"uf_requests_total{endpoint="playground",status_class="2xx"}"#
+        ),
+        1.0
+    );
+    assert_eq!(
+        sample(
+            &text,
+            r#"uf_requests_total{endpoint="chat",status_class="2xx"}"#
+        ),
+        0.0
+    );
+}
+
 #[tokio::test]
 async fn the_circuit_gauge_shows_open_targets_per_provider_and_model() {
     let h = harness_with_metrics_token("openai", Some(TOKEN)).await;

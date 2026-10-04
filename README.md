@@ -44,6 +44,35 @@ Call it with any OpenAI SDK by setting the base URL to
 `http://127.0.0.1:3000/v1` and the model to `provider/model`, for example
 `anthropic/claude-sonnet-5`, or to the name of a route.
 
+### Install a release
+
+A tag `v*` makes a **draft** GitHub release (a person publishes it) with the
+binary of each of these targets, the console compiled in: Linux x86_64 and
+aarch64 (static, musl), macOS x86_64 and arm64, Windows x64. Each archive has
+a checksum, and `SHA256SUMS` lists them all:
+
+```bash
+curl -LO https://github.com/<owner>/<repo>/releases/download/<tag>/ultrafast-<tag>-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/<owner>/<repo>/releases/download/<tag>/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf ultrafast-<tag>-x86_64-unknown-linux-musl.tar.gz
+./ultrafast-<tag>-x86_64-unknown-linux-musl/ultrafast serve
+```
+
+The image is on `ghcr.io/<owner>/ultrafast-ai-gateway:<version>` (and `latest`
+for a version that is not a pre-release), for linux/amd64:
+
+```bash
+docker run -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast ghcr.io/<owner>/ultrafast-ai-gateway:<version>
+```
+
+The release workflow (`.github/workflows/release.yml`) builds the console
+first and the binaries after it, publishes nothing without a tag, and does not
+publish the crates to crates.io yet. Run it by hand (Actions, Release, Run
+workflow) to build the archives as artifacts of the run, with nothing
+published. The tag must name the version in `Cargo.toml` (`v2.0.0-alpha.2` for
+`2.0.0-alpha.2`), or the release job stops.
+
 ### Console
 
 The web console is served by the same binary at `/`: a static app compiled
@@ -55,20 +84,39 @@ an overview with a getting-started guide and the last 30 days of requests,
 errors, tokens and spend; request logs (a list with filters and a detail of
 each call, with the targets tried; no prompt or answer is stored); providers
 (OpenAI-compatible, Anthropic, Gemini and Azure OpenAI: add, edit, sync
-models, delete); models (enable, who may call each, add by name, set prices);
+models, delete); a playground; models (enable, who may call each, add by name, set prices);
 routing (routes with fallbacks, a response cache, who may use each, and the
 health of their targets); virtual keys (create, shown once, limit to chosen
 models and routes, revoke, filter); users (invite, role, status, teams, new
 invite link, delete); teams (create, rename, delete, members added by email,
 and leads); budgets and limits (admins set them; everyone sees what applies
 to them); your account (name, password, access tokens); the audit log, for
-admins; and a Settings page for admins (how long request logs are kept).
+admins, under Settings; and a Settings page for admins (retention, sign-in
+settings, backup, configuration export and import, the audit log).
 What a user sees depends on their role, and the API decides. Light and dark
 themes, following the device until one is chosen, and a layout for phones.
 
-Not yet: the playground, guardrails and MCP tools (shown as coming in the
-navigation), and the rest of Settings (sign-in settings, backup,
-configuration export and import).
+Not yet: guardrails and MCP tools (shown as coming in the navigation).
+
+#### Playground
+
+Observe, Playground: chat with a model or a route from the console, as the
+signed-in user. The picker offers what the gateway lists for you (models you
+may call, routes you may use); there is a system prompt, max tokens,
+temperature, top P and stop sequences, and the answer streams in, with Stop.
+It shows the tokens and the cost of the call (from the price of the model; a
+route is priced by the model that answered), and **Copy as curl** gives the
+same call for `/v1` with `Authorization: Bearer <your key>` to fill in.
+
+The playground is not a side door. The call goes through the same pipeline as
+`/v1/chat/completions` (access, rate limits, budgets, the response cache,
+routing, logging) as a key owned by you, with no team and no allowlist would:
+a model you may not call is refused as it would be for your key, and the call
+counts against your limits and budgets and those of your teams. It is logged
+like any call, to you, with no key and the endpoint `playground`. Nothing of
+the conversation is saved: it is in the memory of the page. The API is
+`POST /api/playground/chat` (a signed-in user; it answers as
+`/v1/chat/completions` does).
 
 #### Prices, cache, limits, budgets and retention
 
@@ -95,6 +143,40 @@ All of these are set by an admin in the console, or with the admin API under
   counts against all of its owner's teams.
 - **Retention.** Settings page: request logs older than the number of days
   (1 to 3 650, 30 at first) are deleted.
+
+#### Settings: sign-in, configuration export and import
+
+Settings, Sign-in: how long a session lives (1 to 720 hours, 12 at first; it
+applies to sign-ins from then on, and sessions that exist keep theirs). The
+trusted proxies (the `--trusted-proxy` flag) and the sign-in limits (5 failed
+attempts for one email and 20 for one address in 15 minutes) are shown and
+cannot be changed there.
+
+Settings, Configuration: **export** writes the setup as one JSON file
+(`{"format": "ultrafast-config", "version": 1, ...}`): providers (name, kind,
+base URL, API version, **no credential**), models (enabled, prices, who may
+call them by team name and user email), routes (all settings, targets as
+`provider/model`, teams by name), teams (names), limits and budgets for the
+gateway, teams and users (those of keys are left out) and the settings. It
+holds no key, token, password, session, log or audit row; users are not in it.
+**Import** reads such a file: choose it, read the report of what it would do
+(a dry run, nothing is written), then Apply. A file that names a team, user,
+provider or model that does not exist, or a value that is not valid, is
+refused whole, with where and why, and writes nothing. What is missing is
+created and what exists, by name, is updated; **nothing is deleted** (a prune
+is for later). Providers it creates have no credential until an admin sets
+one, and the report says so. The import is one transaction, is audited, and
+reaches `/v1` at once. From the command line, with no master key:
+
+```bash
+ultrafast --data-dir ./data config export ./config.json
+ultrafast --data-dir ./other config import ./config.json --dry-run
+ultrafast --data-dir ./other config import ./config.json
+```
+
+The API is `GET /api/config/export` and `POST /api/config/import?dry_run=true`
+(a dry run unless `dry_run=false`; 422 with the report when the file has
+errors), for admins.
 
 #### Backup and restore
 
@@ -150,7 +232,7 @@ scrape_configs:
 ```
 
 Metrics: `uf_requests_total{endpoint,status_class}` (endpoint `chat`,
-`messages`, `embeddings`; class `2xx`, `4xx`, `5xx`, `499` for a caller that
+`messages`, `embeddings`, `playground`; class `2xx`, `4xx`, `5xx`, `499` for a caller that
 went away, `other`), `uf_tokens_total{direction}` (answers from the cache are
 not counted), `uf_cost_micros_total`, `uf_upstream_duration_seconds{provider}`
 (histogram), `uf_log_records_dropped_total`, `uf_log_write_failures_total`,
@@ -237,7 +319,7 @@ What works today: `/v1/chat/completions`, `/v1/messages` (Anthropic format),
 Gemini and Azure OpenAI providers, a model catalog with grants and prices,
 routes with fallbacks, circuit breakers and a response cache, request logs
 with retention, usage and spend reports, rate limits and budgets, Prometheus
-metrics, and the console. Not yet: tools, images, the playground and
+metrics, and the console with its playground. Not yet: tools, images and
 guardrails.
 
 > **A high-performance AI gateway built in Rust** that provides a unified interface to 10+ LLM providers with advanced routing, caching, and monitoring capabilities.

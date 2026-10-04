@@ -1,237 +1,209 @@
-name: Release (crates.io + Docker)
+# On a tag `v*`: the console is built once, the binaries are built with it
+# embedded (the gateway compiles `ui/dist` into the binary, so the console
+# must exist before cargo runs), a DRAFT GitHub release gets the archives and
+# their checksums, and the image goes to ghcr.io.
+#
+# By hand (workflow_dispatch): the same builds, kept as artifacts of the run.
+# Nothing is published: the jobs that publish are for a tag only.
+#
+# Not here yet: publishing the crates to crates.io (LATER), other registries.
+name: Release
 
-# Disabled for v2: manual trigger only, and the first job fails on purpose.
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version (e.g., 0.1.0) used when manually dispatching'
-        required: true
-        type: string
 
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  test:
-    name: Lint & Test
+  console:
+    name: Console
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Release workflow not yet updated for v2
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Build the console
         run: |
-          echo "Release workflow not yet updated for v2" >&2
-          exit 1
+          pnpm --dir ui install --frozen-lockfile
+          pnpm --dir ui build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: console
+          path: ui/dist
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry + build
-        uses: Swatinem/rust-cache@v2
-
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Test
-        run: cargo test --all --all-features --no-fail-fast
-
-  publish-crates:
-    name: Publish to crates.io
-    runs-on: ubuntu-latest
-    needs: test
-    # Only run if token is configured; GitHub does not allow referencing secrets in 'if' for top-level jobs with older expression context.
-    # Instead, check within steps and skip when missing.
+  build:
+    name: Binary ${{ matrix.target }}
+    needs: console
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-15
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
+      # Before cargo runs: the gateway's build script copies `ui/dist` into
+      # the binary.
+      - uses: actions/download-artifact@v4
+        with:
+          name: console
+          path: ui/dist
+      - name: Tools for musl
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      # The toolchain is the one `rust-toolchain.toml` names.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry + build
-        uses: Swatinem/rust-cache@v2
-
-      - name: Extract version
-        id: version
-        shell: bash
         run: |
-          ver="${GITHUB_REF_NAME#v}"
-          if [ -z "$ver" ] || [ "$ver" = "$GITHUB_REF_NAME" ]; then
-            ver="${{ github.event.inputs.version }}"
-          fi
-          ver="${ver#v}"
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
-          echo "Release version: $ver"
-
-      - name: Verify workspace/crate versions match tag
-        shell: bash
+          rustup toolchain install --profile minimal
+          rustup target add ${{ matrix.target }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+      - name: Build
+        run: cargo build --release --locked -p ultrafast-gateway --target ${{ matrix.target }}
+      - name: Smoke test
+        run: ./target/${{ matrix.target }}/release/ultrafast --version
+      - name: Package
         run: |
-          TAG="${{ steps.version.outputs.version }}"
-          echo "Expected tag version: $TAG"
-          echo "Checking root workspace version..."
-          if ! grep -qE '^version\s*=\s*"'"$TAG"'"' Cargo.toml; then
-            echo "Error: root Cargo.toml workspace version does not match tag $TAG" >&2; exit 1; fi
-          echo "Checking crate manifests..."
-          for f in ultrafast-models-sdk/Cargo.toml ultrafast-gateway/Cargo.toml; do
-            echo "- $f"
-            if grep -qE '^version\s*=\s*"' "$f"; then
-              grep -qE '^version\s*=\s*"'"$TAG"'"' "$f" || { echo "Error: $f version does not match tag $TAG" >&2; exit 1; }
-            else
-              grep -qE '^version\.workspace\s*=\s*true' "$f" || { echo "Error: $f missing version or workspace version flag" >&2; exit 1; }
-            fi
-          done
-
-      - name: Check for crates.io token
-        id: tokencheck
-        env:
-          TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CRATES_IO_TOKEN }}
-        shell: bash
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "has_token=false" >> "$GITHUB_OUTPUT"
+          exe=ultrafast
+          if [ "${{ matrix.archive }}" = "zip" ]; then exe=ultrafast.exe; fi
+          ref="${GITHUB_REF_NAME//\//-}"
+          name="ultrafast-${ref}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/$exe" README.md LICENSE CHANGELOG.md "dist/$name/"
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "$name.zip" "$name" > /dev/null
+            file="$name.zip"
           else
-            echo "has_token=true" >> "$GITHUB_OUTPUT"
+            tar -czf "$name.tar.gz" "$name"
+            file="$name.tar.gz"
           fi
+          # The checksum names the file as it is next to it.
+          if command -v sha256sum > /dev/null; then sha256sum "$file" > "$file.sha256"; else shasum -a 256 "$file" > "$file.sha256"; fi
+          cat "$file.sha256"
+          ls -l "$file" | awk '{printf "archive size: %.1f MB\n", $5/1048576}'
+          rm -rf "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Publish ultrafast-models-sdk
-        if: steps.tokencheck.outputs.has_token == 'true'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CRATES_IO_TOKEN }}
-        run: |
-          cargo publish -p ultrafast-models-sdk
-
-      - name: Wait for crates.io index update
-        if: steps.tokencheck.outputs.has_token == 'true'
-        run: |
-          echo "Sleeping to allow crates.io index to update..."
-          sleep 90
-
-      - name: Rewrite gateway dependency to published version
-        if: steps.tokencheck.outputs.has_token == 'true'
-        run: |
-          ver="${{ steps.version.outputs.version }}"
-          sed -i "s#ultrafast-models-sdk = { path = \"../ultrafast-models-sdk\" }#ultrafast-models-sdk = \"$ver\"#" ultrafast-gateway/Cargo.toml
-          echo "Updated dependency in ultrafast-gateway/Cargo.toml to version $ver"
-
-      - name: Commit dependency update
-        if: steps.tokencheck.outputs.has_token == 'true'
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add ultrafast-gateway/Cargo.toml
-          git commit -m "Update ultrafast-models-sdk dependency to published version ${{ steps.version.outputs.version }}"
-
-      - name: Publish ultrafast-gateway
-        if: steps.tokencheck.outputs.has_token == 'true'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CRATES_IO_TOKEN }}
-        run: |
-          cargo publish -p ultrafast-gateway --allow-dirty
-
-  docker:
-    name: Build & Push Docker image (GHCR + Docker Hub)
+  release:
+    name: Draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: test
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      # A tag that does not name the version of the workspace is a mistake:
+      # nothing is released from it.
+      - name: The tag names the version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$tag" != "$version" ]; then
+            echo "The tag $GITHUB_REF_NAME names version $tag; Cargo.toml has $version." >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        working-directory: dist
+        run: |
+          cat ./*.sha256 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          rm ./*.sha256
+          ls -l
+      # A draft: a person reads it and publishes it.
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --draft --verify-tag $pre \
+            --title "$GITHUB_REF_NAME" --generate-notes
+
+  docker-publish:
+    name: Image on ghcr.io
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Full history for better layer caching
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: linux/amd64,linux/arm64
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:v0.13.0
-          platforms: linux/amd64,linux/arm64
-
-      - name: Extract version
-        id: version
-        shell: bash
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          if [ -z "$ver" ] || [ "$ver" = "$GITHUB_REF_NAME" ]; then
-            ver="${{ github.event.inputs.version }}"
-          fi
-          ver="${ver#v}"
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
-          echo "Building version: $ver"
-
-      - name: Get timestamp
-        id: timestamp
-        run: echo "iso8601=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+          password: ${{ github.token }}
+      - id: meta
+        uses: docker/metadata-action@v5
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push to both registries
-        uses: docker/build-push-action@v6
+          images: ghcr.io/${{ github.repository_owner }}/ultrafast-ai-gateway
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+      # The Dockerfile builds the console and the binary itself. linux/amd64
+      # only for now: an arm64 image would be built on an arm64 runner (LATER).
+      - uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/ultrafast-ai-gateway:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/ultrafast-ai-gateway:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/ultrafast-ai-gateway:${{ steps.version.outputs.version }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/ultrafast-ai-gateway:latest
-          build-args: |
-            RUSTFLAGS=-C target-cpu=native
-            BUILDKIT_INLINE_CACHE=1
-          cache-from: |
-            type=gha,scope=docker-cache
-            type=registry,ref=ghcr.io/${{ github.repository_owner }}/ultrafast-ai-gateway:buildcache
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/ultrafast-ai-gateway:buildcache
-          cache-to: |
-            type=gha,mode=max,scope=docker-cache
-            type=registry,ref=ghcr.io/${{ github.repository_owner }}/ultrafast-ai-gateway:buildcache,mode=max
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/ultrafast-ai-gateway:buildcache,mode=max
-          provenance: false  # Disable for faster builds
-          sbom: false        # Disable for faster builds
-          labels: |
-            org.opencontainers.image.title=Ultrafast Gateway
-            org.opencontainers.image.description=High-performance LLM gateway with advanced routing and caching
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.vendor=Ultrafast AI
-            org.opencontainers.image.licenses=MIT
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ steps.timestamp.outputs.iso8601 }}
-            maintainer=techgopal <techgopal2@gmail.com>
-
-      - name: Verify images
-        run: |
-          echo "Verifying built images..."
-          echo "GHCR Images:"
-          docker images | grep ghcr.io || echo "No local GHCR images found"
-          echo "Docker Hub Images:"
-          docker images | grep ultrafast-ai-gateway || echo "No local Docker Hub images found"
-          echo "Image verification complete"
-
-      - name: Cleanup
-        run: |
-          echo "Cleaning up Docker system..."
-          docker system prune -f
-
-
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
