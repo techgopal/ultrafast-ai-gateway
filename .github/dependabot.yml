@@ -11,6 +11,10 @@ updates:
     directory: /ui
     schedule:
       interval: weekly
+    ignore:
+      # Node 22 is the supported runtime; its type definitions follow it.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       ui-minor-patch:
         update-types: [minor, patch]
@@ -18,6 +22,10 @@ updates:
     directory: /clients/ts
     schedule:
       interval: weekly
+    ignore:
+      # Node 22 is the supported runtime; its type definitions follow it.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       client-ts-minor-patch:
         update-types: [minor, patch]
