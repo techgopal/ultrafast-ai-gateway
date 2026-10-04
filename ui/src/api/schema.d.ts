@@ -5401,7 +5401,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            /** @description The caller is not allowed to do this, the CSRF token is missing or does not match, or the call is made with an access token: tokens are made from a browser session only. */
             403: {
                 headers: {
                     [name: string]: unknown;

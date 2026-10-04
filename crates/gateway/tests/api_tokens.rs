@@ -80,16 +80,17 @@ async fn a_token_authenticates_as_its_owner() {
     assert_eq!(body["user"]["id"], org.lena);
     assert_eq!(body["user"]["email"], "lena@example.com");
 
-    // No cookie, so no CSRF header is needed.
+    // A token does not make another: only a browser session does, so a
+    // token that leaks cannot be made to outlive its revocation.
     let second = json!({ "name": "made with a token" });
     let (status, body) = with_token(&org, &secret, "POST", "/api/tokens", Some(second)).await;
-    assert_eq!(status, StatusCode::CREATED);
-    assert!(body["secret"].as_str().unwrap().starts_with("uf-at-"));
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(error_code(&body), "forbidden");
 
     let (status, body) = with_token(&org, &secret, "GET", "/api/tokens", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(names(&body), ["made with a token", "ci"]);
-    assert!(body["tokens"][1]["last_used_at"].is_string());
+    assert_eq!(names(&body), ["ci"]);
+    assert!(body["tokens"][0]["last_used_at"].is_string());
 
     // A token is not a virtual key.
     let chat = r#"{"model":"p/m","messages":[{"role":"user","content":"hi"}]}"#;
@@ -382,4 +383,18 @@ async fn token_status() {
         )
         .await;
     assert_eq!(created["token"]["status"], "active");
+}
+
+#[tokio::test]
+async fn not_even_an_admins_token_makes_a_token() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let (_, secret) = create(&org, &maya, "ops").await;
+    let body = json!({ "name": "another" });
+    let (status, body) = with_token(&org, &secret, "POST", "/api/tokens", Some(body)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(error_code(&body), "forbidden");
+    let (_, body) = with_token(&org, &secret, "GET", "/api/tokens", None).await;
+    assert_eq!(names(&body), ["ops"]);
+    assert_eq!(audited(&org).await, ["token.create"]);
 }

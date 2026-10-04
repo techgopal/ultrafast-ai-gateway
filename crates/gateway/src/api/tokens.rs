@@ -10,7 +10,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{name_and_expiry, path_id, require, ApiError, ApiJson, Authed};
+use super::{name_and_expiry, path_id, require, ApiError, ApiJson, AuthVia, Authed};
 use crate::app::AppState;
 use crate::identity::policy::Action;
 use crate::secrets::{generate_secret, TOKEN_PREFIX};
@@ -110,18 +110,23 @@ pub async fn list(
         (status = 201, description = "The new access token, with the token itself.", body = super::openapi::CreatedToken),
         (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
-        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, the CSRF token is missing or does not match, or the call is made with an access token: tokens are made from a browser session only.", body = super::openapi::ApiErrorBody),
         (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
         (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
-    security(("session" = []), ("token" = [])),
+    security(("session" = [])),
 )]
 pub async fn create(
     State(state): State<Arc<AppState>>,
     authed: Authed,
     ApiJson(req): ApiJson<CreateTokenRequest>,
 ) -> Result<Response, ApiError> {
+    // A token never makes another, so one that leaks cannot be made to
+    // outlive its own revocation.
+    if !matches!(authed.via, AuthVia::Session { .. }) {
+        return Err(ApiError::forbidden());
+    }
     let me = &authed.principal;
     require(me, &Action::ManageOwnTokens)?;
     let (name, expires_at) = name_and_expiry(&req.name, req.expires_at.as_deref())?;
