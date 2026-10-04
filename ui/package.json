@@ -19,12 +19,12 @@
     "@tailwindcss/vite": "4.3.3",
     "@tanstack/react-form": "1.33.5",
     "@tanstack/react-query": "5.104.0",
-    "@tanstack/react-router": "1.170.40",
+    "@tanstack/react-router": "1.170.41",
     "@tanstack/react-table": "9.2.4",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "get-nonce": "1.0.1",
-    "lucide-react": "1.48.0",
+    "lucide-react": "1.49.0",
     "radix-ui": "1.6.7",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -52,8 +52,8 @@
     "msw": "2.15.0",
     "openapi-typescript": "7.13.0",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.70.1",
-    "vite": "8.3.1",
-    "vitest": "5.0.2"
+    "typescript-eslint": "8.71.0",
+    "vite": "8.3.2",
+    "vitest": "5.0.3"
   }
 }
