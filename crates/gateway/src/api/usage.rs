@@ -17,6 +17,7 @@ use super::{require, ApiError, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action};
 use crate::store::{UsageGroup, UsageSums};
+use crate::tags;
 
 /// Days in the range when only one end is given or none.
 const DEFAULT_DAYS: i64 = 30;
@@ -109,7 +110,7 @@ fn day(raw: &str) -> Option<Date> {
     params(
         ("from" = Option<String>, Query, description = "First day, `YYYY-MM-DD` (UTC). 29 days before `to` when left out."),
         ("to" = Option<String>, Query, description = "Last day, `YYYY-MM-DD` (UTC), counted whole. Today when left out."),
-        ("group" = Option<String>, Query, description = "`day` (the default), `model`, `key`, `user` or `team`."),
+        ("group" = Option<String>, Query, description = "`day` (the default), `model`, `key`, `user`, `team`, or `tag:<name>` to group by the value of that tag (calls without it are `(none)`)."),
     ),
     responses(
         (status = 200, description = "The sums, one row per group, and their total.", body = super::openapi::UsagePage),
@@ -138,13 +139,18 @@ pub async fn usage_view(
         Some("key") => UsageGroup::Key,
         Some("user") => UsageGroup::User,
         Some("team") => UsageGroup::Team,
-        Some(_) => {
-            fields.insert(
-                "group".to_string(),
-                "must be day, model, key, user or team".to_string(),
-            );
-            UsageGroup::Day
-        }
+        Some(other) => match other.strip_prefix("tag:") {
+            Some(name) if tags::refusal_of_name(name).is_none() => {
+                UsageGroup::Tag(name.to_string())
+            }
+            _ => {
+                fields.insert(
+                    "group".to_string(),
+                    "must be day, model, key, user, team or tag:<name>".to_string(),
+                );
+                UsageGroup::Day
+            }
+        },
     };
     let mut date = |name: &str, raw: &Option<String>| {
         let raw = raw.as_deref()?;

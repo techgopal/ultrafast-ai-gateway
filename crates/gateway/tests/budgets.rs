@@ -387,6 +387,7 @@ impl World {
 
     fn record(&self) -> RequestRecord {
         RequestRecord {
+            tags: Default::default(),
             key_id: Some(self.key_id),
             user_id: Some(self.user),
             team_id: Some(self.team),
@@ -787,6 +788,7 @@ async fn shutdown_flushes_what_the_interval_has_not() {
 
 fn log(at: &str, key_id: i64, user_id: i64, team_id: i64, cost: i64) -> NewLog {
     NewLog {
+        tags: None,
         at: at.to_string(),
         key_id: Some(key_id),
         user_id: Some(user_id),

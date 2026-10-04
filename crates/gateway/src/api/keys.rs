@@ -17,6 +17,7 @@ use crate::identity::policy::{list_scope, Action, Scope};
 use crate::identity::{Principal, UserStatus};
 use crate::secrets::generate_key;
 use crate::store::{now, AuditEntry, KeyRow, Store};
+use crate::tags::{self, Tags};
 
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +29,21 @@ pub struct CreateKeyRequest {
     /// The names the key may call: `provider/model` of a model in the
     /// catalog, or the name of a route. Left out, the key has no allowlist.
     allowed: Option<Vec<String>>,
+    /// Tags every call of the key is recorded with, over those the call
+    /// sends. At most 20; names of `A-Z a-z 0-9 _ . : -`, names and values
+    /// of 1 to 64 characters.
+    #[schema(value_type = Option<std::collections::BTreeMap<String, String>>)]
+    tags: Option<Tags>,
+}
+
+/// The new tags of a key.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateKeyRequest {
+    /// Replaces all the tags of the key; `{}` removes them. The same limits
+    /// as when the key is created.
+    #[schema(value_type = std::collections::BTreeMap<String, String>)]
+    tags: Tags,
 }
 
 /// Most names an allowlist may hold, and the longest of them.
@@ -141,6 +157,10 @@ pub struct KeyView {
     /// The models and routes the key may call; `null` is no limit.
     #[schema(required)]
     pub allowed: Option<Vec<String>>,
+    /// Added to every call of the key; the key's value wins over the call's
+    /// for the same name. Empty when none.
+    #[schema(value_type = std::collections::BTreeMap<String, String>)]
+    pub tags: Tags,
     /// `revoked`, `expired`, `suspended` or `active`, the first that
     /// applies. `suspended`: the owner of the key is not active, so the key
     /// does not work until they are. Only an `active` key works.
@@ -169,6 +189,7 @@ impl KeyView {
             revoked_at: k.revoked_at,
             created_at: k.created_at,
             allowed: k.allowed,
+            tags: k.tags,
             status,
         }
     }
@@ -270,6 +291,9 @@ pub async fn create(
     };
     let mut tx = store.begin().await?;
     let mut fields = BTreeMap::new();
+    if let Some(reason) = req.tags.as_ref().and_then(tags::refusal) {
+        fields.insert("tags".to_string(), reason.to_string());
+    }
     let allowed = match allowed {
         Some(Ok(names)) => Some(names),
         Some(Err(message)) => {
@@ -318,6 +342,9 @@ pub async fn create(
         .await?;
     if let Some(names) = &allowed {
         tx.set_key_allowed(id, Some(names)).await?;
+    }
+    if let Some(key_tags) = &req.tags {
+        tx.set_key_tags(id, key_tags).await?;
     }
     let summary = match &team {
         Some(team) => format!(
@@ -377,6 +404,68 @@ pub async fn view(
         },
     )?;
     Ok(Json(KeyView::new(key, &now())).into_response())
+}
+
+#[utoipa::path(
+    patch,
+    path = "/keys/{id}",
+    tag = "keys",
+    operation_id = "keys_update",
+    params(
+        ("id" = i64, Path, description = "The id of the key."),
+    ),
+    request_body = UpdateKeyRequest,
+    responses(
+        (status = 200, description = "The key with its new tags.", body = KeyView),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+/// Replaces the tags of a key. Whoever may revoke the key may do this.
+pub async fn update(
+    State(state): State<Arc<AppState>>,
+    Path(raw_id): Path<String>,
+    authed: Authed,
+    ApiJson(req): ApiJson<UpdateKeyRequest>,
+) -> Result<Response, ApiError> {
+    let me = &authed.principal;
+    let store = &state.store;
+    let key = key_of(store, &raw_id).await?;
+    require(
+        me,
+        &Action::RevokeKey {
+            owner_id: key.user_id,
+            team_id: key.team_id,
+        },
+    )?;
+    if let Some(reason) = tags::refusal(&req.tags) {
+        return Err(ApiError::invalid_field("tags", reason));
+    }
+
+    let mut tx = store.begin().await?;
+    tx.set_key_tags(key.id, &req.tags).await?;
+    tx.audit(AuditEntry {
+        actor_user_id: Some(me.user_id),
+        actor_email: &me.email,
+        action: "key.tags",
+        target_type: "key",
+        target_id: Some(key.id),
+        summary: &format!("Changed the tags of key {} ({})", key.name, key.display),
+    })
+    .await?;
+    tx.commit().await?;
+    refresh_snapshot(&state).await?;
+    let row = store
+        .key_by_id(key.id)
+        .await?
+        .ok_or_else(|| anyhow!("the key is missing after its tags were changed"))?;
+    Ok(Json(KeyView::new(row, &now())).into_response())
 }
 
 #[utoipa::path(

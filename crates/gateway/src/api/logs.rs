@@ -17,6 +17,7 @@ use super::{path_id, require, ApiError, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
 use crate::store::{LogDetail, LogFilter, LogScope};
+use crate::tags::{self, Tags};
 
 /// Rows in one answer when `limit` is not given.
 const DEFAULT_LIMIT: i64 = 50;
@@ -83,6 +84,10 @@ pub struct LogView {
     /// characters / 4, and `priced` stays true when the model has a price.
     pub estimated: bool,
     pub duration_ms: i64,
+    /// The tags of the call: what it sent in `x-uf-tags` overlaid by its
+    /// key's. Empty when none.
+    #[schema(value_type = std::collections::BTreeMap<String, String>)]
+    pub tags: Tags,
 }
 
 /// One target tried for a call.
@@ -146,6 +151,10 @@ pub struct LogDetailView {
     /// characters / 4, and `priced` stays true when the model has a price.
     pub estimated: bool,
     pub duration_ms: i64,
+    /// The tags of the call: what it sent in `x-uf-tags` overlaid by its
+    /// key's. Empty when none.
+    #[schema(value_type = std::collections::BTreeMap<String, String>)]
+    pub tags: Tags,
     pub attempts: Vec<LogAttempt>,
 }
 
@@ -173,6 +182,7 @@ impl LogDetailView {
             cached: l.cached,
             estimated: l.estimated,
             duration_ms: l.duration_ms,
+            tags: l.tags,
             attempts,
         }
     }
@@ -203,8 +213,20 @@ impl From<&LogDetail> for LogView {
             cached: r.cached,
             estimated: r.estimated,
             duration_ms: r.duration_ms,
+            tags: tags::parse_stored(r.tags.as_deref()),
         }
     }
+}
+
+/// `name:value`: the name ends at the first colon.
+fn tag_filter(raw: &str) -> Result<(String, String), &'static str> {
+    let Some((name, value)) = raw.split_once(':') else {
+        return Err("must be name:value");
+    };
+    if tags::refusal_of_name(name).is_some() || tags::refusal_of_value(value).is_some() {
+        return Err("must be name:value, with a name of A-Z a-z 0-9 _ . - and a value of 1 to 64 characters");
+    }
+    Ok((name.to_string(), value.to_string()))
 }
 
 /// A positive integer written in plain digits.
@@ -273,6 +295,7 @@ pub(super) fn store_scope(scope: Scope) -> LogScope {
         ("model" = Option<String>, Query, description = "Only calls answered by, or asking for, this model name."),
         ("status" = Option<i64>, Query, description = "Only calls answered with this HTTP status, 100 to 599."),
         ("errors" = Option<bool>, Query, description = "`true`: only calls answered with a status of 400 or more. Combines with the other filters."),
+        ("tag" = Option<Vec<String>>, Query, description = "Only calls with this tag, written `name:value` (the name ends at the first colon). Repeat it to require several tags: all must match."),
     ),
     responses(
         (status = 200, description = "The calls the caller may see, newest first.", body = super::openapi::LogPage),
@@ -287,10 +310,11 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
     query: Result<Query<LogsQuery>, QueryRejection>,
+    pairs: Result<Query<Vec<(String, String)>>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     require(me, &Action::ListLogs)?;
-    let Ok(Query(q)) = query else {
+    let (Ok(Query(q)), Ok(Query(pairs))) = (query, pairs) else {
         return Err(ApiError::bad_request("The query is not valid."));
     };
 
@@ -344,11 +368,25 @@ pub async fn list(
             false
         }
     };
+    // `tag` may be repeated, which a struct cannot take.
+    let mut tag_filters = Vec::new();
+    for (_, raw) in pairs.iter().filter(|(name, _)| name == "tag") {
+        match tag_filter(raw) {
+            Ok(pair) => tag_filters.push(pair),
+            Err(reason) => {
+                fields.insert("tag".to_string(), reason.to_string());
+            }
+        }
+    }
+    if tag_filters.len() > tags::MAX_TAGS {
+        fields.insert("tag".into(), "must be given at most 20 times".into());
+    }
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
 
     let filter = LogFilter {
+        tags: tag_filters,
         errors,
         before,
         from,

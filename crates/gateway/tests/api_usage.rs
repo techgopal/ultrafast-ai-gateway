@@ -21,6 +21,7 @@ fn log(
     priced: bool,
 ) -> NewLog {
     NewLog {
+        tags: None,
         at: at.into(),
         key_id: None,
         user_id: user,
@@ -529,5 +530,113 @@ async fn a_caller_that_went_away_is_cancelled_not_an_error() {
         let sum = |f: &str| -> i64 { rows.iter().map(|r| r[f].as_i64().unwrap()).sum() };
         assert_eq!(sum("errors"), 1, "{group}");
         assert_eq!(sum("cancelled"), 2, "{group}");
+    }
+}
+
+#[tokio::test]
+async fn grouping_by_a_tag_sums_by_its_value_and_scope_applies() {
+    let org = org().await;
+    let g = Some("gpt-4o");
+    let mut rows = Vec::new();
+    for (i, (user, tags)) in [
+        (org.lena, Some(json!({ "team": "a", "env": "prod" }))),
+        (org.lena, Some(json!({ "team": "a" }))),
+        (org.lena, Some(json!({ "team": "b" }))),
+        (org.lena, Some(json!({ "env": "prod" }))),
+        (org.lena, None),
+        (org.tomas, Some(json!({ "team": "b" }))),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut r = log(
+            "2026-01-01 10:00:00",
+            Some(user),
+            None,
+            "r",
+            if i == 2 { 500 } else { 200 },
+            g,
+            Some((10, 5)),
+            100,
+            true,
+        );
+        r.tags = tags.map(|t| t.to_string());
+        rows.push(r);
+    }
+    org.api.store.insert_logs(&rows).await.unwrap();
+    let rows_of = |body: &Value| -> Vec<(String, String, i64)> {
+        body["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["group"].as_str().unwrap().to_string(),
+                    r["label"].as_str().unwrap().to_string(),
+                    r["requests"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let maya = org.sign_in("maya").await;
+    let url = "/api/usage?from=2026-01-01&to=2026-01-02&group=tag:team";
+    let (status, body) = org.call(Some(&maya), "GET", url, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        rows_of(&body),
+        // Equal counts: by value, and the rows without the tag first.
+        [
+            ("".to_string(), "(none)".to_string(), 2),
+            ("a".to_string(), "a".to_string(), 2),
+            ("b".to_string(), "b".to_string(), 2),
+        ]
+    );
+    assert_eq!(body["total"]["requests"], 6);
+    assert_eq!(body["rows"][2]["errors"], 1);
+    assert_eq!(body["rows"][2]["cost_micros"], 200);
+
+    // A caller sees only their own rows.
+    let lena = org.sign_in("lena").await;
+    let (_, body) = org.call(Some(&lena), "GET", url, None).await;
+    assert_eq!(body["total"]["requests"], 5);
+    let (_, body) = org
+        .call(
+            Some(&lena),
+            "GET",
+            "/api/usage?from=2026-01-01&to=2026-01-02&group=tag:env",
+            None,
+        )
+        .await;
+    assert_eq!(
+        rows_of(&body),
+        [
+            ("".to_string(), "(none)".to_string(), 3),
+            ("prod".to_string(), "prod".to_string(), 2),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_bad_tag_group_is_422_on_group() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    for group in [
+        "tag",
+        "tag:",
+        "tag:a%20b",
+        "tags:a",
+        "tag:%22",
+        &format!("tag:{}", "n".repeat(65)),
+    ] {
+        let (status, body) = org
+            .call(
+                Some(&maya),
+                "GET",
+                &format!("/api/usage?group={group}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{group}: {body}");
+        assert!(body["error"]["fields"]["group"].is_string(), "{group}");
     }
 }

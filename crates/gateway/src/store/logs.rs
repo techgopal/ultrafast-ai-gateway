@@ -30,6 +30,8 @@ pub struct NewLog {
     pub duration_ms: i64,
     /// A JSON array.
     pub attempts: String,
+    /// A JSON object of strings; `None` for no tags.
+    pub tags: Option<String>,
 }
 
 /// A stored row.
@@ -56,6 +58,8 @@ pub struct LogRow {
     pub estimated: bool,
     pub duration_ms: i64,
     pub attempts: String,
+    /// A JSON object of strings; `None` for no tags.
+    pub tags: Option<String>,
 }
 
 /// A stored row with the names of its key, user and team, which are `None`
@@ -97,16 +101,27 @@ pub struct LogFilter {
     pub status: Option<i64>,
     /// Only calls answered with status 400 or more.
     pub errors: bool,
+    /// Only calls that carry every one of these tags (name, value). The
+    /// names are checked by the caller.
+    pub tags: Vec<(String, String)>,
 }
 
 /// What `usage` groups by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsageGroup {
     Day,
     Model,
     Key,
     User,
     Team,
+    /// The value of the tag with this name; calls without it are `(none)`.
+    Tag(String),
+}
+
+/// The JSON path of a tag, to bind: names are checked, and quoted here so
+/// a `.`, `:` or `-` in one is part of the name.
+fn tag_path(name: &str) -> String {
+    format!("$.\"{name}\"")
 }
 
 /// Sums over the rows of one group.
@@ -192,6 +207,7 @@ fn log_from(r: &SqliteRow) -> LogRow {
         estimated: r.get::<i64, _>("estimated") != 0,
         duration_ms: r.get("duration_ms"),
         attempts: r.get("attempts"),
+        tags: r.get("tags"),
     }
 }
 
@@ -204,8 +220,8 @@ impl Store {
                 "INSERT INTO request_logs
                  (org_id, at, key_id, user_id, team_id, requested, endpoint, stream, status,
                   provider, model, input_tokens, output_tokens, cost_micros, priced, cached,
-                  estimated, duration_ms, attempts)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  estimated, duration_ms, attempts, tags)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(DEFAULT_ORG)
             .bind(&r.at)
@@ -226,6 +242,7 @@ impl Store {
             .bind(r.estimated)
             .bind(r.duration_ms)
             .bind(&r.attempts)
+            .bind(&r.tags)
             .execute(&mut *tx)
             .await?;
         }
@@ -287,6 +304,13 @@ impl Store {
             text_values.push(v);
             text_values.push(v);
         }
+        // The path is bound, never written into the statement.
+        let tag_paths: Vec<String> = filter.tags.iter().map(|(n, _)| tag_path(n)).collect();
+        for ((_, value), path) in filter.tags.iter().zip(&tag_paths) {
+            clauses.push("json_extract(l.tags, ?) = ?".into());
+            text_values.push(path);
+            text_values.push(value);
+        }
         let sql = format!(
             "{DETAIL_SELECT} WHERE {} ORDER BY l.id DESC LIMIT ?",
             clauses.join(" AND ")
@@ -323,8 +347,12 @@ impl Store {
             UsageGroup::Key => ("l.key_id", Some(("virtual_keys", "name"))),
             UsageGroup::User => ("l.user_id", Some(("users", "email"))),
             UsageGroup::Team => ("l.team_id", Some(("teams", "name"))),
+            UsageGroup::Tag(_) => ("json_extract(l.tags, ?)", None),
         };
         let (label, join) = match names {
+            None if matches!(group, UsageGroup::Tag(_)) => {
+                ("coalesce(a.gid, '(none)')".to_string(), String::new())
+            }
             None => ("a.gid".to_string(), String::new()),
             Some((table, column)) => (
                 format!("CASE WHEN a.gid IS NULL THEN '(none)' ELSE coalesce(n.{column}, '(deleted)') END"),
@@ -358,7 +386,12 @@ impl Store {
              {join}
              ORDER BY {order}"
         );
-        let mut query = sqlx::query(AssertSqlSafe(sql)).bind(DEFAULT_ORG);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
+        // The group expression comes first in the statement.
+        if let UsageGroup::Tag(name) = &group {
+            query = query.bind(tag_path(name));
+        }
+        let mut query = query.bind(DEFAULT_ORG);
         for v in &scope_ints {
             query = query.bind(*v);
         }
@@ -450,6 +483,7 @@ mod tests {
             estimated: false,
             duration_ms: 1,
             attempts: "[]".into(),
+            tags: None,
         }
     }
 

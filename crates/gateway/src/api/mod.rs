@@ -79,7 +79,7 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(teams::add_member))
         .routes(routes!(teams::put_member, teams::remove_member))
         .routes(routes!(keys::list, keys::create))
-        .routes(routes!(keys::view, keys::revoke))
+        .routes(routes!(keys::view, keys::update, keys::revoke))
         .routes(routes!(providers::list, providers::create))
         .routes(routes!(providers::update, providers::delete))
         .routes(routes!(models::sync))

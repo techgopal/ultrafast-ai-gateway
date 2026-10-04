@@ -5,6 +5,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{AssertSqlSafe, Row};
 
 use super::{check_timestamp, write_error, Store, Tx, DEFAULT_ORG};
+use crate::tags::{self, Tags};
 
 /// A virtual key as stored. It never holds the key or its hash.
 #[derive(Debug, Clone)]
@@ -26,6 +27,8 @@ pub struct KeyRow {
     pub owner_inactive: bool,
     /// The names the key may call; `None` is no allowlist.
     pub allowed: Option<Vec<String>>,
+    /// The tags every call of the key is recorded with.
+    pub tags: Tags,
 }
 
 /// Reads the stored allowlist. A value that cannot be read is an empty
@@ -36,7 +39,7 @@ pub fn parse_allowed(raw: Option<&str>) -> Option<Vec<String>> {
 
 /// Every key query reads through this, so the hash is never selected.
 const KEY_SELECT: &str = "SELECT k.id, k.name, k.display, k.user_id, k.team_id,
-            k.expires_at, k.revoked_at, k.created_at, k.allowed,
+            k.expires_at, k.revoked_at, k.created_at, k.allowed, k.tags,
             u.email AS owner_email, t.name AS team_name,
             (u.id IS NOT NULL AND u.status <> 'active') AS owner_inactive
      FROM virtual_keys k
@@ -59,6 +62,7 @@ fn key_from(r: &SqliteRow) -> KeyRow {
         team_name: r.get("team_name"),
         owner_inactive: r.get("owner_inactive"),
         allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
+        tags: tags::parse_stored(r.get::<Option<String>, _>("tags").as_deref()),
     }
 }
 
@@ -71,6 +75,7 @@ pub struct LiveKey {
     pub team_id: Option<i64>,
     pub expires_at: Option<String>,
     pub allowed: Option<Vec<String>>,
+    pub tags: Tags,
 }
 
 impl Store {
@@ -208,6 +213,17 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Sets the tags of the key; an empty set removes them.
+    pub async fn set_key_tags(&mut self, id: i64, tags: &Tags) -> Result<bool> {
+        let r = sqlx::query("UPDATE virtual_keys SET tags = ? WHERE id = ? AND org_id = ?")
+            .bind(tags::to_stored(tags))
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
     /// Revokes every key of the user that is not revoked yet. Returns how many.
     pub async fn revoke_keys_of(&mut self, user_id: i64) -> Result<u64> {
         let r = sqlx::query(
@@ -251,7 +267,8 @@ impl Tx<'_> {
 
 pub(crate) async fn live_keys_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<LiveKey>> {
     let rows = sqlx::query(
-        "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at, k.allowed
+        "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at, k.allowed,
+                k.tags
          FROM virtual_keys k
          LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
          WHERE k.org_id = ?
@@ -271,6 +288,7 @@ pub(crate) async fn live_keys_in(conn: &mut sqlx::SqliteConnection) -> Result<Ve
             team_id: r.get("team_id"),
             expires_at: r.get("expires_at"),
             allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
+            tags: tags::parse_stored(r.get::<Option<String>, _>("tags").as_deref()),
         })
         .collect())
 }

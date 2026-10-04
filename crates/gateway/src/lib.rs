@@ -19,5 +19,6 @@ pub mod routing;
 pub mod secrets;
 pub mod snapshot;
 pub mod store;
+pub mod tags;
 pub mod telemetry;
 pub mod web;

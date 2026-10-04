@@ -208,6 +208,7 @@ async fn world() -> World {
     let session = store.create_session(org.maya).await.unwrap();
     store
         .insert_logs(&[ultrafast_gateway::store::NewLog {
+            tags: None,
             at: "2026-01-01 10:00:00".into(),
             key_id: Some(key_id),
             user_id: Some(org.lena),

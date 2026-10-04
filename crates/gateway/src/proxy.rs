@@ -13,7 +13,7 @@ use tokio::time::timeout_at;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
@@ -42,6 +42,7 @@ use crate::routing::{
     self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
 };
 use crate::snapshot::{SnapKey, SnapProvider, Snapshot};
+use crate::tags::{self, Tags};
 use crate::telemetry::{AttemptOutcome, Scope};
 
 pub(crate) fn now_secs() -> u64 {
@@ -224,6 +225,7 @@ impl<'a> Actor<'a> {
                 team_id: None,
                 expires_at: None,
                 allowed: None,
+                tags: Tags::new(),
             }),
             key_id: None,
         }
@@ -238,6 +240,7 @@ pub(crate) async fn playground(state: Arc<AppState>, user_id: i64, body: Body) -
         &state,
         &snapshot,
         &Actor::of_user(user_id),
+        None,
         body,
         Endpoint::Playground,
     )
@@ -253,13 +256,22 @@ async fn handle(state: Arc<AppState>, request: Request, endpoint: Endpoint) -> R
         Ok(key) => key,
         Err(resp) => return resp,
     };
-    run(&state, &snapshot, &Actor::of_key(&key), body, endpoint).await
+    run(
+        &state,
+        &snapshot,
+        &Actor::of_key(&key),
+        Some(&parts.headers),
+        body,
+        endpoint,
+    )
+    .await
 }
 
 async fn run(
     state: &AppState,
     snapshot: &Snapshot,
     actor: &Actor<'_>,
+    headers: Option<&HeaderMap>,
     body: Body,
     endpoint: Endpoint,
 ) -> Response {
@@ -273,6 +285,21 @@ async fn run(
         endpoint.name(),
     );
     begun.metered(state.metrics.clone());
+    // The caller's tags, under the key's. An invalid header is the caller's
+    // mistake: refused here, and recorded as the call it was.
+    let call_tags = headers.map_or(Ok(Tags::new()), tags::from_headers);
+    match call_tags {
+        Ok(tags) => begun.tagged(tags::effective(tags, &actor.access.tags)),
+        Err(message) => {
+            begun.tagged(actor.access.tags.clone());
+            let response =
+                endpoint
+                    .shape()
+                    .error(StatusCode::BAD_REQUEST, "invalid_request_error", &message);
+            begun.finish(response.status().as_u16());
+            return response;
+        }
+    }
     let mut scope = Some(begun);
     let response = dispatch(state, snapshot, actor, body, endpoint, &mut scope).await;
     // A stream took the scope with it and records itself.

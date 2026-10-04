@@ -10,6 +10,7 @@ use ultrafast_gateway::store::NewLog;
 
 fn log(at: &str, user: Option<i64>, team: Option<i64>, requested: &str) -> NewLog {
     NewLog {
+        tags: None,
         at: at.into(),
         key_id: None,
         user_id: user,
@@ -126,7 +127,7 @@ async fn the_row_has_names_and_every_field() {
             "requested": "r1", "endpoint": "chat", "stream": false, "status": 200,
             "provider": "main", "model": "gpt-4o",
             "input_tokens": 10, "output_tokens": 5,
-            "cost_micros": 70, "priced": true, "cached": false, "estimated": false, "duration_ms": 12,
+            "cost_micros": 70, "priced": true, "cached": false, "estimated": false, "duration_ms": 12, "tags": {},
         })
     );
     // A key that is gone and a row without user or team: ids stay, names are null.
@@ -391,4 +392,129 @@ async fn an_estimated_row_says_so_in_the_list_and_the_detail() {
     let (_, detail) = o.call(Some(&lena), "GET", "/api/logs/9", None).await;
     assert_eq!(detail["estimated"], true);
     assert_eq!(detail["priced"], true);
+}
+
+fn tagged(at: &str, user: i64, tags: Option<Value>) -> NewLog {
+    let mut row = log(at, Some(user), None, "t");
+    row.tags = tags.map(|t| t.to_string());
+    row
+}
+
+/// ids 1..=4: lena {env:prod,team:a}, lena {env:dev,team:a}, lena {env:prod},
+/// lena (none); id 5: tomas {env:prod,team:a}.
+async fn tagged_world() -> Org {
+    let org = org().await;
+    org.api
+        .store
+        .insert_logs(&[
+            tagged(
+                "2026-01-01 10:00:00",
+                org.lena,
+                Some(json!({"env":"prod","team":"a"})),
+            ),
+            tagged(
+                "2026-01-02 10:00:00",
+                org.lena,
+                Some(json!({"env":"dev","team":"a"})),
+            ),
+            tagged("2026-01-03 10:00:00", org.lena, Some(json!({"env":"prod"}))),
+            tagged("2026-01-04 10:00:00", org.lena, None),
+            tagged(
+                "2026-01-05 10:00:00",
+                org.tomas,
+                Some(json!({"env":"prod","team":"a"})),
+            ),
+        ])
+        .await
+        .unwrap();
+    org
+}
+
+#[tokio::test]
+async fn a_row_shows_its_tags_in_the_list_and_the_detail() {
+    let org = tagged_world().await;
+    let maya = org.sign_in("maya").await;
+    let (_, list) = org.call(Some(&maya), "GET", "/api/logs", None).await;
+    let by_id = |id: i64| {
+        list["logs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_id(1)["tags"], json!({"env":"prod","team":"a"}));
+    assert_eq!(by_id(4)["tags"], json!({}));
+    let (_, one) = org.call(Some(&maya), "GET", "/api/logs/2", None).await;
+    assert_eq!(one["tags"], json!({"env":"dev","team":"a"}));
+}
+
+#[tokio::test]
+async fn the_tag_filter_matches_name_and_value_and_repeats_as_and() {
+    let org = tagged_world().await;
+    let sorted = |mut v: Vec<i64>| {
+        v.sort_unstable();
+        v
+    };
+    let q = |query: &'static str| {
+        let org = &org;
+        async move { sorted(ids(org, "maya", query).await) }
+    };
+    assert_eq!(q("?tag=env:prod").await, [1, 3, 5]);
+    assert_eq!(q("?tag=team:a").await, [1, 2, 5]);
+    assert_eq!(q("?tag=env:prod&tag=team:a").await, [1, 5]);
+    assert_eq!(q("?tag=env:dev&tag=team:a").await, [2]);
+    assert_eq!(q("?tag=env:dev&tag=env:prod").await, Vec::<i64>::new());
+    assert_eq!(q("?tag=env:PROD").await, Vec::<i64>::new());
+    assert_eq!(q("?tag=nope:x").await, Vec::<i64>::new());
+    // A value with a colon in it: the name ends at the first colon.
+    assert_eq!(q("?tag=env:prod&status=200").await, [1, 3, 5]);
+    // Combined with the scope: lena sees only her rows.
+    assert_eq!(sorted(ids(&org, "lena", "?tag=env:prod").await), [1, 3]);
+    assert_eq!(sorted(ids(&org, "tomas", "?tag=env:prod").await), [5]);
+}
+
+#[tokio::test]
+async fn bad_tag_filters_are_422_on_the_tag_field() {
+    let org = tagged_world().await;
+    let maya = org.sign_in("maya").await;
+    let many = (0..21)
+        .map(|i| format!("tag=k{i}:v"))
+        .collect::<Vec<_>>()
+        .join("&");
+    for query in [
+        "tag=env".to_string(),
+        "tag=".to_string(),
+        "tag=:v".to_string(),
+        "tag=env:".to_string(),
+        "tag=a%20b:v".to_string(),
+        format!("tag={}:v", "n".repeat(65)),
+        format!("tag=a:{}", "v".repeat(65)),
+        many,
+    ] {
+        let (status, body) = org
+            .call(Some(&maya), "GET", &format!("/api/logs?{query}"), None)
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}: {body}");
+        assert!(
+            body["error"]["fields"]["tag"].is_string(),
+            "{query}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_tag_with_sql_looking_characters_is_only_a_name() {
+    let org = tagged_world().await;
+    let maya = org.sign_in("maya").await;
+    let (status, _) = org
+        .call(
+            Some(&maya),
+            "GET",
+            "/api/logs?tag=a%22)%20OR%201=1--:v",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }

@@ -162,6 +162,7 @@ async fn world() -> World {
     org.api.state.refresh().await.unwrap();
 
     let log = |user: i64, team: i64| ultrafast_gateway::store::NewLog {
+        tags: None,
         at: "2026-01-01 10:00:00".into(),
         key_id: None,
         user_id: Some(user),
@@ -462,6 +463,12 @@ fn table() -> Vec<Row> {
             [200, 403, 403, 401]),
         row(62, "GET", "/api/backup", "", |_, _| "/api/backup".into(), no_body,
             [200, 403, 403, 401]),
+        row(63, "PATCH", "/api/keys/{id}", "lena's tags", |w, _| format!("/api/keys/{}", w.lena_key),
+            || Some(json!({ "tags": { "team": "platform" } })),
+            [200, 200, 200, 401]),
+        row(64, "PATCH", "/api/keys/{id}", "tomas's tags", |w, _| format!("/api/keys/{}", w.tomas_key),
+            || Some(json!({ "tags": { "team": "research" } })),
+            [200, 404, 404, 401]),
     ]
 }
 
@@ -532,7 +539,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=62).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=64).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -658,7 +665,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 60);
+    assert_eq!(operations, 61);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

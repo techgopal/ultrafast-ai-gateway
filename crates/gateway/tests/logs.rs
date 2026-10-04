@@ -20,6 +20,7 @@ use wiremock::{Mock, ResponseTemplate};
 
 fn record(requested: &str) -> RequestRecord {
     RequestRecord {
+        tags: Default::default(),
         key_id: Some(1),
         user_id: Some(2),
         team_id: Some(3),
@@ -465,6 +466,7 @@ async fn a_call_is_logged_with_its_price_from_the_snapshot() {
 
 fn log_at(at: &str, requested: &str) -> NewLog {
     NewLog {
+        tags: None,
         at: at.into(),
         key_id: None,
         user_id: None,

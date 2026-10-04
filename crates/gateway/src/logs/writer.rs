@@ -209,6 +209,7 @@ mod tests {
             estimated: false,
             started_at: "2999-01-01 00:00:00".into(),
             duration_ms: 1,
+            tags: Default::default(),
         }
     }
 

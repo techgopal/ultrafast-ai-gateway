@@ -69,6 +69,7 @@ fn snap_key(k: &Keys, id: i64, team: Option<i64>) -> SnapKey {
         team_id: team,
         expires_at: None,
         allowed: None,
+        tags: Default::default(),
     }
 }
 
@@ -125,6 +126,7 @@ async fn a_key_without_a_team_counts_for_all_of_its_owners_teams() {
 
 fn log(user: i64, team: Option<i64>, cost: i64) -> NewLog {
     NewLog {
+        tags: None,
         at: ultrafast_gateway::store::now(),
         key_id: None,
         user_id: Some(user),

@@ -237,6 +237,7 @@ async fn spent_is_shown_only_where_the_caller_may_see_it() {
     }
     // Everything lena's key spent is counted by every budget.
     let record = ultrafast_gateway::telemetry::RequestRecord {
+        tags: Default::default(),
         key_id: Some(w.lena_key),
         user_id: Some(w.org.lena),
         team_id: Some(w.org.platform),
@@ -409,6 +410,7 @@ async fn delete_removes_the_budget_its_counter_and_audits() {
 
 fn log(at: &str, key_id: i64, user_id: i64, team_id: i64, cost: i64) -> NewLog {
     NewLog {
+        tags: None,
         at: at.to_string(),
         key_id: Some(key_id),
         user_id: Some(user_id),

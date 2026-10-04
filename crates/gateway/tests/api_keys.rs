@@ -152,6 +152,7 @@ async fn admin_lists_all_keys() {
             "owner_id",
             "revoked_at",
             "status",
+            "tags",
             "team_id",
             "team_name"
         ]
@@ -623,4 +624,166 @@ async fn the_key_of_a_disabled_owner_is_suspended() {
         .call(Some(&maya), "GET", &key_path(keys.lena), None)
         .await;
     assert_eq!(seen["status"], "active");
+}
+
+async fn patch(org: &Org, who: &Signed, id: i64, body: Value) -> (StatusCode, Value) {
+    org.call(Some(who), "PATCH", &key_path(id), Some(body))
+        .await
+}
+
+#[tokio::test]
+async fn a_key_is_created_with_tags_and_shows_them_everywhere() {
+    let org = org().await;
+    let lena = org.sign_in("lena").await;
+    let (status, body) = create(
+        &org,
+        &lena,
+        json!({ "name": "tagged", "tags": { "team": "platform", "env": "prod" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(
+        body["key"]["tags"],
+        json!({ "env": "prod", "team": "platform" })
+    );
+    let id = body["key"]["id"].as_i64().unwrap();
+
+    let (_, plain) = create(&org, &lena, json!({ "name": "plain" })).await;
+    assert_eq!(plain["key"]["tags"], json!({}));
+    let (_, empty) = create(&org, &lena, json!({ "name": "empty", "tags": {} })).await;
+    assert_eq!(empty["key"]["tags"], json!({}));
+
+    let (_, one) = org.call(Some(&lena), "GET", &key_path(id), None).await;
+    assert_eq!(one["tags"], json!({ "env": "prod", "team": "platform" }));
+    let (_, list) = org.call(Some(&lena), "GET", "/api/keys", None).await;
+    let listed = list["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["id"] == id)
+        .unwrap();
+    assert_eq!(listed["tags"], json!({ "env": "prod", "team": "platform" }));
+    let stored = org.api.store.key_by_id(id).await.unwrap().unwrap();
+    assert_eq!(stored.tags.get("env").map(String::as_str), Some("prod"));
+}
+
+#[tokio::test]
+async fn bad_tags_on_create_are_a_field_error_and_make_no_key() {
+    let org = org().await;
+    let lena = org.sign_in("lena").await;
+    let many: serde_json::Map<String, Value> =
+        (0..21).map(|i| (format!("k{i}"), json!("v"))).collect();
+    let cases = [
+        json!({ "": "v" }),
+        json!({ "a": "" }),
+        json!({ "a b": "v" }),
+        json!({ "é": "v" }),
+        json!({ "n".repeat(65): "v" }),
+        json!({ "a": "v".repeat(65) }),
+        Value::Object(many),
+    ];
+    for tags in cases {
+        let (status, body) = create(&org, &lena, json!({ "name": "k", "tags": tags })).await;
+        assert_invalid(status, &body, "tags");
+    }
+    assert_eq!(count_keys(&org).await, 0);
+    let (status, _) = create(&org, &lena, json!({ "name": "k", "tags": { "a": 1 } })).await;
+    assert!(status.is_client_error());
+    assert_eq!(count_keys(&org).await, 0);
+}
+
+#[tokio::test]
+async fn tags_are_changed_by_whoever_may_revoke_the_key() {
+    let org = org().await;
+    let keys = seed_keys(&org).await;
+    let (maya, arjun, lena) = (
+        org.sign_in("maya").await,
+        org.sign_in("arjun").await,
+        org.sign_in("lena").await,
+    );
+    // The owner.
+    let (status, body) = patch(&org, &lena, keys.lena, json!({ "tags": { "a": "1" } })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["tags"], json!({ "a": "1" }));
+    // The lead of the key's team replaces them all.
+    let (status, body) = patch(&org, &arjun, keys.lena, json!({ "tags": { "b": "2" } })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["tags"], json!({ "b": "2" }));
+    // An admin, on a key with no owner.
+    let (status, body) = patch(&org, &maya, keys.legacy, json!({ "tags": { "c": "3" } })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["tags"], json!({ "c": "3" }));
+    // Others see a key that is not theirs as missing, and change nothing.
+    for (who, id) in [
+        (&lena, keys.arjun),
+        (&arjun, keys.tomas),
+        (&lena, keys.legacy),
+    ] {
+        let (status, _) = patch(&org, who, id, json!({ "tags": { "x": "y" } })).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    let store = &org.api.store;
+    assert!(store
+        .key_by_id(keys.arjun)
+        .await
+        .unwrap()
+        .unwrap()
+        .tags
+        .is_empty());
+    assert!(store
+        .key_by_id(keys.tomas)
+        .await
+        .unwrap()
+        .unwrap()
+        .tags
+        .is_empty());
+    // An empty object clears them.
+    let (status, body) = patch(&org, &lena, keys.lena, json!({ "tags": {} })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["tags"], json!({}));
+    assert_eq!(
+        audited(&org).await,
+        ["key.tags", "key.tags", "key.tags", "key.tags"]
+    );
+    let summary = org.last_summary("key.tags").await;
+    assert!(summary.contains("lena"), "{summary}");
+    assert!(!summary.contains("platform"), "{summary}");
+}
+
+#[tokio::test]
+async fn bad_tags_on_patch_are_refused_and_change_nothing() {
+    let org = org().await;
+    let keys = seed_keys(&org).await;
+    let lena = org.sign_in("lena").await;
+    patch(&org, &lena, keys.lena, json!({ "tags": { "keep": "me" } })).await;
+    for tags in [
+        json!({ "": "v" }),
+        json!({ "a b": "v" }),
+        json!({ "a": "" }),
+    ] {
+        let (status, body) = patch(&org, &lena, keys.lena, json!({ "tags": tags })).await;
+        assert_invalid(status, &body, "tags");
+    }
+    for body in [
+        json!({}),
+        json!({ "tags": null }),
+        json!({ "tags": {}, "name": "x" }),
+    ] {
+        let (status, _) = patch(&org, &lena, keys.lena, body).await;
+        assert!(status.is_client_error(), "{status}");
+    }
+    let stored = org.api.store.key_by_id(keys.lena).await.unwrap().unwrap();
+    assert_eq!(stored.tags.len(), 1);
+    assert_eq!(audited(&org).await, ["key.tags"]);
+}
+
+#[tokio::test]
+async fn a_tag_change_reaches_v1_at_once() {
+    let org = org().await;
+    let keys = seed_keys(&org).await;
+    let maya = org.sign_in("maya").await;
+    let before = org.api.state.refresh_count();
+    let (status, _) = patch(&org, &maya, keys.lena, json!({ "tags": { "a": "1" } })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(org.api.state.refresh_count() > before);
 }

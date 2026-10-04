@@ -257,9 +257,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 60. Its fallbacks are not
+    /// Every route of `api::router`, which has 61. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 60] = [
+    const ROUTES: [(&str, &str); 61] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -284,6 +284,7 @@ mod tests {
         ("GET", "/api/keys"),
         ("POST", "/api/keys"),
         ("GET", "/api/keys/{id}"),
+        ("PATCH", "/api/keys/{id}"),
         ("DELETE", "/api/keys/{id}"),
         ("GET", "/api/providers"),
         ("POST", "/api/providers"),
@@ -411,7 +412,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 60);
+        assert_eq!(routes.len(), 61);
         assert_eq!(documented, routes);
     }
 
@@ -433,7 +434,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 60);
+        assert_eq!(ids.len(), 61);
     }
 
     #[test]

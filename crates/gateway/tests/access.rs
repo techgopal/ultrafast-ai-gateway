@@ -444,6 +444,7 @@ async fn the_console_and_v1_agree_on_who_may_call_what() {
         .await
         .unwrap();
     let ghost = SnapKey {
+        tags: Default::default(),
         id: 1,
         name: "k".into(),
         user_id: Some(999_999),
@@ -824,6 +825,7 @@ async fn a_key_whose_owner_is_missing_calls_nothing() {
         .await
         .unwrap();
     let key = |user_id| SnapKey {
+        tags: Default::default(),
         id: 1,
         name: "k".into(),
         user_id,

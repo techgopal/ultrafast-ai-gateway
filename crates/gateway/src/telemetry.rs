@@ -12,6 +12,7 @@ use ultrafast_translate::types::Usage;
 use crate::limits::Permit;
 use crate::metrics::Metrics;
 use crate::store;
+use crate::tags::Tags;
 
 /// How one try at a target ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +67,8 @@ pub struct RequestRecord {
     pub estimated: bool,
     pub started_at: String,
     pub duration_ms: u64,
+    /// What the call sent in `x-uf-tags`, overlaid by the tags of its key.
+    pub tags: Tags,
 }
 
 /// Receives the records. `record` is called on the request path and must not
@@ -135,6 +138,7 @@ impl Scope {
                 estimated: false,
                 started_at: store::now(),
                 duration_ms: 0,
+                tags: Tags::new(),
             }),
         }
     }
@@ -146,6 +150,11 @@ impl Scope {
 
     fn record_mut(&mut self) -> &mut RequestRecord {
         self.record.as_mut().expect("a scope is emitted only once")
+    }
+
+    /// The tags the call is recorded with.
+    pub fn tagged(&mut self, tags: Tags) {
+        self.record_mut().tags = tags;
     }
 
     pub fn requested(&mut self, name: &str, stream: bool) {

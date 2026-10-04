@@ -11,6 +11,7 @@ use ultrafast_gateway::store::{LogFilter, LogScope, NewLog, UsageGroup};
 
 fn log(at: &str, user: Option<i64>, team: Option<i64>, cost: i64) -> NewLog {
     NewLog {
+        tags: None,
         at: at.into(),
         key_id: None,
         user_id: user,

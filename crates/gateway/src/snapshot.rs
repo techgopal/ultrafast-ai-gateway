@@ -32,6 +32,8 @@ pub struct SnapKey {
     /// The names (`provider/model` or a route) the key may call; `None` is
     /// no allowlist.
     pub allowed: Option<HashSet<String>>,
+    /// Added to every call of the key, over what the call sends.
+    pub tags: crate::tags::Tags,
 }
 
 /// A catalog model of a provider that is in the snapshot.
@@ -239,6 +241,7 @@ impl Snapshot {
                     team_id: k.team_id,
                     expires_at: k.expires_at,
                     allowed: k.allowed.map(|names| names.into_iter().collect()),
+                    tags: k.tags,
                 };
                 (k.hash, Arc::new(key))
             })

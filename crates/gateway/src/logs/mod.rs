@@ -185,6 +185,7 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
         estimated: record.estimated,
         duration_ms: i64::try_from(record.duration_ms).unwrap_or(i64::MAX),
         attempts: serde_json::Value::Array(attempts).to_string(),
+        tags: crate::tags::to_stored(&record.tags),
     }
 }
 
@@ -258,6 +259,7 @@ mod tests {
             estimated: true,
             started_at: "2999-01-01 00:00:00".into(),
             duration_ms: 1,
+            tags: Default::default(),
         };
         let prices: PriceLookup = Arc::new(|_, _| price(Some(2_000_000), Some(4_000_000)));
         let row = row_of(&record, &prices);
