@@ -132,7 +132,8 @@ async fn a_database_written_by_the_earlier_build_opens_and_reads() {
             (8, "budgets", true),
             (9, "route cache", true),
             (10, "logs privacy estimated", true),
-            (11, "tags", true)
+            (11, "tags", true),
+            (12, "key creator", true)
         ]
     );
 

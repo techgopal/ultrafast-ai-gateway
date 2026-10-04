@@ -451,6 +451,7 @@ async fn the_console_and_v1_agree_on_who_may_call_what() {
         team_id: None,
         expires_at: None,
         allowed: None,
+        delegated: false,
     };
     assert!(callable_names(&snapshot, &ghost).is_empty());
     assert!(!route_usable(
@@ -832,6 +833,7 @@ async fn a_key_whose_owner_is_missing_calls_nothing() {
         team_id: None,
         expires_at: None,
         allowed: None,
+        delegated: false,
     };
 
     // No owner at all: only what is for everyone.

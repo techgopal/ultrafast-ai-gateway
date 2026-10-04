@@ -320,6 +320,21 @@ pub fn limit_access(
     }
 }
 
+/// Whether a key that `p` makes for `owner_id` is a team key: one a
+/// non-admin makes for another user. It acts for its team only: it calls
+/// what is granted to everyone or to its team, never its owner's own grants
+/// or an admin's reach (see `access`).
+pub fn key_for_another_is_team_key(p: &Principal, owner_id: i64) -> bool {
+    !p.is_admin() && owner_id != p.user_id
+}
+
+/// Whether a user may own a team key that a lead makes: only a plain member
+/// of the team, never one of its leads or an admin. `owner_team_role` is
+/// their role in the key's team.
+pub fn may_own_team_key(owner_role: Role, owner_team_role: Option<TeamRole>) -> bool {
+    owner_role != Role::Admin && owner_team_role == Some(TeamRole::Member)
+}
+
 /// Which rows a list call by `p` may return.
 pub fn list_scope(p: &Principal) -> Scope {
     if p.is_admin() {
@@ -1374,5 +1389,36 @@ mod tests {
         assert_eq!(access(&f.member, LimitScope::Key, Some(5), None), Hide);
         assert_eq!(access(&f.member, LimitScope::Key, Some(5), Some(77)), Hide);
         assert_eq!(access(&f.loner, LimitScope::Key, Some(5), Some(77)), Hide);
+    }
+
+    #[test]
+    fn team_keys() {
+        let f = fixture();
+        // (who, owner, is a team key)
+        for (who, p, owner, team_key) in [
+            ("admin, for another", &f.admin, 3, false),
+            ("admin, own", &f.admin, 1, false),
+            ("lead, for a member", &f.lead, 3, true),
+            ("lead, own", &f.lead, 2, false),
+            ("member, own", &f.member, 3, false),
+            ("member, for another", &f.member, 2, true),
+        ] {
+            assert_eq!(key_for_another_is_team_key(p, owner), team_key, "{who}");
+        }
+        // (owner's role, role in the team, may own a team key)
+        for (role, team_role, may) in [
+            (Role::Member, Some(TeamRole::Member), true),
+            (Role::Member, Some(TeamRole::Lead), false),
+            (Role::Member, None, false),
+            (Role::Admin, Some(TeamRole::Member), false),
+            (Role::Admin, Some(TeamRole::Lead), false),
+            (Role::Admin, None, false),
+        ] {
+            assert_eq!(
+                may_own_team_key(role, team_role),
+                may,
+                "{role:?} {team_role:?}"
+            );
+        }
     }
 }

@@ -4,7 +4,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::rejection::QueryRejection;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -205,14 +206,12 @@ fn view_of(row: RouteRow, targets: Vec<TargetRow>, team_ids: Vec<i64>, admin: bo
 /// the same rule `/v1` applies (`access::route_usable`).
 pub(super) fn may_use(p: &Principal, everyone: bool, team_ids: &[i64]) -> bool {
     let teams = p.team_ids();
-    access::route_usable(
-        access::Viewer::User {
-            id: p.user_id,
-            admin: p.is_admin(),
-            team_ids: &teams,
-        },
-        &access::RouteFacts { everyone, team_ids },
-    )
+    usable(super::models::viewer_of(p, &teams), everyone, team_ids)
+}
+
+/// Whether the viewer may use a route open to everyone or to these teams.
+pub(super) fn usable(viewer: access::Viewer<'_>, everyone: bool, team_ids: &[i64]) -> bool {
+    access::route_usable(viewer, &access::RouteFacts { everyone, team_ids })
 }
 
 /// The view of one route as this caller sees it; `None` when it is hidden.
@@ -417,9 +416,15 @@ fn route_exists() -> ApiError {
     path = "/routes",
     tag = "routes",
     operation_id = "routes_list",
+    params(
+        ("key_team_id" = Option<i64>, Query, description = "A team the caller leads: only the routes a key they make for another member of it may use, those open to everyone or to the team. An admin's keys are not cut, so an admin gets the whole list."),
+    ),
     responses(
         (status = 200, description = "An admin gets every route in full. Everyone else gets the routes they may use, with the names and flags of their targets only.", body = RouteList),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "`key_team_id` names a team the caller does not lead.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
     security(("session" = []), ("token" = [])),
@@ -427,9 +432,11 @@ fn route_exists() -> ApiError {
 pub async fn list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
+    query: Result<Query<super::models::KeyTeamQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     require(me, &Action::ListRoutes)?;
+    let team_key = super::models::key_team(me, query)?;
     let rows = state.store.list_routes().await?;
     let mut targets: HashMap<i64, Vec<TargetRow>> = HashMap::new();
     for t in state.store.list_route_targets().await? {
@@ -443,7 +450,11 @@ pub async fn list(
         .into_iter()
         .filter_map(|r| {
             let teams = grants.remove(&r.id).unwrap_or_default();
-            if !me.is_admin() && !may_use(me, r.everyone, &teams) {
+            let open = match team_key {
+                Some(team_id) => usable(access::Viewer::Team { team_id }, r.everyone, &teams),
+                None => may_use(me, r.everyone, &teams),
+            };
+            if !me.is_admin() && !open {
                 return None;
             }
             let t = targets.remove(&r.id).unwrap_or_default();

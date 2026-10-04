@@ -6,6 +6,11 @@
 //! without an owner can call only what is granted to everyone. Through a
 //! route the allowlist names the route and the route must be open to the
 //! owner; the model is still checked for enabled and granted.
+//!
+//! A key that a lead made for another user (a delegated key) acts for its
+//! team only: it calls what is granted to everyone or to the key's team,
+//! never its owner's own grants or an admin's reach, and nothing once its
+//! owner is out of that team.
 
 use crate::identity::Role;
 use crate::snapshot::{SnapKey, SnapModel, SnapRoute, Snapshot};
@@ -41,6 +46,9 @@ pub enum Viewer<'a> {
         admin: bool,
         team_ids: &'a [i64],
     },
+    /// A delegated key whose owner is in its team: only what is granted to
+    /// everyone or to that team.
+    Team { team_id: i64 },
 }
 
 /// What decides whether a model may be called, as plain data.
@@ -71,6 +79,7 @@ pub fn model_callable(viewer: Viewer<'_>, model: &ModelFacts<'_>) -> bool {
     match viewer {
         Viewer::Missing => false,
         Viewer::Nobody => model.everyone,
+        Viewer::Team { team_id } => model.everyone || model.team_ids.contains(&team_id),
         Viewer::User {
             id,
             admin,
@@ -90,6 +99,7 @@ pub fn route_usable(viewer: Viewer<'_>, route: &RouteFacts<'_>) -> bool {
     match viewer {
         Viewer::Missing => false,
         Viewer::Nobody => route.everyone,
+        Viewer::Team { team_id } => route.everyone || route.team_ids.contains(&team_id),
         Viewer::User {
             admin, team_ids, ..
         } => route.everyone || admin || team_ids.iter().any(|t| route.team_ids.contains(t)),
@@ -97,6 +107,16 @@ pub fn route_usable(viewer: Viewer<'_>, route: &RouteFacts<'_>) -> bool {
 }
 
 fn viewer<'a>(snapshot: &'a Snapshot, key: &SnapKey) -> Viewer<'a> {
+    if key.delegated {
+        // Its owner must still be in its team; otherwise it acts for no one.
+        let owner = key.user_id.and_then(|id| snapshot.user(id));
+        return match (owner, key.team_id) {
+            (Some(user), Some(team_id)) if user.team_ids.contains(&team_id) => {
+                Viewer::Team { team_id }
+            }
+            _ => Viewer::Missing,
+        };
+    }
     match key.user_id {
         None => Viewer::Nobody,
         Some(id) => snapshot
@@ -203,4 +223,40 @@ pub fn callable_names(snapshot: &Snapshot, key: &SnapKey) -> Vec<(String, String
         .collect();
     names.sort();
     names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model<'a>(everyone: bool, team_ids: &'a [i64], user_ids: &'a [i64]) -> ModelFacts<'a> {
+        ModelFacts {
+            enabled: true,
+            provider_present: true,
+            everyone,
+            team_ids,
+            user_ids,
+        }
+    }
+
+    #[test]
+    fn a_team_viewer_has_what_is_everyones_or_its_teams() {
+        let team = Viewer::Team { team_id: 10 };
+        assert!(model_callable(team, &model(true, &[], &[])));
+        assert!(model_callable(team, &model(false, &[10], &[])));
+        assert!(!model_callable(team, &model(false, &[20], &[])));
+        // Never a user's own grant, whoever the user is.
+        assert!(!model_callable(team, &model(false, &[], &[1, 2, 3])));
+        // Never what only admins reach.
+        assert!(!model_callable(team, &model(false, &[], &[])));
+        let mut off = model(true, &[10], &[]);
+        off.enabled = false;
+        assert!(!model_callable(team, &off));
+
+        let route = |everyone, team_ids| RouteFacts { everyone, team_ids };
+        assert!(route_usable(team, &route(true, &[])));
+        assert!(route_usable(team, &route(false, &[10])));
+        assert!(!route_usable(team, &route(false, &[20])));
+        assert!(!route_usable(team, &route(false, &[])));
+    }
 }

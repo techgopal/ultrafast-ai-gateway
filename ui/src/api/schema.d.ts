@@ -3203,7 +3203,10 @@ export interface operations {
     };
     models_list: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description A team the caller leads: only the models a key they make for another member of it may call, those granted to everyone or to the team. An admin's keys are not cut, so an admin gets the whole list. */
+                key_team_id?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3219,8 +3222,35 @@ export interface operations {
                     "application/json": components["schemas"]["ModelList"];
                 };
             };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
             /** @description No valid session or access token. */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `key_team_id` names a team the caller does not lead. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4029,7 +4059,10 @@ export interface operations {
     };
     routes_list: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description A team the caller leads: only the routes a key they make for another member of it may use, those open to everyone or to the team. An admin's keys are not cut, so an admin gets the whole list. */
+                key_team_id?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4045,8 +4078,35 @@ export interface operations {
                     "application/json": components["schemas"]["RouteList"];
                 };
             };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
             /** @description No valid session or access token. */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `key_team_id` names a team the caller does not lead. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

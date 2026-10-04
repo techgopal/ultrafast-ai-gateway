@@ -833,6 +833,45 @@ describe("creating a key", () => {
       expect(state.created).toEqual([{ name: "ci", allowed: ["research"] }]);
     });
 
+    test("a lead's key for a member is limited from what is everyone's or the team's", async () => {
+      const state = keeps([]);
+      // The lists of the lead themselves, and those cut to the team.
+      const asked: (string | null)[] = [];
+      override("get", "/api/models", ({ request }) => {
+        const team = new URL(request.url).searchParams.get("key_team_id");
+        asked.push(team);
+        const models = team === String(platform.id) ? fixtures.callableModels.slice(0, 1) : fixtures.callableModels;
+        return ok("get", "/api/models", 200, { models });
+      });
+      override("get", "/api/routes", ({ request }) => {
+        const team = new URL(request.url).searchParams.get("key_team_id");
+        const routes = team === String(platform.id) ? [] : fixtures.routesForMember;
+        return ok("get", "/api/routes", 200, { routes });
+      });
+      await page({ user: fixtures.me.arjun });
+      const dialog = await openCreate();
+      await choose(field(dialog, "Owner"), person(lena));
+      const group = within(dialog).getByRole("radiogroup", { name: "Allowed models" });
+      await userEvent.click(within(group).getByRole("radio", { name: "Only these" }));
+      // Nothing to choose from while the key has no team, and nothing is read.
+      expect(within(dialog).getByText("Choose a team to see what the key can use.")).toBeInTheDocument();
+      expect(asked).toEqual([]);
+      await choose(field(dialog, "Team"), platform.name);
+      await within(dialog).findAllByRole("checkbox");
+      expect(boxes(dialog)).toEqual(["openai/gpt-4o-mini"]);
+      expect(asked).toEqual([String(platform.id)]);
+      expect(
+        within(group).getByRole("radio", { name: "All models of everyone and the team" }),
+      ).toBeInTheDocument();
+      await userEvent.click(box(dialog, "openai/gpt-4o-mini"));
+      await named(dialog, "lena-ci");
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([
+        { name: "lena-ci", owner_id: lena.id, team_id: platform.id, allowed: ["openai/gpt-4o-mini"] },
+      ]);
+    });
+
     test("only these with nothing chosen is refused by the console, on the field, and nothing is sent", async () => {
       const state = keeps([]);
       await page();

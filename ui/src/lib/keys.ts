@@ -56,7 +56,8 @@ export function ownTeams(me: Me): TeamChoice[] {
  * Mirrors what the gateway takes (`CreateKey` in its policy, and the checks
  * of `POST /api/keys`): the owner is an active user; a key of another user
  * belongs to a team the viewer may make keys in, and that the owner is a
- * member of; only who may make keys for anyone may leave out the team.
+ * member of (for a lead's key: a plain member, not a lead or an admin);
+ * only who may make keys for anyone may leave out the team.
  * `users` is what the gateway lists for the viewer, each with the teams of
  * the user that the viewer may see: the teams of an owner are read from it.
  */
@@ -67,7 +68,18 @@ export function ownersFor(me: Me, users: readonly User[]): Owners {
     ownerId === me.user.id
       ? own
       : (users.find((user) => user.id === ownerId)?.teams ?? [])
-          .filter((team) => can(me, { type: "createKeyForMember", teamId: team.team_id }))
+          .filter((team) => {
+            const owner = users.find((user) => user.id === ownerId);
+            return (
+              owner !== undefined &&
+              can(me, {
+                type: "createKeyForUser",
+                teamId: team.team_id,
+                ownerRole: owner.role,
+                ownerTeamRole: team.role,
+              })
+            );
+          })
           .map((team) => ({ id: team.team_id, name: team.name }))
           .sort(byName);
   const others = users
@@ -173,6 +185,18 @@ export function choiceShown(
   waiting: boolean,
 ): Chosen {
   return waiting ? chosen : choiceOffered(chosen, me, owners, teamsFor);
+}
+
+/**
+ * The team a key is cut to, when the viewer makes it for another user
+ * without being who may make keys for anyone: such a key calls only what is
+ * granted to everyone or to its team, and may be limited only to that.
+ * `null` for any other key, and while no team is chosen.
+ */
+export function keyTeamOf(chosen: Chosen, me: Me): number | null {
+  if (can(me, { type: "createKeyForAnyone" })) return null;
+  if (chosen.owner_id === String(me.user.id)) return null;
+  return idOf(chosen.team_id);
 }
 
 export const CHOOSE_ALLOWED = "Choose at least one model or route.";

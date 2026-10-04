@@ -226,6 +226,7 @@ impl<'a> Actor<'a> {
                 expires_at: None,
                 allowed: None,
                 tags: Tags::new(),
+                delegated: false,
             }),
             key_id: None,
         }

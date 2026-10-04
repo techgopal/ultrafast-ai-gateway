@@ -75,10 +75,14 @@ export const queryKeys = {
   models: {
     all: () => ["models"] as const,
     list: () => ["models", "list"] as const,
+    /** What a key the viewer makes for another member of a team they lead may call. */
+    ofTeamKey: (teamId: number) => ["models", "list", { keyTeamId: teamId }] as const,
   },
   routes: {
     all: () => ["routes"] as const,
     list: () => ["routes", "list"] as const,
+    /** What a key the viewer makes for another member of a team they lead may use. */
+    ofTeamKey: (teamId: number) => ["routes", "list", { keyTeamId: teamId }] as const,
     detail: detailOf("routes"),
   },
   routingHealth: () => ["routing", "health"] as const,
@@ -262,16 +266,29 @@ export const providersOptions = () =>
     queryFn: ({ signal }) => api.get("/api/providers", { signal }),
   });
 
-export const modelsOptions = () =>
+/**
+ * `keyTeamId`: only what a key the viewer makes for another member of this
+ * team (one they lead) may call: what is granted to everyone or to the team.
+ */
+export const modelsOptions = (keyTeamId: number | null = null) =>
   queryOptions({
-    queryKey: queryKeys.models.list(),
-    queryFn: ({ signal }) => api.get("/api/models", { signal }),
+    queryKey: keyTeamId === null ? queryKeys.models.list() : queryKeys.models.ofTeamKey(keyTeamId),
+    queryFn: ({ signal }) =>
+      api.get("/api/models", {
+        ...(keyTeamId === null ? {} : { query: { key_team_id: keyTeamId } }),
+        signal,
+      }),
   });
 
-export const routesOptions = () =>
+/** `keyTeamId` as for `modelsOptions`. */
+export const routesOptions = (keyTeamId: number | null = null) =>
   queryOptions({
-    queryKey: queryKeys.routes.list(),
-    queryFn: ({ signal }) => api.get("/api/routes", { signal }),
+    queryKey: keyTeamId === null ? queryKeys.routes.list() : queryKeys.routes.ofTeamKey(keyTeamId),
+    queryFn: ({ signal }) =>
+      api.get("/api/routes", {
+        ...(keyTeamId === null ? {} : { query: { key_team_id: keyTeamId } }),
+        signal,
+      }),
   });
 
 export const routeOptions = (id: number) =>
@@ -318,9 +335,11 @@ export const useTeam = (id: number) => useQuery(teamOptions(id));
 export const useKeys = () => useQuery(keysOptions());
 export const useProviders = () => useQuery(providersOptions());
 /** An admin gets every model with its grants; anybody else the models they may call. */
-export const useModels = (enabled = true) => useQuery({ ...modelsOptions(), enabled });
+export const useModels = (enabled = true, keyTeamId: number | null = null) =>
+  useQuery({ ...modelsOptions(keyTeamId), enabled });
 /** An admin gets every route in full; anybody else the routes they may use, with their models only. */
-export const useRoutes = (enabled = true) => useQuery({ ...routesOptions(), enabled });
+export const useRoutes = (enabled = true, keyTeamId: number | null = null) =>
+  useQuery({ ...routesOptions(keyTeamId), enabled });
 export const useRoute = (id: number) => useQuery(routeOptions(id));
 /** Admin only. What the gateway saw of the targets in real traffic since it started. */
 export const useRoutingHealth = () => useQuery(routingHealthOptions());

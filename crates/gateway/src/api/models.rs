@@ -4,7 +4,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::rejection::QueryRejection;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -136,17 +137,22 @@ where
     Option::<i64>::deserialize(deserializer).map(Some)
 }
 
-/// Whether a non-admin principal may call a model that is `enabled` and
-/// granted like this: the same rule `/v1` applies (`access::model_callable`).
-/// The provider of a stored model is always present.
-pub(super) fn may_call(p: &Principal, enabled: bool, grants: &Grants) -> bool {
-    let teams = p.team_ids();
+/// The viewer of the `/v1` rules for a signed-in principal; `teams` are
+/// their team ids.
+pub(super) fn viewer_of<'a>(p: &Principal, teams: &'a [i64]) -> access::Viewer<'a> {
+    access::Viewer::User {
+        id: p.user_id,
+        admin: p.is_admin(),
+        team_ids: teams,
+    }
+}
+
+/// Whether the viewer may call a model that is `enabled` and granted like
+/// this: the rule `/v1` applies (`access::model_callable`). The provider of
+/// a stored model is always present.
+pub(super) fn callable(viewer: access::Viewer<'_>, enabled: bool, grants: &Grants) -> bool {
     access::model_callable(
-        access::Viewer::User {
-            id: p.user_id,
-            admin: p.is_admin(),
-            team_ids: &teams,
-        },
+        viewer,
         &access::ModelFacts {
             enabled,
             provider_present: true,
@@ -155,6 +161,47 @@ pub(super) fn may_call(p: &Principal, enabled: bool, grants: &Grants) -> bool {
             user_ids: &grants.user_ids,
         },
     )
+}
+
+/// Whether a non-admin principal may call a model that is `enabled` and
+/// granted like this: the same rule `/v1` applies.
+pub(super) fn may_call(p: &Principal, enabled: bool, grants: &Grants) -> bool {
+    let teams = p.team_ids();
+    callable(viewer_of(p, &teams), enabled, grants)
+}
+
+/// `?key_team_id=` of the model and route lists.
+#[derive(Deserialize)]
+pub struct KeyTeamQuery {
+    key_team_id: Option<String>,
+}
+
+/// The team of `?key_team_id=`, when the list must be cut to what a key the
+/// caller makes for another member of it may call: what is granted to
+/// everyone or to the team. Only the team's lead may ask; an admin's key for
+/// another is not cut, so for an admin it is `None`.
+pub(super) fn key_team(
+    me: &Principal,
+    query: Result<Query<KeyTeamQuery>, QueryRejection>,
+) -> Result<Option<i64>, ApiError> {
+    let Ok(Query(query)) = query else {
+        return Err(ApiError::bad_request("The query is not valid."));
+    };
+    let Some(raw) = query.key_team_id else {
+        return Ok(None);
+    };
+    let id = (!raw.is_empty() && raw.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| raw.parse::<i64>().ok())
+        .flatten()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| ApiError::invalid_field("key_team_id", "must be a positive integer"))?;
+    if me.is_admin() {
+        Ok(None)
+    } else if me.leads(id) {
+        Ok(Some(id))
+    } else {
+        Err(ApiError::forbidden())
+    }
 }
 
 pub(super) fn grouped(rows: Vec<GrantRow>) -> HashMap<i64, Grants> {
@@ -198,9 +245,15 @@ async fn model_exists(state: &AppState, raw_id: &str) -> Result<i64, ApiError> {
     path = "/models",
     tag = "models",
     operation_id = "models_list",
+    params(
+        ("key_team_id" = Option<i64>, Query, description = "A team the caller leads: only the models a key they make for another member of it may call, those granted to everyone or to the team. An admin's keys are not cut, so an admin gets the whole list."),
+    ),
     responses(
         (status = 200, description = "An admin gets every model with its grants. Everyone else gets the enabled models they may call, with empty grants.", body = ModelList),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "`key_team_id` names a team the caller does not lead.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
     security(("session" = []), ("token" = [])),
@@ -208,9 +261,11 @@ async fn model_exists(state: &AppState, raw_id: &str) -> Result<i64, ApiError> {
 pub async fn list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
+    query: Result<Query<KeyTeamQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     require(me, &Action::ListModels)?;
+    let team_key = key_team(me, query)?;
     let rows = state.store.list_models().await?;
     let mut grants = grouped(state.store.list_model_grants().await?);
     let models: Vec<ModelView> = rows
@@ -219,6 +274,9 @@ pub async fn list(
             let g = grants.remove(&m.id).unwrap_or_default();
             if me.is_admin() {
                 Some(ModelView::of(m, g.into()))
+            } else if let Some(team_id) = team_key {
+                callable(access::Viewer::Team { team_id }, m.enabled, &g)
+                    .then(|| ModelView::of(m, GrantsView::empty()))
             } else if may_call(me, m.enabled, &g) {
                 Some(ModelView::of(m, GrantsView::empty()))
             } else {

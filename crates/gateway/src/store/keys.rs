@@ -76,6 +76,10 @@ pub struct LiveKey {
     pub expires_at: Option<String>,
     pub allowed: Option<Vec<String>>,
     pub tags: Tags,
+    /// Who made the key; `None` for the CLI and for keys made before this
+    /// was kept.
+    pub created_by: Option<i64>,
+    pub created_at: String,
 }
 
 impl Store {
@@ -201,6 +205,17 @@ impl Tx<'_> {
         Ok(r.last_insert_rowid())
     }
 
+    /// Records who made the key.
+    pub async fn set_key_creator(&mut self, id: i64, user_id: i64) -> Result<()> {
+        sqlx::query("UPDATE virtual_keys SET created_by = ? WHERE id = ? AND org_id = ?")
+            .bind(user_id)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
+        Ok(())
+    }
+
     /// Sets the names the key may call. `None` removes the allowlist.
     pub async fn set_key_allowed(&mut self, id: i64, allowed: Option<&[String]>) -> Result<()> {
         let json = allowed.map(serde_json::to_string).transpose()?;
@@ -268,7 +283,7 @@ impl Tx<'_> {
 pub(crate) async fn live_keys_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<LiveKey>> {
     let rows = sqlx::query(
         "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at, k.allowed,
-                k.tags
+                k.tags, k.created_by, k.created_at
          FROM virtual_keys k
          LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
          WHERE k.org_id = ?
@@ -289,6 +304,8 @@ pub(crate) async fn live_keys_in(conn: &mut sqlx::SqliteConnection) -> Result<Ve
             expires_at: r.get("expires_at"),
             allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
             tags: tags::parse_stored(r.get::<Option<String>, _>("tags").as_deref()),
+            created_by: r.get("created_by"),
+            created_at: r.get("created_at"),
         })
         .collect())
 }

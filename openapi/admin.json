@@ -1908,6 +1908,18 @@
           "models"
         ],
         "operationId": "models_list",
+        "parameters": [
+          {
+            "name": "key_team_id",
+            "in": "query",
+            "description": "A team the caller leads: only the models a key they make for another member of it may call, those granted to everyone or to the team. An admin's keys are not cut, so an admin gets the whole list.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "An admin gets every model with its grants. Everyone else gets the enabled models they may call, with empty grants.",
@@ -1919,8 +1931,38 @@
               }
             }
           },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`key_team_id` names a team the caller does not lead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3015,6 +3057,18 @@
           "routes"
         ],
         "operationId": "routes_list",
+        "parameters": [
+          {
+            "name": "key_team_id",
+            "in": "query",
+            "description": "A team the caller leads: only the routes a key they make for another member of it may use, those open to everyone or to the team. An admin's keys are not cut, so an admin gets the whole list.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "An admin gets every route in full. Everyone else gets the routes they may use, with the names and flags of their targets only.",
@@ -3026,8 +3080,38 @@
               }
             }
           },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "401": {
             "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`key_team_id` names a team the caller does not lead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
             "content": {
               "application/json": {
                 "schema": {

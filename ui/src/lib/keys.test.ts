@@ -10,6 +10,7 @@ import {
   CHOOSE_ALLOWED,
   choiceOffered,
   choiceShown,
+  keyTeamOf,
   ownerOffered,
   ownersFor,
   ownTeams,
@@ -93,6 +94,19 @@ describe("who can own a new key", () => {
     const owners = ownersFor(fixtures.me.arjun, []);
     expect(names(owners.people)).toEqual([arjun.name]);
     expect(owners.teamsOf(arjun.id)).toEqual([PLATFORM, RESEARCH]);
+  });
+
+  test("a lead is not offered another lead or an admin of the team they lead: their key would act for the team", () => {
+    const inPlatform = (role: "lead" | "member") => [
+      { team_id: platform.id, name: platform.name, role },
+    ];
+    const adminInPlatform: fixtures.User = { ...maya, teams: inPlatform("member") };
+    const otherLead: fixtures.User = { ...priya, teams: inPlatform("lead") };
+    const owners = ownersFor(fixtures.me.arjun, [arjun, lena, adminInPlatform, otherLead]);
+    expect(names(owners.people)).toEqual(names([arjun, lena]));
+    expect(owners.teamsOf(maya.id)).toEqual([]);
+    expect(owners.teamsOf(priya.id)).toEqual([]);
+    expect(owners.teamsOf(lena.id)).toEqual([PLATFORM]);
   });
 
   test("a user of a team is an owner only while they are active", () => {
@@ -405,5 +419,20 @@ describe("the models and routes a key can be limited to", () => {
 
   test("a name is there once", () => {
     expect(callableItems([fixtures.models.openaiMini, fixtures.models.openaiMini], [])).toHaveLength(1);
+  });
+});
+
+describe("the team a key is cut to", () => {
+  const chosen = (owner: number, team: string) => ({ owner_id: String(owner), team_id: team });
+
+  test("a lead's key for another member: its team, once one is chosen", () => {
+    expect(keyTeamOf(chosen(lena.id, String(platform.id)), fixtures.me.arjun)).toBe(platform.id);
+    expect(keyTeamOf(chosen(lena.id, ""), fixtures.me.arjun)).toBeNull();
+  });
+
+  test("a key of one's own, and an admin's key for anyone: none", () => {
+    expect(keyTeamOf(chosen(arjun.id, String(platform.id)), fixtures.me.arjun)).toBeNull();
+    expect(keyTeamOf(chosen(lena.id, String(platform.id)), fixtures.me.maya)).toBeNull();
+    expect(keyTeamOf(chosen(lena.id, WITHOUT_TEAM), fixtures.me.maya)).toBeNull();
   });
 });

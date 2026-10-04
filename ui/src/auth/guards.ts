@@ -38,6 +38,13 @@ export type ConsoleAction =
   | { type: "createKeyForSelf"; teamId: number | null }
   /** For another user: only in a team the caller leads. */
   | { type: "createKeyForMember"; teamId: number }
+  /**
+   * For this other user in this team: a lead makes one only for a member of
+   * a team they lead who is neither one of its leads nor an admin. Such a key
+   * calls only what is granted to everyone or to the team. `ownerRole` is the
+   * user's role, `ownerTeamRole` their role in the team.
+   */
+  | { type: "createKeyForUser"; teamId: number; ownerRole: string; ownerTeamRole: string }
   /** For any user, in a team of theirs or in none: what only an admin may. */
   | { type: "createKeyForAnyone" }
   | { type: "revokeKey"; ownerId: number | null; teamId: number | null }
@@ -120,6 +127,10 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "addMember":
     case "createKeyForMember":
       return leads(me, action.teamId);
+    case "createKeyForUser":
+      return (
+        leads(me, action.teamId) && action.ownerRole !== "admin" && action.ownerTeamRole === "member"
+      );
     case "removeMember":
       return (
         leads(me, action.teamId) && (action.role !== "lead" || action.userId === me.user.id)

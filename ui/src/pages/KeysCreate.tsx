@@ -19,12 +19,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AllowedField, useCallable } from "@/pages/KeysAllowed";
+import { AllowedField, useCallable, type Callable } from "@/pages/KeysAllowed";
 import { NO_EXPIRY } from "@/lib/expiry";
 import { idOf } from "@/lib/id";
 import {
   choiceOffered,
   choiceShown,
+  keyTeamOf,
   NO_TEAM,
   ownersFor,
   ownTeams,
@@ -35,6 +36,9 @@ import {
   type Owners,
   type TeamChoices,
 } from "@/lib/keys";
+
+/** The list of models of a team key while it has no team. */
+export const CHOOSE_TEAM_FIRST = "Choose a team to see what the key can use.";
 
 /** A select of a form: as wide as the form. */
 const selectTrigger = `${control} w-full ${cutLongChoice}`;
@@ -98,9 +102,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
   const errorRef = useRef<HTMLDivElement>(null);
   const failure = useFormFailure(form, formRef, errorRef);
   const onSubmit = useSubmit(form);
-  // The models and routes are read when the key is limited to some.
   const allowHeld = useSelector(form.store, (state) => state.values.allow);
-  const callable = useCallable(allowHeld === "some");
 
   /** The teams of a key of this owner, and whether it can have none. */
   function teamsFor(ownerId: string): TeamChoices {
@@ -127,6 +129,15 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
     waiting,
   );
   const offered = teamsFor(shown.owner_id);
+  // A key for another user, by who may not make keys for anyone, is a key of
+  // its team: it is limited from what is everyone's or the team's, and from
+  // nothing while no team is chosen.
+  const teamKey = !can(me, { type: "createKeyForAnyone" }) && shown.owner_id !== String(me.user.id);
+  const keyTeam = keyTeamOf(shown, me);
+  // The models and routes are read when the key is limited to some.
+  const read = useCallable(allowHeld === "some" && (!teamKey || keyTeam !== null), keyTeam);
+  const callable: Callable =
+    teamKey && keyTeam === null ? { items: [], error: null, retry: () => undefined } : read;
   useEffect(() => {
     if (shown.owner_id !== ownerHeld) form.setFieldValue("owner_id", shown.owner_id);
     if (shown.team_id !== teamHeld) form.setFieldValue("team_id", shown.team_id);
@@ -273,6 +284,8 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
                 onChosen={allowed.handleChange}
                 callable={callable}
                 error={failure.fieldError(allowed.name)}
+                teamKey={teamKey}
+                {...(teamKey && keyTeam === null ? { none: CHOOSE_TEAM_FIRST } : {})}
               />
             )}
           </form.Field>

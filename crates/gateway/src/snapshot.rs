@@ -34,6 +34,9 @@ pub struct SnapKey {
     pub allowed: Option<HashSet<String>>,
     /// Added to every call of the key, over what the call sends.
     pub tags: crate::tags::Tags,
+    /// A non-admin made it for another user: it acts for its team only
+    /// (see [`crate::access`]).
+    pub delegated: bool,
 }
 
 /// A catalog model of a provider that is in the snapshot.
@@ -193,6 +196,21 @@ impl Snapshot {
             fp.num(u.id);
             fp.text(&u.created_at);
         }
+        // Admins by id with when they were made, whatever their status: a
+        // key an admin made for another is theirs in full. An id given out
+        // again after the key was made is another user, not its maker.
+        let admins: HashMap<i64, &str> = rows
+            .users
+            .iter()
+            .filter(|u| u.role == Role::Admin)
+            .map(|u| (u.id, u.created_at.as_str()))
+            .collect();
+        let delegated = |k: &crate::store::LiveKey| match (k.created_by, k.user_id) {
+            (Some(by), Some(owner)) if by != owner => admins
+                .get(&by)
+                .is_none_or(|made| *made > k.created_at.as_str()),
+            _ => false,
+        };
         // A key is told apart by its hash: ids are given out again.
         fp.section("keys", rows.keys.len());
         for k in &rows.keys {
@@ -200,6 +218,7 @@ impl Snapshot {
             fp.text(&k.hash);
             fp.num(k.user_id.unwrap_or(-1));
             fp.num(k.team_id.unwrap_or(-1));
+            fp.num(i64::from(delegated(k)));
         }
         fp.section("models", rows.models.len());
         for m in &rows.models {
@@ -234,7 +253,9 @@ impl Snapshot {
             .keys
             .into_iter()
             .map(|k| {
+                let delegated = delegated(&k);
                 let key = SnapKey {
+                    delegated,
                     id: k.id,
                     name: k.name,
                     user_id: k.user_id,

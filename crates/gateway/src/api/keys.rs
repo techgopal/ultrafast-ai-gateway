@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{name_and_expiry, path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
+use crate::access::Viewer;
 use crate::app::AppState;
-use crate::identity::policy::{list_scope, Action, Scope};
+use crate::identity::policy::{self, list_scope, Action, Scope};
 use crate::identity::{Principal, UserStatus};
 use crate::secrets::generate_key;
 use crate::store::{now, AuditEntry, KeyRow, Store};
@@ -51,10 +52,13 @@ const MAX_ALLOWED: usize = 500;
 const MAX_ALLOWED_NAME_BYTES: usize = 300;
 
 /// The allowlist as it is stored: without repeats, in the order given. The
-/// error is the message for `fields.allowed`.
+/// error is the message for `fields.allowed`. `team_key` is the team of a
+/// key a non-admin makes for another user: such a key calls only what is
+/// everyone's or the team's, and may name nothing else.
 async fn checked_allowed(
     store: &Store,
     me: &Principal,
+    team_key: Option<i64>,
     asked: &[String],
 ) -> Result<Vec<String>, String> {
     if asked.is_empty() {
@@ -76,7 +80,12 @@ async fn checked_allowed(
     // Admins see every name. Anyone else may name only what they can call
     // or use themselves, and is told the same for a name that is hidden as
     // for one that does not exist.
-    let admin = me.is_admin();
+    let admin = me.is_admin() && team_key.is_none();
+    let my_teams = me.team_ids();
+    let viewer = match team_key {
+        Some(team_id) => Viewer::Team { team_id },
+        None => super::models::viewer_of(me, &my_teams),
+    };
     let mut grants = super::models::grouped(store.list_model_grants().await.map_err(failed)?);
     let models: HashSet<String> = store
         .list_models()
@@ -85,7 +94,7 @@ async fn checked_allowed(
         .into_iter()
         .filter(|m| {
             let g = grants.remove(&m.id).unwrap_or_default();
-            admin || super::models::may_call(me, m.enabled, &g)
+            admin || super::models::callable(viewer, m.enabled, &g)
         })
         .map(|m| format!("{}/{}", m.provider_name, m.name))
         .collect();
@@ -110,7 +119,7 @@ async fn checked_allowed(
             // As on /v1: the route is open to the caller and at least one
             // of its targets is a model they can call.
             admin
-                || (super::routes::may_use(me, r.everyone, &teams)
+                || (super::routes::usable(viewer, r.everyone, &teams)
                     && route_targets
                         .get(&r.id)
                         .is_some_and(|names| names.iter().any(|n| models.contains(n))))
@@ -127,6 +136,8 @@ async fn checked_allowed(
         if !known {
             return Err(if admin {
                 format!("'{name}' is not a model or route that exists")
+            } else if team_key.is_some() {
+                format!("'{name}' is not a model or route of everyone or of this team")
             } else {
                 format!("'{name}' is not a model or route you can use")
             });
@@ -284,9 +295,16 @@ pub async fn create(
     let (name, expires_at) = name_and_expiry(&req.name, req.expires_at.as_deref())?;
 
     let store = &state.store;
+    // A key a non-admin makes for another user is a key of its team: the
+    // policy has required a team the caller leads.
+    let team_key = if policy::key_for_another_is_team_key(me, owner_id) {
+        team_id
+    } else {
+        None
+    };
     // Before the transaction: it holds the connection the checks read with.
     let allowed = match &req.allowed {
-        Some(asked) => Some(checked_allowed(store, me, asked).await),
+        Some(asked) => Some(checked_allowed(store, me, team_key, asked).await),
         None => None,
     };
     let mut tx = store.begin().await?;
@@ -317,9 +335,15 @@ pub async fn create(
             let team = tx.team_by_id(id).await?;
             if team.is_none() {
                 fields.insert("team_id".to_string(), "team does not exist".into());
-            } else if owner.is_some() && tx.member_role(id, owner_id).await?.is_none() {
-                let message = "owner is not a member of this team";
-                fields.insert("team_id".to_string(), message.into());
+            } else if let Some(owner) = &owner {
+                let role = tx.member_role(id, owner_id).await?;
+                if role.is_none() {
+                    let message = "owner is not a member of this team";
+                    fields.insert("team_id".to_string(), message.into());
+                } else if team_key.is_some() && !policy::may_own_team_key(owner.role, role) {
+                    let message = "must be a member of the team, not a lead or an admin";
+                    fields.insert("owner_id".to_string(), message.into());
+                }
             }
             team
         }
@@ -340,6 +364,7 @@ pub async fn create(
             team.as_ref().map(|t| t.id),
         )
         .await?;
+    tx.set_key_creator(id, me.user_id).await?;
     if let Some(names) = &allowed {
         tx.set_key_allowed(id, Some(names)).await?;
     }
