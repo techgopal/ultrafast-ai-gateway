@@ -242,6 +242,16 @@ impl Store {
         })
     }
 
+    /// Like [`Store::begin`], but takes the write lock at once (`BEGIN
+    /// IMMEDIATE`). For a transaction that reads, plans and then writes: a
+    /// deferred one fails with SQLITE_BUSY_SNAPSHOT, which the busy timeout
+    /// does not retry, when anything else commits in between.
+    pub async fn begin_immediate(&self) -> Result<Tx<'_>> {
+        Ok(Tx {
+            inner: self.pool.begin_with("BEGIN IMMEDIATE").await?,
+        })
+    }
+
     /// Closes every connection. Every later call fails.
     pub async fn close(&self) {
         self.pool.close().await;

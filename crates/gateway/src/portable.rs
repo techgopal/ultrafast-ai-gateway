@@ -576,6 +576,8 @@ fn grants_of(entry: &GrantEntry) -> GrantEntry {
 struct Planner<'a> {
     file: &'a ConfigFile,
     state: &'a ConfigState,
+    /// The gateway's file form, built once.
+    current: ConfigFile,
     report: ImportReport,
     ops: Vec<Planned>,
     /// Names the file or the gateway has.
@@ -655,6 +657,15 @@ impl Planner<'_> {
                     let mut changes = Vec::new();
                     if existing.base_url != entry.base_url {
                         changes.push("base_url".to_string());
+                        if existing.credential.is_some() {
+                            self.report.warnings.push(Issue {
+                                at: format!("{at}.base_url"),
+                                message: format!(
+                                    "provider '{}' has a credential: the stored credential will be sent to the new base_url",
+                                    entry.name
+                                ),
+                            });
+                        }
                     }
                     if existing.api_version != api_version {
                         changes.push("api_version".to_string());
@@ -939,9 +950,10 @@ impl Planner<'_> {
                 );
                 continue;
             };
-            let current = file_of(state)
+            let current = self
+                .current
                 .routes
-                .into_iter()
+                .iter()
                 .find(|r| r.name == entry.name)
                 .expect("the route is in the state");
             let mut changes = Vec::new();
@@ -1302,6 +1314,7 @@ fn plan(file: &ConfigFile, state: &ConfigState) -> Plan {
     let mut planner = Planner {
         file,
         state,
+        current: file_of(state),
         report,
         ops: Vec::new(),
         providers,
@@ -1572,7 +1585,7 @@ pub async fn import(
     actor: &Actor<'_>,
     dry_run: bool,
 ) -> Result<ImportReport> {
-    let mut tx = store.begin().await?;
+    let mut tx = store.begin_immediate().await?;
     let state = tx.config_state().await?;
     let planned = plan(file, &state);
     let report = planned.report.clone();

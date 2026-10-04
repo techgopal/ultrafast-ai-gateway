@@ -1038,3 +1038,151 @@ async fn a_file_may_be_larger_than_the_admin_api_reads_and_up_to_8_mib() {
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(error_code(&body), "payload_too_large");
 }
+
+/// A file that creates a provider, a team, a model and a route, and sets a
+/// setting, under a name of its own.
+fn fresh_file(n: usize) -> ConfigFile {
+    file_of(json!({
+        "format": "ultrafast-config", "version": 1,
+        "providers": [{ "name": format!("p{n}"), "kind": "openai", "base_url": "https://f.example", "api_version": null }],
+        "teams": [{ "name": format!("Team {n}") }],
+        "models": [
+            { "provider": format!("p{n}"), "name": "m", "enabled": true, "input_price_micros": null, "output_price_micros": null,
+              "grants": { "everyone": true, "teams": [], "users": [] } },
+        ],
+        "routes": [
+            { "name": format!("r{n}"), "primaries": [ { "model": format!("p{n}/m"), "weight": 1 } ],
+              "fallbacks": [],
+              "retries": 0, "first_token_timeout_ms": 1000, "total_timeout_ms": 2000,
+              "breaker_failures": 1, "breaker_window_s": 5, "breaker_open_s": 5,
+              "everyone": true, "teams": [],
+              "cache_enabled": false, "cache_ttl_s": 300, "cache_scope": "team" },
+        ],
+        "limits": [], "budgets": [],
+        "settings": { "log_retention_days": 30, "session_hours": 12 },
+    }))
+}
+
+#[tokio::test]
+async fn an_import_survives_another_connection_writing_meanwhile() {
+    let org = common::org_on_disk().await;
+    let store = org.api.store.clone();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let store = store.clone();
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let mut tx = store.begin().await.unwrap();
+                tx.audit(ultrafast_gateway::store::AuditEntry {
+                    actor_user_id: None,
+                    actor_email: "noise",
+                    action: "noise",
+                    target_type: "noise",
+                    target_id: None,
+                    summary: "a concurrent writer",
+                })
+                .await
+                .unwrap();
+                tx.commit().await.unwrap();
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+    let mut failed = Vec::new();
+    for n in 0..30 {
+        if let Err(e) = portable::import(&store, &fresh_file(n), &actor(), false).await {
+            failed.push(e.to_string());
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    writer.await.unwrap();
+    assert!(
+        failed.is_empty(),
+        "{} of 30 failed: {:?}",
+        failed.len(),
+        failed.first()
+    );
+    assert_eq!(store.config_state().await.unwrap().teams.len(), 3 + 30);
+}
+
+#[tokio::test]
+async fn two_imports_at_once_both_succeed() {
+    let org = common::org_on_disk().await;
+    let store = org.api.store.clone();
+    let mut tasks = Vec::new();
+    for n in 0..8 {
+        let store = store.clone();
+        tasks.push(tokio::spawn(async move {
+            portable::import(&store, &fresh_file(n), &actor(), false).await
+        }));
+    }
+    for t in tasks {
+        let report = t.await.unwrap().expect("an import answered an error");
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+    assert_eq!(store.config_state().await.unwrap().teams.len(), 3 + 8);
+}
+
+#[tokio::test]
+async fn a_failure_partway_through_an_apply_writes_nothing() {
+    use sqlx::Connection;
+    let org = common::org_on_disk().await;
+    let store = org.api.store.clone();
+    let path = ultrafast_gateway::config::db_path(org.dir.as_ref().unwrap().path());
+    let mut conn = sqlx::SqliteConnection::connect(&format!("sqlite://{}", path.display()))
+        .await
+        .unwrap();
+    // The provider, team and model of the file are written before the route.
+    sqlx::query(
+        "CREATE TRIGGER refuse_routes BEFORE INSERT ON routes \
+         BEGIN SELECT RAISE(ABORT, 'forced failure'); END",
+    )
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let before = store.config_state().await.unwrap();
+    let audit_before = audit_count(&store).await;
+    let result = portable::import(&store, &fresh_file(0), &actor(), false).await;
+    assert!(
+        result.is_err(),
+        "the forced failure did not reach the import"
+    );
+    let after = store.config_state().await.unwrap();
+    assert_eq!(after.providers.len(), before.providers.len());
+    assert_eq!(after.teams.len(), before.teams.len());
+    assert_eq!(after.models.len(), before.models.len());
+    assert_eq!(after.routes.len(), before.routes.len());
+    assert_eq!(after.log_retention_days, before.log_retention_days);
+    assert_eq!(audit_count(&store).await, audit_before);
+}
+
+#[tokio::test]
+async fn moving_a_provider_with_a_credential_to_a_new_base_url_is_a_warning() {
+    let w = world().await;
+    let store = &w.org.api.store;
+    let mut file = expected_export();
+    // `main` has a credential, `azure1` has none.
+    file["providers"][0]["base_url"] = json!("https://elsewhere.example/v1");
+    file["providers"][1]["base_url"] = json!("https://az-elsewhere.example");
+    let report = portable::import(store, &file_of(file), &actor(), true)
+        .await
+        .unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let main_at = report
+        .updated
+        .iter()
+        .position(|u| u.name == "main")
+        .map(|_| ());
+    assert!(main_at.is_some(), "{:?}", report.updated);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(
+        report.warnings[0]
+            .message
+            .contains("stored credential will be sent to the new base_url"),
+        "{}",
+        report.warnings[0].message
+    );
+    assert!(report.warnings[0].message.contains("'main'"));
+}
