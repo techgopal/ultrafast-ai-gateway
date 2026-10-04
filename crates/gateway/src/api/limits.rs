@@ -16,9 +16,9 @@ use crate::limits::{LimitScope, RateLimit};
 use crate::store::{AuditEntry, LimitRow};
 
 /// The most requests per minute or concurrent requests a limit may allow.
-const MAX_COUNT: i64 = 1_000_000;
+pub(crate) const MAX_COUNT: i64 = 1_000_000;
 /// The most tokens per minute a limit may allow.
-const MAX_TOKENS: i64 = 1_000_000_000_000;
+pub(crate) const MAX_TOKENS: i64 = 1_000_000_000_000;
 
 /// The limits of one team, user, key or of the gateway. A limit that is
 /// `null` is not set.
@@ -115,7 +115,7 @@ fn field(fields: &mut BTreeMap<String, String>, name: &str, message: &str) {
 }
 
 /// A limit that is sent: a whole number from 1 to `max`.
-fn checked(
+pub(crate) fn checked(
     fields: &mut BTreeMap<String, String>,
     name: &str,
     value: Option<i64>,

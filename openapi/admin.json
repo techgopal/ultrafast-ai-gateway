@@ -736,6 +736,184 @@
         ]
       }
     },
+    "/api/config/export": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "The configuration of the gateway as one JSON file: providers (without\ntheir credentials), models with their grants, teams, routes, limits and\nbudgets (those of keys left out) and settings. It holds no key, token,\npassword, session, log or audit row.",
+        "operationId": "config_export",
+        "responses": {
+          "200": {
+            "description": "The configuration file, as a download.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigFile"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/config/import": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Checks a configuration file and, with `dry_run=false`, writes it. Without\n`dry_run` it is a dry run. Missing things are created and existing ones,\nby name, are updated; nothing is deleted. A file with any error writes\nnothing: the answer is 422 with the report. A new provider has no\ncredential until an admin sets one.",
+        "operationId": "config_import",
+        "parameters": [
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "`true` (the default) only reports; `false` writes.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigFile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What was written, or with a dry run what would be.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`dry_run` is not `true` or `false`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The file is larger than 8 MiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The file has errors, which the report lists. Nothing was written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportReport"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/keys": {
       "get": {
         "tags": [
@@ -5261,6 +5439,43 @@
           }
         }
       },
+      "BudgetEntry": {
+        "type": "object",
+        "required": [
+          "scope",
+          "name",
+          "amount_micros",
+          "period",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`block` or `alert`."
+          },
+          "amount_micros": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team's name or the user's email; `null` for the gateway."
+          },
+          "period": {
+            "type": "string",
+            "description": "`daily`, `weekly` or `monthly`."
+          },
+          "scope": {
+            "type": "string",
+            "description": "`gateway`, `team` or `user`."
+          }
+        },
+        "additionalProperties": false
+      },
       "BudgetView": {
         "type": "object",
         "description": "The budget of one team, user, key or of the gateway for one period.",
@@ -5353,6 +5568,66 @@
           "new_password": {
             "type": "string",
             "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConfigFile": {
+        "type": "object",
+        "description": "The configuration file. `format` and `version` come first.",
+        "required": [
+          "format",
+          "version"
+        ],
+        "properties": {
+          "budgets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BudgetEntry"
+            }
+          },
+          "format": {
+            "type": "string",
+            "description": "Always `ultrafast-config`."
+          },
+          "limits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LimitEntry"
+            }
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelEntry"
+            }
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderEntry"
+            }
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RouteEntry"
+            }
+          },
+          "settings": {
+            "$ref": "#/components/schemas/SettingsEntry"
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamEntry"
+            }
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Always 1.",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -5523,6 +5798,29 @@
           }
         }
       },
+      "GrantEntry": {
+        "type": "object",
+        "properties": {
+          "everyone": {
+            "type": "boolean"
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of teams."
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Emails of users."
+          }
+        },
+        "additionalProperties": false
+      },
       "GrantsView": {
         "type": "object",
         "description": "Who may call a model. For everyone who is not an admin it is always\nempty.",
@@ -5552,6 +5850,50 @@
           }
         },
         "additionalProperties": false
+      },
+      "ImportReport": {
+        "type": "object",
+        "description": "What an import did, or with `dry_run` would do.",
+        "required": [
+          "created",
+          "updated",
+          "unchanged",
+          "warnings",
+          "errors"
+        ],
+        "properties": {
+          "created": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            },
+            "description": "With any error nothing is written."
+          },
+          "unchanged": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many things of the file were there already, as they are.",
+            "minimum": 0
+          },
+          "updated": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Issue"
+            }
+          }
+        }
       },
       "InviteRequest": {
         "type": "object",
@@ -5586,6 +5928,48 @@
           },
           "user": {
             "$ref": "#/components/schemas/UserView"
+          }
+        }
+      },
+      "Issue": {
+        "type": "object",
+        "description": "A place in the file and what is to be said about it.",
+        "required": [
+          "at",
+          "message"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "Where, as `models[0].grants.teams[1]`; `file` for the file as a whole."
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "Item": {
+        "type": "object",
+        "description": "Something the import did, or would do.",
+        "required": [
+          "kind",
+          "name",
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For an update: the fields that change. Empty for a creation."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`provider`, `team`, `model`, `route`, `limit`, `budget` or `settings`."
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -5687,6 +6071,54 @@
             ]
           }
         }
+      },
+      "LimitEntry": {
+        "type": "object",
+        "required": [
+          "scope",
+          "name",
+          "requests_per_minute",
+          "tokens_per_minute",
+          "concurrent"
+        ],
+        "properties": {
+          "concurrent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team's name or the user's email; `null` for the gateway."
+          },
+          "requests_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "scope": {
+            "type": "string",
+            "description": "`gateway`, `team` or `user`."
+          },
+          "tokens_per_minute": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "LimitView": {
         "type": "object",
@@ -6191,6 +6623,47 @@
         },
         "additionalProperties": false
       },
+      "ModelEntry": {
+        "type": "object",
+        "required": [
+          "provider",
+          "name",
+          "enabled",
+          "input_price_micros",
+          "output_price_micros"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "grants": {
+            "$ref": "#/components/schemas/GrantEntry"
+          },
+          "input_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Per million tokens, in millionths of a dollar. `null`: not known."
+          },
+          "name": {
+            "type": "string"
+          },
+          "output_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "provider": {
+            "type": "string",
+            "description": "The name of its provider."
+          }
+        },
+        "additionalProperties": false
+      },
       "ModelList": {
         "type": "object",
         "required": [
@@ -6391,6 +6864,24 @@
           }
         }
       },
+      "PrimaryEntry": {
+        "type": "object",
+        "required": [
+          "model",
+          "weight"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "`provider/model`."
+          },
+          "weight": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
       "PrimaryRequest": {
         "type": "object",
         "required": [
@@ -6438,6 +6929,35 @@
             "description": "Zero for a caller who is not an admin."
           }
         }
+      },
+      "ProviderEntry": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "base_url",
+          "api_version"
+        ],
+        "properties": {
+          "api_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Azure OpenAI only."
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`openai`, `anthropic`, `gemini` or `azure`."
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "ProviderList": {
         "type": "object",
@@ -6508,6 +7028,82 @@
           "admin",
           "member"
         ]
+      },
+      "RouteEntry": {
+        "type": "object",
+        "required": [
+          "name",
+          "primaries",
+          "retries",
+          "first_token_timeout_ms",
+          "total_timeout_ms",
+          "breaker_failures",
+          "breaker_window_s",
+          "breaker_open_s"
+        ],
+        "properties": {
+          "breaker_failures": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "breaker_open_s": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "breaker_window_s": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cache_enabled": {
+            "type": "boolean"
+          },
+          "cache_scope": {
+            "type": "string"
+          },
+          "cache_ttl_s": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "everyone": {
+            "type": "boolean"
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`provider/model`, in the order they are tried."
+          },
+          "first_token_timeout_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "primaries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PrimaryEntry"
+            }
+          },
+          "retries": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of teams."
+          },
+          "total_timeout_ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
       },
       "RouteList": {
         "type": "object",
@@ -6812,6 +7408,23 @@
         },
         "additionalProperties": false
       },
+      "SettingsEntry": {
+        "type": "object",
+        "required": [
+          "log_retention_days"
+        ],
+        "properties": {
+          "log_retention_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "1 to 3650. Not in the file: not changed."
+          }
+        },
+        "additionalProperties": false
+      },
       "SettingsView": {
         "type": "object",
         "required": [
@@ -6957,6 +7570,18 @@
             "$ref": "#/components/schemas/TeamSummary"
           }
         }
+      },
+      "TeamEntry": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "TeamList": {
         "type": "object",
@@ -7446,6 +8071,10 @@
     {
       "name": "playground",
       "description": "Chat calls made from the console for the signed-in user."
+    },
+    {
+      "name": "config",
+      "description": "The configuration as a file: export and import."
     }
   ]
 }

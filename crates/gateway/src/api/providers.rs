@@ -82,7 +82,11 @@ impl ProviderView {
 }
 
 /// The messages of the checks in `config` do not repeat what was sent.
-fn checked(field: &str, result: anyhow::Result<()>, fields: &mut BTreeMap<String, String>) {
+pub(crate) fn checked(
+    field: &str,
+    result: anyhow::Result<()>,
+    fields: &mut BTreeMap<String, String>,
+) {
     if let Err(e) = result {
         fields.insert(field.to_string(), e.to_string());
     }
@@ -90,7 +94,7 @@ fn checked(field: &str, result: anyhow::Result<()>, fields: &mut BTreeMap<String
 
 /// Only Azure OpenAI has an API version. For Azure a missing one is the
 /// default; the result is what is stored.
-fn check_api_version(
+pub(crate) fn check_api_version(
     kind: &str,
     api_version: Option<&str>,
     fields: &mut BTreeMap<String, String>,

@@ -149,6 +149,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The configuration of the gateway as one JSON file: providers (without
+         *     their credentials), models with their grants, teams, routes, limits and
+         *     budgets (those of keys left out) and settings. It holds no key, token,
+         *     password, session, log or audit row.
+         */
+        get: operations["config_export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Checks a configuration file and, with `dry_run=false`, writes it. Without
+         *     `dry_run` it is a dry run. Missing things are created and existing ones,
+         *     by name, are updated; nothing is deleted. A file with any error writes
+         *     nothing: the answer is 422 with the report. A new provider has no
+         *     credential until an admin sets one.
+         */
+        post: operations["config_import"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/keys": {
         parameters: {
             query?: never;
@@ -686,6 +731,18 @@ export interface components {
             target_id: number | null;
             target_type: string;
         };
+        BudgetEntry: {
+            /** @description `block` or `alert`. */
+            action: string;
+            /** Format: int64 */
+            amount_micros: number;
+            /** @description The team's name or the user's email; `null` for the gateway. */
+            name: string | null;
+            /** @description `daily`, `weekly` or `monthly`. */
+            period: string;
+            /** @description `gateway`, `team` or `user`. */
+            scope: string;
+        };
         /** @description The budget of one team, user, key or of the gateway for one period. */
         BudgetView: {
             /**
@@ -731,6 +788,23 @@ export interface components {
         ChangePasswordRequest: {
             current_password: string;
             new_password: string;
+        };
+        /** @description The configuration file. `format` and `version` come first. */
+        ConfigFile: {
+            budgets?: components["schemas"]["BudgetEntry"][];
+            /** @description Always `ultrafast-config`. */
+            format: string;
+            limits?: components["schemas"]["LimitEntry"][];
+            models?: components["schemas"]["ModelEntry"][];
+            providers?: components["schemas"]["ProviderEntry"][];
+            routes?: components["schemas"]["RouteEntry"][];
+            settings?: components["schemas"]["SettingsEntry"];
+            teams?: components["schemas"]["TeamEntry"][];
+            /**
+             * Format: int32
+             * @description Always 1.
+             */
+            version: number;
         };
         CreateKeyRequest: {
             /**
@@ -789,6 +863,13 @@ export interface components {
              */
             model_id: number;
         };
+        GrantEntry: {
+            everyone?: boolean;
+            /** @description Names of teams. */
+            teams?: string[];
+            /** @description Emails of users. */
+            users?: string[];
+        };
         /**
          * @description Who may call a model. For everyone who is not an admin it is always
          *     empty.
@@ -802,6 +883,19 @@ export interface components {
             team_ids: number[];
             user_ids: number[];
         };
+        /** @description What an import did, or with `dry_run` would do. */
+        ImportReport: {
+            created: components["schemas"]["Item"][];
+            /** @description With any error nothing is written. */
+            errors: components["schemas"]["Issue"][];
+            /**
+             * Format: int32
+             * @description How many things of the file were there already, as they are.
+             */
+            unchanged: number;
+            updated: components["schemas"]["Item"][];
+            warnings: components["schemas"]["Issue"][];
+        };
         InviteRequest: {
             email: string;
             name: string;
@@ -814,6 +908,20 @@ export interface components {
              */
             invite_link: string;
             user: components["schemas"]["UserView"];
+        };
+        /** @description A place in the file and what is to be said about it. */
+        Issue: {
+            /** @description Where, as `models[0].grants.teams[1]`; `file` for the file as a whole. */
+            at: string;
+            message: string;
+        };
+        /** @description Something the import did, or would do. */
+        Item: {
+            /** @description For an update: the fields that change. Empty for a creation. */
+            changes: string[];
+            /** @description `provider`, `team`, `model`, `route`, `limit`, `budget` or `settings`. */
+            kind: string;
+            name: string;
         };
         KeyList: {
             keys: components["schemas"]["KeyView"][];
@@ -841,6 +949,18 @@ export interface components {
             /** Format: int64 */
             team_id: number | null;
             team_name: string | null;
+        };
+        LimitEntry: {
+            /** Format: int64 */
+            concurrent: number | null;
+            /** @description The team's name or the user's email; `null` for the gateway. */
+            name: string | null;
+            /** Format: int64 */
+            requests_per_minute: number | null;
+            /** @description `gateway`, `team` or `user`. */
+            scope: string;
+            /** Format: int64 */
+            tokens_per_minute: number | null;
         };
         /**
          * @description The limits of one team, user, key or of the gateway. A limit that is
@@ -1032,6 +1152,20 @@ export interface components {
         MemberRequest: {
             role: string;
         };
+        ModelEntry: {
+            enabled: boolean;
+            grants?: components["schemas"]["GrantEntry"];
+            /**
+             * Format: int64
+             * @description Per million tokens, in millionths of a dollar. `null`: not known.
+             */
+            input_price_micros: number | null;
+            name: string;
+            /** Format: int64 */
+            output_price_micros: number | null;
+            /** @description The name of its provider. */
+            provider: string;
+        };
         ModelList: {
             models: components["schemas"]["ModelView"][];
         };
@@ -1106,6 +1240,12 @@ export interface components {
             /** @description `system`, `user` or `assistant`. */
             role: string;
         };
+        PrimaryEntry: {
+            /** @description `provider/model`. */
+            model: string;
+            /** Format: int64 */
+            weight: number;
+        };
         PrimaryRequest: {
             /** Format: int64 */
             model_id: number;
@@ -1130,6 +1270,14 @@ export interface components {
              * @description Zero for a caller who is not an admin.
              */
             weight: number;
+        };
+        ProviderEntry: {
+            /** @description Azure OpenAI only. */
+            api_version: string | null;
+            base_url: string;
+            /** @description `openai`, `anthropic`, `gemini` or `azure`. */
+            kind: string;
+            name: string;
         };
         ProviderList: {
             providers: components["schemas"]["ProviderView"][];
@@ -1160,6 +1308,31 @@ export interface components {
          * @enum {string}
          */
         Role: "admin" | "member";
+        RouteEntry: {
+            /** Format: int64 */
+            breaker_failures: number;
+            /** Format: int64 */
+            breaker_open_s: number;
+            /** Format: int64 */
+            breaker_window_s: number;
+            cache_enabled?: boolean;
+            cache_scope?: string;
+            /** Format: int64 */
+            cache_ttl_s?: number;
+            everyone?: boolean;
+            /** @description `provider/model`, in the order they are tried. */
+            fallbacks?: string[];
+            /** Format: int64 */
+            first_token_timeout_ms: number;
+            name: string;
+            primaries: components["schemas"]["PrimaryEntry"][];
+            /** Format: int64 */
+            retries: number;
+            /** @description Names of teams. */
+            teams?: string[];
+            /** Format: int64 */
+            total_timeout_ms: number;
+        };
         RouteList: {
             routes: components["schemas"]["RouteView"][];
         };
@@ -1313,6 +1486,13 @@ export interface components {
              */
             tokens_per_minute?: number | null;
         };
+        SettingsEntry: {
+            /**
+             * Format: int64
+             * @description 1 to 3650. Not in the file: not changed.
+             */
+            log_retention_days: number | null;
+        };
         SettingsView: {
             /**
              * Format: int64
@@ -1367,6 +1547,9 @@ export interface components {
         TeamDetail: {
             members: components["schemas"]["MemberDetail"][];
             team: components["schemas"]["TeamSummary"];
+        };
+        TeamEntry: {
+            name: string;
         };
         TeamList: {
             teams: components["schemas"]["TeamSummary"][];
@@ -2091,6 +2274,137 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    config_export: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The configuration file, as a download. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConfigFile"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    config_import: {
+        parameters: {
+            query?: {
+                /** @description `true` (the default) only reports; `false` writes. */
+                dry_run?: boolean;
+            };
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigFile"];
+            };
+        };
+        responses: {
+            /** @description What was written, or with a dry run what would be. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportReport"];
+                };
+            };
+            /** @description `dry_run` is not `true` or `false`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The file is larger than 8 MiB. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The file has errors, which the report lists. Nothing was written. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportReport"];
                 };
             };
             /** @description Something went wrong. */

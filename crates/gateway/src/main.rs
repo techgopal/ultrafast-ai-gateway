@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -16,6 +17,7 @@ use ultrafast_gateway::config::{
 };
 use ultrafast_gateway::identity::password;
 use ultrafast_gateway::logs::{self, LogSink, QUEUE_CAPACITY};
+use ultrafast_gateway::portable;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
 use ultrafast_gateway::store::Store;
 use ultrafast_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
@@ -83,8 +85,30 @@ enum Command {
         #[command(subcommand)]
         command: KeyCommand,
     },
+    /// Export and import the configuration as a file.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Print the OpenAPI description of the admin API as JSON.
     Openapi,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Write providers (without credentials), models and their grants, teams,
+    /// routes, limits, budgets and settings to a JSON file. The file holds no
+    /// key, token, password or log. The file must not exist.
+    Export { file: PathBuf },
+    /// Read such a file: create what is missing and update what exists, by
+    /// name. Nothing is deleted. A file with errors writes nothing. New
+    /// providers have no credential until one is set.
+    Import {
+        file: PathBuf,
+        /// Only say what would be done.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -199,7 +223,75 @@ fn validate(command: &mut Command) -> Result<()> {
         } => {
             *name = trimmed_name(name).map_err(anyhow::Error::msg)?.to_string();
         }
-        Command::Openapi => {}
+        Command::Config { .. } | Command::Openapi => {}
+    }
+    Ok(())
+}
+
+/// `ultrafast config ...`. It needs no master key: the file holds no secret,
+/// and a key is neither read nor made.
+async fn config_command(data_dir: &Path, command: ConfigCommand) -> Result<()> {
+    let db = db_path(data_dir);
+    match command {
+        ConfigCommand::Export { file } => {
+            if !db.exists() {
+                bail!("there is no database in {}", data_dir.display());
+            }
+            let store = Store::open(&db)
+                .await
+                .context("could not open the database")?;
+            let exported = portable::export(&store).await?;
+            let bytes = serde_json::to_vec_pretty(&exported)?;
+            let mut out = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&file)
+                .with_context(|| {
+                    format!(
+                        "could not create {} (it must not exist yet)",
+                        file.display()
+                    )
+                })?;
+            out.write_all(&bytes)?;
+            out.write_all(b"\n")?;
+            println!(
+                "Wrote the configuration to {}. It holds no credentials, keys or logs.",
+                file.display()
+            );
+        }
+        ConfigCommand::Import { file, dry_run } => {
+            let length = std::fs::metadata(&file)
+                .with_context(|| format!("could not read {}", file.display()))?
+                .len();
+            if length > portable::MAX_FILE_BYTES as u64 {
+                bail!("{} is larger than 8 MiB", file.display());
+            }
+            let bytes = std::fs::read(&file)
+                .with_context(|| format!("could not read {}", file.display()))?;
+            let parsed = match portable::parse(&bytes) {
+                Ok(parsed) => parsed,
+                Err(report) => bail!("{}", report.describe(dry_run)),
+            };
+            // An import may start a data directory of its own.
+            std::fs::create_dir_all(data_dir)
+                .with_context(|| format!("could not create {}", data_dir.display()))?;
+            let store = Store::open(&db)
+                .await
+                .context("could not open the database")?;
+            restrict_permissions(data_dir)?;
+            let actor = portable::Actor {
+                user_id: None,
+                email: "cli",
+            };
+            let report = portable::import(&store, &parsed, &actor, dry_run).await?;
+            println!("{}", report.describe(dry_run));
+            if !report.is_clean() {
+                bail!("the file was not imported");
+            }
+            if !dry_run {
+                println!("A running gateway picks this up within 30 seconds.");
+            }
+        }
     }
     Ok(())
 }
@@ -225,6 +317,9 @@ async fn main() -> Result<()> {
     if matches!(cli.command, Command::Openapi) {
         println!("{}", serde_json::to_string_pretty(&spec())?);
         return Ok(());
+    }
+    if let Command::Config { command } = cli.command {
+        return config_command(&cli.data_dir, command).await;
     }
     let master = load_master_key(&cli.data_dir, cli.master_key.as_deref())?;
     let cipher = Cipher::from_hex(&master)?;
@@ -368,7 +463,9 @@ async fn main() -> Result<()> {
             println!("Created key '{name}'. Copy it now; it is not shown again:");
             println!("{}", key.full);
         }
-        Command::Openapi => unreachable!("answered before the data directory is opened"),
+        Command::Config { .. } | Command::Openapi => {
+            unreachable!("answered before the master key is read")
+        }
     }
     Ok(())
 }

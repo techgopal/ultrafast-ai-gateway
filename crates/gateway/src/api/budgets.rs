@@ -18,7 +18,7 @@ use crate::limits::LimitScope;
 use crate::store::{AuditEntry, BudgetRow};
 
 /// The most a budget may allow: a billion dollars, in millionths.
-const MAX_AMOUNT_MICROS: i64 = 1_000_000_000_000_000;
+pub(crate) const MAX_AMOUNT_MICROS: i64 = 1_000_000_000_000_000;
 
 /// The budget of one team, user, key or of the gateway for one period.
 #[derive(Debug, Serialize, utoipa::ToSchema)]

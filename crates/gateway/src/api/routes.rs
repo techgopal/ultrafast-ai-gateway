@@ -228,7 +228,7 @@ async fn load(state: &AppState, me: &Principal, id: i64) -> Result<Option<RouteV
     Ok(Some(view_of(row, targets, team_ids, me.is_admin())))
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
     let first_ok = chars
         .next()
@@ -240,22 +240,90 @@ fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
 }
 
-fn in_range(field: &str, v: i64, lo: i64, hi: i64, fields: &mut BTreeMap<String, String>) {
+pub(crate) fn in_range(
+    field: &str,
+    v: i64,
+    lo: i64,
+    hi: i64,
+    fields: &mut BTreeMap<String, String>,
+) {
     if !(lo..=hi).contains(&v) {
         fields.insert(field.to_string(), format!("must be {lo} to {hi}"));
     }
 }
 
-/// Checks everything that needs no database.
-fn check(req: &RouteRequest) -> BTreeMap<String, String> {
+/// The name, the settings and the cache of a route, which need no
+/// database to be checked: a message for each field that is not valid.
+pub(crate) fn check_settings(
+    name: &str,
+    s: &RouteSettings,
+    cache_ttl_s: i64,
+    cache_scope: &str,
+) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
-    if !valid_name(&req.name) {
+    if !valid_name(name) {
         fields.insert(
             "name".to_string(),
             "must be 1 to 64 characters of a-z, 0-9, '.', '_' and '-', starting with a letter or digit"
                 .to_string(),
         );
     }
+    in_range("retries", s.retries, 0, 5, &mut fields);
+    in_range(
+        "first_token_timeout_ms",
+        s.first_token_timeout_ms,
+        1_000,
+        300_000,
+        &mut fields,
+    );
+    in_range(
+        "total_timeout_ms",
+        s.total_timeout_ms,
+        1_000,
+        3_600_000,
+        &mut fields,
+    );
+    if !fields.contains_key("total_timeout_ms")
+        && !fields.contains_key("first_token_timeout_ms")
+        && s.total_timeout_ms < s.first_token_timeout_ms
+    {
+        fields.insert(
+            "total_timeout_ms".to_string(),
+            "must not be below the first token timeout".to_string(),
+        );
+    }
+    in_range("breaker_failures", s.breaker_failures, 1, 100, &mut fields);
+    in_range(
+        "breaker_window_s",
+        s.breaker_window_s,
+        5,
+        3_600,
+        &mut fields,
+    );
+    in_range("breaker_open_s", s.breaker_open_s, 5, 3_600, &mut fields);
+    if !TTL_RANGE.contains(&cache_ttl_s) {
+        fields.insert(
+            "cache_ttl_s".to_string(),
+            format!("must be {} to {}", TTL_RANGE.start(), TTL_RANGE.end()),
+        );
+    }
+    if CacheScope::parse(cache_scope).is_none() {
+        fields.insert(
+            "cache_scope".to_string(),
+            "must be team, key or user".to_string(),
+        );
+    }
+    fields
+}
+
+/// Checks everything that needs no database.
+fn check(req: &RouteRequest) -> BTreeMap<String, String> {
+    let mut fields = check_settings(
+        &req.name,
+        &settings_of(req),
+        req.cache_ttl_s,
+        &req.cache_scope,
+    );
     if req.primaries.is_empty() {
         fields.insert(
             "primaries".to_string(),
@@ -281,57 +349,6 @@ fn check(req: &RouteRequest) -> BTreeMap<String, String> {
         fields.insert(
             "fallbacks".to_string(),
             "a model may appear only once in a route".to_string(),
-        );
-    }
-    in_range("retries", req.retries, 0, 5, &mut fields);
-    in_range(
-        "first_token_timeout_ms",
-        req.first_token_timeout_ms,
-        1_000,
-        300_000,
-        &mut fields,
-    );
-    in_range(
-        "total_timeout_ms",
-        req.total_timeout_ms,
-        1_000,
-        3_600_000,
-        &mut fields,
-    );
-    if !fields.contains_key("total_timeout_ms")
-        && !fields.contains_key("first_token_timeout_ms")
-        && req.total_timeout_ms < req.first_token_timeout_ms
-    {
-        fields.insert(
-            "total_timeout_ms".to_string(),
-            "must not be below the first token timeout".to_string(),
-        );
-    }
-    in_range(
-        "breaker_failures",
-        req.breaker_failures,
-        1,
-        100,
-        &mut fields,
-    );
-    in_range(
-        "breaker_window_s",
-        req.breaker_window_s,
-        5,
-        3_600,
-        &mut fields,
-    );
-    in_range("breaker_open_s", req.breaker_open_s, 5, 3_600, &mut fields);
-    if !TTL_RANGE.contains(&req.cache_ttl_s) {
-        fields.insert(
-            "cache_ttl_s".to_string(),
-            format!("must be {} to {}", TTL_RANGE.start(), TTL_RANGE.end()),
-        );
-    }
-    if CacheScope::parse(&req.cache_scope).is_none() {
-        fields.insert(
-            "cache_scope".to_string(),
-            "must be team, key or user".to_string(),
         );
     }
     if req.everyone && !req.team_ids.is_empty() {

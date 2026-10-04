@@ -37,16 +37,18 @@ pub struct AddMemberRequest {
     email: String,
 }
 
-fn team_name(raw: &str) -> Result<&str, ApiError> {
+/// A team name, trimmed: 1 to 60 characters, none of them a control one.
+pub(crate) fn valid_team_name(raw: &str) -> Result<&str, &'static str> {
     let name = raw.trim();
     let chars = name.chars().count();
     if chars == 0 || chars > MAX_TEAM_NAME_CHARS || name.chars().any(char::is_control) {
-        return Err(ApiError::invalid_field(
-            "name",
-            "name must be 1 to 60 characters",
-        ));
+        return Err("name must be 1 to 60 characters");
     }
     Ok(name)
+}
+
+fn team_name(raw: &str) -> Result<&str, ApiError> {
+    valid_team_name(raw).map_err(|message| ApiError::invalid_field("name", message))
 }
 
 fn team_exists() -> ApiError {
