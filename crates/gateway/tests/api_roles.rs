@@ -492,6 +492,8 @@ fn expected(row: &Row, caller: Caller) -> (u16, Option<&'static str>) {
         Caller::Nobody => row.expect[3],
         // A token carries the role of its owner. It cannot be signed out.
         Caller::MemberToken if row.number == 30 => return (400, Some("bad_request")),
+        // The playground is for a browser session: a token is refused first.
+        Caller::MemberToken if row.number == 59 => return (403, Some("forbidden")),
         Caller::MemberToken => row.expect[2],
     };
     // The code tells a refusal by the policy from a failed CSRF check,

@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::response::Response;
 use serde::Serialize;
 
-use super::{require, ApiError, Authed};
+use super::{require, ApiError, AuthVia, Authed};
 use crate::app::AppState;
 use crate::identity::policy::Action;
 use crate::proxy;
@@ -84,20 +84,25 @@ pub struct PlaygroundErrorDetail {
                 (String = "text/event-stream"),
             )),
         (status = 400, description = "The request is not a chat request. The body is in the OpenAI error shape, as on `/v1`.", body = PlaygroundErrorBody),
-        (status = 401, description = "No valid session or access token.", body = PlaygroundErrorBody),
-        (status = 403, description = "The user may not call this model or route, or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.", body = PlaygroundErrorBody),
+        (status = 401, description = "No valid session.", body = PlaygroundErrorBody),
+        (status = 403, description = "The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.", body = PlaygroundErrorBody),
         (status = 404, description = "No such model or route, in the OpenAI error shape.", body = PlaygroundErrorBody),
         (status = 429, description = "A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape.", body = PlaygroundErrorBody),
         (status = 502, description = "The provider failed; OpenAI error shape.", body = PlaygroundErrorBody),
         (status = 503, description = "No provider could serve the call; OpenAI error shape.", body = PlaygroundErrorBody),
     ),
-    security(("session" = []), ("token" = [])),
+    security(("session" = [])),
 )]
 pub async fn chat(
     State(state): State<Arc<AppState>>,
     authed: Authed,
     body: Body,
 ) -> Result<Response, ApiError> {
+    // A token is the admin SDK's credential, not a way to call models: it
+    // would skip the expiry, revocation, allowlist and key limits of a key.
+    if !matches!(authed.via, AuthVia::Session { .. }) {
+        return Err(ApiError::forbidden());
+    }
     require(&authed.principal, &Action::UsePlayground)?;
     Ok(proxy::playground(state, authed.principal.user_id, body).await)
 }

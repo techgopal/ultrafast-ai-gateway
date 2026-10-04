@@ -3475,7 +3475,7 @@ export interface operations {
                     "application/json": components["schemas"]["PlaygroundErrorBody"];
                 };
             };
-            /** @description No valid session or access token. */
+            /** @description No valid session. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3484,7 +3484,7 @@ export interface operations {
                     "application/json": components["schemas"]["PlaygroundErrorBody"];
                 };
             };
-            /** @description The user may not call this model or route, or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`. */
+            /** @description The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`. */
             403: {
                 headers: {
                     [name: string]: unknown;

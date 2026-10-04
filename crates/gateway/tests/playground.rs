@@ -494,3 +494,159 @@ async fn a_cache_kept_per_key_is_kept_per_user_for_a_call_without_a_key() {
     assert_eq!(w.play(&tomas, chat("open-route")).await.0, StatusCode::OK);
     assert_eq!(sent().await, 2, "another user is not given lena's answer");
 }
+
+/// A call is made with a signed-in user's access token: refused, and
+/// nothing reaches a provider or a record.
+#[tokio::test]
+async fn an_access_token_cannot_call_the_playground() {
+    let w = world().await;
+    let lena = w.org.sign_in("lena").await;
+    let (status, _, body) = call(
+        &w.org.api.app,
+        "POST",
+        "/api/tokens",
+        Some(&lena),
+        Some(json!({ "name": "ci" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let secret = body["secret"].as_str().unwrap().to_string();
+    let (status, _, body) = common::call_with_token(
+        &w.org.api.app,
+        "POST",
+        "/api/playground/chat",
+        &secret,
+        Some(chat("p/open")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "forbidden");
+    assert!(w.upstream.received_requests().await.unwrap().is_empty());
+    assert!(w.sink.records().is_empty());
+    // The same token still works on the routes it is for.
+    let (status, _, _) =
+        common::call_with_token(&w.org.api.app, "GET", "/api/auth/me", &secret, None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// The cost of a playground call reaches the budget of the user, and of
+/// their team, through the real log writer.
+async fn spend_reaches(scope: LimitScope, who: &str) {
+    use std::time::Duration;
+    use tokio::sync::watch;
+    use ultrafast_gateway::budgets::{self, BudgetAction, Period};
+    use ultrafast_gateway::logs::writer::{spawn_accounted, WriterConfig};
+    use ultrafast_gateway::logs::{snapshot_prices, LogSink};
+
+    let (sink, rx) = LogSink::channel(64);
+    let stats = sink.stats();
+    let org = org_with_sink(Some(Arc::new(sink))).await;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ok())
+        .mount(&upstream)
+        .await;
+    let store = &org.api.store;
+    let provider = store
+        .insert_provider("p", "openai", &upstream.uri(), None)
+        .await
+        .unwrap();
+    let mut tx = store.begin().await.unwrap();
+    let model = tx.insert_model(provider, "open").await.unwrap();
+    assert!(tx.set_model_enabled(model, true).await.unwrap());
+    tx.replace_grants(
+        model,
+        &Grants {
+            everyone: true,
+            ..Grants::default()
+        },
+    )
+    .await
+    .unwrap();
+    // 1 prompt and 2 completion tokens cost 3 000 micro-dollars.
+    tx.set_model_input_price(model, Some(1_000_000_000))
+        .await
+        .unwrap();
+    tx.set_model_output_price(model, Some(1_000_000_000))
+        .await
+        .unwrap();
+    let (scope_id, user) = match scope {
+        LimitScope::User => (org.arjun, org.arjun),
+        _ => (org.research, org.arjun),
+    };
+    tx.upsert_budget(
+        scope,
+        Some(scope_id),
+        2_000,
+        Period::Monthly,
+        BudgetAction::Block,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    org.api.state.refresh().await.unwrap();
+    let (stop, stopped) = watch::channel(false);
+    let writer = spawn_accounted(
+        store.clone(),
+        rx,
+        snapshot_prices(org.api.state.clone()),
+        stats,
+        WriterConfig {
+            max_batch: 10,
+            max_wait: Duration::from_millis(20),
+            retry_delay: Duration::from_millis(10),
+        },
+        stopped,
+        budgets::accountant(org.api.state.clone()),
+    );
+    let signed = org.sign_in(who).await;
+    assert_eq!(signed.user_id, user);
+    let play = || async {
+        raw(
+            &org,
+            &signed,
+            "POST",
+            "/api/playground/chat",
+            Some(chat("p/open")),
+        )
+        .await
+        .0
+    };
+    assert_eq!(play().await, StatusCode::OK);
+    let mut next = StatusCode::OK;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        next = play().await;
+        if next == StatusCode::TOO_MANY_REQUESTS {
+            break;
+        }
+    }
+    assert_eq!(next, StatusCode::TOO_MANY_REQUESTS, "{scope:?} budget");
+    // A user outside the scope is not charged.
+    if matches!(scope, LimitScope::User) {
+        let tomas = org.sign_in("tomas").await;
+        let status = raw(
+            &org,
+            &tomas,
+            "POST",
+            "/api/playground/chat",
+            Some(chat("p/open")),
+        )
+        .await
+        .0;
+        assert_eq!(status, StatusCode::OK);
+    }
+    stop.send(true).unwrap();
+    writer.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_playground_calls_cost_reaches_the_users_budget_through_the_log_writer() {
+    spend_reaches(LimitScope::User, "arjun").await;
+}
+
+#[tokio::test]
+async fn a_playground_calls_cost_reaches_the_teams_budget_through_the_log_writer() {
+    spend_reaches(LimitScope::Team, "arjun").await;
+}
