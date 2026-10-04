@@ -258,6 +258,10 @@ export interface LogRow {
   cached: boolean;
   cost_micros: number;
   key_name: string | null;
+  endpoint: string;
+  stream: boolean;
+  user_email: string | null;
+  requested: string;
 }
 
 export interface ModelRow {

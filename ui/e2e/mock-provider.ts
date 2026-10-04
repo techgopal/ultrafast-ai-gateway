@@ -132,6 +132,28 @@ export async function startMockProvider(
         );
         return;
       }
+      if (streaming) {
+        // The answer in three pieces, then the finish and the usage.
+        const words = answer.split(" ");
+        const pieces = [
+          words.slice(0, 2).join(" "),
+          ` ${words.slice(2, -1).join(" ")}`,
+          ` ${words.at(-1) ?? ""}`,
+        ];
+        const chunk = (delta: object, finish: string | null, usage?: object) =>
+          `data: ${JSON.stringify({ id: "chatcmpl-e2e", object: "chat.completion.chunk", model, choices: [{ index: 0, delta, finish_reason: finish }], ...(usage === undefined ? {} : { usage }) })}\n\n`;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        for (const piece of pieces) response.write(chunk({ content: piece }, null));
+        response.write(
+          chunk({}, "stop", {
+            prompt_tokens: state.usage.prompt,
+            completion_tokens: state.usage.completion,
+            total_tokens: state.usage.prompt + state.usage.completion,
+          }),
+        );
+        response.end("data: [DONE]\n\n");
+        return;
+      }
       send(200, {
         id: "chatcmpl-e2e",
         object: "chat.completion",

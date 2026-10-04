@@ -174,6 +174,8 @@ describe("retryText", () => {
     [null, ""],
     [1, " Try again in 1 second."],
     [30, " Try again in 30 seconds."],
+    [59, " Try again in 59 seconds."],
+    [60, " Try again in 1 minute."],
     [90, " Try again in 2 minutes."],
     [3600, " Try again in 60 minutes."],
   ])("%j", (seconds, text) => {

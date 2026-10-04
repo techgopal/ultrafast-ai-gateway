@@ -152,6 +152,30 @@ for (const scheme of ["light", "dark"] as const) {
     await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
 
+    // A model to call, so that the playground shows its form.
+    const provider = (await api.send("POST", "/api/providers", {
+      name: "upstream",
+      kind: "openai",
+      base_url: "https://upstream.example.test/v1",
+    })) as { id: number };
+    const model = (await api.send("POST", "/api/models", {
+      provider_id: provider.id,
+      name: "a-model",
+    })) as { id: number };
+    await api.enable(model.id);
+    await goTo(page, "Playground");
+    await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+
+    await goTo(page, "Settings");
+    await expect(page.getByRole("region", { name: "Sign-in" })).toBeVisible();
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+
+    await goTo(page, "Virtual keys");
+    await expect(page.getByRole("main")).toContainText("a first key");
+
     // The create-key dialog, opened from the keyboard: the focus stays in it.
     const opener = page.getByRole("button", { name: "Create key" });
     await opener.focus();

@@ -3,6 +3,7 @@ import {
   expectForm,
   expectNowhere,
   goTo,
+  goToAuditLog,
   itemOf,
   KEY_DISPLAY,
   KEY_SECRET,
@@ -175,7 +176,7 @@ test("a provider, its models, a key, calls through the gateway, and the key revo
 
   // The audit log has what was done, in the gateway's own action names and
   // summaries (the forms the unit fixtures pin: src/test/fixtures.test.ts).
-  await goTo(page, "Audit log");
+  await goToAuditLog(page);
   const done: [string, string][] = [
     ["setup.create_admin", `Created the first admin ${admin.email}`],
     ["auth.login", `${admin.email} signed in`],

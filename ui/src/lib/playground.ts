@@ -213,5 +213,6 @@ export function curlOf(origin: string, body: object): string {
 export function retryText(seconds: number | null): string {
   if (seconds === null) return "";
   if (seconds < 60) return ` Try again in ${String(seconds)} ${seconds === 1 ? "second" : "seconds"}.`;
-  return ` Try again in ${String(Math.ceil(seconds / 60))} minutes.`;
+  const minutes = Math.ceil(seconds / 60);
+  return ` Try again in ${String(minutes)} ${minutes === 1 ? "minute" : "minutes"}.`;
 }

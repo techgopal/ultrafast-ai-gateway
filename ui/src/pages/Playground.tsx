@@ -157,12 +157,18 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
             )}
           </Field>
           <div className="flex flex-wrap gap-2">
+            {/*
+              Two buttons that are never one element, whatever React could
+              reuse: a click on Stop that ends the call changes the page
+              before the click is over, and a Stop that had become a submit
+              button would send the message again.
+            */}
             {run.running ? (
-              <Button type="button" variant="outline" className={control} onClick={run.stop}>
+              <Button key="stop" type="button" variant="outline" className={control} onClick={run.stop}>
                 Stop
               </Button>
             ) : (
-              <Button type="submit" className={control} disabled={target === "" || text.trim() === ""}>
+              <Button key="send" type="submit" className={control} disabled={target === "" || text.trim() === ""}>
                 Send
               </Button>
             )}

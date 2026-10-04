@@ -80,6 +80,19 @@ export async function goTo(page: Page, label: string, title: string = label): Pr
   await expect(heading(page, title)).toBeVisible();
 }
 
+/**
+ * The audit log: a view of the Settings page, reached through the navigation
+ * and the sections of the page.
+ */
+export async function goToAuditLog(page: Page): Promise<void> {
+  await goTo(page, "Settings");
+  await page
+    .getByRole("navigation", { name: "Settings sections" })
+    .getByRole("link", { name: "Audit log" })
+    .click();
+  await expect(page.getByRole("heading", { level: 2, name: "Audit log", exact: true })).toBeVisible();
+}
+
 /** Signs out through the button of the navigation. */
 export async function signOut(page: Page): Promise<void> {
   const nav = await openNavigation(page);
@@ -94,6 +107,11 @@ export function itemOf(page: Page, list: string, text: string): Locator {
     .getByRole("row")
     .filter({ hasText: text })
     .or(page.getByRole("list", { name: list }).getByRole("listitem").filter({ hasText: text }));
+}
+
+/** What a table lists, or the list of cards that stands for it on a narrow screen. */
+export function listOf(page: Page, name: string): Locator {
+  return page.getByRole("table", { name }).or(page.getByRole("list", { name }));
 }
 
 /** Whether the value has the form, said without showing the value. */

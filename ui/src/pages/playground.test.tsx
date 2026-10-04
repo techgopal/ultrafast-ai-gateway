@@ -367,6 +367,28 @@ describe("stopping", () => {
     });
   });
 
+  test("Stop and Send are two elements: a click that ends the call is not a click on Send", async () => {
+    const feed = handFed();
+    const sent = chats(feed.response);
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await say("hi");
+    const stop = await screen.findByRole("button", { name: "Stop" });
+    // The call ends in the middle of the click, as the browser's does: the
+    // page is changed before the click is over.
+    stop.addEventListener("click", () => {
+      expect(stop.getAttribute("type")).toBe("button");
+    });
+    await userEvent.click(stop);
+    const send = await screen.findByRole("button", { name: "Send" });
+    expect(send).not.toBe(stop);
+    expect(stop.isConnected).toBe(false);
+    expect(send).toHaveAttribute("type", "submit");
+    await settle();
+    // Only the one call was made.
+    expect(sent).toHaveLength(1);
+  });
+
   test("Stop before anything came puts the message back in the box", async () => {
     const feed = handFed();
     chats(feed.response);

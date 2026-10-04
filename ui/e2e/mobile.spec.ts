@@ -2,6 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import {
   expect,
   goTo,
+  goToAuditLog,
   heading,
   menuButton,
   signInFromStart,
@@ -130,11 +131,14 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     ["Providers", "a-rather-long-host-name"],
     ["Models", "a-model-with-a-very-long-name"],
     ["Routing", "a-route-with-a-long-name"],
+    ["Playground", "Nothing has been said yet"],
     ["Account", "Access tokens"],
+    ["Settings", "Session lifetime"],
     ["Audit log", "auth.login"],
   ];
   for (const [title, shows] of pages) {
-    await goTo(page, title);
+    if (title === "Audit log") await goToAuditLog(page);
+    else await goTo(page, title);
     await expect(page.getByRole("main")).toContainText(shows);
     expect(await scrollsSideways(page), title).toBe(false);
   }
@@ -207,11 +211,14 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     ["Teams", "developer experience"],
     ["Virtual keys", "nightly batch job"],
     ["Providers", "a-rather-long-host-name"],
+    ["Playground", "Nothing has been said yet"],
     ["Account", "Access tokens"],
+    ["Settings", "Session lifetime"],
     ["Audit log", "auth.login"],
   ];
   for (const [title, shows] of pages) {
-    await goTo(page, title);
+    if (title === "Audit log") await goToAuditLog(page);
+    else await goTo(page, title);
     await expect(page.getByRole("main")).toContainText(shows);
     await measure(page.locator("body"), title);
     if (title === "Users") await measureDialog("Invite user");

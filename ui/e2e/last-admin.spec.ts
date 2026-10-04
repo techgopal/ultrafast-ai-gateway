@@ -47,5 +47,5 @@ test("the only admin cannot disable themselves: the dialog says why", async ({ p
   await page.reload();
   await expect(heading(page, "Admin")).toBeVisible();
   const nav = await openNavigation(page);
-  await expect(nav.getByRole("link", { name: "Audit log" })).toBeVisible();
+  await expect(nav.getByRole("link", { name: "Settings" })).toBeVisible();
 });
