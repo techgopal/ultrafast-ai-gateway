@@ -62,6 +62,23 @@ jobs:
           cargo build --release --locked -p ultrafast-gateway
           ls -l target/release/ultrafast | awk '{printf "binary size: %.1f MB\n", $5/1048576}'
 
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The whole history is scanned, so a secret that was committed and then
+      # removed still fails. Known test placeholders are in .gitleaks.toml.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          version=8.30.1
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz" | tar -xz -C "$RUNNER_TEMP" gitleaks
+      - name: Scan
+        run: '"$RUNNER_TEMP"/gitleaks git --no-banner --redact -c .gitleaks.toml .'
+
   msrv:
     name: Minimum Rust version
     runs-on: ubuntu-latest

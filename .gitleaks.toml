@@ -1,0 +1,20 @@
+# Gitleaks configuration: the default rules, plus an allowlist for the known
+# test placeholders only. A new finding anywhere else fails CI.
+title = "Ultrafast gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Placeholder keys in the shared client fixtures and in the client tests (not credentials)"
+targetRules = ["generic-api-key"]
+paths = [
+  '''clients/fixtures/[^/]+\.json''',
+  '''clients/ts/tests/helpers\.ts''',
+  '''crates/client-py/tests/conftest\.py''',
+]
+
+[[allowlists]]
+description = "Example tokens in the v1 README (commit 8a399c8, v1 code since removed)"
+targetRules = ["curl-auth-header"]
+commits = ["8a399c86fd4f3b2e953885e55bc2137230591be6"]
