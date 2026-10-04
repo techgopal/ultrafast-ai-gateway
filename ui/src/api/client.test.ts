@@ -2,7 +2,14 @@ import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import { errors, fieldMessages, validationFailed, type GatewayError } from "@/test/errors";
 import { networkFailure, noContent, override, refuse } from "@/test/handlers";
-import { api, onUnauthenticated, playgroundChat, setCsrfToken, type ResponseOf } from "./client";
+import {
+  api,
+  importConfig,
+  onUnauthenticated,
+  playgroundChat,
+  setCsrfToken,
+  type ResponseOf,
+} from "./client";
 import { ApiError, NetworkError, SessionOverError } from "./errors";
 import type { components } from "./schema";
 
@@ -676,5 +683,70 @@ describe("the playground call", () => {
     const error = await failure(playgroundChat(body, controller.signal));
     expect(error).not.toBeInstanceOf(NetworkError);
     expect(error).toBeInstanceOf(Error);
+  });
+});
+
+describe("the configuration import", () => {
+  const file = fixtures.configFile;
+
+  test("a dry run is asked for, the file is sent as JSON with the CSRF token", async () => {
+    setCsrfToken(fixtures.csrfToken);
+    const seen: { url: string; csrf: string | null; body: unknown }[] = [];
+    override("post", "/api/config/import", async ({ request }) => {
+      seen.push({
+        url: new URL(request.url).search,
+        csrf: request.headers.get("x-csrf-token"),
+        body: await request.json(),
+      });
+      return Response.json(fixtures.importReports.changes);
+    });
+    expect(await importConfig(file, true)).toEqual(fixtures.importReports.changes);
+    expect(await importConfig(file, false)).toEqual(fixtures.importReports.changes);
+    expect(seen).toEqual([
+      { url: "?dry_run=true", csrf: fixtures.csrfToken, body: file },
+      { url: "?dry_run=false", csrf: fixtures.csrfToken, body: file },
+    ]);
+    setCsrfToken(null);
+  });
+
+  test("a 422 is the report of a file with errors, not a failure", async () => {
+    override("post", "/api/config/import", () =>
+      Response.json(fixtures.importReports.invalid, { status: 422 }),
+    );
+    expect(await importConfig(file, false)).toEqual(fixtures.importReports.invalid);
+  });
+
+  test("a 422 that is no report is an unexpected response", async () => {
+    override("post", "/api/config/import", () => refuse(validationFailed({ name: "x" })));
+    const error = await apiFailure(importConfig(file, true));
+    expect([error.status, error.code]).toEqual([422, "validation_failed"]);
+  });
+
+  test("a success that is no report is an unexpected response", async () => {
+    override("post", "/api/config/import", () => Response.json({ hello: 1 }));
+    const error = await apiFailure(importConfig(file, true));
+    expect(error.code).toBe("unexpected_response");
+  });
+
+  test.each([
+    ["not an admin", errors.forbidden, 403, "forbidden"],
+    ["no CSRF token", errors.csrf_failed, 403, "csrf_failed"],
+    ["too large", errors.payload_too_large, 413, "payload_too_large"],
+    ["broken", errors.internal_error, 500, "internal_error"],
+  ])("a refusal: %s", async (_, refusal, status, code) => {
+    override("post", "/api/config/import", () => refuse(refusal));
+    const error = await apiFailure(importConfig(file, true));
+    expect([error.status, error.code]).toEqual([status, code]);
+  });
+
+  test("a 401 ends the session, a network failure is a NetworkError", async () => {
+    const heard = vi.fn();
+    const stop = onUnauthenticated(heard);
+    override("post", "/api/config/import", unauthenticated);
+    expect((await apiFailure(importConfig(file, true))).status).toBe(401);
+    expect(heard).toHaveBeenCalledTimes(1);
+    stop();
+    override("post", "/api/config/import", networkFailure);
+    expect(await failure(importConfig(file, true))).toBeInstanceOf(NetworkError);
   });
 });

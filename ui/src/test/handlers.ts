@@ -277,6 +277,22 @@ export const handlers = [
   // playground
   handler("post", "/api/playground/chat", () => eventStream(fixtures.playgroundChunks)),
 
+  // configuration and backup
+  handler("get", "/api/config/export", () =>
+    ok("get", "/api/config/export", 200, fixtures.configFile),
+  ),
+  handler("post", "/api/config/import", () =>
+    ok("post", "/api/config/import", 200, fixtures.importReports.changes),
+  ),
+  handler(
+    "get",
+    "/api/backup",
+    () =>
+      new Response(new Uint8Array([83, 81, 76, 105, 116, 101]), {
+        headers: { "content-type": "application/vnd.sqlite3" },
+      }),
+  ),
+
   // audit
   handler("get", "/api/audit", () =>
     ok("get", "/api/audit", 200, { entries: fixtures.auditEntries }),

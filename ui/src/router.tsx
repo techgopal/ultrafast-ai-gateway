@@ -3,6 +3,7 @@ import {
   createRoute,
   createRouter,
   Outlet,
+  redirect,
   useRouter,
   useRouterState,
   type RouterHistory,
@@ -17,7 +18,6 @@ import type { ShellUser } from "@/components/shell-context";
 import { Button } from "@/components/ui/button";
 import { AcceptInvite } from "@/pages/AcceptInvite";
 import { Account } from "@/pages/Account";
-import { Audit } from "@/pages/Audit";
 import { Keys } from "@/pages/Keys";
 import { Limits } from "@/pages/Limits";
 import { Logs } from "@/pages/Logs";
@@ -169,7 +169,6 @@ function ShellLayout() {
             name: me.user.name,
             role: me.user.role,
             teams: me.teams,
-            mayViewAudit: can(me, { type: "viewAudit" }),
             maySetSettings: can(me, { type: "manageSettings" }),
           },
     [me],
@@ -199,11 +198,14 @@ const overviewRoute = createRoute({
   component: Overview,
 });
 
+// The audit log is a view of the settings page now: the old address leads there.
 const auditRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/audit",
-  staticData: { title: "Audit log" },
-  component: Audit,
+  beforeLoad: () => {
+    // eslint-disable-next-line @typescript-eslint/only-throw-error -- how the router redirects
+    throw redirect({ to: "/settings", hash: "audit", replace: true });
+  },
 });
 
 const logsRoute = createRoute({

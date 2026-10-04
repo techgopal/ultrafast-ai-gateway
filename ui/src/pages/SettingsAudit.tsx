@@ -1,14 +1,10 @@
 import { useId, useMemo, useState } from "react";
 import { useAuditFromTheStart, useAuditPages } from "@/api/queries";
 import type { components } from "@/api/schema";
-import { can } from "@/auth/guards";
-import { useSession } from "@/auth/session";
 import { control } from "@/components/classes";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/ErrorState";
-import { NotAvailableContent } from "@/components/NotAvailableContent";
-import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
 import { Timestamp } from "@/components/Timestamp";
 import { Button } from "@/components/ui/button";
@@ -46,23 +42,30 @@ const columns: Column<AuditEntry>[] = [
   },
 ];
 
-function AuditLog() {
+/** What was done in the gateway, and by whom. The settings page shows it to admins. */
+export function AuditSection() {
   const log = useAuditPages();
   const startAgain = useAuditFromTheStart();
   const [search, setSearch] = useState("");
   const noticeId = useId();
+  const headingId = useId();
   const loaded = useMemo(() => log.data?.pages.flatMap((page) => page.entries) ?? [], [log.data]);
   const rows = useMemo(() => entriesMatching(loaded, search), [loaded, search]);
 
   if (log.error !== null && log.data === undefined) {
     return (
-      <QueryProblem
-        title="Audit log"
-        error={log.error}
-        onRetry={() => {
-          void log.refetch();
-        }}
-      />
+      <section aria-labelledby={headingId} className="flex flex-col gap-4">
+        <h2 id={headingId} className="text-lg font-medium">
+          Audit log
+        </h2>
+        <QueryProblem
+          part
+          error={log.error}
+          onRetry={() => {
+            void log.refetch();
+          }}
+        />
+      </section>
     );
   }
 
@@ -80,17 +83,17 @@ function AuditLog() {
   const loadedOnly = isFilter(search) && log.hasNextPage;
 
   return (
-    <>
-      <PageHeader
-        title="Audit log"
-        actions={
-          // It is not disabled while the log is read: it keeps the focus, and
-          // a second press starts the log again as the first did.
-          <Button type="button" variant="outline" className={control} onClick={startAgain}>
-            Refresh
-          </Button>
-        }
-      />
+    <section aria-labelledby={headingId} className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 id={headingId} className="text-lg font-medium">
+          Audit log
+        </h2>
+        {/* It is not disabled while the log is read: it keeps the focus, and
+            a second press starts the log again as the first did. */}
+        <Button type="button" variant="outline" className={control} onClick={startAgain}>
+          Refresh
+        </Button>
+      </div>
       {log.isPending || loaded.length > 0 ? (
         <div className="flex flex-col">
           <Input
@@ -143,15 +146,6 @@ function AuditLog() {
           </Button>
         </div>
       ) : null}
-    </>
+    </section>
   );
-}
-
-/** What was done in the gateway, and by whom: for admins. */
-export function Audit() {
-  const session = useSession();
-  if (session.status !== "signedIn") return null;
-  // The gateway refuses it to everybody else: it is not asked.
-  if (!can(session.me, { type: "viewAudit" })) return <NotAvailableContent />;
-  return <AuditLog />;
 }

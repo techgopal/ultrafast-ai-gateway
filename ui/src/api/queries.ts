@@ -22,7 +22,7 @@ import {
   type Query,
   type QueryKey,
 } from "@tanstack/react-query";
-import { api, type BodyOf } from "./client";
+import { api, importConfig, type BodyOf } from "./client";
 import { ApiError, NetworkError, type SessionOverError } from "./errors";
 
 declare module "@tanstack/react-query" {
@@ -812,6 +812,30 @@ export const useUpdateSettings = () =>
   useApiMutation(
     (body: BodyOf<"/api/settings", "patch">) => api.patch("/api/settings", { body }),
     () => ({ stale: [queryKeys.settings(), audit] }),
+  );
+
+/**
+ * Checks a configuration file (`dryRun`) or applies it. A dry run changes
+ * nothing, so it marks nothing as stale. What an applied import changes
+ * can be any list of the configuration, and the audit log.
+ */
+export const useImportConfig = () =>
+  useApiMutation(
+    ({ file, dryRun }: { file: unknown; dryRun: boolean }) => importConfig(file, dryRun),
+    ({ dryRun }) => ({
+      stale: dryRun
+        ? []
+        : [
+            queryKeys.providers.all(),
+            queryKeys.models.all(),
+            queryKeys.teams.all(),
+            queryKeys.routes.all(),
+            queryKeys.limits.all(),
+            queryKeys.budgets.all(),
+            queryKeys.settings(),
+            audit,
+          ],
+    }),
   );
 
 // tokens

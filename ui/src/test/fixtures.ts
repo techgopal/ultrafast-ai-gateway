@@ -864,7 +864,71 @@ export const budgetsForMember: Budget[] = [
   budgets.key,
 ];
 
-export const settings: Settings = { log_retention_days: 30 };
+export const settings: Settings = {
+  log_retention_days: 30,
+  session_hours: 12,
+  trusted_proxies: ["10.0.0.0/8"],
+  login_limits: { window_minutes: 15, max_per_email: 5, max_per_address: 20 },
+};
+
+type ImportReport = components["schemas"]["ImportReport"];
+
+/** What an import reports: what it would do, nothing to do, and a file with errors. */
+export const importReports = {
+  /** A dry run of a file with something new, something changed and a provider without a credential. */
+  changes: {
+    created: [
+      { kind: "provider", name: "extra", changes: [] },
+      { kind: "team", name: "Design", changes: [] },
+    ],
+    updated: [{ kind: "model", name: "openai/gpt-4o", changes: ["enabled", "grants"] }],
+    unchanged: 5,
+    warnings: [
+      {
+        at: "providers[0]",
+        message: "provider 'extra' is created with no credential; set one before it can be called",
+      },
+    ],
+    errors: [],
+  },
+  /** The file says what the gateway has. */
+  nothing: { created: [], updated: [], unchanged: 7, warnings: [], errors: [] },
+  /** Nothing is written: no created, no updated. */
+  invalid: {
+    created: [],
+    updated: [],
+    unchanged: 0,
+    warnings: [],
+    errors: [
+      { at: "models[0].grants.teams[1]", message: "team 'No such team' does not exist" },
+      { at: "settings.session_hours", message: "must be from 1 to 720" },
+    ],
+  },
+} satisfies Record<string, ImportReport>;
+
+/** A configuration file: what `GET /api/config/export` answers, in a small gateway. */
+export const configFile = {
+  format: "ultrafast-config",
+  version: 1,
+  providers: [
+    { name: "openai", kind: "openai", base_url: "https://api.openai.com/v1", api_version: null },
+  ],
+  models: [
+    {
+      provider: "openai",
+      name: "gpt-4o-mini",
+      enabled: true,
+      input_price_micros: 150_000,
+      output_price_micros: 600_000,
+      grants: { everyone: true, teams: [], users: [] },
+    },
+  ],
+  teams: [{ name: "Platform" }],
+  routes: [],
+  limits: [],
+  budgets: [],
+  settings: { log_retention_days: 30, session_hours: 12 },
+} satisfies components["schemas"]["ConfigFile"];
 
 /** What the playground's call streams by default: two deltas, the finish and the usage. */
 export const playgroundChunks: readonly string[] = [

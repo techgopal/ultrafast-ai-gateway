@@ -1,5 +1,6 @@
+import { Link, useRouterState } from "@tanstack/react-router";
 import { useForm } from "@tanstack/react-form";
-import { useRef } from "react";
+import { useId, useRef } from "react";
 import { useSettings, useUpdateSettings } from "@/api/queries";
 import { ConsoleRefusal } from "@/api/errors";
 import { can } from "@/auth/guards";
@@ -15,6 +16,10 @@ import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { BackupSection } from "@/pages/SettingsBackup";
+import { ConfigSection } from "@/pages/SettingsConfig";
+import { AuditSection } from "@/pages/SettingsAudit";
+import { SignInSection } from "@/pages/SettingsSignIn";
 
 export const DONE = "Settings saved.";
 export const RETENTION_RULE = "Enter a whole number from 1 to 3650.";
@@ -50,7 +55,7 @@ function RetentionForm({ days }: { days: number }) {
   return (
     <form
       ref={formRef}
-      aria-label="Settings"
+      aria-label="Retention"
       noValidate
       className="flex max-w-md flex-col gap-4"
       onSubmit={onSubmit}
@@ -84,20 +89,58 @@ function RetentionForm({ days }: { days: number }) {
       </form.Field>
       <div>
         <Button type="submit" className={control} disabled={update.isPending}>
-          {update.isPending ? "Saving" : "Save settings"}
+          {update.isPending ? "Saving" : "Save retention"}
         </Button>
       </div>
     </form>
   );
 }
 
-function SettingsOf() {
+function RetentionSection({ days }: { days: number }) {
+  const headingId = useId();
+  return (
+    <section aria-labelledby={headingId} className="flex flex-col gap-4">
+      <h2 id={headingId} className="text-lg font-medium">
+        Retention
+      </h2>
+      <RetentionForm days={days} />
+    </section>
+  );
+}
+
+/** The two views of the page: the settings, and the audit log. */
+function SectionNav({ view }: { view: "general" | "audit" }) {
+  const link = "inline-flex items-center rounded-md px-3 text-sm font-medium aria-[current=page]:bg-muted aria-[current=page]:text-foreground text-muted-foreground hover:text-foreground " + control;
+  return (
+    <nav aria-label="Settings sections" className="flex flex-wrap gap-1">
+      <Link
+        to="/settings"
+        className={link}
+        {...(view === "general" ? { "aria-current": "page" as const } : {})}
+      >
+        General
+      </Link>
+      <Link
+        to="/settings"
+        hash="audit"
+        className={link}
+        {...(view === "audit" ? { "aria-current": "page" as const } : {})}
+      >
+        Audit log
+      </Link>
+    </nav>
+  );
+}
+
+function General() {
   const settings = useSettings();
   return (
-    <>
-      <PageHeader title="Settings" />
+    <div className="flex flex-col gap-8">
       {settings.data !== undefined ? (
-        <RetentionForm days={settings.data.log_retention_days} />
+        <>
+          <RetentionSection days={settings.data.log_retention_days} />
+          <SignInSection settings={settings.data} />
+        </>
       ) : settings.error !== null ? (
         <ErrorState
           error={settings.error}
@@ -116,11 +159,25 @@ function SettingsOf() {
           <Skeleton className="h-8 w-full" />
         </div>
       )}
+      <BackupSection />
+      <ConfigSection />
+    </div>
+  );
+}
+
+function SettingsOf() {
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  const view = hash === "audit" ? "audit" : "general";
+  return (
+    <>
+      <PageHeader title="Settings" />
+      <SectionNav view={view} />
+      {view === "audit" ? <AuditSection /> : <General />}
     </>
   );
 }
 
-/** The settings of the gateway: only an admin reads and changes them. */
+/** The settings of the gateway, and its audit log: only an admin reads and changes them. */
 export function Settings() {
   const session = useSession();
   if (session.status !== "signedIn") return null;

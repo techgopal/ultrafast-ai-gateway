@@ -18,7 +18,6 @@ const items = [
   "Budgets and limits",
   "Guardrails",
   "MCP tools",
-  "Audit log",
   "Settings",
   "Account",
 ];
@@ -61,7 +60,6 @@ describe("sidebar", () => {
       "Budgets and limits",
       "Guardrails",
       "MCP tools",
-      "Audit log",
       "Settings",
       "Account",
     ]);
@@ -87,7 +85,6 @@ describe("sidebar", () => {
       ["Users", "/users"],
       ["Teams", "/teams"],
       ["Budgets and limits", "/limits"],
-      ["Audit log", "/audit"],
       ["Settings", "/settings"],
       ["Account", "/account"],
     ]);
@@ -134,18 +131,18 @@ describe("sidebar", () => {
     );
   });
 
-  test("audit item is for admins", async () => {
+  test("the audit log is no item of its own: it is on the settings page, for admins", async () => {
     const first = await renderWithApp(null, { user: memberUser });
-    expect(
-      within(sidebar()).queryByRole("link", { name: "Audit log" }),
-    ).toBeNull();
+    expect(within(sidebar()).queryByRole("link", { name: "Audit log" })).toBeNull();
     expect(within(sidebar()).queryByText("Audit log")).toBeNull();
     first.unmount();
 
     await renderWithApp(null, { user: adminUser });
-    expect(
-      within(sidebar()).getByRole("link", { name: "Audit log" }),
-    ).toHaveAttribute("href", "/audit");
+    expect(within(sidebar()).queryByRole("link", { name: "Audit log" })).toBeNull();
+    expect(within(sidebar()).getByRole("link", { name: "Settings" })).toHaveAttribute(
+      "href",
+      "/settings",
+    );
   });
 
   test("footer shows the signed-in user and signs out", async () => {

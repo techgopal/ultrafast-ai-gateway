@@ -2,7 +2,7 @@
 // origin, under `/api`, with the session cookie the browser holds. Nothing
 // here logs a request or a response.
 import { ApiError, NetworkError, SessionOverError } from "./errors";
-import type { paths } from "./schema";
+import type { components, paths } from "./schema";
 
 export type Method = "get" | "post" | "put" | "patch" | "delete";
 
@@ -302,6 +302,63 @@ export async function playgroundChat(
     // The status is still told.
   }
   const error = chatErrorOf(response, text);
+  if (response.status === 401) tellUnauthenticated();
+  throw error;
+}
+
+export type ImportReport = components["schemas"]["ImportReport"];
+
+function isReport(body: unknown): body is ImportReport {
+  return (
+    isRecord(body) &&
+    Array.isArray(body.created) &&
+    Array.isArray(body.updated) &&
+    Array.isArray(body.errors) &&
+    Array.isArray(body.warnings) &&
+    typeof body.unchanged === "number"
+  );
+}
+
+/**
+ * Checks a configuration file with the gateway (`dryRun`) or applies it. A
+ * file with errors is answered 422 with the report, which is a result here,
+ * not a failure: nothing was written, and the report says why. Every other
+ * refusal rejects as for any call.
+ */
+export async function importConfig(
+  file: unknown,
+  dryRun: boolean,
+  signal?: AbortSignal,
+): Promise<ImportReport> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  if (csrfToken !== null) headers["x-csrf-token"] = csrfToken;
+  const init: RequestInit = {
+    method: "POST",
+    credentials: "same-origin",
+    headers,
+    body: JSON.stringify(file),
+  };
+  if (signal !== undefined) init.signal = signal;
+
+  const madeUnder = sessionsOver;
+  let response: Response;
+  let text: string;
+  try {
+    response = await fetch(`/api/config/import?dry_run=${dryRun ? "true" : "false"}`, init);
+    text = await response.text();
+  } catch (error) {
+    if (signal?.aborted === true) throw error;
+    if (madeUnder !== sessionsOver) throw new SessionOverError();
+    throw new NetworkError();
+  }
+  if (madeUnder !== sessionsOver) throw new SessionOverError();
+  const body = parseJson(text);
+  if ((response.ok || response.status === 422) && isReport(body)) return body;
+  if (response.ok) throw unexpected(response.status);
+  const error = errorOf(response.status, text);
   if (response.status === 401) tellUnauthenticated();
   throw error;
 }

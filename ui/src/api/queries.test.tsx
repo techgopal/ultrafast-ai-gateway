@@ -755,6 +755,50 @@ describe("mutations invalidate", () => {
     });
   });
 
+  test("an applied import refetches the configuration, a dry run refetches nothing", async () => {
+    const calls = { models: 0, providers: 0, routes: 0, settings: 0 };
+    override("get", "/api/models", () => {
+      calls.models += 1;
+      return ok("get", "/api/models", 200, { models: fixtures.modelList });
+    });
+    override("get", "/api/providers", () => {
+      calls.providers += 1;
+      return ok("get", "/api/providers", 200, { providers: fixtures.providerList });
+    });
+    override("get", "/api/routes", () => {
+      calls.routes += 1;
+      return ok("get", "/api/routes", 200, { routes: fixtures.routeList });
+    });
+    override("get", "/api/settings", () => {
+      calls.settings += 1;
+      return ok("get", "/api/settings", 200, fixtures.settings);
+    });
+    const { result } = renderHook(
+      () => ({
+        models: q.useModels(),
+        providers: q.useProviders(),
+        routes: q.useRoutes(),
+        settings: q.useSettings(),
+        run: q.useImportConfig(),
+      }),
+      { wrapper: wrapperOf(appClient()) },
+    );
+    await waitFor(() => {
+      expect(Object.values(calls)).toEqual([1, 1, 1, 1]);
+    });
+    await act(async () => {
+      await result.current.run.mutateAsync({ file: fixtures.configFile, dryRun: true });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(Object.values(calls)).toEqual([1, 1, 1, 1]);
+    await act(async () => {
+      await result.current.run.mutateAsync({ file: fixtures.configFile, dryRun: false });
+    });
+    await waitFor(() => {
+      expect(Object.values(calls)).toEqual([2, 2, 2, 2]);
+    });
+  });
+
   test("a deleted team is not asked for again", async () => {
     let detail = 0;
     override("get", "/api/teams/{id}", () => {
@@ -1307,16 +1351,17 @@ describe("every mutation calls its operation", () => {
       ["useSetBudget", "PUT /api/budgets", q.useSetBudget, { scope: "gateway", amount_micros: 1, period: "daily", action: "block" }],
       ["useDeleteBudget", "DELETE /api/budgets/1", q.useDeleteBudget, { id: 1 }],
       ["useUpdateSettings", "PATCH /api/settings", q.useUpdateSettings, { log_retention_days: 30 }],
+      ["useImportConfig", "POST /api/config/import?dry_run=true", q.useImportConfig, { file: fixtures.configFile, dryRun: true }],
       ["useCreateToken", "POST /api/tokens", q.useCreateToken, { name: "t" }],
       ["useRevokeToken", "DELETE /api/tokens/1", q.useRevokeToken, { id: 1 }],
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 34 of them, 17 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(34);
+  test("there are 35 of them, 17 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(35);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(54);
+    expect(hooks).toHaveLength(55);
     // What only tests used is not kept: a key read by its id, the audit log
     // read as one page, and `me`, which the session reads itself.
     for (const gone of ["useKey", "keyOptions", "useAuditLog", "auditLogOptions", "useMe"]) {

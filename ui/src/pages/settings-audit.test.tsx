@@ -22,6 +22,7 @@ import {
   toasts,
 } from "@/test/pages";
 import { renderWithApp, type AppRenderResult } from "@/test/render";
+import { PART_NOT_AVAILABLE } from "@/components/NotAvailableNote";
 
 const PAGE = 50;
 const LOAD_OLDER = "Load older";
@@ -33,7 +34,7 @@ afterEach(forgetToasts);
 type Options = { user?: fixtures.Me; width?: number };
 
 function page(options: Options = {}): Promise<AppRenderResult> {
-  return renderWithApp(null, { route: "/audit", ...options });
+  return renderWithApp(null, { route: "/settings#audit", ...options });
 }
 
 /**
@@ -144,7 +145,7 @@ describe("the audit log", () => {
     const log = logIs(fixtures.auditEntries);
     await page();
     const entries = await table();
-    expect(screen.getByRole("heading", { level: 1, name: "Audit log" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Audit log" })).toBeInTheDocument();
     expect(within(entries).getAllByRole("columnheader").map((th) => th.textContent)).toEqual([
       "Time",
       "Actor",
@@ -531,7 +532,7 @@ describe("the audit log", () => {
   test("Refresh is not there when the list call answers 403", async () => {
     forbid("/api/audit");
     await page();
-    await expectNotAvailable();
+    expect(await screen.findByText(PART_NOT_AVAILABLE)).toBeInTheDocument();
     expect(refresh()).toBeNull();
   });
 
@@ -771,20 +772,23 @@ describe("the audit log", () => {
     expect(filter().className.split(/\s+/)).toContain("w-full");
   });
 
-  test("a failed list call shows the error under the title of the page: one h1", async () => {
+  test("a failed list call shows the error under the heading of the section: one h1", async () => {
     override("get", "/api/audit", () => refuse(errors.internal_error));
     await page();
     await screen.findByRole("alert");
-    expectOneH1("Audit log");
+    expect(screen.getByRole("heading", { level: 2, name: "Audit log" })).toBeInTheDocument();
+    expectOneH1("Settings");
     expectOneMain();
   });
 
-  test("the list call answers 403: not available", async () => {
+  test("the list call answers 403: the section says it is not available to the account", async () => {
     forbid("/api/audit");
     await page();
-    await expectNotAvailable();
+    expect(await screen.findByText(PART_NOT_AVAILABLE)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Audit log" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
     expectOneMain();
-    expectOneH1();
+    expectOneH1("Settings");
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.queryByRole("searchbox")).toBeNull();
   });
@@ -811,7 +815,7 @@ describe("the audit log", () => {
     await expectSessionEndsOnPage(app, {
       path: "/api/audit",
       queryKey: queryKeys.audit.pages(),
-      at: "/audit",
+      at: "/settings#audit",
     });
     const [first] = fixtures.auditEntries;
     expect(shown()).not.toContain(first?.summary ?? "no entry");

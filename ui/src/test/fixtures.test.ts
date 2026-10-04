@@ -602,3 +602,40 @@ describe("the fixtures have the forms of the gateway", () => {
     }
   });
 });
+
+describe("the settings, the import reports and the configuration file", () => {
+  test("the settings are as the gateway answers: ranges, proxies as networks and the built-in limits", () => {
+    expect(fixtures.settings.session_hours).toBeGreaterThanOrEqual(1);
+    expect(fixtures.settings.session_hours).toBeLessThanOrEqual(720);
+    for (const network of fixtures.settings.trusted_proxies) {
+      expect(network).toMatch(/^[0-9a-f.:]+\/\d{1,3}$/);
+    }
+    // `identity/limiter.rs`: 15 minutes, 5 an email, 20 an address.
+    expect(fixtures.settings.login_limits).toEqual({
+      window_minutes: 15,
+      max_per_email: 5,
+      max_per_address: 20,
+    });
+  });
+
+  test("a report with errors writes nothing, so it created and updated nothing", () => {
+    const { invalid, changes, nothing } = fixtures.importReports;
+    expect([invalid.created, invalid.updated, invalid.unchanged]).toEqual([[], [], 0]);
+    expect(invalid.errors.length).toBeGreaterThan(0);
+    expect(changes.errors).toEqual([]);
+    expect(nothing.created.length + nothing.updated.length).toBe(0);
+    // A creation has no changes; an update names them.
+    for (const item of changes.created) expect(item.changes).toEqual([]);
+    for (const item of changes.updated) expect(item.changes.length).toBeGreaterThan(0);
+    for (const issue of [...changes.warnings, ...invalid.errors]) {
+      expect(issue.at).toMatch(/^[a-z_]+(\[\d+\])?(\.[a-z_]+(\[\d+\])?)*$/);
+    }
+  });
+
+  test("the configuration file is of the format and version the gateway reads", () => {
+    expect(fixtures.configFile.format).toBe("ultrafast-config");
+    expect(fixtures.configFile.version).toBe(1);
+    // No secret is in a file of that format.
+    expect(JSON.stringify(fixtures.configFile)).not.toMatch(/credential|api_key|password|token_hash/i);
+  });
+});
