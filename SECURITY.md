@@ -2,16 +2,15 @@
 
 ## Supported versions
 
-Ultrafast v2 is in alpha (`2.0.0-alpha.x`). Fixes go into the latest alpha
-release on `main`; older alphas and v1 (tag `v1-final`) get none.
+Ultrafast v2 is in beta (`2.0.0-beta.x`). Fixes go into the latest beta
+release on `main`; older prereleases and v1 (tag `v1-final`) get none.
 
 ## Reporting a vulnerability
 
 Do not open a public issue. Use GitHub's private vulnerability reporting on
 this repository (Security tab, "Report a vulnerability"), or write to the
 maintainer at techgopal.io@gmail.com. Include the version, what you did and
-what happened. This is a one-person project: expect a first answer within a
-week, and a fix or a decision on whether it is in scope after that.
+what happened. We aim to acknowledge reports within 7 days.
 
 ## In scope
 
