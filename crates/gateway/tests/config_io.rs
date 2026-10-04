@@ -992,3 +992,49 @@ async fn users_are_matched_by_email_and_never_created() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(store.config_state().await.unwrap().users.len(), 6);
 }
+
+#[tokio::test]
+async fn a_file_may_be_larger_than_the_admin_api_reads_and_up_to_8_mib() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    // About 130 KB: more than the 64 KiB of the other bodies of /api.
+    let teams: Vec<Value> = (0..5000)
+        .map(|i| json!({ "name": format!("team number {i:05}") }))
+        .collect();
+    let file = json!({ "format": "ultrafast-config", "version": 1, "teams": teams });
+    assert!(file.to_string().len() > 100_000);
+    let (status, _, body) = call(
+        &org.api.app,
+        "POST",
+        "/api/config/import?dry_run=false",
+        Some(&maya),
+        Some(file),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        body.to_string().chars().take(300).collect::<String>()
+    );
+    assert_eq!(body["created"].as_array().unwrap().len(), 5000);
+    assert_eq!(
+        org.api.store.config_state().await.unwrap().teams.len(),
+        5003
+    );
+
+    // Past 8 MiB it is refused, and nothing is read of it.
+    let mut big = br#"{"format":"ultrafast-config","version":1,"teams":[],"#.to_vec();
+    big.extend(std::iter::repeat_n(b' ', 9 * 1024 * 1024));
+    big.extend(br#""routes":[]}"#);
+    let (status, _, body) = common::send(
+        &org.api.app,
+        "POST",
+        "/api/config/import?dry_run=false",
+        &[("cookie", &maya.cookie), ("x-csrf-token", &maya.csrf)],
+        Some(big),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(error_code(&body), "payload_too_large");
+}
