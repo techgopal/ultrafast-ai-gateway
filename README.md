@@ -16,8 +16,12 @@ tagged `v1-final`. Design: [`docs/superpowers/specs/2026-09-28-gateway-v2-design
 
 - **Endpoints.** `/v1/chat/completions`, `/v1/messages` (Anthropic format),
   `/v1/embeddings`, `/v1/models`; streaming on both chat formats.
-- **Providers.** OpenAI and any OpenAI-compatible API, Anthropic, Gemini,
-  Azure OpenAI. Credentials are encrypted at rest with a master key.
+- **Providers.** OpenAI, Anthropic, Gemini, Azure OpenAI, and any
+  OpenAI-compatible API through the `openai` kind: Groq
+  (`https://api.groq.com/openai/v1`), Mistral (`https://api.mistral.ai/v1`),
+  OpenRouter (`https://openrouter.ai/api/v1`), Ollama
+  (`http://localhost:11434/v1`) and others. Credentials are encrypted at rest
+  with a master key.
 - **Routing and resilience.** Routes with weighted targets, ordered fallbacks,
   retries, timeouts and circuit breakers; an exact-match response cache.
 - **Access control.** Email and password sign-in, roles (admin, team lead,
