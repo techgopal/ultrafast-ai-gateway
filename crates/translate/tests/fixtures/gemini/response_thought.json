@@ -1,0 +1,24 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          { "text": "let me think", "thought": true },
+          { "text": "Answer" },
+          { "thoughtSignature": "c2lnbmF0dXJl" }
+        ]
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 7,
+    "candidatesTokenCount": 3,
+    "thoughtsTokenCount": 11,
+    "totalTokenCount": 21
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "resp-2"
+}

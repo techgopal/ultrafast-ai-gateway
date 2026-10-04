@@ -1,0 +1,210 @@
+{
+  "description": "Each case: a target and the pieces of a 200 event-stream body (sent as separate chunks, then also as one chunk), and the events every client must yield, then the error it must raise (null when the stream is complete).",
+  "key": "sk-fixture-key-0001",
+  "cases": [
+    {
+      "name": "openai stream in several chunks",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "chunks": [
+        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hé\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"llo\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n"
+      ],
+      "expect": {
+        "events": [
+          {
+            "text": "hé",
+            "type": "delta"
+          },
+          {
+            "text": "llo",
+            "type": "delta"
+          },
+          {
+            "finish_reason": "stop",
+            "type": "done",
+            "usage": {
+              "input_tokens": 3,
+              "output_tokens": 2
+            }
+          }
+        ],
+        "error": null
+      }
+    },
+    {
+      "name": "openai stream in one chunk",
+      "target": {
+        "kind": "openai",
+        "base_url": "{base}"
+      },
+      "chunks": [
+        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hé\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"llo\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n"
+      ],
+      "expect": {
+        "events": [
+          {
+            "text": "hé",
+            "type": "delta"
+          },
+          {
+            "text": "llo",
+            "type": "delta"
+          },
+          {
+            "finish_reason": "stop",
+            "type": "done",
+            "usage": {
+              "input_tokens": 3,
+              "output_tokens": 2
+            }
+          }
+        ],
+        "error": null
+      }
+    },
+    {
+      "name": "anthropic stream",
+      "target": {
+        "kind": "anthropic",
+        "base_url": "{base}"
+      },
+      "chunks": [
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"he\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"llo\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+      ],
+      "expect": {
+        "events": [
+          {
+            "text": "he",
+            "type": "delta"
+          },
+          {
+            "text": "llo",
+            "type": "delta"
+          },
+          {
+            "finish_reason": "stop",
+            "type": "done",
+            "usage": {
+              "input_tokens": 3,
+              "output_tokens": 2
+            }
+          }
+        ],
+        "error": null
+      }
+    },
+    {
+      "name": "gemini stream",
+      "target": {
+        "kind": "gemini",
+        "base_url": "{base}"
+      },
+      "chunks": [
+        "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"he\"}]}}]}\n\n",
+        "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"llo\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2}}\n\n"
+      ],
+      "expect": {
+        "events": [
+          {
+            "text": "he",
+            "type": "delta"
+          },
+          {
+            "text": "llo",
+            "type": "delta"
+          },
+          {
+            "finish_reason": "stop",
+            "type": "done",
+            "usage": {
+              "input_tokens": 3,
+              "output_tokens": 2
+            }
+          }
+        ],
+        "error": null
+      }
+    },
+    {
+      "name": "text, then the connection closes before the end",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "chunks": [
+        "data: {\"choices\":[{\"delta\":{\"content\":\"par\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"tial\"},\"finish_reason\":null}]}\n\n"
+      ],
+      "expect": {
+        "events": [
+          {
+            "text": "par",
+            "type": "delta"
+          },
+          {
+            "text": "tial",
+            "type": "delta"
+          }
+        ],
+        "error": {
+          "kind": "malformed",
+          "retryable": false,
+          "status": null,
+          "retry_after": null,
+          "message": "the stream ended before it was complete"
+        }
+      }
+    },
+    {
+      "name": "text, then a provider error event",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "chunks": [
+        "data: {\"choices\":[{\"delta\":{\"content\":\"par\"},\"finish_reason\":null}]}\n\ndata: {\"error\":{\"message\":\"overloaded\",\"type\":\"overloaded_error\"}}\n\n"
+      ],
+      "expect": {
+        "events": [
+          {
+            "text": "par",
+            "type": "delta"
+          }
+        ],
+        "error": {
+          "kind": "upstream",
+          "retryable": true,
+          "status": 502,
+          "retry_after": null,
+          "message": "overloaded"
+        }
+      }
+    },
+    {
+      "name": "nothing at all",
+      "target": {
+        "kind": "gateway",
+        "base_url": "{base}"
+      },
+      "chunks": [
+        ""
+      ],
+      "expect": {
+        "events": [],
+        "error": {
+          "kind": "malformed",
+          "retryable": false,
+          "status": null,
+          "retry_after": null,
+          "message": "the stream ended before it was complete"
+        }
+      }
+    }
+  ]
+}

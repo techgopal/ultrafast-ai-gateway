@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, v2]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, v2]
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,43 +12,151 @@ env:
 
 jobs:
   build-test:
-    name: Lint, Test, and Docker Build
+    name: Lint and test
     runs-on: ubuntu-latest
     timeout-minutes: 25
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+      # The console is compiled into the binary, and the tests marked
+      # `ignore` check the one that is really in it.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Build the console
+        run: |
+          pnpm --dir ui install --frozen-lockfile
+          pnpm --dir ui build
       - name: Format check
         run: cargo fmt --all -- --check
-
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Tests
+        run: cargo test --all --no-fail-fast -- --include-ignored
+      - name: OpenAPI spec is current
+        run: |
+          if ! cargo run -q -p ultrafast-gateway -- openapi | diff - openapi/admin.json; then
+            echo "openapi/admin.json is out of date; run: cargo run -p ultrafast-gateway -- openapi > openapi/admin.json"
+            exit 1
+          fi
+      - name: Build image
+        run: docker build -t ultrafast:ci .
+      - name: Run image
+        run: docker run --rm ultrafast:ci --version
+      - name: Report binary size
+        run: |
+          cargo build --release --locked -p ultrafast-gateway
+          ls -l target/release/ultrafast | awk '{printf "binary size: %.1f MB\n", $5/1048576}'
 
-      - name: Unit tests (no doctests)
-        run: cargo test --all --tests --bins --examples --no-fail-fast
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('Cargo.lock') }}
+      # The console is compiled into the binary, and the tests marked
+      # `ignore` check the one that is really in it.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Build the console
+        run: |
+          pnpm --dir ui install --frozen-lockfile
+          pnpm --dir ui build
+      - name: Tests
+        run: cargo test --all --locked -- --include-ignored
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+  console:
+    name: Console
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      # The pnpm version is the one recorded in ui/package.json "packageManager".
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Generated API types are current
+        run: pnpm check:api
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Tests
+        run: pnpm test
+      - name: Build
+        run: pnpm build
 
-      - name: Build Docker image
-        run: docker build -t ultrafast-gateway:ci -f Dockerfile .
+  e2e:
+    name: Console in a browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('Cargo.lock') }}
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: ui/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      # The browser tests start the real binary, which embeds the console:
+      # the console is built first, then the binary.
+      - name: Build the console
+        run: |
+          pnpm --dir ui install --frozen-lockfile
+          pnpm --dir ui build
+      - name: Build the gateway
+        run: cargo build --release --locked -p ultrafast-gateway
+      - name: Install Chromium
+        run: pnpm --dir ui exec playwright install --with-deps chromium
+      # The errors are in this log. Nothing of the run is uploaded: what a
+      # failure writes may hold the test's (random, short-lived) credentials.
+      - name: Browser tests
+        run: pnpm --dir ui test:e2e

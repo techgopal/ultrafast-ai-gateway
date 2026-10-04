@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "429",
+    "message": "Requests to the ChatCompletions_Create Operation have exceeded token rate limit."
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "candidates": [{ "finishReason": "SAFETY", "index": 0 }],
+  "usageMetadata": { "promptTokenCount": 7 },
+  "modelVersion": "gemini-2.0-flash"
+}

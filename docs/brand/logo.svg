@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 64" role="img" aria-label="Ultrafast">
+  <rect width="64" height="64" rx="14" fill="#121417"/>
+  <rect x="12" y="14" width="8" height="36" rx="2" fill="#F6F5F1"/>
+  <rect x="44" y="14" width="8" height="36" rx="2" fill="#F6F5F1"/>
+  <polygon points="36,10 24,35 31,35 27,54 41,27 34,27 38,10" fill="#E11D48"/>
+  <text x="80" y="46" font-family="'Space Grotesk', 'Helvetica Neue', Arial, sans-serif" font-size="44" font-weight="700" letter-spacing="-1.5" fill="#121417">ultrafast</text>
+</svg>

@@ -1,76 +1,43 @@
 [workspace]
 resolver = "2"
-members = [
-    "ultrafast-models-sdk",
-    "ultrafast-gateway"
-]
+members = ["crates/translate", "crates/gateway", "crates/client", "crates/client-wasm", "crates/client-py"]
 
 [workspace.package]
-version = "0.1.6"
+version = "2.0.0-alpha.1"
 edition = "2021"
+rust-version = "1.94"
 license = "MIT"
-authors = ["Ultrafast Gateway Contributors"]
 repository = "https://github.com/techgopal/ultrafast-ai-gateway"
-keywords = ["ai", "llm", "gateway", "sdk", "api"]
-categories = ["api-bindings", "web-programming::http-server"]
-description = "High-performance AI gateway built in Rust with unified interface to 10+ LLM providers"
 
 [workspace.dependencies]
-# Core async runtime and utilities
-tokio = { version = "1.47", features = ["full"] }
-tokio-stream = "0.1"
+anyhow = "1"
+arc-swap = "1"
+argon2 = { version = "0.6", features = ["rand_core"] }
 async-stream = "0.3"
+axum = "0.8"
+bytes = "1"
+chacha20poly1305 = "0.11"
+clap = { version = "4", features = ["derive", "env"] }
+flate2 = "1"
 futures = "0.3"
-
-# HTTP client and server
-reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"] }
-axum = { version = "0.8", features = ["ws"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "timeout"] }
-
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
-# Error handling
-thiserror = "1.0"
-anyhow = "1.0"
-
-# Logging and tracing
+hex = "0.4"
+ipnet = "2"
+http-body-util = "0.1"
+mime_guess = "2"
+rand = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
+rust-embed = { version = "8", features = ["interpolate-folder-path", "debug-embed"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+tempfile = "3"
+thiserror = "2"
+time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# Time and UUID
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.17", features = ["v4", "serde"] }
-
-# Random number generation
-rand = "0.8"
-getrandom = "0.2"
-
-# Configuration
-config = "0.14"
-clap = { version = "4.5", features = ["derive"] }
-
-# Caching and storage
-dashmap = "5.5"
-lru = "0.12"
-redis = { version = "0.25", features = ["tokio-comp"] }
-
-# Authentication
-jsonwebtoken = "9.0"
-
-# Additional dependencies
-async-trait = "0.1"
-toml = "0.8"
-
-
-# Development dependencies
-tokio-test = "0.4"
+utoipa = { version = "6", features = ["axum_extras"] }
+utoipa-axum = "0.3"
 wiremock = "0.6"
-criterion = "0.5"
-axum-test = "18.0.0-rc3"
-
-
-
-

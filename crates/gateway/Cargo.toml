@@ -1,0 +1,49 @@
+[package]
+name = "ultrafast-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Ultrafast AI gateway"
+
+[[bin]]
+name = "ultrafast"
+path = "src/main.rs"
+
+[dependencies]
+ultrafast-translate = { path = "../translate" }
+anyhow.workspace = true
+arc-swap.workspace = true
+argon2.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+bytes.workspace = true
+chacha20poly1305.workspace = true
+clap.workspace = true
+flate2.workspace = true
+futures.workspace = true
+hex.workspace = true
+ipnet.workspace = true
+http-body-util.workspace = true
+mime_guess.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tower.workspace = true
+wiremock.workspace = true

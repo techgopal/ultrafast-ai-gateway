@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>
+    .tile { fill: #121417 } .pillar { fill: #F6F5F1 }
+    @media (prefers-color-scheme: dark) { .tile { fill: #F6F5F1 } .pillar { fill: #121417 } }
+  </style>
+  <rect class="tile" width="64" height="64" rx="14"/>
+  <rect class="pillar" x="10" y="12" width="11" height="40" rx="2"/>
+  <rect class="pillar" x="43" y="12" width="11" height="40" rx="2"/>
+  <polygon points="37,8 23,36 31,36 27,56 42,26 34,26 38,8" fill="#E11D48"/>
+</svg>
