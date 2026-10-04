@@ -865,3 +865,11 @@ export const budgetsForMember: Budget[] = [
 ];
 
 export const settings: Settings = { log_retention_days: 30 };
+
+/** What the playground's call streams by default: two deltas, the finish and the usage. */
+export const playgroundChunks: readonly string[] = [
+  'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"Hel"},"finish_reason":null}]}\n\n',
+  'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":null}]}\n\n',
+  'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\n',
+  "data: [DONE]\n\n",
+];

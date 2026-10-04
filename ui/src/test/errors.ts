@@ -147,3 +147,45 @@ export const errors = {
 } as const satisfies Record<string, GatewayError>;
 
 export type ErrorName = keyof typeof errors;
+
+/**
+ * What the shared `/v1` pipeline answers when the playground's call is
+ * refused: the OpenAI shape (`crates/gateway/src/proxy.rs`, `errors.rs`),
+ * not the `/api` one. `retryAfter` is the `Retry-After` header, in seconds.
+ */
+export interface PipelineError {
+  readonly status: number;
+  readonly body: { error: { message: string; type: string; param: null; code: string | null } };
+  readonly retryAfter?: number;
+}
+
+function pipelineError(
+  status: number,
+  type: string,
+  message: string,
+  extra: { code?: string; retryAfter?: number } = {},
+): PipelineError {
+  return {
+    status,
+    body: { error: { message, type, param: null, code: extra.code ?? null } },
+    ...(extra.retryAfter === undefined ? {} : { retryAfter: extra.retryAfter }),
+  };
+}
+
+export const pipelineErrors = {
+  forbidden: pipelineError(403, "permission_error", "You do not have access to model 'openai/gpt-4o'."),
+  unknown: pipelineError(404, "not_found_error", "Unknown model 'nothing'."),
+  rateLimited: pipelineError(
+    429,
+    "rate_limit_error",
+    "rate limit 'requests per minute' of user 'lena@example.com' reached",
+    { retryAfter: 30 },
+  ),
+  budget: pipelineError(
+    429,
+    "rate_limit_error",
+    "budget 'monthly' of user 'lena@example.com' reached",
+    { code: "budget_exceeded", retryAfter: 7200 },
+  ),
+  unavailable: pipelineError(503, "upstream_error", "No provider could serve this request."),
+} as const satisfies Record<string, PipelineError>;

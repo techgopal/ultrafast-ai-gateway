@@ -11,17 +11,21 @@ export class ApiError extends Error {
   readonly code: string;
   /** A message per field that is not valid. Empty when there is none. */
   readonly fields: Readonly<Record<string, string>>;
+  /** Whole seconds the gateway asked to wait (`Retry-After`), when it did. */
+  readonly retryAfter: number | null;
 
   constructor(
     status: number,
     code: string,
     message: string,
     fields: Readonly<Record<string, string>> = {},
+    retryAfter: number | null = null,
   ) {
     super(message);
     this.status = status;
     this.code = code;
     this.fields = Object.freeze({ ...fields });
+    this.retryAfter = retryAfter;
   }
 }
 

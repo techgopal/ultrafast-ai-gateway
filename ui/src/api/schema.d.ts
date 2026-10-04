@@ -1095,7 +1095,8 @@ export interface components {
             error: components["schemas"]["PlaygroundErrorDetail"];
         };
         PlaygroundErrorDetail: {
-            code?: string;
+            /** @description `null` in the OpenAI shape, except for a spent budget. */
+            code?: string | null;
             message: string;
             /** @description Only in the OpenAI shape, such as `permission_error`. */
             type?: string;

@@ -25,6 +25,7 @@ import { LogsDetail } from "@/pages/LogsDetail";
 import { PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
 import { Overview } from "@/pages/Overview";
+import { Playground } from "@/pages/Playground";
 import { Models } from "@/pages/Models";
 import { Routes } from "@/pages/Routes";
 import { RoutesEdit } from "@/pages/RoutesEdit";
@@ -222,6 +223,13 @@ const logRoute = createRoute({
   },
 });
 
+const playgroundRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/playground",
+  staticData: { title: "Playground" },
+  component: Playground,
+});
+
 const limitsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/limits",
@@ -366,6 +374,7 @@ const routeTree = rootRoute.addChildren([
     overviewRoute,
     logsRoute,
     logRoute,
+    playgroundRoute,
     providersRoute,
     modelsRoute,
     routesRoute,

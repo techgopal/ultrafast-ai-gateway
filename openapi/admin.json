@@ -6360,7 +6360,11 @@
         ],
         "properties": {
           "code": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` in the OpenAI shape, except for a spent budget."
           },
           "message": {
             "type": "string"

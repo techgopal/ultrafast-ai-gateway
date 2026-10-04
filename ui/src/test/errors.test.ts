@@ -6,6 +6,7 @@ import {
   badRequest,
   errors,
   fieldMessages,
+  pipelineErrors,
   validationFailed,
   type ErrorName,
 } from "./errors";
@@ -194,4 +195,29 @@ test("the messages of team members, key allowlists and the API version are in th
   // The message about a name is made with the name: `'{name}' is not a model or route you can use`.
   expect(source).toContain("'{name}' is not a model or route you can use");
   expect(fieldMessages.allowedHidden).toBe("'gpt-secret' is not a model or route you can use");
+});
+
+test("the refusals of the pipeline are in the gateway source, in the OpenAI shape", () => {
+  const dir = fileURLToPath(new URL("../../../crates/gateway/src/", import.meta.url));
+  const source = ["proxy.rs", "limits/mod.rs", "budgets/mod.rs"]
+    .map((file) => readFileSync(dir + file, "utf8"))
+    .join("\n");
+  // The messages are made with the name asked for, or of the limit.
+  expect(source).toContain("You do not have access to model '{model}'.");
+  expect(source).toContain("Unknown model '{model}'.");
+  expect(source).toContain("rate limit '{}' of {} reached");
+  expect(source).toContain("budget '{}' of {} reached");
+  expect(source).toContain('const NO_PROVIDER: &str = "No provider could serve this request."');
+  const kinds = Object.values(pipelineErrors).map((e) => [e.status, e.body.error.type]);
+  expect(kinds).toEqual([
+    [403, "permission_error"],
+    [404, "not_found_error"],
+    [429, "rate_limit_error"],
+    [429, "rate_limit_error"],
+    [503, "upstream_error"],
+  ]);
+  for (const e of Object.values(pipelineErrors)) {
+    expect(Object.keys(e.body.error)).toEqual(["message", "type", "param", "code"]);
+  }
+  expect(pipelineErrors.budget.body.error.code).toBe("budget_exceeded");
 });

@@ -79,6 +79,7 @@ describe("sidebar", () => {
     expect(hrefs).toEqual([
       ["Overview", "/"],
       ["Logs", "/logs"],
+      ["Playground", "/playground"],
       ["Providers", "/providers"],
       ["Models", "/models"],
       ["Routing", "/routes"],
@@ -95,10 +96,10 @@ describe("sidebar", () => {
   test("coming items are not links", async () => {
     await renderWithApp(null);
     const nav = sidebar();
-    expect(within(nav).queryByRole("link", { name: /Playground/ })).toBeNull();
+    expect(within(nav).queryByRole("link", { name: /Guardrails/ })).toBeNull();
     const logs = within(nav)
       .getAllByTestId("nav-item")
-      .find((el) => el.getAttribute("data-label") === "Playground");
+      .find((el) => el.getAttribute("data-label") === "Guardrails");
     expect(logs).toBeDefined();
     expect(logs).not.toHaveAttribute("href");
     expect(logs).toHaveAttribute("aria-disabled", "true");

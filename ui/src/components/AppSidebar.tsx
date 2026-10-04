@@ -23,6 +23,7 @@ import { ThemeSwitch } from "@/theme/theme";
 type Path =
   | "/"
   | "/logs"
+  | "/playground"
   | "/providers"
   | "/models"
   | "/routes"
@@ -55,7 +56,7 @@ const sections: NavSection[] = [
     items: [
       { label: "Overview", to: "/" },
       { label: "Logs", to: "/logs" },
-      { label: "Playground" },
+      { label: "Playground", to: "/playground" },
     ],
   },
   {

@@ -63,7 +63,7 @@ pub struct PlaygroundErrorBody {
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct PlaygroundErrorDetail {
     pub message: String,
-    #[schema(nullable = false)]
+    /// `null` in the OpenAI shape, except for a spent budget.
     pub code: Option<String>,
     /// Only in the OpenAI shape, such as `permission_error`.
     #[serde(rename = "type")]

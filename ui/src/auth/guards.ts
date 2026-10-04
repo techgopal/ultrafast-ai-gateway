@@ -69,7 +69,9 @@ export type ConsoleAction =
    * the lead of a team its people. A member sees their own only, so the logs
    * offer them no filter by key, user or team, and the overview no top keys.
    */
-  | { type: "viewOthersUsage" };
+  | { type: "viewOthersUsage" }
+  /** Makes chat calls in the playground, as a key of their own would: everybody signed in. */
+  | { type: "usePlayground" };
 
 export function isAdmin(me: Me): boolean {
   return me.user.role === "admin";
@@ -122,6 +124,8 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "viewUserAndTeamCounts":
     case "viewOthersUsage":
       return ledTeamIds(me).length > 0;
+    case "usePlayground":
+      return true;
     case "viewTeam":
       return isIn(me, action.teamId);
     case "createKeyForSelf":

@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import { errors, fieldMessages, validationFailed, type GatewayError } from "@/test/errors";
 import { networkFailure, noContent, override, refuse } from "@/test/handlers";
-import { api, onUnauthenticated, setCsrfToken, type ResponseOf } from "./client";
+import { api, onUnauthenticated, playgroundChat, setCsrfToken, type ResponseOf } from "./client";
 import { ApiError, NetworkError, SessionOverError } from "./errors";
 import type { components } from "./schema";
 
@@ -300,7 +300,7 @@ describe("errors", () => {
       api.post("/api/auth/login", { body: { email: "maya@example.test", password } }),
     );
     expect(Object.getOwnPropertyNames(refused).sort()).toEqual(
-      ["code", "fields", "message", "name", "stack", "status"].sort(),
+      ["code", "fields", "message", "name", "retryAfter", "stack", "status"].sort(),
     );
     expect(everythingIn(refused)).not.toContain(password);
     expect(everythingIn(refused)).not.toContain(fixtures.csrfToken);
@@ -594,5 +594,87 @@ describe("the end of the session", () => {
     await failure(api.get("/api/teams"));
     expect(handler).not.toHaveBeenCalled();
     unsubscribe();
+  });
+});
+
+describe("the playground call", () => {
+  const body = {
+    model: "openai/gpt-4o-mini",
+    stream: true,
+    messages: [{ role: "user", content: "hi" }],
+  };
+  const openAiError = (status: number, type: string, message: string, headers = {}) =>
+    new Response(JSON.stringify({ error: { message, type, param: null, code: null } }), {
+      status,
+      headers: { "content-type": "application/json", ...headers },
+    });
+
+  test("it is sent as a write: JSON, the session cookie and the CSRF token", async () => {
+    setCsrfToken(fixtures.csrfToken);
+    let seen: Request | undefined;
+    override("post", "/api/playground/chat", ({ request }) => {
+      seen = request.clone();
+      return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+    });
+    const controller = new AbortController();
+    const response = await playgroundChat(body, controller.signal);
+    expect(await response.text()).toBe("data: [DONE]\n\n");
+    expect(seen?.method).toBe("POST");
+    expect(seen?.headers.get("x-csrf-token")).toBe(fixtures.csrfToken);
+    expect(seen?.headers.get("content-type")).toBe("application/json");
+    expect(await seen?.json()).toEqual(body);
+    setCsrfToken(null);
+  });
+
+  test("a refusal of the pipeline keeps its type, its message and the wait", async () => {
+    override("post", "/api/playground/chat", () =>
+      openAiError(429, "rate_limit_error", "rate limit 'rpm' of user reached", { "retry-after": "30" }),
+    );
+    const error = await apiFailure(playgroundChat(body));
+    expect([error.status, error.code, error.message, error.retryAfter]).toEqual([
+      429,
+      "rate_limit_error",
+      "rate limit 'rpm' of user reached",
+      30,
+    ]);
+  });
+
+  test("the code of the body wins over its type", async () => {
+    override("post", "/api/playground/chat", () => {
+      const refused = new Response(
+        JSON.stringify({ error: { message: "budget spent", type: "rate_limit_error", code: "budget_exceeded" } }),
+        { status: 429, headers: { "retry-after": "oops" } },
+      );
+      return refused;
+    });
+    const error = await apiFailure(playgroundChat(body));
+    expect([error.code, error.retryAfter]).toEqual(["budget_exceeded", null]);
+  });
+
+  test("an answer that is not an error body is an unexpected response", async () => {
+    override("post", "/api/playground/chat", () => new Response("<html>", { status: 502 }));
+    const error = await apiFailure(playgroundChat(body));
+    expect([error.status, error.code]).toEqual([502, "unexpected_response"]);
+    expect(error.message).not.toContain("<");
+  });
+
+  test("a 401 ends the session, as for every call", async () => {
+    const heard = vi.fn();
+    const stop = onUnauthenticated(heard);
+    override("post", "/api/playground/chat", unauthenticated);
+    const error = await apiFailure(playgroundChat(body));
+    expect(error.status).toBe(401);
+    expect(heard).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  test("a network failure is a NetworkError, an abort is the abort", async () => {
+    override("post", "/api/playground/chat", networkFailure);
+    expect(await failure(playgroundChat(body))).toBeInstanceOf(NetworkError);
+    const controller = new AbortController();
+    controller.abort();
+    const error = await failure(playgroundChat(body, controller.signal));
+    expect(error).not.toBeInstanceOf(NetworkError);
+    expect(error).toBeInstanceOf(Error);
   });
 });

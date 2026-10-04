@@ -106,6 +106,7 @@ describe("guards", () => {
     ["view the counts of users and teams", { type: "viewUserAndTeamCounts" }, [true, true, false, false]],
     // Logs and usage of others: filters by key, user and team, and the top keys.
     ["see the logs and usage of others", { type: "viewOthersUsage" }, [true, true, false, false]],
+    ["use the playground", { type: "usePlayground" }, [true, true, true, true]],
   ];
 
   test.each(table)("%s", (_, action, expected) => {
@@ -141,6 +142,7 @@ describe("guards", () => {
       manageSettings: true,
       viewUserAndTeamCounts: true,
       viewOthersUsage: true,
+      usePlayground: true,
     };
     expect([...seen].sort()).toEqual(Object.keys(all).sort());
   });

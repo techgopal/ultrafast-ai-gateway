@@ -248,3 +248,60 @@ export const api = {
   patch: caller("patch"),
   delete: caller("delete"),
 };
+
+/** The error of a refused playground call. The pipeline answers in the OpenAI shape, the session in the `/api` one. */
+function chatErrorOf(response: Response, text: string): ApiError {
+  const body = parseJson(text);
+  if (!isRecord(body) || !isRecord(body.error)) return unexpected(response.status);
+  const { code, type, message } = body.error;
+  if (typeof message !== "string") return unexpected(response.status);
+  const named = typeof code === "string" ? code : typeof type === "string" ? type : "error";
+  const wait = response.headers.get("retry-after") ?? "";
+  const retryAfter = /^\d+$/.test(wait) ? Number(wait) : null;
+  return new ApiError(response.status, named, message, {}, retryAfter);
+}
+
+/**
+ * A chat call of the playground. Resolves with the response of a success
+ * while its body is still unread, for the caller to read as a stream; it
+ * rejects as every call does for anything else. The answer of a refusal is
+ * in the OpenAI shape (see `chatErrorOf`), which `request` does not read.
+ */
+export async function playgroundChat(
+  body: BodyOf<"/api/playground/chat", "post">,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const headers: Record<string, string> = {
+    Accept: "text/event-stream, application/json",
+    "Content-Type": "application/json",
+  };
+  if (csrfToken !== null) headers["x-csrf-token"] = csrfToken;
+  const init: RequestInit = {
+    method: "POST",
+    credentials: "same-origin",
+    headers,
+    body: JSON.stringify(body),
+  };
+  if (signal !== undefined) init.signal = signal;
+
+  const madeUnder = sessionsOver;
+  let response: Response;
+  try {
+    response = await fetch("/api/playground/chat", init);
+  } catch (error) {
+    if (signal?.aborted === true) throw error;
+    if (madeUnder !== sessionsOver) throw new SessionOverError();
+    throw new NetworkError();
+  }
+  if (madeUnder !== sessionsOver) throw new SessionOverError();
+  if (response.ok) return response;
+  let text = "";
+  try {
+    text = await response.text();
+  } catch {
+    // The status is still told.
+  }
+  const error = chatErrorOf(response, text);
+  if (response.status === 401) tellUnauthenticated();
+  throw error;
+}

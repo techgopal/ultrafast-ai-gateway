@@ -4,7 +4,7 @@ import { http, HttpResponse, type JsonBodyType } from "msw";
 import { setupServer } from "msw/node";
 import type { Method, PathFor, ResponseOf } from "@/api/client";
 import type { components } from "@/api/schema";
-import { errors, type GatewayError } from "./errors";
+import { errors, type GatewayError, type PipelineError } from "./errors";
 import * as fixtures from "./fixtures";
 
 type ApiErrorBody = components["schemas"]["ApiErrorBody"];
@@ -31,6 +31,26 @@ export function ok<M extends Method, P extends PathFor<M>>(
   body: ResponseOf<P, M> & JsonBodyType,
 ): Response {
   return HttpResponse.json(body, { status });
+}
+
+/** The refusal of the shared pipeline, in the OpenAI shape, with its `Retry-After`. */
+export function refusePipeline(error: PipelineError): Response {
+  return HttpResponse.json(error.body, {
+    status: error.status,
+    headers: error.retryAfter === undefined ? {} : { "retry-after": String(error.retryAfter) },
+  });
+}
+
+/** An answer of server-sent events, in the chunks given: each is one piece of the body. */
+export function eventStream(chunks: readonly string[]): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
 export function noContent(): Response {
@@ -253,6 +273,9 @@ export const handlers = [
       fixtures.usageOf(new URL(request.url).searchParams.get("group") ?? "day"),
     ),
   ),
+
+  // playground
+  handler("post", "/api/playground/chat", () => eventStream(fixtures.playgroundChunks)),
 
   // audit
   handler("get", "/api/audit", () =>
