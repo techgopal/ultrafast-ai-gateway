@@ -39,7 +39,11 @@ fn job<'a>(jobs: &'a [(String, String)], name: &str) -> &'a str {
         .1
 }
 
-const TAG_ONLY: &str = "if: startsWith(github.ref, 'refs/tags/v')";
+/// A job that publishes runs for a push of a version tag and for nothing
+/// else: a manual run on a tag ref is `workflow_dispatch`, and publishes
+/// nothing.
+const PUBLISH_ONLY: &str =
+    "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
 
 #[test]
 fn it_runs_on_a_version_tag_and_by_hand_and_nothing_else() {
@@ -106,12 +110,13 @@ fn it_builds_every_target_of_the_plan() {
 fn nothing_is_published_without_a_tag() {
     let text = workflow();
     let jobs = jobs(&text);
-    // The jobs that publish are for a tag only.
+    // The jobs that publish are for the push of a tag only, never for a
+    // manual run, even one on a tag ref.
     for name in ["release", "docker-publish"] {
         let body = job(&jobs, name);
         assert!(
-            body.contains(TAG_ONLY),
-            "{name} is not for a tag only:\n{body}"
+            body.contains(PUBLISH_ONLY),
+            "{name} is not for the push of a tag only:\n{body}"
         );
     }
     let release = job(&jobs, "release");
@@ -165,13 +170,35 @@ fn the_crates_are_not_published_yet() {
 }
 
 #[test]
-fn the_tag_must_name_the_version_of_the_workspace() {
+fn the_tag_must_name_the_version_of_the_workspace_before_anything_is_built() {
     let text = workflow();
     let jobs = jobs(&text);
-    let release = job(&jobs, "release");
+    let version = job(&jobs, "version");
     assert!(
-        release.contains("Cargo.toml"),
+        version.contains("Cargo.toml"),
         "the version of the tag is not checked"
     );
-    assert!(release.contains("GITHUB_REF_NAME"), "{release}");
+    assert!(version.contains("GITHUB_REF_NAME"), "{version}");
+    // The check is a step of a first job, only for a push (a manual run has
+    // no tag to check), and the console and so the builds wait for it.
+    assert!(
+        version.contains("if: github.event_name == 'push'"),
+        "{version}"
+    );
+    assert!(
+        !version.contains("needs:"),
+        "the check is not the first job: {version}"
+    );
+    assert!(
+        job(&jobs, "console").contains("needs: version"),
+        "the console does not wait for the version check"
+    );
+    assert!(
+        job(&jobs, "build").contains("needs: console"),
+        "the builds do not wait, through the console, for the check"
+    );
+    assert!(
+        !job(&jobs, "release").contains("Cargo.toml"),
+        "the check is still after the builds"
+    );
 }

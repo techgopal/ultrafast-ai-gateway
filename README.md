@@ -66,12 +66,16 @@ for a version that is not a pre-release), for linux/amd64:
 docker run -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast ghcr.io/<owner>/ultrafast-ai-gateway:<version>
 ```
 
+The image is public as soon as the tag is pushed, while the GitHub release is
+still a draft: `ghcr.io/<owner>/ultrafast-ai-gateway:<version>` can be pulled
+before a person has reviewed and published the release.
+
 The release workflow (`.github/workflows/release.yml`) builds the console
 first and the binaries after it, publishes nothing without a tag, and does not
 publish the crates to crates.io yet. Run it by hand (Actions, Release, Run
 workflow) to build the archives as artifacts of the run, with nothing
 published. The tag must name the version in `Cargo.toml` (`v2.0.0-alpha.2` for
-`2.0.0-alpha.2`), or the release job stops.
+`2.0.0-alpha.2`), or the run stops in its first job, before anything is built.
 
 ### Console
 
@@ -197,14 +201,17 @@ the data directory, or the `UF_MASTER_KEY` you set) safe, apart from the
 backups. The backup file is readable by its owner only; treat it like the
 database.
 
-To restore, stop the gateway and put the backup in its place. There is no
+To restore, stop the gateway cleanly (so that it has checkpointed its
+write-ahead log) and put the backup in its place. There is no
 API for this, on purpose:
 
 ```bash
 # 1. stop the gateway
-# 2. keep what is there, in case
+# 2. keep what is there, in case: the database together with its -wal and
+#    -shm files (they belong to it; after a clean stop they may be absent)
 mv data/gateway.db data/gateway.db.before
-rm -f data/gateway.db-wal data/gateway.db-shm
+[ -e data/gateway.db-wal ] && mv data/gateway.db-wal data/gateway.db.before-wal
+[ -e data/gateway.db-shm ] && mv data/gateway.db-shm data/gateway.db.before-shm
 # 3. put the backup in its place; the master key stays as it is
 cp backups/ultrafast-2026-10-04.db data/gateway.db
 chmod 600 data/gateway.db
