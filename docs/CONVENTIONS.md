@@ -74,6 +74,9 @@ and briefs add to these; they do not repeat them.
   provider delete) calls `refresh_snapshot` after commit.
 - Stateful features (rate limits, budgets, cache) sit behind traits so a shared
   store can replace the in-memory one.
+- A write transaction that reads before it writes starts with `BEGIN IMMEDIATE`
+  (as the configuration import does); a deferred one fails at once with SQLite
+  code 517 when another writer commits in between.
 - Errors to clients use the gateway's error shape; never leak provider keys or
   internal paths.
 
