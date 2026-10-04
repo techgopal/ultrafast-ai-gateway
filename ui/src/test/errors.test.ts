@@ -137,6 +137,11 @@ test("every message of a provider's name and base URL is in the gateway source",
   }
 });
 
+test("the messages of the tags are in the gateway source", () => {
+  const path = fileURLToPath(new URL("../../../crates/gateway/src/tags.rs", import.meta.url));
+  expect(readFileSync(path, "utf8")).toContain(`"${fieldMessages.tags}"`);
+});
+
 test("the messages of the models are in the gateway source", () => {
   const dir = fileURLToPath(new URL("../../../crates/gateway/src/", import.meta.url));
   const source = ["api/models.rs", "catalog/mod.rs"]

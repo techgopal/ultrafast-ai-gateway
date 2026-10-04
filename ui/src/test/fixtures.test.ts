@@ -47,6 +47,7 @@ const AUDIT_ACTIONS: Readonly<Record<string, string>> = {
   // crates/gateway/src/api/keys.rs
   "key.create": "key",
   "key.revoke": "key",
+  "key.tags": "key",
   // crates/gateway/src/api/providers.rs
   "provider.create": "provider",
   "provider.update": "provider",
@@ -261,6 +262,19 @@ describe("the fixtures have the forms of the gateway", () => {
     }
     // The ids of the gateway are positive.
     expect(entries.every((entry) => entry.id > 0)).toBe(true);
+  });
+
+  test("the tags of keys and calls are an object of strings, as the gateway shows them", () => {
+    // crates/gateway/src/api/keys.rs, KeyView.tags and api/logs.rs, LogView.tags:
+    // always present, empty when there are none.
+    for (const row of [...fixtures.keyList, ...fixtures.logList, fixtures.estimatedLog]) {
+      expect(typeof row.tags).toBe("object");
+      expect(Object.values(row.tags).every((value) => typeof value === "string")).toBe(true);
+    }
+    expect(fixtures.keyList.every((key) => Object.keys(key.tags).length === 0)).toBe(true);
+    for (const id of [1, 2, 3, 4, 5]) {
+      expect(fixtures.logDetail(id)?.tags, String(id)).toEqual({});
+    }
   });
 
   test("the status of keys", () => {

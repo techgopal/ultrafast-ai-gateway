@@ -9,6 +9,7 @@ import { Field } from "@/components/Field";
 import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
+import { TagsEditor } from "@/components/TagsEditor";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -73,6 +74,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
     expires_at: NO_EXPIRY,
     allow: "all",
     allowed: [],
+    tags: [],
   };
   const form = useForm({
     defaultValues: start,
@@ -274,6 +276,16 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
               />
             )}
           </form.Field>
+        )}
+      </form.Field>
+
+      <form.Field name="tags">
+        {(tags) => (
+          <TagsEditor
+            rows={tags.state.value}
+            onChange={tags.handleChange}
+            error={failure.fieldError(tags.name)}
+          />
         )}
       </form.Field>
 

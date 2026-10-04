@@ -655,6 +655,15 @@ describe("mutations invalidate", () => {
       { id: 999 },
     ],
     [
+      "changing the tags of a key",
+      "/api/keys",
+      (answer: () => Response) => {
+        override("patch", "/api/keys/{id}", answer);
+      },
+      () => q.useUpdateKey(),
+      { id: 999, body: { tags: {} } },
+    ],
+    [
       "changing a provider",
       "/api/providers",
       (answer: () => Response) => {
@@ -1334,6 +1343,7 @@ describe("every mutation calls its operation", () => {
       ["usePutTeamMember", "PUT /api/teams/1/members/5", q.usePutTeamMember, { id: 1, userId: 5, body: { role: "member" } }],
       ["useRemoveTeamMember", "DELETE /api/teams/1/members/3", q.useRemoveTeamMember, { id: 1, userId: 3 }],
       ["useCreateKey", "POST /api/keys", q.useCreateKey, { name: "k" }],
+      ["useUpdateKey", "PATCH /api/keys/1", q.useUpdateKey, { id: 1, body: { tags: { a: "b" } } }],
       ["useRevokeKey", "DELETE /api/keys/1", q.useRevokeKey, { id: 1 }],
       ["useCreateProvider", "POST /api/providers", q.useCreateProvider, { name: "p", kind: "openai", base_url: "u" }],
       ["useUpdateProvider", "PATCH /api/providers/2", q.useUpdateProvider, { id: 2, body: { api_key: null } }],
@@ -1358,10 +1368,10 @@ describe("every mutation calls its operation", () => {
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 35 of them, 17 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(35);
+  test("there are 36 of them, 17 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(36);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(55);
+    expect(hooks).toHaveLength(56);
     // What only tests used is not kept: a key read by its id, the audit log
     // read as one page, and `me`, which the session reads itself.
     for (const gone of ["useKey", "keyOptions", "useAuditLog", "auditLogOptions", "useMe"]) {

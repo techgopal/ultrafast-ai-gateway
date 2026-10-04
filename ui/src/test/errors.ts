@@ -33,6 +33,8 @@ export const fieldMessages = {
   ownerId: "owner must be an active user",
   teamId: "team does not exist",
   teamIdOwner: "owner is not a member of this team",
+  // `crates/gateway/src/tags.rs`: what is wrong with the tags of a key.
+  tags: "it has more than 20 entries",
   providerKind: "kind must be openai, anthropic, gemini or azure",
   // `api/providers.rs` and `config.rs`: an API version is for Azure only, and has a form.
   apiVersionKind: "only Azure OpenAI providers have an API version",

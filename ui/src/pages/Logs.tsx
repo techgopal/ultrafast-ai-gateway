@@ -11,6 +11,7 @@ import { ErrorState } from "@/components/ErrorState";
 import { PageHeader } from "@/components/PageHeader";
 import { ApiError } from "@/api/errors";
 import { QueryProblem } from "@/components/QueryProblem";
+import { TagChips } from "@/components/TagChips";
 import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -65,6 +66,7 @@ function queryOf(filters: Filters, now: number, offered: ReturnType<typeof useOf
   if (team !== ANY) query.team_id = Number(team);
   if (filters.model !== "") query.model = filters.model;
   if (filters.errorsOnly) query.errors = true;
+  if (filters.tag !== "") query.tag = [filters.tag];
   return query;
 }
 
@@ -111,6 +113,7 @@ const columns: Column<Log>[] = [
     header: "Duration",
     cell: (log) => <span className="tabular-nums">{formatDuration(log.duration_ms)}</span>,
   },
+  { id: "tags", header: "Tags", cell: (log) => <TagChips tags={log.tags} /> },
 ];
 
 function LogsOf({ others }: { others: boolean }) {

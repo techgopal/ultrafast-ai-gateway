@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { keysOptions, teamsOptions, usersOptions } from "@/api/queries";
 import { control } from "@/components/classes";
 import { FilterSelect, type Choice } from "@/components/FilterSelect";
 import { Input } from "@/components/ui/input";
+import { parseTagFilter } from "@/lib/tags";
 
 /** The value of a select that leaves nothing out. No id is written so. */
 export const ANY = "*";
@@ -34,6 +35,8 @@ export interface Filters {
   team: string;
   model: string;
   errorsOnly: boolean;
+  /** `name:value` as it was applied, or empty. */
+  tag: string;
 }
 
 export const NO_FILTERS: Filters = {
@@ -45,6 +48,7 @@ export const NO_FILTERS: Filters = {
   team: ANY,
   model: "",
   errorsOnly: false,
+  tag: "",
 };
 
 /** What is chosen, when it is still offered; otherwise nothing is left out. */
@@ -120,6 +124,55 @@ function ModelField({ value, onApply }: { value: string; onApply: (model: string
   );
 }
 
+/**
+ * The tag is `name:value`, applied on Enter. A text that is not one is
+ * refused here, and nothing is asked of the gateway for it.
+ */
+function TagField({ value, onApply }: { value: string; onApply: (tag: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  const [problem, setProblem] = useState<string | null>(null);
+  const errorId = useId();
+  return (
+    <form
+      className="flex flex-col gap-1"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (draft.trim() === "") {
+          setProblem(null);
+          if (value !== "") onApply("");
+          return;
+        }
+        const parsed = parseTagFilter(draft);
+        if ("problem" in parsed) {
+          setProblem(parsed.problem);
+          return;
+        }
+        setProblem(null);
+        if (parsed.tag !== value) onApply(parsed.tag);
+      }}
+    >
+      <Input
+        type="text"
+        aria-label="Tag"
+        placeholder="Tag name:value"
+        autoComplete="off"
+        className={`${control} w-full sm:w-48`}
+        value={draft}
+        {...(problem === null ? {} : { "aria-invalid": true, "aria-describedby": errorId })}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          setProblem(null);
+        }}
+      />
+      {problem === null ? null : (
+        <p id={errorId} role="alert" className="text-sm text-destructive">
+          {problem}
+        </p>
+      )}
+    </form>
+  );
+}
+
 export function LogsFilters({ filters, offered, others, onChange }: LogsFiltersProps) {
   return (
     <div role="group" aria-label="Filters" className="flex flex-wrap items-center gap-2">
@@ -185,6 +238,12 @@ export function LogsFilters({ filters, offered, others, onChange }: LogsFiltersP
         value={filters.model}
         onApply={(model) => {
           onChange({ model });
+        }}
+      />
+      <TagField
+        value={filters.tag}
+        onApply={(tag) => {
+          onChange({ tag });
         }}
       />
       <FilterSelect

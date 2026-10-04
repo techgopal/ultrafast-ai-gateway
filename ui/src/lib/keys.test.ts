@@ -250,7 +250,30 @@ describe("the request for a key", () => {
     expires_at: NO_EXPIRY,
     allow: "all",
     allowed: [],
+    tags: [],
   };
+
+  test("the tags are sent as an object, and a key with none sends none", () => {
+    expect(
+      requestOf({ ...values, tags: [{ name: "team", value: "a" }, { name: "", value: "" }] }, fixtures.me.maya),
+    ).toEqual({ name: "laptop", tags: { team: "a" } });
+    expect(requestOf({ ...values, tags: [{ name: "", value: "" }] }, fixtures.me.maya)).toEqual({
+      name: "laptop",
+    });
+  });
+
+  test("tags the gateway would refuse are refused by the console, on the field", () => {
+    const refusal = (() => {
+      try {
+        requestOf({ ...values, tags: [{ name: "a b", value: "v" }] }, fixtures.me.maya);
+      } catch (error) {
+        return error;
+      }
+      return null;
+    })();
+    expect(refusal).toBeInstanceOf(ConsoleRefusal);
+    expect(refusal).toMatchObject({ field: "tags" });
+  });
 
   test("a key of one's own without a team and an expiry is its name", () => {
     expect(requestOf(values, fixtures.me.maya)).toEqual({ name: "laptop" });
@@ -266,6 +289,7 @@ describe("the request for a key", () => {
           expires_at: { choice: "date", day: "2027-01-31" },
           allow: "all",
           allowed: [],
+          tags: [],
         },
         fixtures.me.maya,
       ),
@@ -346,6 +370,7 @@ describe("the models a key may call", () => {
       expires_at: NO_EXPIRY,
       allow: "some",
       allowed: ["support"],
+      tags: [],
     };
     expect(requestOf(values, fixtures.me.maya, offered)).toEqual({
       name: "laptop",

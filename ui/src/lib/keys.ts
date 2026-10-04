@@ -8,6 +8,7 @@ import { can, type Me } from "@/auth/guards";
 import { expiryOf, type Expiry } from "@/lib/expiry";
 import { idOf } from "@/lib/id";
 import { refOf, sortModels } from "@/lib/models";
+import { tagsOf, type TagRow } from "@/lib/tags";
 
 type User = components["schemas"]["UserView"];
 type Model = components["schemas"]["ModelView"];
@@ -91,6 +92,8 @@ export interface KeyValues {
   allow: "all" | "some";
   /** The names of the models (`provider/model`) and routes that were checked. */
   allowed: readonly string[];
+  /** The tags as the editor holds them: rows that may still be wrong. */
+  tags: readonly TagRow[];
 }
 
 /** The teams a key of one owner can belong to, and whether it can have none. */
@@ -244,5 +247,7 @@ export function requestOf(
   if (expires !== undefined) body.expires_at = expires;
   const allowed = allowedOf(values.allow, values.allowed, offered);
   if (allowed !== undefined) body.allowed = allowed;
+  const tags = tagsOf(values.tags);
+  if (Object.keys(tags).length > 0) body.tags = tags;
   return body;
 }

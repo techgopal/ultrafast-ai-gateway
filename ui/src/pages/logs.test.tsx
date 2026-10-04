@@ -87,7 +87,7 @@ describe("the list", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Logs" })).toBeInTheDocument();
     const found = rows();
     expect(found).toHaveLength(5);
-    // time, key, user, model, status, tokens, cost, duration
+    // time, key, user, model, status, tokens, cost, duration, tags
     expect(found[0]?.slice(1)).toEqual([
       "platform-prod",
       "arjun@example.test",
@@ -96,6 +96,7 @@ describe("the list", () => {
       "120 / 48",
       "$1.25",
       "850 ms",
+      "No tags",
     ]);
     // The model that answered, or the name asked for when none did.
     expect(found[1]?.[3]).toBe("anthropic/claude-haiku");
@@ -399,12 +400,14 @@ describe("states", () => {
       "Tokens",
       "Cost",
       "Duration",
+      "Tags",
     ]);
     const buttons = [
       screen.getByRole("button", { name: "Refresh" }),
       control("Time range"),
       control("Status"),
       screen.getByRole("textbox", { name: "Model" }),
+      screen.getByRole("textbox", { name: "Tag" }),
     ];
     for (const one of buttons) expect(one.className.split(/\s+/)).toContain("min-h-11");
     expect(within(items[0] ?? cards).getAllByRole("link")[0]?.className).toContain("min-h-11");

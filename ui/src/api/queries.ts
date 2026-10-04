@@ -121,6 +121,8 @@ export interface LogsFilter {
   team_id?: number;
   model?: string;
   errors?: boolean;
+  /** `name:value`, once for each tag the calls must carry. */
+  tag?: string[];
 }
 
 export type UsageGroup = "day" | "model" | "key" | "user" | "team";
@@ -661,6 +663,16 @@ export const useCreateKey = () =>
   useApiMutation(
     (body: BodyOf<"/api/keys", "post">) => api.post("/api/keys", { body }),
     () => ({ stale: [queryKeys.keys.all(), audit] }),
+  );
+
+/** Replaces the tags of a key. */
+export const useUpdateKey = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/keys/{id}", "patch"> }) =>
+      api.patch("/api/keys/{id}", { params: { id }, body }),
+    () => ({ stale: [queryKeys.keys.all(), audit] }),
+    // The key is not the caller's to see any more: the list shows what is not so.
+    (error) => (isNotFound(error) ? [queryKeys.keys.all()] : []),
   );
 
 export const useRevokeKey = () =>

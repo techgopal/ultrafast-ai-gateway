@@ -165,6 +165,10 @@ export const handlers = [
     const key = byId(fixtures.keyList, call);
     return key === undefined ? notFound() : ok("get", "/api/keys/{id}", 200, key);
   }),
+  handler("patch", "/api/keys/{id}", (call) => {
+    const key = byId(fixtures.keyList, call);
+    return key === undefined ? notFound() : ok("patch", "/api/keys/{id}", 200, key);
+  }),
   handler("delete", "/api/keys/{id}", (call) =>
     byId(fixtures.keyList, call) === undefined ? notFound() : noContent(),
   ),

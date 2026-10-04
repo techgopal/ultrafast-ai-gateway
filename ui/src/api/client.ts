@@ -151,6 +151,9 @@ function queryString(query: unknown): string {
   for (const [name, value] of isRecord(query) ? Object.entries(query) : []) {
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
       search.set(name, String(value));
+    } else if (Array.isArray(value)) {
+      // A parameter that may be repeated: `?tag=a:1&tag=b:2`.
+      for (const part of value) if (typeof part === "string") search.append(name, part);
     }
   }
   const text = search.toString();

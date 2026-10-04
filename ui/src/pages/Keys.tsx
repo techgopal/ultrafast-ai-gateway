@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from "react";
-import { useCreateKey, useKeys, useRevokeKey } from "@/api/queries";
+import { useCreateKey, useKeys, useRevokeKey, useUpdateKey } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can, type Me } from "@/auth/guards";
 import { useSession } from "@/auth/session";
@@ -12,6 +12,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
 import { SecretDialog, useSecretOnce } from "@/components/SecretDialog";
 import { StatusBadge } from "@/components/StatusBadge";
+import { TagChips } from "@/components/TagChips";
 import { Timestamp } from "@/components/Timestamp";
 import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { allowedSummary, NO_TEAM } from "@/lib/keys";
 import { CreateDialog } from "@/pages/KeysCreate";
+import { TagsDialog } from "@/pages/KeysTags";
 import {
   ANY,
   chosen,
@@ -35,6 +37,7 @@ export const NEW_KEY_DESCRIPTION = "Copy this key now. It is not shown again.";
 export const SUSPENDED_HINT = "The owner is not active";
 export const REVOKE_CONSEQUENCE = "Apps using this key stop working at once. This cannot be undone.";
 export const KEY_REVOKED = "Key revoked.";
+export const TAGS_SAVED = "Tags saved.";
 
 const NO_OWNER = "No owner";
 
@@ -103,6 +106,11 @@ const columns: Column<Key>[] = [
     sortValue: (key) => key.allowed?.length ?? Number.POSITIVE_INFINITY,
   },
   {
+    id: "tags",
+    header: "Tags",
+    cell: (key) => <TagChips tags={key.tags} />,
+  },
+  {
     id: "expires_at",
     header: "Expires",
     cell: (key) => <Timestamp value={key.expires_at} />,
@@ -128,12 +136,16 @@ function KeyList({ me }: { me: Me }) {
   const create = useCreateKey();
   const once = useSecretOnce(create);
   const revoke = useRevokeKey();
+  const update = useUpdateKey();
   const toast = useToast();
   const showRevokedId = useId();
   const [creating, setCreating] = useState(false);
   // Which key the question is about. Kept while the dialog closes.
   const [target, setTarget] = useState<Key | null>(null);
   const [asking, setAsking] = useState(false);
+  // The key whose tags are being changed; kept while the dialog closes.
+  const [tagging, setTagging] = useState<Key | null>(null);
+  const [editingTags, setEditingTags] = useState(false);
   const [search, setSearch] = useState("");
   const [teamChosen, setTeam] = useState(ANY);
   const [statusChosen, setStatus] = useState(ANY);
@@ -158,22 +170,50 @@ function KeyList({ me }: { me: Me }) {
       can(me, { type: "revokeKey", ownerId: key.owner_id, teamId: key.team_id })
     );
   }
-  const rowActions = all.some(mayRevoke)
-    ? (key: Key) =>
-        mayRevoke(key) ? (
-          <Button
-            type="button"
-            variant="outline"
-            className={control}
-            onClick={() => {
-              setTarget(key);
-              setAsking(true);
-            }}
-          >
-            Revoke
-          </Button>
-        ) : null
+  function mayEditTags(key: Key): boolean {
+    // Tags of a revoked key label no call.
+    return (
+      key.status !== "revoked" &&
+      can(me, { type: "editKeyTags", ownerId: key.owner_id, teamId: key.team_id })
+    );
+  }
+  const rowActions = all.some((key) => mayRevoke(key) || mayEditTags(key))
+    ? (key: Key) => (
+        <>
+          {mayEditTags(key) ? (
+            <Button
+              type="button"
+              variant="outline"
+              className={control}
+              onClick={() => {
+                setTagging(key);
+                setEditingTags(true);
+              }}
+            >
+              Edit tags
+            </Button>
+          ) : null}
+          {mayRevoke(key) ? (
+            <Button
+              type="button"
+              variant="outline"
+              className={control}
+              onClick={() => {
+                setTarget(key);
+                setAsking(true);
+              }}
+            >
+              Revoke
+            </Button>
+          ) : null}
+        </>
+      )
     : undefined;
+
+  function closeTags() {
+    setEditingTags(false);
+    update.reset();
+  }
 
   function closeCreate() {
     setCreating(false);
@@ -281,6 +321,18 @@ function KeyList({ me }: { me: Me }) {
           </SecretDialog>
         </>
       ) : null}
+      {tagging === null ? null : (
+        <TagsDialog
+          open={editingTags}
+          keyOf={tagging}
+          update={update}
+          onCancel={closeTags}
+          onDone={() => {
+            closeTags();
+            toast(TAGS_SAVED);
+          }}
+        />
+      )}
       <ConfirmDialog
         open={asking}
         onOpenChange={(open) => {

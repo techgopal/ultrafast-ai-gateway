@@ -248,7 +248,8 @@ export interface paths {
         delete: operations["keys_revoke"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Replaces the tags of a key. Whoever may revoke the key may do this. */
+        patch: operations["keys_update"];
         trace?: never;
     };
     "/api/limits": {
@@ -841,6 +842,14 @@ export interface components {
             name: string;
             /** Format: int64 */
             owner_id?: number | null;
+            /**
+             * @description Tags every call of the key is recorded with, over those the call
+             *     sends. At most 20; names of `A-Z a-z 0-9 _ . : -`, names and values
+             *     of 1 to 64 characters.
+             */
+            tags?: {
+                [key: string]: string;
+            } | null;
             /** Format: int64 */
             team_id?: number | null;
         };
@@ -971,6 +980,13 @@ export interface components {
              *     does not work until they are. Only an `active` key works.
              */
             status: string;
+            /**
+             * @description Added to every call of the key; the key's value wins over the call's
+             *     for the same name. Empty when none.
+             */
+            tags: {
+                [key: string]: string;
+            };
             /** Format: int64 */
             team_id: number | null;
             team_name: string | null;
@@ -1081,6 +1097,13 @@ export interface components {
              */
             status: number;
             stream: boolean;
+            /**
+             * @description The tags of the call: what it sent in `x-uf-tags` overlaid by its
+             *     key's. Empty when none.
+             */
+            tags: {
+                [key: string]: string;
+            };
             /** Format: int64 */
             team_id: number | null;
             team_name: string | null;
@@ -1138,6 +1161,13 @@ export interface components {
              */
             status: number;
             stream: boolean;
+            /**
+             * @description The tags of the call: what it sent in `x-uf-tags` overlaid by its
+             *     key's. Empty when none.
+             */
+            tags: {
+                [key: string]: string;
+            };
             /** Format: int64 */
             team_id: number | null;
             team_name: string | null;
@@ -1652,6 +1682,16 @@ export interface components {
             revoked_at: string | null;
             /** @description Worked out when the answer is made. */
             status: components["schemas"]["TokenStatus"];
+        };
+        /** @description The new tags of a key. */
+        UpdateKeyRequest: {
+            /**
+             * @description Replaces all the tags of the key; `{}` removes them. The same limits
+             *     as when the key is created.
+             */
+            tags: {
+                [key: string]: string;
+            };
         };
         UpdateModelRequest: {
             /** @description Left out, the model stays as it is. */
@@ -2760,6 +2800,99 @@ export interface operations {
             };
         };
     };
+    keys_update: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the key. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description The key with its new tags. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     limits_list: {
         parameters: {
             query?: never;
@@ -2962,6 +3095,8 @@ export interface operations {
                 status?: number;
                 /** @description `true`: only calls answered with a status of 400 or more. Combines with the other filters. */
                 errors?: boolean;
+                /** @description Only calls with this tag, written `name:value` (the name ends at the first colon). Repeat it to require several tags: all must match. */
+                tag?: string[];
             };
             header?: never;
             path?: never;
@@ -5297,7 +5432,7 @@ export interface operations {
                 from?: string;
                 /** @description Last day, `YYYY-MM-DD` (UTC), counted whole. Today when left out. */
                 to?: string;
-                /** @description `day` (the default), `model`, `key`, `user` or `team`. */
+                /** @description `day` (the default), `model`, `key`, `user`, `team`, or `tag:<name>` to group by the value of that tag (calls without it are `(none)`). */
                 group?: string;
             };
             header?: never;

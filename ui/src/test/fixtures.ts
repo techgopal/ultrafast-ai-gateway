@@ -217,6 +217,7 @@ function key(
     revoked_at: dates.revoked_at ?? null,
     created_at: "2026-08-01 09:00:00",
     allowed: null,
+    tags: {},
   };
 }
 
@@ -601,6 +602,7 @@ function log(
     cached: false,
     estimated: false,
     duration_ms: 850,
+    tags: {},
     ...call,
   };
 }

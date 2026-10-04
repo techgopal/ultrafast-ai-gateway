@@ -233,6 +233,18 @@ describe("requests", () => {
     await api.get("/api/audit");
     expect(search).toBe("");
   });
+
+  test("a list of texts is a parameter given once for each", async () => {
+    let search = "";
+    override("get", "/api/logs", ({ request }) => {
+      search = new URL(request.url).search;
+      return noContent();
+    });
+    await api.get("/api/logs", { query: { limit: 5, tag: ["env:prod", "team:a b"] } });
+    expect(search).toBe("?limit=5&tag=env%3Aprod&tag=team%3Aa+b");
+    await api.get("/api/logs", { query: { tag: [] } });
+    expect(search).toBe("");
+  });
 });
 
 describe("errors", () => {

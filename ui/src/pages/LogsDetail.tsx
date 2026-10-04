@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { NotFoundContent } from "@/components/NotFoundContent";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
+import { TagChips } from "@/components/TagChips";
 import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -102,6 +103,7 @@ function Details({ id }: { id: number }) {
     ["Tokens in / out", tokensOf(log)],
     ["Cost", costOf(log)],
     ["Duration", formatDuration(log.duration_ms)],
+    ["Tags", <TagChips key="g" tags={log.tags} />],
   ];
   return (
     <>
