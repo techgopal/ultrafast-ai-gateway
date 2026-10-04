@@ -52,7 +52,7 @@ export const csrfToken = "c5".repeat(32);
 export const newKeySecret = `uf-sk-${"0123456789abcdef".repeat(4)}`;
 export const newTokenSecret = `uf-at-${"fedcba9876543210".repeat(4)}`;
 export const newInviteToken = `uf-inv-${"00ff".repeat(16)}`;
-export const newInviteLink = `/accept-invite?token=${newInviteToken}`;
+export const newInviteLink = `/accept-invite#token=${newInviteToken}`;
 
 /** What the gateway shows of a secret: the prefix, an ellipsis and the last 4 characters. */
 function displayOf(prefix: "uf-sk-" | "uf-at-", last4: string): string {

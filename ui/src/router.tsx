@@ -81,11 +81,17 @@ function ToSignIn({ comeBack }: { comeBack: boolean }) {
 
 const INVITE_PAGE = "/accept-invite";
 
+/** The fragment of an invite link: `token=<token>`. */
+const FRAGMENT_TOKEN = /^token=(.*)$/;
+
 /**
  * Takes the token of an invite link out of the address and gives it to the
- * session to hold. This runs above the gate, so the token is gone from the
- * address also while the app loads or cannot reach the gateway. The token is
- * dropped as soon as the address is that of another page.
+ * session to hold. The gateway puts it in the fragment (`#token=`), which a
+ * browser never sends to a server; a link of `?token=`, as links sent
+ * before were made, is read as well. This runs above the gate, so the token
+ * is gone from the address also while the app loads or cannot reach the
+ * gateway. The token is dropped as soon as the address is that of another
+ * page.
  */
 function useInviteToken() {
   const router = useRouter();
@@ -99,15 +105,21 @@ function useInviteToken() {
       return;
     }
     const search = new URLSearchParams(searchStr);
-    const token = search.get("token");
-    if (token === null) return;
+    const inSearch = search.get("token");
+    const inFragment = FRAGMENT_TOKEN.exec(hash)?.[1] ?? null;
+    if (inSearch === null && inFragment === null) return;
+    let token = inFragment ?? inSearch ?? "";
+    try {
+      token = inFragment === null ? token : decodeURIComponent(inFragment);
+    } catch {
+      token = "";
+    }
     if (token !== "") holdInvite(token);
     search.delete("token");
     const rest = search.toString();
+    const fragment = inFragment === null && hash !== "" ? `#${hash}` : "";
     // Replaces the entry of the history: with a browser, `history.replaceState`.
-    router.history.replace(
-      INVITE_PAGE + (rest === "" ? "" : `?${rest}`) + (hash === "" ? "" : `#${hash}`),
-    );
+    router.history.replace(INVITE_PAGE + (rest === "" ? "" : `?${rest}`) + fragment);
   }, [router, pathname, searchStr, hash, holdInvite, dropInvite]);
 }
 

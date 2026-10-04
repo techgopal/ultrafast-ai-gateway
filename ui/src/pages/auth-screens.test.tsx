@@ -356,6 +356,37 @@ describe("accept invite", () => {
     }
   });
 
+  test("the token of a link in the fragment is taken, and leaves the address", async () => {
+    startGateway();
+    const sent = record("post", "/api/auth/accept-invite", noContent);
+    const before = window.history.length;
+    const app = await renderWithApp(null, {
+      history: openInBrowser(`/accept-invite#token=${INVITE_TOKEN}`),
+    });
+    await waitFor(() => {
+      expect(window.location.hash).toBe("");
+    });
+    expect(window.location.pathname).toBe("/accept-invite");
+    expect(window.location.href).not.toContain(INVITE_TOKEN);
+    expect(window.history.length).toBe(before);
+    expect(JSON.stringify(app.router.state)).not.toContain(INVITE_TOKEN);
+    expect(shown()).not.toContain(INVITE_TOKEN);
+    await fillInvite();
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in");
+    });
+    expect(sent).toEqual([{ token: INVITE_TOKEN, password: PASSWORD }]);
+  });
+
+  test("a fragment that is not a token stays, and the page asks for the link", async () => {
+    startGateway();
+    await renderWithApp(null, { history: openInBrowser("/accept-invite#top") });
+    expect(
+      await screen.findByText("Open your invite link again. This page cannot be reloaded."),
+    ).toBeInTheDocument();
+    expect(window.location.hash).toBe("#top");
+  });
+
   test("the other parts of the address stay when the token leaves", async () => {
     startGateway();
     await renderWithApp(null, {
@@ -429,7 +460,7 @@ describe("accept invite", () => {
     }
   });
 
-  test.each(["/accept-invite", "/accept-invite?token=", "/accept-invite?other=1"])(
+  test.each(["/accept-invite", "/accept-invite?token=", "/accept-invite?other=1", "/accept-invite#token="])(
     "without a token the page says to open the link again: %s",
     async (route) => {
       startGateway();

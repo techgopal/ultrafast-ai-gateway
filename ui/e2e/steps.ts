@@ -152,4 +152,4 @@ export const KEY_SECRET = /^uf-sk-[0-9a-f]{64}$/;
 export const KEY_DISPLAY = /^uf-sk-…[0-9a-f]{4}$/;
 export const TOKEN_SECRET = /^uf-at-[0-9a-f]{64}$/;
 export const TOKEN_DISPLAY = /^uf-at-…[0-9a-f]{4}$/;
-export const INVITE_PATH = /^\/accept-invite\?token=uf-inv-[0-9a-f]{64}$/;
+export const INVITE_PATH = /^\/accept-invite#token=uf-inv-[0-9a-f]{64}$/;

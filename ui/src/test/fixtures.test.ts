@@ -19,7 +19,7 @@ const SECRET = /^uf-(sk|at|inv)-[0-9a-f]{64}$/;
 // The same function: prefix + U+2026 + the last 4 characters of the secret.
 const DISPLAY = /^uf-(sk|at)-…[0-9a-f]{4}$/;
 // crates/gateway/src/api/users.rs, INVITE_PAGE and new_invite.
-const INVITE_LINK = /^\/accept-invite\?token=uf-inv-[0-9a-f]{64}$/;
+const INVITE_LINK = /^\/accept-invite#token=uf-inv-[0-9a-f]{64}$/;
 // crates/gateway/src/store/mod.rs, TIMESTAMP: UTC, compared as text.
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 // crates/gateway/src/store/sessions.rs, random_hex.

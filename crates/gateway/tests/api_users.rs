@@ -6,7 +6,9 @@ use serde_json::{json, Value};
 use ultrafast_gateway::secrets::{generate_key, generate_secret, TOKEN_PREFIX};
 
 const NEW_PASSWORD: &str = "another horse battery";
-const LINK_PREFIX: &str = "/accept-invite?token=";
+/// The token is in the fragment: a browser never sends it to a server, so
+/// it reaches no access log, proxy or `Referer`.
+const LINK_PREFIX: &str = "/accept-invite#token=";
 
 fn user_path(id: i64) -> String {
     format!("/api/users/{id}")
@@ -24,7 +26,7 @@ fn emails(body: &Value) -> Vec<&str> {
 /// The token of an invite link.
 fn token_of(body: &Value) -> String {
     let link = body["invite_link"].as_str().expect("an invite link");
-    assert!(link.starts_with("/accept-invite?token=uf-inv-"), "{link}");
+    assert!(link.starts_with("/accept-invite#token=uf-inv-"), "{link}");
     link.strip_prefix(LINK_PREFIX).unwrap().to_string()
 }
 

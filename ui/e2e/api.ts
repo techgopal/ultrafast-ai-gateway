@@ -68,7 +68,8 @@ export class GatewayApi {
   async activeUser(name: string, role: "admin" | "member" = "member") {
     const account = newAccount(name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
     const { id, link } = await this.invite(name, account.email, role);
-    const token = new URL(link, "http://console").searchParams.get("token");
+    // The token is in the fragment of the link.
+    const token = new URLSearchParams(new URL(link, "http://console").hash.slice(1)).get("token");
     const answer = await this.request.post("/api/auth/accept-invite", {
       data: { token, password: account.password },
     });

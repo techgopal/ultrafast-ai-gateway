@@ -424,7 +424,7 @@ describe("inviting", () => {
     const field = within(dialog).getByLabelText("Invite link");
     expect(field).toHaveValue(LINK);
     expect(LINK.startsWith(window.location.origin)).toBe(true);
-    expect(LINK).toMatch(/^https?:\/\/[^/]+\/accept-invite\?token=uf-inv-/);
+    expect(LINK).toMatch(/^https?:\/\/[^/]+\/accept-invite#token=uf-inv-/);
     expect(invited.bodies).toEqual([
       { name: "Sam Carter", email: "sam@example.test", role: "admin" },
     ]);
@@ -634,14 +634,14 @@ describe("an invite link that cannot be used", () => {
     expect(thrown).not.toHaveProperty("code");
   });
 
-  test("a usable path keeps its query string", async () => {
+  test("a usable path keeps its fragment, where the token is", async () => {
     await list();
     await table();
     await openInvite();
     await fillInvite();
     const dialog = await screen.findByRole("dialog", { name: "Invite link" });
     expect(within(dialog).getByLabelText("Invite link")).toHaveValue(
-      `${window.location.origin}/accept-invite?token=${TOKEN}`,
+      `${window.location.origin}/accept-invite#token=${TOKEN}`,
     );
   });
 });

@@ -22,7 +22,8 @@ use crate::store::{after, AuditEntry, NewUser, Store, StoreError, Tx, UserRow};
 /// How long an invite link works.
 const INVITE_SECONDS: i64 = 7 * 24 * 60 * 60;
 /// The page that takes an invite token.
-const INVITE_PAGE: &str = "/accept-invite?token=";
+/// The token goes in the fragment, which a browser never sends to a server.
+const INVITE_PAGE: &str = "/accept-invite#token=";
 
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]

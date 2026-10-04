@@ -42,7 +42,9 @@ test("an invited user sets a password from the link and signs in", async ({
   // The gateway gives a path of the console; the dialog shows it on this origin.
   const url = new URL(link);
   expect(url.origin).toBe(gateway.origin);
-  expectForm(url.pathname + url.search, INVITE_PATH, "the invite link");
+  // The token is in the fragment, which the browser never sends to a server.
+  expect(url.search).toBe("");
+  expectForm(url.pathname + url.hash, INVITE_PATH, "the invite link");
   await shown.getByRole("button", { name: "Done" }).click();
   await page
     .getByRole("alertdialog", { name: "Close this dialog?" })
@@ -50,7 +52,8 @@ test("an invited user sets a password from the link and signs in", async ({
     .click();
   await expect(shown).toBeHidden();
   await expect(page.getByRole("main")).toContainText("Sam Reed");
-  const token = url.searchParams.get("token") ?? "";
+  const token = new URLSearchParams(url.hash.slice(1)).get("token") ?? "";
+  expect(token).toMatch(/^uf-inv-/);
   await expectNowhere(page, token, "the invite token, once its dialog is closed,");
 
   await signOut(page);
