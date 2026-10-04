@@ -267,15 +267,22 @@ fn every_base_image_is_pinned_by_its_digest() {
     );
 }
 
-/// A release is built from nothing that an earlier run left: no cached
-/// `target`, which any workflow of the repository could have written.
+/// A release is built from nothing that an earlier run left: no cache at
+/// all (no cached `target`, no pnpm store), which any workflow of the
+/// repository could have written.
 #[test]
-fn a_release_restores_no_cached_target() {
+fn a_release_restores_no_cache() {
     let text = workflow();
-    let jobs = jobs(&text);
-    let build = job(&jobs, "build");
-    assert!(!build.contains("actions/cache"), "{build}");
+    assert!(
+        !text.contains("actions/cache"),
+        "a cache action in the release"
+    );
     for line in text.lines() {
-        assert!(line.trim() != "target", "a cache of target: {line}");
+        let line = line.trim();
+        assert!(line != "target", "a cache of target: {line}");
+        assert!(
+            !line.starts_with("cache:") && !line.starts_with("cache-dependency-path:"),
+            "a cache of a setup action: {line}"
+        );
     }
 }

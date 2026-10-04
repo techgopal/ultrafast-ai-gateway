@@ -53,8 +53,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: ui/pnpm-lock.yaml
+          # No cache: a release is built from nothing an earlier run left.
       - name: Build the console
         run: |
           pnpm --dir ui install --frozen-lockfile
