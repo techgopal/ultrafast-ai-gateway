@@ -61,7 +61,9 @@ pub struct ProviderView {
     pub id: i64,
     pub name: String,
     pub kind: String,
-    pub base_url: String,
+    /// Where the provider is called. Admins only: `null` for anybody else.
+    #[schema(required)]
+    pub base_url: Option<String>,
     pub has_credential: bool,
     /// Set for Azure OpenAI providers.
     pub api_version: Option<String>,
@@ -74,10 +76,19 @@ impl ProviderView {
             id: p.id,
             name: p.name.clone(),
             kind: p.kind.clone(),
-            base_url: p.base_url.clone(),
+            base_url: Some(p.base_url.clone()),
             has_credential: p.credential.is_some(),
             api_version: p.api_version.clone(),
         }
+    }
+
+    /// As `of`, for who may see where the provider is: an admin.
+    fn for_viewer(p: &ProviderRow, admin: bool) -> Self {
+        let mut view = Self::of(p);
+        if !admin {
+            view.base_url = None;
+        }
+        view
     }
 }
 
@@ -138,7 +149,7 @@ async fn provider_of(store: &Store, raw_id: &str) -> Result<ProviderRow, ApiErro
     tag = "providers",
     operation_id = "providers_list",
     responses(
-        (status = 200, description = "Every provider.", body = super::openapi::ProviderList),
+        (status = 200, description = "Every provider. Only an admin gets `base_url`; anybody else gets `null`.", body = super::openapi::ProviderList),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
@@ -148,9 +159,13 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
 ) -> Result<Response, ApiError> {
-    require(&authed.principal, &Action::ListProviders)?;
+    let me = &authed.principal;
+    require(me, &Action::ListProviders)?;
     let providers = state.store.list_providers().await?;
-    let providers: Vec<ProviderView> = providers.iter().map(ProviderView::of).collect();
+    let providers: Vec<ProviderView> = providers
+        .iter()
+        .map(|p| ProviderView::for_viewer(p, me.is_admin()))
+        .collect();
     Ok(Json(json!({ "providers": providers })).into_response())
 }
 

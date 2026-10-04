@@ -1362,7 +1362,8 @@ export interface components {
         ProviderView: {
             /** @description Set for Azure OpenAI providers. */
             api_version?: string | null;
-            base_url: string;
+            /** @description Where the provider is called. Admins only: `null` for anybody else. */
+            base_url: string | null;
             has_credential: boolean;
             /** Format: int64 */
             id: number;
@@ -3710,7 +3711,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Every provider. */
+            /** @description Every provider. Only an admin gets `base_url`; anybody else gets `null`. */
             200: {
                 headers: {
                     [name: string]: unknown;

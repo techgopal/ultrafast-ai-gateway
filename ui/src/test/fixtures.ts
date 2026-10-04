@@ -258,6 +258,12 @@ export const providers = {
 
 export const providerList: Provider[] = Object.values(providers);
 
+/** What the gateway lists of the providers to somebody who is not an admin: no base URL. */
+export const providersForMember: Provider[] = providerList.map((provider) => ({
+  ...provider,
+  base_url: null,
+}));
+
 export const models = {
   /** Enabled, granted to everyone. */
   openaiMini: {

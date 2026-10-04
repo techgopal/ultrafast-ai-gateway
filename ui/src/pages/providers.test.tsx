@@ -332,12 +332,17 @@ describe("the list of providers", () => {
     }
     first.unmount();
 
+    // The gateway gives anybody but an admin no base URL.
+    override("get", "/api/providers", () =>
+      ok("get", "/api/providers", 200, { providers: fixtures.providersForMember }),
+    );
     for (const me of [fixtures.me.arjun, fixtures.me.lena, fixtures.me.priya]) {
       const app = await page({ user: me });
       const providers = await table();
-      // Everyone sees the list.
+      // Everyone sees the list, without where the providers are.
       for (const provider of fixtures.providerList) {
-        expect(rowOf(provider.name)).toHaveTextContent(provider.base_url);
+        expect(rowOf(provider.name)).toHaveTextContent(provider.name);
+        expect(rowOf(provider.name)).not.toHaveTextContent(provider.base_url ?? "");
       }
       expect(rowOf(withCredential.name)).toHaveTextContent("Set");
       expect(rowOf(withoutCredential.name)).toHaveTextContent("None");
@@ -349,7 +354,6 @@ describe("the list of providers", () => {
       expect(within(providers).getAllByRole("columnheader").map((th) => th.textContent)).toEqual([
         "Name",
         "Kind",
-        "Base URL",
         "Credential",
       ]);
       app.unmount();

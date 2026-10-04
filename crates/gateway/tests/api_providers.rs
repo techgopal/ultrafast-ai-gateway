@@ -100,12 +100,29 @@ async fn everyone_lists_providers_without_credentials() {
         list[0],
         json!({
             "id": list[0]["id"], "name": "local", "kind": "openai",
-            "base_url": "http://localhost:11434/v1", "has_credential": false, "api_version": null
+            "base_url": null, "has_credential": false, "api_version": null
         })
     );
     assert_eq!(list[1]["name"], "openai");
     assert_eq!(list[1]["has_credential"], true);
     assert_eq!(list[1].as_object().unwrap().len(), 6);
+    // Where a provider lives is the admin's to know: none of it reaches others.
+    assert!(!body.to_string().contains("localhost"), "{body}");
+    assert!(!body.to_string().contains("api.openai.com"), "{body}");
+    for name in ["arjun", "tomas"] {
+        let who = org.sign_in(name).await;
+        let (_, body) = org.call(Some(&who), "GET", "/api/providers", None).await;
+        assert!(body["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["base_url"].is_null()));
+    }
+    let (_, body) = org.call(Some(&maya), "GET", "/api/providers", None).await;
+    assert_eq!(
+        body["providers"][0]["base_url"],
+        "http://localhost:11434/v1"
+    );
 
     let text = body.to_string();
     assert!(!text.contains(API_KEY), "{text}");

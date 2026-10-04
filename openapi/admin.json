@@ -2576,7 +2576,7 @@
         "operationId": "providers_list",
         "responses": {
           "200": {
-            "description": "Every provider.",
+            "description": "Every provider. Only an admin gets `base_url`; anybody else gets `null`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7359,7 +7359,11 @@
             "description": "Set for Azure OpenAI providers."
           },
           "base_url": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the provider is called. Admins only: `null` for anybody else."
           },
           "has_credential": {
             "type": "boolean"

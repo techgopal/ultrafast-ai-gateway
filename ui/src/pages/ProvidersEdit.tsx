@@ -47,7 +47,8 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
   const version = provider.api_version ?? DEFAULT_API_VERSION;
   const form = useForm({
     defaultValues: {
-      base_url: provider.base_url,
+      // An admin edits, and the gateway gives an admin the base URL.
+      base_url: provider.base_url ?? "",
       api_version: version,
       credential: "keep",
       api_key: "",
@@ -57,7 +58,7 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
       const typed = value.api_version.trim();
       const versionChanged = azure && typed !== "" && typed !== version;
       // Nothing was changed: nothing is sent, and nothing is reported as updated.
-      if (value.credential === "keep" && value.base_url === provider.base_url && !versionChanged) {
+      if (value.credential === "keep" && value.base_url === (provider.base_url ?? "") && !versionChanged) {
         onCancel();
         return;
       }
@@ -66,7 +67,7 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
         if (
           value.credential === "keep" &&
           provider.has_credential &&
-          !sameHost(provider.base_url, value.base_url)
+          !sameHost(provider.base_url ?? "", value.base_url)
         ) {
           throw new ConsoleRefusal(HOST_CHANGED, "credential");
         }

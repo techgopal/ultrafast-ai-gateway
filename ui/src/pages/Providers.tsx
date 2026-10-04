@@ -57,9 +57,9 @@ const columns: Column<Provider>[] = [
     id: "base_url",
     header: "Base URL",
     cell: (provider) => (
-      <span className={`${longText} break-all md:max-w-80`}>{provider.base_url}</span>
+      <span className={`${longText} break-all md:max-w-80`}>{provider.base_url ?? ""}</span>
     ),
-    sortValue: (provider) => provider.base_url,
+    sortValue: (provider) => provider.base_url ?? "",
   },
   {
     id: "has_credential",
@@ -269,7 +269,8 @@ export function Providers() {
       ) : (
         <DataTable
           caption="Providers"
-          columns={columns}
+          // Where a provider is, the gateway tells an admin only.
+          columns={mayManage ? columns : columns.filter((column) => column.id !== "base_url")}
           rows={providers.data?.providers ?? []}
           loading={providers.isPending}
           getRowId={(provider) => String(provider.id)}
