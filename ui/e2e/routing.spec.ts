@@ -229,6 +229,11 @@ test("an admin makes a route in the console, changes it, and the gateway serves 
     .getByRole("alertdialog", { name: "Delete console-route?" })
     .getByRole("button", { name: "Delete" })
     .click();
+  // While the dialog is open the page behind it is hidden from the
+  // accessibility tree, so the row would read as gone at once: wait for the
+  // gateway's answer first.
+  await expect(page.getByText("Route deleted.")).toBeVisible();
+  await expect(page.getByRole("alertdialog")).toBeHidden();
   await expect(itemOf(page, "Routes", "console-route")).toBeHidden();
   const gone = await request.post("/v1/chat/completions", {
     headers: { authorization: `Bearer ${key}` },
