@@ -2,10 +2,6 @@ target
 .git
 data
 docs
-ultrafast-gateway
-ultrafast-models-sdk
-deployment
-configs
 ui/node_modules
 ui/dist
 ui/test-results
