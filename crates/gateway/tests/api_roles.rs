@@ -8,7 +8,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use axum::http::StatusCode;
-use common::{error_code, org, send, Org, Signed, ORG_PASSWORD};
+use common::{error_code, org_on_disk, send, Org, Signed, ORG_PASSWORD};
 use serde_json::{json, Value};
 use ultrafast_gateway::api::openapi::spec;
 use ultrafast_gateway::identity::{Role, UserStatus};
@@ -95,7 +95,8 @@ async fn seed_key(org: &Org, name: &str, owner: i64, team: i64) -> i64 {
 }
 
 async fn world() -> World {
-    let org = org().await;
+    // On disk: a backup is of a file.
+    let org = org_on_disk().await;
     let store = &org.api.store;
 
     let mut tx = store.begin().await.unwrap();
@@ -459,6 +460,8 @@ fn table() -> Vec<Row> {
         row(61, "POST", "/api/config/import", "an empty file, as a dry run", |_, _| "/api/config/import".into(),
             || Some(json!({ "format": "ultrafast-config", "version": 1 })),
             [200, 403, 403, 401]),
+        row(62, "GET", "/api/backup", "", |_, _| "/api/backup".into(), no_body,
+            [200, 403, 403, 401]),
     ]
 }
 
@@ -527,7 +530,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=61).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=62).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -653,7 +656,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 59);
+    assert_eq!(operations, 60);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

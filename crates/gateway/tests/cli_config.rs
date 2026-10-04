@@ -110,7 +110,7 @@ async fn a_configuration_goes_from_one_data_directory_to_another() {
     assert!(said.contains("created: provider main"), "{said}");
     assert!(said.contains("warning: providers[0]"), "{said}");
     assert!(
-        said.contains("4 created, 0 updated, 1 unchanged."),
+        said.contains("4 created, 0 updated, 2 unchanged."),
         "{said}"
     );
     let empty = Store::open(&db_path(to.path())).await.unwrap();
@@ -120,10 +120,10 @@ async fn a_configuration_goes_from_one_data_directory_to_another() {
     // The real import, and the second one that finds nothing to do.
     let done = run(to.path(), &["config", "import", exported_arg]);
     assert!(done.status.success(), "{}", text(&done.stderr));
-    assert!(text(&done.stdout).contains("4 created, 0 updated, 1 unchanged."));
+    assert!(text(&done.stdout).contains("4 created, 0 updated, 2 unchanged."));
     let second = run(to.path(), &["config", "import", exported_arg]);
     assert!(
-        text(&second.stdout).contains("0 created, 0 updated, 5 unchanged."),
+        text(&second.stdout).contains("0 created, 0 updated, 6 unchanged."),
         "{}",
         text(&second.stdout)
     );

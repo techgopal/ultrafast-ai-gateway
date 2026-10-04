@@ -27,6 +27,7 @@ pub struct ConfigState {
     pub limits: Vec<LimitRow>,
     pub budgets: Vec<BudgetRow>,
     pub log_retention_days: i64,
+    pub session_hours: i64,
 }
 
 async fn read(conn: &mut SqliteConnection) -> Result<ConfigState> {
@@ -53,6 +54,7 @@ async fn read(conn: &mut SqliteConnection) -> Result<ConfigState> {
     let limits = limits::list_limits_in(conn).await?;
     let budgets = budgets::list_budgets_in(conn).await?;
     let log_retention_days = settings::log_retention_days_in(conn).await?;
+    let session_hours = settings::session_hours_in(conn).await?;
     Ok(ConfigState {
         providers,
         models,
@@ -65,6 +67,7 @@ async fn read(conn: &mut SqliteConnection) -> Result<ConfigState> {
         limits,
         budgets,
         log_retention_days,
+        session_hours,
     })
 }
 

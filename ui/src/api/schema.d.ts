@@ -104,6 +104,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/backup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Downloads a consistent copy of the database: a SQLite file with every
+         *     table, taken of one moment while the gateway goes on. It holds
+         *     everything the database holds (users with their password hashes,
+         *     sessions, logs, provider credentials as they are stored) except the
+         *     master key, which is not in it: the credentials are unreadable without
+         *     that key, and so the copy is of little use without it. Admin only; the
+         *     download is audited.
+         */
+        get: operations["backup_download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/budgets": {
         parameters: {
             query?: never;
@@ -1120,6 +1145,24 @@ export interface components {
             /** Format: int64 */
             user_id: number | null;
         };
+        /** @description The limits of failed sign-ins, as they are built in. */
+        LoginLimits: {
+            /**
+             * Format: int64
+             * @description Failures one client address may have inside the window.
+             */
+            max_per_address: number;
+            /**
+             * Format: int64
+             * @description Failures one email may have inside the window.
+             */
+            max_per_email: number;
+            /**
+             * Format: int64
+             * @description Failures older than this no longer count.
+             */
+            window_minutes: number;
+        };
         LoginRequest: {
             email: string;
             password: string;
@@ -1492,6 +1535,11 @@ export interface components {
              * @description 1 to 3650. Not in the file: not changed.
              */
             log_retention_days: number | null;
+            /**
+             * Format: int64
+             * @description 1 to 720. Not in the file: not changed.
+             */
+            session_hours: number | null;
         };
         SettingsView: {
             /**
@@ -1499,6 +1547,19 @@ export interface components {
              * @description How many days request logs are kept before they are deleted.
              */
             log_retention_days: number;
+            /** @description Read only: built in. */
+            login_limits: components["schemas"]["LoginLimits"];
+            /**
+             * Format: int64
+             * @description How many hours a session lives, from sign-in. Sessions that exist
+             *     keep the lifetime they were made with.
+             */
+            session_hours: number;
+            /**
+             * @description The networks (CIDR) whose forwarding headers are believed, as the
+             *     gateway was started. Read only: it is a flag of `ultrafast serve`.
+             */
+            trusted_proxies: string[];
         };
         SetupRequest: {
             email: string;
@@ -1624,7 +1685,12 @@ export interface components {
              * Format: int64
              * @description 1 to 3650.
              */
-            log_retention_days: number;
+            log_retention_days?: number | null;
+            /**
+             * Format: int64
+             * @description 1 to 720. Applies to sessions made from now on.
+             */
+            session_hours?: number | null;
         };
         UsagePage: {
             /** @description First day of the range, `YYYY-MM-DD`, UTC. */
@@ -2090,6 +2156,53 @@ export interface operations {
             };
             /** @description Too many failed attempts. */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    backup_download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The database as a SQLite file. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.sqlite3": number[];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

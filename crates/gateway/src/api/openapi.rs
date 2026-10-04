@@ -177,6 +177,7 @@ pub struct RoutingHealth {
         (name = "usage", description = "Usage sums over the request logs."),
         (name = "playground", description = "Chat calls made from the console for the signed-in user."),
         (name = "config", description = "The configuration as a file: export and import."),
+        (name = "backup", description = "A copy of the database."),
     )
 )]
 struct AdminApi;
@@ -256,9 +257,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 59. Its fallbacks are not
+    /// Every route of `api::router`, which has 60. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 59] = [
+    const ROUTES: [(&str, &str); 60] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -318,6 +319,7 @@ mod tests {
         ("POST", "/api/playground/chat"),
         ("GET", "/api/config/export"),
         ("POST", "/api/config/import"),
+        ("GET", "/api/backup"),
     ];
 
     const SECRET_REQUEST_FIELDS: [&str; 5] = [
@@ -409,7 +411,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 59);
+        assert_eq!(routes.len(), 60);
         assert_eq!(documented, routes);
     }
 
@@ -431,7 +433,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 59);
+        assert_eq!(ids.len(), 60);
     }
 
     #[test]

@@ -496,6 +496,70 @@
         ]
       }
     },
+    "/api/backup": {
+      "get": {
+        "tags": [
+          "backup"
+        ],
+        "summary": "Downloads a consistent copy of the database: a SQLite file with every\ntable, taken of one moment while the gateway goes on. It holds\neverything the database holds (users with their password hashes,\nsessions, logs, provider credentials as they are stored) except the\nmaster key, which is not in it: the credentials are unreadable without\nthat key, and so the copy is of little use without it. Admin only; the\ndownload is audited.",
+        "operationId": "backup_download",
+        "responses": {
+          "200": {
+            "description": "The database as a SQLite file.",
+            "content": {
+              "application/vnd.sqlite3": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/budgets": {
       "get": {
         "tags": [
@@ -6527,6 +6591,35 @@
           }
         }
       },
+      "LoginLimits": {
+        "type": "object",
+        "description": "The limits of failed sign-ins, as they are built in.",
+        "required": [
+          "window_minutes",
+          "max_per_email",
+          "max_per_address"
+        ],
+        "properties": {
+          "max_per_address": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Failures one client address may have inside the window.",
+            "minimum": 0
+          },
+          "max_per_email": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Failures one email may have inside the window.",
+            "minimum": 0
+          },
+          "window_minutes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Failures older than this no longer count.",
+            "minimum": 0
+          }
+        }
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -7411,7 +7504,8 @@
       "SettingsEntry": {
         "type": "object",
         "required": [
-          "log_retention_days"
+          "log_retention_days",
+          "session_hours"
         ],
         "properties": {
           "log_retention_days": {
@@ -7421,6 +7515,14 @@
             ],
             "format": "int64",
             "description": "1 to 3650. Not in the file: not changed."
+          },
+          "session_hours": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "1 to 720. Not in the file: not changed."
           }
         },
         "additionalProperties": false
@@ -7428,13 +7530,32 @@
       "SettingsView": {
         "type": "object",
         "required": [
-          "log_retention_days"
+          "log_retention_days",
+          "session_hours",
+          "trusted_proxies",
+          "login_limits"
         ],
         "properties": {
           "log_retention_days": {
             "type": "integer",
             "format": "int64",
             "description": "How many days request logs are kept before they are deleted."
+          },
+          "login_limits": {
+            "$ref": "#/components/schemas/LoginLimits",
+            "description": "Read only: built in."
+          },
+          "session_hours": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many hours a session lives, from sign-in. Sessions that exist\nkeep the lifetime they were made with."
+          },
+          "trusted_proxies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The networks (CIDR) whose forwarding headers are believed, as the\ngateway was started. Read only: it is a flag of `ultrafast serve`."
           }
         }
       },
@@ -7801,14 +7922,22 @@
       },
       "UpdateSettingsRequest": {
         "type": "object",
-        "required": [
-          "log_retention_days"
-        ],
         "properties": {
           "log_retention_days": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
             "description": "1 to 3650."
+          },
+          "session_hours": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "1 to 720. Applies to sessions made from now on."
           }
         },
         "additionalProperties": false
@@ -8075,6 +8204,10 @@
     {
       "name": "config",
       "description": "The configuration as a file: export and import."
+    },
+    {
+      "name": "backup",
+      "description": "A copy of the database."
     }
   ]
 }

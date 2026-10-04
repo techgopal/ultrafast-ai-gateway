@@ -3,6 +3,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod backup;
 pub mod budgets;
 pub mod config;
 pub mod health;
@@ -102,6 +103,7 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(playground::chat))
         .routes(routes!(config::export))
         .routes(routes!(config::import))
+        .routes(routes!(backup::download))
 }
 
 pub fn router() -> Router<Arc<AppState>> {

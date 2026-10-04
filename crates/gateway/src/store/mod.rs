@@ -1,6 +1,7 @@
 //! SQLite storage. Nothing outside this module writes SQL.
 
 mod audit;
+mod backup;
 mod budgets;
 mod keys;
 mod limits;
@@ -38,7 +39,7 @@ pub use portable::ConfigState;
 pub use providers::ProviderRow;
 pub use routes::{is_missing_reference, RouteRow, RouteSettings, TargetRow, TargetsInput};
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
-pub use settings::DEFAULT_LOG_RETENTION_DAYS;
+pub use settings::{DEFAULT_LOG_RETENTION_DAYS, DEFAULT_SESSION_HOURS, SESSION_HOURS_RANGE};
 pub use teams::{MemberDetail, MemberRow, TeamRow, TeamSummary, UserTeam};
 pub use users::{InviteRow, NewUser, UserRow};
 
@@ -133,6 +134,8 @@ pub struct SnapshotRows {
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
+    /// The directory of the database file; `None` for an in-memory one.
+    dir: Option<std::path::PathBuf>,
     /// How many times `teams_of_users` was called, so a test can see that
     /// a list asks once and not once per row.
     teams_of_users_calls: Arc<AtomicU64>,
@@ -145,7 +148,11 @@ impl Store {
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true);
-        Self::connect(opts, SqlitePoolOptions::new().max_connections(8)).await
+        let dir = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => std::path::PathBuf::from("."),
+        };
+        Self::connect(opts, SqlitePoolOptions::new().max_connections(8), Some(dir)).await
     }
 
     /// One connection only: every in-memory connection is its own database,
@@ -157,14 +164,19 @@ impl Store {
             .min_connections(1)
             .idle_timeout(None)
             .max_lifetime(None);
-        Self::connect(opts, pool).await
+        Self::connect(opts, pool, None).await
     }
 
-    async fn connect(opts: SqliteConnectOptions, pool: SqlitePoolOptions) -> Result<Self> {
+    async fn connect(
+        opts: SqliteConnectOptions,
+        pool: SqlitePoolOptions,
+        dir: Option<std::path::PathBuf>,
+    ) -> Result<Self> {
         let pool = pool.connect_with(opts).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
         let store = Self {
             pool,
+            dir,
             teams_of_users_calls: Arc::default(),
         };
         // So the planner has statistics for `request_logs` from the first

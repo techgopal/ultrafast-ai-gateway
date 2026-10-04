@@ -85,6 +85,11 @@ enum Command {
         #[command(subcommand)]
         command: KeyCommand,
     },
+    /// Write a consistent copy of the database to a file, which must not
+    /// exist. The gateway may be running. The copy has no master key: without
+    /// the key (`master.key`, or UF_MASTER_KEY) it is useless, as the
+    /// provider credentials in it cannot be read.
+    Backup { path: PathBuf },
     /// Export and import the configuration as a file.
     Config {
         #[command(subcommand)]
@@ -223,8 +228,42 @@ fn validate(command: &mut Command) -> Result<()> {
         } => {
             *name = trimmed_name(name).map_err(anyhow::Error::msg)?.to_string();
         }
-        Command::Config { .. } | Command::Openapi => {}
+        Command::Backup { .. } | Command::Config { .. } | Command::Openapi => {}
     }
+    Ok(())
+}
+
+/// `ultrafast backup <path>`.
+async fn backup_command(data_dir: &Path, path: &Path) -> Result<()> {
+    let db = db_path(data_dir);
+    if !db.exists() {
+        bail!("there is no database in {}", data_dir.display());
+    }
+    let store = Store::open(&db)
+        .await
+        .context("could not open the database")?;
+    store
+        .backup_to(path)
+        .await
+        .with_context(|| format!("could not write the backup to {}", path.display()))?;
+    restrict_file(path)?;
+    println!(
+        "Wrote a backup of the database to {}. It does not hold the master key, and is useless without the master key (master.key in the data directory, or UF_MASTER_KEY): keep that safe, apart from the backup.",
+        path.display()
+    );
+    Ok(())
+}
+
+/// The backup is readable by its owner alone, as the database is.
+#[cfg(unix)]
+fn restrict_file(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("could not restrict {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_file(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -318,8 +357,11 @@ async fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&spec())?);
         return Ok(());
     }
-    if let Command::Config { command } = cli.command {
-        return config_command(&cli.data_dir, command).await;
+    // Neither needs the master key: it is not read, and not made.
+    match cli.command {
+        Command::Config { command } => return config_command(&cli.data_dir, command).await,
+        Command::Backup { path } => return backup_command(&cli.data_dir, &path).await,
+        _ => {}
     }
     let master = load_master_key(&cli.data_dir, cli.master_key.as_deref())?;
     let cipher = Cipher::from_hex(&master)?;
@@ -463,7 +505,7 @@ async fn main() -> Result<()> {
             println!("Created key '{name}'. Copy it now; it is not shown again:");
             println!("{}", key.full);
         }
-        Command::Config { .. } | Command::Openapi => {
+        Command::Backup { .. } | Command::Config { .. } | Command::Openapi => {
             unreachable!("answered before the master key is read")
         }
     }

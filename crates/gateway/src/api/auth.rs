@@ -27,7 +27,7 @@ use crate::identity::password::{
 use crate::identity::policy::Action;
 use crate::identity::{normalize_email, Principal, Role, TeamRole, UserStatus};
 use crate::secrets::{hash_key, INVITE_PREFIX};
-use crate::store::{AuditEntry, NewUser, Store, UserRow, UserTeam, SESSION_SECONDS};
+use crate::store::{AuditEntry, NewUser, Store, UserRow, UserTeam};
 
 /// The name of an admin created from the environment at startup.
 const BOOTSTRAP_NAME: &str = "Admin";
@@ -416,7 +416,7 @@ pub async fn login(
     tx.commit().await?;
     attempt_succeeded(&state, &key, addr);
 
-    let cookie = cookie_header(&session.id, SESSION_SECONDS, state.cookie_secure)?;
+    let cookie = cookie_header(&session.id, session.max_age_seconds, state.cookie_secure)?;
     let user = user_view(&state.store, user).await?;
     let body = json!({ "user": user, "csrf_token": session.csrf_token });
     Ok(([(SET_COOKIE, cookie)], Json(body)).into_response())

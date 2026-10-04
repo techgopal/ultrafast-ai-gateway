@@ -396,7 +396,11 @@ pub async fn send(
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    let value = if bytes.is_empty() {
+    let is_json = headers
+        .get("content-type")
+        .is_none_or(|v| v.to_str().is_ok_and(|v| v.starts_with("application/json")));
+    // A download is not JSON: the caller reads its status and headers.
+    let value = if bytes.is_empty() || !is_json {
         serde_json::Value::Null
     } else {
         serde_json::from_slice(&bytes).expect("the response body must be JSON")
@@ -451,6 +455,8 @@ pub const ORG_PASSWORD: &str = "correct horse battery";
 /// a team, in three teams.
 pub struct Org {
     pub api: Api,
+    /// The directory of the database, for an organization that is on disk.
+    pub dir: Option<tempfile::TempDir>,
     /// Admin.
     pub maya: i64,
     /// Lead of Platform, member of Research.
@@ -476,9 +482,27 @@ pub async fn org() -> Org {
     org_with_sink(None).await
 }
 
+/// [`org`], trusting forwarding headers from peers in these networks.
+pub async fn org_behind(trusted: &[&str]) -> Org {
+    build_org(api_full(Store::open_in_memory().await.unwrap(), false, trusted, None).await).await
+}
+
 /// [`org`], with `sink` receiving the request records.
 pub async fn org_with_sink(sink: Option<Arc<dyn RequestSink>>) -> Org {
-    let api = api_full(Store::open_in_memory().await.unwrap(), false, &[], sink).await;
+    build_org(api_full(Store::open_in_memory().await.unwrap(), false, &[], sink).await).await
+}
+
+/// [`org`], with its database in a file of a directory of its own, as a
+/// backup needs.
+pub async fn org_on_disk() -> Org {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("gateway.db")).await.unwrap();
+    let mut org = build_org(api_full(store, false, &[], None).await).await;
+    org.dir = Some(dir);
+    org
+}
+
+async fn build_org(api: Api) -> Org {
     let store = &api.store;
     let maya = seed_user(store, &email_of("maya"), Role::Admin, ORG_PASSWORD).await;
     let arjun = seed_user(store, &email_of("arjun"), Role::Member, ORG_PASSWORD).await;
@@ -500,6 +524,7 @@ pub async fn org_with_sink(sink: Option<Arc<dyn RequestSink>>) -> Org {
     let growth = seed_team(store, "Growth", &[]).await;
     Org {
         api,
+        dir: None,
         maya,
         arjun,
         lena,

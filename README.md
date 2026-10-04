@@ -96,6 +96,43 @@ All of these are set by an admin in the console, or with the admin API under
 - **Retention.** Settings page: request logs older than the number of days
   (1 to 3 650, 30 at first) are deleted.
 
+#### Backup and restore
+
+A backup is a consistent copy of the whole database, of one moment, taken
+while the gateway runs (SQLite's online backup; it blocks no request). Take
+one from the console (Settings, Backup), from the admin API
+(`GET /api/backup`, admins only, audited), or from the command line:
+
+```bash
+ultrafast --data-dir ./data backup ./backups/ultrafast-2026-10-04.db
+```
+
+The file holds everything in the database (users and their password hashes,
+sessions, request logs, the audit log, provider credentials as they are
+stored) **except the master key**. The credentials are encrypted with that
+key, so a backup is useless without it: keep the master key (`master.key` in
+the data directory, or the `UF_MASTER_KEY` you set) safe, apart from the
+backups. The backup file is readable by its owner only; treat it like the
+database.
+
+To restore, stop the gateway and put the backup in its place. There is no
+API for this, on purpose:
+
+```bash
+# 1. stop the gateway
+# 2. keep what is there, in case
+mv data/gateway.db data/gateway.db.before
+rm -f data/gateway.db-wal data/gateway.db-shm
+# 3. put the backup in its place; the master key stays as it is
+cp backups/ultrafast-2026-10-04.db data/gateway.db
+chmod 600 data/gateway.db
+# 4. start the gateway: it runs the migrations it needs and serves
+```
+
+The gateway must have the master key of the gateway the backup came from. To
+move only the setup (providers without credentials, models, routes, limits)
+and not the data, use the configuration export and import instead.
+
 ### Metrics
 
 `GET /metrics` serves Prometheus metrics (text format 0.0.4). It exists only

@@ -322,7 +322,7 @@ fn expected_export() -> Value {
             { "scope": "team", "name": "Research", "amount_micros": 20_000_000, "period": "monthly", "action": "block" },
             { "scope": "user", "name": "tomas@example.com", "amount_micros": 5_000_000, "period": "weekly", "action": "block" },
         ],
-        "settings": { "log_retention_days": 45 },
+        "settings": { "log_retention_days": 45, "session_hours": 12 },
     })
 }
 
@@ -374,7 +374,7 @@ async fn the_export_holds_no_secret() {
         "csrf",
         "key_hash",
         "token_hash",
-        "session",
+        "session_id",
         "secret",
         "bearer",
     ] {
@@ -438,8 +438,8 @@ async fn a_second_import_changes_nothing() {
     assert!(report.created.is_empty());
     assert!(report.updated.is_empty(), "{:?}", report.updated);
     // Every thing of the file is there already: 2 providers, 3 models,
-    // 3 teams, 2 routes, 3 limits, 3 budgets and the settings.
-    assert_eq!(report.unchanged, 17);
+    // 3 teams, 2 routes, 3 limits, 3 budgets and the 2 settings.
+    assert_eq!(report.unchanged, 18);
     // Only the summary of the import is audited when nothing changed.
     let actions: Vec<String> = store
         .list_audit(50, None)
@@ -487,7 +487,7 @@ async fn import_creates_what_is_missing_updates_what_differs_and_deletes_nothing
     changed["budgets"] = json!([
         { "scope": "user", "name": "priya@example.com", "amount_micros": 1_000_000, "period": "daily", "action": "block" },
     ]);
-    changed["settings"] = json!({ "log_retention_days": 90 });
+    changed["settings"] = json!({ "log_retention_days": 90, "session_hours": 48 });
 
     let report = portable::import(store, &file_of(changed), &actor(), false)
         .await
@@ -520,7 +520,8 @@ async fn import_creates_what_is_missing_updates_what_differs_and_deletes_nothing
             "model main/gpt-4o",
             "route chat",
             "limit gateway",
-            "settings log retention"
+            "settings log retention",
+            "settings session lifetime",
         ]
     );
     let model = report
@@ -542,6 +543,7 @@ async fn import_creates_what_is_missing_updates_what_differs_and_deletes_nothing
     );
     assert_eq!(state.budgets.len(), 5);
     assert_eq!(state.log_retention_days, 90);
+    assert_eq!(state.session_hours, 48);
     // What the file says is now so.
     let chat = state.routes.iter().find(|r| r.name == "chat").unwrap();
     assert!(chat.everyone && !chat.cache.enabled);
@@ -579,7 +581,7 @@ async fn a_dry_run_reports_and_writes_nothing() {
     let before = audit_count(store).await;
     let mut file = expected_export();
     file["teams"] = json!([{ "name": "Design" }]);
-    file["settings"] = json!({ "log_retention_days": 7 });
+    file["settings"] = json!({ "log_retention_days": 7, "session_hours": 12 });
     let report = portable::import(store, &file_of(file), &actor(), true)
         .await
         .unwrap();
@@ -595,6 +597,7 @@ async fn a_dry_run_reports_and_writes_nothing() {
     assert_eq!(report.updated.len(), 1);
     let state = store.config_state().await.unwrap();
     assert_eq!(state.log_retention_days, 45);
+    assert_eq!(state.session_hours, 12);
     assert_eq!(state.teams.len(), 3);
     assert_eq!(audit_count(store).await, before);
 }
@@ -646,7 +649,7 @@ async fn unknown_references_are_reported_exactly_and_nothing_is_written() {
         "budgets": [
             { "scope": "team", "name": "No such team", "amount_micros": 1, "period": "daily", "action": "block" },
         ],
-        "settings": { "log_retention_days": 9999 },
+        "settings": { "log_retention_days": 9999, "session_hours": 721 },
     });
     let report = portable::import(store, &file_of(file.clone()), &actor(), false)
         .await
@@ -706,6 +709,10 @@ async fn unknown_references_are_reported_exactly_and_nothing_is_written() {
     );
     assert!(
         said("settings.log_retention_days", "must be from 1 to 3650"),
+        "{errors:?}"
+    );
+    assert!(
+        said("settings.session_hours", "must be from 1 to 720"),
         "{errors:?}"
     );
     // A team named in the file is known, though it is created by the import.

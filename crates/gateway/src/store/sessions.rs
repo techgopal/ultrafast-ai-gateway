@@ -10,7 +10,7 @@ use super::{after, check_timestamp, write_error, Store, Tx, DEFAULT_ORG};
 use crate::secrets::{hash_key, TOKEN_PREFIX};
 
 /// How long a session lasts after sign-in.
-pub const SESSION_SECONDS: i64 = 12 * 60 * 60;
+pub const SESSION_SECONDS: i64 = super::DEFAULT_SESSION_HOURS * 60 * 60;
 
 /// Length of a session cookie value: 32 bytes as hex.
 const SESSION_VALUE_LEN: usize = 64;
@@ -27,6 +27,8 @@ pub struct NewSession {
     /// The cookie value. Shown to the browser once. Only its hash is stored.
     pub id: String,
     pub csrf_token: String,
+    /// How long the session lives, in seconds: the cookie's `Max-Age`.
+    pub max_age_seconds: i64,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -92,7 +94,7 @@ fn is_session_value(value: &str) -> bool {
 }
 
 impl Store {
-    /// Creates a session valid for `SESSION_SECONDS`.
+    /// Creates a session; see `Tx::create_session`.
     pub async fn create_session(&self, user_id: i64) -> Result<NewSession> {
         let mut tx = self.begin().await?;
         let session = tx.create_session(user_id).await?;
@@ -213,11 +215,14 @@ impl Store {
 }
 
 impl Tx<'_> {
-    /// Creates a session valid for `SESSION_SECONDS`.
+    /// Creates a session that lives as many hours as the settings say
+    /// (`SESSION_SECONDS` unless they say otherwise).
     pub async fn create_session(&mut self, user_id: i64) -> Result<NewSession> {
+        let max_age_seconds = self.session_hours().await? * 3600;
         let session = NewSession {
             id: random_hex(),
             csrf_token: random_hex(),
+            max_age_seconds,
         };
         sqlx::query(
             "INSERT INTO sessions (org_id, user_id, id_hash, csrf_token, expires_at)
@@ -227,7 +232,7 @@ impl Tx<'_> {
         .bind(user_id)
         .bind(hash_key(&session.id))
         .bind(&session.csrf_token)
-        .bind(after(SESSION_SECONDS))
+        .bind(after(max_age_seconds))
         .execute(self.conn())
         .await?;
         Ok(session)

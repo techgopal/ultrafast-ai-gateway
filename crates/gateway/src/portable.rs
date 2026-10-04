@@ -27,7 +27,9 @@ use crate::cache::{CacheScope, RouteCache};
 use crate::catalog::validate_model_name;
 use crate::config::{validate_base_url, validate_provider_name};
 use crate::limits::{LimitScope, RateLimit};
-use crate::store::{AuditEntry, ConfigState, Grants, RouteSettings, Store, TargetsInput, Tx};
+use crate::store::{
+    AuditEntry, ConfigState, Grants, RouteSettings, Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
+};
 
 /// The `format` of the file.
 pub const FORMAT: &str = "ultrafast-config";
@@ -172,6 +174,10 @@ pub struct SettingsEntry {
     #[serde(default)]
     #[schema(required)]
     pub log_retention_days: Option<i64>,
+    /// 1 to 720. Not in the file: not changed.
+    #[serde(default)]
+    #[schema(required)]
+    pub session_hours: Option<i64>,
 }
 
 /// The configuration file. `format` and `version` come first.
@@ -484,6 +490,7 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
         budgets: budgets.into_iter().map(|(_, _, b)| b).collect(),
         settings: SettingsEntry {
             log_retention_days: Some(state.log_retention_days),
+            session_hours: Some(state.session_hours),
         },
     }
 }
@@ -543,6 +550,7 @@ enum Op {
         action: BudgetAction,
     },
     SetRetention(i64),
+    SetSessionHours(i64),
 }
 
 struct Planned {
@@ -1194,24 +1202,41 @@ impl Planner<'_> {
     }
 
     fn settings(&mut self) {
-        let Some(days) = self.file.settings.log_retention_days else {
-            return;
-        };
-        if !(1..=3650).contains(&days) {
-            self.error(
-                "settings.log_retention_days".to_string(),
-                "must be from 1 to 3650",
-            );
-        } else if days == self.state.log_retention_days {
-            self.report.unchanged += 1;
-        } else {
-            self.push(
-                Op::SetRetention(days),
-                "settings",
-                "log retention".to_string(),
-                vec!["log_retention_days".to_string()],
-                false,
-            );
+        if let Some(days) = self.file.settings.log_retention_days {
+            if !(1..=3650).contains(&days) {
+                self.error(
+                    "settings.log_retention_days".to_string(),
+                    "must be from 1 to 3650",
+                );
+            } else if days == self.state.log_retention_days {
+                self.report.unchanged += 1;
+            } else {
+                self.push(
+                    Op::SetRetention(days),
+                    "settings",
+                    "log retention".to_string(),
+                    vec!["log_retention_days".to_string()],
+                    false,
+                );
+            }
+        }
+        if let Some(hours) = self.file.settings.session_hours {
+            if !SESSION_HOURS_RANGE.contains(&hours) {
+                self.error(
+                    "settings.session_hours".to_string(),
+                    "must be from 1 to 720",
+                );
+            } else if hours == self.state.session_hours {
+                self.report.unchanged += 1;
+            } else {
+                self.push(
+                    Op::SetSessionHours(hours),
+                    "settings",
+                    "session lifetime".to_string(),
+                    vec!["session_hours".to_string()],
+                    false,
+                );
+            }
         }
     }
 }
@@ -1508,6 +1533,7 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                     .await?;
             }
             Op::SetRetention(days) => tx.set_log_retention_days(days).await?,
+            Op::SetSessionHours(hours) => tx.set_session_hours(hours).await?,
         }
         let verb = if planned.created {
             "Created"
