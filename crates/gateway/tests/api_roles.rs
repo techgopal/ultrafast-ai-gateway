@@ -450,6 +450,10 @@ fn table() -> Vec<Row> {
         // Budget 1 exists in the world's store for the table: see `world`.
         row(58, "DELETE", "/api/budgets/{id}", "the gateway's budget", |_, _| "/api/budgets/1".into(), no_body,
             [204, 403, 403, 401]),
+        // A model nobody has: the answer is the pipeline's own, in the OpenAI shape.
+        row(59, "POST", "/api/playground/chat", "an unknown model", |_, _| "/api/playground/chat".into(),
+            || Some(json!({ "model": "nothing", "messages": [{ "role": "user", "content": "hi" }] })),
+            [404, 404, 404, 401]),
     ]
 }
 
@@ -487,6 +491,8 @@ fn expected(row: &Row, caller: Caller) -> (u16, Option<&'static str>) {
     let code = match status {
         401 => Some("unauthenticated"),
         403 => Some("forbidden"),
+        // The playground answers as `/v1` does: no `/api` error code.
+        404 if row.number == 59 => None,
         404 => Some("not_found"),
         _ => None,
     };
@@ -516,7 +522,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=58).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=59).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -642,7 +648,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 56);
+    assert_eq!(operations, 57);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

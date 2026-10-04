@@ -279,9 +279,22 @@ pub async fn api_on(store: Store, cookie_secure: bool) -> Api {
 /// A gateway that trusts forwarding headers from peers in these networks
 /// (CIDR notation).
 pub async fn api_behind(store: Store, cookie_secure: bool, trusted: &[&str]) -> Api {
+    api_full(store, cookie_secure, trusted, None).await
+}
+
+/// Like [`api_behind`], with `sink` receiving the request records.
+pub async fn api_full(
+    store: Store,
+    cookie_secure: bool,
+    trusted: &[&str],
+    sink: Option<Arc<dyn RequestSink>>,
+) -> Api {
     warm_up().unwrap();
     let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
     let mut state = AppState::new(store.clone(), cipher).await.unwrap();
+    if let Some(sink) = sink {
+        state.sink = sink;
+    }
     state.cookie_secure = cookie_secure;
     state.trusted_proxies = trusted.iter().map(|c| c.parse().unwrap()).collect();
     let state = Arc::new(state);
@@ -460,7 +473,12 @@ pub fn email_of(name: &str) -> String {
 }
 
 pub async fn org() -> Org {
-    let api = api().await;
+    org_with_sink(None).await
+}
+
+/// [`org`], with `sink` receiving the request records.
+pub async fn org_with_sink(sink: Option<Arc<dyn RequestSink>>) -> Org {
+    let api = api_full(Store::open_in_memory().await.unwrap(), false, &[], sink).await;
     let store = &api.store;
     let maya = seed_user(store, &email_of("maya"), Role::Admin, ORG_PASSWORD).await;
     let arjun = seed_user(store, &email_of("arjun"), Role::Member, ORG_PASSWORD).await;

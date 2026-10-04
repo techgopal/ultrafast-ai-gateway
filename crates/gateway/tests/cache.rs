@@ -483,7 +483,7 @@ async fn a_hit_still_passes_the_budgets() {
     assert_eq!(w.chat(&a, BODY).await, StatusCode::OK);
     // The log writer prices a call; here the key's budget is spent.
     let spent = RequestRecord {
-        key_id: a.id,
+        key_id: Some(a.id),
         user_id: a.user,
         team_id: a.team,
         requested: "r".into(),

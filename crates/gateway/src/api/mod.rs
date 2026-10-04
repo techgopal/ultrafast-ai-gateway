@@ -10,6 +10,7 @@ pub mod limits;
 pub mod logs;
 pub mod models;
 pub mod openapi;
+pub mod playground;
 pub mod providers;
 pub mod routes;
 pub mod settings;
@@ -97,6 +98,7 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(logs::list))
         .routes(routes!(logs::view))
         .routes(routes!(usage::usage_view))
+        .routes(routes!(playground::chat))
 }
 
 pub fn router() -> Router<Arc<AppState>> {

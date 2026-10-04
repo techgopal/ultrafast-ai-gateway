@@ -501,15 +501,26 @@ impl Snapshot {
     /// gateway's. Only
     /// subjects that have a limit are in it.
     pub fn subjects(&self, key: &SnapKey) -> Subjects {
+        self.subjects_of(Some(key.id), key.user_id, key.team_id)
+    }
+
+    /// [`Snapshot::subjects`] for a caller that may have no key (a call from
+    /// the console playground): it has no key limit.
+    pub fn subjects_of(
+        &self,
+        key_id: Option<i64>,
+        user_id: Option<i64>,
+        team_id: Option<i64>,
+    ) -> Subjects {
         if self.limits.is_empty() {
             return Subjects::default();
         }
         let get = |scope, id| self.limits.get(&(scope, id)).cloned();
         Subjects {
-            key: get(LimitScope::Key, key.id),
-            user: key.user_id.and_then(|u| get(LimitScope::User, u)),
+            key: key_id.and_then(|k| get(LimitScope::Key, k)),
+            user: user_id.and_then(|u| get(LimitScope::User, u)),
             teams: self
-                .team_ids_of(key.user_id, key.team_id)
+                .team_ids_of(user_id, team_id)
                 .into_iter()
                 .filter_map(|t| get(LimitScope::Team, t))
                 .collect(),
@@ -536,7 +547,7 @@ impl Snapshot {
     /// ids of a record, so a key that is gone still counts.
     pub fn budgets_of(
         &self,
-        key_id: i64,
+        key_id: Option<i64>,
         user_id: Option<i64>,
         team_id: Option<i64>,
     ) -> Vec<Arc<Budget>> {
@@ -550,7 +561,10 @@ impl Snapshot {
                 .flatten()
                 .cloned()
         };
-        let mut out: Vec<Arc<Budget>> = get(LimitScope::Key, key_id).collect();
+        let mut out: Vec<Arc<Budget>> = key_id
+            .into_iter()
+            .flat_map(|id| get(LimitScope::Key, id))
+            .collect();
         if let Some(u) = user_id {
             out.extend(get(LimitScope::User, u));
         }

@@ -168,7 +168,7 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
         .collect();
     NewLog {
         at: record.started_at.clone(),
-        key_id: Some(record.key_id),
+        key_id: record.key_id,
         user_id: record.user_id,
         team_id: record.team_id,
         requested: record.requested.clone(),
@@ -239,7 +239,7 @@ mod tests {
     fn an_estimated_record_is_priced_like_a_reported_one_and_marked() {
         use crate::telemetry::{Attempt, AttemptOutcome};
         let record = RequestRecord {
-            key_id: 1,
+            key_id: Some(1),
             user_id: None,
             team_id: None,
             requested: "p/m".into(),

@@ -20,7 +20,7 @@ use wiremock::{Mock, ResponseTemplate};
 
 fn record(requested: &str) -> RequestRecord {
     RequestRecord {
-        key_id: 1,
+        key_id: Some(1),
         user_id: Some(2),
         team_id: Some(3),
         requested: requested.into(),

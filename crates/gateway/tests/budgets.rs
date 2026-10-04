@@ -387,7 +387,7 @@ impl World {
 
     fn record(&self) -> RequestRecord {
         RequestRecord {
-            key_id: self.key_id,
+            key_id: Some(self.key_id),
             user_id: Some(self.user),
             team_id: Some(self.team),
             requested: "p/m".into(),
@@ -886,7 +886,7 @@ async fn a_restart_counts_only_the_current_period_and_the_right_scope() {
     let b = state
         .snapshot
         .load()
-        .budgets_of(w.key_id, Some(w.user), Some(w.team));
+        .budgets_of(Some(w.key_id), Some(w.user), Some(w.team));
     assert_eq!(b.len(), 1);
     assert_eq!(b[0].id, id);
     assert_eq!(state.budgets.spent(&b[0], now), 1_000);
@@ -916,7 +916,7 @@ async fn the_cached_usage_covers_logs_that_retention_deleted() {
     let b = state
         .snapshot
         .load()
-        .budgets_of(w.key_id, Some(w.user), Some(w.team));
+        .budgets_of(Some(w.key_id), Some(w.user), Some(w.team));
     assert_eq!(state.budgets.spent(&b[0], now), 4_000_000);
 }
 
@@ -974,7 +974,7 @@ async fn a_call_that_crosses_midnight_is_counted_in_the_period_it_started_in() {
         w.h.state
             .snapshot
             .load()
-            .budgets_of(w.key_id, Some(w.user), Some(w.team));
+            .budgets_of(Some(w.key_id), Some(w.user), Some(w.team));
     assert_eq!(b[0].id, id);
     assert_eq!(
         w.h.state
@@ -1010,7 +1010,7 @@ async fn a_spend_between_the_refresh_and_the_read_of_the_logs_is_merged() {
         w.h.state
             .snapshot
             .load()
-            .budgets_of(w.key_id, Some(w.user), Some(w.team));
+            .budgets_of(Some(w.key_id), Some(w.user), Some(w.team));
     assert_eq!(b[0].id, id);
     let now = OffsetDateTime::now_utc();
     budgets::seed_from_logs(&w.h.state, &b[0], now)

@@ -80,6 +80,9 @@ pub enum Action {
     ViewRoutingHealth,
     // settings: viewing and changing both
     ManageSettings,
+    // playground
+    /// Every signed-in user: what they may call is decided as for their keys.
+    UsePlayground,
     // rate limits
     /// Everyone may ask; what they get is cut by `limit_access`.
     ListLimits,
@@ -147,7 +150,8 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ListLogs
         | Action::ListLimits
         | Action::ListBudgets
-        | Action::ListUsage => Allow,
+        | Action::ListUsage
+        | Action::UsePlayground => Allow,
 
         Action::InviteUser { role: _ }
         | Action::CreateTeam
@@ -1145,6 +1149,14 @@ mod tests {
             ("list_usage: lead", lead, Action::ListUsage, Allow),
             ("list_usage: member", member, Action::ListUsage, Allow),
             ("list_usage: loner", loner, Action::ListUsage, Allow),
+            ("use_playground: lead", lead, Action::UsePlayground, Allow),
+            (
+                "use_playground: member",
+                member,
+                Action::UsePlayground,
+                Allow,
+            ),
+            ("use_playground: loner", loner, Action::UsePlayground, Allow),
             (
                 "view_log: lead, own row",
                 lead,

@@ -2023,6 +2023,130 @@
         ]
       }
     },
+    "/api/playground/chat": {
+      "post": {
+        "tags": [
+          "playground"
+        ],
+        "operationId": "playground_chat",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaygroundChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The answer, in the OpenAI shape; server-sent events when `stream` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundChatAnswer"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not a chat request. The body is in the OpenAI error shape, as on `/v1`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not call this model or route, or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such model or route, in the OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider failed; OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No provider could serve the call; OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/providers": {
       "get": {
         "tags": [
@@ -6137,6 +6261,132 @@
           }
         }
       },
+      "PlaygroundChatAnswer": {
+        "type": "object",
+        "description": "The answer of `/v1/chat/completions`, in the OpenAI shape.",
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "choices",
+          "usage"
+        ],
+        "properties": {
+          "choices": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "usage": {
+            "type": "object"
+          }
+        }
+      },
+      "PlaygroundChatRequest": {
+        "type": "object",
+        "description": "A chat request, as `/v1/chat/completions` takes it. The body is read by\nthe same parser as that call's, so any field it accepts is accepted here.",
+        "required": [
+          "model",
+          "messages"
+        ],
+        "properties": {
+          "max_tokens": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlaygroundMessage"
+            }
+          },
+          "model": {
+            "type": "string",
+            "description": "A model as `provider/name`, or a route name."
+          },
+          "stop": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "stream": {
+            "type": "boolean",
+            "description": "Answer as server-sent events."
+          },
+          "temperature": {
+            "type": "number",
+            "format": "double"
+          },
+          "top_p": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "PlaygroundErrorBody": {
+        "type": "object",
+        "description": "An error of this call: the CSRF and sign-in errors have the `/api` shape\n(`code`, `message`); the pipeline's own have the OpenAI shape (`message`,\n`type`, and sometimes `code`).",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/PlaygroundErrorDetail"
+          }
+        }
+      },
+      "PlaygroundErrorDetail": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "description": "Only in the OpenAI shape, such as `permission_error`."
+          }
+        }
+      },
+      "PlaygroundMessage": {
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "`system`, `user` or `assistant`."
+          }
+        }
+      },
       "PrimaryRequest": {
         "type": "object",
         "required": [
@@ -7188,6 +7438,10 @@
     {
       "name": "usage",
       "description": "Usage sums over the request logs."
+    },
+    {
+      "name": "playground",
+      "description": "Chat calls made from the console for the signed-in user."
     }
   ]
 }

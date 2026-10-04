@@ -371,7 +371,7 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         duration_ms: 0,
     };
     let mut record = RequestRecord {
-        key_id: 1,
+        key_id: Some(1),
         user_id: None,
         team_id: None,
         requested: "p/m".into(),
@@ -425,7 +425,7 @@ async fn a_failing_provider_counts_as_5xx() {
 #[test]
 fn a_call_the_caller_abandoned_counts_as_499_and_not_as_a_4xx() {
     let metrics = Arc::new(ultrafast_gateway::metrics::Metrics::new());
-    let mut scope = Scope::begin(Arc::new(NoopSink), 1, None, None, "messages");
+    let mut scope = Scope::begin(Arc::new(NoopSink), Some(1), None, None, "messages");
     scope.metered(metrics.clone());
     drop(scope);
     let text = metrics.render(&[]);
@@ -548,7 +548,7 @@ async fn a_budget_refusal_is_counted() {
         StatusCode::OK
     );
     let record = RequestRecord {
-        key_id: 1,
+        key_id: Some(1),
         user_id: None,
         team_id: None,
         requested: "p/m".into(),

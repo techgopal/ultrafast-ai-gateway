@@ -196,7 +196,7 @@ mod tests {
 
     fn record() -> RequestRecord {
         RequestRecord {
-            key_id: 1,
+            key_id: Some(1),
             user_id: None,
             team_id: None,
             requested: "r".into(),

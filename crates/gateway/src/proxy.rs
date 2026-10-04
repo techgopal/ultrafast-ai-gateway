@@ -2,6 +2,7 @@
 //! embeddings. They share authentication, body reading, resolution, the
 //! routing engine and recording; only the caller's format differs.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -35,7 +36,7 @@ use ultrafast_translate::types::{ChatRequest, ChatResponse, StreamEvent, Usage};
 use crate::access::{self, Denied, Resolved};
 use crate::app::AppState;
 use crate::auth::authenticate;
-use crate::cache::{Answer, CacheKey, Cached, KeyParts, ScopeId};
+use crate::cache::{Answer, CacheKey, CacheScope, Cached, KeyParts, ScopeId};
 use crate::errors::{caller_message, Shape};
 use crate::routing::{
     self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
@@ -97,6 +98,9 @@ enum Endpoint {
     Chat,
     Messages,
     Embeddings,
+    /// A chat call the console makes for a signed-in user: the answer of
+    /// `/v1/chat/completions`, recorded as its own endpoint.
+    Playground,
 }
 
 impl Endpoint {
@@ -106,19 +110,20 @@ impl Endpoint {
             Endpoint::Chat => "chat",
             Endpoint::Messages => "messages",
             Endpoint::Embeddings => "embeddings",
+            Endpoint::Playground => "playground",
         }
     }
 
     fn shape(self) -> Shape {
         match self {
             Endpoint::Messages => Shape::Anthropic,
-            Endpoint::Chat | Endpoint::Embeddings => Shape::OpenAi,
+            Endpoint::Chat | Endpoint::Embeddings | Endpoint::Playground => Shape::OpenAi,
         }
     }
 
     fn parse(self, body: &[u8]) -> Result<Call, TranslateError> {
         match self {
-            Endpoint::Chat => openai::parse_request(body).map(Call::Chat),
+            Endpoint::Chat | Endpoint::Playground => openai::parse_request(body).map(Call::Chat),
             Endpoint::Messages => anthropic::parse_request(body).map(Call::Chat),
             Endpoint::Embeddings => embeddings::parse_request(body).map(Call::Embed),
         }
@@ -189,6 +194,56 @@ pub async fn embeddings(state: State<Arc<AppState>>, request: Request) -> Respon
     handle(state.0, request, Endpoint::Embeddings).await
 }
 
+/// Who a call is made for: a virtual key, or a signed-in user who has none
+/// (the console playground). Everything that decides what the call may do
+/// (access, limits, budgets, cache, records) reads it from here.
+pub(crate) struct Actor<'a> {
+    /// The key as access sees it: the real key, or for a user without one
+    /// a stand-in owned by the user, with no team and no allowlist, so
+    /// the user's own grants and teams decide.
+    access: Cow<'a, SnapKey>,
+    /// The key the call is counted and recorded under; `None` for a user.
+    key_id: Option<i64>,
+}
+
+impl<'a> Actor<'a> {
+    fn of_key(key: &'a SnapKey) -> Self {
+        Self {
+            access: Cow::Borrowed(key),
+            key_id: Some(key.id),
+        }
+    }
+
+    /// A signed-in user, as a key they own with no team and no allowlist.
+    pub(crate) fn of_user(user_id: i64) -> Self {
+        Self {
+            access: Cow::Owned(SnapKey {
+                id: 0,
+                name: "playground".to_string(),
+                user_id: Some(user_id),
+                team_id: None,
+                expires_at: None,
+                allowed: None,
+            }),
+            key_id: None,
+        }
+    }
+}
+
+/// A chat call of the console playground for a signed-in user: the same
+/// pipeline as `/v1/chat/completions`, recorded without a key.
+pub(crate) async fn playground(state: Arc<AppState>, user_id: i64, body: Body) -> Response {
+    let snapshot = state.snapshot.load_full();
+    run(
+        &state,
+        &snapshot,
+        &Actor::of_user(user_id),
+        body,
+        Endpoint::Playground,
+    )
+    .await
+}
+
 async fn handle(state: Arc<AppState>, request: Request, endpoint: Endpoint) -> Response {
     // 1. Authenticate on the headers alone. The body has not been read yet.
     let (parts, body) = request.into_parts();
@@ -198,18 +253,28 @@ async fn handle(state: Arc<AppState>, request: Request, endpoint: Endpoint) -> R
         Ok(key) => key,
         Err(resp) => return resp,
     };
+    run(&state, &snapshot, &Actor::of_key(&key), body, endpoint).await
+}
+
+async fn run(
+    state: &AppState,
+    snapshot: &Snapshot,
+    actor: &Actor<'_>,
+    body: Body,
+    endpoint: Endpoint,
+) -> Response {
     // From here on the call is recorded, once: when it is answered, when the
     // stream ends, or when the caller goes away (the scope is dropped).
     let mut begun = Scope::begin(
         state.sink.clone(),
-        key.id,
-        key.user_id,
-        key.team_id,
+        actor.key_id,
+        actor.access.user_id,
+        actor.access.team_id,
         endpoint.name(),
     );
     begun.metered(state.metrics.clone());
     let mut scope = Some(begun);
-    let response = dispatch(&state, &snapshot, &key, body, endpoint, &mut scope).await;
+    let response = dispatch(state, snapshot, actor, body, endpoint, &mut scope).await;
     // A stream took the scope with it and records itself.
     if let Some(scope) = scope {
         scope.finish(response.status().as_u16());
@@ -275,11 +340,12 @@ struct CachePlan {
 /// given to a key that may not call that target.
 fn cache_plan(
     snapshot: &Snapshot,
-    key: &SnapKey,
+    actor: &Actor<'_>,
     call: &Call,
     resolved: &Resolved<'_>,
     candidates: &[Candidate],
 ) -> Option<CachePlan> {
+    let key: &SnapKey = &actor.access;
     let Resolved::Route(route) = resolved else {
         return None;
     };
@@ -308,10 +374,16 @@ fn cache_plan(
     if targets.is_empty() {
         return None;
     }
+    // A caller with no key is never cached "per key": every such caller
+    // would share the same one. Its user is the nearest scope.
+    let cache_scope = match (route.cache.scope, actor.key_id) {
+        (CacheScope::Key, None) => CacheScope::User,
+        (scope, _) => scope,
+    };
     let parts = KeyParts {
         route: &route.name,
         targets: &targets,
-        scope: ScopeId::of(route.cache.scope, key.team_id, key.user_id, key.id),
+        scope: ScopeId::of(cache_scope, key.team_id, key.user_id, key.id),
         config: snapshot.cache_fingerprint(),
     };
     let cache_key = match call {
@@ -332,7 +404,7 @@ fn render_cached(endpoint: Endpoint, cached: &Cached) -> Option<Response> {
         (Answer::Chat(r), Endpoint::Messages) => {
             Some(Json(anthropic::render_response(r)).into_response())
         }
-        (Answer::Chat(r), Endpoint::Chat) => {
+        (Answer::Chat(r), Endpoint::Chat | Endpoint::Playground) => {
             Some(Json(openai::render_response(r, now_secs())).into_response())
         }
         (Answer::Embeddings(r), Endpoint::Embeddings) => {
@@ -360,11 +432,12 @@ fn wrong_kind(snapshot: &Snapshot, key: &SnapKey, call: &Call, candidates: &[Can
 async fn dispatch(
     state: &AppState,
     snapshot: &Snapshot,
-    key: &SnapKey,
+    actor: &Actor<'_>,
     body: Body,
     endpoint: Endpoint,
     scope: &mut Option<Scope>,
 ) -> Response {
+    let key: &SnapKey = &actor.access;
     let shape = endpoint.shape();
     let record = scope.as_mut().expect("the scope is taken only by a stream");
 
@@ -405,7 +478,7 @@ async fn dispatch(
     // call that a limit refuses counts nowhere; one that is refused after
     // this (a spent budget, no usable model) gives back its request and its
     // token estimate at every scope.
-    let subjects = snapshot.subjects(key);
+    let subjects = snapshot.subjects_of(actor.key_id, key.user_id, key.team_id);
     match state
         .rate
         .acquire(&subjects, call.estimated_tokens(), Instant::now())
@@ -419,7 +492,7 @@ async fn dispatch(
     // 3c. The budgets of the same subjects: a spent `block` budget refuses
     // the call. Spend is counted when the log writer prices a call, so what
     // was already running is not stopped.
-    let budgets = snapshot.budgets_of(key.id, key.user_id, key.team_id);
+    let budgets = snapshot.budgets_of(actor.key_id, key.user_id, key.team_id);
     if !budgets.is_empty() {
         if let Err(refusal) = state.budgets.check(&budgets, OffsetDateTime::now_utc()) {
             state.metrics.budget_blocked();
@@ -445,7 +518,7 @@ async fn dispatch(
 
     // 3d. The response cache of the route: after access, limits and budgets,
     // so a hit is refused as a call would be. A hit calls no provider.
-    let cache = cache_plan(snapshot, key, &call, &resolved, &candidates);
+    let cache = cache_plan(snapshot, actor, &call, &resolved, &candidates);
     if let Some(plan) = &cache {
         let now = tokio::time::Instant::now().into_std();
         if let Some(hit) = state.cache.get(&plan.key, now) {

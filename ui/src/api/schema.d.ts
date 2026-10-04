@@ -323,6 +323,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/playground/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["playground_chat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers": {
         parameters: {
             query?: never;
@@ -1041,6 +1057,53 @@ export interface components {
             /** Format: int64 */
             provider_id: number;
             provider_name: string;
+        };
+        /** @description The answer of `/v1/chat/completions`, in the OpenAI shape. */
+        PlaygroundChatAnswer: {
+            choices: Record<string, never>[];
+            /** Format: int64 */
+            created: number;
+            id: string;
+            model: string;
+            object: string;
+            usage: Record<string, never>;
+        };
+        /**
+         * @description A chat request, as `/v1/chat/completions` takes it. The body is read by
+         *     the same parser as that call's, so any field it accepts is accepted here.
+         */
+        PlaygroundChatRequest: {
+            /** Format: int32 */
+            max_tokens?: number;
+            messages: components["schemas"]["PlaygroundMessage"][];
+            /** @description A model as `provider/name`, or a route name. */
+            model: string;
+            stop?: string[];
+            /** @description Answer as server-sent events. */
+            stream?: boolean;
+            /** Format: double */
+            temperature?: number;
+            /** Format: double */
+            top_p?: number;
+        };
+        /**
+         * @description An error of this call: the CSRF and sign-in errors have the `/api` shape
+         *     (`code`, `message`); the pipeline's own have the OpenAI shape (`message`,
+         *     `type`, and sometimes `code`).
+         */
+        PlaygroundErrorBody: {
+            error: components["schemas"]["PlaygroundErrorDetail"];
+        };
+        PlaygroundErrorDetail: {
+            code?: string;
+            message: string;
+            /** @description Only in the OpenAI shape, such as `permission_error`. */
+            type?: string;
+        };
+        PlaygroundMessage: {
+            content: string;
+            /** @description `system`, `user` or `assistant`. */
+            role: string;
         };
         PrimaryRequest: {
             /** Format: int64 */
@@ -2945,6 +3008,97 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    playground_chat: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaygroundChatRequest"];
+            };
+        };
+        responses: {
+            /** @description The answer, in the OpenAI shape; server-sent events when `stream` is true. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundChatAnswer"];
+                    "text/event-stream": string;
+                };
+            };
+            /** @description The request is not a chat request. The body is in the OpenAI error shape, as on `/v1`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The user may not call this model or route, or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No such model or route, in the OpenAI error shape. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The provider failed; OpenAI error shape. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No provider could serve the call; OpenAI error shape. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
                 };
             };
         };

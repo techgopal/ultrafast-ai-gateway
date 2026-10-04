@@ -237,7 +237,7 @@ async fn spent_is_shown_only_where_the_caller_may_see_it() {
     }
     // Everything lena's key spent is counted by every budget.
     let record = ultrafast_gateway::telemetry::RequestRecord {
-        key_id: w.lena_key,
+        key_id: Some(w.lena_key),
         user_id: Some(w.org.lena),
         team_id: Some(w.org.platform),
         requested: "p/m".into(),
@@ -469,7 +469,7 @@ async fn writes_refresh_the_snapshot() {
         state
             .snapshot
             .load()
-            .budgets_of(w.lena_key, Some(w.org.lena), Some(w.org.platform))
+            .budgets_of(Some(w.lena_key), Some(w.org.lena), Some(w.org.platform))
     };
     assert!(budgets().is_empty());
     let before = state.refresh_count();

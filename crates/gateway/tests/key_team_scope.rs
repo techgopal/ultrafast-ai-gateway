@@ -93,13 +93,13 @@ async fn a_team_key_counts_for_its_team_only() {
     let k = keys().await;
     let key = snap_key(&k, k.platform_key, Some(k.org.platform));
     assert_eq!(team_ids_of_limits(&k, &key), vec![k.org.platform]);
-    let budgets = k
-        .org
-        .api
-        .state
-        .snapshot
-        .load()
-        .budgets_of(key.id, key.user_id, key.team_id);
+    let budgets =
+        k.org
+            .api
+            .state
+            .snapshot
+            .load()
+            .budgets_of(Some(key.id), key.user_id, key.team_id);
     assert_eq!(budgets.len(), 1);
     assert_eq!(budgets[0].scope_id, k.org.platform);
 }
@@ -111,13 +111,13 @@ async fn a_key_without_a_team_counts_for_all_of_its_owners_teams() {
     let mut both = vec![k.org.platform, k.org.research];
     both.sort();
     assert_eq!(team_ids_of_limits(&k, &key), both);
-    let budgets = k
-        .org
-        .api
-        .state
-        .snapshot
-        .load()
-        .budgets_of(key.id, key.user_id, key.team_id);
+    let budgets =
+        k.org
+            .api
+            .state
+            .snapshot
+            .load()
+            .budgets_of(Some(key.id), key.user_id, key.team_id);
     let mut ids: Vec<i64> = budgets.iter().map(|b| b.scope_id).collect();
     ids.sort();
     assert_eq!(ids, both);

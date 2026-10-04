@@ -43,13 +43,14 @@ pub struct Attempt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RequestRecord {
-    pub key_id: i64,
+    /// `None` for a call made without a key (the console playground).
+    pub key_id: Option<i64>,
     pub user_id: Option<i64>,
     pub team_id: Option<i64>,
     /// The model or route name the caller asked for; empty when the body
     /// could not be read far enough to tell.
     pub requested: String,
-    /// `"chat"`, `"messages"` or `"embeddings"`.
+    /// `"chat"`, `"messages"`, `"embeddings"` or `"playground"`.
     pub endpoint: &'static str,
     pub stream: bool,
     /// What the caller was answered. A caller that went away before the
@@ -107,7 +108,7 @@ pub struct Scope {
 impl Scope {
     pub fn begin(
         sink: Arc<dyn RequestSink>,
-        key_id: i64,
+        key_id: Option<i64>,
         user_id: Option<i64>,
         team_id: Option<i64>,
         endpoint: &'static str,
@@ -367,7 +368,7 @@ mod tests {
     }
 
     fn scope(sink: &Arc<Mem>) -> Scope {
-        Scope::begin(sink.clone(), 7, Some(1), None, "chat")
+        Scope::begin(sink.clone(), Some(7), Some(1), None, "chat")
     }
 
     #[test]
@@ -379,7 +380,7 @@ mod tests {
         let records = sink.0.lock().unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].status, 200);
-        assert_eq!(records[0].key_id, 7);
+        assert_eq!(records[0].key_id, Some(7));
         assert_eq!(records[0].requested, "p/m");
         assert!(records[0].stream);
     }
@@ -449,6 +450,12 @@ mod tests {
 
     #[test]
     fn the_noop_sink_accepts_records() {
-        drop(Scope::begin(Arc::new(NoopSink), 1, None, None, "chat"));
+        drop(Scope::begin(
+            Arc::new(NoopSink),
+            Some(1),
+            None,
+            None,
+            "chat",
+        ));
     }
 }

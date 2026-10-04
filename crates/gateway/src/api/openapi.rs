@@ -175,6 +175,7 @@ pub struct RoutingHealth {
         (name = "budgets", description = "Spending budgets of /v1."),
         (name = "logs", description = "Request logs."),
         (name = "usage", description = "Usage sums over the request logs."),
+        (name = "playground", description = "Chat calls made from the console for the signed-in user."),
     )
 )]
 struct AdminApi;
@@ -254,9 +255,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 56. Its fallbacks are not
+    /// Every route of `api::router`, which has 57. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 56] = [
+    const ROUTES: [(&str, &str); 57] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -313,6 +314,7 @@ mod tests {
         ("GET", "/api/logs"),
         ("GET", "/api/logs/{id}"),
         ("GET", "/api/usage"),
+        ("POST", "/api/playground/chat"),
     ];
 
     const SECRET_REQUEST_FIELDS: [&str; 5] = [
@@ -404,7 +406,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 56);
+        assert_eq!(routes.len(), 57);
         assert_eq!(documented, routes);
     }
 
@@ -426,7 +428,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 56);
+        assert_eq!(ids.len(), 57);
     }
 
     #[test]
@@ -496,10 +498,13 @@ mod tests {
                     continue;
                 }
                 let schema = &response["content"]["application/json"]["schema"];
-                assert_eq!(
-                    schema["$ref"], "#/components/schemas/ApiErrorBody",
-                    "{status} of {method} {path}"
-                );
+                // The playground's errors are of two shapes, in one schema.
+                let shared = if path == "/api/playground/chat" {
+                    "#/components/schemas/PlaygroundErrorBody"
+                } else {
+                    "#/components/schemas/ApiErrorBody"
+                };
+                assert_eq!(schema["$ref"], shared, "{status} of {method} {path}");
             }
         }
     }

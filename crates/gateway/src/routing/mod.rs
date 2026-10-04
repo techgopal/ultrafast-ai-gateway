@@ -392,7 +392,7 @@ mod tests {
         script: &Arc<Script>,
     ) -> Ran {
         let sink = Arc::new(Mem::default());
-        let mut scope = Scope::begin(sink.clone(), 1, None, None, "chat");
+        let mut scope = Scope::begin(sink.clone(), Some(1), None, None, "chat");
         scope.targets(
             plan.iter()
                 .map(|c| (c.target.provider.clone(), c.target.model.clone()))
@@ -728,7 +728,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_limits_given_to_a_try_are_the_settings() {
         let sink = Arc::new(Mem::default());
-        let mut scope = Scope::begin(sink, 1, None, None, "chat");
+        let mut scope = Scope::begin(sink, Some(1), None, None, "chat");
         let health = InMemoryHealth::new();
         let settings = Settings {
             first_token_timeout: Duration::from_secs(7),
@@ -765,7 +765,7 @@ mod tests {
         let script = Script::new(&[("a", &[Step::Hang]), ("b", &[Step::Ok])]);
         let plan = plan_of(&["a", "b"]);
         {
-            let mut scope = Scope::begin(sink.clone(), 1, None, None, "chat");
+            let mut scope = Scope::begin(sink.clone(), Some(1), None, None, "chat");
             scope.targets(vec![("p".into(), "a".into()), ("p".into(), "b".into())]);
             let health = InMemoryHealth::new();
             let mut rng = StdRng::seed_from_u64(1);
