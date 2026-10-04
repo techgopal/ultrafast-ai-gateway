@@ -465,24 +465,34 @@ fn update_summary(email: &str, changes: &[(&str, &str, &str)]) -> String {
 enum KeysOnDelete {
     /// The user was not active: their unrevoked keys were revoked.
     Revoked(u64),
-    /// The user was active: their working keys go on working, ownerless.
-    LeftWorking(i64),
+    /// The user was active: their team keys were revoked (the first), the
+    /// others go on working, ownerless (the second).
+    LeftWorking(u64, i64),
 }
 
 fn delete_summary(email: &str, keys: KeysOnDelete) -> String {
+    let count = |n: u64, one: &str, many: &str| match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {many}"),
+    };
+    let mut parts = vec![format!("Deleted user {email}")];
     match keys {
-        KeysOnDelete::Revoked(0) | KeysOnDelete::LeftWorking(0) => {
-            format!("Deleted user {email}")
-        }
-        KeysOnDelete::Revoked(1) => format!("Deleted user {email}, revoked 1 key"),
-        KeysOnDelete::Revoked(n) => format!("Deleted user {email}, revoked {n} keys"),
-        KeysOnDelete::LeftWorking(1) => {
-            format!("Deleted user {email}, left 1 key working without an owner")
-        }
-        KeysOnDelete::LeftWorking(n) => {
-            format!("Deleted user {email}, left {n} keys working without an owner")
+        KeysOnDelete::Revoked(0) => {}
+        KeysOnDelete::Revoked(n) => parts.push(format!("revoked {}", count(n, "key", "keys"))),
+        KeysOnDelete::LeftWorking(team, left) => {
+            if team > 0 {
+                parts.push(format!("revoked {}", count(team, "team key", "team keys")));
+            }
+            let left = u64::try_from(left).unwrap_or(0);
+            if left > 0 {
+                parts.push(format!(
+                    "left {} working without an owner",
+                    count(left, "key", "keys")
+                ));
+            }
         }
     }
+    parts.join(", ")
 }
 
 #[utoipa::path(
@@ -528,9 +538,11 @@ pub async fn delete(
     tx.revoke_tokens_of(was.id).await?;
     // Deleting the user makes their keys ownerless. The keys of a user who
     // is not active do not work, and must not start to work that way. The
-    // keys of an active user go on working, which the audit entry states.
+    // keys of an active user go on working, which the audit entry states,
+    // but for their team keys: such a key needs its owner in its team.
     let keys = if was.status == UserStatus::Active {
-        KeysOnDelete::LeftWorking(tx.count_live_keys_of(was.id).await?)
+        let team = tx.revoke_team_keys_of(was.id).await?;
+        KeysOnDelete::LeftWorking(team, tx.count_live_keys_of(was.id).await?)
     } else {
         KeysOnDelete::Revoked(tx.revoke_keys_of(was.id).await?)
     };
@@ -585,16 +597,24 @@ mod tests {
                 "Deleted user lena@example.com, revoked 2 keys",
             ),
             (
-                KeysOnDelete::LeftWorking(0),
+                KeysOnDelete::LeftWorking(0, 0),
                 "Deleted user lena@example.com",
             ),
             (
-                KeysOnDelete::LeftWorking(1),
+                KeysOnDelete::LeftWorking(0, 1),
                 "Deleted user lena@example.com, left 1 key working without an owner",
             ),
             (
-                KeysOnDelete::LeftWorking(2),
+                KeysOnDelete::LeftWorking(0, 2),
                 "Deleted user lena@example.com, left 2 keys working without an owner",
+            ),
+            (
+                KeysOnDelete::LeftWorking(1, 0),
+                "Deleted user lena@example.com, revoked 1 team key",
+            ),
+            (
+                KeysOnDelete::LeftWorking(2, 1),
+                "Deleted user lena@example.com, revoked 2 team keys, left 1 key working without an owner",
             ),
         ];
         for (keys, expected) in cases {

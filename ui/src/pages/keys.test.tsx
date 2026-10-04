@@ -229,6 +229,26 @@ describe("the list of keys", () => {
     expectOneH1();
   });
 
+  test("a team key says so, with what it may call", async () => {
+    const teamKey: fixtures.Key = {
+      ...fixtures.keys.revoked,
+      id: 9,
+      name: "lena-team",
+      status: "active",
+      revoked_at: null,
+      team_only: true,
+    };
+    keysAre([...fixtures.keyList, teamKey]);
+    await page();
+    await table();
+    const row = rowOf(teamKey.name);
+    expect(within(row).getByText("Team key")).toBeInTheDocument();
+    expect(
+      within(row).getByText("Calls only what everyone or the team may use."),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Team key")).toHaveLength(1);
+  });
+
   test("the Models column says All for a key without a limit, and how many for one with a limit", async () => {
     keysAre([
       active,

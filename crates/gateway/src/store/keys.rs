@@ -29,6 +29,8 @@ pub struct KeyRow {
     pub allowed: Option<Vec<String>>,
     /// The tags every call of the key is recorded with.
     pub tags: Tags,
+    /// A non-admin made it for another user: it acts for its team only.
+    pub team_only: bool,
 }
 
 /// Reads the stored allowlist. A value that cannot be read is an empty
@@ -39,7 +41,7 @@ pub fn parse_allowed(raw: Option<&str>) -> Option<Vec<String>> {
 
 /// Every key query reads through this, so the hash is never selected.
 const KEY_SELECT: &str = "SELECT k.id, k.name, k.display, k.user_id, k.team_id,
-            k.expires_at, k.revoked_at, k.created_at, k.allowed, k.tags,
+            k.expires_at, k.revoked_at, k.created_at, k.allowed, k.tags, k.team_only,
             u.email AS owner_email, t.name AS team_name,
             (u.id IS NOT NULL AND u.status <> 'active') AS owner_inactive
      FROM virtual_keys k
@@ -63,6 +65,7 @@ fn key_from(r: &SqliteRow) -> KeyRow {
         owner_inactive: r.get("owner_inactive"),
         allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
         tags: tags::parse_stored(r.get::<Option<String>, _>("tags").as_deref()),
+        team_only: r.get("team_only"),
     }
 }
 
@@ -76,10 +79,8 @@ pub struct LiveKey {
     pub expires_at: Option<String>,
     pub allowed: Option<Vec<String>>,
     pub tags: Tags,
-    /// Who made the key; `None` for the CLI and for keys made before this
-    /// was kept.
-    pub created_by: Option<i64>,
-    pub created_at: String,
+    /// It acts for its team only (see `access`).
+    pub team_only: bool,
 }
 
 impl Store {
@@ -205,14 +206,17 @@ impl Tx<'_> {
         Ok(r.last_insert_rowid())
     }
 
-    /// Records who made the key.
-    pub async fn set_key_creator(&mut self, id: i64, user_id: i64) -> Result<()> {
-        sqlx::query("UPDATE virtual_keys SET created_by = ? WHERE id = ? AND org_id = ?")
-            .bind(user_id)
-            .bind(id)
-            .bind(DEFAULT_ORG)
-            .execute(self.conn())
-            .await?;
+    /// Records who made the key, and whether it acts for its team only.
+    pub async fn set_key_origin(&mut self, id: i64, user_id: i64, team_only: bool) -> Result<()> {
+        sqlx::query(
+            "UPDATE virtual_keys SET created_by = ?, team_only = ? WHERE id = ? AND org_id = ?",
+        )
+        .bind(user_id)
+        .bind(team_only)
+        .bind(id)
+        .bind(DEFAULT_ORG)
+        .execute(self.conn())
+        .await?;
         Ok(())
     }
 
@@ -252,6 +256,19 @@ impl Tx<'_> {
         Ok(r.rows_affected())
     }
 
+    /// Revokes the team keys the user owns: such a key needs its owner.
+    pub async fn revoke_team_keys_of(&mut self, user_id: i64) -> Result<u64> {
+        let r = sqlx::query(
+            "UPDATE virtual_keys SET revoked_at = datetime('now')
+             WHERE user_id = ? AND org_id = ? AND team_only = 1 AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(DEFAULT_ORG)
+        .execute(self.conn())
+        .await?;
+        Ok(r.rows_affected())
+    }
+
     /// How many keys of the user work: not revoked and not expired.
     pub async fn count_live_keys_of(&mut self, user_id: i64) -> Result<i64> {
         let count = sqlx::query_scalar(
@@ -283,7 +300,7 @@ impl Tx<'_> {
 pub(crate) async fn live_keys_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<LiveKey>> {
     let rows = sqlx::query(
         "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at, k.allowed,
-                k.tags, k.created_by, k.created_at
+                k.tags, k.team_only
          FROM virtual_keys k
          LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
          WHERE k.org_id = ?
@@ -304,8 +321,7 @@ pub(crate) async fn live_keys_in(conn: &mut sqlx::SqliteConnection) -> Result<Ve
             expires_at: r.get("expires_at"),
             allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
             tags: tags::parse_stored(r.get::<Option<String>, _>("tags").as_deref()),
-            created_by: r.get("created_by"),
-            created_at: r.get("created_at"),
+            team_only: r.get("team_only"),
         })
         .collect())
 }

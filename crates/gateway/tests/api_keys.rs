@@ -154,9 +154,11 @@ async fn admin_lists_all_keys() {
             "status",
             "tags",
             "team_id",
-            "team_name"
+            "team_name",
+            "team_only"
         ]
     );
+    assert_eq!(lena["team_only"], false);
 }
 
 #[tokio::test]

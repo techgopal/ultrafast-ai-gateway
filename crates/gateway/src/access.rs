@@ -107,7 +107,7 @@ pub fn route_usable(viewer: Viewer<'_>, route: &RouteFacts<'_>) -> bool {
 }
 
 fn viewer<'a>(snapshot: &'a Snapshot, key: &SnapKey) -> Viewer<'a> {
-    if key.delegated {
+    if key.team_only {
         // Its owner must still be in its team; otherwise it acts for no one.
         let owner = key.user_id.and_then(|id| snapshot.user(id));
         return match (owner, key.team_id) {

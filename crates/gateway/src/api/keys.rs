@@ -172,6 +172,9 @@ pub struct KeyView {
     /// for the same name. Empty when none.
     #[schema(value_type = std::collections::BTreeMap<String, String>)]
     pub tags: Tags,
+    /// A non-admin made it for another user: it calls only what everyone
+    /// or its team may use, and is revoked when its owner is deleted.
+    pub team_only: bool,
     /// `revoked`, `expired`, `suspended` or `active`, the first that
     /// applies. `suspended`: the owner of the key is not active, so the key
     /// does not work until they are. Only an `active` key works.
@@ -201,6 +204,7 @@ impl KeyView {
             created_at: k.created_at,
             allowed: k.allowed,
             tags: k.tags,
+            team_only: k.team_only,
             status,
         }
     }
@@ -364,7 +368,8 @@ pub async fn create(
             team.as_ref().map(|t| t.id),
         )
         .await?;
-    tx.set_key_creator(id, me.user_id).await?;
+    tx.set_key_origin(id, me.user_id, team_key.is_some())
+        .await?;
     if let Some(names) = &allowed {
         tx.set_key_allowed(id, Some(names)).await?;
     }

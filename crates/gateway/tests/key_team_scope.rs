@@ -70,7 +70,7 @@ fn snap_key(k: &Keys, id: i64, team: Option<i64>) -> SnapKey {
         expires_at: None,
         allowed: None,
         tags: Default::default(),
-        delegated: false,
+        team_only: false,
     }
 }
 

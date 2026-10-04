@@ -470,3 +470,124 @@ async fn a_team_key_stays_one_when_its_maker_is_gone() {
     org.api.state.refresh().await.unwrap();
     assert_eq!(w.callable(&key, &ALL).await, team_only);
 }
+
+/// Whether a key acts for its team is fixed when it is made: promoting or
+/// demoting its maker later changes nothing of what it may call.
+#[tokio::test]
+async fn what_a_key_may_call_does_not_follow_its_makers_role() {
+    let w = world().await;
+    w.catalog().await;
+    let org = &w.org;
+    let arjun = org.sign_in("arjun").await;
+    let (status, body) = w
+        .create_key(
+            &arjun,
+            json!({ "name": "k", "owner_id": org.lena, "team_id": org.platform }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["key"]["team_only"], true);
+    let team_key = body["secret"].as_str().unwrap().to_string();
+    let maya = org.sign_in("maya").await;
+    let (status, body) = w
+        .create_key(
+            &maya,
+            json!({ "name": "by-admin", "owner_id": org.lena, "team_id": org.platform }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["key"]["team_only"], false);
+    let full_key = body["secret"].as_str().unwrap().to_string();
+    let team_only = ["p/open", "p/platform", "open-route", "platform-route"];
+    let full = w.callable(&full_key, &ALL).await;
+    assert_eq!(w.callable(&team_key, &ALL).await, team_only);
+
+    // The lead is made an admin, and the admin a member (another admin stays).
+    let (status, body) = org
+        .call(
+            Some(&maya),
+            "PATCH",
+            &format!("/api/users/{}", org.arjun),
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    let arjun_admin = org.sign_in("arjun").await;
+    let (status, body) = org
+        .call(
+            Some(&arjun_admin),
+            "PATCH",
+            &format!("/api/users/{}", org.maya),
+            Some(json!({ "role": "member" })),
+        )
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(w.callable(&team_key, &ALL).await, team_only);
+    assert_eq!(w.callable(&full_key, &ALL).await, full);
+    // The key list says which is which.
+    let (_, body) = org.call(Some(&arjun_admin), "GET", "/api/keys", None).await;
+    let flags: Vec<(String, bool)> = body["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| {
+            (
+                k["name"].as_str().unwrap().to_string(),
+                k["team_only"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert!(flags.contains(&("k".into(), true)), "{flags:?}");
+    assert!(flags.contains(&("by-admin".into(), false)), "{flags:?}");
+}
+
+/// A team key needs its owner: when the owner is deleted it is revoked,
+/// not left working without one. Their own keys go on as before.
+#[tokio::test]
+async fn deleting_the_owner_revokes_their_team_keys() {
+    let w = world().await;
+    w.catalog().await;
+    let org = &w.org;
+    let arjun = org.sign_in("arjun").await;
+    let (_, body) = w
+        .create_key(
+            &arjun,
+            json!({ "name": "team", "owner_id": org.lena, "team_id": org.platform }),
+        )
+        .await;
+    let team_key = body["secret"].as_str().unwrap().to_string();
+    let team_id = body["key"]["id"].as_i64().unwrap();
+    let lena = org.sign_in("lena").await;
+    let (_, body) = w.create_key(&lena, json!({ "name": "own" })).await;
+    let own_key = body["secret"].as_str().unwrap().to_string();
+    let own_id = body["key"]["id"].as_i64().unwrap();
+
+    let maya = org.sign_in("maya").await;
+    let (status, body) = org
+        .call(
+            Some(&maya),
+            "DELETE",
+            &format!("/api/users/{}", org.lena),
+            None,
+        )
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(
+        w.status(&team_key, "p/open").await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(w.status(&own_key, "p/open").await, StatusCode::OK);
+    let (_, body) = org
+        .call(Some(&maya), "GET", &format!("/api/keys/{team_id}"), None)
+        .await;
+    assert_eq!(body["status"], "revoked");
+    let (_, body) = org
+        .call(Some(&maya), "GET", &format!("/api/keys/{own_id}"), None)
+        .await;
+    assert_eq!(body["status"], "active");
+    let summary = org.last_summary("user.delete").await;
+    assert!(
+        summary.contains("revoked 1 team key") && summary.contains("left 1 key working"),
+        "{summary}"
+    );
+}

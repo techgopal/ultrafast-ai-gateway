@@ -12,6 +12,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
 import { SecretDialog, useSecretOnce } from "@/components/SecretDialog";
 import { StatusBadge } from "@/components/StatusBadge";
+import { Badge } from "@/components/ui/badge";
 import { TagChips } from "@/components/TagChips";
 import { Timestamp } from "@/components/Timestamp";
 import { useToast } from "@/components/toast";
@@ -35,6 +36,9 @@ type Key = components["schemas"]["KeyView"];
 export const NEW_KEY_TITLE = "Your new key";
 export const NEW_KEY_DESCRIPTION = "Copy this key now. It is not shown again.";
 export const SUSPENDED_HINT = "The owner is not active";
+export const TEAM_KEY = "Team key";
+/** A key a lead made for another member: what it may call. */
+export const TEAM_KEY_HINT = "Calls only what everyone or the team may use.";
 export const REVOKE_CONSEQUENCE = "Apps using this key stop working at once. This cannot be undone.";
 export const KEY_REVOKED = "Key revoked.";
 export const TAGS_SAVED = "Tags saved.";
@@ -90,12 +94,21 @@ const columns: Column<Key>[] = [
   {
     id: "team",
     header: "Team",
-    cell: (key) =>
-      key.team_name === null ? (
-        <span className="text-muted-foreground">{NO_TEAM}</span>
-      ) : (
-        <span className={`${longText} break-words md:max-w-64`}>{key.team_name}</span>
-      ),
+    cell: (key) => (
+      <span className="inline-flex flex-col items-start gap-1">
+        {key.team_name === null ? (
+          <span className="text-muted-foreground">{NO_TEAM}</span>
+        ) : (
+          <span className={`${longText} break-words md:max-w-64`}>{key.team_name}</span>
+        )}
+        {key.team_only ? (
+          <>
+            <Badge variant="outline">{TEAM_KEY}</Badge>
+            <span className="text-xs text-muted-foreground">{TEAM_KEY_HINT}</span>
+          </>
+        ) : null}
+      </span>
+    ),
     sortValue: (key) => key.team_name,
   },
   {

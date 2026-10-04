@@ -990,6 +990,11 @@ export interface components {
             /** Format: int64 */
             team_id: number | null;
             team_name: string | null;
+            /**
+             * @description A non-admin made it for another user: it calls only what everyone
+             *     or its team may use, and is revoked when its owner is deleted.
+             */
+            team_only: boolean;
         };
         LimitEntry: {
             /** Format: int64 */

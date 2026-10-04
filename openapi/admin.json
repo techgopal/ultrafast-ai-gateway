@@ -6308,6 +6308,7 @@
           "created_at",
           "allowed",
           "tags",
+          "team_only",
           "status"
         ],
         "properties": {
@@ -6385,6 +6386,10 @@
               "string",
               "null"
             ]
+          },
+          "team_only": {
+            "type": "boolean",
+            "description": "A non-admin made it for another user: it calls only what everyone\nor its team may use, and is revoked when its owner is deleted."
           }
         }
       },
