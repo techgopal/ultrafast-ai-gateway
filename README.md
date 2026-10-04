@@ -85,13 +85,13 @@ runtime.
 
 What is in it: setting up the first admin, signing in, accepting an invite;
 an overview with a getting-started guide and the last 30 days of requests,
-errors, tokens and spend; request logs (a list with filters and a detail of
+errors, tokens and spend; request logs (a list with filters, tags included, and a detail of
 each call, with the targets tried; no prompt or answer is stored); providers
 (OpenAI-compatible, Anthropic, Gemini and Azure OpenAI: add, edit, sync
 models, delete); a playground; models (enable, who may call each, add by name, set prices);
 routing (routes with fallbacks, a response cache, who may use each, and the
 health of their targets); virtual keys (create, shown once, limit to chosen
-models and routes, revoke, filter); users (invite, role, status, teams, new
+models and routes, tags, revoke, filter); users (invite, role, status, teams, new
 invite link, delete); teams (create, rename, delete, members added by email,
 and leads); budgets and limits (admins set them; everyone sees what applies
 to them); your account (name, password, access tokens); the audit log, for
@@ -121,6 +121,36 @@ like any call, to you, with no key and the endpoint `playground`. Nothing of
 the conversation is saved: it is in the memory of the page. The API is
 `POST /api/playground/chat` (a signed-in user; it answers as
 `/v1/chat/completions` does).
+
+#### Tags on keys and calls
+
+Tags are names and values that tell calls apart in the logs and the usage
+reports: a team, a job, an environment.
+
+- **On a call.** Send `x-uf-tags` on a `/v1` call (chat, messages or
+  embeddings): a compact JSON object of strings, for example
+  `x-uf-tags: {"job":"nightly","env":"dev"}`. The gateway-owned clients send
+  it for you (`tags` option). The header is never forwarded to a provider.
+- **On a key.** Set `tags` when creating a key (`POST /api/keys`), or replace
+  them with `PATCH /api/keys/{id}` and `{"tags": {...}}` (`{}` removes them);
+  whoever may revoke the key may change its tags. The console has a Tags
+  editor on Create key and an Edit tags action on each key.
+- **Precedence.** A call is recorded with its own tags overlaid by its key's,
+  and the key wins on the same name: a caller cannot relabel what an admin
+  fixed. A change to a key's tags applies to calls made after it.
+- **Limits.** At most 20 tags; a name of `A-Z a-z 0-9 _ . : -`; names and
+  values of 1 to 64 characters; the header at most 1 KiB (1024 bytes). A
+  header that breaks a rule is refused with 400 `invalid_request_error`, "The
+  x-uf-tags header is not valid: ...", in the shape of the endpoint, and the
+  call is not made.
+- **Reading them.** `GET /api/logs` and `GET /api/logs/{id}` show `tags`
+  (an object, empty when none). `GET /api/logs?tag=env:prod` keeps the calls
+  with that tag; repeat `tag` to require several (all must match). The name
+  ends at the first colon. `GET /api/usage?group=tag:team` sums by the value
+  of the tag `team`; calls without it are `(none)`. Both follow the same scope
+  as the rest of the logs and usage: you see your own calls, a team lead their
+  team's, an admin all. The filter is applied to the rows in that scope and
+  needs no index of its own.
 
 #### Prices, cache, limits, budgets and retention
 
@@ -388,8 +418,8 @@ console.log(reply.content);
 Each client also streams (`chat_stream` / `chatStream`) and makes
 embeddings; see its README. Wheels and an npm package are configured but not
 published yet: build from source as each README says. Text content only, as
-in the gateway; the optional `tags` are sent as `x-uf-tags` and ignored until
-the gateway stores them.
+in the gateway; the optional `tags` are sent as `x-uf-tags`, which the gateway
+records (see Tags on keys and calls).
 
 ## ✨ Features
 

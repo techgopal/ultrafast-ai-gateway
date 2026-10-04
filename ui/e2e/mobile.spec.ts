@@ -151,7 +151,7 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     .getByRole("listitem")
     .filter({ hasText: "nightly batch job" });
   await expect(card).toBeVisible();
-  await expect(card.getByRole("term")).toHaveText(["Name", "Key", "Owner", "Team", "Models", "Expires", "Status"]);
+  await expect(card.getByRole("term")).toHaveText(["Name", "Key", "Owner", "Team", "Models", "Tags", "Expires", "Status"]);
 
   // The create-key dialog fits the screen, and its submit button can be reached.
   await page.getByRole("button", { name: "Create key" }).click();

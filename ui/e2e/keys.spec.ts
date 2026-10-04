@@ -75,6 +75,10 @@ test("a provider, its models, a key, calls through the gateway, and the key revo
   await page.getByRole("button", { name: "Create key" }).click();
   const create = page.getByRole("dialog", { name: "Create key" });
   await create.getByLabel("Name", { exact: true }).fill("first call");
+  // A tag the key fixes for every call it makes.
+  await create.getByRole("button", { name: "Add tag" }).click();
+  await create.getByRole("textbox", { name: "Tag 1 name" }).fill("env");
+  await create.getByRole("textbox", { name: "Tag 1 value" }).fill("prod");
   await create.getByRole("button", { name: "Create key" }).click();
   const shown = page.getByRole("dialog", { name: "Your new key" });
   await expect(shown).toBeVisible();
@@ -100,11 +104,16 @@ test("a provider, its models, a key, calls through the gateway, and the key revo
   const row = itemOf(page, "Virtual keys", "first call");
   await expect(row).toContainText(display);
   await expect(row).toContainText("active");
+  await expect(row).toContainText("env:prod");
 
   // A call with the key reaches the mock, with the provider's key, and its answer comes back.
   const call = () =>
     request.post("/v1/chat/completions", {
-      headers: { authorization: `Bearer ${key}` },
+      headers: {
+        authorization: `Bearer ${key}`,
+        // `env` is fixed by the key, so the key's value is the one that counts.
+        "x-uf-tags": JSON.stringify({ env: "dev", job: "nightly" }),
+      },
       data: {
         model: "mock/e2e-model",
         messages: [{ role: "user", content: "Hello" }],
@@ -150,6 +159,27 @@ test("a provider, its models, a key, calls through the gateway, and the key revo
   });
   expect(refusedModel.status()).toBe(403);
   expect(mock.calls).toHaveLength(2);
+
+  // The Logs page shows the tags of the call: its own, under the key's.
+  await goTo(page, "Logs");
+  const logged = itemOf(page, "Request logs", "job:nightly");
+  // The log is written in batches: ask again until the call is there.
+  await expect(async () => {
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect(logged.first()).toBeVisible({ timeout: 1_000 });
+  }).toPass();
+  await expect(logged).toHaveCount(1);
+  await expect(logged).toContainText("env:prod");
+  await expect(logged).not.toContainText("env:dev");
+  // The filter is name:value, applied on Enter.
+  const tag = page.getByRole("textbox", { name: "Tag", exact: true });
+  await tag.fill("job:nightly");
+  await tag.press("Enter");
+  await expect(itemOf(page, "Request logs", "env:prod")).toHaveCount(1);
+  await tag.fill("env:dev");
+  await tag.press("Enter");
+  await expect(page.getByText("No calls", { exact: true })).toBeVisible();
+  await goTo(page, "Virtual keys");
 
   // Revoked, the key is refused, and the mock is not called again.
   await row.getByRole("button", { name: "Revoke" }).click();
