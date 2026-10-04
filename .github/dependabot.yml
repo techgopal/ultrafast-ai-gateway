@@ -1,0 +1,37 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: weekly
+    groups:
+      ui-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: npm
+    directory: /clients/ts
+    schedule:
+      interval: weekly
+    groups:
+      client-ts-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: pip
+    directory: /crates/client-py
+    schedule:
+      interval: weekly
+    groups:
+      client-py-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
