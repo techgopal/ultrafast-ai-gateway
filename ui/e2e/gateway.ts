@@ -32,6 +32,8 @@ const STOP_WITHIN_MS = 10_000;
 const START_ATTEMPTS = 3;
 /** The log line of `--insecure-cookies`, which the tests need on plain HTTP. */
 const INSECURE_COOKIES_LINE = "session cookies are sent without Secure";
+/** The log line with the one-time setup code, of a gateway that starts without users. */
+const SETUP_CODE_LINE = /Setup code: ([0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}); open the console/;
 
 export interface Account {
   email: string;
@@ -51,8 +53,13 @@ export interface Gateway {
   pid: number;
   /** Its data directory, which is removed when it stops. */
   dataDir: string;
-  /** What the gateway wrote to its output. It logs warnings and errors only. */
+  /**
+   * What the gateway wrote to its output. It logs warnings and errors only,
+   * and the setup code of a gateway that needs setup.
+   */
   output: () => string;
+  /** The setup code the gateway logged; `null` when it started with an admin. */
+  setupCode: () => string | null;
   /** Stops the gateway, waits for it, and removes its data directory. */
   stop: () => Promise<void>;
 }
@@ -126,7 +133,8 @@ function environment(dataDir: string, port: number, admin: Account | undefined) 
     UF_PORT: String(port),
     UF_INSECURE_COOKIES: "true",
     // Warnings and errors only: the gateway logs the admin's email at `info`.
-    RUST_LOG: "warn",
+    // The setup code has a target of its own: setup needs it.
+    RUST_LOG: "warn,ultrafast::setup=info",
     NO_COLOR: "1",
   };
   if (admin !== undefined) {
@@ -287,7 +295,11 @@ async function startOnce(binary: string, options: GatewayOptions): Promise<Try> 
       typeof body === "object" && body !== null && "needs_setup" in body ? body.needs_setup : null;
     // The line is written before the gateway listens; its pipe may be read a little later.
     const insecure = await within(READY_WITHIN_MS, () => output.includes(INSECURE_COOKIES_LINE));
-    if (needsSetup !== (options.admin === undefined) || !insecure) {
+    // A gateway that needs setup logs its code before it listens.
+    const coded =
+      options.admin !== undefined ||
+      (await within(READY_WITHIN_MS, () => SETUP_CODE_LINE.test(output)));
+    if (needsSetup !== (options.admin === undefined) || !insecure || !coded) {
       throw new Error(
         `The gateway on ${origin} is not the one started here, or runs without --insecure-cookies.`,
       );
@@ -304,6 +316,7 @@ async function startOnce(binary: string, options: GatewayOptions): Promise<Try> 
       pid,
       dataDir,
       output: () => output,
+      setupCode: () => SETUP_CODE_LINE.exec(output)?.[1] ?? null,
       stop: () => {
         stopped ??= stop();
         return stopped;

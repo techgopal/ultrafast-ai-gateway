@@ -188,6 +188,15 @@ impl ApiError {
         )
     }
 
+    /// The first admin is made only with the code the gateway logged.
+    pub fn setup_code_invalid() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "setup_code_invalid",
+            "The setup code is missing or wrong. It is printed in the gateway's log when it starts.",
+        )
+    }
+
     pub fn not_found() -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", "Not found.")
     }

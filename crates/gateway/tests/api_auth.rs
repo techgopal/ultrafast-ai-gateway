@@ -97,7 +97,15 @@ async fn setup_creates_the_first_admin_once() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!({ "needs_setup": true }));
 
-    let request = json!({ "email": " Maya@Example.com ", "name": " Maya ", "password": PASSWORD });
+    let setup_code = api
+        .state
+        .setup_code
+        .clone()
+        .expect("a gateway without users has a setup code");
+    let request = json!({
+        "email": " Maya@Example.com ", "name": " Maya ", "password": PASSWORD,
+        "setup_code": setup_code,
+    });
     let (status, headers, body) =
         call(&api.app, "POST", "/api/setup", None, Some(request.clone())).await;
     assert_eq!(status, StatusCode::CREATED);
@@ -140,7 +148,10 @@ async fn setup_validates_each_field() {
         "POST",
         "/api/setup",
         None,
-        Some(json!({ "email": "x", "name": "", "password": "short" })),
+        Some(json!({
+            "email": "x", "name": "", "password": "short",
+            "setup_code": api.state.setup_code.clone().unwrap(),
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -158,7 +169,10 @@ async fn setup_validates_each_field() {
         "POST",
         "/api/setup",
         None,
-        Some(json!({ "email": EMAIL, "name": long_name, "password": PASSWORD })),
+        Some(json!({
+            "email": EMAIL, "name": long_name, "password": PASSWORD,
+            "setup_code": api.state.setup_code.clone().unwrap(),
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -896,7 +910,10 @@ async fn nothing_secret_is_audited() {
         "POST",
         "/api/setup",
         None,
-        Some(json!({ "email": EMAIL, "name": "Maya", "password": PASSWORD })),
+        Some(json!({
+            "email": EMAIL, "name": "Maya", "password": PASSWORD,
+            "setup_code": api.state.setup_code.clone().unwrap(),
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -1021,4 +1038,64 @@ async fn trusted_proxy_uses_forwarded_address() {
     let other = [("x-forwarded-for", "198.51.100.2, 10.0.0.2")];
     let status = login_from(&api, "10.0.0.1", &other, "more@example.com").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn setup_without_the_setup_code_is_refused() {
+    let api = api().await;
+    for request in [
+        json!({ "email": EMAIL, "name": "Maya", "password": PASSWORD }),
+        json!({ "email": EMAIL, "name": "Maya", "password": PASSWORD, "setup_code": "" }),
+        json!({ "email": EMAIL, "name": "Maya", "password": PASSWORD, "setup_code": "AAAA-AAAA-AAAA" }),
+        // A wrong code is refused before the fields are looked at.
+        json!({ "email": "x", "name": "", "password": "short", "setup_code": "nope" }),
+    ] {
+        let (status, _, body) = call(&api.app, "POST", "/api/setup", None, Some(request)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(code(&body), "setup_code_invalid");
+        assert_eq!(
+            body["error"]["message"],
+            "The setup code is missing or wrong. It is printed in the gateway's log when it starts."
+        );
+        assert!(body["error"].get("fields").is_none());
+    }
+    assert_eq!(api.store.count_users().await.unwrap(), 0);
+    assert!(api.store.list_audit(10, None).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn setup_with_the_setup_code_creates_the_admin_as_typed() {
+    let api = api().await;
+    let setup_code = api.state.setup_code.clone().unwrap();
+    // As people type it: in lower case, without dashes.
+    let typed = setup_code.replace('-', "").to_lowercase();
+    let (status, _, body) = call(
+        &api.app,
+        "POST",
+        "/api/setup",
+        None,
+        Some(json!({ "email": EMAIL, "name": "Maya", "password": PASSWORD, "setup_code": typed })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    // Done once: the code is not in any answer, and setup is over.
+    assert!(!body.to_string().contains(&setup_code));
+    let (status, _, body) = call(
+        &api.app,
+        "POST",
+        "/api/setup",
+        None,
+        Some(json!({ "email": "x@example.com", "name": "X", "password": PASSWORD, "setup_code": setup_code })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(code(&body), "already_set_up");
+}
+
+#[tokio::test]
+async fn a_gateway_that_starts_with_a_user_has_no_setup_code() {
+    let store = Store::open_in_memory().await.unwrap();
+    seed_user(&store, EMAIL, Role::Admin, PASSWORD).await;
+    let api = common::api_on(store, false).await;
+    assert!(api.state.setup_code.is_none());
 }

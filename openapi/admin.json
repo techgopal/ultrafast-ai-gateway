@@ -3834,6 +3834,16 @@
               }
             }
           },
+          "403": {
+            "description": "`setup_code_invalid`: the setup code is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "409": {
             "description": "`already_set_up`: a user exists.",
             "content": {
@@ -7842,6 +7852,14 @@
           },
           "password": {
             "type": "string",
+            "writeOnly": true
+          },
+          "setup_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The one-time code the gateway printed to its log when it started\nwithout users. Required; left out or wrong, the answer is 403.",
             "writeOnly": true
           }
         },

@@ -44,6 +44,46 @@ pub fn fill_random(buf: &mut [u8]) {
         .expect("the operating system supplies random bytes");
 }
 
+/// The letters of a setup code: Crockford's base 32, which has no I, L, O
+/// or U, so a code read from a log is not mistyped.
+const SETUP_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// A one-time code for creating the first admin, as `XXXX-XXXX-XXXX`: 60
+/// random bits.
+pub fn generate_setup_code() -> String {
+    let mut bytes = [0u8; 12];
+    fill_random(&mut bytes);
+    let letters: Vec<char> = bytes
+        .iter()
+        // 256 is a multiple of 32: every letter is as likely.
+        .map(|b| char::from(SETUP_ALPHABET[usize::from(b % 32)]))
+        .collect();
+    letters
+        .chunks(4)
+        .map(|c| c.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Whether `given` is the setup code `expected`, read as people type it:
+/// in any case, with or without dashes and spaces, an O for a zero and an I
+/// or L for a one. Compared by hash, so the time taken says nothing of how
+/// much of it was right.
+pub fn setup_code_matches(expected: &str, given: &str) -> bool {
+    let normal = |text: &str| -> String {
+        text.chars()
+            .filter(|c| *c != '-' && !c.is_whitespace())
+            .map(|c| match c.to_ascii_uppercase() {
+                'O' => '0',
+                'I' | 'L' => '1',
+                other => other,
+            })
+            .collect()
+    };
+    let given = normal(given);
+    !given.is_empty() && Sha256::digest(normal(expected)) == Sha256::digest(given)
+}
+
 pub fn generate_key() -> NewKey {
     generate_secret(KEY_PREFIX)
 }
@@ -274,5 +314,49 @@ mod tests {
         let out = c.encrypt(b"sk-fixture-provider-credential");
         assert_eq!(out.len(), 12 + 30 + 16);
         assert_eq!(c.decrypt(&out).unwrap(), b"sk-fixture-provider-credential");
+    }
+}
+
+#[cfg(test)]
+mod setup_code_tests {
+    use super::*;
+
+    #[test]
+    fn a_setup_code_is_three_groups_of_four_unambiguous_letters() {
+        for _ in 0..200 {
+            let code = generate_setup_code();
+            assert_eq!(code.len(), 14, "{code}");
+            let groups: Vec<&str> = code.split('-').collect();
+            assert_eq!(groups.len(), 3, "{code}");
+            for group in groups {
+                assert_eq!(group.len(), 4);
+                assert!(group.bytes().all(|b| SETUP_ALPHABET.contains(&b)), "{code}");
+            }
+        }
+        assert_ne!(generate_setup_code(), generate_setup_code());
+    }
+
+    #[test]
+    fn a_setup_code_is_read_as_people_type_it() {
+        let code = "A0B1-CDEF-9XYZ";
+        for given in [
+            code,
+            "a0b1-cdef-9xyz",
+            "A0B1CDEF9XYZ",
+            " a0b1 cdef 9xyz ",
+            "AOBI-CDEF-9XYZ",
+            "AOBL-CDEF-9XYZ",
+        ] {
+            assert!(setup_code_matches(code, given), "{given}");
+        }
+        for given in [
+            "",
+            "-",
+            "A0B1-CDEF-9XY",
+            "A0B1-CDEF-9XYZZ",
+            "B0B1-CDEF-9XYZ",
+        ] {
+            assert!(!setup_code_matches(code, given), "{given}");
+        }
     }
 }

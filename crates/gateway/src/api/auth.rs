@@ -26,7 +26,7 @@ use crate::identity::password::{
 };
 use crate::identity::policy::Action;
 use crate::identity::{normalize_email, Principal, Role, TeamRole, UserStatus};
-use crate::secrets::{hash_key, INVITE_PREFIX};
+use crate::secrets::{hash_key, setup_code_matches, INVITE_PREFIX};
 use crate::store::{AuditEntry, NewUser, Store, UserRow, UserTeam};
 
 /// The name of an admin created from the environment at startup.
@@ -103,6 +103,10 @@ pub struct SetupRequest {
     name: String,
     #[schema(write_only)]
     password: String,
+    /// The one-time code the gateway printed to its log when it started
+    /// without users. Required; left out or wrong, the answer is 403.
+    #[schema(write_only)]
+    setup_code: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -294,6 +298,7 @@ fn already_set_up() -> ApiError {
     responses(
         (status = 201, description = "The first admin.", body = UserView),
         (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "`setup_code_invalid`: the setup code is missing or wrong.", body = super::openapi::ApiErrorBody),
         (status = 409, description = "`already_set_up`: a user exists.", body = super::openapi::ApiErrorBody),
         (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
         (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
@@ -308,6 +313,14 @@ pub async fn setup(
     // Answered before any hashing; the transaction below checks it again.
     if store.count_users().await? != 0 {
         return Err(already_set_up());
+    }
+    // Before the fields: who has not the code learns nothing from them.
+    let code_ok = match (&state.setup_code, &req.setup_code) {
+        (Some(expected), Some(given)) => setup_code_matches(expected, given),
+        _ => false,
+    };
+    if !code_ok {
+        return Err(ApiError::setup_code_invalid());
     }
 
     let mut fields = BTreeMap::new();

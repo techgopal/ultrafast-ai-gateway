@@ -68,18 +68,30 @@ the volume `/var/lib/ultrafast`):
 
 ```bash
 docker build -t ultrafast .
-docker run -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast \
-  -e UF_ADMIN_EMAIL=you@example.com -e UF_ADMIN_PASSWORD='a long password' ultrafast
+# The first admin, in a file of its own: not on the command line, where the
+# password would be in the shell history and in `docker inspect`.
+printf 'UF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' > admin.env
+chmod 600 admin.env
+docker run -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast --env-file admin.env ultrafast
 ```
 
 Start it. `UF_ADMIN_EMAIL` and `UF_ADMIN_PASSWORD` create the first admin when
-there is no user yet (password 12 to 256 characters); without them the console
-asks you to create the first admin on first visit.
+there is no user yet (password 12 to 256 characters). They are read only then:
+once the admin exists, start the gateway without them (run the container again
+without `--env-file` and delete `admin.env`, or unset them) so the password
+does not stay in the environment.
 
 ```bash
 UF_DATA_DIR=./data UF_ADMIN_EMAIL=you@example.com UF_ADMIN_PASSWORD='a long password' \
   ./target/release/ultrafast serve
 ```
+
+Without them, the console asks you to create the first admin on first visit,
+and for a **setup code**: a gateway that starts with no user prints a one-time
+code to its log (`Setup code: XXXX-XXXX-XXXX; open the console to create the
+first admin.`, see `docker logs` for the container). Only who can read the log
+can create the first admin, so a gateway reachable by others before setup
+cannot be taken over. A restart prints a new code.
 
 Then, in the console at <http://127.0.0.1:3000> (plain HTTP works on localhost):
 

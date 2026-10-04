@@ -388,6 +388,14 @@ async fn main() -> Result<()> {
             let expired = store.delete_expired_sessions().await?;
             tracing::debug!(expired, "removed expired sessions");
             let mut state = AppState::new(store, cipher).await?;
+            if let Some(code) = &state.setup_code {
+                // Its own target, so it can be shown with every other info
+                // line hidden. It is the only way to the first admin.
+                tracing::info!(
+                    target: "ultrafast::setup",
+                    "Setup code: {code}; open the console to create the first admin."
+                );
+            }
             let (log_sink, log_queue) = LogSink::channel(QUEUE_CAPACITY);
             let log_stats = log_sink.stats();
             state.sink = Arc::new(log_sink);

@@ -109,6 +109,11 @@ export const errors = {
   invalid_credentials: error(401, "invalid_credentials", "Email or password is incorrect."),
   csrf_failed: error(403, "csrf_failed", "The CSRF token is missing or does not match."),
   forbidden: error(403, "forbidden", "You are not allowed to do this."),
+  setup_code_invalid: error(
+    403,
+    "setup_code_invalid",
+    "The setup code is missing or wrong. It is printed in the gateway's log when it starts.",
+  ),
   not_found: error(404, "not_found", "Not found."),
   method_not_allowed: error(405, "method_not_allowed", "This method is not supported here."),
   payload_too_large: error(413, "payload_too_large", "The request body is too large."),

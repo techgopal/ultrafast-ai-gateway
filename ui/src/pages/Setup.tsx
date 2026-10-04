@@ -17,10 +17,12 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
+export const SETUP_CODE_HINT = "Printed in the gateway's log when it started.";
+
 export const SETUP_DONE_NOTICE = "The admin account is created. Sign in to continue.";
 
 /** The fields of the form that the API may find fault with. */
-const FIELDS = ["name", "email", "password"] as const;
+const FIELDS = ["setup_code", "name", "email", "password"] as const;
 type FieldErrors = Partial<Record<(typeof FIELDS)[number] | "confirm", string>>;
 
 /** Creates the first admin. The passwords are held by their fields only. */
@@ -58,6 +60,7 @@ export function Setup() {
     let created = false;
     try {
       await mutateAsync({
+        setup_code: textOf(data, "setup_code"),
         name: textOf(data, "name"),
         email: textOf(data, "email"),
         password: textOf(data, "password"),
@@ -66,6 +69,8 @@ export function Setup() {
     } catch (reason) {
       if (reason instanceof ApiError && reason.code === "already_set_up") {
         setAlreadyDone(true);
+      } else if (reason instanceof ApiError && reason.code === "setup_code_invalid") {
+        setErrors({ setup_code: reason.message });
       } else if (reason instanceof ApiError) {
         const known: FieldErrors = {};
         for (const field of FIELDS) {
@@ -122,6 +127,15 @@ export function Setup() {
     >
       {message === null ? null : <FormError ref={error}>{message}</FormError>}
       <form ref={form} aria-label="Set up the gateway" className={formColumn} onSubmit={submit}>
+        <Field
+          label="Setup code"
+          name="setup_code"
+          autoComplete="off"
+          spellCheck={false}
+          required
+          hint={SETUP_CODE_HINT}
+          error={errors.setup_code}
+        />
         <Field label="Name" name="name" autoComplete="name" required error={errors.name} />
         <Field
           label="Email"

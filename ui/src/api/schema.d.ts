@@ -1595,6 +1595,11 @@ export interface components {
             email: string;
             name: string;
             password: string;
+            /**
+             * @description The one-time code the gateway printed to its log when it started
+             *     without users. Required; left out or wrong, the answer is 403.
+             */
+            setup_code?: string | null;
         };
         SetupStatus: {
             /** @description True while no user exists. */
@@ -4655,6 +4660,15 @@ export interface operations {
             };
             /** @description The request is not of the expected form. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `setup_code_invalid`: the setup code is missing or wrong. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

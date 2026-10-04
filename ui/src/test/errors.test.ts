@@ -19,6 +19,7 @@ const statuses: Record<ErrorName, number> = {
   invalid_credentials: 401,
   csrf_failed: 403,
   forbidden: 403,
+  setup_code_invalid: 403,
   not_found: 404,
   method_not_allowed: 405,
   payload_too_large: 413,
@@ -225,4 +226,9 @@ test("the refusals of the pipeline are in the gateway source, in the OpenAI shap
     expect(Object.keys(e.body.error)).toEqual(["message", "type", "param", "code"]);
   }
   expect(pipelineErrors.budget.body.error.code).toBe("budget_exceeded");
+});
+
+test("the message of a wrong setup code is in the gateway source", () => {
+  const path = fileURLToPath(new URL("../../../crates/gateway/src/api/mod.rs", import.meta.url));
+  expect(readFileSync(path, "utf8")).toContain(`"${errors.setup_code_invalid.body.error.message}"`);
 });

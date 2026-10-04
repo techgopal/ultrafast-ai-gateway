@@ -25,7 +25,7 @@ use crate::limits::{Limiter, MemoryLimiter};
 use crate::metrics::{self, Metrics};
 use crate::proxy;
 use crate::routing::{HealthStore, InMemoryHealth};
-use crate::secrets::Cipher;
+use crate::secrets::{generate_setup_code, Cipher};
 use crate::snapshot::Snapshot;
 use crate::store::Store;
 use crate::telemetry::{NoopSink, RequestSink};
@@ -73,6 +73,9 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     /// The bearer token of `/metrics`. None: the path does not exist.
     pub metrics_token: Option<String>,
+    /// The one-time code that `POST /api/setup` needs, made when the
+    /// gateway starts without users. `None` when a user existed then.
+    pub setup_code: Option<String>,
     /// How many snapshots have been swapped in since the start.
     refreshes: AtomicU64,
     /// The fingerprint of the configuration the cache was filled under.
@@ -88,7 +91,9 @@ impl AppState {
     pub async fn new(store: Store, cipher: Cipher) -> anyhow::Result<Self> {
         let snapshot = Snapshot::load(&store, &cipher).await?;
         let snapshot_fingerprint = snapshot.cache_fingerprint();
+        let setup_code = (store.count_users().await? == 0).then(generate_setup_code);
         Ok(Self {
+            setup_code,
             snapshot: ArcSwap::from_pointee(snapshot),
             refresh_interval: DEFAULT_REFRESH_INTERVAL,
             trusted_proxies: Vec::new(),

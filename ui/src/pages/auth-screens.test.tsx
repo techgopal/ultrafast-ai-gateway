@@ -70,13 +70,17 @@ function record(
   return bodies;
 }
 
+const SETUP_CODE = "K7QD-2M9X-VR4T";
+
 async function fillSetup(values: {
   name?: string;
   email?: string;
   password?: string;
   confirm?: string;
+  code?: string;
 }): Promise<void> {
   const user = userEvent.setup();
+  await user.type(screen.getByLabelText("Setup code"), values.code ?? SETUP_CODE);
   await user.type(screen.getByLabelText("Name"), values.name ?? "Maya Okafor");
   await user.type(screen.getByLabelText("Email"), values.email ?? "maya@example.test");
   await user.type(screen.getByLabelText("Password"), values.password ?? PASSWORD);
@@ -107,7 +111,7 @@ describe("setup", () => {
       expect(href(app)).toBe("/sign-in");
     });
     expect(sent).toEqual([
-      { name: "Maya Okafor", email: "maya@example.test", password: PASSWORD },
+      { name: "Maya Okafor", email: "maya@example.test", password: PASSWORD, setup_code: SETUP_CODE },
     ]);
     expect(heading("Sign in")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent(
@@ -119,6 +123,24 @@ describe("setup", () => {
     expect(cached(app.queryClient)).not.toContain(PASSWORD);
     expect(shown()).not.toContain(PASSWORD);
     expect(JSON.stringify(app.router.state)).not.toContain(PASSWORD);
+  });
+
+  test("the setup code is asked for, with where to find it, and a wrong one is told on its field", async () => {
+    startGateway({ needsSetup: true });
+    override("post", "/api/setup", () => refuse(errors.setup_code_invalid));
+    await renderWithApp(null, { route: "/setup" });
+    const field = await screen.findByLabelText("Setup code");
+    expect(field).toBeRequired();
+    expect(field).toHaveAttribute("autocomplete", "off");
+    expect(descriptionOf(field)).toContain("Printed in the gateway's log when it started.");
+    await fillSetup({ code: "WRONG" });
+    await waitFor(() => {
+      expect(descriptionOf(field)).toContain(errors.setup_code_invalid.body.error.message);
+    });
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field).toHaveFocus();
+    // What was typed stays, to be put right.
+    expect(field).toHaveValue("WRONG");
   });
 
   test("setup validates before sending", async () => {
