@@ -24,12 +24,8 @@ and briefs add to these; they do not repeat them.
 
 - Commit with `git -c user.name=techgopal -c user.email=44522021+techgopal@users.noreply.github.com commit`.
   Never change git config. Stage specific paths; never `git add -A`.
-- End every commit message with a blank line and:
-  ```
-  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-  Claude-Session: https://claude.ai/code/session_01324TihPkVH93vHDA6zipLq
-  ```
-  (use the model that actually wrote the commit in the first line).
+- The owner is the only author: no `Co-Authored-By` or `Claude-Session` lines,
+  or any other trailer naming an assistant, in commit messages.
 - Never push. Never commit `ui/node_modules`, `ui/dist`, test reports or `target/`.
 - After committing, read `git log --oneline` yourself; never quote SHAs from memory.
 
