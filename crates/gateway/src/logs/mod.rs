@@ -138,13 +138,15 @@ fn outcome_name(outcome: AttemptOutcome) -> &'static str {
 }
 
 /// The row for a record. The provider and model are those of the attempt
-/// that answered (the last one that was `Ok`), else of the last attempt.
+/// that answered (the last one that was `Ok`, or the cached answer of a
+/// hit, whose other targets are listed as skipped), else of the last
+/// attempt.
 pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
     let answered = record
         .attempts
         .iter()
         .rev()
-        .find(|a| a.outcome == AttemptOutcome::Ok)
+        .find(|a| matches!(a.outcome, AttemptOutcome::Ok | AttemptOutcome::Cached))
         .or_else(|| record.attempts.last());
     let price = answered.and_then(|a| prices(&a.provider, &a.model));
     // A hit used no provider: it is free, and known to be.

@@ -751,3 +751,41 @@ async fn an_answer_stored_after_the_configuration_changed_is_not_found_under_the
     assert_eq!(w.chat(&kb, BODY).await, StatusCode::OK);
     assert_eq!(w.provider_calls().await, 2, "B was given A's answer");
 }
+
+/// A hit through a route with a fallback is logged with the target that
+/// gave the answer, not with the last target the route has.
+#[tokio::test]
+async fn the_log_row_of_a_hit_names_who_gave_the_answer() {
+    let w = world(CacheScope::Team).await;
+    let models = w.h.store.list_models().await.unwrap();
+    let id_of = |name: &str| models.iter().find(|m| m.name == name).unwrap().id;
+    let route = w.h.store.list_routes().await.unwrap()[0].id;
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.replace_targets(
+        route,
+        &TargetsInput {
+            primaries: vec![(id_of("gpt-4o"), 1)],
+            fallbacks: vec![id_of("m"), id_of("claude-sonnet-5")],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    let (a, _) = w.two_teams().await;
+    assert_eq!(w.chat(&a, BODY).await, StatusCode::OK);
+    assert_eq!(w.chat(&a, BODY).await, StatusCode::OK);
+    assert_eq!(w.provider_calls().await, 1);
+    let records = w.h.sink.records();
+    let prices: ultrafast_gateway::logs::PriceLookup = std::sync::Arc::new(|_, _| None);
+    for record in &records {
+        let row = ultrafast_gateway::logs::row_of(record, &prices);
+        assert_eq!(
+            (row.provider.as_deref(), row.model.as_deref()),
+            (Some("p"), Some("gpt-4o")),
+            "cached: {}",
+            record.cached
+        );
+    }
+    assert!(records[1].cached);
+}
