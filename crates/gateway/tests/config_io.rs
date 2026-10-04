@@ -460,7 +460,7 @@ async fn import_creates_what_is_missing_updates_what_differs_and_deletes_nothing
     // One more of everything, a change in each existing kind, and one
     // thing that is in the gateway and not in the file.
     changed["providers"] = json!([
-        { "name": "main", "kind": "openai", "base_url": "https://eu.openai.example/v1", "api_version": null },
+        { "name": "main", "kind": "openai", "base_url": "https://api.openai.example/eu/v1", "api_version": null },
         { "name": "extra", "kind": "anthropic", "base_url": "https://api.anthropic.example", "api_version": null },
     ]);
     changed["models"] = json!([
@@ -550,8 +550,8 @@ async fn import_creates_what_is_missing_updates_what_differs_and_deletes_nothing
     assert!(chat.everyone && !chat.cache.enabled);
     assert_eq!(chat.settings.retries, 1);
     let main = state.providers.iter().find(|p| p.name == "main").unwrap();
-    assert_eq!(main.base_url, "https://eu.openai.example/v1");
-    // The credential of an existing provider is left as it was.
+    assert_eq!(main.base_url, "https://api.openai.example/eu/v1");
+    // The credential of an existing provider on the same host is left as it was.
     assert!(main.credential.is_some());
 }
 
@@ -1160,30 +1160,86 @@ async fn a_failure_partway_through_an_apply_writes_nothing() {
 }
 
 #[tokio::test]
-async fn moving_a_provider_with_a_credential_to_a_new_base_url_is_a_warning() {
+async fn moving_a_provider_with_a_credential_to_a_new_host_removes_it_with_a_warning() {
     let w = world().await;
     let store = &w.org.api.store;
     let mut file = expected_export();
+    let at = |file: &Value, name: &str| {
+        file["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|p| p["name"] == name)
+            .unwrap()
+    };
+    let (main_at, azure_at) = (at(&file, "main"), at(&file, "azure1"));
     // `main` has a credential, `azure1` has none.
-    file["providers"][0]["base_url"] = json!("https://elsewhere.example/v1");
-    file["providers"][1]["base_url"] = json!("https://az-elsewhere.example");
-    let report = portable::import(store, &file_of(file), &actor(), true)
+    file["providers"][main_at]["base_url"] = json!("https://elsewhere.example/v1");
+    file["providers"][azure_at]["base_url"] = json!("https://az-elsewhere.example");
+    let report = portable::import(store, &file_of(file.clone()), &actor(), true)
         .await
         .unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
-    let main_at = report
-        .updated
-        .iter()
-        .position(|u| u.name == "main")
-        .map(|_| ());
-    assert!(main_at.is_some(), "{:?}", report.updated);
-    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
     assert!(
-        report.warnings[0]
-            .message
-            .contains("stored credential will be sent to the new base_url"),
-        "{}",
-        report.warnings[0].message
+        report.updated.iter().any(|u| u.name == "main"),
+        "{:?}",
+        report.updated
     );
-    assert!(report.warnings[0].message.contains("'main'"));
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert_eq!(
+        report.warnings[0].message,
+        "provider 'main' moves to another host: its stored credential is removed; set it again"
+    );
+    assert_eq!(
+        report.warnings[0].at,
+        format!("providers[{main_at}].base_url")
+    );
+    // A dry run removes nothing.
+    let main = |state: &ultrafast_gateway::store::ConfigState| {
+        state
+            .providers
+            .iter()
+            .find(|p| p.name == "main")
+            .unwrap()
+            .clone()
+    };
+    assert!(main(&store.config_state().await.unwrap())
+        .credential
+        .is_some());
+
+    let report = portable::import(store, &file_of(file), &actor(), false)
+        .await
+        .unwrap();
+    assert!(report.is_clean(), "{:?}", report.errors);
+    let after = main(&store.config_state().await.unwrap());
+    assert_eq!(after.base_url, "https://elsewhere.example/v1");
+    assert!(after.credential.is_none());
+}
+
+#[tokio::test]
+async fn moving_a_provider_on_its_own_host_keeps_its_credential() {
+    let w = world().await;
+    let store = &w.org.api.store;
+    let mut file = expected_export();
+    let main_at = file["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|p| p["name"] == "main")
+        .unwrap();
+    let old = file["providers"][main_at]["base_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let moved = format!("{}/other", old.trim_end_matches('/'));
+    file["providers"][main_at]["base_url"] = json!(moved);
+    let report = portable::import(store, &file_of(file), &actor(), false)
+        .await
+        .unwrap();
+    assert!(report.is_clean(), "{:?}", report.errors);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let state = store.config_state().await.unwrap();
+    let main = state.providers.iter().find(|p| p.name == "main").unwrap();
+    assert_eq!(main.base_url, moved);
+    assert!(main.credential.is_some());
 }

@@ -25,7 +25,7 @@ use crate::api::teams::valid_team_name;
 use crate::budgets::{BudgetAction, Period};
 use crate::cache::{CacheScope, RouteCache};
 use crate::catalog::validate_model_name;
-use crate::config::{validate_base_url, validate_provider_name};
+use crate::config::{same_host, validate_base_url, validate_provider_name};
 use crate::limits::{LimitScope, RateLimit};
 use crate::store::{
     AuditEntry, ConfigState, Grants, RouteSettings, Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
@@ -517,6 +517,8 @@ enum Op {
     },
     UpdateProvider {
         id: i64,
+        /// It moves to another host: its stored key is not sent there.
+        drop_credential: bool,
         base_url: Option<String>,
         api_version: Option<Option<String>>,
     },
@@ -655,13 +657,18 @@ impl Planner<'_> {
                         continue;
                     }
                     let mut changes = Vec::new();
+                    let mut drop_credential = false;
                     if existing.base_url != entry.base_url {
                         changes.push("base_url".to_string());
-                        if existing.credential.is_some() {
+                        // The stored key goes only to the host it was given for.
+                        if existing.credential.is_some()
+                            && !same_host(&existing.base_url, &entry.base_url)
+                        {
+                            drop_credential = true;
                             self.report.warnings.push(Issue {
                                 at: format!("{at}.base_url"),
                                 message: format!(
-                                    "provider '{}' has a credential: the stored credential will be sent to the new base_url",
+                                    "provider '{}' moves to another host: its stored credential is removed; set it again",
                                     entry.name
                                 ),
                             });
@@ -675,6 +682,7 @@ impl Planner<'_> {
                     } else {
                         let op = Op::UpdateProvider {
                             id: existing.id,
+                            drop_credential,
                             base_url: changes
                                 .contains(&"base_url".to_string())
                                 .then(|| entry.base_url.clone()),
@@ -1431,11 +1439,13 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
             }
             Op::UpdateProvider {
                 id,
+                drop_credential,
                 base_url,
                 api_version,
             } => {
                 if let Some(url) = base_url {
-                    tx.update_provider(id, Some(&url), None).await?;
+                    let credential = drop_credential.then_some(None);
+                    tx.update_provider(id, Some(&url), credential).await?;
                 }
                 if let Some(version) = api_version {
                     tx.set_provider_api_version(id, version.as_deref()).await?;

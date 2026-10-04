@@ -14,7 +14,7 @@ use ultrafast_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
 
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
-use crate::config::{validate_api_version, validate_base_url, validate_provider_name};
+use crate::config::{same_host, validate_api_version, validate_base_url, validate_provider_name};
 use crate::identity::policy::Action;
 use crate::secrets::Cipher;
 use crate::store::{AuditEntry, ProviderRow, Store, StoreError};
@@ -315,6 +315,19 @@ pub async fn update(
         .await?
         .ok_or_else(ApiError::not_found)?;
     let base_url = base_url.filter(|url| *url != was.base_url);
+    // The stored key goes only to the host it was given for: another host
+    // needs it again, or its removal.
+    if was.credential.is_some()
+        && credential.is_none()
+        && base_url
+            .as_deref()
+            .is_some_and(|url| !same_host(&was.base_url, url))
+    {
+        return Err(ApiError::invalid_field(
+            "api_key",
+            "Enter the API key again: the host changed.",
+        ));
+    }
     let api_version = api_version.filter(|v| was.api_version.as_deref() != Some(v.as_str()));
     let credential_change = match (&credential, was.credential.is_some()) {
         (None, _) | (Some(None), false) => None,

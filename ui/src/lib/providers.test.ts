@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, test } from "vitest";
 import { ConsoleRefusal } from "@/api/errors";
-import { apiKeyOf, newApiKeyOf } from "./providers";
+import { apiKeyOf, newApiKeyOf, sameHost } from "./providers";
 
 describe("the API key that is sent", () => {
   test("is the one typed, without the spaces around it, which nobody means", () => {
@@ -40,5 +40,23 @@ describe("the new key that replaces the one a provider has", () => {
     } catch (error) {
       expect(error).toMatchObject({ message: "Enter an API key.", field: "api_key" });
     }
+  });
+});
+
+describe("whether a base URL stays on its host", () => {
+  const url = "https://api.openai.com/v1";
+  test.each(["https://api.openai.com/v2", "https://API.openai.com:443", "https://api.openai.com"])(
+    "%s is the same host",
+    (other) => {
+      expect(sameHost(url, other)).toBe(true);
+    },
+  );
+  test.each([
+    "http://api.openai.com/v1",
+    "https://api.openai.com:8443/v1",
+    "https://api.openai.com.evil.example/v1",
+    "not a url",
+  ])("%s is another host", (other) => {
+    expect(sameHost(url, other)).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import { useForm } from "@tanstack/react-form";
 import { useRef } from "react";
 import type { useUpdateProvider } from "@/api/queries";
+import { ConsoleRefusal } from "@/api/errors";
 import type { components } from "@/api/schema";
 import { ApiKeyInput } from "@/components/ApiKeyInput";
 import { ApiVersionField } from "@/components/ApiVersionField";
@@ -12,7 +13,7 @@ import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { DEFAULT_API_VERSION, kindName, newApiKeyOf } from "@/lib/providers";
+import { DEFAULT_API_VERSION, HOST_CHANGED, kindName, newApiKeyOf, sameHost } from "@/lib/providers";
 
 type Provider = components["schemas"]["ProviderView"];
 type UpdateProviderRequest = components["schemas"]["UpdateProviderRequest"];
@@ -61,6 +62,14 @@ function EditForm({ provider, update, onDone, onCancel }: EditFormProps) {
         return;
       }
       try {
+        // The gateway sends a stored key only to the host it was given for.
+        if (
+          value.credential === "keep" &&
+          provider.has_credential &&
+          !sameHost(provider.base_url, value.base_url)
+        ) {
+          throw new ConsoleRefusal(HOST_CHANGED, "credential");
+        }
         // Keeping the key sends no `api_key` at all.
         const body: UpdateProviderRequest = { base_url: value.base_url };
         if (versionChanged) body.api_version = typed;

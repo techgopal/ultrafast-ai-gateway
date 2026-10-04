@@ -1470,7 +1470,10 @@ describe("adding a provider", () => {
 });
 
 describe("editing a provider", () => {
-  const OTHER_URL = "https://eu.api.openai.example.test/v1";
+  /** Another path on the same host: the key may stay. */
+  const OTHER_URL = "https://api.openai.example.test/eu/v1";
+  /** Another host: the key is asked for again. */
+  const OTHER_HOST = "https://eu.api.openai.example.test/v1";
 
   function credential(dialog: HTMLElement): HTMLElement {
     return within(dialog).getByRole("radiogroup", { name: "API key" });
@@ -1553,17 +1556,17 @@ describe("editing a provider", () => {
       expect(toasts()).toEqual(["Provider updated."]);
     });
 
-    test("the version as it is, with a new address: only the address is sent", async () => {
+    test("the version as it is, with a new address on the same host: only the address is sent", async () => {
       const state = keeps([...fixtures.providerList, azure]);
       await page();
       const dialog = await openEdit(azure);
       const url = within(dialog).getByLabelText("Base URL");
       await userEvent.clear(url);
-      await userEvent.type(url, "https://other.openai.azure.com");
+      await userEvent.type(url, "https://my-resource.openai.azure.com/openai");
       await save(dialog);
       await closed();
       expect(state.patched).toEqual([
-        { id: String(azure.id), body: { base_url: "https://other.openai.azure.com" } },
+        { id: String(azure.id), body: { base_url: "https://my-resource.openai.azure.com/openai" } },
       ]);
     });
 
@@ -1574,11 +1577,11 @@ describe("editing a provider", () => {
       await userEvent.clear(within(dialog).getByLabelText("API version"));
       const url = within(dialog).getByLabelText("Base URL");
       await userEvent.clear(url);
-      await userEvent.type(url, "https://other.openai.azure.com");
+      await userEvent.type(url, "https://my-resource.openai.azure.com/openai");
       await save(dialog);
       await closed();
       expect(state.patched).toEqual([
-        { id: String(azure.id), body: { base_url: "https://other.openai.azure.com" } },
+        { id: String(azure.id), body: { base_url: "https://my-resource.openai.azure.com/openai" } },
       ]);
     });
 
@@ -1648,6 +1651,31 @@ describe("editing a provider", () => {
       });
       expect(rowOf(withCredential.name)).toHaveTextContent("Set");
       expect(state.lists).toBe(2);
+    });
+
+    test("keep, with the base URL on another host, is refused on the key choice and nothing is sent", async () => {
+      const state = keeps();
+      await page();
+      const dialog = await openEdit(withCredential);
+      const url = within(dialog).getByLabelText("Base URL");
+      await userEvent.clear(url);
+      await userEvent.type(url, OTHER_HOST);
+      await save(dialog);
+      await waitFor(() => {
+        expect(descriptionOf(credential(dialog))).toContain(
+          "Enter the API key again: the host changed.",
+        );
+      });
+      await settle();
+      expect(state.patched).toEqual([]);
+      // Removing the key, or setting a new one, may go to another host.
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Replace the key" }));
+      await enter(within(dialog).getByLabelText("New API key"), API_KEY);
+      await save(dialog);
+      await closed();
+      expect(state.patched).toEqual([
+        { id: String(withCredential.id), body: { base_url: OTHER_HOST, api_key: API_KEY } },
+      ]);
     });
 
     test("replace sends the new value", async () => {

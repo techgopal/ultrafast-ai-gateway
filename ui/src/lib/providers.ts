@@ -42,3 +42,19 @@ export function newApiKeyOf(typed: string): string {
   if (key === "") throw new ConsoleRefusal(ENTER_AN_API_KEY, "api_key");
   return key;
 }
+
+export const HOST_CHANGED = "Enter the API key again: the host changed.";
+
+/**
+ * Whether two base URLs name the same host: scheme, host and port, as the
+ * gateway reads them. The gateway sends a stored key only to the host it
+ * was given for; a URL that cannot be read is another host.
+ */
+export function sameHost(a: string, b: string): boolean {
+  try {
+    const [first, second] = [new URL(a), new URL(b)];
+    return first.protocol === second.protocol && first.host === second.host;
+  } catch {
+    return false;
+  }
+}

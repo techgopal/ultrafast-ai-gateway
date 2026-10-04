@@ -64,6 +64,26 @@ pub fn validate_base_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether two base URLs name the same host: scheme, host and port (the
+/// default port of the scheme when none is written). A URL that cannot be
+/// read is another host. A provider's stored credential is sent only to the
+/// host it was given for.
+pub fn same_host(a: &str, b: &str) -> bool {
+    let origin = |url: &str| {
+        reqwest::Url::parse(url).ok().and_then(|u| {
+            Some((
+                u.scheme().to_string(),
+                u.host_str()?.to_ascii_lowercase(),
+                u.port_or_known_default(),
+            ))
+        })
+    };
+    match (origin(a), origin(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Checks the API version of an Azure OpenAI provider: `2024-10-21` or
 /// `2025-03-01-preview`.
 pub fn validate_api_version(version: &str) -> Result<()> {
@@ -190,6 +210,27 @@ pub fn parse_trusted_proxies(values: &[String]) -> Result<Vec<ipnet::IpNet>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_host_is_scheme_host_and_port() {
+        let a = "https://api.openai.com/v1";
+        for b in [
+            "https://api.openai.com/v2",
+            "https://API.OpenAI.com:443",
+            "https://api.openai.com",
+        ] {
+            assert!(same_host(a, b), "{b}");
+        }
+        for b in [
+            "http://api.openai.com/v1",
+            "https://api.openai.com:8443/v1",
+            "https://api.openai.com.evil.example/v1",
+            "https://evil.example/api.openai.com",
+            "not a url",
+        ] {
+            assert!(!same_host(a, b), "{b}");
+        }
+    }
     use crate::secrets::Cipher;
 
     #[test]

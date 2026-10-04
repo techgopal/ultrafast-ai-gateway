@@ -298,7 +298,8 @@ async fn patch_replaces_and_removes_the_key() {
         .await
         .contains("credential replaced"));
 
-    let new_url = "https://proxy.example.com/v1";
+    // Another path of the same host: the key stays.
+    let new_url = "https://api.openai.com/v2";
     let (status, body) = patch(&org, &maya, id, json!({ "base_url": new_url })).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["base_url"], new_url);
@@ -608,4 +609,66 @@ async fn an_azure_api_version_can_be_changed() {
     let other = seed(&org, &maya, "o").await;
     let (status, body) = patch(&org, &maya, other, json!({ "api_version": "2024-10-21" })).await;
     assert_invalid(status, &body, "api_version");
+}
+
+/// The stored key is never sent to a host it was not given for: moving a
+/// provider to another host needs the key again, or its removal.
+#[tokio::test]
+async fn a_new_host_needs_the_api_key_again() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let id = seed(&org, &maya, "openai").await;
+    let before = audited(&org).await;
+    for url in [
+        "https://evil.example.com/v1",
+        "http://api.openai.com/v1",
+        "https://api.openai.com:8443/v1",
+        "https://API.openai.com.evil.example/v1",
+    ] {
+        let (status, body) = patch(&org, &maya, id, json!({ "base_url": url })).await;
+        assert_invalid(status, &body, "api_key");
+        assert_eq!(
+            body["error"]["fields"]["api_key"],
+            "Enter the API key again: the host changed."
+        );
+    }
+    assert_eq!(audited(&org).await, before);
+    let row = org.api.store.provider_by_id(id).await.unwrap().unwrap();
+    assert_eq!(row.base_url, BASE_URL);
+    assert_eq!(stored_key(&org, id).await.as_deref(), Some(API_KEY));
+
+    // The same host, by another path or the default port written out: the key stays.
+    for url in ["https://api.openai.com/v2", "https://API.OPENAI.COM:443/v1"] {
+        let (status, body) = patch(&org, &maya, id, json!({ "base_url": url })).await;
+        assert_eq!(status, StatusCode::OK, "{url}: {body}");
+        assert_eq!(stored_key(&org, id).await.as_deref(), Some(API_KEY));
+    }
+    // A new host with a new key, or with the key removed.
+    let (status, body) = patch(
+        &org,
+        &maya,
+        id,
+        json!({ "base_url": "https://proxy.example.com/v1", "api_key": NEW_API_KEY }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(stored_key(&org, id).await.as_deref(), Some(NEW_API_KEY));
+    let (status, body) = patch(
+        &org,
+        &maya,
+        id,
+        json!({ "base_url": "https://other.example.com/v1", "api_key": null }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["has_credential"], false);
+    // Without a key there is nothing to send: the host may change freely.
+    let (status, body) = patch(
+        &org,
+        &maya,
+        id,
+        json!({ "base_url": "https://third.example.com" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
