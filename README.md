@@ -157,7 +157,7 @@ secrets: a flag shows in the process list.
 | `UF_TRUSTED_PROXIES` | `--trusted-proxy CIDR` (repeatable) | none | Networks of reverse proxies whose `CF-Connecting-IP` and `X-Forwarded-For` are believed. Comma separated in the variable. |
 | `UF_METRICS_TOKEN` | `--metrics-token` | unset | Enables `GET /metrics` for callers sending this bearer token. |
 | `UF_PROVIDER_API_KEY` | `--api-key` | unset | `provider add` only: the provider's API key. |
-| `RUST_LOG` | none | `info` | Log filter. |
+| `RUST_LOG` | none | `info` | Log filter. A gateway that starts with no user logs its one-time setup code at `info` under the target `ultrafast::setup`: when you lower the level, keep it, as in `RUST_LOG=warn,ultrafast::setup=info`. |
 
 For the dev tooling only: `UF_DEV_GATEWAY` (where `pnpm --dir ui dev` proxies
 to) and `UF_E2E_BINARY` (the binary the browser tests run).
