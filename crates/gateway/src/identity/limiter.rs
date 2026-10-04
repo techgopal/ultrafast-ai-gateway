@@ -1,5 +1,5 @@
 //! Limits failed sign-in attempts per email and client address together,
-//! and per client address.
+//! and per client address. An IPv6 client counts by its /64.
 //!
 //! An email is never locked out as a whole: failures from many addresses
 //! count for each of them, so nobody can keep its owner from signing in by
@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 pub const WINDOW: Duration = Duration::from_secs(15 * 60);
 /// Failures one email may have from one address inside the window.
 pub const MAX_PER_EMAIL: usize = 5;
-/// Failures one address may have inside the window.
+/// Failures one address (an IPv6 /64) may have inside the window.
 pub const MAX_PER_ADDRESS: usize = 20;
 /// The most names (an email with an address, or an address) kept at once.
 pub const MAX_ENTRIES: usize = 100_000;
@@ -51,12 +51,28 @@ impl Default for LoginLimiter {
     }
 }
 
+/// Who an address stands for: an IPv4 address itself, an IPv6 address its
+/// /64, which one client is commonly given whole. An IPv4 address written
+/// as IPv6 (`::ffff:a.b.c.d`) is that IPv4 address.
+fn client_of(addr: IpAddr) -> String {
+    match addr {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+    }
+}
+
 fn pair_key(email: &str, addr: IpAddr) -> String {
-    format!("pair:{addr} {email}")
+    format!("pair:{} {email}", client_of(addr))
 }
 
 fn address_key(addr: IpAddr) -> String {
-    format!("addr:{addr}")
+    format!("addr:{}", client_of(addr))
 }
 
 /// Drops the failures of one entry that left the window.
@@ -425,5 +441,39 @@ mod tests {
         assert!(limiter.try_begin("b@example.com", addr(3), t1));
         assert_eq!(limiter.count(&pair_key(EMAIL, addr(1))), 1);
         assert_eq!(limiter.count(&address_key(addr(2))), 0);
+    }
+
+    fn v6(text: &str) -> IpAddr {
+        text.parse().unwrap()
+    }
+
+    #[test]
+    fn ipv6_addresses_count_per_64_and_ipv4_per_address() {
+        let limiter = LoginLimiter::new();
+        let t0 = Instant::now();
+        // One /64 has many addresses: they are one address here.
+        for n in 0..20u16 {
+            let addr = v6(&format!("2001:db8:1:2::{n:x}"));
+            assert!(
+                limiter.try_begin(&format!("u{n}@example.com"), addr, t0),
+                "{n}"
+            );
+        }
+        assert!(!limiter.try_begin("x@example.com", v6("2001:db8:1:2:ffff::1"), t0));
+        // So is an email from it.
+        let one = LoginLimiter::new();
+        for n in 0..5u16 {
+            assert!(one.try_begin(EMAIL, v6(&format!("2001:db8::{n:x}")), t0));
+        }
+        assert!(!one.try_begin(EMAIL, v6("2001:db8::99"), t0));
+        // Another /64 is another address.
+        assert!(limiter.try_begin("x@example.com", v6("2001:db8:1:3::1"), t0));
+        assert!(one.try_begin(EMAIL, v6("2001:db8:0:1::1"), t0));
+        // IPv4 addresses next to each other are not one.
+        let four = LoginLimiter::new();
+        for _ in 0..5 {
+            assert!(four.try_begin(EMAIL, addr(1), t0));
+        }
+        assert!(four.try_begin(EMAIL, addr(2), t0));
     }
 }
