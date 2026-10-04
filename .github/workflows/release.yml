@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: The tag names the version
         if: github.event_name == 'push'
         run: |
@@ -46,11 +46,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           package_json_file: ui/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
@@ -59,7 +59,7 @@ jobs:
         run: |
           pnpm --dir ui install --frozen-lockfile
           pnpm --dir ui build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: console
           path: ui/dist
@@ -94,10 +94,10 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Before cargo runs: the gateway's build script copies `ui/dist` into
       # the binary.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: console
           path: ui/dist
@@ -109,13 +109,7 @@ jobs:
         run: |
           rustup toolchain install --profile minimal
           rustup target add ${{ matrix.target }}
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+      # No cache: a release is built from nothing an earlier run left.
       - name: Build
         run: cargo build --release --locked -p ultrafast-gateway --target ${{ matrix.target }}
       - name: Smoke test
@@ -141,7 +135,7 @@ jobs:
           cat "$file.sha256"
           ls -l "$file" | awk '{printf "archive size: %.1f MB\n", $5/1048576}'
           rm -rf "$name"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.target }}
           path: |
@@ -159,8 +153,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           merge-multiple: true
@@ -193,15 +187,15 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/ultrafast-ai-gateway
           tags: |
@@ -209,7 +203,7 @@ jobs:
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
       # The Dockerfile builds the console and the binary itself. linux/amd64
       # only for now: an arm64 image would be built on an arm64 runner (LATER).
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./Dockerfile

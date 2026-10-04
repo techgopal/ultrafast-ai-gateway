@@ -202,3 +202,80 @@ fn the_tag_must_name_the_version_of_the_workspace_before_anything_is_built() {
         "the check is still after the builds"
     );
 }
+
+fn repository_file(path: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(path);
+    std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} is missing", path.display()))
+}
+
+/// Every third-party action is pinned by the commit it runs, with the tag
+/// it stands for in a comment: a tag can be moved to other code.
+#[test]
+fn every_action_is_pinned_by_its_commit() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for line in text.lines() {
+            let Some(at) = line.find("uses: ") else {
+                continue;
+            };
+            seen += 1;
+            let rest = &line[at + "uses: ".len()..];
+            let (action, after) = rest.split_once('@').unwrap_or((rest, ""));
+            let sha: String = after.chars().take_while(|c| !c.is_whitespace()).collect();
+            assert!(
+                sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "{}: {action} is not pinned by a commit: {line}",
+                path.display()
+            );
+            assert!(
+                after[sha.len()..].trim_start().starts_with("# "),
+                "{}: {action} has no comment with its tag: {line}",
+                path.display()
+            );
+        }
+    }
+    assert!(seen > 0);
+}
+
+/// The base images of the Docker image are pinned by digest, with the tag
+/// in a comment.
+#[test]
+fn every_base_image_is_pinned_by_its_digest() {
+    let text = repository_file("Dockerfile");
+    let froms: Vec<&str> = text.lines().filter(|l| l.starts_with("FROM ")).collect();
+    assert!(!froms.is_empty());
+    for line in froms {
+        let image = line.split_whitespace().nth(1).unwrap();
+        let digest = image.split_once("@sha256:").map(|(_, d)| d).unwrap_or("");
+        assert!(
+            digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit()),
+            "{line}"
+        );
+    }
+    assert!(
+        text.lines().filter(|l| l.starts_with("FROM ")).count()
+            <= text
+                .lines()
+                .filter(|l| l.starts_with("# ") && l.contains(':'))
+                .count(),
+        "each FROM has a comment with its tag"
+    );
+}
+
+/// A release is built from nothing that an earlier run left: no cached
+/// `target`, which any workflow of the repository could have written.
+#[test]
+fn a_release_restores_no_cached_target() {
+    let text = workflow();
+    let jobs = jobs(&text);
+    let build = job(&jobs, "build");
+    assert!(!build.contains("actions/cache"), "{build}");
+    for line in text.lines() {
+        assert!(line.trim() != "target", "a cache of target: {line}");
+    }
+}

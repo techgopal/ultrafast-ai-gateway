@@ -39,11 +39,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           components: rustfmt, clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -61,11 +61,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -73,7 +73,7 @@ jobs:
             target
           key: ${{ runner.os }}-clients-wasm-${{ hashFiles('Cargo.lock') }}
       # The CLI must match the pinned wasm-bindgen crate (0.2.129).
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: wasm-bindgen
         with:
           path: ~/.cargo/bin/wasm-bindgen
@@ -84,10 +84,10 @@ jobs:
         run: |
           bash crates/client-wasm/build.sh /tmp/uf-wasm-pkg nodejs
           node crates/client-wasm/smoke/smoke.mjs /tmp/uf-wasm-pkg
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           package_json_file: clients/ts/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
@@ -107,16 +107,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/cache@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: ${{ runner.os }}-clients-py-${{ hashFiles('Cargo.lock') }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Build the extension and run the tests
@@ -145,14 +145,14 @@ jobs:
           - { os: windows-latest, target: x64 }
           - { os: windows-11-arm, target: aarch64 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           working-directory: crates/client-py
           target: ${{ matrix.target }}
           args: --release --out dist
           manylinux: auto
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: crates/client-py/dist
@@ -162,13 +162,13 @@ jobs:
     needs: [python]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           working-directory: crates/client-py
           command: sdist
           args: --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sdist
           path: crates/client-py/dist
