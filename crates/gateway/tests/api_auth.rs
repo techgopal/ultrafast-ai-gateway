@@ -1099,3 +1099,33 @@ async fn a_gateway_that_starts_with_a_user_has_no_setup_code() {
     let api = common::api_on(store, false).await;
     assert!(api.state.setup_code.is_none());
 }
+
+/// Failures for one email from many addresses do not lock its owner out:
+/// they count for each address and email together, and for each address.
+#[tokio::test]
+async fn failures_from_other_addresses_do_not_lock_an_email_out() {
+    let api = api().await;
+    seed_user(&api.store, EMAIL, Role::Admin, PASSWORD).await;
+    for n in 1..=6u8 {
+        for _ in 0..5 {
+            let status = login_from(&api, &format!("198.51.100.{n}"), &[], EMAIL).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "address {n}");
+        }
+        // That address has used up its tries for this email.
+        let status = login_from(&api, &format!("198.51.100.{n}"), &[], EMAIL).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "address {n}");
+    }
+    // The owner, from their own address, still signs in.
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "email": EMAIL, "password": PASSWORD }).to_string(),
+        ))
+        .unwrap();
+    let peer: SocketAddr = "203.0.113.50:4000".parse().unwrap();
+    req.extensions_mut().insert(ConnectInfo(peer));
+    let status = api.app.clone().oneshot(req).await.unwrap().status();
+    assert_eq!(status, StatusCode::OK);
+}

@@ -176,6 +176,9 @@ pub fn spawn_refresher(state: Arc<AppState>, mut stop: watch::Receiver<bool>) ->
             if let Err(e) = state.refresh().await {
                 tracing::error!(error = %e, "snapshot refresh failed");
             }
+            // The sign-in limiter forgets what left its window here, not
+            // on every attempt.
+            state.limiter.prune(std::time::Instant::now());
             match state.store.delete_expired_sessions().await {
                 Ok(expired) => tracing::debug!(expired, "removed expired sessions"),
                 Err(e) => tracing::warn!(error = %e, "could not remove expired sessions"),

@@ -370,10 +370,11 @@ fn begin_attempt(state: &AppState, key: &str, addr: IpAddr) -> Result<(), ApiErr
     Ok(())
 }
 
-/// Takes back what `begin_attempt` counted, and the email's failures.
+/// Takes back what `begin_attempt` counted, and the failures of the email
+/// from this address.
 fn attempt_succeeded(state: &AppState, key: &str, addr: IpAddr) {
-    state.limiter.record_success(key);
-    state.limiter.forgive(addr, Instant::now());
+    state.limiter.record_success(key, addr);
+    state.limiter.forgive(addr);
 }
 
 #[utoipa::path(
