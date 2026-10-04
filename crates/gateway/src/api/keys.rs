@@ -30,7 +30,7 @@ pub struct CreateKeyRequest {
     /// catalog, or the name of a route. Left out, the key has no allowlist.
     allowed: Option<Vec<String>>,
     /// Tags every call of the key is recorded with, over those the call
-    /// sends. At most 20; names of `A-Z a-z 0-9 _ . : -`, names and values
+    /// sends. At most 20; names of `A-Z a-z 0-9 _ . -`, names and values
     /// of 1 to 64 characters.
     #[schema(value_type = Option<std::collections::BTreeMap<String, String>>)]
     tags: Option<Tags>,
@@ -419,7 +419,7 @@ pub async fn view(
         (status = 200, description = "The key with its new tags.", body = KeyView),
         (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
-        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not an admin, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
         (status = 404, description = "It does not exist, or it is hidden from the caller.", body = super::openapi::ApiErrorBody),
         (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
         (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
@@ -427,7 +427,7 @@ pub async fn view(
     ),
     security(("session" = []), ("token" = [])),
 )]
-/// Replaces the tags of a key. Whoever may revoke the key may do this.
+/// Replaces the tags of a key. Admins only: the key's tags win over a call's.
 pub async fn update(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -439,7 +439,7 @@ pub async fn update(
     let key = key_of(store, &raw_id).await?;
     require(
         me,
-        &Action::RevokeKey {
+        &Action::EditKeyTags {
             owner_id: key.user_id,
             team_id: key.team_id,
         },

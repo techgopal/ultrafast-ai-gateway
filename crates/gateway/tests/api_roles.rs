@@ -465,7 +465,7 @@ fn table() -> Vec<Row> {
             [200, 403, 403, 401]),
         row(63, "PATCH", "/api/keys/{id}", "lena's tags", |w, _| format!("/api/keys/{}", w.lena_key),
             || Some(json!({ "tags": { "team": "platform" } })),
-            [200, 200, 200, 401]),
+            [200, 403, 403, 401]),
         row(64, "PATCH", "/api/keys/{id}", "tomas's tags", |w, _| format!("/api/keys/{}", w.tomas_key),
             || Some(json!({ "tags": { "team": "research" } })),
             [200, 404, 404, 401]),

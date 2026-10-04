@@ -42,7 +42,7 @@ pub fn refusal_of_name(name: &str) -> Option<&'static str> {
         return Some("a name or value is longer than 64 characters");
     }
     if !name.chars().all(name_char) {
-        return Some("a name may use only A-Z a-z 0-9 _ . : -");
+        return Some("a name may use only A-Z a-z 0-9 _ . -");
     }
     None
 }
@@ -59,7 +59,7 @@ pub fn refusal_of_value(value: &str) -> Option<&'static str> {
 }
 
 fn name_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-')
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')
 }
 
 /// The tags of the `x-uf-tags` header: none when it is absent, else the

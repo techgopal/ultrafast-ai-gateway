@@ -1286,7 +1286,7 @@
         "tags": [
           "keys"
         ],
-        "summary": "Replaces the tags of a key. Whoever may revoke the key may do this.",
+        "summary": "Replaces the tags of a key. Admins only: the key's tags win over a call's.",
         "operationId": "keys_update",
         "parameters": [
           {
@@ -1351,7 +1351,7 @@
             }
           },
           "403": {
-            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "description": "The caller is not an admin, or the CSRF token is missing or does not match.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5870,7 +5870,7 @@
               "object",
               "null"
             ],
-            "description": "Tags every call of the key is recorded with, over those the call\nsends. At most 20; names of `A-Z a-z 0-9 _ . : -`, names and values\nof 1 to 64 characters.",
+            "description": "Tags every call of the key is recorded with, over those the call\nsends. At most 20; names of `A-Z a-z 0-9 _ . -`, names and values\nof 1 to 64 characters.",
             "additionalProperties": {
               "type": "string"
             },

@@ -677,6 +677,7 @@ async fn bad_tags_on_create_are_a_field_error_and_make_no_key() {
         json!({ "": "v" }),
         json!({ "a": "" }),
         json!({ "a b": "v" }),
+        json!({ "a:b": "v" }),
         json!({ "é": "v" }),
         json!({ "n".repeat(65): "v" }),
         json!({ "a": "v".repeat(65) }),
@@ -693,7 +694,7 @@ async fn bad_tags_on_create_are_a_field_error_and_make_no_key() {
 }
 
 #[tokio::test]
-async fn tags_are_changed_by_whoever_may_revoke_the_key() {
+async fn only_an_admin_changes_the_tags_of_a_key() {
     let org = org().await;
     let keys = seed_keys(&org).await;
     let (maya, arjun, lena) = (
@@ -701,19 +702,23 @@ async fn tags_are_changed_by_whoever_may_revoke_the_key() {
         org.sign_in("arjun").await,
         org.sign_in("lena").await,
     );
-    // The owner.
-    let (status, body) = patch(&org, &lena, keys.lena, json!({ "tags": { "a": "1" } })).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["tags"], json!({ "a": "1" }));
-    // The lead of the key's team replaces them all.
-    let (status, body) = patch(&org, &arjun, keys.lena, json!({ "tags": { "b": "2" } })).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["tags"], json!({ "b": "2" }));
-    // An admin, on a key with no owner.
-    let (status, body) = patch(&org, &maya, keys.legacy, json!({ "tags": { "c": "3" } })).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["tags"], json!({ "c": "3" }));
-    // Others see a key that is not theirs as missing, and change nothing.
+    // An admin, on any key, with or without an owner.
+    for id in [keys.lena, keys.legacy] {
+        let (status, body) = patch(&org, &maya, id, json!({ "tags": { "a": "1" } })).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["tags"], json!({ "a": "1" }));
+    }
+    // The owner and the lead of the team may see the key, and are refused.
+    for (who, id) in [
+        (&lena, keys.lena),
+        (&arjun, keys.lena),
+        (&arjun, keys.arjun),
+    ] {
+        let (status, body) = patch(&org, who, id, json!({ "tags": { "x": "y" } })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(error_code(&body), "forbidden");
+    }
+    // A key that is not theirs looks missing.
     for (who, id) in [
         (&lena, keys.arjun),
         (&arjun, keys.tomas),
@@ -723,6 +728,16 @@ async fn tags_are_changed_by_whoever_may_revoke_the_key() {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
     let store = &org.api.store;
+    assert_eq!(
+        store
+            .key_by_id(keys.lena)
+            .await
+            .unwrap()
+            .unwrap()
+            .tags
+            .len(),
+        1
+    );
     assert!(store
         .key_by_id(keys.arjun)
         .await
@@ -730,21 +745,11 @@ async fn tags_are_changed_by_whoever_may_revoke_the_key() {
         .unwrap()
         .tags
         .is_empty());
-    assert!(store
-        .key_by_id(keys.tomas)
-        .await
-        .unwrap()
-        .unwrap()
-        .tags
-        .is_empty());
     // An empty object clears them.
-    let (status, body) = patch(&org, &lena, keys.lena, json!({ "tags": {} })).await;
+    let (status, body) = patch(&org, &maya, keys.lena, json!({ "tags": {} })).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["tags"], json!({}));
-    assert_eq!(
-        audited(&org).await,
-        ["key.tags", "key.tags", "key.tags", "key.tags"]
-    );
+    assert_eq!(audited(&org).await, ["key.tags", "key.tags", "key.tags"]);
     let summary = org.last_summary("key.tags").await;
     assert!(summary.contains("lena"), "{summary}");
     assert!(!summary.contains("platform"), "{summary}");
@@ -754,7 +759,7 @@ async fn tags_are_changed_by_whoever_may_revoke_the_key() {
 async fn bad_tags_on_patch_are_refused_and_change_nothing() {
     let org = org().await;
     let keys = seed_keys(&org).await;
-    let lena = org.sign_in("lena").await;
+    let lena = org.sign_in("maya").await;
     patch(&org, &lena, keys.lena, json!({ "tags": { "keep": "me" } })).await;
     for tags in [
         json!({ "": "v" }),

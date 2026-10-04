@@ -78,11 +78,15 @@ async fn the_header_is_checked_rule_by_rule() {
         (long_value, "a name or value is longer than 64 characters"),
         (
             r#"{"a b":"v"}"#.into(),
-            "a name may use only A-Z a-z 0-9 _ . : -",
+            "a name may use only A-Z a-z 0-9 _ . -",
+        ),
+        (
+            r#"{"a:b":"v"}"#.into(),
+            "a name may use only A-Z a-z 0-9 _ . -",
         ),
         (
             r#"{"é":"v"}"#.into(),
-            "a name may use only A-Z a-z 0-9 _ . : -",
+            "a name may use only A-Z a-z 0-9 _ . -",
         ),
     ];
     for (header, reason) in &cases {
@@ -115,7 +119,7 @@ async fn the_limits_are_inclusive() {
         format!("{{{}}}", pairs.join(","))
     };
     let edge = format!(r#"{{"{}":"{}"}}"#, "n".repeat(64), "v".repeat(64));
-    let charset = r#"{"Az09_.:-":"any value, with spaces é"}"#;
+    let charset = r#"{"Az09_.-":"any value, with spaces é"}"#;
     for header in [twenty.as_str(), edge.as_str(), charset, "{}"] {
         let (status, body) = chat(&h, &[header]).await;
         assert_eq!(status, StatusCode::OK, "{header}: {body}");
@@ -231,4 +235,95 @@ async fn the_header_is_never_forwarded_to_a_provider() {
         }
         assert!(!String::from_utf8_lossy(&seen[0].body).contains("secret-label"));
     }
+}
+
+/// What the provider was sent for a call with a tags header on each endpoint.
+async fn forwarded(h: &Harness, path: &str, key_header: (&str, &str), body: &str) -> Vec<Value> {
+    let headers = [
+        key_header,
+        ("x-uf-tags", r#"{"secret-label":"internal"}"#),
+        ("anthropic-version", "2023-06-01"),
+    ];
+    let (status, _, text) = post_to(&h.app, path, &headers, body).await;
+    assert_eq!(status, StatusCode::OK, "{path}: {text}");
+    h.upstream
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            json!({
+                "headers": r.headers.iter().map(|(n, v)| format!("{}={}", n, v.to_str().unwrap_or(""))).collect::<Vec<_>>(),
+                "body": String::from_utf8_lossy(&r.body),
+            })
+        })
+        .collect()
+}
+
+fn assert_clean(seen: &[Value], what: &str) {
+    assert_eq!(seen.len(), 1, "{what}");
+    let text = seen[0].to_string();
+    assert!(
+        !text.contains("x-uf-tags") && !text.contains("secret-label"),
+        "{what}: {text}"
+    );
+}
+
+#[tokio::test]
+async fn the_header_is_not_forwarded_on_messages_embeddings_or_a_stream() {
+    let anthropic_ok = json!({
+        "id": "m1", "type": "message", "role": "assistant", "model": "claude-sonnet-5",
+        "content": [{ "type": "text", "text": "hi" }], "stop_reason": "end_turn",
+        "usage": { "input_tokens": 1, "output_tokens": 2 }
+    });
+    let h = harness("anthropic").await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(anthropic_ok))
+        .mount(&h.upstream)
+        .await;
+    let bearer = format!("Bearer {}", h.key);
+    let _ = bearer;
+    let body = r#"{"model":"p/claude-sonnet-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#;
+    let seen = forwarded(&h, "/v1/messages", ("x-api-key", &h.key), body).await;
+    assert_clean(&seen, "messages");
+
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list", "model": "m",
+            "data": [{ "object": "embedding", "index": 0, "embedding": [0.1, 0.2] }],
+            "usage": { "prompt_tokens": 1, "total_tokens": 1 }
+        })))
+        .mount(&h.upstream)
+        .await;
+    let bearer = format!("Bearer {}", h.key);
+    let seen = forwarded(
+        &h,
+        "/v1/embeddings",
+        ("authorization", &bearer),
+        r#"{"model":"p/m","input":"hi"}"#,
+    )
+    .await;
+    assert_clean(&seen, "embeddings");
+
+    let h = harness("openai").await;
+    let sse = "data: {\"id\":\"c1\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"c1\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n";
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse),
+        )
+        .mount(&h.upstream)
+        .await;
+    let bearer = format!("Bearer {}", h.key);
+    let seen = forwarded(
+        &h,
+        "/v1/chat/completions",
+        ("authorization", &bearer),
+        r#"{"model":"p/gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+    )
+    .await;
+    assert_clean(&seen, "stream");
 }

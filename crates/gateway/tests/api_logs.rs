@@ -505,6 +505,21 @@ async fn bad_tag_filters_are_422_on_the_tag_field() {
 }
 
 #[tokio::test]
+async fn the_name_ends_at_the_first_colon() {
+    let org = org().await;
+    org.api
+        .store
+        .insert_logs(&[
+            tagged("2026-01-01 10:00:00", org.lena, Some(json!({"a":"b:c"}))),
+            tagged("2026-01-02 10:00:00", org.lena, Some(json!({"a":"b"}))),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(ids(&org, "maya", "?tag=a:b:c").await, [1]);
+    assert_eq!(ids(&org, "maya", "?tag=a:b").await, [2]);
+}
+
+#[tokio::test]
 async fn a_tag_with_sql_looking_characters_is_only_a_name() {
     let org = tagged_world().await;
     let maya = org.sign_in("maya").await;

@@ -63,6 +63,13 @@ pub enum Action {
         owner_id: Option<i64>,
         team_id: Option<i64>,
     },
+    /// Replaces the tags of a key. Admins only: a key's tags win over a
+    /// call's, so they are the admin's labels, and an owner may not take
+    /// them off. The creator sets tags when the key is made.
+    EditKeyTags {
+        owner_id: Option<i64>,
+        team_id: Option<i64>,
+    },
     // access tokens: always the caller's own
     ManageOwnTokens,
     // providers
@@ -241,6 +248,15 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
                 Allow
             } else {
                 Forbidden
+            }
+        }
+        // Who may see the key is told it is not theirs to edit; the rest,
+        // that it is not there.
+        Action::EditKeyTags { owner_id, team_id } => {
+            if *owner_id == Some(p.user_id) || team_id.is_some_and(|t| p.leads(t)) {
+                Forbidden
+            } else {
+                Hidden
             }
         }
         Action::ViewKey { owner_id, team_id } | Action::RevokeKey { owner_id, team_id } => {
@@ -1269,6 +1285,26 @@ mod tests {
         ] {
             assert_eq!(authorize(&f.admin, &action), Allow, "admin, {action:?}");
         }
+    }
+
+    #[test]
+    fn only_an_admin_edits_the_tags_of_a_key() {
+        let f = fixture();
+        let edit = |owner_id, team_id| Action::EditKeyTags { owner_id, team_id };
+        for (owner, team) in [(Some(1), None), (Some(2), Some(10)), (None, None)] {
+            assert_eq!(authorize(&f.admin, &edit(owner, team)), Allow);
+        }
+        // Who may see the key is told it is not theirs to edit; the rest, that it is not there.
+        let own = Some(f.lead.user_id);
+        assert_eq!(authorize(&f.lead, &edit(own, None)), Forbidden);
+        assert_eq!(
+            authorize(&f.member, &edit(Some(f.member.user_id), None)),
+            Forbidden
+        );
+        assert_eq!(authorize(&f.lead, &edit(Some(99), Some(10))), Forbidden);
+        assert_eq!(authorize(&f.lead, &edit(Some(99), Some(77))), Hidden);
+        assert_eq!(authorize(&f.member, &edit(Some(99), None)), Hidden);
+        assert_eq!(authorize(&f.loner, &edit(None, None)), Hidden);
     }
 
     #[test]
