@@ -2780,7 +2780,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "ultrafast-client"
-version = "2.0.0-alpha.1"
+version = "2.0.0-beta.1"
 dependencies = [
  "async-stream",
  "bytes",
@@ -2794,7 +2794,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-client-py"
-version = "2.0.0-alpha.1"
+version = "2.0.0-beta.1"
 dependencies = [
  "futures",
  "pyo3",
@@ -2805,7 +2805,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-client-wasm"
-version = "2.0.0-alpha.1"
+version = "2.0.0-beta.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2815,7 +2815,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-gateway"
-version = "2.0.0-alpha.1"
+version = "2.0.0-beta.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2853,7 +2853,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-translate"
-version = "2.0.0-alpha.1"
+version = "2.0.0-beta.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3256,9 +3256,9 @@ dependencies = [
 
 [[package]]
 name = "yoke-derive"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33811428bee40dbceb6d545e95754741d17a6aef9a4849f0fd62e2ba4f412a78"
+checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
 dependencies = [
  "proc-macro2",
  "quote",

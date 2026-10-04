@@ -5,13 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0-alpha.2] - Unreleased
+## [2.0.0-beta.1] - 2026-10-04
 
-The last features of phase 1: a playground, Settings for sign-in and backup,
-configuration export and import, the audit log under Settings, and a release
-workflow that works. The version in `Cargo.toml` is still `2.0.0-alpha.1`
-until the release is cut; the release workflow stops on a tag that does not
-name it.
+The first release of Ultrafast v2, a rewrite of the gateway. Phase 1 is
+complete: one binary with an embedded web console, an OpenAI-compatible `/v1`
+proxy (chat in the OpenAI and Anthropic formats, embeddings, streaming) over
+OpenAI, Anthropic, Gemini, Azure OpenAI and other OpenAI-compatible
+providers, virtual keys, teams and roles, rate limits and budgets, a response
+cache, routing with fallbacks, request logs and usage, a playground,
+configuration export and import, backup, and clients for Rust, TypeScript and
+Python. It is a beta: the API may still change before 2.0.0, and the limits
+below and in the README's "Known limits" apply. v2 is a fresh install;
+nothing from v1 is migrated.
 
 ### Added
 - **Playground** in the console (Observe, Playground) and
