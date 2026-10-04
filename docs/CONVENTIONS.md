@@ -22,7 +22,7 @@ and briefs add to these; they do not repeat them.
 
 ## Git
 
-- Commit with `git -c user.name=techgopal -c user.email=techgopal2@gmail.com commit`.
+- Commit with `git -c user.name=techgopal -c user.email=44522021+techgopal@users.noreply.github.com commit`.
   Never change git config. Stage specific paths; never `git add -A`.
 - End every commit message with a blank line and:
   ```
