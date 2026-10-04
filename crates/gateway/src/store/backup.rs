@@ -30,10 +30,33 @@ impl Store {
         let Some(target) = path.to_str() else {
             bail!("the path of a backup must be text");
         };
-        sqlx::query("VACUUM INTO ?")
+        // Made here, readable by its owner alone, so that the copy is never
+        // readable by others while it is written (`VACUUM INTO` takes an
+        // empty file that exists).
+        create_private(path)?;
+        let done = sqlx::query("VACUUM INTO ?")
             .bind(target)
             .execute(self.pool())
-            .await?;
+            .await;
+        if let Err(e) = done {
+            let _ = std::fs::remove_file(path);
+            return Err(e.into());
+        }
         Ok(())
     }
+}
+
+/// Creates `path`, which must not exist, with mode 0600 where there are modes.
+fn create_private(path: &Path) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map(drop)
+        .map_err(|e| anyhow::anyhow!("could not create {}: {e}", path.display()))
 }

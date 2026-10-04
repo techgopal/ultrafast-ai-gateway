@@ -348,3 +348,29 @@ async fn the_command_writes_a_backup_that_has_no_master_key() {
     assert!(!none.status.success());
     assert!(String::from_utf8_lossy(&none.stderr).contains("no database"));
 }
+
+/// The copy is private from the moment it exists, whatever the umask: the
+/// store creates it, nothing restricts it afterwards.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_backup_file_is_created_readable_by_its_owner_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = disk().await;
+    let out = tempfile::tempdir().unwrap();
+    let target = out.path().join("copy.db");
+    // A umask that would let others read what is created.
+    let old = unsafe { libc_umask(0o022) };
+    let done = d.store.backup_to(&target).await;
+    unsafe { libc_umask(old) };
+    done.unwrap();
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "mode {mode:o}");
+    // It still refuses an existing file, and leaves it alone.
+    assert!(d.store.backup_to(&target).await.is_err());
+}
+
+#[cfg(unix)]
+extern "C" {
+    #[link_name = "umask"]
+    fn libc_umask(mask: u32) -> u32;
+}
