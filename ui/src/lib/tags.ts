@@ -1,5 +1,5 @@
 // The rules of a tag, as the gateway has them (`crates/gateway/src/tags.rs`):
-// at most 20 to a call or a key, a name of `A-Z a-z 0-9 _ . : -`, names and
+// at most 20 to a call or a key, a name of `A-Z a-z 0-9 _ . -`, names and
 // values of 1 to 64 characters. The gateway decides; the console refuses
 // what it knows the gateway would, so that nothing is sent that cannot be.
 import { ConsoleRefusal } from "@/api/errors";
@@ -17,14 +17,14 @@ export const TAG_PROBLEMS = {
   count: "At most 20 tags.",
   empty: "Every tag needs a name and a value.",
   long: "A name or value is at most 64 characters.",
-  charset: "A tag name may use only letters, digits and _ . : -",
+  charset: "A tag name may use only letters, digits and _ . -",
   twice: "A tag name can be used once.",
 } as const;
 
 /** What the filter of the logs says when its text is not `name:value`. */
 export const BAD_TAG_FILTER = "Write the tag as name:value.";
 
-const NAME = /^[A-Za-z0-9_.:-]+$/;
+const NAME = /^[A-Za-z0-9_.-]+$/;
 
 function length(text: string): number {
   return Array.from(text).length;
@@ -75,7 +75,7 @@ export function chipsOf(tags: Readonly<Record<string, string>>): string[] {
 
 /**
  * The tag of the filter of the logs: `name:value`, the name ending at the
- * first colon, as in the gateway. The tag is as the gateway takes it.
+ * first colon (a name has none), as in the gateway. The tag is as the gateway takes it.
  */
 export function parseTagFilter(text: string): { tag: string } | { problem: string } {
   const trimmed = text.trim();

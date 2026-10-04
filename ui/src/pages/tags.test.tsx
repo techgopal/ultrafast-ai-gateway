@@ -124,7 +124,7 @@ describe("the tags of a new key", () => {
   });
 
   test.each([
-    ["a name with a space", ["a b", "v"], "A tag name may use only letters, digits and _ . : -"],
+    ["a name with a space", ["a b", "v"], "A tag name may use only letters, digits and _ . -"],
     ["a name without a value", ["a", ""], "Every tag needs a name and a value."],
     ["a long value", ["a", "v".repeat(65)], "A name or value is at most 64 characters."],
   ])("%s is refused by the console, on the field, and nothing is sent", async (_, [name, value], message) => {
@@ -297,7 +297,7 @@ describe("changing the tags of a key", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
     const group = await within(dialog).findByRole("group", { name: "Tags" });
     await waitFor(() => {
-      expect(descriptionOf(group)).toBe("A tag name may use only letters, digits and _ . : -");
+      expect(descriptionOf(group)).toBe("A tag name may use only letters, digits and _ . -");
     });
     expect(state.patched).toEqual([]);
     expect(within(dialog).getByRole("textbox", { name: "Tag 1 name" })).toHaveValue("env x");
@@ -340,25 +340,28 @@ describe("changing the tags of a key", () => {
     expect(toasts()).toEqual([]);
   });
 
-  test("it is offered where the gateway allows it, and not for a revoked key", async () => {
+  test("an admin is offered it on every key but a revoked one", async () => {
     keysAre([active, noOwner, revoked, fixtures.keys.suspended]);
-    // The lead of Platform: their team's keys, not a key without a team of another.
-    await page("/keys", { user: fixtures.me.arjun });
+    await page("/keys");
     await table();
     await userEvent.click(screen.getByRole("checkbox", { name: "Show revoked" }));
-    expect(within(rowWithCell(active.name)).getByRole("button", { name: "Edit tags" })).toBeInTheDocument();
-    expect(within(rowWithCell(noOwner.name)).getByRole("button", { name: "Edit tags" })).toBeInTheDocument();
+    for (const key of [active, noOwner, fixtures.keys.suspended]) {
+      expect(within(rowWithCell(key.name)).getByRole("button", { name: "Edit tags" })).toBeInTheDocument();
+    }
     expect(within(rowWithCell(revoked.name)).queryByRole("button", { name: "Edit tags" })).toBeNull();
   });
 
-  test("a member sees it on their own keys only", async () => {
-    const own: fixtures.Key = { ...active, id: 20, name: "lena-own", owner_id: fixtures.users.lena.id };
-    const other: fixtures.Key = { ...active, id: 21, name: "other", owner_id: fixtures.users.tomas.id, team_id: null };
-    keysAre([own, other]);
-    await page("/keys", { user: fixtures.me.lena });
+  test.each([
+    ["a lead", fixtures.me.arjun],
+    ["a member", fixtures.me.lena],
+  ])("%s is not offered it, not even on their own key or their team's", async (_, user) => {
+    const own: fixtures.Key = { ...active, id: 20, name: "own", owner_id: user.user.id };
+    keysAre([own, noOwner]);
+    await page("/keys", { user });
     await table();
-    expect(within(rowWithCell(own.name)).getByRole("button", { name: "Edit tags" })).toBeInTheDocument();
-    expect(within(rowWithCell(other.name)).queryByRole("button", { name: "Edit tags" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit tags" })).toBeNull();
+    // They can still revoke their own key.
+    expect(within(rowWithCell(own.name)).getByRole("button", { name: "Revoke" })).toBeInTheDocument();
   });
 });
 

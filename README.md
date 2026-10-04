@@ -131,22 +131,27 @@ reports: a team, a job, an environment.
   embeddings): a compact JSON object of strings, for example
   `x-uf-tags: {"job":"nightly","env":"dev"}`. The gateway-owned clients send
   it for you (`tags` option). The header is never forwarded to a provider.
-- **On a key.** Set `tags` when creating a key (`POST /api/keys`), or replace
-  them with `PATCH /api/keys/{id}` and `{"tags": {...}}` (`{}` removes them);
-  whoever may revoke the key may change its tags. The console has a Tags
-  editor on Create key and an Edit tags action on each key.
+- **On a key.** Set `tags` when creating a key (`POST /api/keys`); whoever
+  creates the key may. Only an admin changes them afterwards, with
+  `PATCH /api/keys/{id}` and `{"tags": {...}}` (`{}` removes them): a key's
+  tags win over a call's, so they are the admin's labels, and an owner or a
+  team lead cannot take them off. The console has a Tags editor on Create key
+  and an Edit tags action on each key, for admins.
 - **Precedence.** A call is recorded with its own tags overlaid by its key's,
   and the key wins on the same name: a caller cannot relabel what an admin
   fixed. A change to a key's tags applies to calls made after it.
-- **Limits.** At most 20 tags; a name of `A-Z a-z 0-9 _ . : -`; names and
+- **Limits.** At most 20 tags; a name of `A-Z a-z 0-9 _ . -` (no colon); names and
   values of 1 to 64 characters; the header at most 1 KiB (1024 bytes). A
   header that breaks a rule is refused with 400 `invalid_request_error`, "The
   x-uf-tags header is not valid: ...", in the shape of the endpoint, and the
-  call is not made.
+  call is not made. A key's tags and a call's can merge to 40 stored entries:
+  the limit of 20 applies to each, not to the union.
 - **Reading them.** `GET /api/logs` and `GET /api/logs/{id}` show `tags`
   (an object, empty when none). `GET /api/logs?tag=env:prod` keeps the calls
   with that tag; repeat `tag` to require several (all must match). The name
-  ends at the first colon. `GET /api/usage?group=tag:team` sums by the value
+  ends at the first colon, which a name cannot contain, so `tag=a:b:c` is the
+  name `a` with the value `b:c`. The console's Tag filter takes one tag; the
+  API takes several. `GET /api/usage?group=tag:team` sums by the value
   of the tag `team`; calls without it are `(none)`. Both follow the same scope
   as the rest of the logs and usage: you see your own calls, a team lead their
   team's, an admin all. The filter is applied to the rows in that scope and

@@ -248,7 +248,7 @@ export interface paths {
         delete: operations["keys_revoke"];
         options?: never;
         head?: never;
-        /** Replaces the tags of a key. Whoever may revoke the key may do this. */
+        /** Replaces the tags of a key. Admins only: the key's tags win over a call's. */
         patch: operations["keys_update"];
         trace?: never;
     };
@@ -844,7 +844,7 @@ export interface components {
             owner_id?: number | null;
             /**
              * @description Tags every call of the key is recorded with, over those the call
-             *     sends. At most 20; names of `A-Z a-z 0-9 _ . : -`, names and values
+             *     sends. At most 20; names of `A-Z a-z 0-9 _ . -`, names and values
              *     of 1 to 64 characters.
              */
             tags?: {
@@ -2846,7 +2846,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            /** @description The caller is not an admin, or the CSRF token is missing or does not match. */
             403: {
                 headers: {
                     [name: string]: unknown;

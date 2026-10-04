@@ -16,7 +16,7 @@ const row = (name: string, value: string) => ({ name, value });
 describe("the rules of a tag, as the gateway has them", () => {
   test("a good set has no problem; rows left empty are not there", () => {
     expect(tagProblem([])).toBeNull();
-    expect(tagProblem([row("team", "platform"), row("Az09_.:-", "any value é")])).toBeNull();
+    expect(tagProblem([row("team", "platform"), row("Az09_.-", "any value é")])).toBeNull();
     expect(tagProblem([row("", ""), row("a", "b"), row("  ", "")])).toBeNull();
     const edge = [row("n".repeat(64), "v".repeat(64))];
     expect(tagProblem(edge)).toBeNull();
@@ -31,6 +31,7 @@ describe("the rules of a tag, as the gateway has them", () => {
     ["a long name", [row("n".repeat(65), "v")], TAG_PROBLEMS.long],
     ["a long value", [row("a", "v".repeat(65))], TAG_PROBLEMS.long],
     ["a space in a name", [row("a b", "v")], TAG_PROBLEMS.charset],
+    ["a colon in a name", [row("a:b", "v")], TAG_PROBLEMS.charset],
     ["a letter outside ASCII in a name", [row("é", "v")], TAG_PROBLEMS.charset],
     ["a name twice", [row("a", "1"), row("a", "2")], TAG_PROBLEMS.twice],
   ])("%s is refused", (_, rows, problem) => {
@@ -70,6 +71,8 @@ describe("the filter of the logs", () => {
     expect(parseTagFilter("  env:prod  ")).toEqual({ tag: "env:prod" });
     expect(parseTagFilter("url:http://x:80")).toEqual({ tag: "url:http://x:80" });
     expect(parseTagFilter("a:b c")).toEqual({ tag: "a:b c" });
+    // The name is `a`, the value `b:c`.
+    expect(parseTagFilter("a:b:c")).toEqual({ tag: "a:b:c" });
   });
 
   test.each(["env", ":v", "env:", "a b:v", "é:v", `${"n".repeat(65)}:v`, `a:${"v".repeat(65)}`, ""])(

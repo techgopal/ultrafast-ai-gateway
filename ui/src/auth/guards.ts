@@ -41,7 +41,7 @@ export type ConsoleAction =
   /** For any user, in a team of theirs or in none: what only an admin may. */
   | { type: "createKeyForAnyone" }
   | { type: "revokeKey"; ownerId: number | null; teamId: number | null }
-  /** Replaces the tags of a key: whoever may revoke it, as in the gateway. */
+  /** Replaces the tags of a key: admins only, as in the gateway; the creator sets them when the key is made. */
   | { type: "editKeyTags"; ownerId: number | null; teamId: number | null }
   | { type: "manageProviders" }
   /** Adds, syncs, enables, grants and deletes models: what only an admin may. */
@@ -112,6 +112,7 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "manageLimits":
     case "manageBudgets":
     case "manageSettings":
+    case "editKeyTags":
       return false;
     case "renameUser":
       return action.userId === me.user.id;
@@ -133,7 +134,6 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "createKeyForSelf":
       return action.teamId === null || isIn(me, action.teamId);
     case "revokeKey":
-    case "editKeyTags":
       return (
         action.ownerId === me.user.id || (action.teamId !== null && leads(me, action.teamId))
       );
