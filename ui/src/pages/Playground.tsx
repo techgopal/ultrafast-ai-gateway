@@ -113,7 +113,7 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
   const cost =
     run.finished === null
       ? null
-      : costMicros(run.finished.usage, pricesOf(target, run.finished.model, models));
+      : costMicros(run.finished.usage, pricesOf(run.finished.called, run.finished.model, models));
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">

@@ -17,6 +17,8 @@ export const NO_ANSWER = "The gateway sent no answer.";
 
 export interface Finished {
   usage: Usage;
+  /** The model or route the call was made with, as it was sent. */
+  called: string;
   /** The model that answered, as the provider names it. */
   model: string | null;
 }
@@ -140,7 +142,7 @@ export function useRun(): Run {
     setPartial("");
     setRunning(false);
     setError(failure);
-    setFinished(usage === null ? null : { usage, model });
+    setFinished(usage === null ? null : { usage, called: call.model, model });
     return putBack;
   }, []);
 

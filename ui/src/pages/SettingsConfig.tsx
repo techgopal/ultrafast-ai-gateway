@@ -4,6 +4,7 @@ import type { ImportReport } from "@/api/client";
 import { ConsoleRefusal, messageOfError } from "@/api/errors";
 import { control } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DownloadLink } from "@/components/DownloadLink";
 import { DataTable, type Column } from "@/components/DataTable";
 import { useToast } from "@/components/toast";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -184,13 +185,9 @@ export function ConfigSection() {
           them, teams, routes, limits, budgets and settings. No credential, key, token, password or
           log is in the file.
         </p>
-        <div>
-          <Button asChild variant="outline" className={control}>
-            <a href="/api/config/export" download>
-              Download configuration
-            </a>
-          </Button>
-        </div>
+        <DownloadLink href="/api/config/export" variant="outline">
+          Download configuration
+        </DownloadLink>
       </div>
       <div className="flex flex-col gap-3">
         <h3 className="text-sm font-medium">Import</h3>

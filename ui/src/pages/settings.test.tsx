@@ -1,6 +1,6 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { errors, validationFailed } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
 import { gate, startGateway } from "@/test/gateway";
@@ -24,6 +24,19 @@ afterEach(forgetToasts);
 
 function page(options: { user?: fixtures.Me; width?: number } = {}): Promise<AppRenderResult> {
   return renderWithApp(null, { route: "/settings", ...options });
+}
+
+/**
+ * Records what the console tells the browser to download: the address of
+ * every anchor it clicks. The page's own link is not counted, it is only
+ * what a click on it is turned into.
+ */
+function downloads(): string[] {
+  const started: string[] = [];
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+    started.push(this.getAttribute("href") ?? "");
+  });
+  return started;
 }
 
 const days = () => screen.findByLabelText("Keep request logs for (days)");
@@ -404,6 +417,50 @@ describe("backup", () => {
     expect(within(section).getByText(/Restore is a command-line procedure/)).toBeInTheDocument();
     expect(link.className.split(/\s+/)).toContain("min-h-11");
   });
+
+  test("the session is checked first, then the download starts", async () => {
+    const started = downloads();
+    const check = counted("get", "/api/settings", () => ok("get", "/api/settings", 200, fixtures.settings));
+    await page();
+    await days();
+    const before = check.calls;
+    await userEvent.click(screen.getByRole("link", { name: "Download backup" }));
+    await waitFor(() => {
+      expect(started).toEqual(["/api/backup"]);
+    });
+    expect(check.calls).toBe(before + 1);
+  });
+
+  test("a refusal is shown in place and nothing is downloaded", async () => {
+    const started = downloads();
+    await page();
+    await days();
+    override("get", "/api/settings", () => refuse(errors.internal_error));
+    await userEvent.click(screen.getByRole("link", { name: "Download backup" }));
+    const section = screen.getByRole("region", { name: "Backup" });
+    expect(await within(section).findByRole("alert")).toHaveTextContent("Something went wrong.");
+    expect(started).toEqual([]);
+    // Trying again, when it works, clears the message.
+    override("get", "/api/settings", () => ok("get", "/api/settings", 200, fixtures.settings));
+    await userEvent.click(within(section).getByRole("link", { name: "Download backup" }));
+    await waitFor(() => {
+      expect(started).toEqual(["/api/backup"]);
+    });
+    expect(within(section).queryByRole("alert")).toBeNull();
+  });
+
+  test("an ended session downloads nothing and ends the session as every call does", async () => {
+    const started = downloads();
+    const app = await page();
+    await days();
+    override("get", "/api/settings", unauthenticated);
+    override("get", "/api/auth/me", unauthenticated);
+    await userEvent.click(screen.getByRole("link", { name: "Download backup" }));
+    await waitFor(() => {
+      expect(href(app)).toBe("/sign-in?next=%2Fsettings");
+    });
+    expect(started).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------- configuration
@@ -444,6 +501,23 @@ describe("configuration: export", () => {
     expect(
       within(section).getByText(/No credential, key, token, password or log is in the file/),
     ).toBeInTheDocument();
+  });
+
+  test("the session is checked first, a refusal is shown in place, then the download starts", async () => {
+    const started = downloads();
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Configuration" });
+    override("get", "/api/settings", () => refuse(errors.internal_error));
+    await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
+    expect(await within(section).findByRole("alert")).toHaveTextContent("Something went wrong.");
+    expect(started).toEqual([]);
+    override("get", "/api/settings", () => ok("get", "/api/settings", 200, fixtures.settings));
+    await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
+    await waitFor(() => {
+      expect(started).toEqual(["/api/config/export"]);
+    });
+    expect(within(section).queryByRole("alert")).toBeNull();
   });
 });
 

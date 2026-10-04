@@ -109,7 +109,7 @@ function RetentionSection({ days }: { days: number }) {
 }
 
 /** The two views of the page: the settings, and the audit log. */
-function SectionNav({ view }: { view: "general" | "audit" }) {
+function SectionNav({ view, audit }: { view: "general" | "audit"; audit: boolean }) {
   const link = "inline-flex items-center rounded-md px-3 text-sm font-medium aria-[current=page]:bg-muted aria-[current=page]:text-foreground text-muted-foreground hover:text-foreground " + control;
   return (
     <nav aria-label="Settings sections" className="flex flex-wrap gap-1">
@@ -120,14 +120,16 @@ function SectionNav({ view }: { view: "general" | "audit" }) {
       >
         General
       </Link>
-      <Link
-        to="/settings"
-        hash="audit"
-        className={link}
-        {...(view === "audit" ? { "aria-current": "page" as const } : {})}
-      >
-        Audit log
-      </Link>
+      {audit ? (
+        <Link
+          to="/settings"
+          hash="audit"
+          className={link}
+          {...(view === "audit" ? { "aria-current": "page" as const } : {})}
+        >
+          Audit log
+        </Link>
+      ) : null}
     </nav>
   );
 }
@@ -165,13 +167,14 @@ function General() {
   );
 }
 
-function SettingsOf() {
+function SettingsOf({ audit }: { audit: boolean }) {
   const hash = useRouterState({ select: (state) => state.location.hash });
-  const view = hash === "audit" ? "audit" : "general";
+  // The audit log is decided by its own action, not by the settings'.
+  const view = hash === "audit" && audit ? "audit" : "general";
   return (
     <>
       <PageHeader title="Settings" />
-      <SectionNav view={view} />
+      <SectionNav view={view} audit={audit} />
       {view === "audit" ? <AuditSection /> : <General />}
     </>
   );
@@ -182,5 +185,5 @@ export function Settings() {
   const session = useSession();
   if (session.status !== "signedIn") return null;
   if (!can(session.me, { type: "manageSettings" })) return <NotAvailableContent />;
-  return <SettingsOf />;
+  return <SettingsOf audit={can(session.me, { type: "viewAudit" })} />;
 }

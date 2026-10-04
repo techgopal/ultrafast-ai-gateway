@@ -196,6 +196,17 @@ describe("sending", () => {
     expect(await screen.findByText("Tokens: 2 in, 3 out. Cost: $0.000002.")).toBeInTheDocument();
   });
 
+  test("the cost of a call stays with the model it was called with when another is chosen", async () => {
+    chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await say("hi");
+    expect(await screen.findByText("Tokens: 2 in, 3 out. Cost: $0.000002.")).toBeInTheDocument();
+    await choose(await modelPicker(), "local-llm/llama3.1:8b");
+    expect(screen.getByText("Tokens: 2 in, 3 out. Cost: $0.000002.")).toBeInTheDocument();
+    expect(screen.queryByText(/the model has no price/)).toBeNull();
+  });
+
   test("a model with no price has tokens and no cost", async () => {
     chats();
     await page();

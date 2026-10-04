@@ -1,8 +1,7 @@
 import { useId } from "react";
-import { control } from "@/components/classes";
-import { Button } from "@/components/ui/button";
+import { DownloadLink } from "@/components/DownloadLink";
 
-/** A copy of the database to keep. The download is the browser's own, so a large file is not held in memory. */
+/** A copy of the database to keep. The download is the browser's own, so a large file is not held in memory; the session is checked first. */
 export function BackupSection() {
   const headingId = useId();
   return (
@@ -19,13 +18,7 @@ export function BackupSection() {
         can only be read with the key. Keep the master key safe, apart from the backups. Restore is
         a command-line procedure, in the README: stop the gateway and put the file in place.
       </p>
-      <div>
-        <Button asChild className={control}>
-          <a href="/api/backup" download>
-            Download backup
-          </a>
-        </Button>
-      </div>
+      <DownloadLink href="/api/backup">Download backup</DownloadLink>
     </section>
   );
 }
