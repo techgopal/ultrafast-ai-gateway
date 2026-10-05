@@ -100,6 +100,28 @@ fn tool_choice_value(req: &ChatRequest) -> Option<Value> {
     Some(v)
 }
 
+/// Anthropic wants roles to alternate: adjacent user messages become one.
+fn merge_user_turns(messages: Vec<Value>) -> Vec<Value> {
+    fn blocks(content: &Value) -> Vec<Value> {
+        match content.as_str() {
+            Some(t) => vec![json!({"type": "text", "text": t})],
+            None => content.as_array().cloned().unwrap_or_default(),
+        }
+    }
+    let mut out: Vec<Value> = Vec::with_capacity(messages.len());
+    for m in messages {
+        match out.last_mut() {
+            Some(last) if last["role"] == "user" && m["role"] == "user" => {
+                let mut merged = blocks(&last["content"]);
+                merged.extend(blocks(&m["content"]));
+                last["content"] = Value::Array(merged);
+            }
+            _ => out.push(m),
+        }
+    }
+    out
+}
+
 /// The `messages` array: tool messages become `tool_result` blocks of one user
 /// message, joined with an immediately following user message.
 fn messages_value(req: &ChatRequest) -> Result<Vec<Value>, TranslateError> {
@@ -154,7 +176,7 @@ fn messages_value(req: &ChatRequest) -> Result<Vec<Value>, TranslateError> {
     if !results.is_empty() {
         out.push(json!({"role": "user", "content": results}));
     }
-    Ok(out)
+    Ok(merge_user_turns(out))
 }
 
 pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, TranslateError> {
@@ -323,6 +345,9 @@ pub(crate) fn decode(
                     ));
                 };
                 if !part.is_empty() {
+                    if !state.tool_args_seen.contains(&index) {
+                        state.tool_args_seen.push(index);
+                    }
                     out.push(StreamEvent::ToolCallDelta {
                         index,
                         arguments: part.to_string(),
@@ -337,6 +362,21 @@ pub(crate) fn decode(
                         });
                     }
                 }
+            }
+        }
+        Some("content_block_stop") => {
+            // A tool without parameters gets no argument text: say `{}` so that
+            // callers always hold valid JSON.
+            let tool = v["index"]
+                .as_u64()
+                .and_then(|at| state.tool_blocks.iter().find(|(b, _)| *b == at))
+                .map(|(_, i)| *i);
+            if let Some(index) = tool.filter(|i| !state.tool_args_seen.contains(i)) {
+                state.tool_args_seen.push(index);
+                out.push(StreamEvent::ToolCallDelta {
+                    index,
+                    arguments: "{}".to_string(),
+                });
             }
         }
         Some("message_delta") => {
@@ -616,6 +656,76 @@ mod tests {
         assert_eq!(
             v["tools"],
             serde_json::json!([{"name": "get_weather", "description": "d", "input_schema": {"type": "object"}}])
+        );
+    }
+
+    #[test]
+    fn adjacent_user_messages_are_merged() {
+        let mut req = request(vec![
+            msg(Role::User, "a"),
+            msg(Role::User, "b"),
+            msg(Role::Assistant, "c"),
+            msg(Role::User, "d"),
+        ]);
+        req.tools = Vec::new();
+        let v = body_of(&req);
+        assert_eq!(
+            v["messages"],
+            serde_json::json!([
+                {"role": "user", "content": [
+                    {"type": "text", "text": "a"}, {"type": "text", "text": "b"}
+                ]},
+                {"role": "assistant", "content": "c"},
+                {"role": "user", "content": "d"}
+            ])
+        );
+        // Tool results with no assistant turn before them, then a user message after.
+        let mut req = request(vec![
+            msg(Role::User, "q"),
+            tool_message("t1", "r"),
+            msg(Role::User, "next"),
+        ]);
+        req.tools = vec![tool("f")];
+        let v = body_of(&req);
+        let roles: Vec<_> = v["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user"]);
+        assert_eq!(v["messages"][0]["content"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_tool_without_arguments_gets_empty_object_arguments_in_a_stream() {
+        let input = concat!(
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"ping\",\"input\":{}}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"u\",\"name\":\"p2\",\"input\":{}}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":1}\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        )
+        .as_bytes();
+        let mut d = StreamDecoder::new(ProviderKind::Anthropic);
+        let got = d.feed(input).unwrap();
+        let start = |index, id: &str, name: &str| StreamEvent::ToolCallStart {
+            index,
+            id: id.into(),
+            name: name.into(),
+        };
+        let delta = |index, a: &str| StreamEvent::ToolCallDelta {
+            index,
+            arguments: a.into(),
+        };
+        assert_eq!(
+            got,
+            vec![
+                start(0, "t", "ping"),
+                delta(0, "{}"),
+                start(1, "u", "p2"),
+                delta(1, "{\"a\":1}"),
+            ]
         );
     }
 

@@ -154,11 +154,25 @@ fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
             })?;
         let parameters = match &f["parameters"] {
             Value::Null => json!({"type": "object"}),
-            v => v.clone(),
+            v @ Value::Object(_) => v.clone(),
+            _ => {
+                return Err(TranslateError::InvalidRequest(
+                    "tool function 'parameters' must be an object".into(),
+                ))
+            }
+        };
+        let description = match &f["description"] {
+            Value::Null => None,
+            Value::String(d) => Some(d.clone()),
+            _ => {
+                return Err(TranslateError::InvalidRequest(
+                    "tool function 'description' must be a string".into(),
+                ))
+            }
         };
         out.push(Tool {
             name: name.to_string(),
-            description: f["description"].as_str().map(str::to_string),
+            description,
             parameters,
         });
     }
@@ -256,6 +270,11 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
         if !tool_calls.is_empty() && role != Role::Assistant {
             return Err(TranslateError::InvalidRequest(
                 "tool_calls are only allowed in assistant messages".into(),
+            ));
+        }
+        if role != Role::Tool && m.tool_call_id.is_some() {
+            return Err(TranslateError::InvalidRequest(
+                "tool_call_id is only allowed in tool messages".into(),
             ));
         }
         if role == Role::Tool && m.tool_call_id.is_none() {
@@ -536,6 +555,44 @@ mod tests {
             parse_request(body),
             Err(TranslateError::InvalidRequest(_))
         ));
+    }
+
+    #[test]
+    fn tool_call_id_on_a_non_tool_message_is_invalid() {
+        let body =
+            br#"{"model":"m","messages":[{"role":"user","content":"x","tool_call_id":"c"}]}"#;
+        match parse_request(body) {
+            Err(TranslateError::InvalidRequest(m)) => {
+                assert_eq!(m, "tool_call_id is only allowed in tool messages")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_parameters_and_description_must_have_their_types() {
+        for (f, want) in [
+            (
+                r#"{"name":"f","parameters":"x"}"#,
+                "tool function 'parameters' must be an object",
+            ),
+            (
+                r#"{"name":"f","parameters":[1]}"#,
+                "tool function 'parameters' must be an object",
+            ),
+            (
+                r#"{"name":"f","description":3}"#,
+                "tool function 'description' must be a string",
+            ),
+        ] {
+            let body = format!(
+                r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],"tools":[{{"type":"function","function":{f}}}]}}"#
+            );
+            match parse_request(body.as_bytes()) {
+                Err(TranslateError::InvalidRequest(m)) => assert_eq!(m, want),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]

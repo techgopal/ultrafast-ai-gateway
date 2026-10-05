@@ -207,6 +207,8 @@ pub(crate) struct StreamState {
     pub tool_call_slots: std::collections::HashMap<u32, u32>,
     /// Anthropic: (content block index, tool call index) of each tool block.
     pub tool_blocks: Vec<(u64, u32)>,
+    /// Anthropic: tool call indexes that have had argument text.
+    pub tool_args_seen: Vec<u32>,
 }
 
 impl StreamState {

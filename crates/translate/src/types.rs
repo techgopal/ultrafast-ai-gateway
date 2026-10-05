@@ -91,6 +91,21 @@ impl Message {
 
 pub const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
 
+/// The alphabet only: standard or URL-safe (not both), with `=` padding (at
+/// most two) at the very end.
+fn valid_base64(data: &str) -> bool {
+    let body = data.trim_end_matches('=');
+    if body.is_empty() || data.len() - body.len() > 2 {
+        return false;
+    }
+    let std = body.bytes().any(|b| matches!(b, b'+' | b'/'));
+    let url = body.bytes().any(|b| matches!(b, b'-' | b'_'));
+    !(std && url)
+        && body
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_'))
+}
+
 /// Checks the media type and the alphabet of base64 image data.
 pub(crate) fn base64_source(media_type: &str, data: &str) -> Result<ImageSource, TranslateError> {
     if !IMAGE_TYPES.contains(&media_type) {
@@ -99,10 +114,7 @@ pub(crate) fn base64_source(media_type: &str, data: &str) -> Result<ImageSource,
             IMAGE_TYPES.join(", ")
         )));
     }
-    let valid = !data.is_empty()
-        && data
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'));
+    let valid = valid_base64(data);
     if !valid {
         return Err(TranslateError::InvalidRequest(
             "image data is not valid base64".to_string(),
@@ -226,6 +238,22 @@ mod tests {
         );
         assert!(image_source("ftp://x/a.png").is_err());
         assert!(image_source("data:image/svg+xml;base64,QQ==").is_err());
+    }
+
+    #[test]
+    fn base64_padding_and_alphabet_are_checked() {
+        for ok in ["QUJD", "QQ==", "QUI=", "a-b_", "a+b/"] {
+            assert!(
+                image_source(&format!("data:image/png;base64,{ok}")).is_ok(),
+                "{ok}"
+            );
+        }
+        for bad in ["=QUJD", "QU=JD", "QQ===", "=", "a+b_", "a-b/"] {
+            assert!(
+                image_source(&format!("data:image/png;base64,{bad}")).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

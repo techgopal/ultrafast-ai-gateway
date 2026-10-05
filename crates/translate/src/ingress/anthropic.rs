@@ -84,7 +84,11 @@ fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
         .into_iter()
         .map(|t| {
             // Server tools (web_search_*, bash_*, ...) run at Anthropic, not here.
-            if let Some(kind) = t.get("type").filter(|k| !k.is_null()) {
+            // "custom" is the explicit form of a normal client tool.
+            if let Some(kind) = t
+                .get("type")
+                .filter(|k| !k.is_null() && k.as_str() != Some("custom"))
+            {
                 return Err(invalid(format!(
                     "server tool '{}' is not supported",
                     kind.as_str().unwrap_or("?")
@@ -655,6 +659,15 @@ mod tests {
         });
         assert!(c.starts_with("event: message_start"), "{c}");
         assert!(c.contains("event: message_stop"));
+        // An answer with no content is still one empty text block.
+        let start = c.find("event: content_block_start").expect(&c);
+        let stop = c.find("event: content_block_stop").expect(&c);
+        assert!(start < stop, "{c}");
+        assert!(
+            c.contains(r#""content_block":{"text":"","type":"text"}"#),
+            "{c}"
+        );
+        assert_eq!(c.matches("event: content_block_start").count(), 1, "{c}");
     }
 
     fn req(messages: &str, extra: &str) -> Result<ChatRequest, TranslateError> {
@@ -704,6 +717,16 @@ mod tests {
             .as_bytes(),
         );
         assert!(m.contains("tool_choice"), "{m}");
+    }
+
+    #[test]
+    fn custom_tool_type_is_a_normal_tool() {
+        let r = req(
+            r#"[{"role":"user","content":"x"}]"#,
+            r#""tools":[{"type":"custom","name":"w","input_schema":{"type":"object"}}],"#,
+        )
+        .unwrap();
+        assert_eq!(r.tools[0].name, "w");
     }
 
     #[test]
