@@ -1,0 +1,4 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Ok"},{"functionCall":{"name":"get_weather","args":{"city":"Paris"}}}]},"index":0}],"usageMetadata":{"promptTokenCount":7,"totalTokenCount":7}}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"ping"},"thoughtSignature":"c2ln"}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":5,"totalTokenCount":12}}
+
