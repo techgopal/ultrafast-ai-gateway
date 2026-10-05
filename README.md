@@ -10,7 +10,7 @@ Ultrafast is one small Rust binary that sits between your apps and your LLM
 providers. It speaks the OpenAI and Anthropic APIs, adds an admin API, and
 serves a built-in web console, with SQLite for storage and nothing else to
 run. It is for small teams who host it themselves. This is v2; the v1 code is
-tagged `v1-final`. Design: [`docs/superpowers/specs/2026-09-28-gateway-v2-design.md`](docs/superpowers/specs/2026-09-28-gateway-v2-design.md).
+tagged `v1-final`.
 
 ## Screenshots
 

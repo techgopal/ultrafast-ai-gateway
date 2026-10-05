@@ -83,6 +83,9 @@ config.toml
 CLAUDE.md
 .cursorrules
 .claude/settings.local.json
+# Links to the private ultrafast-ai-gateway-internal repo (plan workflow).
+.claude/agents
+.claude/skills
 
 # Ignored generated files
 ultrafast-gateway/gateway.log
