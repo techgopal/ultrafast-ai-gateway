@@ -82,6 +82,7 @@ fn contents_value(req: &ChatRequest) -> Result<Vec<Value>, TranslateError> {
                 .ok_or_else(|| invalid("a tool message needs a tool_call_id"))?;
             let name = names
                 .iter()
+                .rev()
                 .find(|(i, _)| *i == id)
                 .map(|(_, n)| *n)
                 .ok_or_else(|| {
@@ -122,7 +123,9 @@ fn contents_value(req: &ChatRequest) -> Result<Vec<Value>, TranslateError> {
 }
 
 fn declaration(t: &Tool) -> Value {
-    let mut o = json!({ "name": t.name, "parameters": t.parameters });
+    // `parametersJsonSchema` takes a full JSON Schema; `parameters` is an
+    // OpenAPI subset that rejects what OpenAI-style schemas carry (additionalProperties, ...).
+    let mut o = json!({ "name": t.name, "parametersJsonSchema": t.parameters });
     if let Some(d) = &t.description {
         o["description"] = json!(d);
     }
@@ -242,6 +245,15 @@ fn read_usage(state: &mut StreamState, v: &Value) {
     }
 }
 
+/// Gemini ends an answer that has calls as STOP; callers expect ToolCalls.
+fn with_calls(reason: Option<FinishReason>, has_calls: bool) -> Option<FinishReason> {
+    if has_calls && reason == Some(FinishReason::Stop) {
+        Some(FinishReason::ToolCalls)
+    } else {
+        reason
+    }
+}
+
 /// What one answer or chunk holds: text, function calls as (name, arguments)
 /// and why it ended, if it did. A prompt that was refused ends as a content filter.
 struct Candidate {
@@ -302,11 +314,7 @@ fn read_candidate(v: &Value) -> Result<Candidate, TranslateError> {
     }
     let reason = candidate["finishReason"].as_str().and_then(finish);
     // Gemini ends an answer with calls as STOP.
-    let finish = if !calls.is_empty() && reason == Some(FinishReason::Stop) {
-        Some(FinishReason::ToolCalls)
-    } else {
-        reason
-    };
+    let finish = with_calls(reason, !calls.is_empty());
     Ok(Candidate {
         text,
         calls,
@@ -399,11 +407,7 @@ pub(crate) fn decode(
     if ended {
         // Given when the stream closes: a chunk of usage may still follow.
         // The calls may have come in an earlier chunk.
-        state.finish = if state.tool_calls_started > 0 && finish == Some(FinishReason::Stop) {
-            Some(FinishReason::ToolCalls)
-        } else {
-            finish
-        };
+        state.finish = with_calls(finish, state.tool_calls_started > 0);
         state.ended = true;
     }
     Ok(())
@@ -898,7 +902,7 @@ mod tests {
             serde_json::json!([{"functionDeclarations": [{
                 "name": "get_weather",
                 "description": "Weather",
-                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                "parametersJsonSchema": {"type": "object", "properties": {"city": {"type": "string"}}}
             }]}])
         );
         assert!(v.get("toolConfig").is_none());
@@ -1008,6 +1012,28 @@ mod tests {
             ]}
         ]);
         assert_eq!(v["contents"], want);
+    }
+
+    #[test]
+    fn repeated_call_ids_name_the_latest_call() {
+        let mut req = with_tools();
+        req.messages = vec![
+            msg(Role::User, "x"),
+            Message {
+                tool_calls: vec![call("call_0", "first", "{}")],
+                ..msg(Role::Assistant, "")
+            },
+            tool_msg("call_0", "a"),
+            Message {
+                tool_calls: vec![call("call_0", "second", "{}")],
+                ..msg(Role::Assistant, "")
+            },
+            tool_msg("call_0", "b"),
+        ];
+        let v = body_of(&build_request(&target(), &req).unwrap());
+        let c = &v["contents"];
+        assert_eq!(c[2]["parts"][0]["functionResponse"]["name"], "first");
+        assert_eq!(c[4]["parts"][0]["functionResponse"]["name"], "second");
     }
 
     #[test]
