@@ -181,7 +181,13 @@ fn messages_value(req: &ChatRequest) -> Result<Vec<Value>, TranslateError> {
 
 pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, TranslateError> {
     super::check_tool_choice(req)?;
-    if req.messages.iter().any(|m| m.name.is_some()) {
+    // A tool message's `name` (OpenAI's older form) is not needed: the id
+    // names the call.
+    if req
+        .messages
+        .iter()
+        .any(|m| m.name.is_some() && m.role != Role::Tool)
+    {
         return Err(TranslateError::Unsupported(
             "message field 'name' is not supported by this provider".into(),
         ));
@@ -598,6 +604,7 @@ mod tests {
             name: name.into(),
             description: Some("d".into()),
             parameters: serde_json::json!({"type": "object"}),
+            strict: None,
         }
     }
 
@@ -1002,6 +1009,41 @@ mod tests {
                 "message field 'name' is not supported by this provider".into()
             )
         );
+    }
+
+    #[test]
+    fn strict_is_ignored() {
+        let mut req = request(vec![msg(Role::User, "x")]);
+        req.tools = vec![tool("f")];
+        let plain = body_of(&req);
+        req.tools[0].strict = Some(true);
+        assert_eq!(plain, body_of(&req));
+    }
+
+    #[test]
+    fn a_tool_message_may_carry_a_name() {
+        let mut req = request(vec![
+            msg(Role::User, "weather?"),
+            Message {
+                tool_calls: vec![call("toolu_1", r#"{"city":"Paris"}"#)],
+                ..msg(Role::Assistant, "")
+            },
+            Message {
+                name: Some("get_weather".into()),
+                ..tool_message("toolu_1", "sunny")
+            },
+        ]);
+        req.tools = vec![tool("get_weather")];
+        let v = body_of(&req);
+        assert_eq!(v["messages"][2]["content"][0]["type"], "tool_result");
+        assert_eq!(v["messages"][2]["content"][0]["tool_use_id"], "toolu_1");
+        assert!(v["messages"][2]["content"][0].get("name").is_none());
+        // A name on a non-tool message is still refused.
+        req.messages[0].name = Some("bob".into());
+        assert!(matches!(
+            build_request(&target(), &req),
+            Err(TranslateError::Unsupported(_))
+        ));
     }
 
     fn stream_error_status(kind: &str) -> u16 {

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{saturate, HttpRequest, StreamState, Target};
+use super::{saturate, with_calls, HttpRequest, StreamState, Target};
 use crate::error::TranslateError;
 use crate::sse::SseEvent;
 use crate::types::{
@@ -24,6 +24,17 @@ fn finish(s: &str) -> Option<FinishReason> {
         "length" => Some(FinishReason::Length),
         "tool_calls" => Some(FinishReason::ToolCalls),
         "content_filter" => Some(FinishReason::ContentFilter),
+        _ => None,
+    }
+}
+
+/// The arguments of a tool call as text, one rule for streams and whole
+/// answers: a string as it is, an object serialized (some compatibles send
+/// one), anything else nothing.
+fn arguments_text(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(_) => Some(v.to_string()),
         _ => None,
     }
 }
@@ -99,6 +110,9 @@ fn tool_value(t: &Tool) -> Value {
     let mut f = json!({ "name": t.name, "parameters": t.parameters });
     if let Some(d) = &t.description {
         f["description"] = json!(d);
+    }
+    if let Some(s) = t.strict {
+        f["strict"] = json!(s);
     }
     json!({ "type": "function", "function": f })
 }
@@ -211,7 +225,8 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
     let mut tool_calls = Vec::new();
     if let Value::Array(items) = &message.tool_calls {
         for item in items {
-            if item["type"] != "function" {
+            // A missing type is a function (the stream and the ingress agree).
+            if !item["type"].is_null() && item["type"] != "function" {
                 return Err(TranslateError::Malformed(
                     "tool call type is not 'function'".into(),
                 ));
@@ -225,7 +240,7 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
             tool_calls.push(ToolCall {
                 id: id.to_string(),
                 name: name.to_string(),
-                arguments: f["arguments"].as_str().unwrap_or("{}").to_string(),
+                arguments: arguments_text(&f["arguments"]).unwrap_or_else(|| "{}".to_string()),
             });
         }
     } else if has_tool_call(&message.tool_calls) {
@@ -237,6 +252,7 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
         content.push_str(&refusal);
         finish_reason = Some(FinishReason::ContentFilter);
     }
+    let finish_reason = with_calls(finish_reason, !tool_calls.is_empty());
     Ok(ChatResponse {
         id: w.id,
         model: w.model,
@@ -295,11 +311,7 @@ fn decode_tool_call(
             ));
         }
     };
-    let args = match &f["arguments"] {
-        Value::String(s) => s.clone(),
-        Value::Object(_) => f["arguments"].to_string(),
-        _ => String::new(),
-    };
+    let args = arguments_text(&f["arguments"]).unwrap_or_default();
     if !args.is_empty() {
         out.push(StreamEvent::ToolCallDelta {
             index,
@@ -316,7 +328,7 @@ pub(crate) fn decode(
 ) -> Result<(), TranslateError> {
     if ev.data == "[DONE]" {
         out.push(StreamEvent::Done {
-            finish_reason: state.finish,
+            finish_reason: with_calls(state.finish, !state.tool_call_ids.is_empty()),
             usage: state.usage(),
         });
         return Ok(());
@@ -645,6 +657,7 @@ mod tests {
             name: name.into(),
             description: Some("d".into()),
             parameters: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+            strict: None,
         }
     }
 
@@ -674,6 +687,95 @@ mod tests {
             },
         ];
         r
+    }
+
+    #[test]
+    fn strict_is_sent_only_when_set() {
+        let mut r = request(false);
+        r.tools = vec![tool("a"), tool("b"), tool("c")];
+        r.tools[0].strict = Some(true);
+        r.tools[1].strict = Some(false);
+        let v = body_of(&r);
+        assert_eq!(v["tools"][0]["function"]["strict"], true);
+        assert_eq!(v["tools"][1]["function"]["strict"], false);
+        assert!(v["tools"][2]["function"].get("strict").is_none());
+    }
+
+    #[test]
+    fn a_named_tool_choice_must_name_a_tool() {
+        let mut r = tool_conversation();
+        r.tool_choice = Some(ToolChoice::Tool("nope".into()));
+        assert_eq!(
+            build_request(&target(), &r).unwrap_err(),
+            TranslateError::InvalidRequest(
+                "tool_choice names 'nope', which is not in tools".into()
+            )
+        );
+    }
+
+    #[test]
+    fn non_stream_tool_calls_follow_the_stream_rules() {
+        // Object arguments are serialized, a missing type is a function,
+        // absent arguments are "{}".
+        let body = br#"{"id":"i","model":"m","choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"a","function":{"name":"f","arguments":{"a":1}}},
+            {"id":"b","type":"function","function":{"name":"g"}},
+            {"id":"c","type":"function","function":{"name":"h","arguments":"{\"x\":2}"}}]},
+            "finish_reason":"stop"}]}"#;
+        let r = parse_response(ProviderKind::OpenAi, 200, body).unwrap();
+        let got: Vec<_> = r
+            .tool_calls
+            .iter()
+            .map(|c| (c.id.as_str(), c.arguments.as_str()))
+            .collect();
+        assert_eq!(got, [("a", r#"{"a":1}"#), ("b", "{}"), ("c", r#"{"x":2}"#)]);
+        // A type other than function stays malformed.
+        let body = br#"{"id":"i","model":"m","choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"a","type":"custom","function":{"name":"f"}}]}}]}"#;
+        assert!(matches!(
+            parse_response(ProviderKind::OpenAi, 200, body),
+            Err(TranslateError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn a_stop_with_tool_calls_finishes_as_tool_calls() {
+        let body = br#"{"id":"i","model":"m","choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]},
+            "finish_reason":"stop"}]}"#;
+        let r = parse_response(ProviderKind::OpenAi, 200, body).unwrap();
+        assert_eq!(r.finish_reason, Some(FinishReason::ToolCalls));
+        // Without calls a stop stays a stop, and a length stop stays.
+        let body = br#"{"id":"i","model":"m","choices":[{"message":{"content":"x"},"finish_reason":"stop"}]}"#;
+        let r = parse_response(ProviderKind::OpenAi, 200, body).unwrap();
+        assert_eq!(r.finish_reason, Some(FinishReason::Stop));
+        let body = br#"{"id":"i","model":"m","choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]},
+            "finish_reason":"length"}]}"#;
+        let r = parse_response(ProviderKind::OpenAi, 200, body).unwrap();
+        assert_eq!(r.finish_reason, Some(FinishReason::Length));
+        // The stream, for both OpenAI-format kinds.
+        for kind in [ProviderKind::OpenAi, ProviderKind::Azure] {
+            let mut d = StreamDecoder::new(kind);
+            let got = d
+                .feed(
+                    concat!(
+                        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+                        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                        "data: [DONE]\n\n",
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            assert_eq!(
+                got.last(),
+                Some(&StreamEvent::Done {
+                    finish_reason: Some(FinishReason::ToolCalls),
+                    usage: None
+                }),
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 
-use super::{path_segment, saturate, HttpRequest, StreamState, Target};
+use super::{path_segment, saturate, with_calls, HttpRequest, StreamState, Target};
 use crate::error::TranslateError;
 use crate::sse::SseEvent;
 use crate::types::{
@@ -19,6 +19,33 @@ fn finish(s: &str) -> Option<FinishReason> {
         }
         _ => None,
     }
+}
+
+const SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+
+/// `call_<first 8 hex of sha256(responseId)>`: Gemini has no call ids, and
+/// the same answer (stream chunks, a cached copy) must always give the same
+/// ones, while two answers must not share any (a later turn would look like
+/// a repeat of an earlier one). Without a responseId the 8 hex are random.
+fn call_prefix(response_id: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = match response_id.filter(|s| !s.is_empty()) {
+        Some(id) => {
+            let d = Sha256::digest(id.as_bytes());
+            u32::from_be_bytes([d[0], d[1], d[2], d[3]])
+        }
+        None => {
+            // RandomState is seeded per process; the counter makes every call differ.
+            use std::collections::hash_map::RandomState;
+            use std::hash::{BuildHasher, Hasher};
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let mut h = RandomState::new().build_hasher();
+            h.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+            (h.finish() >> 32) as u32
+        }
+    };
+    format!("call_{hash:08x}")
 }
 
 fn text_part(text: &str) -> Value {
@@ -62,7 +89,14 @@ fn function_call_part(c: &ToolCall) -> Result<Value, TranslateError> {
     if !args.is_object() {
         return Err(invalid("tool call arguments must be a JSON object"));
     }
-    Ok(json!({ "functionCall": { "name": c.name, "args": args } }))
+    // Gemini 3 answers 400 to a functionCall in the history that has no
+    // thought signature, and the gateway does not carry the real ones (they
+    // are not part of any other format). Google documents this placeholder
+    // for history that did not come from the model.
+    Ok(json!({
+        "functionCall": { "name": c.name, "args": args },
+        "thoughtSignature": SKIP_THOUGHT_SIGNATURE,
+    }))
 }
 
 /// The `contents` array. Consecutive tool messages become one user content of
@@ -80,11 +114,13 @@ fn contents_value(req: &ChatRequest) -> Result<Vec<Value>, TranslateError> {
                 .tool_call_id
                 .as_deref()
                 .ok_or_else(|| invalid("a tool message needs a tool_call_id"))?;
+            // The call the id points to, else the name the message carries.
             let name = names
                 .iter()
                 .rev()
                 .find(|(i, _)| *i == id)
                 .map(|(_, n)| *n)
+                .or(m.name.as_deref())
                 .ok_or_else(|| {
                     TranslateError::InvalidRequest(format!(
                         "tool result for unknown tool call '{id}'"
@@ -149,7 +185,11 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
             "parallel_tool_calls=false is not supported by this provider".into(),
         ));
     }
-    if req.messages.iter().any(|m| m.name.is_some()) {
+    if req
+        .messages
+        .iter()
+        .any(|m| m.name.is_some() && m.role != Role::Tool)
+    {
         return Err(TranslateError::Unsupported(
             "message field 'name' is not supported by this provider".into(),
         ));
@@ -245,15 +285,6 @@ fn read_usage(state: &mut StreamState, v: &Value) {
     }
 }
 
-/// Gemini ends an answer that has calls as STOP; callers expect ToolCalls.
-fn with_calls(reason: Option<FinishReason>, has_calls: bool) -> Option<FinishReason> {
-    if has_calls && reason == Some(FinishReason::Stop) {
-        Some(FinishReason::ToolCalls)
-    } else {
-        reason
-    }
-}
-
 /// What one answer or chunk holds: text, function calls as (name, arguments)
 /// and why it ended, if it did. A prompt that was refused ends as a content filter.
 struct Candidate {
@@ -330,11 +361,12 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
         calls,
         finish: finish_reason,
     } = read_candidate(&v)?;
+    let prefix = call_prefix(v["responseId"].as_str());
     let tool_calls = calls
         .into_iter()
         .enumerate()
         .map(|(n, (name, arguments))| ToolCall {
-            id: format!("call_{n}"),
+            id: format!("{prefix}_{n}"),
             name,
             arguments,
         })
@@ -392,11 +424,15 @@ pub(crate) fn decode(
         out.push(StreamEvent::Delta { text });
     }
     for (name, arguments) in calls {
+        // One prefix for the whole answer, taken when its first call comes.
+        let prefix = state
+            .call_prefix
+            .get_or_insert_with(|| call_prefix(v["responseId"].as_str()));
         let index = state.tool_calls_started;
         state.tool_calls_started = index.saturating_add(1);
         out.push(StreamEvent::ToolCallStart {
             index,
-            id: format!("call_{index}"),
+            id: format!("{prefix}_{index}"),
             name,
         });
         out.push(StreamEvent::ToolCallDelta { index, arguments });
@@ -672,7 +708,7 @@ mod tests {
         assert_eq!(
             r.tool_calls,
             vec![ToolCall {
-                id: "call_0".into(),
+                id: "call_9a8fd095_0".into(),
                 name: "f".into(),
                 arguments: "{}".into()
             }]
@@ -689,7 +725,20 @@ mod tests {
             .iter()
             .map(|c| (c.id.as_str(), c.name.as_str(), c.arguments.as_str()))
             .collect();
-        assert_eq!(got, [("call_0", "a", r#"{"x":1}"#), ("call_1", "b", "{}")]);
+        let prefix = r.tool_calls[0].id.strip_suffix("_0").unwrap();
+        assert!(
+            prefix.len() == "call_".len() + 8
+                && prefix.starts_with("call_")
+                && prefix[5..].bytes().all(|b| b.is_ascii_hexdigit()),
+            "{prefix}"
+        );
+        assert_eq!(
+            got,
+            [
+                (format!("{prefix}_0").as_str(), "a", r#"{"x":1}"#),
+                (format!("{prefix}_1").as_str(), "b", "{}")
+            ]
+        );
         assert_eq!(r.finish_reason, Some(FinishReason::ToolCalls));
         // A length stop with calls keeps its reason.
         let body = br#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"a"}}]},"finishReason":"MAX_TOKENS"}]}"#;
@@ -847,7 +896,7 @@ mod tests {
             StreamEvent::Delta { text: "Ok".into() },
             StreamEvent::ToolCallStart {
                 index: 0,
-                id: "call_0".into(),
+                id: "call_9a8fd095_0".into(),
                 name: "get_weather".into(),
             },
             StreamEvent::ToolCallDelta {
@@ -856,7 +905,7 @@ mod tests {
             },
             StreamEvent::ToolCallStart {
                 index: 1,
-                id: "call_1".into(),
+                id: "call_9a8fd095_1".into(),
                 name: "ping".into(),
             },
             StreamEvent::ToolCallDelta {
@@ -880,11 +929,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn call_ids_differ_between_answers_and_hold_across_stream_chunks() {
+        // Without a responseId the prefix is random per answer, but one
+        // answer keeps one prefix across all its chunks.
+        let chunk = |name: &str| {
+            format!(
+                "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{{\"functionCall\":{{\"name\":\"{name}\"}}}}]}}}}]}}\n\n"
+            )
+        };
+        let ids = |input: &str| {
+            let mut d = StreamDecoder::new(ProviderKind::Gemini);
+            d.feed(input.as_bytes())
+                .unwrap()
+                .into_iter()
+                .filter_map(|e| match e {
+                    StreamEvent::ToolCallStart { id, .. } => Some(id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let a = ids(&format!("{}{}", chunk("x"), chunk("y")));
+        assert_eq!(a.len(), 2);
+        let prefix = |id: &str| id.rsplit_once('_').unwrap().0.to_string();
+        assert_eq!(prefix(&a[0]), prefix(&a[1]), "{a:?}");
+        assert!(a[0].ends_with("_0") && a[1].ends_with("_1"), "{a:?}");
+        let b = ids(&chunk("x"));
+        assert_ne!(prefix(&a[0]), prefix(&b[0]), "{a:?} {b:?}");
+        // The same non-stream answer without a responseId also differs.
+        let body = br#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"a"}}]}}]}"#;
+        let one = parse_response(ProviderKind::Gemini, 200, body).unwrap();
+        let two = parse_response(ProviderKind::Gemini, 200, body).unwrap();
+        assert_ne!(one.tool_calls[0].id, two.tool_calls[0].id);
+    }
+
     fn weather_tool() -> Tool {
         Tool {
             name: "get_weather".into(),
             description: Some("Weather".into()),
             parameters: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+            strict: None,
         }
     }
 
@@ -998,8 +1082,8 @@ mod tests {
         let want = serde_json::json!([
             {"role": "user", "parts": [{"text": "weather?"}]},
             {"role": "model", "parts": [
-                {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}},
-                {"functionCall": {"name": "ping", "args": {}}}
+                {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}, "thoughtSignature": "skip_thought_signature_validator"},
+                {"functionCall": {"name": "ping", "args": {}}, "thoughtSignature": "skip_thought_signature_validator"}
             ]},
             {"role": "user", "parts": [
                 {"functionResponse": {"name": "get_weather", "response": {"content": "sunny"}}},
@@ -1008,7 +1092,7 @@ mod tests {
             {"role": "user", "parts": [{"text": "thanks"}]},
             {"role": "model", "parts": [
                 {"text": "calling"},
-                {"functionCall": {"name": "ping", "args": {}}}
+                {"functionCall": {"name": "ping", "args": {}}, "thoughtSignature": "skip_thought_signature_validator"}
             ]}
         ]);
         assert_eq!(v["contents"], want);
@@ -1034,6 +1118,54 @@ mod tests {
         let c = &v["contents"];
         assert_eq!(c[2]["parts"][0]["functionResponse"]["name"], "first");
         assert_eq!(c[4]["parts"][0]["functionResponse"]["name"], "second");
+    }
+
+    #[test]
+    fn a_tool_message_may_carry_a_name() {
+        let mut req = with_tools();
+        req.messages = vec![
+            msg(Role::User, "x"),
+            Message {
+                tool_calls: vec![call("c1", "real", "{}")],
+                ..msg(Role::Assistant, "")
+            },
+            Message {
+                name: Some("ignored".into()),
+                ..tool_msg("c1", "a")
+            },
+            // The id matches no call: the message's own name is the fallback.
+            Message {
+                name: Some("fallback".into()),
+                ..tool_msg("other", "b")
+            },
+        ];
+        let v = body_of(&build_request(&target(), &req).unwrap());
+        let parts = &v["contents"][2]["parts"];
+        assert_eq!(parts[0]["functionResponse"]["name"], "real");
+        assert_eq!(parts[1]["functionResponse"]["name"], "fallback");
+        // A name on any other message is still refused.
+        req.messages[1].name = Some("n".into());
+        assert!(matches!(
+            build_request(&target(), &req),
+            Err(TranslateError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn strict_is_ignored() {
+        let mut req = with_tools();
+        req.tools[0].strict = Some(true);
+        let with = body_of(&build_request(&target(), &req).unwrap());
+        req.tools[0].strict = None;
+        assert_eq!(with, body_of(&build_request(&target(), &req).unwrap()));
+    }
+
+    #[test]
+    fn auto_without_tools_is_accepted() {
+        let mut req = request(false);
+        req.tool_choice = Some(ToolChoice::Auto);
+        let v = body_of(&build_request(&target(), &req).unwrap());
+        assert!(v.get("toolConfig").is_none() && v.get("tools").is_none());
     }
 
     #[test]

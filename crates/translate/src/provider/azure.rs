@@ -177,12 +177,18 @@ mod tests {
             name: "f".into(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            strict: None,
         }];
         req.tool_choice = Some(ToolChoice::Required);
         let r = build_request(&target(None), &req).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
         assert_eq!(v["tools"][0]["function"]["name"], "f");
         assert!(v["tools"][0]["function"].get("description").is_none());
+        assert!(v["tools"][0]["function"].get("strict").is_none());
+        req.tools[0].strict = Some(true);
+        let r = build_request(&target(None), &req).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(v["tools"][0]["function"]["strict"], true);
         assert_eq!(v["tool_choice"], "required");
         assert!(v.get("model").is_none());
     }

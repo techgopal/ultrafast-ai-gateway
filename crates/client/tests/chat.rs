@@ -192,6 +192,7 @@ fn weather() -> ultrafast_client::Tool {
         name: "weather".into(),
         description: Some("Current weather".into()),
         parameters: serde_json::json!({"type":"object","properties":{"city":{"type":"string"}}}),
+        strict: None,
     }
 }
 

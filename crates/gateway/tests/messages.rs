@@ -289,7 +289,7 @@ async fn errors_are_in_the_anthropic_shape() {
     .await;
     assert_eq!(
         json_of(&body)["error"]["message"],
-        "Only text content is supported."
+        "content block 'thinking' is not supported in a user message"
     );
 
     // 503: the provider is down.

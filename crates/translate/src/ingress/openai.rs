@@ -171,10 +171,20 @@ pub fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
                 ))
             }
         };
+        let strict = match &f["strict"] {
+            Value::Null => None,
+            Value::Bool(b) => Some(*b),
+            _ => {
+                return Err(TranslateError::InvalidRequest(
+                    "tool function 'strict' must be a boolean".into(),
+                ))
+            }
+        };
         out.push(Tool {
             name: name.to_string(),
             description,
             parameters,
+            strict,
         });
     }
     Ok(out)
@@ -490,6 +500,17 @@ mod tests {
     }
 
     #[test]
+    fn strict_must_be_a_boolean() {
+        let body = req_with_tools(
+            r#""tools":[{"type":"function","function":{"name":"a","strict":"yes"}}]"#,
+        );
+        assert_eq!(
+            parse_request(body.as_bytes()).unwrap_err(),
+            TranslateError::InvalidRequest("tool function 'strict' must be a boolean".into())
+        );
+    }
+
+    #[test]
     fn parses_tools_and_tool_choice() {
         let body = req_with_tools(
             r#""tools":[
@@ -502,6 +523,8 @@ mod tests {
         assert_eq!(req.tools[0].name, "a");
         assert_eq!(req.tools[0].description.as_deref(), Some("does a"));
         assert_eq!(req.tools[0].parameters["properties"]["x"]["type"], "string");
+        assert_eq!(req.tools[0].strict, Some(true));
+        assert_eq!(req.tools[1].strict, None);
         assert_eq!(req.tools[1].name, "b");
         assert_eq!(req.tools[1].description, None);
         assert_eq!(req.tools[1].parameters, json!({"type":"object"}));

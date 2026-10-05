@@ -39,6 +39,11 @@ pub struct Tool {
     pub description: Option<String>,
     /// JSON Schema of the arguments; `{"type":"object"}` when not given.
     pub parameters: serde_json::Value,
+    /// OpenAI's `function.strict` (schema-enforced arguments). Only OpenAI
+    /// and Azure send it; Anthropic and Gemini have no such setting and
+    /// ignore it.
+    #[serde(default)]
+    pub strict: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -91,11 +96,17 @@ impl Message {
 
 pub const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
 
-/// The alphabet only: standard or URL-safe (not both), with `=` padding (at
-/// most two) at the very end.
+/// The alphabet and the length: standard or URL-safe (not both), with `=`
+/// padding (at most two) at the very end; a length of 1 mod 4 is impossible
+/// and padded data is a multiple of 4.
 fn valid_base64(data: &str) -> bool {
     let body = data.trim_end_matches('=');
-    if body.is_empty() || data.len() - body.len() > 2 {
+    let padding = data.len() - body.len();
+    if body.is_empty() || padding > 2 {
+        return false;
+    }
+    // One character is never a whole byte; padded data fills its last group.
+    if data.len() % 4 == 1 || (padding > 0 && !data.len().is_multiple_of(4)) {
         return false;
     }
     let std = body.bytes().any(|b| matches!(b, b'+' | b'/'));
@@ -242,13 +253,15 @@ mod tests {
 
     #[test]
     fn base64_padding_and_alphabet_are_checked() {
-        for ok in ["QUJD", "QQ==", "QUI=", "a-b_", "a+b/"] {
+        for ok in ["QUJD", "QQ==", "QUI=", "QQ", "QUI", "a-b_", "a+b/"] {
             assert!(
                 image_source(&format!("data:image/png;base64,{ok}")).is_ok(),
                 "{ok}"
             );
         }
-        for bad in ["=QUJD", "QU=JD", "QQ===", "=", "a+b_", "a-b/"] {
+        for bad in [
+            "=QUJD", "QU=JD", "QQ===", "=", "a+b_", "a-b/", "QUJDx", "Q", "QUJDx=", "QQ=", "QUJ=Q",
+        ] {
             assert!(
                 image_source(&format!("data:image/png;base64,{bad}")).is_err(),
                 "{bad}"

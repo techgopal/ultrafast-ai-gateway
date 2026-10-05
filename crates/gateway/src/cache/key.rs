@@ -114,6 +114,7 @@ impl Encoder {
             name,
             description,
             parameters,
+            strict,
         } in tools
         {
             self.field(31, name.as_bytes());
@@ -121,6 +122,7 @@ impl Encoder {
             // `serde_json::Map` is ordered by key, so this is canonical.
             let schema = serde_json::to_vec(parameters).unwrap_or_default();
             self.field(33, &schema);
+            self.optional(36, strict.map(|b| [u8::from(b)]).as_ref().map(|b| &b[..]));
         }
     }
 
@@ -368,6 +370,7 @@ mod tests {
             name: name.into(),
             description: Some("d".into()),
             parameters: serde_json::json!({"type": "object", "properties": {"a": {"type": "string"}}}),
+            strict: None,
         }
     }
 
@@ -417,6 +420,11 @@ mod tests {
             (
                 "tool parameters",
                 Box::new(|r| r.tools[0].parameters = serde_json::json!({"type": "object"})),
+            ),
+            ("tool strict", Box::new(|r| r.tools[0].strict = Some(true))),
+            (
+                "tool strict false",
+                Box::new(|r| r.tools[0].strict = Some(false)),
             ),
             ("tool added", Box::new(|r| r.tools.push(tool("g")))),
             ("tools removed", Box::new(|r| r.tools.clear())),

@@ -1,5 +1,7 @@
 //! Anthropic Messages wire format, as received from and returned to callers.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -106,6 +108,7 @@ fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
                     v @ Value::Object(_) => v.clone(),
                     _ => return Err(invalid("tool 'input_schema' must be an object")),
                 },
+                strict: None,
             })
         })
         .collect()
@@ -220,7 +223,16 @@ fn parse_message(
                 m.tool_call_id = Some(id.to_string());
                 results.push(m);
             }
-            _ => return Err(invalid(ONLY_TEXT)),
+            (other, _) => {
+                let role = match role {
+                    Role::Assistant => "an assistant",
+                    _ => "a user",
+                };
+                return Err(invalid(format!(
+                    "content block '{}' is not supported in {role} message",
+                    other.unwrap_or("(no type)")
+                )));
+            }
         }
     }
     // Tool results come first: they answer the assistant message before this one.
@@ -317,7 +329,7 @@ pub fn render_response(r: &ChatResponse) -> Value {
         let input = match serde_json::from_str::<Value>(&c.arguments) {
             Ok(v @ Value::Object(_)) => v,
             _ => {
-                tracing::warn!(tool = %c.name, "tool call arguments are not a JSON object");
+                tracing::warn!("tool call arguments are not a JSON object");
                 json!({})
             }
         };
@@ -364,8 +376,14 @@ pub fn render_stream_error(message: &str) -> String {
 /// Renders a stream as Anthropic events. The message opens with the first
 /// event, because the usage is only known at the end it reports 0 input
 /// tokens there and gives both counts in the closing `message_delta`.
-/// Content blocks are opened as they are needed: text first when text comes,
-/// a `tool_use` block per tool call, and a new text block for text after a call.
+///
+/// Blocks are never interleaved: only one block is open at a time and every
+/// delta lands on it. Text streams live until the first tool call; that call
+/// then streams live. Whatever comes later (more tool calls, text after a
+/// call) is held back and written out whole at `Done`: the held tool calls in
+/// the order of their call index, each as one start, one `input_json_delta`
+/// with all its arguments (`{}` when it had none) and one stop, then the held
+/// text as one text block.
 pub struct StreamRenderer {
     id: String,
     model: String,
@@ -374,8 +392,12 @@ pub struct StreamRenderer {
     next_block: u32,
     /// The open block, and whether it is text.
     open_block: Option<(u32, bool)>,
-    /// Block index of each tool call, by the call's own index.
-    tool_blocks: Vec<(u32, u32)>,
+    /// The call index and block of the tool call that streams live.
+    live_tool: Option<(u32, u32)>,
+    /// Later tool calls, by the call's own index: id, name, arguments so far.
+    held_tools: BTreeMap<u32, (String, String, String)>,
+    /// Text that came after the first tool call.
+    held_text: String,
 }
 
 impl StreamRenderer {
@@ -386,7 +408,9 @@ impl StreamRenderer {
             started: false,
             next_block: 0,
             open_block: None,
-            tool_blocks: Vec::new(),
+            live_tool: None,
+            held_tools: BTreeMap::new(),
+            held_text: String::new(),
         }
     }
 
@@ -427,10 +451,21 @@ impl StreamRenderer {
         (index, out)
     }
 
+    fn delta(index: u32, delta: Value) -> String {
+        event(
+            "content_block_delta",
+            json!({ "type": "content_block_delta", "index": index, "delta": delta }),
+        )
+    }
+
     pub fn render(&mut self, ev: &StreamEvent) -> String {
         let mut out = self.open();
         match ev {
             StreamEvent::Delta { text } => {
+                if self.live_tool.is_some() {
+                    self.held_text.push_str(text);
+                    return out;
+                }
                 let index = match self.open_block {
                     Some((i, true)) => i,
                     _ => {
@@ -440,28 +475,39 @@ impl StreamRenderer {
                         i
                     }
                 };
-                out.push_str(&event(
-                    "content_block_delta",
-                    json!({ "type": "content_block_delta", "index": index,
-                            "delta": { "type": "text_delta", "text": text } }),
+                out.push_str(&Self::delta(
+                    index,
+                    json!({ "type": "text_delta", "text": text }),
                 ));
             }
             StreamEvent::ToolCallStart { index, id, name } => {
+                if self.live_tool.is_some() {
+                    self.held_tools
+                        .insert(*index, (id.clone(), name.clone(), String::new()));
+                    return out;
+                }
                 let (block, start) = self.start_block(
                     json!({ "type": "tool_use", "id": id, "name": name, "input": {} }),
                     false,
                 );
-                self.tool_blocks.push((*index, block));
+                self.live_tool = Some((*index, block));
                 out.push_str(&start);
             }
             StreamEvent::ToolCallDelta { index, arguments } => {
                 // The raw partial JSON is passed on; it can only be checked at the end.
-                if let Some((_, block)) = self.tool_blocks.iter().find(|(t, _)| t == index) {
-                    out.push_str(&event(
-                        "content_block_delta",
-                        json!({ "type": "content_block_delta", "index": block,
-                                "delta": { "type": "input_json_delta", "partial_json": arguments } }),
-                    ));
+                match self.live_tool {
+                    Some((t, block)) if t == *index => {
+                        out.push_str(&Self::delta(
+                            block,
+                            json!({ "type": "input_json_delta", "partial_json": arguments }),
+                        ));
+                    }
+                    _ => match self.held_tools.get_mut(index) {
+                        Some((_, _, buf)) => buf.push_str(arguments),
+                        // Every decoder refuses a delta for an unknown call
+                        // before it gets here.
+                        None => debug_assert!(false, "tool call delta for an unknown call"),
+                    },
                 }
             }
             StreamEvent::Done {
@@ -474,6 +520,33 @@ impl StreamRenderer {
                     out.push_str(&start);
                 }
                 out.push_str(&self.close_block());
+                for (_, (id, name, arguments)) in std::mem::take(&mut self.held_tools) {
+                    let arguments = if arguments.is_empty() {
+                        "{}".to_string()
+                    } else {
+                        arguments
+                    };
+                    let (block, start) = self.start_block(
+                        json!({ "type": "tool_use", "id": id, "name": name, "input": {} }),
+                        false,
+                    );
+                    out.push_str(&start);
+                    out.push_str(&Self::delta(
+                        block,
+                        json!({ "type": "input_json_delta", "partial_json": arguments }),
+                    ));
+                    out.push_str(&self.close_block());
+                }
+                if !self.held_text.is_empty() {
+                    let (block, start) =
+                        self.start_block(json!({ "type": "text", "text": "" }), true);
+                    out.push_str(&start);
+                    out.push_str(&Self::delta(
+                        block,
+                        json!({ "type": "text_delta", "text": std::mem::take(&mut self.held_text) }),
+                    ));
+                    out.push_str(&self.close_block());
+                }
                 out.push_str(&event(
                     "message_delta",
                     json!({ "type": "message_delta",
@@ -539,11 +612,36 @@ mod tests {
         let m = invalid(
             br#"{"model":"m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"thinking","thinking":"t"}]}]}"#,
         );
-        assert_eq!(m, "Only text content is supported.");
+        assert_eq!(
+            m,
+            "content block 'thinking' is not supported in a user message"
+        );
         let m = invalid(
             br#"{"model":"m","max_tokens":1,"system":[{"type":"tool_use"}],"messages":[{"role":"user","content":"x"}]}"#,
         );
         assert_eq!(m, "Only text content is supported.");
+    }
+
+    #[test]
+    fn refusal_names_the_block_type_and_role() {
+        let m = invalid(
+            br#"{"model":"m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"tool_use","id":"a","name":"n","input":{}}]}]}"#,
+        );
+        assert_eq!(
+            m,
+            "content block 'tool_use' is not supported in a user message"
+        );
+        let m = invalid(
+            br#"{"model":"m","max_tokens":1,"messages":[{"role":"assistant","content":[{"type":"image","source":{}}]}]}"#,
+        );
+        assert_eq!(
+            m,
+            "content block 'image' is not supported in an assistant message"
+        );
+        let m = invalid(
+            br#"{"model":"m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"document"}]}]}"#,
+        );
+        assert!(m.contains("'document'"), "{m}");
     }
 
     #[test]
@@ -967,6 +1065,120 @@ mod tests {
         assert_eq!(evs[11].1["content_block"]["type"], "text");
         assert_eq!(evs[12].1["delta"]["text"], "bye");
         assert_eq!(evs[14].1["delta"]["stop_reason"], "tool_use");
+    }
+
+    fn render_all(evs: Vec<StreamEvent>) -> Vec<(String, Value)> {
+        let mut r = StreamRenderer::new("m1", "m");
+        let mut all = String::new();
+        for ev in &evs {
+            all.push_str(&r.render(ev));
+        }
+        events(&all)
+    }
+
+    fn start(index: u32, id: &str, name: &str) -> StreamEvent {
+        StreamEvent::ToolCallStart {
+            index,
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    fn args(index: u32, a: &str) -> StreamEvent {
+        StreamEvent::ToolCallDelta {
+            index,
+            arguments: a.into(),
+        }
+    }
+
+    fn done() -> StreamEvent {
+        StreamEvent::Done {
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn stream_renderer_never_interleaves_parallel_tool_calls() {
+        // The shape of tests/fixtures/openai/stream_tool_calls.txt.
+        let evs = render_all(vec![
+            start(0, "call_a", "get_weather"),
+            start(1, "call_b", "get_time"),
+            args(0, r#"{"city":"#),
+            args(1, r#"{"tz":"UTC"}"#),
+            args(0, r#""Paris"}"#),
+            done(),
+        ]);
+        let seq: Vec<(&str, Option<u64>)> = evs
+            .iter()
+            .map(|(n, d)| (n.as_str(), d["index"].as_u64()))
+            .collect();
+        assert_eq!(
+            seq,
+            [
+                ("message_start", None),
+                ("content_block_start", Some(0)),
+                ("content_block_delta", Some(0)),
+                ("content_block_delta", Some(0)),
+                ("content_block_stop", Some(0)),
+                ("content_block_start", Some(1)),
+                ("content_block_delta", Some(1)),
+                ("content_block_stop", Some(1)),
+                ("message_delta", None),
+                ("message_stop", None),
+            ]
+        );
+        assert_eq!(evs[1].1["content_block"]["id"], "call_a");
+        assert_eq!(evs[2].1["delta"]["partial_json"], r#"{"city":"#);
+        assert_eq!(evs[3].1["delta"]["partial_json"], r#""Paris"}"#);
+        assert_eq!(evs[5].1["content_block"]["id"], "call_b");
+        assert_eq!(evs[6].1["delta"]["partial_json"], r#"{"tz":"UTC"}"#);
+    }
+
+    #[test]
+    fn stream_renderer_buffers_later_calls_without_arguments_and_text_after_a_call() {
+        let evs = render_all(vec![
+            start(0, "a", "w"),
+            args(0, "{}"),
+            start(2, "c", "z"),
+            StreamEvent::Delta { text: "he".into() },
+            start(1, "b", "n"),
+            StreamEvent::Delta { text: "llo".into() },
+            args(1, "{\"k\":1}"),
+            done(),
+        ]);
+        let seq: Vec<(&str, Option<u64>)> = evs
+            .iter()
+            .map(|(n, d)| (n.as_str(), d["index"].as_u64()))
+            .collect();
+        assert_eq!(
+            seq,
+            [
+                ("message_start", None),
+                ("content_block_start", Some(0)),
+                ("content_block_delta", Some(0)),
+                ("content_block_stop", Some(0)),
+                // Buffered calls, in tool-index order: 1 then 2.
+                ("content_block_start", Some(1)),
+                ("content_block_delta", Some(1)),
+                ("content_block_stop", Some(1)),
+                ("content_block_start", Some(2)),
+                ("content_block_delta", Some(2)),
+                ("content_block_stop", Some(2)),
+                // Then the text that came after the first call.
+                ("content_block_start", Some(3)),
+                ("content_block_delta", Some(3)),
+                ("content_block_stop", Some(3)),
+                ("message_delta", None),
+                ("message_stop", None),
+            ]
+        );
+        assert_eq!(evs[4].1["content_block"]["id"], "b");
+        assert_eq!(evs[5].1["delta"]["partial_json"], "{\"k\":1}");
+        assert_eq!(evs[7].1["content_block"]["id"], "c");
+        assert_eq!(evs[8].1["delta"]["partial_json"], "{}");
+        assert_eq!(evs[10].1["content_block"]["type"], "text");
+        assert_eq!(evs[11].1["delta"]["text"], "hello");
     }
 
     #[test]
