@@ -682,7 +682,7 @@ async fn playground_accepts_tools_and_images() {
     assert_eq!(sent["messages"][0]["content"][1]["type"], "image_url");
     assert_eq!(sent["messages"][2]["tool_call_id"], "call_1");
     // Without the CSRF token the same call is refused before any upstream call.
-    let (status, _, _) = post_to(
+    let (status, _, refused) = post_to(
         &w.org.api.app,
         "/api/playground/chat",
         &[("cookie", &lena.cookie)],
@@ -690,5 +690,7 @@ async fn playground_accepts_tools_and_images() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(refused["error"]["code"], "csrf_failed");
     assert_eq!(w.upstream.received_requests().await.unwrap().len(), 1);
 }

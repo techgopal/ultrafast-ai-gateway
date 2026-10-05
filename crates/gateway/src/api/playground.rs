@@ -36,7 +36,7 @@ pub struct PlaygroundChatRequest {
     /// `auto`, `none`, `required` or a named function, as in
     /// `/v1/chat/completions`. Without `tools`, `required` and a named
     /// function are refused with 400.
-    #[schema(value_type = Object, nullable = false, required = false)]
+    #[schema(schema_with = tool_choice_schema, nullable = false, required = false)]
     pub tool_choice: Option<serde_json::Value>,
     /// As in `/v1/chat/completions`; ignored without `tools`.
     #[schema(nullable = false)]
@@ -47,7 +47,7 @@ pub struct PlaygroundChatRequest {
 pub struct PlaygroundMessage {
     /// `system`, `user`, `assistant` or `tool`.
     pub role: String,
-    #[schema(schema_with = content_schema)]
+    #[schema(schema_with = content_schema, required = false)]
     pub content: serde_json::Value,
     /// The calls of an assistant message, as in `/v1/chat/completions`.
     #[schema(value_type = Vec<Object>, nullable = false, required = false)]
@@ -57,7 +57,25 @@ pub struct PlaygroundMessage {
     pub tool_call_id: Option<String>,
 }
 
-/// A string, or a list of content parts.
+/// `auto`, `none` or `required`, or an object naming a function.
+fn tool_choice_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    use utoipa::openapi::schema::{ObjectBuilder, OneOfBuilder, Type};
+    OneOfBuilder::new()
+        .description(Some(
+            "`auto`, `none`, `required` or a named function, as in \
+             `/v1/chat/completions`. Without `tools`, `required` and a named \
+             function are refused with 400.",
+        ))
+        .item(
+            ObjectBuilder::new()
+                .schema_type(Type::String)
+                .enum_values(Some(["auto", "none", "required"])),
+        )
+        .item(ObjectBuilder::new().schema_type(Type::Object))
+        .into()
+}
+
+/// A string, a list of content parts, or null.
 fn content_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
     use utoipa::openapi::schema::{ArrayBuilder, ObjectBuilder, OneOfBuilder, Type};
     OneOfBuilder::new()
@@ -69,6 +87,7 @@ fn content_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
         ))
         .item(ObjectBuilder::new().schema_type(Type::String))
         .item(ArrayBuilder::new().items(ObjectBuilder::new().schema_type(Type::Object)))
+        .item(ObjectBuilder::new().schema_type(Type::Null))
         .into()
 }
 

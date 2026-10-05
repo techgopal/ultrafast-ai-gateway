@@ -1297,12 +1297,8 @@ export interface components {
             stream?: boolean;
             /** Format: double */
             temperature?: number;
-            /**
-             * @description `auto`, `none`, `required` or a named function, as in
-             *     `/v1/chat/completions`. Without `tools`, `required` and a named
-             *     function are refused with 400.
-             */
-            tool_choice?: Record<string, never>;
+            /** @description `auto`, `none`, `required` or a named function, as in `/v1/chat/completions`. Without `tools`, `required` and a named function are refused with 400. */
+            tool_choice?: ("auto" | "none" | "required") | Record<string, never>;
             /** @description Functions the model may call, as in `/v1/chat/completions`. */
             tools?: Record<string, never>[];
             /** Format: double */
@@ -1325,7 +1321,7 @@ export interface components {
         };
         PlaygroundMessage: {
             /** @description Text, or a list of parts (`text` and `image_url`) as in `/v1/chat/completions`. Null is allowed on an assistant message that has `tool_calls`. Images are `data:` URLs or, except for Gemini, `http(s)` URLs, and count toward the request body limit (10 MiB). */
-            content: string | Record<string, never>[];
+            content?: string | Record<string, never>[] | null;
             /** @description `system`, `user`, `assistant` or `tool`. */
             role: string;
             /** @description On a `tool` message: the id of the call it answers. */

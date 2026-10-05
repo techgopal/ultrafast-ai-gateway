@@ -28,10 +28,14 @@ export interface MockProvider {
   apiKey: string;
   /** What every completion answers. */
   answer: string;
+  /** The arguments of the tool call that is answered when the request has tools and no tool result. */
+  toolArguments: string;
   /** The models `GET /v1/models` lists. */
   models: string[];
   /** Completions asked for, in order. */
   calls: MockCall[];
+  /** The roles of the messages each completion carried, in order. */
+  roles: string[][];
   /** How many times the model list was asked for. */
   listCalls: number;
   /** The token usage every completion reports; a test may change it at any time. */
@@ -55,7 +59,9 @@ export async function startMockProvider(
 ): Promise<MockProvider> {
   const apiKey = `mock-${randomBytes(16).toString("hex")}`;
   const answer = `Hello from the mock provider ${randomBytes(4).toString("hex")}.`;
+  const toolArguments = JSON.stringify({ city: "Oslo" });
   const calls: MockCall[] = [];
+  const roles: string[][] = [];
   const state = {
     listCalls: 0,
     mode: {} as MockMode,
@@ -102,7 +108,16 @@ export async function startMockProvider(
         body !== null &&
         "stream" in body &&
         body.stream === true;
+      const messages =
+        typeof body === "object" && body !== null && "messages" in body && Array.isArray(body.messages)
+          ? (body.messages as { role?: unknown }[])
+          : [];
+      const hasTools =
+        typeof body === "object" && body !== null && "tools" in body && Array.isArray(body.tools) && body.tools.length > 0;
+      const hasToolResult = messages.some((message) => message.role === "tool");
+      const callsTool = hasTools && !hasToolResult;
       calls.push({ authorized, model });
+      roles.push(messages.map((message) => String(message.role)));
       if (!authorized) {
         send(401, {
           error: {
@@ -130,6 +145,44 @@ export async function startMockProvider(
             request.socket.destroy();
           },
         );
+        return;
+      }
+      const toolCalls = [
+        { id: "call_e2e_1", type: "function", function: { name: "weather", arguments: toolArguments } },
+      ];
+      if (streaming && callsTool) {
+        // The call in pieces: id and name in the first, the arguments in two more.
+        const cut = Math.floor(toolArguments.length / 2);
+        const piece = (call: object, finish: string | null, usage?: object) =>
+          `data: ${JSON.stringify({ id: "chatcmpl-e2e", object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { tool_calls: [call] }, finish_reason: finish }], ...(usage === undefined ? {} : { usage }) })}\n\n`;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(piece({ index: 0, id: "call_e2e_1", type: "function", function: { name: "weather", arguments: "" } }, null));
+        response.write(piece({ index: 0, function: { arguments: toolArguments.slice(0, cut) } }, null));
+        response.write(
+          piece({ index: 0, function: { arguments: toolArguments.slice(cut) } }, "tool_calls", {
+            prompt_tokens: state.usage.prompt,
+            completion_tokens: state.usage.completion,
+            total_tokens: state.usage.prompt + state.usage.completion,
+          }),
+        );
+        response.end("data: [DONE]\n\n");
+        return;
+      }
+      if (callsTool) {
+        send(200, {
+          id: "chatcmpl-e2e",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [
+            { index: 0, message: { role: "assistant", content: null, tool_calls: toolCalls }, finish_reason: "tool_calls" },
+          ],
+          usage: {
+            prompt_tokens: state.usage.prompt,
+            completion_tokens: state.usage.completion,
+            total_tokens: state.usage.prompt + state.usage.completion,
+          },
+        });
         return;
       }
       if (streaming) {
@@ -189,8 +242,10 @@ export async function startMockProvider(
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     apiKey,
     answer,
+    toolArguments,
     models,
     calls,
+    roles,
     get listCalls() {
       return state.listCalls;
     },

@@ -1,10 +1,32 @@
 // What the playground knows: how its parameters are checked, the request it
 // sends, how the stream that answers is read, and what the call cost. Pure.
 
-export interface Message {
-  role: "user" | "assistant";
-  content: string;
+/** An image attached to a message of the user, as a `data:` URL. */
+export interface Attachment {
+  /** The file name, which is also its alt text. */
+  name: string;
+  url: string;
 }
+
+/** A call of a function the model asks for, as the OpenAI shape has it. */
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+export type Message =
+  | { role: "user"; content: string; images?: readonly Attachment[] }
+  | { role: "assistant"; content: string | null; tool_calls?: readonly ToolCall[] }
+  | { role: "tool"; content: string; tool_call_id: string };
+
+/** A tool as it is typed: a function with a name; the rest is the provider's. */
+export interface ToolDef {
+  type: "function";
+  function: { name: string } & Record<string, unknown>;
+}
+
+export type ToolChoice = "none" | "required" | { type: "function"; function: { name: string } };
 
 /** The parameters as they are typed. */
 export interface Params {
@@ -20,6 +42,8 @@ export interface ParamValues {
   temperature?: number;
   top_p?: number;
   stop?: string[];
+  tools?: ToolDef[];
+  tool_choice?: ToolChoice;
 }
 
 export interface Checked {
@@ -76,14 +100,82 @@ export function checkParams(params: Params): Checked {
   return Object.keys(errors).length > 0 ? { values: {}, errors } : { values, errors };
 }
 
+type WirePart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+export type WireMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string | WirePart[] }
+  | { role: "assistant"; content: string | null; tool_calls?: readonly ToolCall[] }
+  | { role: "tool"; content: string; tool_call_id: string };
+
 export interface ChatRequestBody {
   model: string;
   stream: true;
-  messages: { role: "system" | "user" | "assistant"; content: string }[];
+  messages: WireMessage[];
   max_tokens?: number;
   temperature?: number;
   top_p?: number;
   stop?: string[];
+  tools?: ToolDef[];
+  tool_choice?: ToolChoice;
+}
+
+function wireOf(message: Message): WireMessage {
+  switch (message.role) {
+    case "tool":
+      return { role: "tool", content: message.content, tool_call_id: message.tool_call_id };
+    case "assistant":
+      return message.tool_calls === undefined
+        ? { role: "assistant", content: message.content }
+        : { role: "assistant", content: message.content, tool_calls: message.tool_calls };
+    case "user":
+      if (message.images === undefined || message.images.length === 0) {
+        return { role: "user", content: message.content };
+      }
+      return {
+        role: "user",
+        content: [
+          ...(message.content === "" ? [] : [{ type: "text" as const, text: message.content }]),
+          ...message.images.map((image) => ({ type: "image_url" as const, image_url: { url: image.url } })),
+        ],
+      };
+  }
+}
+
+export const TOOLS_INVALID =
+  "Tools must be a JSON array of functions, each with a type of function and a name.";
+
+export interface CheckedTools {
+  /** The tools to send; nothing when none were given. */
+  tools: ToolDef[] | undefined;
+  /** The names of the functions, for the choice of one. */
+  names: string[];
+  error: string | undefined;
+}
+
+/** Reads the typed tools. Empty text and an empty array are no tools. */
+export function checkTools(text: string): CheckedTools {
+  const none: CheckedTools = { tools: undefined, names: [], error: undefined };
+  if (text.trim() === "") return none;
+  const refused: CheckedTools = { tools: undefined, names: [], error: TOOLS_INVALID };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return refused;
+  }
+  if (!Array.isArray(parsed)) return refused;
+  if (parsed.length === 0) return none;
+  const names: string[] = [];
+  for (const item of parsed as unknown[]) {
+    if (!isRecord(item) || item.type !== "function" || !isRecord(item.function)) return refused;
+    const { name } = item.function;
+    if (typeof name !== "string" || name === "") return refused;
+    names.push(name);
+  }
+  return { tools: parsed as ToolDef[], names, error: undefined };
 }
 
 /** The request of the playground: always a stream. */
@@ -98,7 +190,10 @@ export function requestBody(
     model,
     stream: true,
     ...values,
-    messages: [...(prompt === "" ? [] : [{ role: "system" as const, content: prompt }]), ...messages],
+    messages: [
+      ...(prompt === "" ? [] : [{ role: "system" as const, content: prompt }]),
+      ...messages.map(wireOf),
+    ],
   };
 }
 
@@ -135,11 +230,46 @@ export interface Usage {
 /** What one event of the stream says. An event with nothing to use is `{}`. */
 export interface Chunk {
   text?: string;
+  toolCalls?: ToolCallDelta[];
   usage?: Usage;
   /** The model that answered, as the provider names it. */
   model?: string;
   error?: string;
   done?: true;
+}
+
+/** One piece of a tool call in a stream; the id and the name come in its first piece only. */
+export interface ToolCallDelta {
+  index: number;
+  id?: string;
+  name?: string;
+  arguments?: string;
+}
+
+/** Puts the pieces of the tool calls of a stream together, by their index. */
+export class ToolCallAssembler {
+  private readonly parts = new Map<number, { id?: string; name: string; arguments: string }>();
+
+  add(deltas: readonly ToolCallDelta[]): void {
+    for (const delta of deltas) {
+      const part = this.parts.get(delta.index) ?? { name: "", arguments: "" };
+      if (delta.id !== undefined) part.id = delta.id;
+      part.name += delta.name ?? "";
+      part.arguments += delta.arguments ?? "";
+      this.parts.set(delta.index, part);
+    }
+  }
+
+  /** The calls so far, in the order of their index. A piece that never named its call is left out. */
+  calls(): ToolCall[] {
+    return [...this.parts.entries()]
+      .sort(([a], [b]) => a - b)
+      .flatMap(([, part]) =>
+        part.id === undefined
+          ? []
+          : [{ id: part.id, type: "function" as const, function: { name: part.name, arguments: part.arguments } }],
+      );
+  }
 }
 
 export const BROKE_OFF = "The answer broke off.";
@@ -170,6 +300,19 @@ export function chunkOf(data: string): Chunk {
   if (isRecord(first) && isRecord(first.delta) && typeof first.delta.content === "string") {
     if (first.delta.content !== "") chunk.text = first.delta.content;
   }
+  if (isRecord(first) && isRecord(first.delta) && Array.isArray(first.delta.tool_calls)) {
+    const deltas: ToolCallDelta[] = [];
+    for (const raw of first.delta.tool_calls as unknown[]) {
+      if (!isRecord(raw) || typeof raw.index !== "number") continue;
+      const delta: ToolCallDelta = { index: raw.index };
+      if (typeof raw.id === "string") delta.id = raw.id;
+      const fn = isRecord(raw.function) ? raw.function : {};
+      if (typeof fn.name === "string") delta.name = fn.name;
+      if (typeof fn.arguments === "string") delta.arguments = fn.arguments;
+      deltas.push(delta);
+    }
+    if (deltas.length > 0) chunk.toolCalls = deltas;
+  }
   const { usage } = body;
   if (isRecord(usage) && typeof usage.prompt_tokens === "number" && typeof usage.completion_tokens === "number") {
     chunk.usage = { input: usage.prompt_tokens, output: usage.completion_tokens };
@@ -199,14 +342,28 @@ function shellQuote(text: string): string {
   return `'${text.replace(/'/g, `'"'"'`)}'`;
 }
 
-/** The call as a `curl` command for `/v1`, with a placeholder where the key goes. */
+export const IMAGE_OMITTED = "# image data omitted";
+
+/** The call as a `curl` command for `/v1`, with a placeholder where the key goes. Image data is cut short. */
 export function curlOf(origin: string, body: object): string {
-  return [
+  let shortened = 0;
+  const json = JSON.stringify(body, (_key, value: unknown) => {
+    if (typeof value === "string" && value.startsWith("data:image/")) {
+      const cut = /^data:image\/[a-z+.-]+;base64,/.exec(value);
+      if (cut !== null) {
+        shortened += 1;
+        return `${cut[0]}…`;
+      }
+    }
+    return value;
+  });
+  const command = [
     `curl ${origin}/v1/chat/completions`,
     "  -H 'Authorization: Bearer <your key>'",
     "  -H 'Content-Type: application/json'",
-    `  -d ${shellQuote(JSON.stringify(body))}`,
+    `  -d ${shellQuote(json)}`,
   ].join(" \\\n");
+  return shortened > 0 ? `${command}\n${IMAGE_OMITTED}` : command;
 }
 
 /** How long to wait, as the sentence that follows a refusal; nothing when it is not known. */
