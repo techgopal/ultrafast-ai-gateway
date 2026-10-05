@@ -7195,7 +7195,8 @@
                 ]
               },
               {
-                "type": "object"
+                "type": "object",
+                "additionalProperties": true
               }
             ],
             "description": "`auto`, `none`, `required` or a named function, as in `/v1/chat/completions`. Without `tools`, `required` and a named function are refused with 400."
@@ -7203,9 +7204,9 @@
           "tools": {
             "type": "array",
             "items": {
-              "type": "object"
-            },
-            "description": "Functions the model may call, as in `/v1/chat/completions`."
+              "type": "object",
+              "additionalProperties": true
+            }
           },
           "top_p": {
             "type": "number",
@@ -7261,7 +7262,8 @@
               {
                 "type": "array",
                 "items": {
-                  "type": "object"
+                  "type": "object",
+                  "additionalProperties": true
                 }
               },
               {
@@ -7281,9 +7283,9 @@
           "tool_calls": {
             "type": "array",
             "items": {
-              "type": "object"
-            },
-            "description": "The calls of an assistant message, as in `/v1/chat/completions`."
+              "type": "object",
+              "additionalProperties": true
+            }
           }
         }
       },

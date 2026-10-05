@@ -211,6 +211,21 @@ describe("tool calls in a stream", () => {
     ]);
   });
 
+  test("two calls whose pieces come in one chunk are both kept", () => {
+    const assembler = new ToolCallAssembler();
+    assembler.add(
+      delta([
+        { index: 0, id: "a", type: "function", function: { name: "f", arguments: "{" } },
+        { index: 1, id: "b", type: "function", function: { name: "g", arguments: "[" } },
+      ]).toolCalls ?? [],
+    );
+    assembler.add(delta([{ index: 0, function: { arguments: "}" } }, { index: 1, function: { arguments: "]" } }]).toolCalls ?? []);
+    expect(assembler.calls().map((call) => [call.id, call.function.arguments])).toEqual([
+      ["a", "{}"],
+      ["b", "[]"],
+    ]);
+  });
+
   test("no deltas, no calls; a call that never got an id is not made up", () => {
     const assembler = new ToolCallAssembler();
     expect(assembler.calls()).toEqual([]);

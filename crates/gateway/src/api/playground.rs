@@ -31,7 +31,7 @@ pub struct PlaygroundChatRequest {
     #[schema(nullable = false)]
     pub stream: Option<bool>,
     /// Functions the model may call, as in `/v1/chat/completions`.
-    #[schema(value_type = Vec<Object>, nullable = false, required = false)]
+    #[schema(schema_with = free_objects, nullable = false, required = false)]
     pub tools: Option<Vec<serde_json::Value>>,
     /// `auto`, `none`, `required` or a named function, as in
     /// `/v1/chat/completions`. Without `tools`, `required` and a named
@@ -50,11 +50,26 @@ pub struct PlaygroundMessage {
     #[schema(schema_with = content_schema, required = false)]
     pub content: serde_json::Value,
     /// The calls of an assistant message, as in `/v1/chat/completions`.
-    #[schema(value_type = Vec<Object>, nullable = false, required = false)]
+    #[schema(schema_with = free_objects, nullable = false, required = false)]
     pub tool_calls: Option<Vec<serde_json::Value>>,
     /// On a `tool` message: the id of the call it answers.
     #[schema(nullable = false)]
     pub tool_call_id: Option<String>,
+}
+
+/// An object with any members: the shape of the call is the provider API's.
+fn free_object() -> utoipa::openapi::schema::ObjectBuilder {
+    use utoipa::openapi::schema::{AdditionalProperties, ObjectBuilder, Type};
+    ObjectBuilder::new()
+        .schema_type(Type::Object)
+        .additional_properties(Some(AdditionalProperties::FreeForm(true)))
+}
+
+/// A list of free objects.
+fn free_objects() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    utoipa::openapi::schema::ArrayBuilder::new()
+        .items(free_object())
+        .into()
 }
 
 /// `auto`, `none` or `required`, or an object naming a function.
@@ -71,7 +86,7 @@ fn tool_choice_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schem
                 .schema_type(Type::String)
                 .enum_values(Some(["auto", "none", "required"])),
         )
-        .item(ObjectBuilder::new().schema_type(Type::Object))
+        .item(free_object())
         .into()
 }
 
@@ -86,7 +101,7 @@ fn content_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
              URLs, and count toward the request body limit (10 MiB).",
         ))
         .item(ObjectBuilder::new().schema_type(Type::String))
-        .item(ArrayBuilder::new().items(ObjectBuilder::new().schema_type(Type::Object)))
+        .item(ArrayBuilder::new().items(free_object()))
         .item(ObjectBuilder::new().schema_type(Type::Null))
         .into()
 }

@@ -36,17 +36,19 @@ function nameOf(messages: readonly Message[], id: string): string | undefined {
 
 interface CallProps {
   call: ToolCall;
+  /** The name of the call among the others: the function, and its number when it is called more than once. */
+  label: string;
   onCopy: (text: string) => void;
   /** The field for the result of the call, while it is waited for. */
   children?: React.ReactNode;
 }
 
-function Call({ call, onCopy, children }: CallProps) {
+function Call({ call, label, onCopy, children }: CallProps) {
   const text = prettyArguments(call.function.arguments);
   return (
     <div
       role="group"
-      aria-label={`Tool call ${call.function.name}`}
+      aria-label={`Tool call ${label}`}
       className="flex min-w-0 flex-col gap-2 rounded-md border bg-background p-3"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -109,15 +111,19 @@ function Turn({ message, messages, streaming, onCopy, results }: TurnProps) {
         <p className="break-words whitespace-pre-wrap">{message.content}</p>
       )}
       {message.role === "assistant" && message.tool_calls !== undefined
-        ? message.tool_calls.map((call) => (
-            <Call key={call.id} call={call} onCopy={onCopy}>
+        ? message.tool_calls.map((call, index, all) => {
+            const same = all.filter((other) => other.function.name === call.function.name).length;
+            const label = same > 1 ? `${call.function.name} (${String(index + 1)})` : call.function.name;
+            return (
+            <Call key={call.id} call={call} label={label} onCopy={onCopy}>
               {results === undefined ? null : (
-                <Field label="Tool result" name={`result-${call.id}`}>
+                <Field label={`Tool result for ${label}`} name={`result-${call.id}`}>
                   {({ id, name, ...described }) => (
                     <Textarea
                       {...described}
                       id={id}
                       name={name}
+                      {...(index === 0 ? { "data-first-result": "" } : {})}
                       value={results.values[call.id] ?? ""}
                       onChange={(event) => {
                         results.onChange(call.id, event.target.value);
@@ -127,7 +133,8 @@ function Turn({ message, messages, streaming, onCopy, results }: TurnProps) {
                 </Field>
               )}
             </Call>
-          ))
+            );
+          })
         : null}
       {results === undefined ? null : (
         <div className="flex flex-col gap-2">

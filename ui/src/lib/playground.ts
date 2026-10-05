@@ -9,22 +9,22 @@ export interface Attachment {
 }
 
 /** A call of a function the model asks for, as the OpenAI shape has it. */
-export interface ToolCall {
+export type ToolCall = {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
-}
+};
 
 export type Message =
   | { role: "user"; content: string; images?: readonly Attachment[] }
-  | { role: "assistant"; content: string | null; tool_calls?: readonly ToolCall[] }
+  | { role: "assistant"; content: string | null; tool_calls?: ToolCall[] }
   | { role: "tool"; content: string; tool_call_id: string };
 
 /** A tool as it is typed: a function with a name; the rest is the provider's. */
-export interface ToolDef {
+export type ToolDef = {
   type: "function";
   function: { name: string } & Record<string, unknown>;
-}
+};
 
 export type ToolChoice = "none" | "required" | { type: "function"; function: { name: string } };
 
@@ -107,7 +107,7 @@ type WirePart =
 export type WireMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string | WirePart[] }
-  | { role: "assistant"; content: string | null; tool_calls?: readonly ToolCall[] }
+  | { role: "assistant"; content: string | null; tool_calls?: ToolCall[] }
   | { role: "tool"; content: string; tool_call_id: string };
 
 export interface ChatRequestBody {
@@ -340,6 +340,14 @@ export function costMicros(usage: Usage, prices: Prices | null): number | null {
 
 function shellQuote(text: string): string {
   return `'${text.replace(/'/g, `'"'"'`)}'`;
+}
+
+/** The most the JSON of one request may be: the gateway takes 10 MiB, the rest is margin. */
+export const BODY_BUDGET = 9 * 1024 * 1024;
+
+/** The size of the request as it goes over the wire, in bytes. */
+export function bodyBytes(body: object): number {
+  return new TextEncoder().encode(JSON.stringify(body)).length;
 }
 
 export const IMAGE_OMITTED = "# image data omitted";

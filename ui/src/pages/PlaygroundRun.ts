@@ -92,9 +92,10 @@ export function useRun(): Run {
     let model: string | null = null;
     let failure: string | null = null;
     let failed = false;
+    // Tool calls whose stream broke off are cut short: only a finished stream keeps them.
+    let finishedStream = false;
     try {
-      // The generated type of free-form JSON (tools, parts) is `Record<string, never>`.
-      const response = await playgroundChat(asked as unknown as Parameters<typeof playgroundChat>[0], abort.signal);
+      const response = await playgroundChat(asked, abort.signal);
       const reader = response.body?.getReader();
       if (reader === undefined) throw new Error(NO_ANSWER);
       // Stopping ends the read at once, whatever the connection does.
@@ -112,6 +113,7 @@ export function useRun(): Run {
             answer += chunk.text;
             setPartial(answer);
           }
+          if (chunk.done === true) finishedStream = true;
           if (chunk.toolCalls !== undefined) calls.add(chunk.toolCalls);
           if (chunk.usage !== undefined) {
             usage = chunk.usage;
@@ -130,7 +132,7 @@ export function useRun(): Run {
     if (controller.current === abort) controller.current = null;
 
     let putBack = false;
-    const toolCalls = calls.calls();
+    const toolCalls = finishedStream ? calls.calls() : [];
     if (answer !== "" || toolCalls.length > 0) {
       const kept: readonly Message[] = [
         ...sent,

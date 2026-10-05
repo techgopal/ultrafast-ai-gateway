@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useModels, useRoutes } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
@@ -18,6 +18,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { refOf } from "@/lib/models";
 import {
+  BODY_BUDGET,
+  bodyBytes,
   checkParams,
   checkTools,
   costMicros,
@@ -49,6 +51,9 @@ export const CURL_SAMPLE = "Hello";
 export const IMAGE_TOO_BIG = "Images over 5 MB are not sent.";
 export const IMAGE_KIND = "Only PNG, JPEG, GIF and WebP images are sent.";
 export const IMAGE_UNREADABLE = "That image could not be read.";
+export const IMAGES_TOGETHER = "These images are too large to send together. Remove one.";
+export const IMAGES_HISTORY =
+  "These images are too large to send together. Remove one, or start a New conversation.";
 export const WAITING_FOR_RESULTS = "Send the results of the tool calls above to go on.";
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -102,7 +107,12 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
   const [text, setText] = useState("");
   const box = useRef<HTMLTextAreaElement>(null);
   const [images, setImages] = useState<readonly Attachment[]>([]);
-  const [imageError, setImageError] = useState<string | null>(null);
+  const [imageErrors, setImageErrors] = useState<readonly { name: string; text: string }[]>([]);
+  const toolsField = useRef<HTMLTextAreaElement>(null);
+  const chips = useRef<HTMLUListElement>(null);
+  const attachInput = useRef<HTMLInputElement>(null);
+  const [focusTools, setFocusTools] = useState(0);
+  const focusChip = useRef<number | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [toolsText, setToolsText] = useState("");
   const [toolsError, setToolsError] = useState<string | undefined>(undefined);
@@ -141,6 +151,11 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
     setFieldErrors(checked.errors);
     const toolsChecked = checkTools(toolsText);
     setToolsError(toolsChecked.error);
+    if (toolsChecked.error !== undefined) {
+      // The error is in the section: open it, and take the cursor there.
+      setToolsOpen(true);
+      setFocusTools((before) => before + 1);
+    }
     if (Object.keys(checked.errors).length > 0 || toolsChecked.error !== undefined) return null;
     return { model: target, system, add, values: { ...checked.values, ...toolValues(toolsChecked) } };
   }
@@ -161,16 +176,34 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
     if (target === "" || run.running || waiting.length > 0) return;
     if (typed === "" && images.length === 0) return;
     const kept = images;
+    if (kept.length > 0 && tooLarge(kept)) {
+      setImageErrors([{ name: "", text: sizeText() }]);
+      return;
+    }
     const call = callOf([{ role: "user", content: typed, ...(kept.length > 0 ? { images: kept } : {}) }]);
     if (call === null) return;
     setText("");
     setImages([]);
+    setImageErrors([]);
     const putBack = await run.send(call);
     if (putBack) {
       setText(typed);
       setImages(kept);
     }
-    box.current?.focus();
+  }
+
+  /** Whether the request with `attached` on the message that is being written is over the budget. */
+  function tooLarge(attached: readonly Attachment[]): boolean {
+    const body = bodyOf(
+      { model: target, system, add: [{ role: "user", content: typed, images: attached }], values: {} },
+      run.messages,
+    );
+    return bodyBytes(body) > BODY_BUDGET;
+  }
+
+  /** What to say of too many images: the thread alone may be what is too large. */
+  function sizeText(): string {
+    return tooLarge([]) ? IMAGES_HISTORY : IMAGES_TOGETHER;
   }
 
   function resultMessages(): Message[] {
@@ -193,29 +226,54 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
     if (call === null) return;
     const putBack = await run.send(call);
     if (!putBack) setResults({});
-    box.current?.focus();
   }
+
+  // When a call ends, the cursor goes where the next thing is to be done:
+  // the first result that is asked for, or else the message.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    const ended = wasRunning.current && !run.running;
+    wasRunning.current = run.running;
+    if (!ended) return;
+    const first = document.querySelector<HTMLElement>("[data-first-result]");
+    (first ?? box.current)?.focus();
+  }, [run.running, run.messages]);
+
+  useEffect(() => {
+    if (focusTools > 0) toolsField.current?.focus();
+  }, [focusTools]);
+
+  useEffect(() => {
+    const at = focusChip.current;
+    if (at === null) return;
+    focusChip.current = null;
+    const buttons = chips.current?.querySelectorAll<HTMLElement>("button") ?? [];
+    (buttons[Math.min(at, buttons.length - 1)] ?? attachInput.current)?.focus();
+  }, [images]);
 
   async function attach(files: FileList | null) {
     if (files === null) return;
-    setImageError(null);
-    const added: Attachment[] = [];
+    const errors: { name: string; text: string }[] = [];
+    let attached = images;
     for (const file of Array.from(files)) {
       if (!IMAGE_TYPES.includes(file.type)) {
-        setImageError(IMAGE_KIND);
+        errors.push({ name: file.name, text: IMAGE_KIND });
         continue;
       }
       if (file.size > MAX_IMAGE_BYTES) {
-        setImageError(IMAGE_TOO_BIG);
+        errors.push({ name: file.name, text: IMAGE_TOO_BIG });
         continue;
       }
       try {
-        added.push({ name: file.name, url: await readAsDataUrl(file) });
+        const next = [...attached, { name: file.name, url: await readAsDataUrl(file) }];
+        if (tooLarge(next)) errors.push({ name: file.name, text: sizeText() });
+        else attached = next;
       } catch {
-        setImageError(IMAGE_UNREADABLE);
+        errors.push({ name: file.name, text: IMAGE_UNREADABLE });
       }
     }
-    if (added.length > 0) setImages((before) => [...before, ...added]);
+    setImageErrors(errors);
+    setImages(attached);
   }
 
   async function copyText(value: string) {
@@ -232,6 +290,10 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
     setFieldErrors(checked.errors);
     const toolsChecked = checkTools(toolsText);
     setToolsError(toolsChecked.error);
+    if (toolsChecked.error !== undefined) {
+      setToolsOpen(true);
+      setFocusTools((before) => before + 1);
+    }
     if (Object.keys(checked.errors).length > 0 || toolsChecked.error !== undefined || target === "") return;
     const add: readonly Message[] =
       waiting.length > 0
@@ -301,7 +363,7 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
             )}
           </Field>
           {images.length === 0 ? null : (
-            <ul aria-label="Attached images" className="flex flex-wrap gap-2">
+            <ul ref={chips} aria-label="Attached images" className="flex flex-wrap gap-2">
               {images.map((image, index) => (
                 <li key={index} className="flex items-center gap-2 rounded-md border p-1">
                   <img src={image.url} alt={image.name} className="size-12 rounded object-cover" />
@@ -313,6 +375,8 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
                     aria-label={`Remove ${image.name}`}
                     onClick={() => {
                       setImages((before) => before.filter((_, at) => at !== index));
+                      setImageErrors([]);
+                      focusChip.current = index;
                     }}
                   >
                     Remove
@@ -321,11 +385,12 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
               ))}
             </ul>
           )}
-          {imageError === null ? null : (
-            <p role="alert" className="text-sm text-destructive">
-              {imageError}
+          {imageErrors.map((error, index) => (
+            <p key={index} role="alert" className="text-sm text-destructive">
+              {error.name === "" ? null : <span>{error.name}: </span>}
+              {error.text}
             </p>
-          )}
+          ))}
           {waiting.length > 0 && !run.running ? (
             <p className="text-sm text-muted-foreground">{WAITING_FOR_RESULTS}</p>
           ) : null}
@@ -367,6 +432,7 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
                 type="file"
                 accept="image/png,image/jpeg,image/gif,image/webp"
                 multiple
+                ref={attachInput}
                 className="sr-only"
                 onChange={(event) => {
                   void attach(event.target.files);
@@ -439,7 +505,7 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
               setToolsOpen((before) => !before);
             }}
           >
-            Tools
+            {tools.tools === undefined ? "Tools" : `Tools (${String(tools.names.length)})`}
           </Button>
           <div id="tools-section" hidden={!toolsOpen} className="flex flex-col gap-4">
             <Field
@@ -453,6 +519,7 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
                   {...described}
                   id={id}
                   name={name}
+                  ref={toolsField}
                   className="font-mono text-xs"
                   spellCheck={false}
                   value={toolsText}
