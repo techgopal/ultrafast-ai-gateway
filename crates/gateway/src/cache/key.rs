@@ -19,6 +19,14 @@ impl std::fmt::Debug for CacheKey {
     }
 }
 
+#[cfg(test)]
+impl CacheKey {
+    /// A key of its own for every `name`, for tests of the code around keys.
+    pub fn for_test(name: &str) -> Self {
+        Self(Sha256::digest(name.as_bytes()).into())
+    }
+}
+
 /// What a call is cached under besides its own fields.
 #[derive(Debug, Clone, Copy)]
 pub struct KeyParts<'a> {

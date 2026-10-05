@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 
 use crate::api;
 use crate::budgets::{Budgets, MemoryBudgets};
-use crate::cache::{MemoryCache, ResponseCache};
+use crate::cache::{Flights, MemoryCache, ResponseCache};
 use crate::errors::error_response;
 use crate::identity::limiter::LoginLimiter;
 use crate::limits::{Limiter, MemoryLimiter};
@@ -65,6 +65,8 @@ pub struct AppState {
     pub rate: Arc<dyn Limiter>,
     /// The answers kept by routes with the cache on.
     pub cache: Arc<dyn ResponseCache>,
+    /// Makes concurrent misses of one cache key wait for the first.
+    pub flights: Flights,
     /// The spend counters of the budgets of `/v1`.
     pub budgets: Arc<dyn Budgets>,
     /// The circuit breaker of every target that was called.
@@ -100,6 +102,7 @@ impl AppState {
             sink: Arc::new(NoopSink),
             rate: Arc::new(MemoryLimiter::new()),
             cache: Arc::new(MemoryCache::new()),
+            flights: Flights::new(),
             budgets: Arc::new(MemoryBudgets::new()),
             health: Arc::new(InMemoryHealth::new()),
             metrics: Arc::new(Metrics::new()),

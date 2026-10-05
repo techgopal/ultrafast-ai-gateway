@@ -276,6 +276,7 @@ async fn the_output_is_valid_exposition_text_with_every_metric() {
         ("uf_log_write_failures_total", "counter"),
         ("uf_cache_hits_total", "counter"),
         ("uf_cache_misses_total", "counter"),
+        ("ultrafast_cache_flight_waits_total", "counter"),
         ("uf_rate_limited_total", "counter"),
         ("uf_budget_blocked_total", "counter"),
         ("uf_circuit_open", "gauge"),

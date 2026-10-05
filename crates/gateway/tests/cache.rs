@@ -4,7 +4,8 @@
 
 mod common;
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use common::{harness, post_to, seed_team, seed_user, Harness};
@@ -863,4 +864,130 @@ async fn images_are_part_of_the_cache_key() {
     assert_eq!(w.provider_calls().await, 1);
     assert_eq!(w.chat(&a, &with("BBBB")).await, StatusCode::OK);
     assert_eq!(w.provider_calls().await, 2);
+}
+
+// ---- single-flight: one provider call per key for concurrent misses ----
+
+/// Answers like `ok` after `delay`, and notes when each call arrived.
+struct Slow {
+    delay: Duration,
+    arrivals: Arc<std::sync::Mutex<Vec<Instant>>>,
+}
+
+impl wiremock::Respond for Slow {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        self.arrivals.lock().unwrap().push(Instant::now());
+        ok("hello").set_delay(self.delay)
+    }
+}
+
+async fn slow_upstream(w: &World, delay: Duration) -> Arc<std::sync::Mutex<Vec<Instant>>> {
+    w.h.upstream.reset().await;
+    let arrivals = Arc::new(std::sync::Mutex::new(Vec::new()));
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(Slow {
+            delay,
+            arrivals: arrivals.clone(),
+        })
+        .mount(&w.h.upstream)
+        .await;
+    arrivals
+}
+
+/// Runs `n` calls of `body` at once and gives every answer.
+async fn together(
+    w: &Arc<World>,
+    who: &Arc<Who>,
+    n: usize,
+    body: &str,
+) -> Vec<(StatusCode, String)> {
+    let mut tasks = Vec::new();
+    for _ in 0..n {
+        let (w, who, body) = (w.clone(), who.clone(), body.to_string());
+        tasks.push(tokio::spawn(async move {
+            let (status, _, text) = w.chat_as(&who, &body).await;
+            (status, text)
+        }));
+    }
+    let mut out = Vec::new();
+    for t in tasks {
+        out.push(
+            tokio::time::timeout(Duration::from_secs(30), t)
+                .await
+                .expect("a caller hung")
+                .unwrap(),
+        );
+    }
+    out
+}
+
+#[tokio::test]
+async fn concurrent_identical_calls_reach_the_provider_once() {
+    let w = world(CacheScope::Team).await;
+    let (a, _) = w.two_teams().await;
+    slow_upstream(&w, Duration::from_millis(200)).await;
+    let (w, a) = (Arc::new(w), Arc::new(a));
+    let answers = together(&w, &a, 50, BODY).await;
+    assert_eq!(answers.len(), 50);
+    for (status, text) in &answers {
+        assert_eq!(*status, StatusCode::OK);
+        assert_eq!(content_of(text), "hello");
+    }
+    assert_eq!(w.provider_calls().await, 1);
+    let records = w.h.sink.wait_for(50).await;
+    assert_eq!(records.len(), 50);
+    assert_eq!(records.iter().filter(|r| r.cached).count(), 49);
+    let metrics = w.h.state.metrics.render(&[]);
+    let waits: f64 = metrics
+        .lines()
+        .find_map(|l| l.strip_prefix("ultrafast_cache_flight_waits_total "))
+        .expect("the counter is exposed")
+        .parse()
+        .unwrap();
+    assert!(waits >= 1.0, "callers that waited are counted: {waits}");
+    assert!(waits <= 49.0);
+}
+
+#[tokio::test]
+async fn failed_leader_lets_waiters_call() {
+    let w = world(CacheScope::Team).await;
+    let (a, _) = w.two_teams().await;
+    w.h.upstream.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_delay(Duration::from_millis(200)))
+        .up_to_n_times(1)
+        .mount(&w.h.upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ok("hello"))
+        .mount(&w.h.upstream)
+        .await;
+    let (w, a) = (Arc::new(w), Arc::new(a));
+    let answers = together(&w, &a, 5, BODY).await;
+    let good = answers.iter().filter(|(s, _)| *s == StatusCode::OK).count();
+    assert_eq!(answers.len(), 5, "none hangs");
+    assert_eq!(good, 4, "only the leader saw the failure");
+    // The failure, then one answer that the rest found in the cache.
+    assert_eq!(w.provider_calls().await, 2);
+}
+
+#[tokio::test]
+async fn uncacheable_calls_do_not_wait() {
+    let w = world(CacheScope::Team).await;
+    let (a, _) = w.two_teams().await;
+    let delay = Duration::from_secs(2);
+    let arrivals = slow_upstream(&w, delay).await;
+    let (w, a) = (Arc::new(w), Arc::new(a));
+    let body = BODY.replace("\"max_tokens\":10", "\"max_tokens\":10,\"temperature\":1.0");
+    let answers = together(&w, &a, 2, &body).await;
+    assert!(answers.iter().all(|(s, _)| *s == StatusCode::OK));
+    assert_eq!(w.provider_calls().await, 2);
+    // Both reached the provider before the first could have finished.
+    let at = arrivals.lock().unwrap().clone();
+    assert_eq!(at.len(), 2);
+    let gap = at[1].duration_since(at[0]);
+    assert!(gap < delay, "the calls ran one after the other: {gap:?}");
 }

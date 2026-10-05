@@ -9,12 +9,14 @@
 //! The entries live behind [`ResponseCache`] so a shared store can replace
 //! the in-memory one.
 
+pub mod flight;
 mod key;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+pub use flight::{FlightGuard, Flights};
 pub use key::{CacheKey, KeyParts};
 use ultrafast_translate::embeddings::EmbeddingsResponse;
 use ultrafast_translate::types::{ChatResponse, Usage};

@@ -566,18 +566,39 @@ async fn dispatch(
 
     // 3d. The response cache of the route: after access, limits and budgets,
     // so a hit is refused as a call would be. A hit calls no provider.
+    //
+    // A miss takes the flight of its key before it calls a provider, so
+    // concurrent identical calls make one provider call: the others wait,
+    // read the cache again and find its answer. The wait is after the
+    // limits, so a waiter keeps its concurrency slot while it waits (a slow
+    // leader can hold a route's slots). `flight` lives to the end of the
+    // function: through the provider call and `keep`, and it is released on
+    // every exit, an error and a dropped future included.
     let cache = cache_plan(snapshot, actor, &call, &resolved, &candidates);
+    let mut flight = None;
     if let Some(plan) = &cache {
-        let now = tokio::time::Instant::now().into_std();
-        if let Some(hit) = state.cache.get(&plan.key, now) {
-            if let Some(response) = render_cached(endpoint, &hit) {
-                state.metrics.cache_hit();
-                record.cache_hit(&hit.provider, &hit.model, hit.usage());
+        let answered = |state: &AppState, record: &mut Scope| {
+            let now = tokio::time::Instant::now().into_std();
+            let hit = state.cache.get(&plan.key, now)?;
+            let response = render_cached(endpoint, &hit)?;
+            state.metrics.cache_hit();
+            record.cache_hit(&hit.provider, &hit.model, hit.usage());
+            Some(response)
+        };
+        if let Some(response) = answered(state, record) {
+            return response;
+        }
+        let held = state.flights.hold(plan.key).await;
+        if held.waited() {
+            state.metrics.cache_flight_wait();
+            if let Some(response) = answered(state, record) {
                 return response;
             }
         }
+        flight = Some(held);
         state.metrics.cache_miss();
     }
+    let _flight = flight;
 
     // 4. Try the targets in order.
     let served = routing::run(
