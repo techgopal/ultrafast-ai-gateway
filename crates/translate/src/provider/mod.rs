@@ -13,8 +13,8 @@ use crate::error::TranslateError;
 use crate::sse::SseParser;
 use crate::types::{ChatRequest, ChatResponse, FinishReason, Role, StreamEvent, Usage};
 
-/// Tools, tool messages, tool calls and images are not translated yet by any
-/// provider: say so instead of dropping them.
+/// Tools, tool messages, tool calls and images are not translated yet by the
+/// Anthropic and Gemini adapters: say so instead of dropping them.
 pub(crate) fn reject_tools_and_images(req: &ChatRequest) -> Result<(), TranslateError> {
     if !req.tools.is_empty()
         || req.tool_choice.is_some()
@@ -206,6 +206,8 @@ pub(crate) struct StreamState {
     /// The stream has ended by its own account but its end is not yet given
     /// (Gemini: a usage-only chunk may still follow).
     pub ended: bool,
+    /// Tool calls started so far (OpenAI: indexes below this have started).
+    pub tool_calls_started: u32,
 }
 
 impl StreamState {
@@ -328,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn every_provider_refuses_tools_tool_messages_and_images_for_now() {
+    fn anthropic_and_gemini_refuse_tools_tool_messages_and_images_for_now() {
         let mut tools = plain();
         tools.tools.push(Tool {
             name: "f".into(),
@@ -350,12 +352,7 @@ mod tests {
         image.messages[0]
             .content
             .push(Part::Image(ImageSource::Url("https://x.test/a.png".into())));
-        for kind in [
-            ProviderKind::OpenAi,
-            ProviderKind::Anthropic,
-            ProviderKind::Gemini,
-            ProviderKind::Azure,
-        ] {
+        for kind in [ProviderKind::Anthropic, ProviderKind::Gemini] {
             let target = Target {
                 kind,
                 base_url: "https://x.test".into(),

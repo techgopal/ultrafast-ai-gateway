@@ -4,7 +4,10 @@ use serde_json::{json, Value};
 use super::{saturate, HttpRequest, StreamState, Target};
 use crate::error::TranslateError;
 use crate::sse::SseEvent;
-use crate::types::{ChatRequest, ChatResponse, FinishReason, Role, StreamEvent, Usage};
+use crate::types::{
+    ChatRequest, ChatResponse, FinishReason, ImageSource, Message, Part, Role, StreamEvent, Tool,
+    ToolCall, ToolChoice, Usage,
+};
 
 fn role_str(r: Role) -> &'static str {
     match r {
@@ -34,8 +37,79 @@ fn has_tool_call(v: &Value) -> bool {
     }
 }
 
-fn tool_calls_unsupported() -> TranslateError {
-    TranslateError::Unsupported("provider response contains tool calls".into())
+fn function_call_unsupported() -> TranslateError {
+    TranslateError::Unsupported("provider response contains a legacy function call".into())
+}
+
+fn image_url(src: &ImageSource) -> String {
+    match src {
+        ImageSource::Url(u) => u.clone(),
+        ImageSource::Base64 { media_type, data } => format!("data:{media_type};base64,{data}"),
+    }
+}
+
+/// Text-only messages keep a string `content` (bodies stay as they were
+/// before parts existed); an array is used only when an image is present.
+fn content_value(m: &Message) -> Value {
+    if !m.has_images() {
+        let text = m.joined_text();
+        if text.is_empty() && !m.tool_calls.is_empty() {
+            return Value::Null;
+        }
+        return json!(text);
+    }
+    let parts: Vec<Value> = m
+        .content
+        .iter()
+        .map(|p| match p {
+            Part::Text(t) => json!({ "type": "text", "text": t }),
+            Part::Image(i) => json!({ "type": "image_url", "image_url": { "url": image_url(i) } }),
+        })
+        .collect();
+    Value::Array(parts)
+}
+
+fn message_value(m: &Message) -> Value {
+    let mut o = json!({ "role": role_str(m.role), "content": content_value(m) });
+    if let Some(n) = &m.name {
+        o["name"] = json!(n);
+    }
+    if m.role == Role::Tool {
+        if let Some(id) = &m.tool_call_id {
+            o["tool_call_id"] = json!(id);
+        }
+    }
+    if !m.tool_calls.is_empty() {
+        o["tool_calls"] = m
+            .tool_calls
+            .iter()
+            .map(|c| {
+                json!({
+                    "id": c.id,
+                    "type": "function",
+                    "function": { "name": c.name, "arguments": c.arguments },
+                })
+            })
+            .collect();
+    }
+    o
+}
+
+fn tool_value(t: &Tool) -> Value {
+    let mut f = json!({ "name": t.name, "parameters": t.parameters });
+    if let Some(d) = &t.description {
+        f["description"] = json!(d);
+    }
+    json!({ "type": "function", "function": f })
+}
+
+fn tool_choice_value(c: &ToolChoice) -> Value {
+    match c {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::None => json!("none"),
+        ToolChoice::Required => json!("required"),
+        ToolChoice::Tool(n) => json!({ "type": "function", "function": { "name": n } }),
+    }
 }
 
 pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, TranslateError> {
@@ -54,18 +128,13 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
 /// The JSON body of a chat completion. Azure names the model in the URL and
 /// leaves it out here.
 pub(crate) fn body(req: &ChatRequest, model: Option<&str>) -> Result<Vec<u8>, TranslateError> {
-    super::reject_tools_and_images(req)?;
-    let messages: Vec<Value> = req
-        .messages
-        .iter()
-        .map(|m| {
-            let mut o = json!({ "role": role_str(m.role), "content": m.joined_text() });
-            if let Some(n) = &m.name {
-                o["name"] = json!(n);
-            }
-            o
-        })
-        .collect();
+    if req.tools.is_empty() && (req.tool_choice.is_some() || req.parallel_tool_calls.is_some()) {
+        // OpenAI rejects both without tools; refuse the same way for every provider.
+        return Err(TranslateError::Unsupported(
+            "tool_choice and parallel_tool_calls need tools".into(),
+        ));
+    }
+    let messages: Vec<Value> = req.messages.iter().map(message_value).collect();
     let mut body = json!({ "messages": messages });
     if let Some(model) = model {
         body["model"] = json!(model);
@@ -81,6 +150,15 @@ pub(crate) fn body(req: &ChatRequest, model: Option<&str>) -> Result<Vec<u8>, Tr
     }
     if let Some(v) = &req.stop {
         body["stop"] = json!(v);
+    }
+    if !req.tools.is_empty() {
+        body["tools"] = req.tools.iter().map(tool_value).collect();
+        if let Some(c) = &req.tool_choice {
+            body["tool_choice"] = tool_choice_value(c);
+        }
+        if let Some(p) = req.parallel_tool_calls {
+            body["parallel_tool_calls"] = json!(p);
+        }
     }
     if req.stream {
         body["stream"] = json!(true);
@@ -132,8 +210,31 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
         .next()
         .ok_or_else(|| TranslateError::Malformed("response has no choices".into()))?;
     let message = choice.message;
-    if has_tool_call(&message.tool_calls) || has_tool_call(&message.function_call) {
-        return Err(tool_calls_unsupported());
+    if has_tool_call(&message.function_call) {
+        return Err(function_call_unsupported());
+    }
+    let mut tool_calls = Vec::new();
+    if let Value::Array(items) = &message.tool_calls {
+        for item in items {
+            if item["type"] != "function" {
+                return Err(TranslateError::Malformed(
+                    "tool call type is not 'function'".into(),
+                ));
+            }
+            let f = &item["function"];
+            let (Some(id), Some(name)) = (item["id"].as_str(), f["name"].as_str()) else {
+                return Err(TranslateError::Malformed(
+                    "tool call has no id or name".into(),
+                ));
+            };
+            tool_calls.push(ToolCall {
+                id: id.to_string(),
+                name: name.to_string(),
+                arguments: f["arguments"].as_str().unwrap_or("{}").to_string(),
+            });
+        }
+    } else if has_tool_call(&message.tool_calls) {
+        return Err(TranslateError::Malformed("tool_calls is not a list".into()));
     }
     let mut content = message.content.unwrap_or_default();
     let mut finish_reason = choice.finish_reason.as_deref().and_then(finish);
@@ -145,13 +246,62 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
         id: w.id,
         model: w.model,
         content,
-        tool_calls: Vec::new(),
+        tool_calls,
         finish_reason,
         usage: w.usage.map(|u| Usage {
             input_tokens: saturate(u.prompt_tokens),
             output_tokens: saturate(u.completion_tokens),
         }),
     })
+}
+
+/// One element of `delta.tool_calls`. A call starts with the element that
+/// carries its `id`. A name arriving later for a call that started without
+/// one is ignored: the start event has already been sent. A missing `index`
+/// (Ollama, older Groq: a whole call in one chunk) is the next unused index.
+fn decode_tool_call(
+    state: &mut StreamState,
+    item: &Value,
+    out: &mut Vec<StreamEvent>,
+) -> Result<(), TranslateError> {
+    let next = state.tool_calls_started;
+    let index = match item["index"].as_u64() {
+        Some(i) => u32::try_from(i)
+            .map_err(|_| TranslateError::Malformed("tool call index out of range".into()))?,
+        None => next,
+    };
+    let f = &item["function"];
+    let id = item["id"].as_str().filter(|s| !s.is_empty());
+    let started = index < next;
+    match (id, started) {
+        (Some(id), false) => {
+            out.push(StreamEvent::ToolCallStart {
+                index,
+                id: id.to_string(),
+                name: f["name"].as_str().unwrap_or_default().to_string(),
+            });
+            state.tool_calls_started = index.saturating_add(1);
+        }
+        // An id repeated on a later chunk of a call that started is not a new call.
+        (_, true) => {}
+        (None, false) => {
+            return Err(TranslateError::Malformed(
+                "tool call delta before its start".into(),
+            ));
+        }
+    }
+    let args = match &f["arguments"] {
+        Value::String(s) => s.clone(),
+        Value::Object(_) => f["arguments"].to_string(),
+        _ => String::new(),
+    };
+    if !args.is_empty() {
+        out.push(StreamEvent::ToolCallDelta {
+            index,
+            arguments: args,
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn decode(
@@ -183,8 +333,13 @@ pub(crate) fn decode(
     }
     let choice = &v["choices"][0];
     let delta = &choice["delta"];
-    if has_tool_call(&delta["tool_calls"]) || has_tool_call(&delta["function_call"]) {
-        return Err(tool_calls_unsupported());
+    if has_tool_call(&delta["function_call"]) {
+        return Err(function_call_unsupported());
+    }
+    if let Some(items) = delta["tool_calls"].as_array() {
+        for item in items {
+            decode_tool_call(state, item, out)?;
+        }
     }
     if let Some(f) = choice["finish_reason"].as_str() {
         // A refusal already decided the finish reason; a later "stop" must not hide it.
@@ -406,13 +561,6 @@ mod tests {
     }
 
     #[test]
-    fn response_with_tool_calls_is_unsupported() {
-        let body = br#"{"id":"c1","model":"m","choices":[{"message":{"content":null,"tool_calls":[{"id":"t","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#;
-        let e = parse_response(ProviderKind::OpenAi, 200, body).unwrap_err();
-        assert!(matches!(e, TranslateError::Unsupported(_)));
-    }
-
-    #[test]
     fn response_refusal_becomes_content_with_content_filter() {
         let body = br#"{"id":"c1","model":"m","choices":[{"message":{"content":null,"refusal":"I cannot help"},"finish_reason":"stop"}]}"#;
         let r = parse_response(ProviderKind::OpenAi, 200, body).unwrap();
@@ -426,15 +574,6 @@ mod tests {
         let r = parse_response(ProviderKind::OpenAi, 200, body).unwrap();
         assert_eq!(r.content, "yo");
         assert_eq!(r.finish_reason, Some(FinishReason::Stop));
-    }
-
-    #[test]
-    fn stream_tool_calls_are_unsupported() {
-        let mut d = StreamDecoder::new(ProviderKind::OpenAi);
-        let e = d
-            .feed(b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"f\"}}]},\"finish_reason\":null}]}\n\n")
-            .unwrap_err();
-        assert!(matches!(e, TranslateError::Unsupported(_)));
     }
 
     #[test]
@@ -490,5 +629,305 @@ mod tests {
             stream_error_status(r#"{"error":{"message":"overloaded"}}"#),
             502
         );
+    }
+
+    fn tool(name: &str) -> Tool {
+        Tool {
+            name: name.into(),
+            description: Some("d".into()),
+            parameters: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+        }
+    }
+
+    fn body_of(req: &ChatRequest) -> serde_json::Value {
+        let r = build_request(&target(), req).unwrap();
+        serde_json::from_slice(&r.body).unwrap()
+    }
+
+    fn tool_conversation() -> ChatRequest {
+        let mut r = request(false);
+        r.tools = vec![tool("get_weather")];
+        r.tool_choice = Some(ToolChoice::Tool("get_weather".into()));
+        r.parallel_tool_calls = Some(false);
+        r.messages = vec![
+            Message::text(Role::User, "weather?"),
+            Message {
+                tool_calls: vec![ToolCall {
+                    id: "call_1".into(),
+                    name: "get_weather".into(),
+                    arguments: "{\"city\":\"Paris\"}".into(),
+                }],
+                ..Message::text(Role::Assistant, "")
+            },
+            Message {
+                tool_call_id: Some("call_1".into()),
+                ..Message::text(Role::Tool, "sunny")
+            },
+        ];
+        r
+    }
+
+    #[test]
+    fn builds_tool_conversation_body() {
+        let v = body_of(&tool_conversation());
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "model": "gpt-4o",
+                "max_tokens": 5,
+                "messages": [
+                    {"role": "user", "content": "weather?"},
+                    {"role": "assistant", "content": null, "tool_calls": [
+                        {"id": "call_1", "type": "function",
+                         "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}}
+                    ]},
+                    {"role": "tool", "tool_call_id": "call_1", "content": "sunny"}
+                ],
+                "tools": [{"type": "function", "function": {
+                    "name": "get_weather", "description": "d",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }}],
+                "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+                "parallel_tool_calls": false
+            })
+        );
+    }
+
+    #[test]
+    fn tool_choice_strings() {
+        for (c, s) in [
+            (ToolChoice::Auto, "auto"),
+            (ToolChoice::None, "none"),
+            (ToolChoice::Required, "required"),
+        ] {
+            let mut r = tool_conversation();
+            r.tool_choice = Some(c);
+            r.parallel_tool_calls = None;
+            let v = body_of(&r);
+            assert_eq!(v["tool_choice"], s);
+            assert!(v.get("parallel_tool_calls").is_none());
+        }
+    }
+
+    #[test]
+    fn text_only_messages_keep_string_content() {
+        let mut r = request(false);
+        r.messages = vec![Message {
+            content: vec![Part::Text("a".into()), Part::Text("b".into())],
+            ..Message::text(Role::User, "")
+        }];
+        let v = body_of(&r);
+        assert_eq!(v["messages"][0]["content"], "ab");
+        assert!(v.get("tools").is_none());
+        assert!(v["messages"][0].get("tool_calls").is_none());
+        // An empty assistant text without tool calls stays an empty string.
+        r.messages = vec![Message::text(Role::Assistant, "")];
+        assert_eq!(body_of(&r)["messages"][0]["content"], "");
+    }
+
+    #[test]
+    fn builds_image_parts_with_data_url_rejoined() {
+        let mut r = request(false);
+        r.messages = vec![Message {
+            content: vec![
+                Part::Text("what?".into()),
+                Part::Image(ImageSource::Url("https://x.test/a.png".into())),
+                Part::Image(ImageSource::Base64 {
+                    media_type: "image/png".into(),
+                    data: "QUJD".into(),
+                }),
+            ],
+            ..Message::text(Role::User, "")
+        }];
+        assert_eq!(
+            body_of(&r)["messages"][0]["content"],
+            serde_json::json!([
+                {"type": "text", "text": "what?"},
+                {"type": "image_url", "image_url": {"url": "https://x.test/a.png"}},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}
+            ])
+        );
+    }
+
+    #[test]
+    fn parallel_tool_calls_only_sent_with_tools() {
+        let mut r = request(false);
+        r.parallel_tool_calls = Some(true);
+        assert!(matches!(
+            build_request(&target(), &r).unwrap_err(),
+            TranslateError::Unsupported(_)
+        ));
+        r.parallel_tool_calls = None;
+        r.tool_choice = Some(ToolChoice::Auto);
+        assert!(matches!(
+            build_request(&target(), &r).unwrap_err(),
+            TranslateError::Unsupported(_)
+        ));
+        r.tool_choice = None;
+        r.tools = vec![tool("f")];
+        assert!(body_of(&r).get("parallel_tool_calls").is_none());
+        r.parallel_tool_calls = Some(true);
+        assert_eq!(body_of(&r)["parallel_tool_calls"], true);
+    }
+
+    #[test]
+    fn parses_response_tool_calls() {
+        let body = br#"{"id":"c1","model":"m","choices":[{"message":{"content":null,"tool_calls":[{"id":"t1","type":"function","function":{"name":"f","arguments":"{\"a\":1}"}},{"id":"t2","type":"function","function":{"name":"g","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let r = parse_response(ProviderKind::OpenAi, 200, body).unwrap();
+        assert_eq!(r.content, "");
+        assert_eq!(r.finish_reason, Some(FinishReason::ToolCalls));
+        assert_eq!(
+            r.tool_calls,
+            vec![
+                ToolCall {
+                    id: "t1".into(),
+                    name: "f".into(),
+                    arguments: "{\"a\":1}".into()
+                },
+                ToolCall {
+                    id: "t2".into(),
+                    name: "g".into(),
+                    arguments: "{}".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn non_function_tool_call_is_malformed_and_legacy_function_call_unsupported() {
+        let body = br#"{"id":"c1","model":"m","choices":[{"message":{"content":null,"tool_calls":[{"id":"t1","type":"custom","custom":{}}]},"finish_reason":"tool_calls"}]}"#;
+        assert!(matches!(
+            parse_response(ProviderKind::OpenAi, 200, body).unwrap_err(),
+            TranslateError::Malformed(_)
+        ));
+        let body = br#"{"id":"c1","model":"m","choices":[{"message":{"content":null,"function_call":{"name":"f","arguments":"{}"}},"finish_reason":"function_call"}]}"#;
+        assert!(matches!(
+            parse_response(ProviderKind::OpenAi, 200, body).unwrap_err(),
+            TranslateError::Unsupported(_)
+        ));
+    }
+
+    fn tc_start(index: u32, id: &str, name: &str) -> StreamEvent {
+        StreamEvent::ToolCallStart {
+            index,
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    fn tc_delta(index: u32, a: &str) -> StreamEvent {
+        StreamEvent::ToolCallDelta {
+            index,
+            arguments: a.into(),
+        }
+    }
+
+    #[test]
+    fn decodes_streamed_parallel_tool_calls() {
+        let input = include_bytes!("../../tests/fixtures/openai/stream_tool_calls.txt");
+        let want = vec![
+            tc_start(0, "call_a", "get_weather"),
+            tc_start(1, "call_b", "get_time"),
+            tc_delta(0, "{\"city\":"),
+            tc_delta(1, "{\"tz\":\"UTC\"}"),
+            tc_delta(0, "\"Paris\"}"),
+            StreamEvent::Done {
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: Some(Usage {
+                    input_tokens: 30,
+                    output_tokens: 20,
+                }),
+            },
+        ];
+        for split in 0..=input.len() {
+            let mut d = StreamDecoder::new(ProviderKind::OpenAi);
+            let mut got = d.feed(&input[..split]).unwrap();
+            got.extend(d.feed(&input[split..]).unwrap());
+            assert_eq!(got, want, "split {split}");
+        }
+    }
+
+    #[test]
+    fn decodes_whole_call_without_index() {
+        let mut d = StreamDecoder::new(ProviderKind::OpenAi);
+        let got = d
+            .feed(
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"a\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"b\",\"type\":\"function\",\"function\":{\"name\":\"g\",\"arguments\":\"{\\\"x\\\":1}\"}}]},\"finish_reason\":null}]}\n\n",
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(
+            got,
+            vec![
+                tc_start(0, "a", "f"),
+                tc_delta(0, "{}"),
+                tc_start(1, "b", "g"),
+                tc_delta(1, "{\"x\":1}"),
+            ]
+        );
+    }
+
+    #[test]
+    fn late_name_is_ignored_and_repeated_id_is_not_a_second_start() {
+        let mut d = StreamDecoder::new(ProviderKind::OpenAi);
+        let got = d
+            .feed(
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"late\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"arguments\":\"}\"}}]},\"finish_reason\":null}]}\n\n",
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(
+            got,
+            vec![tc_start(0, "a", ""), tc_delta(0, "{"), tc_delta(0, "}")]
+        );
+    }
+
+    #[test]
+    fn delta_for_unknown_index_is_malformed() {
+        let mut d = StreamDecoder::new(ProviderKind::OpenAi);
+        let e = d
+            .feed(b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":2,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n")
+            .unwrap_err();
+        assert_eq!(
+            e,
+            TranslateError::Malformed("tool call delta before its start".into())
+        );
+    }
+
+    #[test]
+    fn anthropic_shaped_tool_conversation_round_trips_to_openai() {
+        let body = br#"{"model":"m","max_tokens":50,"messages":[
+            {"role":"user","content":"weather?"},
+            {"role":"assistant","content":[
+                {"type":"text","text":"Checking."},
+                {"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"Paris"}}]},
+            {"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"toolu_1","content":"sunny"}]}
+        ],"tools":[{"name":"get_weather","description":"d","input_schema":{"type":"object"}}],
+        "tool_choice":{"type":"any"}}"#;
+        let req = crate::ingress::anthropic::parse_request(body).unwrap();
+        let v = body_of(&req);
+        assert_eq!(v["messages"][1]["role"], "assistant");
+        assert_eq!(v["messages"][1]["content"], "Checking.");
+        assert_eq!(v["messages"][1]["tool_calls"][0]["id"], "toolu_1");
+        let args = v["messages"][1]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(args).unwrap(),
+            serde_json::json!({"city": "Paris"})
+        );
+        assert_eq!(v["messages"][2]["role"], "tool");
+        assert_eq!(v["messages"][2]["tool_call_id"], "toolu_1");
+        assert_eq!(v["messages"][2]["content"], "sunny");
+        assert_eq!(v["tool_choice"], "required");
+        assert_eq!(v["tools"][0]["function"]["name"], "get_weather");
     }
 }

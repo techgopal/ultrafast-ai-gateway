@@ -169,4 +169,21 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn azure_body_carries_tools() {
+        let mut req = request(false);
+        req.tools = vec![Tool {
+            name: "f".into(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        req.tool_choice = Some(ToolChoice::Required);
+        let r = build_request(&target(None), &req).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(v["tools"][0]["function"]["name"], "f");
+        assert!(v["tools"][0]["function"].get("description").is_none());
+        assert_eq!(v["tool_choice"], "required");
+        assert!(v.get("model").is_none());
+    }
 }
