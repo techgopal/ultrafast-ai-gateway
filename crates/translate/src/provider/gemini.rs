@@ -140,12 +140,8 @@ fn tool_config(choice: &ToolChoice) -> Value {
 }
 
 pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, TranslateError> {
-    if req.tools.is_empty() && (req.tool_choice.is_some() || req.parallel_tool_calls.is_some()) {
-        return Err(TranslateError::Unsupported(
-            "tool_choice and parallel_tool_calls need tools".into(),
-        ));
-    }
-    if req.parallel_tool_calls == Some(false) {
+    super::check_tool_choice(req)?;
+    if !req.tools.is_empty() && req.parallel_tool_calls == Some(false) {
         return Err(TranslateError::Unsupported(
             "parallel_tool_calls=false is not supported by this provider".into(),
         ));
@@ -945,18 +941,18 @@ mod tests {
     }
 
     #[test]
-    fn tool_choice_without_tools_is_refused() {
-        for (c, p) in [(Some(ToolChoice::Auto), None), (None, Some(true))] {
-            let mut req = request(false);
-            req.tool_choice = c;
-            req.parallel_tool_calls = p;
-            assert_eq!(
-                build_request(&target(), &req).unwrap_err(),
-                TranslateError::Unsupported(
-                    "tool_choice and parallel_tool_calls need tools".into()
-                )
-            );
-        }
+    fn tool_options_without_tools_are_ignored_or_refused() {
+        let mut req = request(false);
+        req.tool_choice = Some(ToolChoice::None);
+        req.parallel_tool_calls = Some(false);
+        let r = build_request(&target(), &req).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert!(v.get("toolConfig").is_none() && v.get("tools").is_none());
+        req.tool_choice = Some(ToolChoice::Tool("f".into()));
+        assert_eq!(
+            build_request(&target(), &req).unwrap_err(),
+            TranslateError::InvalidRequest("tool_choice 'f' needs tools".into())
+        );
     }
 
     fn call(id: &str, name: &str, args: &str) -> ToolCall {

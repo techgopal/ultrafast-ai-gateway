@@ -158,11 +158,7 @@ fn messages_value(req: &ChatRequest) -> Result<Vec<Value>, TranslateError> {
 }
 
 pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, TranslateError> {
-    if req.tools.is_empty() && (req.tool_choice.is_some() || req.parallel_tool_calls.is_some()) {
-        return Err(TranslateError::Unsupported(
-            "tool_choice and parallel_tool_calls need tools".into(),
-        ));
-    }
+    super::check_tool_choice(req)?;
     if req.messages.iter().any(|m| m.name.is_some()) {
         return Err(TranslateError::Unsupported(
             "message field 'name' is not supported by this provider".into(),
@@ -746,12 +742,16 @@ mod tests {
     }
 
     #[test]
-    fn tool_choice_without_tools_is_refused() {
+    fn tool_options_without_tools_are_ignored_or_refused() {
         let mut req = request(vec![msg(Role::User, "hi")]);
         req.tool_choice = Some(ToolChoice::Auto);
+        req.parallel_tool_calls = Some(false);
+        let v = body_of(&req);
+        assert!(v.get("tool_choice").is_none() && v.get("tools").is_none());
+        req.tool_choice = Some(ToolChoice::Required);
         assert_eq!(
             build_request(&target(), &req).unwrap_err(),
-            TranslateError::Unsupported("tool_choice and parallel_tool_calls need tools".into())
+            TranslateError::InvalidRequest("tool_choice 'required' needs tools".into())
         );
     }
 

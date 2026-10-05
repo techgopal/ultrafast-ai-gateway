@@ -11,7 +11,23 @@ use serde_json::Value;
 
 use crate::error::TranslateError;
 use crate::sse::SseParser;
-use crate::types::{ChatRequest, ChatResponse, FinishReason, StreamEvent, Usage};
+use crate::types::{ChatRequest, ChatResponse, FinishReason, StreamEvent, ToolChoice, Usage};
+
+/// Without tools, `tool_choice` auto/none and `parallel_tool_calls` mean
+/// nothing and are left out; a choice that demands a tool cannot be met.
+pub(crate) fn check_tool_choice(req: &ChatRequest) -> Result<(), TranslateError> {
+    if !req.tools.is_empty() {
+        return Ok(());
+    }
+    let what = match &req.tool_choice {
+        Some(ToolChoice::Required) => "required",
+        Some(ToolChoice::Tool(name)) => name.as_str(),
+        _ => return Ok(()),
+    };
+    Err(TranslateError::InvalidRequest(format!(
+        "tool_choice '{what}' needs tools"
+    )))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -183,8 +199,12 @@ pub(crate) struct StreamState {
     /// The stream has ended by its own account but its end is not yet given
     /// (Gemini: a usage-only chunk may still follow).
     pub ended: bool,
-    /// Tool calls started so far (OpenAI: indexes below this have started).
+    /// Tool calls started so far (Gemini).
     pub tool_calls_started: u32,
+    /// OpenAI tool calls: the id of each started call, by our tool index.
+    pub tool_call_ids: Vec<String>,
+    /// OpenAI tool calls: provider `index` -> our tool index of its newest call.
+    pub tool_call_slots: std::collections::HashMap<u32, u32>,
     /// Anthropic: (content block index, tool call index) of each tool block.
     pub tool_blocks: Vec<(u64, u32)>,
 }

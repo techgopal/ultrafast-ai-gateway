@@ -128,12 +128,7 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
 /// The JSON body of a chat completion. Azure names the model in the URL and
 /// leaves it out here.
 pub(crate) fn body(req: &ChatRequest, model: Option<&str>) -> Result<Vec<u8>, TranslateError> {
-    if req.tools.is_empty() && (req.tool_choice.is_some() || req.parallel_tool_calls.is_some()) {
-        // OpenAI rejects both without tools; refuse the same way for every provider.
-        return Err(TranslateError::Unsupported(
-            "tool_choice and parallel_tool_calls need tools".into(),
-        ));
-    }
+    super::check_tool_choice(req)?;
     let messages: Vec<Value> = req.messages.iter().map(message_value).collect();
     let mut body = json!({ "messages": messages });
     if let Some(model) = model {
@@ -256,40 +251,50 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
 }
 
 /// One element of `delta.tool_calls`. A call starts with the element that
-/// carries its `id`. A name arriving later for a call that started without
-/// one is ignored: the start event has already been sent. A missing `index`
-/// (Ollama, older Groq: a whole call in one chunk) is the next unused index.
+/// carries its `id`; a different id on a provider index that already has a
+/// call starts a new call (some compatibles send every parallel call with
+/// index 0). Later chunks go to the newest call of their provider index. A
+/// name arriving later for a call that started without one is ignored: the
+/// start event has already been sent. A missing `index` (Ollama, older Groq:
+/// a whole call in one chunk) starts a call at the next unused tool index.
 fn decode_tool_call(
     state: &mut StreamState,
     item: &Value,
     out: &mut Vec<StreamEvent>,
 ) -> Result<(), TranslateError> {
-    let next = state.tool_calls_started;
-    let index = match item["index"].as_u64() {
-        Some(i) => u32::try_from(i)
-            .map_err(|_| TranslateError::Malformed("tool call index out of range".into()))?,
-        None => next,
+    let provider_index = match item["index"].as_u64() {
+        Some(i) => Some(
+            u32::try_from(i)
+                .map_err(|_| TranslateError::Malformed("tool call index out of range".into()))?,
+        ),
+        None => None,
     };
     let f = &item["function"];
     let id = item["id"].as_str().filter(|s| !s.is_empty());
-    let started = index < next;
-    match (id, started) {
-        (Some(id), false) => {
+    let current = provider_index.and_then(|p| state.tool_call_slots.get(&p).copied());
+    let index = match (id, current) {
+        (Some(id), Some(t)) if state.tool_call_ids[t as usize] == id => t,
+        (Some(id), _) => {
+            let t = u32::try_from(state.tool_call_ids.len())
+                .map_err(|_| TranslateError::Malformed("too many tool calls".into()))?;
+            state.tool_call_ids.push(id.to_string());
+            if let Some(p) = provider_index {
+                state.tool_call_slots.insert(p, t);
+            }
             out.push(StreamEvent::ToolCallStart {
-                index,
+                index: t,
                 id: id.to_string(),
                 name: f["name"].as_str().unwrap_or_default().to_string(),
             });
-            state.tool_calls_started = index.saturating_add(1);
+            t
         }
-        // An id repeated on a later chunk of a call that started is not a new call.
-        (_, true) => {}
-        (None, false) => {
+        (None, Some(t)) => t,
+        (None, None) => {
             return Err(TranslateError::Malformed(
                 "tool call delta before its start".into(),
             ));
         }
-    }
+    };
     let args = match &f["arguments"] {
         Value::String(s) => s.clone(),
         Value::Object(_) => f["arguments"].to_string(),
@@ -336,10 +341,14 @@ pub(crate) fn decode(
     if has_tool_call(&delta["function_call"]) {
         return Err(function_call_unsupported());
     }
-    if let Some(items) = delta["tool_calls"].as_array() {
-        for item in items {
-            decode_tool_call(state, item, out)?;
+    match &delta["tool_calls"] {
+        Value::Null => {}
+        Value::Array(items) => {
+            for item in items {
+                decode_tool_call(state, item, out)?;
+            }
         }
+        _ => return Err(TranslateError::Malformed("tool_calls is not a list".into())),
     }
     if let Some(f) = choice["finish_reason"].as_str() {
         // A refusal already decided the finish reason; a later "stop" must not hide it.
@@ -750,24 +759,126 @@ mod tests {
     }
 
     #[test]
-    fn parallel_tool_calls_only_sent_with_tools() {
+    fn tool_options_without_tools_are_ignored_or_refused() {
         let mut r = request(false);
         r.parallel_tool_calls = Some(true);
-        assert!(matches!(
-            build_request(&target(), &r).unwrap_err(),
-            TranslateError::Unsupported(_)
-        ));
-        r.parallel_tool_calls = None;
+        r.tool_choice = Some(ToolChoice::None);
+        let v = body_of(&r);
+        assert!(v.get("parallel_tool_calls").is_none());
+        assert!(v.get("tool_choice").is_none());
         r.tool_choice = Some(ToolChoice::Auto);
-        assert!(matches!(
+        assert!(body_of(&r).get("tool_choice").is_none());
+        r.tool_choice = Some(ToolChoice::Required);
+        assert_eq!(
             build_request(&target(), &r).unwrap_err(),
-            TranslateError::Unsupported(_)
-        ));
+            TranslateError::InvalidRequest("tool_choice 'required' needs tools".into())
+        );
+        r.tool_choice = Some(ToolChoice::Tool("f".into()));
+        assert_eq!(
+            build_request(&target(), &r).unwrap_err(),
+            TranslateError::InvalidRequest("tool_choice 'f' needs tools".into())
+        );
         r.tool_choice = None;
         r.tools = vec![tool("f")];
+        r.parallel_tool_calls = None;
         assert!(body_of(&r).get("parallel_tool_calls").is_none());
         r.parallel_tool_calls = Some(true);
         assert_eq!(body_of(&r)["parallel_tool_calls"], true);
+    }
+
+    #[test]
+    fn image_message_and_tool_call_message_in_one_request() {
+        let mut r = request(false);
+        r.messages = vec![
+            Message {
+                content: vec![
+                    Part::Text("see".into()),
+                    Part::Image(ImageSource::Url("https://x.test/a.png".into())),
+                ],
+                ..Message::text(Role::User, "")
+            },
+            Message {
+                tool_calls: vec![ToolCall {
+                    id: "c".into(),
+                    name: "f".into(),
+                    arguments: "{}".into(),
+                }],
+                ..Message::text(Role::Assistant, "ok")
+            },
+            Message {
+                tool_call_id: Some("c".into()),
+                name: Some("f".into()),
+                ..Message::text(Role::Tool, "r")
+            },
+        ];
+        let v = body_of(&r);
+        assert_eq!(v["messages"][0]["content"][1]["type"], "image_url");
+        assert_eq!(v["messages"][1]["content"], "ok");
+        assert_eq!(v["messages"][1]["tool_calls"][0]["id"], "c");
+        assert_eq!(v["messages"][2]["name"], "f");
+        assert_eq!(v["messages"][2]["tool_call_id"], "c");
+    }
+
+    #[test]
+    fn whole_calls_all_with_index_zero_are_separate_calls() {
+        let mut d = StreamDecoder::new(ProviderKind::OpenAi);
+        let got = d
+            .feed(
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"b\",\"function\":{\"name\":\"g\",\"arguments\":\"{\\\"x\\\":1}\"}}]},\"finish_reason\":null}]}\n\n",
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(
+            got,
+            vec![
+                tc_start(0, "a", "f"),
+                tc_delta(0, "{}"),
+                tc_start(1, "b", "g"),
+                tc_delta(1, "{\"x\":1}"),
+            ]
+        );
+    }
+
+    #[test]
+    fn out_of_order_starts_work_and_unstarted_index_stays_malformed() {
+        let mut d = StreamDecoder::new(ProviderKind::OpenAi);
+        let got = d
+            .feed(
+                concat!(
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"b\",\"function\":{\"name\":\"g\"}}]},\"finish_reason\":null}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"f\"}}]},\"finish_reason\":null}]}\n\n",
+                    "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1\"}}]},\"finish_reason\":null}]}\n\n",
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(
+            got,
+            vec![
+                tc_start(0, "b", "g"),
+                tc_start(1, "a", "f"),
+                tc_delta(1, "1")
+            ]
+        );
+        let e = d
+            .feed(b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":5,\"function\":{\"arguments\":\"1\"}}]},\"finish_reason\":null}]}\n\n")
+            .unwrap_err();
+        assert!(matches!(e, TranslateError::Malformed(_)));
+    }
+
+    #[test]
+    fn streamed_tool_calls_that_is_not_a_list_is_malformed() {
+        let mut d = StreamDecoder::new(ProviderKind::OpenAi);
+        let e = d
+            .feed(b"data: {\"choices\":[{\"delta\":{\"tool_calls\":{\"index\":0}},\"finish_reason\":null}]}\n\n")
+            .unwrap_err();
+        assert_eq!(
+            e,
+            TranslateError::Malformed("tool_calls is not a list".into())
+        );
     }
 
     #[test]
