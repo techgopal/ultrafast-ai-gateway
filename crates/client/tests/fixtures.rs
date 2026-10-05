@@ -95,9 +95,10 @@ fn error_json(e: &Error) -> Value {
     })
 }
 
-fn event_json(e: &StreamEvent) -> Value {
-    match e {
+fn event_json(e: &StreamEvent) -> Option<Value> {
+    Some(match e {
         StreamEvent::Delta { text } => json!({"type": "delta", "text": text}),
+        StreamEvent::ToolCallStart { .. } | StreamEvent::ToolCallDelta { .. } => return None,
         StreamEvent::Done {
             finish_reason,
             usage,
@@ -106,7 +107,7 @@ fn event_json(e: &StreamEvent) -> Value {
             "finish_reason": finish_reason.map(|f| f.as_openai()),
             "usage": usage.map(|u| json!({"input_tokens": u.input_tokens, "output_tokens": u.output_tokens})),
         }),
-    }
+    })
 }
 
 /// Compares an error to the fixture's; a fixture without `message` leaves it out.
@@ -247,7 +248,7 @@ async fn stream_of(c: &Value, chunks: Vec<Vec<u8>>, key: &str) -> (Vec<Value>, O
     let (mut events, mut error) = (Vec::new(), None);
     while let Some(item) = st.next().await {
         match item {
-            Ok(e) => events.push(event_json(&e)),
+            Ok(e) => events.extend(event_json(&e)),
             Err(e) => {
                 assert!(st.next().await.is_none(), "nothing follows an error");
                 error = Some(error_json(&e));

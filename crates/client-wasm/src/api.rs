@@ -14,7 +14,7 @@ use ultrafast_translate::provider::{
 };
 use ultrafast_translate::tags;
 use ultrafast_translate::types::{
-    ChatRequest, ChatResponse, FinishReason, Message, StreamEvent, Usage,
+    ChatRequest, ChatResponse, FinishReason, Message, Role, StreamEvent, Usage,
 };
 
 pub type Failure = String;
@@ -80,10 +80,19 @@ fn target_of(target_json: &str, model: &str) -> Result<(WireTarget, bool), Failu
     ))
 }
 
+/// A message as the host sends it: text only until the clients carry tools.
+#[derive(Deserialize)]
+struct MessageIn {
+    role: Role,
+    content: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct ChatIn {
     model: String,
-    messages: Vec<Message>,
+    messages: Vec<MessageIn>,
     #[serde(default)]
     max_tokens: Option<u32>,
     #[serde(default)]
@@ -142,12 +151,22 @@ pub fn build_request(target_json: &str, request_json: &str) -> Result<String, Fa
     let tag_header = tag_header_for(gateway, &r.tags)?;
     let req = ChatRequest {
         model: r.model,
-        messages: r.messages,
+        messages: r
+            .messages
+            .into_iter()
+            .map(|m| Message {
+                name: m.name,
+                ..Message::text(m.role, m.content)
+            })
+            .collect(),
         max_tokens: r.max_tokens,
         temperature: r.temperature,
         top_p: r.top_p,
         stop: r.stop,
         stream: r.stream,
+        tools: Vec::new(),
+        tool_choice: None,
+        parallel_tool_calls: None,
     };
     let http = provider::build_request(&target, &req).map_err(|e| classified(e, None))?;
     http_json(http, tag_header, r.stream)
@@ -183,6 +202,7 @@ fn response_json(r: &ChatResponse) -> Value {
         "id": r.id,
         "model": r.model,
         "content": r.content,
+        "tool_calls": [],
         "finish_reason": finish_json(r.finish_reason),
         "usage": usage_json(r.usage),
     })
@@ -274,9 +294,11 @@ pub fn tags_header(tags_json: &str) -> Result<Option<String>, Failure> {
     tags::tags_header(&t).map_err(|c| error_json(&c))
 }
 
-fn event_json(e: &StreamEvent) -> Value {
-    match e {
+/// `None` for a tool call event: the host API does not carry tools yet.
+fn event_json(e: &StreamEvent) -> Option<Value> {
+    Some(match e {
         StreamEvent::Delta { text } => json!({"type": "delta", "text": text}),
+        StreamEvent::ToolCallStart { .. } | StreamEvent::ToolCallDelta { .. } => return None,
         StreamEvent::Done {
             finish_reason,
             usage,
@@ -285,11 +307,11 @@ fn event_json(e: &StreamEvent) -> Value {
             "finish_reason": finish_json(*finish_reason),
             "usage": usage_json(*usage),
         }),
-    }
+    })
 }
 
 fn events_json(events: &[StreamEvent]) -> String {
-    Value::Array(events.iter().map(event_json).collect()).to_string()
+    Value::Array(events.iter().filter_map(event_json).collect()).to_string()
 }
 
 /// Decodes a provider's event stream, chunk by chunk.

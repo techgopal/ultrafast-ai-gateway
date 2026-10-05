@@ -11,6 +11,7 @@ fn role_str(r: Role) -> &'static str {
         Role::System => "system",
         Role::User => "user",
         Role::Assistant => "assistant",
+        Role::Tool => "tool",
     }
 }
 
@@ -53,11 +54,12 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
 /// The JSON body of a chat completion. Azure names the model in the URL and
 /// leaves it out here.
 pub(crate) fn body(req: &ChatRequest, model: Option<&str>) -> Result<Vec<u8>, TranslateError> {
+    super::reject_tools_and_images(req)?;
     let messages: Vec<Value> = req
         .messages
         .iter()
         .map(|m| {
-            let mut o = json!({ "role": role_str(m.role), "content": m.content });
+            let mut o = json!({ "role": role_str(m.role), "content": m.joined_text() });
             if let Some(n) = &m.name {
                 o["name"] = json!(n);
             }
@@ -143,6 +145,7 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
         id: w.id,
         model: w.model,
         content,
+        tool_calls: Vec::new(),
         finish_reason,
         usage: w.usage.map(|u| Usage {
             input_tokens: saturate(u.prompt_tokens),
@@ -226,16 +229,15 @@ mod tests {
     fn request(stream: bool) -> ChatRequest {
         ChatRequest {
             model: "openai/gpt-4o".into(),
-            messages: vec![Message {
-                role: Role::User,
-                content: "hi".into(),
-                name: None,
-            }],
+            messages: vec![Message::text(Role::User, "hi")],
             max_tokens: Some(5),
             temperature: None,
             top_p: None,
             stop: None,
             stream,
+            tools: Vec::new(),
+            tool_choice: None,
+            parallel_tool_calls: None,
         }
     }
 

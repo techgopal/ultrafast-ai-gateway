@@ -23,16 +23,17 @@ fn text_part(text: &str) -> Value {
 }
 
 pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, TranslateError> {
+    super::reject_tools_and_images(req)?;
     if req.messages.iter().any(|m| m.name.is_some()) {
         return Err(TranslateError::Unsupported(
             "message field 'name' is not supported by this provider".into(),
         ));
     }
-    let system: Vec<&str> = req
+    let system: Vec<String> = req
         .messages
         .iter()
         .filter(|m| m.role == Role::System)
-        .map(|m| m.content.as_str())
+        .map(|m| m.joined_text())
         .collect();
     let contents: Vec<Value> = req
         .messages
@@ -44,7 +45,7 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
             } else {
                 "user"
             };
-            let mut c = text_part(&m.content);
+            let mut c = text_part(&m.joined_text());
             c["role"] = json!(role);
             c
         })
@@ -172,6 +173,7 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
         id: v["responseId"].as_str().unwrap_or_default().to_string(),
         model: v["modelVersion"].as_str().unwrap_or_default().to_string(),
         content,
+        tool_calls: Vec::new(),
         finish_reason,
         usage,
     })
@@ -236,11 +238,7 @@ mod tests {
     }
 
     fn msg(role: Role, content: &str) -> Message {
-        Message {
-            role,
-            content: content.into(),
-            name: None,
-        }
+        Message::text(role, content)
     }
 
     fn request(stream: bool) -> ChatRequest {
@@ -258,6 +256,9 @@ mod tests {
             top_p: Some(0.9),
             stop: Some(vec!["x".into()]),
             stream,
+            tools: Vec::new(),
+            tool_choice: None,
+            parallel_tool_calls: None,
         }
     }
 

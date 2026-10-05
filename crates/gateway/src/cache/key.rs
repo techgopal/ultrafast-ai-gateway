@@ -3,7 +3,9 @@
 
 use sha2::{Digest, Sha256};
 use ultrafast_translate::embeddings::EmbeddingsRequest;
-use ultrafast_translate::types::{ChatRequest, Message, Role};
+use ultrafast_translate::types::{
+    ChatRequest, ImageSource, Message, Part, Role, Tool, ToolCall, ToolChoice,
+};
 
 use super::ScopeId;
 
@@ -70,6 +72,50 @@ impl Encoder {
         self.optional(tag, bits.map(u32::to_le_bytes).as_ref().map(|b| &b[..]));
     }
 
+    fn content(&mut self, content: &[Part]) {
+        self.number(13, content.len() as u64);
+        for part in content {
+            match part {
+                Part::Text(t) => self.field(21, t.as_bytes()),
+                Part::Image(ImageSource::Url(u)) => self.field(22, u.as_bytes()),
+                Part::Image(ImageSource::Base64 { media_type, data }) => {
+                    self.field(23, media_type.as_bytes());
+                    self.field(24, data.as_bytes());
+                }
+            }
+        }
+    }
+
+    fn tool_calls(&mut self, calls: &[ToolCall]) {
+        self.number(25, calls.len() as u64);
+        for ToolCall {
+            id,
+            name,
+            arguments,
+        } in calls
+        {
+            self.field(26, id.as_bytes());
+            self.field(27, name.as_bytes());
+            self.field(28, arguments.as_bytes());
+        }
+    }
+
+    fn tools(&mut self, tools: &[Tool]) {
+        self.number(30, tools.len() as u64);
+        for Tool {
+            name,
+            description,
+            parameters,
+        } in tools
+        {
+            self.field(31, name.as_bytes());
+            self.optional(32, description.as_deref().map(str::as_bytes));
+            // `serde_json::Map` is ordered by key, so this is canonical.
+            let schema = serde_json::to_vec(parameters).unwrap_or_default();
+            self.field(33, &schema);
+        }
+    }
+
     fn parts(&mut self, parts: &KeyParts<'_>) {
         self.field(1, parts.route.as_bytes());
         self.number(2, parts.targets.len() as u64);
@@ -92,6 +138,16 @@ fn role(r: Role) -> &'static str {
         Role::System => "system",
         Role::User => "user",
         Role::Assistant => "assistant",
+        Role::Tool => "tool",
+    }
+}
+
+fn tool_choice(c: &ToolChoice) -> String {
+    match c {
+        ToolChoice::Auto => "auto".into(),
+        ToolChoice::None => "none".into(),
+        ToolChoice::Required => "required".into(),
+        ToolChoice::Tool(name) => format!("tool:{name}"),
     }
 }
 
@@ -108,6 +164,9 @@ impl CacheKey {
             top_p,
             stop,
             stream,
+            tools,
+            tool_choice: choice,
+            parallel_tool_calls,
         } = request;
         let mut e = Encoder::new("chat");
         e.parts(parts);
@@ -117,11 +176,15 @@ impl CacheKey {
             role: r,
             content,
             name,
+            tool_calls,
+            tool_call_id,
         } in messages
         {
             e.field(12, role(*r).as_bytes());
-            e.field(13, content.as_bytes());
+            e.content(content);
             e.optional(14, name.as_deref().map(str::as_bytes));
+            e.tool_calls(tool_calls);
+            e.optional(29, tool_call_id.as_deref().map(str::as_bytes));
         }
         e.optional(
             15,
@@ -139,6 +202,22 @@ impl CacheKey {
             None => e.optional(18, None),
         }
         e.number(20, u64::from(*stream));
+        e.tools(tools);
+        e.optional(
+            34,
+            choice
+                .as_ref()
+                .map(tool_choice)
+                .as_deref()
+                .map(str::as_bytes),
+        );
+        e.optional(
+            35,
+            parallel_tool_calls
+                .map(|b| [u8::from(b)])
+                .as_ref()
+                .map(|b| &b[..]),
+        );
         e.finish()
     }
 
@@ -182,15 +261,10 @@ mod tests {
         ChatRequest {
             model: "r".into(),
             messages: vec![
+                Message::text(Role::System, "be brief"),
                 Message {
-                    role: Role::System,
-                    content: "be brief".into(),
-                    name: None,
-                },
-                Message {
-                    role: Role::User,
-                    content: "hi".into(),
                     name: Some("lena".into()),
+                    ..Message::text(Role::User, "hi")
                 },
             ],
             max_tokens: Some(10),
@@ -198,7 +272,14 @@ mod tests {
             top_p: Some(0.9),
             stop: Some(vec!["END".into()]),
             stream: false,
+            tools: Vec::new(),
+            tool_choice: None,
+            parallel_tool_calls: None,
         }
+    }
+
+    fn text(s: &str) -> Vec<Part> {
+        vec![Part::Text(s.into())]
     }
 
     fn key_of(request: &ChatRequest) -> CacheKey {
@@ -226,7 +307,7 @@ mod tests {
             ("model", Box::new(|r| r.model = "r2".into())),
             (
                 "message content",
-                Box::new(|r| r.messages[1].content = "ho".into()),
+                Box::new(|r| r.messages[1].content = text("ho")),
             ),
             (
                 "message role",
@@ -242,7 +323,7 @@ mod tests {
             ),
             (
                 "system message",
-                Box::new(|r| r.messages[0].content = "be long".into()),
+                Box::new(|r| r.messages[0].content = text("be long")),
             ),
             (
                 "a message added",
@@ -271,6 +352,137 @@ mod tests {
             let key = key_of(&r);
             assert!(!seen.contains(&key), "{field} does not change the key");
             seen.push(key);
+        }
+    }
+
+    fn tool(name: &str) -> Tool {
+        Tool {
+            name: name.into(),
+            description: Some("d".into()),
+            parameters: serde_json::json!({"type": "object", "properties": {"a": {"type": "string"}}}),
+        }
+    }
+
+    fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        }
+    }
+
+    fn with_tools() -> ChatRequest {
+        let mut r = base();
+        r.tools = vec![tool("f")];
+        r.tool_choice = Some(ToolChoice::Auto);
+        r.parallel_tool_calls = Some(true);
+        r.messages.push(Message {
+            tool_calls: vec![call("c1", "f", "{}")],
+            ..Message::text(Role::Assistant, "")
+        });
+        r.messages.push(Message {
+            role: Role::Tool,
+            tool_call_id: Some("c1".into()),
+            ..Message::text(Role::Tool, "out")
+        });
+        r
+    }
+
+    #[test]
+    fn tools_images_and_tool_calls_change_the_key() {
+        let original = key_of(&with_tools());
+        assert_eq!(original, key_of(&with_tools()));
+        assert_ne!(original, key_of(&base()), "tools and calls present");
+        let url = || Part::Image(ImageSource::Url("https://x.test/a.png".into()));
+        let b64 = |t: &str, d: &str| {
+            Part::Image(ImageSource::Base64 {
+                media_type: t.into(),
+                data: d.into(),
+            })
+        };
+        let changes: Vec<(&str, Change)> = vec![
+            ("tool name", Box::new(|r| r.tools[0].name = "g".into())),
+            (
+                "tool description",
+                Box::new(|r| r.tools[0].description = None),
+            ),
+            (
+                "tool parameters",
+                Box::new(|r| r.tools[0].parameters = serde_json::json!({"type": "object"})),
+            ),
+            ("tool added", Box::new(|r| r.tools.push(tool("g")))),
+            ("tools removed", Box::new(|r| r.tools.clear())),
+            (
+                "tool_choice",
+                Box::new(|r| r.tool_choice = Some(ToolChoice::Required)),
+            ),
+            (
+                "tool_choice named",
+                Box::new(|r| r.tool_choice = Some(ToolChoice::Tool("f".into()))),
+            ),
+            ("tool_choice removed", Box::new(|r| r.tool_choice = None)),
+            (
+                "parallel_tool_calls",
+                Box::new(|r| r.parallel_tool_calls = Some(false)),
+            ),
+            (
+                "parallel_tool_calls removed",
+                Box::new(|r| r.parallel_tool_calls = None),
+            ),
+            (
+                "call id",
+                Box::new(|r| r.messages[2].tool_calls[0].id = "c2".into()),
+            ),
+            (
+                "call name",
+                Box::new(|r| r.messages[2].tool_calls[0].name = "g".into()),
+            ),
+            (
+                "call arguments",
+                Box::new(|r| r.messages[2].tool_calls[0].arguments = "{ }".into()),
+            ),
+            (
+                "call removed",
+                Box::new(|r| r.messages[2].tool_calls.clear()),
+            ),
+            (
+                "tool_call_id",
+                Box::new(|r| r.messages[3].tool_call_id = Some("c2".into())),
+            ),
+            (
+                "tool_call_id removed",
+                Box::new(|r| r.messages[3].tool_call_id = None),
+            ),
+            (
+                "image added",
+                Box::new(move |r| r.messages[1].content.push(url())),
+            ),
+        ];
+        let mut seen = vec![original];
+        for (field, change) in changes {
+            let mut r = with_tools();
+            change(&mut r);
+            let key = key_of(&r);
+            assert!(!seen.contains(&key), "{field} does not change the key");
+            seen.push(key);
+        }
+        // Images: url, media type and data each matter, and a text part is not an image.
+        let with = |p: Part| {
+            let mut r = base();
+            r.messages[1].content = vec![p];
+            key_of(&r)
+        };
+        let keys = [
+            with(Part::Text("https://x.test/a.png".into())),
+            with(url()),
+            with(b64("image/png", "QUJD")),
+            with(b64("image/jpeg", "QUJD")),
+            with(b64("image/png", "QUJE")),
+        ];
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                assert_ne!(a, b);
+            }
         }
     }
 
@@ -312,19 +524,19 @@ mod tests {
     fn neighbouring_fields_do_not_blur() {
         // "ab" + "c" is not "a" + "bc".
         let mut a = base();
-        a.messages[0].content = "ab".into();
-        a.messages[1].content = "c".into();
+        a.messages[0].content = text("ab");
+        a.messages[1].content = text("c");
         let mut b = base();
-        b.messages[0].content = "a".into();
-        b.messages[1].content = "bc".into();
+        b.messages[0].content = text("a");
+        b.messages[1].content = text("bc");
         assert_ne!(key_of(&a), key_of(&b));
         // Content moved into the name.
         let mut c = base();
         c.messages[1].name = None;
-        c.messages[1].content = "hilena".into();
+        c.messages[1].content = text("hilena");
         let mut d = base();
         d.messages[1].name = Some("lena".into());
-        d.messages[1].content = "hi".into();
+        d.messages[1].content = text("hi");
         assert_ne!(key_of(&c), key_of(&d));
         // An absent name is not an empty one.
         let mut e = base();

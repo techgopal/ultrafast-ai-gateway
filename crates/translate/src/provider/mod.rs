@@ -11,7 +11,30 @@ use serde_json::Value;
 
 use crate::error::TranslateError;
 use crate::sse::SseParser;
-use crate::types::{ChatRequest, ChatResponse, FinishReason, StreamEvent, Usage};
+use crate::types::{ChatRequest, ChatResponse, FinishReason, Role, StreamEvent, Usage};
+
+/// Tools, tool messages, tool calls and images are not translated yet by any
+/// provider: say so instead of dropping them.
+pub(crate) fn reject_tools_and_images(req: &ChatRequest) -> Result<(), TranslateError> {
+    if !req.tools.is_empty()
+        || req.tool_choice.is_some()
+        || req.parallel_tool_calls.is_some()
+        || req
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool || !m.tool_calls.is_empty())
+    {
+        return Err(TranslateError::Unsupported(
+            "tools are not supported yet by this provider".into(),
+        ));
+    }
+    if req.messages.iter().any(|m| m.has_images()) {
+        return Err(TranslateError::Unsupported(
+            "images are not supported yet by this provider".into(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -287,6 +310,76 @@ impl StreamDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{ImageSource, Message, Part, Tool, ToolCall};
+
+    fn plain() -> ChatRequest {
+        ChatRequest {
+            model: "m".into(),
+            messages: vec![Message::text(Role::User, "hi")],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            tools: Vec::new(),
+            tool_choice: None,
+            parallel_tool_calls: None,
+        }
+    }
+
+    #[test]
+    fn every_provider_refuses_tools_tool_messages_and_images_for_now() {
+        let mut tools = plain();
+        tools.tools.push(Tool {
+            name: "f".into(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        });
+        let mut call = plain();
+        call.messages.push(Message {
+            tool_calls: vec![ToolCall {
+                id: "c".into(),
+                name: "f".into(),
+                arguments: "{}".into(),
+            }],
+            ..Message::text(Role::Assistant, "")
+        });
+        let mut result = plain();
+        result.messages.push(Message::text(Role::Tool, "r"));
+        let mut image = plain();
+        image.messages[0]
+            .content
+            .push(Part::Image(ImageSource::Url("https://x.test/a.png".into())));
+        for kind in [
+            ProviderKind::OpenAi,
+            ProviderKind::Anthropic,
+            ProviderKind::Gemini,
+            ProviderKind::Azure,
+        ] {
+            let target = Target {
+                kind,
+                base_url: "https://x.test".into(),
+                api_key: None,
+                model: "m".into(),
+                api_version: None,
+            };
+            for r in [&tools, &call, &result] {
+                assert_eq!(
+                    build_request(&target, r).unwrap_err(),
+                    TranslateError::Unsupported(
+                        "tools are not supported yet by this provider".into()
+                    ),
+                    "{kind:?}"
+                );
+            }
+            assert_eq!(
+                build_request(&target, &image).unwrap_err(),
+                TranslateError::Unsupported("images are not supported yet by this provider".into()),
+                "{kind:?}"
+            );
+            assert!(build_request(&target, &plain()).is_ok(), "{kind:?}");
+        }
+    }
 
     #[test]
     fn a_gateway_base_is_its_root_plus_v1_whatever_the_caller_wrote() {

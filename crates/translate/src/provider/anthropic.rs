@@ -32,16 +32,17 @@ fn unsupported_block(kind: Option<&str>) -> TranslateError {
 }
 
 pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, TranslateError> {
+    super::reject_tools_and_images(req)?;
     if req.messages.iter().any(|m| m.name.is_some()) {
         return Err(TranslateError::Unsupported(
             "message field 'name' is not supported by this provider".into(),
         ));
     }
-    let system: Vec<&str> = req
+    let system: Vec<String> = req
         .messages
         .iter()
         .filter(|m| m.role == Role::System)
-        .map(|m| m.content.as_str())
+        .map(|m| m.joined_text())
         .collect();
     let messages: Vec<Value> = req
         .messages
@@ -53,7 +54,7 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
             } else {
                 "user"
             };
-            json!({ "role": role, "content": m.content })
+            json!({ "role": role, "content": m.joined_text() })
         })
         .collect();
     if messages.is_empty() {
@@ -119,6 +120,7 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
         id: v["id"].as_str().unwrap_or_default().to_string(),
         model: v["model"].as_str().unwrap_or_default().to_string(),
         content,
+        tool_calls: Vec::new(),
         finish_reason: v["stop_reason"].as_str().and_then(finish),
         usage,
     })
@@ -203,11 +205,7 @@ mod tests {
     }
 
     fn msg(role: Role, content: &str) -> Message {
-        Message {
-            role,
-            content: content.into(),
-            name: None,
-        }
+        Message::text(role, content)
     }
 
     fn request(messages: Vec<Message>) -> ChatRequest {
@@ -219,6 +217,9 @@ mod tests {
             top_p: None,
             stop: Some(vec!["END".into()]),
             stream: false,
+            tools: Vec::new(),
+            tool_choice: None,
+            parallel_tool_calls: None,
         }
     }
 

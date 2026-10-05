@@ -27,17 +27,16 @@ impl ChatRequest {
                 top_p: None,
                 stop: None,
                 stream: false,
+                tools: Vec::new(),
+                tool_choice: None,
+                parallel_tool_calls: None,
             },
             tags: BTreeMap::new(),
         }
     }
 
     pub fn message(mut self, role: Role, content: impl Into<String>) -> Self {
-        self.inner.messages.push(Message {
-            role,
-            content: content.into(),
-            name: None,
-        });
+        self.inner.messages.push(Message::text(role, content));
         self
     }
 

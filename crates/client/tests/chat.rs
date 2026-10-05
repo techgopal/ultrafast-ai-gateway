@@ -156,16 +156,18 @@ async fn a_translate_request_converts() {
     let c = Client::new(Target::gateway(&s.url, "k"));
     let t = ultrafast_client::types::ChatRequest {
         model: "m".into(),
-        messages: vec![ultrafast_client::types::Message {
-            role: ultrafast_client::types::Role::User,
-            content: "hi".into(),
-            name: None,
-        }],
+        messages: vec![ultrafast_client::types::Message::text(
+            ultrafast_client::types::Role::User,
+            "hi",
+        )],
         max_tokens: None,
         temperature: None,
         top_p: None,
         stop: None,
         stream: false,
+        tools: Vec::new(),
+        tool_choice: None,
+        parallel_tool_calls: None,
     };
     check(&c.chat(t).await.unwrap());
 }

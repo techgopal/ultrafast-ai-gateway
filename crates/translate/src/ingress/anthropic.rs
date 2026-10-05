@@ -83,11 +83,7 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
     }
     let mut messages = Vec::with_capacity(wire.messages.len() + 1);
     if let Some(system) = wire.system {
-        messages.push(Message {
-            role: Role::System,
-            content: text_of(system)?,
-            name: None,
-        });
+        messages.push(Message::text(Role::System, text_of(system)?));
     }
     for m in wire.messages {
         let role = match m.role.as_str() {
@@ -99,11 +95,7 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
                 )))
             }
         };
-        messages.push(Message {
-            role,
-            content: text_of(m.content)?,
-            name: None,
-        });
+        messages.push(Message::text(role, text_of(m.content)?));
     }
     Ok(ChatRequest {
         model: wire.model,
@@ -113,6 +105,9 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
         top_p: wire.top_p,
         stop: wire.stop_sequences,
         stream: wire.stream,
+        tools: Vec::new(),
+        tool_choice: None,
+        parallel_tool_calls: None,
     })
 }
 
@@ -222,6 +217,8 @@ impl StreamRenderer {
                 json!({ "type": "content_block_delta", "index": 0,
                         "delta": { "type": "text_delta", "text": text } }),
             )),
+            // Tool events do not occur until the Anthropic format carries tools.
+            StreamEvent::ToolCallStart { .. } | StreamEvent::ToolCallDelta { .. } => {}
             StreamEvent::Done {
                 finish_reason,
                 usage,
@@ -263,16 +260,16 @@ mod tests {
         assert_eq!(r.max_tokens, Some(9));
         assert_eq!(r.messages.len(), 3);
         assert_eq!(r.messages[0].role, Role::System);
-        assert_eq!(r.messages[0].content, "ab");
+        assert_eq!(r.messages[0].joined_text(), "ab");
         assert_eq!(r.messages[2].role, Role::Assistant);
-        assert_eq!(r.messages[2].content, "yo");
+        assert_eq!(r.messages[2].joined_text(), "yo");
         assert_eq!(r.stop, Some(vec!["x".into()]));
         assert!(r.stream);
         let r = parse_request(
             br#"{"model":"m","max_tokens":1,"system":"s","messages":[{"role":"user","content":"x"}]}"#,
         )
         .unwrap();
-        assert_eq!(r.messages[0].content, "s");
+        assert_eq!(r.messages[0].joined_text(), "s");
     }
 
     #[test]
@@ -307,6 +304,7 @@ mod tests {
             id: "msg_1".into(),
             model: "m".into(),
             content: "hello".into(),
+            tool_calls: Vec::new(),
             finish_reason: Some(FinishReason::Length),
             usage: Some(Usage {
                 input_tokens: 3,
@@ -337,6 +335,7 @@ mod tests {
                 id: "i".into(),
                 model: "m".into(),
                 content: String::new(),
+                tool_calls: Vec::new(),
                 finish_reason: reason,
                 usage: None,
             };

@@ -47,15 +47,10 @@ mod tests {
         ChatRequest {
             model: "az/my-gpt4o".into(),
             messages: vec![
+                Message::text(Role::System, "be brief"),
                 Message {
-                    role: Role::System,
-                    content: "be brief".into(),
-                    name: None,
-                },
-                Message {
-                    role: Role::User,
-                    content: "hi".into(),
                     name: Some("ann".into()),
+                    ..Message::text(Role::User, "hi")
                 },
             ],
             max_tokens: Some(5),
@@ -63,6 +58,9 @@ mod tests {
             top_p: None,
             stop: Some(vec!["x".into()]),
             stream,
+            tools: Vec::new(),
+            tool_choice: None,
+            parallel_tool_calls: None,
         }
     }
 

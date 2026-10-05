@@ -67,13 +67,15 @@ fn chat_out(r: ChatResponse) -> ChatOut {
     )
 }
 
-fn event_out(e: StreamEvent) -> EventOut {
+/// `None` for a tool call event: the Python API does not carry tools yet.
+fn event_out(e: StreamEvent) -> Option<EventOut> {
     match e {
-        StreamEvent::Delta { text } => ("delta", Some(text), None, None),
+        StreamEvent::Delta { text } => Some(("delta", Some(text), None, None)),
+        StreamEvent::ToolCallStart { .. } | StreamEvent::ToolCallDelta { .. } => None,
         StreamEvent::Done {
             finish_reason,
             usage,
-        } => ("done", None, finish_out(finish_reason), usage_out(usage)),
+        } => Some(("done", None, finish_out(finish_reason), usage_out(usage))),
     }
 }
 
@@ -256,15 +258,21 @@ impl Shared {
         let Some(stream) = guard.as_mut() else {
             return Ok(None);
         };
-        match stream.next().await {
-            Some(Ok(e)) => Ok(Some(event_out(e))),
-            Some(Err(e)) => {
-                *guard = None;
-                Err(e)
-            }
-            None => {
-                *guard = None;
-                Ok(None)
+        loop {
+            match stream.next().await {
+                Some(Ok(e)) => {
+                    if let Some(out) = event_out(e) {
+                        return Ok(Some(out));
+                    }
+                }
+                Some(Err(e)) => {
+                    *guard = None;
+                    return Err(e);
+                }
+                None => {
+                    *guard = None;
+                    return Ok(None);
+                }
             }
         }
     }
