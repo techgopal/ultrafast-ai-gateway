@@ -25,9 +25,11 @@ export function pendingCalls(messages: readonly Message[]): readonly ToolCall[] 
   return last?.role === "assistant" ? (last.tool_calls ?? []) : [];
 }
 
-function nameOf(messages: readonly Message[], id: string): string | undefined {
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
+/** The name of the call `id` belongs to: the latest one made before message number `before`, since a provider may reuse an id from turn to turn. */
+export function nameOf(messages: readonly Message[], id: string, before = messages.length): string | undefined {
+  for (let at = Math.min(before, messages.length) - 1; at >= 0; at--) {
+    const message = messages[at];
+    if (message?.role !== "assistant") continue;
     const call = message.tool_calls?.find((candidate) => candidate.id === id);
     if (call !== undefined) return call.function.name;
   }
@@ -86,7 +88,7 @@ interface TurnProps {
 function Turn({ message, messages, streaming, onCopy, results }: TurnProps) {
   const who =
     message.role === "tool"
-      ? `Tool result: ${nameOf(messages, message.tool_call_id) ?? "call"}`
+      ? `Tool result: ${nameOf(messages, message.tool_call_id, messages.indexOf(message)) ?? "call"}`
       : WHO[message.role];
   return (
     <li

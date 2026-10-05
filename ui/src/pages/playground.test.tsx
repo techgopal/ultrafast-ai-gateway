@@ -944,6 +944,35 @@ describe("fix round 1", () => {
     expect(screen.queryByRole("button", { name: "Remove b.png" })).toBeNull();
   });
 
+  test("Send checks the budget again, with the text written after the image was attached", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await userEvent.upload(screen.getByLabelText("Attach image"), big("a.png"));
+    await screen.findByRole("img", { name: "a.png" });
+    await userEvent.click(message());
+    await userEvent.paste("x".repeat(3 * 1024 * 1024));
+    await userEvent.click(sendButton());
+    expect(await screen.findByText("These images are too large to send together. Remove one.")).toBeInTheDocument();
+    expect(sent).toEqual([]);
+    expect(screen.getByRole("img", { name: "a.png" })).toBeInTheDocument();
+  });
+
+  test("when the thread alone is over the budget, the image error says to start a new conversation", async () => {
+    chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await userEvent.click(message());
+    await userEvent.paste("x".repeat(9 * 1024 * 1024 + 1024));
+    await userEvent.click(sendButton());
+    await screen.findByText("Hello");
+    await userEvent.upload(screen.getByLabelText("Attach image"), png());
+    expect(
+      await screen.findByText("These images are too large to send together. Remove one, or start a New conversation."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove cat.png" })).toBeNull();
+  });
+
   test("a successful send clears the image errors", async () => {
     chats();
     await page();
