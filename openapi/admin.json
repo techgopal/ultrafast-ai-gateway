@@ -7206,7 +7206,8 @@
             "items": {
               "type": "object",
               "additionalProperties": true
-            }
+            },
+            "description": "Functions the model may call, as in `/v1/chat/completions`."
           },
           "top_p": {
             "type": "number",
@@ -7285,7 +7286,8 @@
             "items": {
               "type": "object",
               "additionalProperties": true
-            }
+            },
+            "description": "The calls of an assistant message, as in `/v1/chat/completions`."
           }
         }
       },

@@ -55,11 +55,15 @@ struct World {
 
 /// A harness with the route `r` on `p/gpt-4o`, its cache on for `scope`.
 async fn world(scope: CacheScope) -> World {
+    world_with(scope, &SETTINGS).await
+}
+
+async fn world_with(scope: CacheScope, settings: &RouteSettings) -> World {
     let h = harness("openai").await;
     let gpt = h.store.list_models().await.unwrap();
     let model = gpt.iter().find(|m| m.name == "gpt-4o").unwrap().id;
     let mut tx = h.store.begin().await.unwrap();
-    let id = tx.insert_route("r", &SETTINGS, true).await.unwrap();
+    let id = tx.insert_route("r", settings, true).await.unwrap();
     tx.replace_targets(
         id,
         &TargetsInput {
@@ -848,6 +852,22 @@ async fn cached_tool_call_answer_is_served_from_cache() {
 }
 
 #[tokio::test]
+async fn a_tool_request_above_the_temperature_limit_is_not_kept() {
+    let w = world(CacheScope::Team).await;
+    let (a, _) = w.two_teams().await;
+    let warm = tools_body("Weather by city").replace("\"temperature\":0", "\"temperature\":0.6");
+    assert!(warm.contains("\"temperature\":0.6"), "{warm}");
+    assert_eq!(w.chat(&a, &warm).await, StatusCode::OK);
+    assert_eq!(w.chat(&a, &warm).await, StatusCode::OK);
+    assert_eq!(w.provider_calls().await, 2, "temperature 0.6 with tools");
+    // The same request at temperature 0 is kept.
+    let cold = tools_body("Weather by city");
+    assert_eq!(w.chat(&a, &cold).await, StatusCode::OK);
+    assert_eq!(w.chat(&a, &cold).await, StatusCode::OK);
+    assert_eq!(w.provider_calls().await, 3);
+}
+
+#[tokio::test]
 async fn images_are_part_of_the_cache_key() {
     let w = world(CacheScope::Team).await;
     let (a, _) = w.two_teams().await;
@@ -926,7 +946,9 @@ async fn together(
 async fn concurrent_identical_calls_reach_the_provider_once() {
     let w = world(CacheScope::Team).await;
     let (a, _) = w.two_teams().await;
-    slow_upstream(&w, Duration::from_millis(200)).await;
+    // Long enough that every caller has asked before the first answer comes,
+    // however busy the machine is: `waits >= 1` below cannot flake.
+    slow_upstream(&w, Duration::from_secs(2)).await;
     let (w, a) = (Arc::new(w), Arc::new(a));
     let answers = together(&w, &a, 50, BODY).await;
     assert_eq!(answers.len(), 50);
@@ -995,6 +1017,66 @@ async fn failed_leader_lets_waiters_call() {
     let at = arrivals.lock().unwrap().clone();
     let spread = at[4].duration_since(at[1]);
     assert!(spread < delay, "the waiters queued: {spread:?}");
+}
+
+#[tokio::test]
+async fn a_leader_whose_caller_left_does_not_stall_the_waiters() {
+    let w = world(CacheScope::Team).await;
+    let (a, _) = w.two_teams().await;
+    slow_upstream(&w, Duration::from_secs(1)).await;
+    let (w, a) = (Arc::new(w), Arc::new(a));
+    // The leader's caller goes away while the provider is still answering.
+    let leader = {
+        let (w, a) = (w.clone(), a.clone());
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(Duration::from_millis(400), w.chat_as(&a, BODY)).await;
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let started = Instant::now();
+    let answers = together(&w, &a, 3, BODY).await;
+    leader.await.unwrap();
+    assert!(
+        answers.iter().all(|(s, _)| *s == StatusCode::OK),
+        "{answers:?}"
+    );
+    // They did not queue behind the leader's whole call and then each other.
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn a_waiter_is_bound_by_its_own_request_deadline() {
+    // Every call hangs for 4 s; the route allows a request 1.5 s in all.
+    let settings = RouteSettings {
+        first_token_timeout_ms: 1_500,
+        total_timeout_ms: 1_500,
+        ..SETTINGS
+    };
+    let w = world_with(CacheScope::Team, &settings).await;
+    let (a, _) = w.two_teams().await;
+    slow_upstream(&w, Duration::from_secs(4)).await;
+    let (w, a) = (Arc::new(w), Arc::new(a));
+    let leader = {
+        let (w, a) = (w.clone(), a.clone());
+        tokio::spawn(async move { w.chat(&a, BODY).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let started = Instant::now();
+    let waiter = w.chat(&a, BODY).await;
+    let took = started.elapsed();
+    let leader = leader.await.unwrap();
+    assert_ne!(leader, StatusCode::OK);
+    assert_ne!(waiter, StatusCode::OK);
+    // The waiter's own 1.5 s covers its wait and its call. Waiting for the
+    // leader and then taking a full 1.5 s of its own would be about 2.7 s.
+    assert!(
+        took < Duration::from_millis(2_200),
+        "the waiter took {took:?}"
+    );
 }
 
 #[tokio::test]

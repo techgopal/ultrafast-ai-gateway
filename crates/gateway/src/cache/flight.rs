@@ -179,6 +179,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_panicking_holder_releases_the_key() {
+        let flights = Arc::new(Flights::new());
+        let holder = {
+            let flights = flights.clone();
+            tokio::spawn(async move {
+                let _guard = flights.hold(key("a")).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                panic!("the leader's call panicked");
+            })
+        };
+        // A waiter that queued behind it.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let waiter = {
+            let flights = flights.clone();
+            tokio::spawn(async move { flights.hold(key("a")).await.waited() })
+        };
+        assert!(holder.await.unwrap_err().is_panic());
+        let waited = tokio::time::timeout(Duration::from_secs(10), waiter)
+            .await
+            .expect("the waiter hangs after the holder panicked")
+            .unwrap();
+        assert!(waited);
+        assert!(flights.is_empty(), "nothing leaks");
+        let again = flights.hold(key("a")).await;
+        assert!(!again.waited());
+    }
+
+    #[tokio::test]
     async fn cancelled_waiter_after_the_holder_left_leaves_no_entry() {
         let flights = Flights::new();
         let first = flights.hold(key("a")).await;

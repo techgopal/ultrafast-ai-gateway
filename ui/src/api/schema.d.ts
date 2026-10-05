@@ -1301,6 +1301,7 @@ export interface components {
             tool_choice?: ("auto" | "none" | "required") | {
                 [key: string]: unknown;
             };
+            /** @description Functions the model may call, as in `/v1/chat/completions`. */
             tools?: {
                 [key: string]: unknown;
             }[];
@@ -1331,6 +1332,7 @@ export interface components {
             role: string;
             /** @description On a `tool` message: the id of the call it answers. */
             tool_call_id?: string;
+            /** @description The calls of an assistant message, as in `/v1/chat/completions`. */
             tool_calls?: {
                 [key: string]: unknown;
             }[];

@@ -31,7 +31,7 @@ pub struct PlaygroundChatRequest {
     #[schema(nullable = false)]
     pub stream: Option<bool>,
     /// Functions the model may call, as in `/v1/chat/completions`.
-    #[schema(schema_with = free_objects, nullable = false, required = false)]
+    #[schema(schema_with = tools_schema, nullable = false, required = false)]
     pub tools: Option<Vec<serde_json::Value>>,
     /// `auto`, `none`, `required` or a named function, as in
     /// `/v1/chat/completions`. Without `tools`, `required` and a named
@@ -50,7 +50,7 @@ pub struct PlaygroundMessage {
     #[schema(schema_with = content_schema, required = false)]
     pub content: serde_json::Value,
     /// The calls of an assistant message, as in `/v1/chat/completions`.
-    #[schema(schema_with = free_objects, nullable = false, required = false)]
+    #[schema(schema_with = tool_calls_schema, nullable = false, required = false)]
     pub tool_calls: Option<Vec<serde_json::Value>>,
     /// On a `tool` message: the id of the call it answers.
     #[schema(nullable = false)]
@@ -65,11 +65,21 @@ fn free_object() -> utoipa::openapi::schema::ObjectBuilder {
         .additional_properties(Some(AdditionalProperties::FreeForm(true)))
 }
 
-/// A list of free objects.
-fn free_objects() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+/// A list of free objects. `schema_with` replaces the generated schema, so
+/// the description of the field is given here.
+fn free_objects(description: &str) -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
     utoipa::openapi::schema::ArrayBuilder::new()
+        .description(Some(description))
         .items(free_object())
         .into()
+}
+
+fn tools_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    free_objects("Functions the model may call, as in `/v1/chat/completions`.")
+}
+
+fn tool_calls_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    free_objects("The calls of an assistant message, as in `/v1/chat/completions`.")
 }
 
 /// `auto`, `none` or `required`, or an object naming a function.

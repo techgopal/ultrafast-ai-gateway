@@ -552,7 +552,7 @@ async fn dispatch(
     // from the operating system on every request. It is `Send`: it lives
     // across awaits.
     let mut rng = StdRng::from_rng(&mut rand::rng());
-    let (candidates, settings) = plan_of(snapshot, key, &call, &resolved, &mut rng);
+    let (candidates, mut settings) = plan_of(snapshot, key, &call, &resolved, &mut rng);
     record.targets(
         candidates
             .iter()
@@ -590,7 +590,24 @@ async fn dispatch(
         if let Some(response) = answered(state, record) {
             return response;
         }
-        let held = state.flights.hold(plan.key).await;
+        // The wait is part of this request's time: it ends with the deadline
+        // the request has (the route's total timeout), and what the call
+        // that follows may take is what is left of it.
+        let deadline = tokio::time::Instant::now() + settings.total_timeout;
+        let Ok(held) = timeout_at(deadline, state.flights.hold(plan.key)).await else {
+            // Out of time while waiting: the same end as a call that ran out
+            // of time before it could try a target.
+            return exhausted_response(
+                shape,
+                Exhausted {
+                    attempts: 0,
+                    rate_limited: 0,
+                    retry_after: None,
+                    refused: None,
+                },
+            );
+        };
+        settings.total_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
         if held.waited() {
             state.metrics.cache_flight_wait();
             if let Some(response) = answered(state, record) {
