@@ -175,7 +175,7 @@ Anthropic ignores it and Gemini uses it when the call id matches no earlier
 call. `function.strict` is sent to OpenAI and Azure; Anthropic and Gemini have
 no such setting and ignore it. Gemini has no call ids, so the gateway names
 its tool calls `call_<8 hex>_<n>`, where the hex comes from the response id and
-differs from answer to answer (the same answer always gets the same ids), and
+differs from answer to answer (an answer with a response id always gets the same ids; one without gets random hex), and
 sends tool schemas as `parametersJsonSchema` (full JSON Schema).
 
 **Images.** Send an `image_url` part in a user message (PNG, JPEG, GIF or WebP;
