@@ -159,7 +159,7 @@ async fn invalid_requests_get_400_and_unknown_targets_get_404() {
     let tools = r#"{"model":"p/m","messages":[{"role":"user","content":"x"}],"tools":[{}]}"#;
     let (s, b) = post_chat(&h.app, Some(&h.key), tools).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
-    assert!(error_message(&b).contains("tools"));
+    assert!(error_message(&b).contains("tool"));
 
     let no_slash = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"x"}]}"#;
     assert_eq!(

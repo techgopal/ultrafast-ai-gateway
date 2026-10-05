@@ -11,3 +11,4 @@ description = "Provider format translation for Ultrafast. No networking."
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true

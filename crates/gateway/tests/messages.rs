@@ -276,7 +276,7 @@ async fn errors_are_in_the_anthropic_shape() {
     for bad in [
         r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"image","source":{}}]}]}"#,
         r#"{"model":"p/m","messages":[{"role":"user","content":"x"}]}"#,
-        r#"{"model":"p/m","max_tokens":1,"tools":[],"messages":[{"role":"user","content":"x"}]}"#,
+        r#"{"model":"p/m","max_tokens":1,"top_k":1,"messages":[{"role":"user","content":"x"}]}"#,
     ] {
         let (s, _, body) = messages(&h, bad).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
@@ -284,7 +284,7 @@ async fn errors_are_in_the_anthropic_shape() {
     }
     let (_, _, body) = messages(
         &h,
-        r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"image"}]}]}"#,
+        r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"thinking"}]}]}"#,
     )
     .await;
     assert_eq!(

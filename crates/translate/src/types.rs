@@ -91,6 +91,29 @@ impl Message {
 
 pub const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
 
+/// Checks the media type and the alphabet of base64 image data.
+pub(crate) fn base64_source(media_type: &str, data: &str) -> Result<ImageSource, TranslateError> {
+    if !IMAGE_TYPES.contains(&media_type) {
+        return Err(TranslateError::InvalidRequest(format!(
+            "image type '{media_type}' is not supported; use one of {}",
+            IMAGE_TYPES.join(", ")
+        )));
+    }
+    let valid = !data.is_empty()
+        && data
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'));
+    if !valid {
+        return Err(TranslateError::InvalidRequest(
+            "image data is not valid base64".to_string(),
+        ));
+    }
+    Ok(ImageSource::Base64 {
+        media_type: media_type.to_string(),
+        data: data.to_string(),
+    })
+}
+
 /// Parses `data:<type>;base64,<data>` or an http(s) URL. Shared by both ingresses.
 pub fn image_source(url: &str) -> Result<ImageSource, TranslateError> {
     let bad = |m: &str| TranslateError::InvalidRequest(m.to_string());
@@ -101,23 +124,7 @@ pub fn image_source(url: &str) -> Result<ImageSource, TranslateError> {
         let media_type = meta
             .strip_suffix(";base64")
             .ok_or_else(|| bad("image data URL must be base64 encoded"))?;
-        if !IMAGE_TYPES.contains(&media_type) {
-            return Err(TranslateError::InvalidRequest(format!(
-                "image type '{media_type}' is not supported; use one of {}",
-                IMAGE_TYPES.join(", ")
-            )));
-        }
-        let valid = !data.is_empty()
-            && data.bytes().all(|b| {
-                b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_')
-            });
-        if !valid {
-            return Err(bad("image data is not valid base64"));
-        }
-        return Ok(ImageSource::Base64 {
-            media_type: media_type.to_string(),
-            data: data.to_string(),
-        });
+        return base64_source(media_type, data);
     }
     if url.starts_with("http://") || url.starts_with("https://") {
         return Ok(ImageSource::Url(url.to_string()));
