@@ -1290,11 +1290,21 @@ export interface components {
             messages: components["schemas"]["PlaygroundMessage"][];
             /** @description A model as `provider/name`, or a route name. */
             model: string;
+            /** @description As in `/v1/chat/completions`; ignored without `tools`. */
+            parallel_tool_calls?: boolean;
             stop?: string[];
             /** @description Answer as server-sent events. */
             stream?: boolean;
             /** Format: double */
             temperature?: number;
+            /** @description `auto`, `none`, `required` or a named function, as in `/v1/chat/completions`. Without `tools`, `required` and a named function are refused with 400. */
+            tool_choice?: ("auto" | "none" | "required") | {
+                [key: string]: unknown;
+            };
+            /** @description Functions the model may call, as in `/v1/chat/completions`. */
+            tools?: {
+                [key: string]: unknown;
+            }[];
             /** Format: double */
             top_p?: number;
         };
@@ -1314,9 +1324,18 @@ export interface components {
             type?: string;
         };
         PlaygroundMessage: {
-            content: string;
-            /** @description `system`, `user` or `assistant`. */
+            /** @description Text, or a list of parts (`text` and `image_url`) as in `/v1/chat/completions`. Null is allowed on an assistant message that has `tool_calls`. Images are `data:` URLs or, except for Gemini, `http(s)` URLs, and count toward the request body limit (10 MiB). */
+            content?: string | {
+                [key: string]: unknown;
+            }[] | null;
+            /** @description `system`, `user`, `assistant` or `tool`. */
             role: string;
+            /** @description On a `tool` message: the id of the call it answers. */
+            tool_call_id?: string;
+            /** @description The calls of an assistant message, as in `/v1/chat/completions`. */
+            tool_calls?: {
+                [key: string]: unknown;
+            }[];
         };
         PrimaryEntry: {
             /** @description `provider/model`. */

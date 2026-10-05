@@ -31,7 +31,7 @@ use ultrafast_translate::ingress::{anthropic, openai};
 use ultrafast_translate::provider::{
     build_request, parse_response, HttpRequest, StreamDecoder, Target,
 };
-use ultrafast_translate::types::{ChatRequest, ChatResponse, StreamEvent, Usage};
+use ultrafast_translate::types::{ChatRequest, ChatResponse, Part, StreamEvent, Usage};
 
 use crate::access::{self, Denied, Resolved};
 use crate::app::AppState;
@@ -92,6 +92,8 @@ const TIMED_OUT: &str = "The request timed out.";
 
 /// What a chat call that names no `max_tokens` is expected to answer with.
 const DEFAULT_MAX_TOKENS_ESTIMATE: u32 = 1_000;
+/// What an image counts for in the estimate of a call's input, in tokens.
+const IMAGE_TOKEN_ESTIMATE: u64 = 1_000;
 
 /// The three calls of `/v1` that reach a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,7 +171,25 @@ impl Call {
             chars.div_ceil(4) as u64
         }
         match self {
-            Call::Chat(r) => tokens(r.messages.iter().map(|m| m.content.chars().count()).sum()),
+            Call::Chat(r) => {
+                let mut chars = 0usize;
+                let mut images = 0u64;
+                for m in &r.messages {
+                    for part in &m.content {
+                        match part {
+                            Part::Text(t) => chars += t.chars().count(),
+                            Part::Image(_) => images += 1,
+                        }
+                    }
+                    for c in &m.tool_calls {
+                        chars += c.name.chars().count() + c.arguments.chars().count();
+                    }
+                }
+                for t in &r.tools {
+                    chars += serde_json::to_string(t).map_or(0, |s| s.chars().count());
+                }
+                tokens(chars) + images * IMAGE_TOKEN_ESTIMATE
+            }
             Call::Embed(r) => tokens(r.input.iter().map(|s| s.chars().count()).sum()),
         }
     }
@@ -532,7 +552,7 @@ async fn dispatch(
     // from the operating system on every request. It is `Send`: it lives
     // across awaits.
     let mut rng = StdRng::from_rng(&mut rand::rng());
-    let (candidates, settings) = plan_of(snapshot, key, &call, &resolved, &mut rng);
+    let (candidates, mut settings) = plan_of(snapshot, key, &call, &resolved, &mut rng);
     record.targets(
         candidates
             .iter()
@@ -546,18 +566,63 @@ async fn dispatch(
 
     // 3d. The response cache of the route: after access, limits and budgets,
     // so a hit is refused as a call would be. A hit calls no provider.
+    //
+    // A miss takes the flight of its key before it calls a provider, so
+    // concurrent identical calls make one provider call: the others wait,
+    // read the cache again and find its answer. The wait is after the
+    // limits, so a waiter keeps its concurrency slot while it waits (a slow
+    // leader can hold a route's slots). Only the caller that got the flight
+    // without waiting (the leader) holds it to the end of the function:
+    // through the provider call and `keep`, released on every exit, an error
+    // and a dropped future included. A caller that waited and still misses
+    // calls on its own, without the flight.
     let cache = cache_plan(snapshot, actor, &call, &resolved, &candidates);
+    let mut flight = None;
     if let Some(plan) = &cache {
-        let now = tokio::time::Instant::now().into_std();
-        if let Some(hit) = state.cache.get(&plan.key, now) {
-            if let Some(response) = render_cached(endpoint, &hit) {
-                state.metrics.cache_hit();
-                record.cache_hit(&hit.provider, &hit.model, hit.usage());
+        let answered = |state: &AppState, record: &mut Scope| {
+            let now = tokio::time::Instant::now().into_std();
+            let hit = state.cache.get(&plan.key, now)?;
+            let response = render_cached(endpoint, &hit)?;
+            state.metrics.cache_hit();
+            record.cache_hit(&hit.provider, &hit.model, hit.usage());
+            Some(response)
+        };
+        if let Some(response) = answered(state, record) {
+            return response;
+        }
+        // The wait is part of this request's time: it ends with the deadline
+        // the request has (the route's total timeout), and what the call
+        // that follows may take is what is left of it.
+        let deadline = tokio::time::Instant::now() + settings.total_timeout;
+        let Ok(held) = timeout_at(deadline, state.flights.hold(plan.key)).await else {
+            // Out of time while waiting: the same end as a call that ran out
+            // of time before it could try a target.
+            return exhausted_response(
+                shape,
+                Exhausted {
+                    attempts: 0,
+                    rate_limited: 0,
+                    retry_after: None,
+                    refused: None,
+                },
+            );
+        };
+        settings.total_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if held.waited() {
+            state.metrics.cache_flight_wait();
+            if let Some(response) = answered(state, record) {
                 return response;
             }
+            // The answer was not kept (the call that held the flight
+            // failed): this caller makes its own call without the flight,
+            // so waiters of a failed call do not queue behind each other.
+            drop(held);
+        } else {
+            flight = Some(held);
         }
         state.metrics.cache_miss();
     }
+    let _flight = flight;
 
     // 4. Try the targets in order.
     let served = routing::run(
@@ -1227,8 +1292,12 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
                 }
             };
             for ev in events {
-                if let StreamEvent::Delta { text } = &ev {
-                    record.streamed(text.chars().count());
+                match &ev {
+                    StreamEvent::Delta { text } => record.streamed(text.chars().count()),
+                    StreamEvent::ToolCallDelta { arguments, .. } => {
+                        record.streamed(arguments.chars().count())
+                    }
+                    _ => {}
                 }
                 let usage = match &ev {
                     StreamEvent::Done { usage, .. } => Some(*usage),

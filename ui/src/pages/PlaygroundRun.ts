@@ -8,6 +8,7 @@ import {
   requestBody,
   retryText,
   SseReader,
+  ToolCallAssembler,
   type ChatRequestBody,
   type Message,
   type Usage,
@@ -37,8 +38,8 @@ export interface Run {
   running: boolean;
   error: string | null;
   finished: Finished | null;
-  /** Sends the message. Resolves with the text to put back in the box when the call failed. */
-  send: (call: Call) => Promise<string | null>;
+  /** Sends the call. Resolves with `true` when nothing came of it and what was added is taken back. */
+  send: (call: Call) => Promise<boolean>;
   stop: () => void;
   clear: () => void;
 }
@@ -46,13 +47,14 @@ export interface Run {
 export interface Call {
   model: string;
   system: string;
-  text: string;
+  /** What this call adds to the conversation: a message of the user, or the results of tool calls. */
+  add: readonly Message[];
   values: Parameters<typeof requestBody>[3];
 }
 
 /** The body the next send would have: for the call itself and for "Copy as curl". */
 export function bodyOf(call: Call, history: readonly Message[]): ChatRequestBody {
-  return requestBody(call.model, call.system, [...history, { role: "user", content: call.text }], call.values);
+  return requestBody(call.model, call.system, [...history, ...call.add], call.values);
 }
 
 export function useRun(): Run {
@@ -72,11 +74,11 @@ export function useRun(): Run {
     [],
   );
 
-  const send = useCallback(async (call: Call): Promise<string | null> => {
+  const send = useCallback(async (call: Call): Promise<boolean> => {
     const abort = new AbortController();
     controller.current = abort;
     const asked = bodyOf(call, history.current);
-    const sent: readonly Message[] = [...history.current, { role: "user", content: call.text }];
+    const sent: readonly Message[] = [...history.current, ...call.add];
     history.current = sent;
     setMessages(sent);
     setError(null);
@@ -85,10 +87,13 @@ export function useRun(): Run {
     setRunning(true);
 
     let answer = "";
+    const calls = new ToolCallAssembler();
     let usage: Usage | null = null;
     let model: string | null = null;
     let failure: string | null = null;
     let failed = false;
+    // Tool calls whose stream broke off are cut short: only a finished stream keeps them.
+    let finishedStream = false;
     try {
       const response = await playgroundChat(asked, abort.signal);
       const reader = response.body?.getReader();
@@ -108,6 +113,8 @@ export function useRun(): Run {
             answer += chunk.text;
             setPartial(answer);
           }
+          if (chunk.done === true) finishedStream = true;
+          if (chunk.toolCalls !== undefined) calls.add(chunk.toolCalls);
           if (chunk.usage !== undefined) {
             usage = chunk.usage;
             model = chunk.model ?? model;
@@ -124,20 +131,22 @@ export function useRun(): Run {
     }
     if (controller.current === abort) controller.current = null;
 
-    let putBack: string | null = null;
-    if (answer !== "") {
-      const kept: readonly Message[] = [...sent, { role: "assistant", content: answer }];
+    let putBack = false;
+    const toolCalls = finishedStream ? calls.calls() : [];
+    if (answer !== "" || toolCalls.length > 0) {
+      const kept: readonly Message[] = [
+        ...sent,
+        toolCalls.length > 0
+          ? { role: "assistant", content: answer === "" ? null : answer, tool_calls: toolCalls }
+          : { role: "assistant", content: answer },
+      ];
       history.current = kept;
       setMessages(kept);
-    } else if (failed || failure !== null) {
-      // Nothing was answered: the message goes back to the box, to be sent again.
-      history.current = history.current.slice(0, -1);
+    } else if (failed || failure !== null || abort.signal.aborted) {
+      // Nothing was answered: what was added goes back, to be sent again.
+      history.current = history.current.slice(0, history.current.length - call.add.length);
       setMessages(history.current);
-      putBack = call.text;
-    } else if (abort.signal.aborted) {
-      history.current = history.current.slice(0, -1);
-      setMessages(history.current);
-      putBack = call.text;
+      putBack = true;
     }
     setPartial("");
     setRunning(false);

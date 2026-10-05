@@ -11,7 +11,40 @@ use serde_json::Value;
 
 use crate::error::TranslateError;
 use crate::sse::SseParser;
-use crate::types::{ChatRequest, ChatResponse, FinishReason, StreamEvent, Usage};
+use crate::types::{ChatRequest, ChatResponse, FinishReason, StreamEvent, ToolChoice, Usage};
+
+/// Without tools, `tool_choice` auto/none and `parallel_tool_calls` mean
+/// nothing and are left out; a choice that demands a tool cannot be met.
+pub(crate) fn check_tool_choice(req: &ChatRequest) -> Result<(), TranslateError> {
+    if !req.tools.is_empty() {
+        if let Some(ToolChoice::Tool(name)) = &req.tool_choice {
+            if !req.tools.iter().any(|t| &t.name == name) {
+                return Err(TranslateError::InvalidRequest(format!(
+                    "tool_choice names '{name}', which is not in tools"
+                )));
+            }
+        }
+        return Ok(());
+    }
+    let what = match &req.tool_choice {
+        Some(ToolChoice::Required) => "required",
+        Some(ToolChoice::Tool(name)) => name.as_str(),
+        _ => return Ok(()),
+    };
+    Err(TranslateError::InvalidRequest(format!(
+        "tool_choice '{what}' needs tools"
+    )))
+}
+
+/// Some providers end an answer that has tool calls as a plain stop (Gemini
+/// always, OpenAI-compatibles now and then); callers expect `ToolCalls`.
+pub(crate) fn with_calls(reason: Option<FinishReason>, has_calls: bool) -> Option<FinishReason> {
+    if has_calls && reason == Some(FinishReason::Stop) {
+        Some(FinishReason::ToolCalls)
+    } else {
+        reason
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -183,6 +216,18 @@ pub(crate) struct StreamState {
     /// The stream has ended by its own account but its end is not yet given
     /// (Gemini: a usage-only chunk may still follow).
     pub ended: bool,
+    /// Tool calls started so far (Gemini).
+    pub tool_calls_started: u32,
+    /// Gemini: the `call_<hash>` prefix of this answer's call ids.
+    pub call_prefix: Option<String>,
+    /// OpenAI tool calls: the id of each started call, by our tool index.
+    pub tool_call_ids: Vec<String>,
+    /// OpenAI tool calls: provider `index` -> our tool index of its newest call.
+    pub tool_call_slots: std::collections::HashMap<u32, u32>,
+    /// Anthropic: (content block index, tool call index) of each tool block.
+    pub tool_blocks: Vec<(u64, u32)>,
+    /// Anthropic: tool call indexes that have had argument text.
+    pub tool_args_seen: Vec<u32>,
 }
 
 impl StreamState {

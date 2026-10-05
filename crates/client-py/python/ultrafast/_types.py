@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Union
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, Union
 
 
 @dataclass(frozen=True)
 class Message:
-    """One chat message; `role` is "system", "user" or "assistant"."""
+    """One chat message; `role` is "system", "user", "assistant" or "tool".
+
+    `content` is text, a list of OpenAI-shaped parts (`text` / `image_url`), or
+    None for an assistant message that only calls tools. `tool_calls` (assistant)
+    is a list of `ToolCall`, flat `{id, name, arguments}` dicts or OpenAI-shaped
+    dicts; a "tool" message needs `tool_call_id`.
+    """
 
     role: str
-    content: str
+    content: Union[str, List[Any], None]
+    tool_calls: Optional[List[Any]] = None
+    tool_call_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -21,12 +29,22 @@ class Usage:
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    """A tool call the model made; `arguments` is the JSON text it produced."""
+
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
 class ChatResponse:
     id: str
     model: str
     content: str
     finish_reason: Optional[str]  # "stop", "length", "tool_calls", "content_filter"
     usage: Optional[Usage]
+    tool_calls: List[ToolCall] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -44,7 +62,24 @@ class Done:
     usage: Optional[Usage]
 
 
-StreamEvent = Union[Delta, Done]
+@dataclass(frozen=True)
+class ToolCallStart:
+    """A tool call begins; `index` counts the answer's tool calls from 0."""
+
+    index: int
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
+class ToolCallDelta:
+    """More argument text for the call at `index`."""
+
+    index: int
+    arguments: str
+
+
+StreamEvent = Union[Delta, ToolCallStart, ToolCallDelta, Done]
 
 
 @dataclass(frozen=True)

@@ -66,6 +66,7 @@ pub struct Metrics {
     tokens_out: AtomicU64,
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
+    cache_flight_waits: AtomicU64,
     rate_limited: [AtomicU64; LIMITS.len()],
     budget_blocked: AtomicU64,
     /// Per provider.
@@ -134,6 +135,11 @@ impl Metrics {
 
     pub fn cache_miss(&self) {
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A call that waited for another call of the same cache key.
+    pub fn cache_flight_wait(&self) {
+        self.cache_flight_waits.fetch_add(1, Ordering::Relaxed);
     }
 
     /// A call refused by a rate limit; `limit_name` is the limiter's
@@ -276,6 +282,17 @@ impl Metrics {
             "Calls on a route with the cache on that the cache could not answer.",
         );
         let _ = writeln!(out, "uf_cache_misses_total {}", n(&self.cache_misses));
+        header(
+            &mut out,
+            "uf_cache_flight_waits_total",
+            "counter",
+            "Calls that waited for a call of the same cache key that was already at a provider.",
+        );
+        let _ = writeln!(
+            out,
+            "uf_cache_flight_waits_total {}",
+            n(&self.cache_flight_waits)
+        );
 
         header(
             &mut out,

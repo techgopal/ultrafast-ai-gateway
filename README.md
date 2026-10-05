@@ -26,7 +26,8 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
 ## Features
 
 - **Endpoints.** `/v1/chat/completions`, `/v1/messages` (Anthropic format),
-  `/v1/embeddings`, `/v1/models`; streaming on both chat formats.
+  `/v1/embeddings`, `/v1/models`; streaming on both chat formats, with tool
+  calling and image input (vision) on both, over any provider kind.
 - **Providers.** OpenAI, Anthropic, Gemini, Azure OpenAI, and any
   OpenAI-compatible API through the `openai` kind: Groq
   (`https://api.groq.com/openai/v1`), Mistral (`https://api.mistral.ai/v1`),
@@ -34,7 +35,8 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
   (`http://localhost:11434/v1`) and others. Credentials are encrypted at rest
   with a master key.
 - **Routing and resilience.** Routes with weighted targets, ordered fallbacks,
-  retries, timeouts and circuit breakers; an exact-match response cache.
+  retries, timeouts and circuit breakers; an exact-match response cache that
+  sends concurrent identical calls to the provider once (single-flight).
 - **Access control.** Email and password sign-in, roles (admin, team lead,
   member), teams, virtual keys with expiry and an allowlist of models and
   routes, a model catalog with enable and grant rules, an audit log.
@@ -51,8 +53,8 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
 - **Clients.** Rust, Python and TypeScript, sharing one Rust core.
 
 Not yet (phase 2): guardrails, MCP tools, single sign-on, alerts by email or
-webhook, OpenTelemetry export, an admin SDK, Postgres, tools and images in
-chat.
+webhook, OpenTelemetry export, an admin SDK, Postgres, the Responses API,
+image or audio output, and `response_format` / structured outputs.
 
 ## Quickstart
 
@@ -66,14 +68,14 @@ chat.
 printf 'UF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' > admin.env
 chmod 600 admin.env
 docker run -d --name ultrafast -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast \
-  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.1
+  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.2
 ```
 
 **Or a binary** from the [latest release](https://github.com/techgopal/ultrafast-ai-gateway/releases)
 (Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x64). For Linux x86_64:
 
 ```bash
-V=2.0.0-beta.1; T=x86_64-unknown-linux-musl
+V=2.0.0-beta.2; T=x86_64-unknown-linux-musl
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/ultrafast-v$V-$T.tar.gz
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c
@@ -137,6 +139,60 @@ client.messages.create(model="anthropic/claude-sonnet-5", max_tokens=256,
 
 The gateway accepts the key as `Authorization: Bearer` or `x-api-key`.
 
+**Tools.** Send `tools` on `/v1/chat/completions` or `/v1/messages`, to any
+provider kind, streaming or not; the gateway translates them. The arguments of
+a call are a JSON string you parse yourself. Between an OpenAI-format caller and
+an OpenAI-format provider (OpenAI, Azure, compatibles) the text passes through
+unchanged; otherwise it is converted from or to the provider's JSON object
+(Anthropic, Gemini), so it is serialized once and its keys come out sorted.
+
+```bash
+curl http://127.0.0.1:3000/v1/chat/completions \
+  -H "Authorization: Bearer $UF_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"Weather in Paris?"}],
+       "tools":[{"type":"function","function":{"name":"weather","description":"Current weather",
+         "parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]}'
+```
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:3000/v1", api_key=UF_KEY)
+tools = [{"type": "function", "function": {"name": "weather", "description": "Current weather",
+          "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}]
+messages = [{"role": "user", "content": "Weather in Paris?"}]
+first = client.chat.completions.create(model="openai/gpt-4o", messages=messages, tools=tools)
+call = first.choices[0].message.tool_calls[0]          # call.function.arguments is JSON text
+messages += [first.choices[0].message,
+             {"role": "tool", "tool_call_id": call.id, "content": "18 C, clear"}]
+client.chat.completions.create(model="openai/gpt-4o", messages=messages, tools=tools)
+```
+
+`tool_choice` is `auto`, `none`, `required` or a named tool. With `tools` empty
+or absent, `auto`, `none` and `parallel_tool_calls` are ignored (SDKs send them
+anyway); `required` is a 400, and so is a named tool, with no tools or when it
+is not among `tools`. A `tool` message may carry `name` (OpenAI's older form);
+Anthropic ignores it and Gemini uses it when the call id matches no earlier
+call. `function.strict` is sent to OpenAI and Azure; Anthropic and Gemini have
+no such setting and ignore it. Gemini has no call ids, so the gateway names
+its tool calls `call_<8 hex>_<n>`, where the hex comes from the response id and
+differs from answer to answer (an answer with a response id always gets the same ids; one without gets random hex), and
+sends tool schemas as `parametersJsonSchema` (full JSON Schema).
+
+**Images.** Send an `image_url` part in a user message (PNG, JPEG, GIF or WebP;
+an `http(s)` URL or a `data:` URL). Only user messages may carry images.
+
+```python
+client.chat.completions.create(model="openai/gpt-4o", messages=[{"role": "user", "content": [
+    {"type": "text", "text": "What is in this picture?"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0..."}},
+]}])
+```
+
+The gateway never fetches an image URL: the provider does, so it must be able
+to reach it. Gemini takes `data:` URLs only (an `https` URL is a 400). Images
+count toward the 10 MiB request body limit (413 above it). The Anthropic
+format takes `image` blocks with a `source` of type `base64` or `url`.
+
 The same setup from the command line (no console), against the same data
 directory:
 
@@ -196,7 +252,10 @@ Subcommands: `serve`, `provider add`, `model add`, `key create`,
   (budgets: `budget_exceeded`). Errors use the shape of the endpoint called
   (OpenAI or Anthropic).
 - **Cache.** A route can cache answers (TTL 1 to 86 400 s; shared per team, key
-  or user). Streams and temperature above 0.5 are never cached.
+  or user). Streams and temperature above 0.5 are never cached. When identical
+  cacheable calls arrive at once, one reaches the provider and the others wait
+  for its answer (single-flight); if it fails, each waiter calls the provider
+  itself.
 - **Prices and budgets.** A model without a price is logged without a cost, so
   spend is a lower bound. Budgets are per UTC day, week (from Monday) or month.
 - **Admin API.** `/api/*`, described by [`openapi/admin.json`](openapi/admin.json)
@@ -219,6 +278,10 @@ Served at `/`. What each role sees is decided by the API.
 | Budgets and limits | set | read their teams' | read what applies to them |
 | Settings (retention, sign-in, backup, config, audit log) | yes | no | no |
 | Account (name, password, access tokens) | yes | yes | yes |
+
+The playground sends images (5 MB each, 9 MiB per request including the
+history), tools as JSON with a tool choice, and shows the model's tool calls and
+the results you send back.
 
 Guardrails and MCP tools appear in the navigation as coming.
 
@@ -280,7 +343,7 @@ scrape_configs:
 
 Series: `uf_requests_total{endpoint,status_class}`, `uf_tokens_total{direction}`,
 `uf_cost_micros_total`, `uf_upstream_duration_seconds{provider}`,
-`uf_cache_hits_total`, `uf_cache_misses_total`, `uf_rate_limited_total{limit}`,
+`uf_cache_hits_total`, `uf_cache_misses_total`, `uf_cache_flight_waits_total`, `uf_rate_limited_total{limit}`,
 `uf_budget_blocked_total`, `uf_circuit_open{provider,model}`,
 `uf_log_records_dropped_total`, `uf_log_write_failures_total`. No label names a
 key, user, team or prompt. `GET /health` answers `{"status":"ok"}`.
@@ -302,8 +365,8 @@ trusted network use `--insecure-cookies`. `/v1` with a key works over HTTP.
 Rust, Python and TypeScript clients for the gateway (or a provider directly),
 built on one Rust core, `ultrafast-translate`, and tested with shared fixtures
 (`clients/fixtures/`). They do not retry, route or cache; an error says
-whether to retry and when. Wheels and an npm package are not published yet:
-build from source as each README says.
+whether to retry and when. Wheels and an npm package are not published yet,
+and the crates are not on crates.io: build from source as each README says.
 
 Rust ([`crates/client`](crates/client/README.md)):
 
@@ -336,6 +399,11 @@ console.log(reply.content);
 ```
 
 All three also stream and make embeddings, and send `tags` as `x-uf-tags`.
+They also take tools and images: Rust through `ChatRequest` (tools, tool choice,
+image and tool-result messages), Python with flat tool dicts
+(`{"name", "description", "parameters"}`) and a `ToolCall` you can pass straight
+back in the next assistant message, TypeScript with `tools`, `toolChoice` and
+`toolCalls` / `toolCallId`; see each README. Streams yield tool-call events.
 
 ## Known limits
 
@@ -348,14 +416,23 @@ All three also stream and make embeddings, and send `tags` as `x-uf-tags`.
 - A stream whose caller left, or that failed midway, is charged an estimate
   (marked Estimated in the logs).
 - Creating or revoking a key, or changing teams, users, routes, providers,
-  models or grants, clears the whole response cache. There is no
-  single-flight: concurrent misses all go to the provider.
+  models or grants, clears the whole response cache.
+- Single-flight is per process, and a caller waiting on another's call keeps
+  its concurrency slot while it waits.
 - Request logs keep metadata only. Logs of a deleted user or team stay, with no
   owner.
-- Only admins set limits and budgets; nobody sees another person's spend. A
-  budget alert is an audit entry, not an email or a webhook.
+- Members see their own usage and budgets, team leads their teams', admins
+  all; only admins set limits and budgets. A budget alert is an audit entry,
+  not an email or a webhook.
 - A backup restore is manual, and a configuration import never deletes.
-- Text chat only: no tools or images. SQLite only.
+- No Responses API, image or audio output, or `response_format` / structured
+  outputs yet (phase 2). SQLite only.
+- Gemini thought signatures are not carried: no other format has them. Every
+  earlier tool call sent to Gemini carries Google's documented placeholder
+  signature (`skip_thought_signature_validator`), which Gemini 3 models need
+  to accept the history.
+- A tool result's `is_error` flag (Anthropic) is not carried; its text is kept.
+- `function.strict` reaches OpenAI and Azure only.
 - The image is linux/amd64; the crates are not on crates.io.
 
 ## Development

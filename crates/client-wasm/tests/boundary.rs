@@ -372,3 +372,142 @@ fn a_redirect_answer_says_the_same_thing_everywhere() {
         ultrafast_translate::classify::REDIRECT_MESSAGE
     );
 }
+
+fn tool_req() -> Value {
+    json!({
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "what is this"},
+                {"type": "image", "url": "data:image/png;base64,AAAA"},
+            ]},
+            {"role": "assistant", "content": null,
+             "tool_calls": [{"id": "call_1", "name": "weather", "arguments": "{\"city\":\"Paris\"}"}]},
+            {"role": "tool", "content": "sunny", "tool_call_id": "call_1"},
+        ],
+        "tools": [{"name": "weather", "description": "Current weather",
+                   "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}],
+        "tool_choice": {"name": "weather"},
+        "parallel_tool_calls": false,
+    })
+}
+
+#[test]
+fn tools_images_and_tool_messages_build_the_openai_body() {
+    let out = j(&api::build_request(
+        &target("gateway", "http://gw:3900"),
+        &tool_req().to_string(),
+    )
+    .unwrap());
+    let body = j(out["body"].as_str().unwrap());
+    assert_eq!(body["messages"][0]["content"][1]["type"], "image_url");
+    assert_eq!(
+        body["messages"][0]["content"][1]["image_url"]["url"],
+        "data:image/png;base64,AAAA"
+    );
+    assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call_1");
+    assert_eq!(body["messages"][2]["role"], "tool");
+    assert_eq!(body["messages"][2]["tool_call_id"], "call_1");
+    assert_eq!(body["tools"][0]["function"]["name"], "weather");
+    assert_eq!(body["tool_choice"]["function"]["name"], "weather");
+    assert_eq!(body["parallel_tool_calls"], false);
+}
+
+#[test]
+fn the_same_request_builds_for_a_direct_provider() {
+    let out = j(&api::build_request(
+        &target("anthropic", "https://api.anthropic.com"),
+        &tool_req().to_string(),
+    )
+    .unwrap());
+    let body = j(out["body"].as_str().unwrap());
+    assert_eq!(body["tools"][0]["name"], "weather");
+    assert_eq!(body["messages"][0]["content"][1]["type"], "image");
+}
+
+#[test]
+fn a_tool_message_without_a_tool_call_id_is_invalid() {
+    let mut req = tool_req();
+    req["messages"][2]
+        .as_object_mut()
+        .unwrap()
+        .remove("tool_call_id");
+    let e = j(
+        &api::build_request(&target("openai", "https://p.example/v1"), &req.to_string())
+            .unwrap_err(),
+    );
+    assert_eq!(e["kind"], "invalid_request");
+    assert_eq!(e["retryable"], false);
+    assert!(
+        e["message"].as_str().unwrap().contains("tool_call_id"),
+        "{e}"
+    );
+}
+
+#[test]
+fn bad_images_tools_and_choices_are_invalid_requests() {
+    let build = |edit: &dyn Fn(&mut Value)| {
+        let mut req = tool_req();
+        edit(&mut req);
+        j(
+            &api::build_request(&target("openai", "https://p.example/v1"), &req.to_string())
+                .unwrap_err(),
+        )
+    };
+    for e in [
+        build(&|r| r["messages"][0]["content"][1]["url"] = json!("ftp://x/a.png")),
+        build(&|r| r["messages"][0]["content"][1]["type"] = json!("audio")),
+        build(&|r| r["tool_choice"] = json!("sometimes")),
+        build(&|r| r["tools"][0]["name"] = json!("")),
+        build(&|r| {
+            r["messages"][0]["tool_calls"] = json!([{"id":"x","name":"n","arguments":"{}"}])
+        }),
+    ] {
+        assert_eq!(e["kind"], "invalid_request", "{e}");
+    }
+    // string forms of tool_choice
+    for c in ["auto", "none", "required"] {
+        let mut req = tool_req();
+        req["tool_choice"] = json!(c);
+        api::build_request(&target("openai", "https://p.example/v1"), &req.to_string()).unwrap();
+    }
+}
+
+#[test]
+fn a_text_message_in_the_old_shape_still_builds() {
+    let req = json!({"model": "m", "messages": [{"role": "user", "content": "hi", "name": "bob"}]});
+    let out = j(
+        &api::build_request(&target("openai", "https://p.example/v1"), &req.to_string()).unwrap(),
+    );
+    let body = j(out["body"].as_str().unwrap());
+    assert_eq!(body["messages"][0]["content"], "hi");
+    assert_eq!(body["messages"][0]["name"], "bob");
+}
+
+#[test]
+fn a_tool_call_answer_and_stream_come_out_as_json() {
+    let answer = r#"{"id":"c2","model":"gpt-4o","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":9,"completion_tokens":4}}"#;
+    let r = j(&api::parse_response("openai", 200, answer.as_bytes(), None).unwrap());
+    assert_eq!(r["finish_reason"], "tool_calls");
+    assert_eq!(
+        r["tool_calls"],
+        json!([{"id": "call_1", "name": "weather", "arguments": "{\"city\":\"Paris\"}"}])
+    );
+
+    let sse = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"weather\",\"arguments\":\"\"}}]}}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"a\\\":1}\"}}]}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
+    let mut d = api::Decoder::new("openai").unwrap();
+    let mut events = j(&d.feed(sse.as_bytes()).unwrap())
+        .as_array()
+        .unwrap()
+        .clone();
+    events.extend(j(&d.finish()).as_array().unwrap().clone());
+    assert_eq!(
+        events[0],
+        json!({"type": "tool_call_start", "index": 0, "id": "call_1", "name": "weather"})
+    );
+    assert_eq!(
+        events[1],
+        json!({"type": "tool_call_delta", "index": 0, "arguments": "{\"a\":1}"})
+    );
+    assert_eq!(events.last().unwrap()["type"], "done");
+}

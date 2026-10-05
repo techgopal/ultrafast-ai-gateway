@@ -200,13 +200,12 @@ describe("http errors", () => {
 });
 
 function eventOf(e: StreamEvent): unknown {
-  return e.type === "delta"
-    ? { type: "delta", text: e.text }
-    : {
-        type: "done",
-        finish_reason: e.finishReason,
-        usage: e.usage && { input_tokens: e.usage.inputTokens, output_tokens: e.usage.outputTokens },
-      };
+  if (e.type !== "done") return e;
+  return {
+    type: "done",
+    finish_reason: e.finishReason,
+    usage: e.usage && { input_tokens: e.usage.inputTokens, output_tokens: e.usage.outputTokens },
+  };
 }
 
 async function runStream(c: Case, chunks: string[]): Promise<{ events: unknown[]; error: unknown }> {

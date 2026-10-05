@@ -9,12 +9,14 @@
 //! The entries live behind [`ResponseCache`] so a shared store can replace
 //! the in-memory one.
 
+pub mod flight;
 mod key;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+pub use flight::{FlightGuard, Flights};
 pub use key::{CacheKey, KeyParts};
 use ultrafast_translate::embeddings::EmbeddingsResponse;
 use ultrafast_translate::types::{ChatResponse, Usage};
@@ -137,6 +139,10 @@ impl Cached {
                 r.id.len()
                     + r.model.len()
                     + r.content.len()
+                    + r.tool_calls
+                        .iter()
+                        .map(|c| c.id.len() + c.name.len() + c.arguments.len())
+                        .sum::<usize>()
                     + std::mem::size_of_val(&r.finish_reason)
                     + std::mem::size_of_val(&r.usage)
             }
@@ -304,6 +310,7 @@ mod tests {
                 id: "c1".into(),
                 model: "gpt-4o".into(),
                 content: content.into(),
+                tool_calls: Vec::new(),
                 finish_reason: None,
                 usage: None,
             }),
@@ -315,16 +322,15 @@ mod tests {
     fn key(n: u32) -> CacheKey {
         let request = ChatRequest {
             model: "r".into(),
-            messages: vec![Message {
-                role: Role::User,
-                content: n.to_string(),
-                name: None,
-            }],
+            messages: vec![Message::text(Role::User, n.to_string())],
             max_tokens: None,
             temperature: None,
             top_p: None,
             stop: None,
             stream: false,
+            tools: Vec::new(),
+            tool_choice: None,
+            parallel_tool_calls: None,
         };
         CacheKey::chat(
             &KeyParts {

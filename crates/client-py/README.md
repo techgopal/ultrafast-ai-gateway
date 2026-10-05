@@ -35,6 +35,48 @@ async for event in client.chat_stream("gpt-4o", messages):
 `openai_compatible(base_url, key)`. `Client(target, timeout=None, max_response_bytes=None)`;
 the timeout is in seconds (default 120).
 
+## Tools and images
+
+Messages are `(role, content)` tuples, `Message` objects, or OpenAI-shaped
+dicts (`content` a string or a list of `text` / `image_url` parts, an assistant's
+`tool_calls`, a tool's `tool_call_id`):
+
+```python
+messages = [{"role": "user", "content": [
+    {"type": "text", "text": "What is in this picture?"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+]}]
+tools = [{"name": "weather", "description": "Current weather", "parameters": {"type": "object"}}]
+reply = client.chat(
+    "gpt-4o",
+    messages,
+    tools=tools,
+    tool_choice="auto",           # "auto", "none", "required", or a tool's name
+    parallel_tool_calls=True,
+)
+for call in reply.tool_calls:     # ToolCall(id, name, arguments)  (arguments is JSON text)
+    ...
+```
+
+`tools` entries are flat `{name, description?, parameters?, strict?}` dicts (OpenAI's
+`{"type": "function", "function": {...}}` is accepted too); `strict` is sent to
+OpenAI and Azure only. Send results back by
+appending the assistant turn and one tool message per call, then calling again:
+
+```python
+messages.append({"role": "assistant", "content": reply.content, "tool_calls": reply.tool_calls})
+for call in reply.tool_calls:
+    messages.append({"role": "tool", "tool_call_id": call.id, "content": run_tool(call)})
+reply = client.chat("gpt-4o", messages, tools=tools)
+```
+
+`tool_calls` may hold `ToolCall` objects, flat `{id, name, arguments}` dicts or
+OpenAI-shaped dicts; `Message(role, content, tool_calls=..., tool_call_id=...)` works too.
+`chat_stream` yields `Delta`, `ToolCallStart(index, id, name)`,
+`ToolCallDelta(index, arguments)` and `Done`. Messages are checked by the same
+parser the gateway uses; a bad one raises `InvalidRequestError` before anything
+is sent. Direct provider targets accept the same arguments.
+
 ## Errors
 
 Every failure is an `ultrafast.Error` with `.kind`, `.status`, `.retryable` and

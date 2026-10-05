@@ -402,6 +402,25 @@ mod tests {
     }
 
     #[test]
+    fn playground_tools_and_calls_are_described_and_free_form() {
+        let spec = spec_json();
+        let schemas = &spec["components"]["schemas"];
+        for (schema, field) in [
+            ("PlaygroundChatRequest", "tools"),
+            ("PlaygroundMessage", "tool_calls"),
+        ] {
+            let f = &schemas[schema]["properties"][field];
+            assert!(
+                f["description"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("/v1/chat/completions")),
+                "{schema}.{field} has no description: {f}"
+            );
+            assert_eq!(f["items"]["additionalProperties"], true, "{schema}.{field}");
+        }
+    }
+
+    #[test]
     fn spec_lists_every_route() {
         let spec = spec_json();
         let documented: BTreeSet<(String, String)> = operations(&spec)

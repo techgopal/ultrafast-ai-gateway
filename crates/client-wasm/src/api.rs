@@ -9,13 +9,12 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use ultrafast_translate::classify::{classify_answer, parse_retry_after, Classified, ErrorKind};
 use ultrafast_translate::embeddings::{self, EmbeddingsRequest};
+use ultrafast_translate::ingress::openai::{parse_messages, parse_tool_choice, parse_tools};
 use ultrafast_translate::provider::{
     self, HttpRequest, ProviderKind, StreamDecoder, Target as WireTarget,
 };
 use ultrafast_translate::tags;
-use ultrafast_translate::types::{
-    ChatRequest, ChatResponse, FinishReason, Message, StreamEvent, Usage,
-};
+use ultrafast_translate::types::{ChatRequest, ChatResponse, FinishReason, StreamEvent, Usage};
 
 pub type Failure = String;
 
@@ -80,10 +79,131 @@ fn target_of(target_json: &str, model: &str) -> Result<(WireTarget, bool), Failu
     ))
 }
 
+/// A message as the host sends it: `content` is a string, a list of
+/// `{type:"text",text}` / `{type:"image",url}` parts, or null (an assistant
+/// message that only calls tools).
+#[derive(Deserialize)]
+struct MessageIn {
+    role: String,
+    #[serde(default)]
+    content: Option<ContentIn>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<ToolCallIn>,
+    #[serde(default)]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ContentIn {
+    Text(String),
+    Parts(Vec<PartIn>),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum PartIn {
+    Text { text: String },
+    Image { url: String },
+}
+
+#[derive(Deserialize)]
+struct ToolCallIn {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+#[derive(Deserialize)]
+struct ToolIn {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    parameters: Option<Value>,
+    #[serde(default)]
+    strict: Option<bool>,
+}
+
+/// The message in OpenAI's shape, so the one parser in `translate` checks it.
+fn message_value(m: MessageIn) -> Value {
+    let mut out = Map::new();
+    out.insert("role".into(), m.role.into());
+    match m.content {
+        None => {}
+        Some(ContentIn::Text(t)) => {
+            out.insert("content".into(), t.into());
+        }
+        Some(ContentIn::Parts(parts)) => {
+            let parts: Vec<Value> = parts
+                .into_iter()
+                .map(|p| match p {
+                    PartIn::Text { text } => json!({"type": "text", "text": text}),
+                    PartIn::Image { url } => {
+                        json!({"type": "image_url", "image_url": {"url": url}})
+                    }
+                })
+                .collect();
+            out.insert("content".into(), parts.into());
+        }
+    }
+    if let Some(n) = m.name {
+        out.insert("name".into(), n.into());
+    }
+    if !m.tool_calls.is_empty() {
+        let calls: Vec<Value> = m
+            .tool_calls
+            .into_iter()
+            .map(|c| {
+                json!({"id": c.id, "type": "function",
+                       "function": {"name": c.name, "arguments": c.arguments}})
+            })
+            .collect();
+        out.insert("tool_calls".into(), calls.into());
+    }
+    if let Some(id) = m.tool_call_id {
+        out.insert("tool_call_id".into(), id.into());
+    }
+    Value::Object(out)
+}
+
+fn tool_value(t: ToolIn) -> Value {
+    let mut f = Map::new();
+    f.insert("name".into(), t.name.into());
+    if let Some(d) = t.description {
+        f.insert("description".into(), d.into());
+    }
+    if let Some(p) = t.parameters {
+        f.insert("parameters".into(), p);
+    }
+    if let Some(s) = t.strict {
+        f.insert("strict".into(), s.into());
+    }
+    json!({"type": "function", "function": f})
+}
+
+/// `"auto"`, `"none"`, `"required"` or `{"name": "<tool>"}`.
+fn tool_choice_value(v: Value) -> Value {
+    match v {
+        Value::Object(o) if o.len() == 1 && o.get("name").is_some_and(Value::is_string) => {
+            json!({"type": "function", "function": {"name": o["name"]}})
+        }
+        other => other,
+    }
+}
+
 #[derive(Deserialize)]
 struct ChatIn {
     model: String,
-    messages: Vec<Message>,
+    messages: Vec<MessageIn>,
+    #[serde(default)]
+    tools: Vec<ToolIn>,
+    #[serde(default)]
+    tool_choice: Option<Value>,
+    #[serde(default)]
+    parallel_tool_calls: Option<bool>,
     #[serde(default)]
     max_tokens: Option<u32>,
     #[serde(default)]
@@ -142,12 +262,22 @@ pub fn build_request(target_json: &str, request_json: &str) -> Result<String, Fa
     let tag_header = tag_header_for(gateway, &r.tags)?;
     let req = ChatRequest {
         model: r.model,
-        messages: r.messages,
+        messages: parse_messages(r.messages.into_iter().map(message_value).collect())
+            .map_err(|e| classified(e, None))?,
         max_tokens: r.max_tokens,
         temperature: r.temperature,
         top_p: r.top_p,
         stop: r.stop,
         stream: r.stream,
+        tools: parse_tools(r.tools.into_iter().map(tool_value).collect())
+            .map_err(|e| classified(e, None))?,
+        tool_choice: match r.tool_choice {
+            None | Some(Value::Null) => None,
+            Some(v) => {
+                Some(parse_tool_choice(tool_choice_value(v)).map_err(|e| classified(e, None))?)
+            }
+        },
+        parallel_tool_calls: r.parallel_tool_calls,
     };
     let http = provider::build_request(&target, &req).map_err(|e| classified(e, None))?;
     http_json(http, tag_header, r.stream)
@@ -183,6 +313,9 @@ fn response_json(r: &ChatResponse) -> Value {
         "id": r.id,
         "model": r.model,
         "content": r.content,
+        "tool_calls": r.tool_calls.iter().map(|c| json!({
+            "id": c.id, "name": c.name, "arguments": c.arguments,
+        })).collect::<Vec<_>>(),
         "finish_reason": finish_json(r.finish_reason),
         "usage": usage_json(r.usage),
     })
@@ -277,6 +410,12 @@ pub fn tags_header(tags_json: &str) -> Result<Option<String>, Failure> {
 fn event_json(e: &StreamEvent) -> Value {
     match e {
         StreamEvent::Delta { text } => json!({"type": "delta", "text": text}),
+        StreamEvent::ToolCallStart { index, id, name } => {
+            json!({"type": "tool_call_start", "index": index, "id": id, "name": name})
+        }
+        StreamEvent::ToolCallDelta { index, arguments } => {
+            json!({"type": "tool_call_delta", "index": index, "arguments": arguments})
+        }
         StreamEvent::Done {
             finish_reason,
             usage,

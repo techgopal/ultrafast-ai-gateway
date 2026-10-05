@@ -607,3 +607,442 @@ describe("on a narrow screen", () => {
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
   });
 });
+
+const WEATHER = JSON.stringify([
+  {
+    type: "function",
+    function: { name: "weather", parameters: { type: "object", properties: { city: { type: "string" } } } },
+  },
+]);
+
+const toolEvent = (calls: object[], finish: string | null = null) =>
+  `data: ${JSON.stringify({ model: "gpt-4o-mini", choices: [{ index: 0, delta: { tool_calls: calls }, finish_reason: finish }] })}\n\n`;
+
+/** An answer that calls `weather` twice, the pieces of the two interleaved. */
+const toolCallStream: readonly string[] = [
+  toolEvent([{ index: 0, id: "call_a", type: "function", function: { name: "weather", arguments: "" } }]),
+  toolEvent([{ index: 0, function: { arguments: '{"city":' } }]),
+  toolEvent([{ index: 1, id: "call_b", type: "function", function: { name: "weather", arguments: '{"city"' } }]),
+  toolEvent([{ index: 0, function: { arguments: '"Oslo"}' } }]),
+  toolEvent([{ index: 1, function: { arguments: ':"Rome"}' } }], "tool_calls"),
+  'data: {"model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\n',
+  "data: [DONE]\n\n",
+];
+
+async function openTools(): Promise<void> {
+  await userEvent.click(await screen.findByRole("button", { name: "Tools" }));
+}
+
+async function defineTools(text: string): Promise<void> {
+  await openTools();
+  await userEvent.click(screen.getByRole("textbox", { name: "Tools" }));
+  await userEvent.paste(text);
+}
+
+const png = (name = "cat.png") => new File(["x"], name, { type: "image/png" });
+
+describe("images", () => {
+  test("an attached image is sent as content parts, with its file name as alt text", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    const input = await screen.findByLabelText("Attach image");
+    expect(input).toHaveAttribute("accept", "image/png,image/jpeg,image/gif,image/webp");
+    await userEvent.upload(input, png());
+    expect(await screen.findByRole("img", { name: "cat.png" })).toBeInTheDocument();
+    await say("what is this");
+    await screen.findByText("Hello");
+    expect(sent).toEqual([
+      {
+        model: "openai/gpt-4o-mini",
+        stream: true,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "what is this" },
+              { type: "image_url", image_url: { url: "data:image/png;base64,eA==" } },
+            ],
+          },
+        ],
+      },
+    ]);
+    // The image stays in the thread, and the composer is empty again.
+    expect(within(screen.getByRole("list", { name: "Conversation" })).getByRole("img", { name: "cat.png" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove cat.png" })).toBeNull();
+  });
+
+  test("an image can be removed before sending", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await userEvent.upload(await screen.findByLabelText("Attach image"), png());
+    await userEvent.click(await screen.findByRole("button", { name: "Remove cat.png" }));
+    expect(screen.queryByRole("img", { name: "cat.png" })).toBeNull();
+    await say("hi");
+    await screen.findByText("Hello");
+    expect(sent[0]).toMatchObject({ messages: [{ role: "user", content: "hi" }] });
+  });
+
+  test("an image over 5 MB is not attached and is said so", async () => {
+    await page();
+    await modelPicker();
+    const big = new File([new Uint8Array(5 * 1024 * 1024 + 1)], "big.png", { type: "image/png" });
+    await userEvent.upload(screen.getByLabelText("Attach image"), big);
+    expect(await screen.findByText("Images over 5 MB are not sent.")).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "big.png" })).toBeNull();
+  });
+
+  test("an image of exactly 5 MB is attached", async () => {
+    await page();
+    await modelPicker();
+    const edge = new File([new Uint8Array(5 * 1024 * 1024)], "edge.png", { type: "image/png" });
+    await userEvent.upload(screen.getByLabelText("Attach image"), edge);
+    expect(await screen.findByRole("img", { name: "edge.png" })).toBeInTheDocument();
+  });
+});
+
+describe("tools", () => {
+  test("the tools and the choice are sent", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await defineTools(WEATHER);
+    expect(await optionsOf(screen.getByRole("combobox", { name: "Tool choice" }))).toEqual([
+      "auto",
+      "none",
+      "required",
+      "weather",
+    ]);
+    await choose(screen.getByRole("combobox", { name: "Tool choice" }), "weather");
+    await say("hi");
+    await screen.findByText("Hello");
+    expect(sent[0]).toMatchObject({
+      tools: JSON.parse(WEATHER) as unknown,
+      tool_choice: { type: "function", function: { name: "weather" } },
+    });
+  });
+
+  test("without tools the choice offers auto and none only, and none is sent", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await openTools();
+    expect(await optionsOf(screen.getByRole("combobox", { name: "Tool choice" }))).toEqual(["auto", "none"]);
+    await choose(screen.getByRole("combobox", { name: "Tool choice" }), "none");
+    await say("hi");
+    await screen.findByText("Hello");
+    expect(sent[0]).not.toHaveProperty("tools");
+    expect(sent[0]).not.toHaveProperty("tool_choice");
+  });
+
+  test("a choice that is no longer offered is not sent", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await defineTools(WEATHER);
+    await choose(screen.getByRole("combobox", { name: "Tool choice" }), "required");
+    await userEvent.clear(screen.getByRole("textbox", { name: "Tools" }));
+    await say("hi");
+    await screen.findByText("Hello");
+    expect(sent[0]).not.toHaveProperty("tool_choice");
+  });
+
+  test("tools that are not valid JSON functions block Send, say why, and keep the message", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await defineTools('[{"type":"function"}]');
+    await say("hi");
+    const field = screen.getByRole("textbox", { name: "Tools" });
+    expect(field).toHaveAccessibleDescription(/Tools must be a JSON array of functions, each with a type of function and a name\./);
+    expect(field).toBeInvalid();
+    await settle();
+    expect(sent).toEqual([]);
+    expect(message()).toHaveValue("hi");
+  });
+
+  test("streamed tool calls are shown whole, and the results go back as tool messages", async () => {
+    let turn = 0;
+    const sent = chats(() => {
+      turn += 1;
+      return eventStream(turn === 1 ? toolCallStream : fixtures.playgroundChunks);
+    });
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await defineTools(WEATHER);
+    await say("weather in Oslo and Rome?");
+    const calls = await screen.findAllByRole("group", { name: /^Tool call weather/ });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.querySelector("pre")?.textContent).toBe('{\n  "city": "Oslo"\n}');
+    expect(calls[1]?.querySelector("pre")?.textContent).toBe('{\n  "city": "Rome"\n}');
+    // The next message waits for the results.
+    expect(sendButton()).toBeDisabled();
+
+    // Nothing is sent without a result for every call.
+    await userEvent.click(within(calls[0] as HTMLElement).getByLabelText(/^Tool result for weather/));
+    await userEvent.paste("3 degrees");
+    await userEvent.click(screen.getByRole("button", { name: "Send results" }));
+    expect(await screen.findByText("Give a result for every call.")).toBeInTheDocument();
+    expect(sent).toHaveLength(1);
+
+    await userEvent.click(within(calls[1] as HTMLElement).getByLabelText(/^Tool result for weather/));
+    await userEvent.paste("20 degrees");
+    await userEvent.click(screen.getByRole("button", { name: "Send results" }));
+    expect(await screen.findByText("Hello")).toBeInTheDocument();
+    expect(sent).toHaveLength(2);
+    const second = sent[1] as { messages: unknown[] };
+    expect(second.messages).toEqual([
+      { role: "user", content: "weather in Oslo and Rome?" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          { id: "call_a", type: "function", function: { name: "weather", arguments: '{"city":"Oslo"}' } },
+          { id: "call_b", type: "function", function: { name: "weather", arguments: '{"city":"Rome"}' } },
+        ],
+      },
+      { role: "tool", content: "3 degrees", tool_call_id: "call_a" },
+      { role: "tool", content: "20 degrees", tool_call_id: "call_b" },
+    ]);
+    // The results are answered: no more fields for them, and Send works again.
+    expect(screen.queryByRole("button", { name: "Send results" })).toBeNull();
+    await userEvent.click(message());
+    await userEvent.paste("thanks");
+    expect(sendButton()).toBeEnabled();
+  });
+
+  test("a call can be copied", async () => {
+    const written: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: (value: string) => {
+          written.push(value);
+          return Promise.resolve();
+        },
+      },
+    });
+    try {
+      chats(() => eventStream(toolCallStream));
+      await page();
+      await choose(await modelPicker(), "openai/gpt-4o-mini");
+      await say("go");
+      const calls = await screen.findAllByRole("group", { name: /^Tool call weather/ });
+      await userEvent.click(within(calls[0] as HTMLElement).getByRole("button", { name: "Copy arguments" }));
+      await waitFor(() => {
+        expect(toasts()).toEqual(["Copied."]);
+      });
+      expect(written).toEqual(['{\n  "city": "Oslo"\n}']);
+    } finally {
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
+  test("the thread at 390 px with tool calls fits the screen", async () => {
+    chats(() => eventStream(toolCallStream));
+    await page({ width: 390 });
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await say("go");
+    await screen.findAllByRole("group", { name: /^Tool call weather/ });
+    expectOneMain();
+    expectOneH1("Playground");
+    expectLabelsNameControls(document.body);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
+  });
+
+  test("Copy as curl has the tools and the image parts, the image data cut short", async () => {
+    let command = "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: (value: string) => {
+          command = value;
+          return Promise.resolve();
+        },
+      },
+    });
+    try {
+      await page();
+      await choose(await modelPicker(), "openai/gpt-4o-mini");
+      await defineTools(WEATHER);
+      await userEvent.upload(screen.getByLabelText("Attach image"), png());
+      await screen.findByRole("img", { name: "cat.png" });
+      await userEvent.click(message());
+      await userEvent.paste("look");
+      await userEvent.click(screen.getByRole("button", { name: "Copy as curl" }));
+      await waitFor(() => {
+        expect(command).not.toBe("");
+      });
+      expect(command).toContain('"tools":[{"type":"function"');
+      expect(command).toContain('"image_url":{"url":"data:image/png;base64,…"}');
+      expect(command).not.toContain("eA==");
+      expect(command).toContain("# image data omitted");
+    } finally {
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+});
+
+describe("fix round 1", () => {
+  test("invalid tools with the section collapsed open it, show the error and take the focus", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await defineTools("nope");
+    const toggle = screen.getByRole("button", { name: "Tools" });
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await say("hi");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("textbox", { name: "Tools" })).toHaveFocus();
+    expect(screen.getByText(/Tools must be a JSON array/)).toBeVisible();
+    expect(sent).toEqual([]);
+  });
+
+  test("the collapsed Tools button says how many tools are defined", async () => {
+    await page();
+    await modelPicker();
+    await defineTools(WEATHER);
+    expect(screen.getByRole("button", { name: "Tools (1)" })).toBeInTheDocument();
+  });
+
+  const big = (name: string) => new File([new Uint8Array(5 * 1024 * 1024)], name, { type: "image/png" });
+
+  test("images that are too large together are refused, each file with its own error, and Remove clears them", async () => {
+    await page();
+    await modelPicker();
+    await userEvent.upload(screen.getByLabelText("Attach image"), [big("a.png"), big("b.png"), big("c.png")]);
+    expect(await screen.findByRole("img", { name: "a.png" })).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "b.png" })).toBeNull();
+    const errors = screen.getAllByText("These images are too large to send together. Remove one.");
+    expect(errors).toHaveLength(2);
+    await userEvent.click(screen.getByRole("button", { name: "Remove a.png" }));
+    expect(screen.queryByText(/too large to send together/)).toBeNull();
+  });
+
+  test("every failing file is told, not only the last", async () => {
+    await page();
+    await modelPicker();
+    const gif = new File(["x"], "doc.pdf", { type: "application/pdf" });
+    const huge = new File([new Uint8Array(5 * 1024 * 1024 + 1)], "huge.png", { type: "image/png" });
+    await userEvent.upload(screen.getByLabelText("Attach image"), [gif, huge], { applyAccept: false });
+    expect(await screen.findByText("Only PNG, JPEG, GIF and WebP images are sent.")).toBeInTheDocument();
+    expect(screen.getByText("Images over 5 MB are not sent.")).toBeInTheDocument();
+  });
+
+  test("images of the thread count: the next one is refused and New conversation is suggested", async () => {
+    chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await userEvent.upload(screen.getByLabelText("Attach image"), big("a.png"));
+    await screen.findByRole("img", { name: "a.png" });
+    await say("one");
+    await screen.findByText("Hello");
+    await userEvent.upload(screen.getByLabelText("Attach image"), big("b.png"));
+    expect(await screen.findByText("These images are too large to send together. Remove one.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove b.png" })).toBeNull();
+  });
+
+  test("Send checks the budget again, with the text written after the image was attached", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await userEvent.upload(screen.getByLabelText("Attach image"), big("a.png"));
+    await screen.findByRole("img", { name: "a.png" });
+    await userEvent.click(message());
+    await userEvent.paste("x".repeat(3 * 1024 * 1024));
+    await userEvent.click(sendButton());
+    expect(await screen.findByText("These images are too large to send together. Remove one.")).toBeInTheDocument();
+    expect(sent).toEqual([]);
+    expect(screen.getByRole("img", { name: "a.png" })).toBeInTheDocument();
+  });
+
+  test("when the thread alone is over the budget, the image error says to start a new conversation", async () => {
+    chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await userEvent.click(message());
+    await userEvent.paste("x".repeat(9 * 1024 * 1024 + 1024));
+    await userEvent.click(sendButton());
+    await screen.findByText("Hello");
+    await userEvent.upload(screen.getByLabelText("Attach image"), png());
+    expect(
+      await screen.findByText("These images are too large to send together. Remove one, or start a New conversation."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove cat.png" })).toBeNull();
+  });
+
+  test("a successful send clears the image errors", async () => {
+    chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await userEvent.upload(screen.getByLabelText("Attach image"), png());
+    await userEvent.upload(screen.getByLabelText("Attach image"), big("big.png"), { applyAccept: false });
+    await userEvent.upload(
+      screen.getByLabelText("Attach image"),
+      new File([new Uint8Array(5 * 1024 * 1024 + 1)], "huge.png", { type: "image/png" }),
+    );
+    expect(await screen.findByText("Images over 5 MB are not sent.")).toBeInTheDocument();
+    await say("hi");
+    await screen.findByText("Hello");
+    expect(screen.queryByText("Images over 5 MB are not sent.")).toBeNull();
+  });
+
+  test("a stream that breaks off in a tool call keeps no calls and Send stays usable", async () => {
+    const feed = handFed();
+    chats(feed.response);
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await defineTools(WEATHER);
+    await say("go");
+    feed.push(toolEvent([{ index: 0, id: "call_a", type: "function", function: { name: "weather", arguments: '{"ci' } }]));
+    await settle();
+    feed.close();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    });
+    expect(screen.queryByRole("group", { name: /^Tool call/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send results" })).toBeNull();
+    await userEvent.click(message());
+    await userEvent.paste("again");
+    expect(sendButton()).toBeEnabled();
+  });
+
+  test("the focus goes to the first result when tool calls arrive, and to the next chip on Remove", async () => {
+    chats(() => eventStream(toolCallStream));
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await defineTools(WEATHER);
+    await say("go");
+    const groups = await screen.findAllByRole("group", { name: /^Tool call weather/ });
+    await waitFor(() => {
+      expect(within(groups[0] as HTMLElement).getByLabelText(/^Tool result for weather/)).toHaveFocus();
+    });
+  });
+
+  test("Remove moves the focus to the next chip, or to the attach control", async () => {
+    await page();
+    await modelPicker();
+    await userEvent.upload(screen.getByLabelText("Attach image"), [png("a.png"), png("b.png")]);
+    await screen.findByRole("img", { name: "b.png" });
+    await userEvent.click(screen.getByRole("button", { name: "Remove a.png" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Remove b.png" })).toHaveFocus();
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Remove b.png" }));
+    await waitFor(() => {
+      expect(screen.getByLabelText("Attach image")).toHaveFocus();
+    });
+  });
+
+  test("calls of the same function are told apart by their number", async () => {
+    chats(() => eventStream(toolCallStream));
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await say("go");
+    expect(await screen.findByRole("group", { name: "Tool call weather (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Tool call weather (2)" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Tool result for weather (2)")).toBeInTheDocument();
+  });
+});

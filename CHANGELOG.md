@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.2] - 2026-10-05
+
+Tool calling and image input on both chat endpoints, single-flight for the
+response cache, and the same in the playground and the clients.
+
+### Added
+- **Tools** on `/v1/chat/completions` and `/v1/messages`, for every provider
+  kind (OpenAI, Azure, Anthropic, Gemini, OpenAI-compatible), streaming and
+  not. Tool arguments pass through unchanged between OpenAI-format callers
+  and OpenAI-format providers; otherwise they are converted from or to the
+  provider's JSON object. With `tools` empty or absent, `tool_choice` `auto` /
+  `none` and `parallel_tool_calls` are ignored; `required` or a named tool is a
+  400, and so is a named tool that is not in `tools`. `function.strict` is sent
+  to OpenAI and Azure (Anthropic and Gemini ignore it). A `tool` message may
+  carry `name`. Gemini tool call ids are `call_<8 hex>_<n>` (the hex from the
+  response id, so they differ from answer to answer), tool schemas are sent as
+  `parametersJsonSchema` (full JSON Schema), and earlier tool calls carry
+  Google's placeholder thought signature `skip_thought_signature_validator`
+  (Gemini 3 refuses history without one).
+- Anthropic-format streams never interleave content blocks: the first tool
+  call streams live, later calls and text after a call are sent whole after it.
+- OpenAI-format answers with tool calls that end as `stop` are reported as
+  `tool_calls`.
+- **Images** in user messages: PNG, JPEG, GIF and WebP as `http(s)` or `data:`
+  URLs (Anthropic `image` blocks with a `base64` or `url` source). The gateway
+  never fetches an image URL; Gemini takes `data:` URLs only (`https` is a 400).
+  Images count toward the 10 MiB request body limit (413 above it).
+- **Single-flight** in the response cache: concurrent identical cacheable calls
+  reach the provider once. Waiters hold their concurrency slot while waiting; if
+  the first call fails, waiters call the provider themselves, concurrently.
+  Metric `uf_cache_flight_waits_total`.
+- **Playground**: images (5 MB each, 9 MiB per request including the history),
+  tools as JSON, a tool choice, and tool calls and results in the thread.
+- **Clients**: tools and images in the Rust, Python (flat tool dicts, `ToolCall`
+  round trip) and TypeScript clients, with tool-call events in streams.
+
+### Changed
+- README: "Known limits" and the role rule for spend are accurate now: members
+  see their own usage and budgets, team leads their teams', admins all; only
+  admins set limits and budgets.
+
+### Known limits
+- No Responses API, image or audio output, or `response_format` / structured
+  outputs yet (phase 2).
+- Gemini thought signatures are not carried; the documented placeholder is
+  sent instead.
+- A tool result's `is_error` flag is not carried.
+- Single-flight is per process; clearing the cache on configuration changes
+  stays.
+- The Python wheels, the npm package and the crates are still not published.
+
 ## [2.0.0-beta.1] - 2026-10-04
 
 The first release of Ultrafast v2, a rewrite of the gateway. Phase 1 is

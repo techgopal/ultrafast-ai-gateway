@@ -35,6 +35,31 @@ const { vectors } = await client.embed({ model: "text-embedding-3-small", input:
 | `azure({ endpoint, key, apiVersion? })` | The request's `model` is the deployment name. |
 | `openaiCompatible({ baseUrl, key? })` | Groq, Mistral, OpenRouter, Ollama; `baseUrl` includes `/v1`. The key may be empty or left out (keyless Ollama): no Authorization header is sent. |
 
+## Tools and images
+
+```ts
+const reply = await client.chat({
+  model: "gpt-4o",
+  messages: [
+    { role: "user", content: [
+      { type: "text", text: "What is in this picture?" },
+      { type: "image", url: "data:image/png;base64,..." }, // or an http(s) URL
+    ] },
+  ],
+  tools: [{ name: "weather", description: "Current weather", parameters: { type: "object" } }], // `strict?: boolean` goes to OpenAI and Azure only
+  toolChoice: "auto", // "auto" | "none" | "required" | { name: "weather" }
+  parallelToolCalls: true,
+});
+for (const call of reply.toolCalls) { /* call.id, call.name, call.arguments (JSON text) */ }
+// the next turn: { role: "assistant", content: null, toolCalls: reply.toolCalls },
+//                { role: "tool", toolCallId: reply.toolCalls[0].id, content: "..." }
+```
+
+`chatStream` yields `delta`, `tool_call_start` (`index`, `id`, `name`),
+`tool_call_delta` (`index`, `arguments`) and `done`. A `tool` message without
+`toolCallId`, or any other malformed message, throws `InvalidRequestError`
+before a request is sent. A direct provider target takes the same request.
+
 ## Options
 
 `new Client(target, { fetch?, timeoutMs?, maxResponseBytes? })`

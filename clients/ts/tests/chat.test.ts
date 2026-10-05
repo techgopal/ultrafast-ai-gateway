@@ -7,7 +7,7 @@ describe("chat", () => {
     const { fetch, seen } = fakeFetch(json(200, OPENAI_CHAT));
     const c = new Client(gateway({ baseUrl: "http://gw.test:3000", key: KEY }), { fetch });
     const r = await c.chat({ model: "gpt-4o", messages: MSGS, maxTokens: 10, temperature: 0.5, topP: 0.5, stop: "x", tags: { team: "a" } });
-    expect(r).toEqual({ id: "c1", model: "gpt-4o", content: "hello", finishReason: "stop", usage: { inputTokens: 3, outputTokens: 2 } });
+    expect(r).toEqual({ id: "c1", model: "gpt-4o", content: "hello", toolCalls: [], finishReason: "stop", usage: { inputTokens: 3, outputTokens: 2 } });
     expect(seen).toHaveLength(1);
     const s = seen[0]!;
     expect(s.url).toBe("http://gw.test:3000/v1/chat/completions");
@@ -97,7 +97,7 @@ describe("chat", () => {
   it("refuses a bad role or non-text content before sending", async () => {
     const { fetch, seen } = fakeFetch(json(200, OPENAI_CHAT));
     const c = new Client(openai({ key: KEY }), { fetch });
-    // @ts-expect-error deliberately wrong
+    // a tool message without toolCallId (the type allows it; the check refuses it)
     await expect(c.chat({ model: "m", messages: [{ role: "tool", content: "x" }] })).rejects.toMatchObject({ kind: "invalid_request" });
     // @ts-expect-error deliberately wrong
     await expect(c.chat({ model: "m", messages: [{ role: "user", content: [1] }] })).rejects.toMatchObject({ kind: "invalid_request" });

@@ -184,3 +184,65 @@ test("the limits of the user apply to the playground: the second call of a user 
   await expect(page.getByRole("alert")).toContainText(/Try again in \d+ (?:seconds?|minutes?)\./);
   expect(mock.calls).toHaveLength(1);
 });
+
+test("a tool call is shown, its result is sent back, and the model answers with text", async ({
+  page,
+  admin,
+  apiAs,
+}) => {
+  await setup(await apiAs(admin));
+  await signInFromStart(page, admin);
+  await goTo(page, "Playground");
+  await picker(page).click();
+  await page.getByRole("option", { name: "alpha/e2e-model" }).click();
+
+  await page.getByRole("button", { name: "Tools" }).click();
+  await page.getByRole("textbox", { name: "Tools" }).fill(
+    JSON.stringify([
+      {
+        type: "function",
+        function: {
+          name: "weather",
+          description: "The weather in a city.",
+          parameters: { type: "object", properties: { city: { type: "string" } } },
+        },
+      },
+    ]),
+  );
+  await box(page).fill("What is the weather in Oslo?");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  // The call arrives in pieces and is shown whole, with its arguments indented.
+  const call = page.getByRole("group", { name: "Tool call weather" });
+  await expect(call).toBeVisible();
+  await expect(call.locator("pre")).toHaveText('{\n  "city": "Oslo"\n}');
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+  expect(mock.roles).toEqual([["user"]]);
+
+  await call.getByLabel("Tool result").fill("3 degrees and clear");
+  await page.getByRole("button", { name: "Send results" }).click();
+  await expect(page.getByRole("list", { name: "Conversation" })).toContainText(mock.answer);
+  await expect(page.getByRole("button", { name: "Send results" })).toHaveCount(0);
+  // The second request carried the call and its result.
+  expect(mock.roles).toEqual([["user"], ["user", "assistant", "tool"]]);
+});
+
+test("an image is attached, sent as a part and shown in the thread", async ({ page, admin, apiAs }) => {
+  await setup(await apiAs(admin));
+  await signInFromStart(page, admin);
+  await goTo(page, "Playground");
+  await picker(page).click();
+  await page.getByRole("option", { name: "alpha/e2e-model" }).click();
+  // A one pixel PNG.
+  const pixel = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  await page.getByLabel("Attach image").setInputFiles({ name: "pixel.png", mimeType: "image/png", buffer: pixel });
+  await expect(page.getByRole("img", { name: "pixel.png" })).toBeVisible();
+  await box(page).fill("What is this?");
+  await page.getByRole("button", { name: "Send" }).click();
+  const thread = page.getByRole("list", { name: "Conversation" });
+  await expect(thread).toContainText(mock.answer);
+  await expect(thread.getByRole("img", { name: "pixel.png" })).toBeVisible();
+});

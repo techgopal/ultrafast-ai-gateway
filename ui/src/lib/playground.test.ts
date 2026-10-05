@@ -1,12 +1,14 @@
 import { describe, expect, test } from "vitest";
 import {
   checkParams,
+  checkTools,
   chunkOf,
   costMicros,
   curlOf,
   requestBody,
   retryText,
   SseReader,
+  ToolCallAssembler,
   type Params,
 } from "@/lib/playground";
 
@@ -180,5 +182,144 @@ describe("retryText", () => {
     [3600, " Try again in 60 minutes."],
   ])("%j", (seconds, text) => {
     expect(retryText(seconds)).toBe(text);
+  });
+});
+
+const delta = (calls: object[]) =>
+  chunkOf(JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: calls } }] }));
+
+describe("tool calls in a stream", () => {
+  test("a chunk with tool call deltas is read, the text stays absent", () => {
+    expect(delta([{ index: 0, id: "c1", type: "function", function: { name: "f", arguments: "" } }])).toEqual({
+      toolCalls: [{ index: 0, id: "c1", name: "f", arguments: "" }],
+    });
+  });
+
+  test("two calls whose pieces are interleaved are put together by index", () => {
+    const assembler = new ToolCallAssembler();
+    const feed = (calls: object[]) => {
+      assembler.add(delta(calls).toolCalls ?? []);
+    };
+    feed([{ index: 0, id: "call_a", type: "function", function: { name: "weather", arguments: "" } }]);
+    feed([{ index: 0, function: { arguments: '{"city":' } }]);
+    feed([{ index: 1, id: "call_b", type: "function", function: { name: "time", arguments: '{"tz"' } }]);
+    feed([{ index: 0, function: { arguments: '"Oslo"}' } }]);
+    feed([{ index: 1, function: { arguments: ':"CET"}' } }]);
+    expect(assembler.calls()).toEqual([
+      { id: "call_a", type: "function", function: { name: "weather", arguments: '{"city":"Oslo"}' } },
+      { id: "call_b", type: "function", function: { name: "time", arguments: '{"tz":"CET"}' } },
+    ]);
+  });
+
+  test("two calls whose pieces come in one chunk are both kept", () => {
+    const assembler = new ToolCallAssembler();
+    assembler.add(
+      delta([
+        { index: 0, id: "a", type: "function", function: { name: "f", arguments: "{" } },
+        { index: 1, id: "b", type: "function", function: { name: "g", arguments: "[" } },
+      ]).toolCalls ?? [],
+    );
+    assembler.add(delta([{ index: 0, function: { arguments: "}" } }, { index: 1, function: { arguments: "]" } }]).toolCalls ?? []);
+    expect(assembler.calls().map((call) => [call.id, call.function.arguments])).toEqual([
+      ["a", "{}"],
+      ["b", "[]"],
+    ]);
+  });
+
+  test("no deltas, no calls; a call that never got an id is not made up", () => {
+    const assembler = new ToolCallAssembler();
+    expect(assembler.calls()).toEqual([]);
+    assembler.add([{ index: 0, arguments: "{}" }]);
+    expect(assembler.calls()).toEqual([]);
+  });
+});
+
+describe("checkTools", () => {
+  const tool = { type: "function", function: { name: "weather", parameters: { type: "object" } } };
+
+  test("nothing typed is no tools", () => {
+    expect(checkTools("  ")).toEqual({ tools: undefined, names: [], error: undefined });
+    expect(checkTools("[]")).toEqual({ tools: undefined, names: [], error: undefined });
+  });
+
+  test("an array of functions is read, with the names", () => {
+    const checked = checkTools(JSON.stringify([tool, { ...tool, function: { name: "time" } }]));
+    expect(checked.error).toBeUndefined();
+    expect(checked.names).toEqual(["weather", "time"]);
+    expect(checked.tools).toHaveLength(2);
+  });
+
+  test.each([
+    ["not json", "{"],
+    ["an object", '{"type":"function"}'],
+    ["a number in the array", "[1]"],
+    ["no function", '[{"type":"function"}]'],
+    ["another type", '[{"type":"retrieval","function":{"name":"a"}}]'],
+    ["no name", '[{"type":"function","function":{}}]'],
+    ["an empty name", '[{"type":"function","function":{"name":""}}]'],
+  ])("%s is refused", (_why, text) => {
+    const checked = checkTools(text);
+    expect(checked.error).toBe("Tools must be a JSON array of functions, each with a type of function and a name.");
+    expect(checked.tools).toBeUndefined();
+  });
+});
+
+describe("the request with tools and images", () => {
+  test("an image is sent as content parts, the text first", () => {
+    const body = requestBody(
+      "m",
+      "",
+      [{ role: "user", content: "what is this", images: [{ name: "a.png", url: "data:image/png;base64,AAAA" }] }],
+      {},
+    );
+    expect(body.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "what is this" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+        ],
+      },
+    ]);
+  });
+
+  test("tool calls and results go as the OpenAI shape, null content with calls", () => {
+    const call = { id: "c1", type: "function" as const, function: { name: "f", arguments: "{}" } };
+    const body = requestBody(
+      "m",
+      "",
+      [
+        { role: "user", content: "go" },
+        { role: "assistant", content: null, tool_calls: [call] },
+        { role: "tool", content: "42", tool_call_id: "c1" },
+      ],
+      { tool_choice: "required" },
+    );
+    expect(body.tool_choice).toBe("required");
+    expect(body.messages).toEqual([
+      { role: "user", content: "go" },
+      { role: "assistant", content: null, tool_calls: [call] },
+      { role: "tool", content: "42", tool_call_id: "c1" },
+    ]);
+  });
+
+  test("curl abbreviates the image data and says so", () => {
+    const text = curlOf("https://gw", {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAAAAAAA" } }],
+        },
+      ],
+      tools: [{ type: "function", function: { name: "f" } }],
+    });
+    expect(text).toContain("data:image/png;base64,…");
+    expect(text).not.toContain("AAAAAAAA");
+    expect(text).toContain('"tools":[{"type":"function","function":{"name":"f"}}]');
+    expect(text).toContain("# image data omitted");
+  });
+
+  test("without an image there is no note", () => {
+    expect(curlOf("https://gw", { messages: [{ role: "user", content: "x" }] })).not.toContain("omitted");
   });
 });

@@ -4,5 +4,6 @@
       "content": { "role": "model", "parts": [{ "functionCall": { "name": "f", "args": {} } }] },
       "finishReason": "STOP"
     }
-  ]
+  ],
+  "responseId": "resp-1"
 }

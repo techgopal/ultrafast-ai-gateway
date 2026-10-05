@@ -4,7 +4,10 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::error::TranslateError;
-use crate::types::{ChatRequest, ChatResponse, Message, Role, StreamEvent, Usage};
+use crate::types::{
+    image_source, ChatRequest, ChatResponse, Message, Part, Role, StreamEvent, Tool, ToolCall,
+    ToolChoice, Usage,
+};
 
 #[derive(Deserialize)]
 struct WireRequest {
@@ -22,6 +25,12 @@ struct WireRequest {
     stop: Option<StopField>,
     #[serde(default)]
     stream: bool,
+    #[serde(default)]
+    tools: Option<Vec<Value>>,
+    #[serde(default)]
+    tool_choice: Option<Value>,
+    #[serde(default)]
+    parallel_tool_calls: Option<bool>,
     /// Every field that is not named above.
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -66,6 +75,10 @@ struct WireMessage {
     content: Option<WireContent>,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    tool_call_id: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<Value>>,
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
@@ -77,21 +90,244 @@ enum WireContent {
     Parts(Vec<Value>),
 }
 
-/// The text of a content part. Only text parts are supported.
-fn part_text(part: &Value) -> Result<&str, TranslateError> {
+/// One content part. Images are only allowed where `allow_images` is set.
+fn parse_part(part: &Value, allow_images: bool) -> Result<Part, TranslateError> {
     let kind = part["type"].as_str();
-    if kind != Some("text") {
-        return Err(TranslateError::Unsupported(format!(
+    match kind {
+        Some("text") => {
+            if let Some(fields) = part.as_object() {
+                reject_unknown(fields, &["type", "text"])?;
+            }
+            part["text"]
+                .as_str()
+                .map(|t| Part::Text(t.to_string()))
+                .ok_or_else(|| {
+                    TranslateError::InvalidRequest("content part 'text' must be a string".into())
+                })
+        }
+        Some("image_url") => {
+            if !allow_images {
+                return Err(TranslateError::InvalidRequest(
+                    "images are only allowed in user messages".into(),
+                ));
+            }
+            if let Some(fields) = part.as_object() {
+                reject_unknown(fields, &["type", "image_url"])?;
+            }
+            let image = &part["image_url"];
+            if let Some(fields) = image.as_object() {
+                reject_unknown(fields, &["url", "detail"])?;
+            }
+            let url = image["url"].as_str().ok_or_else(|| {
+                TranslateError::InvalidRequest("image_url 'url' must be a string".into())
+            })?;
+            Ok(Part::Image(image_source(url)?))
+        }
+        other => Err(TranslateError::Unsupported(format!(
             "content part '{}' is not supported yet",
-            kind.unwrap_or("unknown")
-        )));
+            other.unwrap_or("unknown")
+        ))),
     }
-    if let Some(fields) = part.as_object() {
-        reject_unknown(fields, &["type", "text"])?;
+}
+
+/// OpenAI-shaped `tools` entries (`{type:"function", function:{...}}`).
+pub fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
+    let mut out = Vec::with_capacity(tools.len());
+    for t in &tools {
+        let kind = t["type"].as_str().unwrap_or("unknown");
+        if kind != "function" {
+            return Err(TranslateError::Unsupported(format!(
+                "tool type '{kind}' is not supported yet"
+            )));
+        }
+        if let Some(fields) = t.as_object() {
+            reject_unknown(fields, &["type", "function"])?;
+        }
+        let f = &t["function"];
+        if let Some(fields) = f.as_object() {
+            reject_unknown(fields, &["name", "description", "parameters", "strict"])?;
+        }
+        let name = f["name"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| {
+                TranslateError::InvalidRequest("tool function 'name' must be a string".into())
+            })?;
+        let parameters = match &f["parameters"] {
+            Value::Null => json!({"type": "object"}),
+            v @ Value::Object(_) => v.clone(),
+            _ => {
+                return Err(TranslateError::InvalidRequest(
+                    "tool function 'parameters' must be an object".into(),
+                ))
+            }
+        };
+        let description = match &f["description"] {
+            Value::Null => None,
+            Value::String(d) => Some(d.clone()),
+            _ => {
+                return Err(TranslateError::InvalidRequest(
+                    "tool function 'description' must be a string".into(),
+                ))
+            }
+        };
+        let strict = match &f["strict"] {
+            Value::Null => None,
+            Value::Bool(b) => Some(*b),
+            _ => {
+                return Err(TranslateError::InvalidRequest(
+                    "tool function 'strict' must be a boolean".into(),
+                ))
+            }
+        };
+        out.push(Tool {
+            name: name.to_string(),
+            description,
+            parameters,
+            strict,
+        });
     }
-    part["text"].as_str().ok_or_else(|| {
-        TranslateError::InvalidRequest("content part 'text' must be a string".into())
-    })
+    Ok(out)
+}
+
+/// An OpenAI-shaped `tool_choice`: "auto", "none", "required" or `{type:"function", function:{name}}`.
+pub fn parse_tool_choice(v: Value) -> Result<ToolChoice, TranslateError> {
+    match &v {
+        Value::String(s) => match s.as_str() {
+            "auto" => Ok(ToolChoice::Auto),
+            "none" => Ok(ToolChoice::None),
+            "required" => Ok(ToolChoice::Required),
+            other => Err(TranslateError::InvalidRequest(format!(
+                "tool_choice '{other}' is not valid"
+            ))),
+        },
+        Value::Object(o) => {
+            reject_unknown(o, &["type", "function"])?;
+            if v["type"].as_str() != Some("function") {
+                return Err(TranslateError::Unsupported(
+                    "tool_choice type is not supported yet".into(),
+                ));
+            }
+            v["function"]["name"]
+                .as_str()
+                .map(|n| ToolChoice::Tool(n.to_string()))
+                .ok_or_else(|| {
+                    TranslateError::InvalidRequest("tool_choice function 'name' is required".into())
+                })
+        }
+        _ => Err(TranslateError::InvalidRequest(
+            "tool_choice must be a string or an object".into(),
+        )),
+    }
+}
+
+fn parse_tool_calls(calls: Vec<Value>) -> Result<Vec<ToolCall>, TranslateError> {
+    let mut out = Vec::with_capacity(calls.len());
+    for c in &calls {
+        if let Some(fields) = c.as_object() {
+            reject_unknown(fields, &["id", "type", "function"])?;
+        }
+        if c["type"].as_str().is_some_and(|t| t != "function") {
+            return Err(TranslateError::Unsupported(
+                "tool call type is not supported yet".into(),
+            ));
+        }
+        if let Some(fields) = c["function"].as_object() {
+            reject_unknown(fields, &["name", "arguments"])?;
+        }
+        let field = |v: &Value, what: &str| -> Result<String, TranslateError> {
+            v.as_str().map(str::to_string).ok_or_else(|| {
+                TranslateError::InvalidRequest(format!("tool call '{what}' must be a string"))
+            })
+        };
+        out.push(ToolCall {
+            id: field(&c["id"], "id")?,
+            name: field(&c["function"]["name"], "name")?,
+            arguments: field(&c["function"]["arguments"], "arguments")?,
+        });
+    }
+    Ok(out)
+}
+
+/// OpenAI-shaped chat messages (the `messages` array), parsed and checked
+/// exactly as the gateway's ingress does.
+pub fn parse_messages(messages: Vec<Value>) -> Result<Vec<Message>, TranslateError> {
+    let wire = messages
+        .into_iter()
+        .map(|m| {
+            serde_json::from_value::<WireMessage>(m)
+                .map_err(|e| TranslateError::InvalidRequest(e.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    convert_messages(wire)
+}
+
+fn convert_messages(wire: Vec<WireMessage>) -> Result<Vec<Message>, TranslateError> {
+    if wire.is_empty() {
+        return Err(TranslateError::InvalidRequest(
+            "messages must not be empty".into(),
+        ));
+    }
+    let mut messages = Vec::with_capacity(wire.len());
+    for m in wire {
+        let role = match m.role.as_str() {
+            "system" | "developer" => Role::System,
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            "tool" => Role::Tool,
+            other => {
+                return Err(TranslateError::Unsupported(format!(
+                    "message role '{other}' is not supported yet"
+                )))
+            }
+        };
+        reject_unknown(&m.extra, &[])?;
+        let tool_calls = parse_tool_calls(m.tool_calls.unwrap_or_default())?;
+        if !tool_calls.is_empty() && role != Role::Assistant {
+            return Err(TranslateError::InvalidRequest(
+                "tool_calls are only allowed in assistant messages".into(),
+            ));
+        }
+        if role != Role::Tool && m.tool_call_id.is_some() {
+            return Err(TranslateError::InvalidRequest(
+                "tool_call_id is only allowed in tool messages".into(),
+            ));
+        }
+        if role == Role::Tool && m.tool_call_id.is_none() {
+            return Err(TranslateError::InvalidRequest(
+                "tool messages need a tool_call_id".into(),
+            ));
+        }
+        let content = match m.content {
+            None if !tool_calls.is_empty() => Vec::new(),
+            None => {
+                return Err(TranslateError::InvalidRequest(
+                    "message content is required".into(),
+                ))
+            }
+            Some(WireContent::Text(t)) if t.is_empty() && !tool_calls.is_empty() => Vec::new(),
+            Some(WireContent::Text(t)) => vec![Part::Text(t)],
+            Some(WireContent::Parts(parts)) => {
+                let mut out = Vec::with_capacity(parts.len());
+                for p in &parts {
+                    out.push(parse_part(p, role == Role::User)?);
+                }
+                out
+            }
+        };
+        messages.push(Message {
+            role,
+            content,
+            name: m.name,
+            tool_calls,
+            tool_call_id: if role == Role::Tool {
+                m.tool_call_id
+            } else {
+                None
+            },
+        });
+    }
+    Ok(messages)
 }
 
 pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
@@ -104,45 +340,7 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
         }
     }
     reject_unknown(&wire.extra, IGNORED_REQUEST_FIELDS)?;
-    if wire.messages.is_empty() {
-        return Err(TranslateError::InvalidRequest(
-            "messages must not be empty".into(),
-        ));
-    }
-    let mut messages = Vec::with_capacity(wire.messages.len());
-    for m in wire.messages {
-        let role = match m.role.as_str() {
-            "system" | "developer" => Role::System,
-            "user" => Role::User,
-            "assistant" => Role::Assistant,
-            other => {
-                return Err(TranslateError::Unsupported(format!(
-                    "message role '{other}' is not supported yet"
-                )))
-            }
-        };
-        reject_unknown(&m.extra, &[])?;
-        let content = match m.content {
-            None => {
-                return Err(TranslateError::InvalidRequest(
-                    "message content is required".into(),
-                ))
-            }
-            Some(WireContent::Text(t)) => t,
-            Some(WireContent::Parts(parts)) => {
-                let mut out = String::new();
-                for p in &parts {
-                    out.push_str(part_text(p)?);
-                }
-                out
-            }
-        };
-        messages.push(Message {
-            role,
-            content,
-            name: m.name,
-        });
-    }
+    let messages = convert_messages(wire.messages)?;
     Ok(ChatRequest {
         model: wire.model,
         messages,
@@ -154,6 +352,12 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
             StopField::Many(v) => v,
         }),
         stream: wire.stream,
+        tools: parse_tools(wire.tools.unwrap_or_default())?,
+        tool_choice: match wire.tool_choice {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(parse_tool_choice(v)?),
+        },
+        parallel_tool_calls: wire.parallel_tool_calls,
     })
 }
 
@@ -167,6 +371,25 @@ fn usage_json(u: Usage) -> Value {
 }
 
 pub fn render_response(r: &ChatResponse, created: u64) -> Value {
+    let content = if r.content.is_empty() && !r.tool_calls.is_empty() {
+        Value::Null
+    } else {
+        Value::String(r.content.clone())
+    };
+    let mut message = json!({ "role": "assistant", "content": content });
+    if !r.tool_calls.is_empty() {
+        message["tool_calls"] = r
+            .tool_calls
+            .iter()
+            .map(|c| {
+                json!({
+                    "id": c.id,
+                    "type": "function",
+                    "function": { "name": c.name, "arguments": c.arguments },
+                })
+            })
+            .collect();
+    }
     let mut v = json!({
         "id": r.id,
         "object": "chat.completion",
@@ -174,7 +397,7 @@ pub fn render_response(r: &ChatResponse, created: u64) -> Value {
         "model": r.model,
         "choices": [{
             "index": 0,
-            "message": { "role": "assistant", "content": r.content },
+            "message": message,
             "finish_reason": r.finish_reason.map(|f| f.as_openai()),
         }],
     });
@@ -190,6 +413,29 @@ pub fn render_stream_event(ev: &StreamEvent, id: &str, model: &str, created: u64
             let v = json!({
                 "id": id, "object": "chat.completion.chunk", "created": created, "model": model,
                 "choices": [{ "index": 0, "delta": { "content": text }, "finish_reason": null }],
+            });
+            format!("data: {v}\n\n")
+        }
+        StreamEvent::ToolCallStart {
+            index,
+            id: call_id,
+            name,
+        } => {
+            let v = json!({
+                "id": id, "object": "chat.completion.chunk", "created": created, "model": model,
+                "choices": [{ "index": 0, "delta": { "tool_calls": [{
+                    "index": index, "id": call_id, "type": "function",
+                    "function": { "name": name, "arguments": "" },
+                }] }, "finish_reason": null }],
+            });
+            format!("data: {v}\n\n")
+        }
+        StreamEvent::ToolCallDelta { index, arguments } => {
+            let v = json!({
+                "id": id, "object": "chat.completion.chunk", "created": created, "model": model,
+                "choices": [{ "index": 0, "delta": { "tool_calls": [{
+                    "index": index, "function": { "arguments": arguments },
+                }] }, "finish_reason": null }],
             });
             format!("data: {v}\n\n")
         }
@@ -230,7 +476,7 @@ mod tests {
         assert_eq!(req.model, "openai/gpt-4o");
         assert_eq!(req.messages.len(), 1);
         assert_eq!(req.messages[0].role, Role::User);
-        assert_eq!(req.messages[0].content, "hi");
+        assert_eq!(req.messages[0].joined_text(), "hi");
         assert!(!req.stream);
     }
 
@@ -240,29 +486,292 @@ mod tests {
             "messages":[{"role":"developer","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}]}"#;
         let req = parse_request(body).unwrap();
         assert_eq!(req.messages[0].role, Role::System);
-        assert_eq!(req.messages[0].content, "ab");
+        assert_eq!(
+            req.messages[0].content,
+            vec![Part::Text("a".into()), Part::Text("b".into())]
+        );
         assert_eq!(req.stop, Some(vec!["END".to_string()]));
         assert_eq!(req.max_tokens, Some(9));
         assert!(req.stream);
     }
 
+    fn req_with_tools(extra: &str) -> String {
+        format!(r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],{extra}}}"#)
+    }
+
     #[test]
-    fn rejects_tools_and_images_instead_of_dropping_them() {
-        let tools = br#"{"model":"m","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function"}]}"#;
+    fn strict_must_be_a_boolean() {
+        let body = req_with_tools(
+            r#""tools":[{"type":"function","function":{"name":"a","strict":"yes"}}]"#,
+        );
+        assert_eq!(
+            parse_request(body.as_bytes()).unwrap_err(),
+            TranslateError::InvalidRequest("tool function 'strict' must be a boolean".into())
+        );
+    }
+
+    #[test]
+    fn parses_tools_and_tool_choice() {
+        let body = req_with_tools(
+            r#""tools":[
+              {"type":"function","function":{"name":"a","description":"does a","parameters":{"type":"object","properties":{"x":{"type":"string"}}},"strict":true}},
+              {"type":"function","function":{"name":"b"}}],
+              "tool_choice":"required","parallel_tool_calls":false"#,
+        );
+        let req = parse_request(body.as_bytes()).unwrap();
+        assert_eq!(req.tools.len(), 2);
+        assert_eq!(req.tools[0].name, "a");
+        assert_eq!(req.tools[0].description.as_deref(), Some("does a"));
+        assert_eq!(req.tools[0].parameters["properties"]["x"]["type"], "string");
+        assert_eq!(req.tools[0].strict, Some(true));
+        assert_eq!(req.tools[1].strict, None);
+        assert_eq!(req.tools[1].name, "b");
+        assert_eq!(req.tools[1].description, None);
+        assert_eq!(req.tools[1].parameters, json!({"type":"object"}));
+        assert_eq!(req.tool_choice, Some(ToolChoice::Required));
+        assert_eq!(req.parallel_tool_calls, Some(false));
+
+        for (wire, want) in [
+            (r#""auto""#, ToolChoice::Auto),
+            (r#""none""#, ToolChoice::None),
+            (r#""required""#, ToolChoice::Required),
+            (
+                r#"{"type":"function","function":{"name":"b"}}"#,
+                ToolChoice::Tool("b".into()),
+            ),
+        ] {
+            let req = parse_request(req_with_tools(&format!(r#""tool_choice":{wire}"#)).as_bytes())
+                .unwrap();
+            assert_eq!(req.tool_choice, Some(want), "{wire}");
+        }
+        let plain = parse_request(req_with_tools(r#""tool_choice":null"#).as_bytes()).unwrap();
+        assert!(plain.tools.is_empty());
+        assert_eq!(plain.tool_choice, None);
+        assert_eq!(plain.parallel_tool_calls, None);
+    }
+
+    #[test]
+    fn parses_a_tool_conversation() {
+        let args1 = "{\\\"a\\\": 1,  \\\"b\\\":[ ]}";
+        let body = format!(
+            r#"{{"model":"m","messages":[
+            {{"role":"user","content":"go"}},
+            {{"role":"assistant","content":null,"tool_calls":[
+              {{"id":"c1","type":"function","function":{{"name":"f","arguments":"{args1}"}}}},
+              {{"id":"c2","type":"function","function":{{"name":"g","arguments":"{{}}"}}}}]}},
+            {{"role":"tool","tool_call_id":"c1","content":"r1"}},
+            {{"role":"tool","tool_call_id":"c2","content":[{{"type":"text","text":"r"}},{{"type":"text","text":"2"}}]}},
+            {{"role":"user","content":"thanks"}}]}}"#
+        );
+        let req = parse_request(body.as_bytes()).unwrap();
+        assert_eq!(req.messages.len(), 5);
+        let a = &req.messages[1];
+        assert_eq!(a.role, Role::Assistant);
+        assert!(a.content.is_empty());
+        assert_eq!(a.tool_calls.len(), 2);
+        assert_eq!(a.tool_calls[0].id, "c1");
+        assert_eq!(a.tool_calls[0].name, "f");
+        assert_eq!(a.tool_calls[0].arguments, "{\"a\": 1,  \"b\":[ ]}");
+        assert_eq!(a.tool_calls[1].id, "c2");
+        assert_eq!(a.tool_calls[1].arguments, "{}");
+        assert_eq!(req.messages[2].role, Role::Tool);
+        assert_eq!(req.messages[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(req.messages[2].joined_text(), "r1");
+        assert_eq!(req.messages[3].tool_call_id.as_deref(), Some("c2"));
+        assert_eq!(req.messages[3].joined_text(), "r2");
+        assert_eq!(req.messages[4].joined_text(), "thanks");
+
+        for content in [r#""content":"","#, ""] {
+            let body = format!(
+                r#"{{"model":"m","messages":[{{"role":"assistant",{content}"tool_calls":[{{"id":"c","type":"function","function":{{"name":"f","arguments":"{{}}"}}}}]}}]}}"#
+            );
+            let req = parse_request(body.as_bytes()).unwrap();
+            assert_eq!(req.messages[0].tool_calls.len(), 1, "{content}");
+            assert_eq!(req.messages[0].joined_text(), "");
+        }
+    }
+
+    #[test]
+    fn tool_message_without_tool_call_id_is_invalid() {
+        let body = br#"{"model":"m","messages":[{"role":"tool","content":"x"}]}"#;
         assert!(matches!(
-            parse_request(tools),
+            parse_request(body),
+            Err(TranslateError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn tool_call_id_on_a_non_tool_message_is_invalid() {
+        let body =
+            br#"{"model":"m","messages":[{"role":"user","content":"x","tool_call_id":"c"}]}"#;
+        match parse_request(body) {
+            Err(TranslateError::InvalidRequest(m)) => {
+                assert_eq!(m, "tool_call_id is only allowed in tool messages")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_parameters_and_description_must_have_their_types() {
+        for (f, want) in [
+            (
+                r#"{"name":"f","parameters":"x"}"#,
+                "tool function 'parameters' must be an object",
+            ),
+            (
+                r#"{"name":"f","parameters":[1]}"#,
+                "tool function 'parameters' must be an object",
+            ),
+            (
+                r#"{"name":"f","description":3}"#,
+                "tool function 'description' must be a string",
+            ),
+        ] {
+            let body = format!(
+                r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],"tools":[{{"type":"function","function":{f}}}]}}"#
+            );
+            match parse_request(body.as_bytes()) {
+                Err(TranslateError::InvalidRequest(m)) => assert_eq!(m, want),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn image_in_assistant_message_is_invalid() {
+        let body = br#"{"model":"m","messages":[{"role":"assistant","content":[{"type":"image_url","image_url":{"url":"https://x/a.png"}}]}]}"#;
+        match parse_request(body) {
+            Err(TranslateError::InvalidRequest(m)) => {
+                assert_eq!(m, "images are only allowed in user messages")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_function_tool_is_unsupported() {
+        let body = req_with_tools(r#""tools":[{"type":"code_interpreter"}]"#);
+        assert!(matches!(
+            parse_request(body.as_bytes()),
             Err(TranslateError::Unsupported(_))
         ));
-        let image = br#"{"model":"m","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"u"}}]}]}"#;
+    }
+
+    #[test]
+    fn legacy_function_call_is_unsupported() {
+        let body = br#"{"model":"m","messages":[{"role":"assistant","content":"x","function_call":{"name":"f","arguments":"{}"}}]}"#;
         assert!(matches!(
-            parse_request(image),
+            parse_request(body),
             Err(TranslateError::Unsupported(_))
         ));
-        let tool_msg = br#"{"model":"m","messages":[{"role":"tool","content":"x"}]}"#;
-        assert!(matches!(
-            parse_request(tool_msg),
-            Err(TranslateError::Unsupported(_))
-        ));
+    }
+
+    #[test]
+    fn parses_image_parts_in_order() {
+        let body = with_part(
+            r#"{"type":"text","text":"a"},
+            {"type":"image_url","image_url":{"url":"https://x.test/p.png","detail":"high"}},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}},
+            {"type":"text","text":"b"}"#,
+        );
+        let req = parse_request(body.as_bytes()).unwrap();
+        assert_eq!(
+            req.messages[0].content,
+            vec![
+                Part::Text("a".into()),
+                Part::Image(ImageSource::Url("https://x.test/p.png".into())),
+                Part::Image(ImageSource::Base64 {
+                    media_type: "image/png".into(),
+                    data: "QUJD".into()
+                }),
+                Part::Text("b".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_bad_data_urls() {
+        for url in [
+            "data:text/plain;base64,QQ==",
+            "data:image/png,raw",
+            "data:image/png;base64,***",
+        ] {
+            let body = with_part(&format!(
+                r#"{{"type":"image_url","image_url":{{"url":"{url}"}}}}"#
+            ));
+            assert!(
+                matches!(
+                    parse_request(body.as_bytes()),
+                    Err(TranslateError::InvalidRequest(_))
+                ),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn renders_tool_calls_in_response() {
+        let r = ChatResponse {
+            id: "id1".into(),
+            model: "m".into(),
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "c1".into(),
+                name: "f".into(),
+                arguments: "{\"a\": 1}".into(),
+            }],
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: None,
+        };
+        let v = render_response(&r, 1);
+        let m = &v["choices"][0]["message"];
+        assert!(m["content"].is_null());
+        assert_eq!(m["tool_calls"][0]["id"], "c1");
+        assert_eq!(m["tool_calls"][0]["type"], "function");
+        assert_eq!(m["tool_calls"][0]["function"]["name"], "f");
+        assert_eq!(m["tool_calls"][0]["function"]["arguments"], "{\"a\": 1}");
+        assert_eq!(v["choices"][0]["finish_reason"], "tool_calls");
+
+        let with_text = ChatResponse {
+            content: "hi".into(),
+            ..r
+        };
+        let v = render_response(&with_text, 1);
+        assert_eq!(v["choices"][0]["message"]["content"], "hi");
+        assert!(v["choices"][0]["message"]["tool_calls"].is_array());
+    }
+
+    #[test]
+    fn renders_tool_call_stream_events() {
+        let chunk = |ev: &StreamEvent| -> serde_json::Value {
+            let s = render_stream_event(ev, "id1", "m", 1);
+            serde_json::from_str(s["data: ".len()..].trim()).unwrap()
+        };
+        let start = chunk(&StreamEvent::ToolCallStart {
+            index: 0,
+            id: "c1".into(),
+            name: "f".into(),
+        });
+        let t = &start["choices"][0]["delta"]["tool_calls"][0];
+        assert_eq!(t["index"], 0);
+        assert_eq!(t["id"], "c1");
+        assert_eq!(t["type"], "function");
+        assert_eq!(t["function"]["name"], "f");
+        assert_eq!(t["function"]["arguments"], "");
+
+        for (part, want) in [("{\"a\"", "{\"a\""), (":1}", ":1}")] {
+            let d = chunk(&StreamEvent::ToolCallDelta {
+                index: 0,
+                arguments: part.into(),
+            });
+            let t = &d["choices"][0]["delta"]["tool_calls"][0];
+            assert_eq!(t["index"], 0);
+            assert_eq!(t["function"]["arguments"], want);
+            assert!(t.get("id").is_none());
+            assert!(t.get("type").is_none());
+            assert!(t["function"].get("name").is_none());
+        }
     }
 
     #[test]
@@ -284,6 +793,7 @@ mod tests {
             id: "id1".into(),
             model: "gpt-4o".into(),
             content: "hello".into(),
+            tool_calls: Vec::new(),
             finish_reason: Some(FinishReason::Stop),
             usage: Some(Usage {
                 input_tokens: 3,
@@ -349,7 +859,6 @@ mod tests {
     #[test]
     fn rejects_every_unsupported_top_level_field() {
         let cases = [
-            ("tool_choice", r#""auto""#),
             ("functions", r#"[{"name":"f"}]"#),
             ("function_call", r#""auto""#),
             ("response_format", r#"{"type":"json_object"}"#),
@@ -394,10 +903,6 @@ mod tests {
     #[test]
     fn rejects_unsupported_message_fields() {
         let cases = [
-            (
-                "tool_calls",
-                r#"[{"id":"c","type":"function","function":{"name":"f","arguments":"{}"}}]"#,
-            ),
             ("function_call", r#"{"name":"f","arguments":"{}"}"#),
             ("audio", r#"{"id":"a1"}"#),
         ];
@@ -437,7 +942,7 @@ mod tests {
             "user":"u1","metadata":{"k":"v"},"store":true,"stream_options":{"include_usage":true},
             "service_tier":"auto"}"#;
         let req = parse_request(body).unwrap();
-        assert_eq!(req.messages[0].content, "x");
+        assert_eq!(req.messages[0].joined_text(), "x");
     }
 
     #[test]
@@ -450,6 +955,7 @@ mod tests {
             id: "id1".into(),
             model: "m".into(),
             content: "x".into(),
+            tool_calls: Vec::new(),
             finish_reason: Some(FinishReason::Stop),
             usage,
         };
@@ -481,8 +987,6 @@ mod tests {
         let cases = [
             ("web_search_options", r#"{"search_context_size":"low"}"#),
             ("top_k", "40"),
-            ("parallel_tool_calls", "false"),
-            ("tools", r#"[{"type":"function"}]"#),
             ("some_future_field", "123"),
         ];
         for (field, value) in cases {
@@ -508,7 +1012,7 @@ mod tests {
             for v in [value, "null"] {
                 let req = parse_request(with_top_level(field, v).as_bytes())
                     .unwrap_or_else(|e| panic!("{field}={v}: {e:?}"));
-                assert_eq!(req.messages[0].content, "x");
+                assert_eq!(req.messages[0].joined_text(), "x");
             }
         }
     }
@@ -571,6 +1075,6 @@ mod tests {
         );
         let part = r#"{"type":"text","text":"x","cache_control":null}"#;
         let req = parse_request(with_part(part).as_bytes()).unwrap();
-        assert_eq!(req.messages[0].content, "x");
+        assert_eq!(req.messages[0].joined_text(), "x");
     }
 }

@@ -30,13 +30,90 @@ pub struct PlaygroundChatRequest {
     /// Answer as server-sent events.
     #[schema(nullable = false)]
     pub stream: Option<bool>,
+    /// Functions the model may call, as in `/v1/chat/completions`.
+    #[schema(schema_with = tools_schema, nullable = false, required = false)]
+    pub tools: Option<Vec<serde_json::Value>>,
+    /// `auto`, `none`, `required` or a named function, as in
+    /// `/v1/chat/completions`. Without `tools`, `required` and a named
+    /// function are refused with 400.
+    #[schema(schema_with = tool_choice_schema, nullable = false, required = false)]
+    pub tool_choice: Option<serde_json::Value>,
+    /// As in `/v1/chat/completions`; ignored without `tools`.
+    #[schema(nullable = false)]
+    pub parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct PlaygroundMessage {
-    /// `system`, `user` or `assistant`.
+    /// `system`, `user`, `assistant` or `tool`.
     pub role: String,
-    pub content: String,
+    #[schema(schema_with = content_schema, required = false)]
+    pub content: serde_json::Value,
+    /// The calls of an assistant message, as in `/v1/chat/completions`.
+    #[schema(schema_with = tool_calls_schema, nullable = false, required = false)]
+    pub tool_calls: Option<Vec<serde_json::Value>>,
+    /// On a `tool` message: the id of the call it answers.
+    #[schema(nullable = false)]
+    pub tool_call_id: Option<String>,
+}
+
+/// An object with any members: the shape of the call is the provider API's.
+fn free_object() -> utoipa::openapi::schema::ObjectBuilder {
+    use utoipa::openapi::schema::{AdditionalProperties, ObjectBuilder, Type};
+    ObjectBuilder::new()
+        .schema_type(Type::Object)
+        .additional_properties(Some(AdditionalProperties::FreeForm(true)))
+}
+
+/// A list of free objects. `schema_with` replaces the generated schema, so
+/// the description of the field is given here.
+fn free_objects(description: &str) -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    utoipa::openapi::schema::ArrayBuilder::new()
+        .description(Some(description))
+        .items(free_object())
+        .into()
+}
+
+fn tools_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    free_objects("Functions the model may call, as in `/v1/chat/completions`.")
+}
+
+fn tool_calls_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    free_objects("The calls of an assistant message, as in `/v1/chat/completions`.")
+}
+
+/// `auto`, `none` or `required`, or an object naming a function.
+fn tool_choice_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    use utoipa::openapi::schema::{ObjectBuilder, OneOfBuilder, Type};
+    OneOfBuilder::new()
+        .description(Some(
+            "`auto`, `none`, `required` or a named function, as in \
+             `/v1/chat/completions`. Without `tools`, `required` and a named \
+             function are refused with 400.",
+        ))
+        .item(
+            ObjectBuilder::new()
+                .schema_type(Type::String)
+                .enum_values(Some(["auto", "none", "required"])),
+        )
+        .item(free_object())
+        .into()
+}
+
+/// A string, a list of content parts, or null.
+fn content_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    use utoipa::openapi::schema::{ArrayBuilder, ObjectBuilder, OneOfBuilder, Type};
+    OneOfBuilder::new()
+        .description(Some(
+            "Text, or a list of parts (`text` and `image_url`) as in \
+             `/v1/chat/completions`. Null is allowed on an assistant message that has \
+             `tool_calls`. Images are `data:` URLs or, except for Gemini, `http(s)` \
+             URLs, and count toward the request body limit (10 MiB).",
+        ))
+        .item(ObjectBuilder::new().schema_type(Type::String))
+        .item(ArrayBuilder::new().items(free_object()))
+        .item(ObjectBuilder::new().schema_type(Type::Null))
+        .into()
 }
 
 /// The answer of `/v1/chat/completions`, in the OpenAI shape.
