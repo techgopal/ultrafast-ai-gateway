@@ -12,6 +12,8 @@ export interface Tool {
   name: string;
   description?: string;
   parameters?: Record<string, unknown>;
+  /** OpenAI's schema-enforced arguments. Sent to OpenAI and Azure; Anthropic and Gemini ignore it. */
+  strict?: boolean;
 }
 
 export type ToolChoice = "auto" | "none" | "required" | { name: string };

@@ -230,3 +230,17 @@ def test_flat_and_openai_tool_shapes_send_the_same_body(serve):
         bodies.append(json.loads(s.only()["body"])["tools"])
     assert bodies[0] == bodies[1]
     assert bodies[0][0]["function"]["name"] == "weather"
+
+
+def test_strict_is_carried_in_both_tool_shapes(serve):
+    for tool in (
+        {**FLAT_WEATHER, "strict": True},
+        {"type": "function", "function": {**WEATHER["function"], "strict": True}},
+    ):
+        s = serve(Script.json(200, OPENAI_CHAT))
+        ultrafast.Client(ultrafast.gateway(s.url, KEY)).chat(
+            "m", [{"role": "user", "content": "x"}], tools=[tool, FLAT_WEATHER | {"name": "b"}]
+        )
+        tools = json.loads(s.only()["body"])["tools"]
+        assert tools[0]["function"]["strict"] is True
+        assert "strict" not in tools[1]["function"]

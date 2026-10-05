@@ -123,6 +123,8 @@ struct ToolIn {
     description: Option<String>,
     #[serde(default)]
     parameters: Option<Value>,
+    #[serde(default)]
+    strict: Option<bool>,
 }
 
 /// The message in OpenAI's shape, so the one parser in `translate` checks it.
@@ -175,6 +177,9 @@ fn tool_value(t: ToolIn) -> Value {
     }
     if let Some(p) = t.parameters {
         f.insert("parameters".into(), p);
+    }
+    if let Some(s) = t.strict {
+        f.insert("strict".into(), s.into());
     }
     json!({"type": "function", "function": f})
 }

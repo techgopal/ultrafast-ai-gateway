@@ -46,7 +46,7 @@ const reply = await client.chat({
       { type: "image", url: "data:image/png;base64,..." }, // or an http(s) URL
     ] },
   ],
-  tools: [{ name: "weather", description: "Current weather", parameters: { type: "object" } }],
+  tools: [{ name: "weather", description: "Current weather", parameters: { type: "object" } }], // `strict?: boolean` goes to OpenAI and Azure only
   toolChoice: "auto", // "auto" | "none" | "required" | { name: "weather" }
   parallelToolCalls: true,
 });

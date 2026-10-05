@@ -249,6 +249,25 @@ async fn a_gateway_tool_call_answer_and_the_result_round_trip() {
 }
 
 #[tokio::test]
+async fn strict_on_a_tool_reaches_the_wire() {
+    let s = serve(Script::json(200, OPENAI_CHAT)).await;
+    let c = Client::new(Target::gateway(&s.url, "k"));
+    let mut strict = weather();
+    strict.strict = Some(true);
+    c.chat(
+        ChatRequest::new("gpt-4o")
+            .user("x")
+            .tool(strict)
+            .tool(weather()),
+    )
+    .await
+    .unwrap();
+    let body = body_of(&s.only());
+    assert_eq!(body["tools"][0]["function"]["strict"], true);
+    assert!(body["tools"][1]["function"].get("strict").is_none());
+}
+
+#[tokio::test]
 async fn a_direct_provider_target_gets_tools_and_images_too() {
     let req = || {
         ChatRequest::new("claude-sonnet-5")

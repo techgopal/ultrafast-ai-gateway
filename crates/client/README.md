@@ -46,11 +46,16 @@ without sending anything.
 ```rust
 use ultrafast_client::{ChatRequest, Tool, ToolChoice};
 
+let weather = Tool {
+    name: "weather".into(),
+    description: Some("Current weather".into()),
+    parameters: serde_json::json!({"type": "object"}),
+    strict: None, // Some(true) is sent to OpenAI and Azure only
+};
 let req = ChatRequest::new("gpt-4o")
     .user("What is in this picture, and what is the weather there?")
     .image("https://example.com/photo.png")? // or a base64 `data:image/png;base64,...` URL
-    .tool(Tool { name: "weather".into(), description: Some("Current weather".into()),
-                 parameters: serde_json::json!({"type": "object"}) })
+    .tool(weather.clone())
     .tool_choice(ToolChoice::Auto)
     .parallel_tool_calls(true);
 let reply = client.chat(req).await?;
@@ -59,6 +64,7 @@ for call in &reply.tool_calls { /* call.id, call.name, call.arguments (JSON text
 // Send the result back:
 let next = ChatRequest::new("gpt-4o")
     .user("...")
+    .tool(weather) // Anthropic refuses tool blocks without `tools`
     .assistant_tool_calls("", reply.tool_calls.clone())
     .tool_result(&reply.tool_calls[0].id, r#"{"temp_c": 18}"#);
 ```

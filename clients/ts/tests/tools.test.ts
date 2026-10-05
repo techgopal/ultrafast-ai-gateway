@@ -56,6 +56,14 @@ describe("tools and images", () => {
     expect(body.parallel_tool_calls).toBe(false);
   });
 
+  it("strict reaches the wire when set and only then", async () => {
+    const { fetch, seen } = fakeFetch(json(200, TOOL_ANSWER));
+    await gw(fetch).chat({ model: "m", messages: [{ role: "user", content: "x" }], tools: [{ ...weather, strict: true }, { ...weather, name: "other" }] });
+    const body = JSON.parse(seen[0]!.body);
+    expect(body.tools[0].function.strict).toBe(true);
+    expect(body.tools[1].function).not.toHaveProperty("strict");
+  });
+
   it("a plain answer has no tool calls", async () => {
     const { fetch } = fakeFetch(json(200, { id: "c", model: "m", choices: [{ message: { role: "assistant", content: "hi" }, finish_reason: "stop" }] }));
     expect((await gw(fetch).chat({ model: "m", messages: [{ role: "user", content: "x" }] })).toolCalls).toEqual([]);

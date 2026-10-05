@@ -42,13 +42,15 @@ dicts (`content` a string or a list of `text` / `image_url` parts, an assistant'
 `tool_calls`, a tool's `tool_call_id`):
 
 ```python
+messages = [{"role": "user", "content": [
+    {"type": "text", "text": "What is in this picture?"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+]}]
+tools = [{"name": "weather", "description": "Current weather", "parameters": {"type": "object"}}]
 reply = client.chat(
     "gpt-4o",
-    [{"role": "user", "content": [
-        {"type": "text", "text": "What is in this picture?"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
-    ]}],
-    tools=[{"name": "weather", "description": "Current weather", "parameters": {"type": "object"}}],
+    messages,
+    tools=tools,
     tool_choice="auto",           # "auto", "none", "required", or a tool's name
     parallel_tool_calls=True,
 )
@@ -56,8 +58,9 @@ for call in reply.tool_calls:     # ToolCall(id, name, arguments)  (arguments is
     ...
 ```
 
-`tools` entries are flat `{name, description?, parameters?}` dicts (OpenAI's
-`{"type": "function", "function": {...}}` is accepted too). Send results back by
+`tools` entries are flat `{name, description?, parameters?, strict?}` dicts (OpenAI's
+`{"type": "function", "function": {...}}` is accepted too); `strict` is sent to
+OpenAI and Azure only. Send results back by
 appending the assistant turn and one tool message per call, then calling again:
 
 ```python

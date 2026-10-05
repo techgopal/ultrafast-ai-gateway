@@ -87,9 +87,9 @@ function checkMessages(messages: unknown): unknown[] {
 function checkTools(tools: unknown): Tool[] | undefined {
   if (tools === undefined) return undefined;
   if (!Array.isArray(tools) || !tools.every((t: unknown) => isObject(t) && isString(t["name"]))) {
-    throw bad("tools is a list of {name, description?, parameters?}");
+    throw bad("tools is a list of {name, description?, parameters?, strict?}");
   }
-  return (tools as Tool[]).map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }));
+  return (tools as Tool[]).map((t) => ({ name: t.name, description: t.description, parameters: t.parameters, strict: t.strict }));
 }
 
 function checkToolChoice(choice: unknown): ToolChoice | undefined {
