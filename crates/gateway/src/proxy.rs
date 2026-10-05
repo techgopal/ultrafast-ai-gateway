@@ -571,9 +571,11 @@ async fn dispatch(
     // concurrent identical calls make one provider call: the others wait,
     // read the cache again and find its answer. The wait is after the
     // limits, so a waiter keeps its concurrency slot while it waits (a slow
-    // leader can hold a route's slots). `flight` lives to the end of the
-    // function: through the provider call and `keep`, and it is released on
-    // every exit, an error and a dropped future included.
+    // leader can hold a route's slots). Only the caller that got the flight
+    // without waiting (the leader) holds it to the end of the function:
+    // through the provider call and `keep`, released on every exit, an error
+    // and a dropped future included. A caller that waited and still misses
+    // calls on its own, without the flight.
     let cache = cache_plan(snapshot, actor, &call, &resolved, &candidates);
     let mut flight = None;
     if let Some(plan) = &cache {
@@ -594,8 +596,13 @@ async fn dispatch(
             if let Some(response) = answered(state, record) {
                 return response;
             }
+            // The answer was not kept (the call that held the flight
+            // failed): this caller makes its own call without the flight,
+            // so waiters of a failed call do not queue behind each other.
+            drop(held);
+        } else {
+            flight = Some(held);
         }
-        flight = Some(held);
         state.metrics.cache_miss();
     }
     let _flight = flight;

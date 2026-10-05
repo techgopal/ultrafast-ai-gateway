@@ -284,13 +284,13 @@ impl Metrics {
         let _ = writeln!(out, "uf_cache_misses_total {}", n(&self.cache_misses));
         header(
             &mut out,
-            "ultrafast_cache_flight_waits_total",
+            "uf_cache_flight_waits_total",
             "counter",
             "Calls that waited for a call of the same cache key that was already at a provider.",
         );
         let _ = writeln!(
             out,
-            "ultrafast_cache_flight_waits_total {}",
+            "uf_cache_flight_waits_total {}",
             n(&self.cache_flight_waits)
         );
 

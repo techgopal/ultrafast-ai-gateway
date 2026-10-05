@@ -941,7 +941,7 @@ async fn concurrent_identical_calls_reach_the_provider_once() {
     let metrics = w.h.state.metrics.render(&[]);
     let waits: f64 = metrics
         .lines()
-        .find_map(|l| l.strip_prefix("ultrafast_cache_flight_waits_total "))
+        .find_map(|l| l.strip_prefix("uf_cache_flight_waits_total "))
         .expect("the counter is exposed")
         .parse()
         .unwrap();
@@ -949,29 +949,52 @@ async fn concurrent_identical_calls_reach_the_provider_once() {
     assert!(waits <= 49.0);
 }
 
+/// The first call fails after a short delay; every later call answers after
+/// `delay`. Arrivals of all calls are noted.
+struct FailsFirst {
+    delay: Duration,
+    arrivals: Arc<std::sync::Mutex<Vec<Instant>>>,
+}
+
+impl wiremock::Respond for FailsFirst {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        let mut at = self.arrivals.lock().unwrap();
+        at.push(Instant::now());
+        if at.len() == 1 {
+            ResponseTemplate::new(500).set_delay(Duration::from_millis(500))
+        } else {
+            ok("hello").set_delay(self.delay)
+        }
+    }
+}
+
 #[tokio::test]
 async fn failed_leader_lets_waiters_call() {
     let w = world(CacheScope::Team).await;
     let (a, _) = w.two_teams().await;
     w.h.upstream.reset().await;
+    let arrivals = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let delay = Duration::from_secs(3);
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(500).set_delay(Duration::from_millis(200)))
-        .up_to_n_times(1)
-        .mount(&w.h.upstream)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(ok("hello"))
+        .respond_with(FailsFirst {
+            delay,
+            arrivals: arrivals.clone(),
+        })
         .mount(&w.h.upstream)
         .await;
     let (w, a) = (Arc::new(w), Arc::new(a));
     let answers = together(&w, &a, 5, BODY).await;
-    let good = answers.iter().filter(|(s, _)| *s == StatusCode::OK).count();
     assert_eq!(answers.len(), 5, "none hangs");
+    let good = answers.iter().filter(|(s, _)| *s == StatusCode::OK).count();
     assert_eq!(good, 4, "only the leader saw the failure");
-    // The failure, then one answer that the rest found in the cache.
-    assert_eq!(w.provider_calls().await, 2);
+    // The leader's call, then one call of each waiter: nothing was kept.
+    assert_eq!(w.provider_calls().await, 5);
+    // The waiters called together, not one after the other: if they queued,
+    // the last would arrive at least 3 x `delay` after the first of them.
+    let at = arrivals.lock().unwrap().clone();
+    let spread = at[4].duration_since(at[1]);
+    assert!(spread < delay, "the waiters queued: {spread:?}");
 }
 
 #[tokio::test]
