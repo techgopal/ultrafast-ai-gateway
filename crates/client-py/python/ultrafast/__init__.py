@@ -112,7 +112,12 @@ def _messages(messages: Iterable[Any]) -> str:
     out = []
     for m in messages:
         if isinstance(m, Message):
-            out.append(_check_message({"role": m.role, "content": m.content}))
+            d: Dict[str, Any] = {"role": m.role, "content": m.content}
+            if m.tool_calls is not None:
+                d["tool_calls"] = m.tool_calls
+            if m.tool_call_id is not None:
+                d["tool_call_id"] = m.tool_call_id
+            out.append(_check_message(d))
         elif isinstance(m, dict):
             out.append(_check_message(m))
         elif isinstance(m, tuple) and len(m) == 2:
@@ -128,15 +133,42 @@ def _check_message(m: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"a message role is one of {', '.join(_ROLES)}")
     if content is not None and not isinstance(content, (str, list)):
         raise TypeError("a message content is a string, a list of parts, or None")
-    return m
+    calls = m.get("tool_calls")
+    if calls is None:
+        return m
+    if isinstance(calls, (str, bytes, dict)):
+        raise TypeError("tool_calls is a list of ToolCall or dicts")
+    return {**m, "tool_calls": [_tool_call(c) for c in calls]}
+
+
+def _tool_call(c: Any) -> Dict[str, Any]:
+    """A `ToolCall`, a flat {id, name, arguments} dict or an OpenAI-shaped dict, as OpenAI's."""
+    if isinstance(c, ToolCall):
+        c = {"id": c.id, "name": c.name, "arguments": c.arguments}
+    if not isinstance(c, dict):
+        raise TypeError("tool_calls is a list of ToolCall or dicts")
+    if "function" in c:
+        return c
+    return {
+        "id": c.get("id"),
+        "type": "function",
+        "function": {"name": c.get("name"), "arguments": c.get("arguments")},
+    }
 
 
 def _tools(tools: Optional[Sequence[Dict[str, Any]]]) -> Optional[str]:
     if tools is None:
         return None
     if isinstance(tools, (str, bytes, dict)) or not all(isinstance(t, dict) for t in tools):
-        raise TypeError("tools is a list of OpenAI-shaped dicts")
-    return json.dumps(list(tools))
+        raise TypeError("tools is a list of dicts")
+    return json.dumps([_tool(t) for t in tools])
+
+
+def _tool(t: Dict[str, Any]) -> Dict[str, Any]:
+    """Flat {name, description?, parameters?} or OpenAI's {type:"function", function:{...}}."""
+    if "function" in t or "type" in t:
+        return t
+    return {"type": "function", "function": t}
 
 
 def _tool_choice(choice: Optional[str]) -> Optional[str]:

@@ -48,7 +48,7 @@ reply = client.chat(
         {"type": "text", "text": "What is in this picture?"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
     ]}],
-    tools=[{"type": "function", "function": {"name": "weather", "parameters": {"type": "object"}}}],
+    tools=[{"name": "weather", "description": "Current weather", "parameters": {"type": "object"}}],
     tool_choice="auto",           # "auto", "none", "required", or a tool's name
     parallel_tool_calls=True,
 )
@@ -56,8 +56,19 @@ for call in reply.tool_calls:     # ToolCall(id, name, arguments)  (arguments is
     ...
 ```
 
-Send results back with `{"role": "assistant", "content": None, "tool_calls": [...]}`
-followed by `{"role": "tool", "tool_call_id": call.id, "content": "..."}`.
+`tools` entries are flat `{name, description?, parameters?}` dicts (OpenAI's
+`{"type": "function", "function": {...}}` is accepted too). Send results back by
+appending the assistant turn and one tool message per call, then calling again:
+
+```python
+messages.append({"role": "assistant", "content": reply.content, "tool_calls": reply.tool_calls})
+for call in reply.tool_calls:
+    messages.append({"role": "tool", "tool_call_id": call.id, "content": run_tool(call)})
+reply = client.chat("gpt-4o", messages, tools=tools)
+```
+
+`tool_calls` may hold `ToolCall` objects, flat `{id, name, arguments}` dicts or
+OpenAI-shaped dicts; `Message(role, content, tool_calls=..., tool_call_id=...)` works too.
 `chat_stream` yields `Delta`, `ToolCallStart(index, id, name)`,
 `ToolCallDelta(index, arguments)` and `Done`. Messages are checked by the same
 parser the gateway uses; a bad one raises `InvalidRequestError` before anything

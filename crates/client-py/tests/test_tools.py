@@ -178,3 +178,55 @@ def test_bad_input_is_refused_before_sending(serve):
     with pytest.raises(TypeError):
         c.chat("m", [user], tools="weather")
     assert s.requests == []
+
+
+FLAT_WEATHER = {
+    "name": "weather",
+    "description": "Current weather",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+}
+
+
+def test_the_natural_tool_loop_round_trips(serve):
+    s = serve(Script.json(200, TOOL_ANSWER))
+    c = ultrafast.Client(ultrafast.gateway(s.url, KEY))
+    messages = [{"role": "user", "content": "weather in Paris?"}]
+    reply = c.chat("m", messages, tools=[FLAT_WEATHER])
+    messages.append({"role": "assistant", "content": reply.content, "tool_calls": reply.tool_calls})
+    messages.append({"role": "tool", "tool_call_id": reply.tool_calls[0].id, "content": "sunny"})
+    s2 = serve(Script.json(200, OPENAI_CHAT))
+    ultrafast.Client(ultrafast.gateway(s2.url, KEY)).chat("m", messages, tools=[FLAT_WEATHER])
+    body = json.loads(s2.only()["body"])
+    assert body["messages"][1]["tool_calls"] == [
+        {"id": "call_1", "type": "function", "function": {"name": "weather", "arguments": '{"city":"Paris"}'}}
+    ]
+    assert body["messages"][2]["tool_call_id"] == "call_1"
+
+
+def test_flat_dict_tool_calls_and_message_objects_carry_tools(serve):
+    s = serve(Script.json(200, OPENAI_CHAT))
+    ultrafast.Client(ultrafast.gateway(s.url, KEY)).chat(
+        "m",
+        [
+            ultrafast.Message("user", [{"type": "text", "text": "hi"}]),
+            ultrafast.Message(
+                "assistant", None, tool_calls=[{"id": "c1", "name": "weather", "arguments": "{}"}]
+            ),
+            ultrafast.Message("tool", "sunny", tool_call_id="c1"),
+        ],
+    )
+    body = json.loads(s.only()["body"])
+    assert body["messages"][1]["tool_calls"][0]["function"]["name"] == "weather"
+    assert body["messages"][2]["tool_call_id"] == "c1"
+
+
+def test_flat_and_openai_tool_shapes_send_the_same_body(serve):
+    bodies = []
+    for tool in (FLAT_WEATHER, WEATHER):
+        s = serve(Script.json(200, OPENAI_CHAT))
+        ultrafast.Client(ultrafast.gateway(s.url, KEY)).chat(
+            "m", [{"role": "user", "content": "x"}], tools=[tool]
+        )
+        bodies.append(json.loads(s.only()["body"])["tools"])
+    assert bodies[0] == bodies[1]
+    assert bodies[0][0]["function"]["name"] == "weather"

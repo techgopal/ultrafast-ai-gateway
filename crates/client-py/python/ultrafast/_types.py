@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 
 @dataclass(frozen=True)
 class Message:
-    """One chat message; `role` is "system", "user" or "assistant"."""
+    """One chat message; `role` is "system", "user", "assistant" or "tool".
+
+    `content` is text, a list of OpenAI-shaped parts (`text` / `image_url`), or
+    None for an assistant message that only calls tools. `tool_calls` (assistant)
+    is a list of `ToolCall`, flat `{id, name, arguments}` dicts or OpenAI-shaped
+    dicts; a "tool" message needs `tool_call_id`.
+    """
 
     role: str
-    content: str
+    content: Union[str, List[Any], None]
+    tool_calls: Optional[List[Any]] = None
+    tool_call_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
