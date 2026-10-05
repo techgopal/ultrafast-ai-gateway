@@ -14,7 +14,7 @@ use crate::sse::SseParser;
 use crate::types::{ChatRequest, ChatResponse, FinishReason, Role, StreamEvent, Usage};
 
 /// Tools, tool messages, tool calls and images are not translated yet by the
-/// Anthropic and Gemini adapters: say so instead of dropping them.
+/// Gemini adapter: say so instead of dropping them.
 pub(crate) fn reject_tools_and_images(req: &ChatRequest) -> Result<(), TranslateError> {
     if !req.tools.is_empty()
         || req.tool_choice.is_some()
@@ -208,6 +208,8 @@ pub(crate) struct StreamState {
     pub ended: bool,
     /// Tool calls started so far (OpenAI: indexes below this have started).
     pub tool_calls_started: u32,
+    /// Anthropic: (content block index, tool call index) of each tool block.
+    pub tool_blocks: Vec<(u64, u32)>,
 }
 
 impl StreamState {
@@ -330,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_and_gemini_refuse_tools_tool_messages_and_images_for_now() {
+    fn gemini_refuses_tools_tool_messages_and_images_for_now() {
         let mut tools = plain();
         tools.tools.push(Tool {
             name: "f".into(),
@@ -352,7 +354,7 @@ mod tests {
         image.messages[0]
             .content
             .push(Part::Image(ImageSource::Url("https://x.test/a.png".into())));
-        for kind in [ProviderKind::Anthropic, ProviderKind::Gemini] {
+        for kind in [ProviderKind::Gemini] {
             let target = Target {
                 kind,
                 base_url: "https://x.test".into(),
