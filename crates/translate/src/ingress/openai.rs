@@ -130,7 +130,8 @@ fn parse_part(part: &Value, allow_images: bool) -> Result<Part, TranslateError> 
     }
 }
 
-fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
+/// OpenAI-shaped `tools` entries (`{type:"function", function:{...}}`).
+pub fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
     let mut out = Vec::with_capacity(tools.len());
     for t in &tools {
         let kind = t["type"].as_str().unwrap_or("unknown");
@@ -179,7 +180,8 @@ fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
     Ok(out)
 }
 
-fn parse_tool_choice(v: Value) -> Result<ToolChoice, TranslateError> {
+/// An OpenAI-shaped `tool_choice`: "auto", "none", "required" or `{type:"function", function:{name}}`.
+pub fn parse_tool_choice(v: Value) -> Result<ToolChoice, TranslateError> {
     match &v {
         Value::String(s) => match s.as_str() {
             "auto" => Ok(ToolChoice::Auto),
@@ -237,23 +239,27 @@ fn parse_tool_calls(calls: Vec<Value>) -> Result<Vec<ToolCall>, TranslateError> 
     Ok(out)
 }
 
-pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
-    let mut wire: WireRequest =
-        serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
-    // `n` is only accepted as the integer 1, which is also the default.
-    if let Some(n) = wire.extra.remove("n") {
-        if !n.is_null() && n.as_u64() != Some(1) {
-            return Err(unsupported_field("n"));
-        }
-    }
-    reject_unknown(&wire.extra, IGNORED_REQUEST_FIELDS)?;
-    if wire.messages.is_empty() {
+/// OpenAI-shaped chat messages (the `messages` array), parsed and checked
+/// exactly as the gateway's ingress does.
+pub fn parse_messages(messages: Vec<Value>) -> Result<Vec<Message>, TranslateError> {
+    let wire = messages
+        .into_iter()
+        .map(|m| {
+            serde_json::from_value::<WireMessage>(m)
+                .map_err(|e| TranslateError::InvalidRequest(e.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    convert_messages(wire)
+}
+
+fn convert_messages(wire: Vec<WireMessage>) -> Result<Vec<Message>, TranslateError> {
+    if wire.is_empty() {
         return Err(TranslateError::InvalidRequest(
             "messages must not be empty".into(),
         ));
     }
-    let mut messages = Vec::with_capacity(wire.messages.len());
-    for m in wire.messages {
+    let mut messages = Vec::with_capacity(wire.len());
+    for m in wire {
         let role = match m.role.as_str() {
             "system" | "developer" => Role::System,
             "user" => Role::User,
@@ -311,6 +317,20 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
             },
         });
     }
+    Ok(messages)
+}
+
+pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
+    let mut wire: WireRequest =
+        serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
+    // `n` is only accepted as the integer 1, which is also the default.
+    if let Some(n) = wire.extra.remove("n") {
+        if !n.is_null() && n.as_u64() != Some(1) {
+            return Err(unsupported_field("n"));
+        }
+    }
+    reject_unknown(&wire.extra, IGNORED_REQUEST_FIELDS)?;
+    let messages = convert_messages(wire.messages)?;
     Ok(ChatRequest {
         model: wire.model,
         messages,

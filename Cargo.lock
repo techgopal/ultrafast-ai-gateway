@@ -2799,8 +2799,10 @@ dependencies = [
  "futures",
  "pyo3",
  "pyo3-async-runtimes",
+ "serde_json",
  "tokio",
  "ultrafast-client",
+ "ultrafast-translate",
 ]
 
 [[package]]

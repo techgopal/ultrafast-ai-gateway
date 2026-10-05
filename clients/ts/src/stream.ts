@@ -12,13 +12,13 @@ export const usageOf = (u: WireUsage | null): Usage | null =>
 
 type WireEvent =
   | { type: "delta"; text: string }
+  | { type: "tool_call_start"; index: number; id: string; name: string }
+  | { type: "tool_call_delta"; index: number; arguments: string }
   | { type: "done"; finish_reason: string | null; usage: WireUsage | null };
 
 function* events(json: string): Generator<StreamEvent> {
   for (const e of JSON.parse(json) as WireEvent[]) {
-    yield e.type === "delta"
-      ? { type: "delta", text: e.text }
-      : { type: "done", finishReason: e.finish_reason, usage: usageOf(e.usage) };
+    yield e.type === "done" ? { type: "done", finishReason: e.finish_reason, usage: usageOf(e.usage) } : e;
   }
 }
 

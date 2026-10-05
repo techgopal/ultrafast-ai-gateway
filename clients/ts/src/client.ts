@@ -7,8 +7,11 @@ import type {
   ChatResponse,
   EmbeddingsRequest,
   EmbeddingsResponse,
-  Message,
+  ContentPart,
   StreamEvent,
+  Tool,
+  ToolCall,
+  ToolChoice,
 } from "./types.js";
 import { wasm, type Wasm } from "./wasm.js";
 
@@ -30,20 +33,70 @@ export interface ClientOptions {
   maxResponseBytes?: number;
 }
 
-const ROLES = ["system", "user", "assistant"];
+const ROLES = ["system", "user", "assistant", "tool"];
 
-function checkMessages(messages: unknown): Message[] {
-  if (!Array.isArray(messages)) throw new HostFailure("invalid_request", "messages must be a list");
-  return messages.map((m: unknown) => {
-    const { role, content } = (m ?? {}) as Partial<Message>;
-    if (typeof role !== "string" || !ROLES.includes(role)) {
-      throw new HostFailure("invalid_request", `a message role is one of ${ROLES.join(", ")}`);
-    }
-    if (typeof content !== "string") {
-      throw new HostFailure("invalid_request", "a message content is a string (text only)");
-    }
-    return { role, content } as Message;
+const bad = (message: string): HostFailure => new HostFailure("invalid_request", message);
+const isString = (v: unknown): v is string => typeof v === "string";
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+function checkContent(content: unknown): string | ContentPart[] | null {
+  if (content === null || isString(content)) return content;
+  if (!Array.isArray(content)) throw bad("a message content is a string, a list of parts, or null");
+  return content.map((p: unknown): ContentPart => {
+    if (isObject(p) && p["type"] === "text" && isString(p["text"])) return { type: "text", text: p["text"] };
+    if (isObject(p) && p["type"] === "image" && isString(p["url"])) return { type: "image", url: p["url"] };
+    throw bad('a content part is {type:"text",text} or {type:"image",url}');
   });
+}
+
+function checkMessages(messages: unknown): unknown[] {
+  if (!Array.isArray(messages)) throw bad("messages must be a list");
+  return messages.map((m: unknown) => {
+    const o = isObject(m) ? m : {};
+    const role = o["role"];
+    if (!isString(role) || !ROLES.includes(role)) throw bad(`a message role is one of ${ROLES.join(", ")}`);
+    const content = checkContent(o["content"]);
+    const toolCalls = o["toolCalls"];
+    const toolCallId = o["toolCallId"];
+    if (toolCalls !== undefined) {
+      if (role !== "assistant") throw bad("toolCalls are only for assistant messages");
+      if (
+        !Array.isArray(toolCalls) ||
+        !toolCalls.every((c: unknown) => isObject(c) && isString(c["id"]) && isString(c["name"]) && isString(c["arguments"]))
+      ) {
+        throw bad("toolCalls is a list of {id, name, arguments} strings");
+      }
+    }
+    if (role === "tool") {
+      if (!isString(toolCallId) || toolCallId === "") throw bad("a tool message needs a toolCallId");
+    } else if (toolCallId !== undefined) {
+      throw bad("toolCallId is only for tool messages");
+    }
+    if (content === null && !(Array.isArray(toolCalls) && toolCalls.length > 0)) {
+      throw bad("a message needs content unless it is an assistant message with toolCalls");
+    }
+    return {
+      role,
+      content,
+      tool_calls: toolCalls === undefined ? undefined : (toolCalls as ToolCall[]).map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })),
+      tool_call_id: toolCallId,
+    };
+  });
+}
+
+function checkTools(tools: unknown): Tool[] | undefined {
+  if (tools === undefined) return undefined;
+  if (!Array.isArray(tools) || !tools.every((t: unknown) => isObject(t) && isString(t["name"]))) {
+    throw bad("tools is a list of {name, description?, parameters?}");
+  }
+  return (tools as Tool[]).map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }));
+}
+
+function checkToolChoice(choice: unknown): ToolChoice | undefined {
+  if (choice === undefined) return undefined;
+  if (choice === "auto" || choice === "none" || choice === "required") return choice;
+  if (isObject(choice) && isString(choice["name"])) return { name: choice["name"] };
+  throw bad('toolChoice is "auto", "none", "required" or {name}');
 }
 
 interface Built {
@@ -101,6 +154,7 @@ export class Client {
         id: string | null;
         model: string | null;
         content: string;
+        tool_calls: ToolCall[];
         finish_reason: string | null;
         usage: { input_tokens: number; output_tokens: number } | null;
       };
@@ -108,6 +162,7 @@ export class Client {
         id: out.id,
         model: out.model,
         content: out.content,
+        toolCalls: out.tool_calls.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })),
         finishReason: out.finish_reason,
         usage: usageOf(out.usage),
       };
@@ -170,6 +225,9 @@ export class Client {
     const body = JSON.stringify({
       model: r.model,
       messages: checkMessages(r.messages),
+      tools: checkTools(r.tools),
+      tool_choice: checkToolChoice(r.toolChoice),
+      parallel_tool_calls: r.parallelToolCalls,
       max_tokens: r.maxTokens,
       temperature: r.temperature,
       top_p: r.topP,

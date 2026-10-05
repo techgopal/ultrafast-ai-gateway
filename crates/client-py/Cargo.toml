@@ -18,6 +18,9 @@ doctest = false
 
 [dependencies]
 ultrafast-client = { path = "../client" }
+# The one OpenAI-format parser for dict messages and tools.
+ultrafast-translate = { path = "../translate" }
+serde_json.workspace = true
 futures.workspace = true
 # abi3: one wheel per platform for Python 3.9 and newer. The `extension-module`
 # feature is added by maturin (pyproject.toml), so `cargo test` still links.

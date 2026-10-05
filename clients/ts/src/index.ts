@@ -19,8 +19,12 @@ export type {
   ChatResponse,
   EmbeddingsRequest,
   EmbeddingsResponse,
+  ContentPart,
   FinishReason,
   Message,
   StreamEvent,
+  Tool,
+  ToolCall,
+  ToolChoice,
   Usage,
 } from "./types.js";

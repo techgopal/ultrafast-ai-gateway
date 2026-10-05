@@ -41,6 +41,34 @@ async fn run() -> Result<(), ultrafast_client::Error> {
 Anthropic has no embeddings API: `embed` returns an `invalid_request` error
 without sending anything.
 
+## Tools and images
+
+```rust
+use ultrafast_client::{ChatRequest, Tool, ToolChoice};
+
+let req = ChatRequest::new("gpt-4o")
+    .user("What is in this picture, and what is the weather there?")
+    .image("https://example.com/photo.png")? // or a base64 `data:image/png;base64,...` URL
+    .tool(Tool { name: "weather".into(), description: Some("Current weather".into()),
+                 parameters: serde_json::json!({"type": "object"}) })
+    .tool_choice(ToolChoice::Auto)
+    .parallel_tool_calls(true);
+let reply = client.chat(req).await?;
+for call in &reply.tool_calls { /* call.id, call.name, call.arguments (JSON text) */ }
+
+// Send the result back:
+let next = ChatRequest::new("gpt-4o")
+    .user("...")
+    .assistant_tool_calls("", reply.tool_calls.clone())
+    .tool_result(&reply.tool_calls[0].id, r#"{"temp_c": 18}"#);
+```
+
+`image` returns an error for a URL that is neither http(s) nor a base64 data
+URL, or an image type other than png, jpeg, gif and webp. Streams carry
+`StreamEvent::ToolCallStart` and `ToolCallDelta`. Providers that cannot do a
+thing (images on a text-only model, say) answer with an `InvalidRequest` error.
+The same requests work against a gateway and against a provider directly.
+
 ## Errors
 
 Every call returns `Error { kind, message, status, retryable, retry_after }`.

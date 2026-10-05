@@ -17,3 +17,4 @@ pub use target::Target;
 pub use ultrafast_translate::embeddings::EmbeddingsResponse;
 pub use ultrafast_translate::provider::ProviderKind;
 pub use ultrafast_translate::types;
+pub use ultrafast_translate::types::{ImageSource, Part, Tool, ToolCall, ToolChoice};

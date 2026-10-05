@@ -10,9 +10,10 @@ whether trying again could help (`retryable`) and how long to wait (`retry_after
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import asyncio
+import json
 
 from . import _native
 from ._errors import (
@@ -34,6 +35,9 @@ from ._types import (
     EmbeddingsResponse,
     Message,
     StreamEvent,
+    ToolCall,
+    ToolCallDelta,
+    ToolCallStart,
     Usage,
 )
 
@@ -58,6 +62,9 @@ __all__ = [
     "RequestTimeoutError",
     "StreamEvent",
     "Target",
+    "ToolCall",
+    "ToolCallDelta",
+    "ToolCallStart",
     "UpstreamError",
     "Usage",
     "anthropic",
@@ -68,7 +75,7 @@ __all__ = [
     "openai_compatible",
 ]
 
-_ROLES = ("system", "user", "assistant")
+_ROLES = ("system", "user", "assistant", "tool")
 
 
 def gateway(base_url: str, key: str) -> Target:
@@ -99,21 +106,49 @@ def openai_compatible(base_url: str, key: str) -> Target:
     return _native.openai_compatible(base_url, key)
 
 
-def _messages(messages: Iterable[Any]) -> List[tuple]:
+def _messages(messages: Iterable[Any]) -> str:
+    """The messages as the JSON text of an OpenAI-shaped array, which the
+    native layer parses with the gateway's own parser."""
     out = []
     for m in messages:
         if isinstance(m, Message):
-            role, content = m.role, m.content
+            out.append(_check_message({"role": m.role, "content": m.content}))
         elif isinstance(m, dict):
-            role, content = m.get("role"), m.get("content")
+            out.append(_check_message(m))
+        elif isinstance(m, tuple) and len(m) == 2:
+            out.append(_check_message({"role": m[0], "content": m[1]}))
         else:
-            raise TypeError("a message is a dict with role and content, or a Message")
-        if not isinstance(role, str) or role not in _ROLES:
-            raise ValueError(f"a message role is one of {', '.join(_ROLES)}")
-        if not isinstance(content, str):
-            raise TypeError("a message content is a string (text only)")
-        out.append((role, content))
-    return out
+            raise TypeError("a message is a dict, a (role, content) tuple, or a Message")
+    return json.dumps(out)
+
+
+def _check_message(m: Dict[str, Any]) -> Dict[str, Any]:
+    role, content = m.get("role"), m.get("content")
+    if not isinstance(role, str) or role not in _ROLES:
+        raise ValueError(f"a message role is one of {', '.join(_ROLES)}")
+    if content is not None and not isinstance(content, (str, list)):
+        raise TypeError("a message content is a string, a list of parts, or None")
+    return m
+
+
+def _tools(tools: Optional[Sequence[Dict[str, Any]]]) -> Optional[str]:
+    if tools is None:
+        return None
+    if isinstance(tools, (str, bytes, dict)) or not all(isinstance(t, dict) for t in tools):
+        raise TypeError("tools is a list of OpenAI-shaped dicts")
+    return json.dumps(list(tools))
+
+
+def _tool_choice(choice: Optional[str]) -> Optional[str]:
+    if choice is not None and not isinstance(choice, str):
+        raise TypeError('tool_choice is "auto", "none", "required" or a tool name')
+    return choice
+
+
+def _parallel(v: Optional[bool]) -> Optional[bool]:
+    if v is not None and not isinstance(v, bool):
+        raise TypeError("parallel_tool_calls is a bool")
+    return v
 
 
 def _stop(stop: Union[None, str, Sequence[str]]) -> Optional[List[str]]:
@@ -150,7 +185,9 @@ def _u32(name: str, value: Optional[int]) -> Optional[int]:
     return value
 
 
-def _chat_args(model, messages, max_tokens, temperature, top_p, stop, tags):
+def _chat_args(
+    model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls
+):
     if not isinstance(model, str):
         raise TypeError("model is a string")
     return (
@@ -161,6 +198,9 @@ def _chat_args(model, messages, max_tokens, temperature, top_p, stop, tags):
         None if top_p is None else float(top_p),
         _stop(stop),
         _tags(tags),
+        _tools(tools),
+        _tool_choice(tool_choice),
+        _parallel(parallel_tool_calls),
     )
 
 
@@ -178,14 +218,18 @@ def _usage(u) -> Optional[Usage]:
 
 
 def _chat(t) -> ChatResponse:
-    id, model, content, finish, usage = t
-    return ChatResponse(id, model, content, finish, _usage(usage))
+    id, model, content, finish, usage, calls = t
+    return ChatResponse(id, model, content, finish, _usage(usage), [ToolCall(*c) for c in calls])
 
 
 def _event(t) -> StreamEvent:
-    kind, text, finish, usage = t
+    kind, text, finish, usage, index, id, name = t
     if kind == "delta":
         return Delta(text)
+    if kind == "tool_call_start":
+        return ToolCallStart(index, id, name)
+    if kind == "tool_call_delta":
+        return ToolCallDelta(index, text)
     return Done(finish, _usage(usage))
 
 
@@ -252,30 +296,40 @@ class Client:
     def chat(
         self,
         model: str,
-        messages: Sequence[Union[Message, Dict[str, str]]],
+        messages: Sequence[Union[Message, Dict[str, Any], Tuple[str, str]]],
         *,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         stop: Union[None, str, Sequence[str]] = None,
         tags: Optional[Dict[str, str]] = None,
+        tools: Optional[Sequence[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> ChatResponse:
-        args = _chat_args(model, messages, max_tokens, temperature, top_p, stop, tags)
+        args = _chat_args(
+            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls
+        )
         return _chat(self._native.chat(*args))
 
     def chat_stream(
         self,
         model: str,
-        messages: Sequence[Union[Message, Dict[str, str]]],
+        messages: Sequence[Union[Message, Dict[str, Any], Tuple[str, str]]],
         *,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         stop: Union[None, str, Sequence[str]] = None,
         tags: Optional[Dict[str, str]] = None,
+        tools: Optional[Sequence[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> ChatStream:
         """Sends the request and returns once the answer starts; a refusal raises here."""
-        args = _chat_args(model, messages, max_tokens, temperature, top_p, stop, tags)
+        args = _chat_args(
+            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls
+        )
         return ChatStream(self._native.chat_stream(*args))
 
     def embed(
@@ -355,29 +409,39 @@ class AsyncClient:
     async def chat(
         self,
         model: str,
-        messages: Sequence[Union[Message, Dict[str, str]]],
+        messages: Sequence[Union[Message, Dict[str, Any], Tuple[str, str]]],
         *,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         stop: Union[None, str, Sequence[str]] = None,
         tags: Optional[Dict[str, str]] = None,
+        tools: Optional[Sequence[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> ChatResponse:
-        args = _chat_args(model, messages, max_tokens, temperature, top_p, stop, tags)
+        args = _chat_args(
+            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls
+        )
         return _chat(await self._native.chat(*args))
 
     def chat_stream(
         self,
         model: str,
-        messages: Sequence[Union[Message, Dict[str, str]]],
+        messages: Sequence[Union[Message, Dict[str, Any], Tuple[str, str]]],
         *,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         stop: Union[None, str, Sequence[str]] = None,
         tags: Optional[Dict[str, str]] = None,
+        tools: Optional[Sequence[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> AsyncChatStream:
-        args = _chat_args(model, messages, max_tokens, temperature, top_p, stop, tags)
+        args = _chat_args(
+            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls
+        )
         return AsyncChatStream(lambda: self._native.chat_stream(*args))
 
     async def embed(

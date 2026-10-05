@@ -184,3 +184,89 @@ async fn a_gateway_base_url_ending_in_v1_is_not_doubled() {
         );
     }
 }
+
+const OPENAI_TOOL_CALL: &str = r#"{"id":"c2","model":"gpt-4o","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":9,"completion_tokens":4}}"#;
+
+fn weather() -> ultrafast_client::Tool {
+    ultrafast_client::Tool {
+        name: "weather".into(),
+        description: Some("Current weather".into()),
+        parameters: serde_json::json!({"type":"object","properties":{"city":{"type":"string"}}}),
+    }
+}
+
+fn body_of(r: &str) -> serde_json::Value {
+    serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn a_gateway_tool_call_answer_and_the_result_round_trip() {
+    let s = serve(Script::json(200, OPENAI_TOOL_CALL)).await;
+    let c = Client::new(Target::gateway(&s.url, "k"));
+    let r = c
+        .chat(
+            ChatRequest::new("gpt-4o")
+                .user("weather in Paris?")
+                .tool(weather())
+                .tool_choice(ultrafast_client::ToolChoice::Tool("weather".into()))
+                .parallel_tool_calls(false),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.finish_reason, Some(FinishReason::ToolCalls));
+    assert_eq!(r.content, "");
+    assert_eq!(
+        r.tool_calls,
+        vec![ultrafast_client::ToolCall {
+            id: "call_1".into(),
+            name: "weather".into(),
+            arguments: r#"{"city":"Paris"}"#.into()
+        }]
+    );
+    let body = body_of(&s.only());
+    assert_eq!(body["tools"][0]["type"], "function");
+    assert_eq!(body["tools"][0]["function"]["name"], "weather");
+    assert_eq!(body["tool_choice"]["function"]["name"], "weather");
+    assert_eq!(body["parallel_tool_calls"], false);
+
+    // The follow-up turn carries the call and its result.
+    let s = serve(Script::json(200, OPENAI_CHAT)).await;
+    let c = Client::new(Target::gateway(&s.url, "k"));
+    c.chat(
+        ChatRequest::new("gpt-4o")
+            .user("weather in Paris?")
+            .tool(weather())
+            .assistant_tool_calls("", r.tool_calls)
+            .tool_result("call_1", "sunny"),
+    )
+    .await
+    .unwrap();
+    let body = body_of(&s.only());
+    assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call_1");
+    assert_eq!(body["messages"][2]["role"], "tool");
+    assert_eq!(body["messages"][2]["tool_call_id"], "call_1");
+}
+
+#[tokio::test]
+async fn a_direct_provider_target_gets_tools_and_images_too() {
+    let req = || {
+        ChatRequest::new("claude-sonnet-5")
+            .user("what is in this picture?")
+            .image("data:image/png;base64,AAAA")
+            .unwrap()
+            .tool(weather())
+    };
+    let s = serve(Script::json(200, ANTHROPIC_CHAT)).await;
+    let c = Client::new(Target::anthropic("ak-1").with_base_url(&s.url));
+    c.chat(req()).await.unwrap();
+    let body = body_of(&s.only());
+    assert_eq!(body["tools"][0]["name"], "weather");
+    assert_eq!(body["messages"][0]["content"][1]["type"], "image");
+
+    let s = serve(Script::json(200, OPENAI_TOOL_CALL)).await;
+    let c = Client::new(Target::openai_compatible(format!("{}/v1", s.url), "sk-x"));
+    let r = c.chat(req()).await.unwrap();
+    assert_eq!(r.tool_calls[0].name, "weather");
+    let body = body_of(&s.only());
+    assert_eq!(body["messages"][0]["content"][1]["type"], "image_url");
+}

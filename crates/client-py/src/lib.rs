@@ -17,11 +17,13 @@ use futures::{Stream, StreamExt};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
-use ultrafast_client::types::{ChatResponse, FinishReason, Role, StreamEvent, Usage};
+use ultrafast_client::types::{ChatResponse, FinishReason, StreamEvent, ToolChoice, Usage};
 use ultrafast_client::{
-    ChatRequest, Client as RustClient, EmbeddingsRequest, EmbeddingsResponse, Error,
+    ChatRequest, Client as RustClient, EmbeddingsRequest, EmbeddingsResponse, Error, ErrorKind,
     Target as RustTarget,
 };
+use ultrafast_translate::error::TranslateError;
+use ultrafast_translate::ingress::openai::{parse_messages, parse_tools};
 
 /// How long a blocking call waits before it lets Python handle a signal.
 const SIGNAL_SLICE: Duration = Duration::from_millis(100);
@@ -45,8 +47,26 @@ fn wait<T: Send>(py: Python<'_>, fut: impl Future<Output = T> + Send) -> PyResul
 type BoxStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, Error>> + Send>>;
 
 type UsageOut = Option<(u32, u32)>;
-type ChatOut = (String, String, String, Option<&'static str>, UsageOut);
-type EventOut = (&'static str, Option<String>, Option<&'static str>, UsageOut);
+type ToolCallOut = (String, String, String);
+type ChatOut = (
+    String,
+    String,
+    String,
+    Option<&'static str>,
+    UsageOut,
+    Vec<ToolCallOut>,
+);
+/// `(kind, text, finish_reason, usage, index, id, name)`; a `tool_call_delta`
+/// carries its argument text in `text`.
+type EventOut = (
+    &'static str,
+    Option<String>,
+    Option<&'static str>,
+    UsageOut,
+    Option<u32>,
+    Option<String>,
+    Option<String>,
+);
 type EmbedOut = (String, Vec<Vec<f32>>, u32);
 
 fn usage_out(u: Option<Usage>) -> UsageOut {
@@ -64,18 +84,46 @@ fn chat_out(r: ChatResponse) -> ChatOut {
         r.content,
         finish_out(r.finish_reason),
         usage_out(r.usage),
+        r.tool_calls
+            .into_iter()
+            .map(|c| (c.id, c.name, c.arguments))
+            .collect(),
     )
 }
 
-/// `None` for a tool call event: the Python API does not carry tools yet.
-fn event_out(e: StreamEvent) -> Option<EventOut> {
+fn event_out(e: StreamEvent) -> EventOut {
     match e {
-        StreamEvent::Delta { text } => Some(("delta", Some(text), None, None)),
-        StreamEvent::ToolCallStart { .. } | StreamEvent::ToolCallDelta { .. } => None,
+        StreamEvent::Delta { text } => ("delta", Some(text), None, None, None, None, None),
+        StreamEvent::ToolCallStart { index, id, name } => (
+            "tool_call_start",
+            None,
+            None,
+            None,
+            Some(index),
+            Some(id),
+            Some(name),
+        ),
+        StreamEvent::ToolCallDelta { index, arguments } => (
+            "tool_call_delta",
+            Some(arguments),
+            None,
+            None,
+            Some(index),
+            None,
+            None,
+        ),
         StreamEvent::Done {
             finish_reason,
             usage,
-        } => Some(("done", None, finish_out(finish_reason), usage_out(usage))),
+        } => (
+            "done",
+            None,
+            finish_out(finish_reason),
+            usage_out(usage),
+            None,
+            None,
+            None,
+        ),
     }
 }
 
@@ -102,47 +150,73 @@ fn async_err(e: Error) -> PyErr {
     Python::attach(|py| to_py(py, &e))
 }
 
-fn role(s: &str) -> PyResult<Role> {
-    match s {
-        "system" => Ok(Role::System),
-        "user" => Ok(Role::User),
-        "assistant" => Ok(Role::Assistant),
-        _ => Err(PyValueError::new_err("unknown message role")),
+type Tags = Option<BTreeMap<String, String>>;
+
+fn invalid(e: TranslateError) -> Error {
+    match e {
+        TranslateError::InvalidRequest(m) | TranslateError::Unsupported(m) => {
+            Error::new(ErrorKind::InvalidRequest, m)
+        }
+        other => Error::new(ErrorKind::InvalidRequest, other.to_string()),
     }
 }
 
-type Tags = Option<BTreeMap<String, String>>;
+fn json_list(what: &str, text: &str) -> Result<Vec<serde_json::Value>, Error> {
+    serde_json::from_str(text)
+        .map_err(|e| Error::new(ErrorKind::InvalidRequest, format!("{what}: {e}")))
+}
+
+/// What the Python layer hands over: messages and tools as JSON text in
+/// OpenAI's shape, parsed by the same code the gateway uses.
+struct ToolArgs {
+    tools: Option<String>,
+    tool_choice: Option<String>,
+    parallel_tool_calls: Option<bool>,
+}
 
 #[allow(clippy::too_many_arguments)]
 fn chat_request(
+    py: Python<'_>,
     model: String,
-    messages: Vec<(String, String)>,
+    messages: String,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     top_p: Option<f32>,
     stop: Option<Vec<String>>,
     tags: Tags,
+    tools: ToolArgs,
 ) -> PyResult<ChatRequest> {
-    let mut req = ChatRequest::new(model);
-    for (r, c) in messages {
-        req = req.message(role(&r)?, c);
-    }
-    if let Some(v) = max_tokens {
-        req = req.max_tokens(v);
-    }
-    if let Some(v) = temperature {
-        req = req.temperature(v);
-    }
-    if let Some(v) = top_p {
-        req = req.top_p(v);
-    }
-    if let Some(v) = stop {
-        req = req.stop(v);
-    }
-    for (k, v) in tags.unwrap_or_default() {
-        req = req.tag(k, v);
-    }
-    Ok(req)
+    let build = || -> Result<ChatRequest, Error> {
+        let mut req = ChatRequest::new(model);
+        req.inner.messages = parse_messages(json_list("messages", &messages)?).map_err(invalid)?;
+        if let Some(t) = &tools.tools {
+            req.inner.tools = parse_tools(json_list("tools", t)?).map_err(invalid)?;
+        }
+        req.inner.tool_choice = tools.tool_choice.map(|c| match c.as_str() {
+            "auto" => ToolChoice::Auto,
+            "none" => ToolChoice::None,
+            "required" => ToolChoice::Required,
+            _ => ToolChoice::Tool(c),
+        });
+        req.inner.parallel_tool_calls = tools.parallel_tool_calls;
+        if let Some(v) = max_tokens {
+            req = req.max_tokens(v);
+        }
+        if let Some(v) = temperature {
+            req = req.temperature(v);
+        }
+        if let Some(v) = top_p {
+            req = req.top_p(v);
+        }
+        if let Some(v) = stop {
+            req = req.stop(v);
+        }
+        for (k, v) in tags.unwrap_or_default() {
+            req = req.tag(k, v);
+        }
+        Ok(req)
+    };
+    build().map_err(|e| to_py(py, &e))
 }
 
 fn embed_request(
@@ -258,21 +332,15 @@ impl Shared {
         let Some(stream) = guard.as_mut() else {
             return Ok(None);
         };
-        loop {
-            match stream.next().await {
-                Some(Ok(e)) => {
-                    if let Some(out) = event_out(e) {
-                        return Ok(Some(out));
-                    }
-                }
-                Some(Err(e)) => {
-                    *guard = None;
-                    return Err(e);
-                }
-                None => {
-                    *guard = None;
-                    return Ok(None);
-                }
+        match stream.next().await {
+            Some(Ok(e)) => Ok(Some(event_out(e))),
+            Some(Err(e)) => {
+                *guard = None;
+                Err(e)
+            }
+            None => {
+                *guard = None;
+                Ok(None)
             }
         }
     }
@@ -318,14 +386,31 @@ impl Client {
         &self,
         py: Python<'_>,
         model: String,
-        messages: Vec<(String, String)>,
+        messages: String,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
         top_p: Option<f32>,
         stop: Option<Vec<String>>,
         tags: Tags,
+        tools: Option<String>,
+        tool_choice: Option<String>,
+        parallel_tool_calls: Option<bool>,
     ) -> PyResult<ChatOut> {
-        let req = chat_request(model, messages, max_tokens, temperature, top_p, stop, tags)?;
+        let req = chat_request(
+            py,
+            model,
+            messages,
+            max_tokens,
+            temperature,
+            top_p,
+            stop,
+            tags,
+            ToolArgs {
+                tools,
+                tool_choice,
+                parallel_tool_calls,
+            },
+        )?;
         let client = self.inner.clone();
         // The GIL is released while waiting on the network; signals are checked between slices.
         let r = wait(py, client.chat(req))?;
@@ -337,14 +422,31 @@ impl Client {
         &self,
         py: Python<'_>,
         model: String,
-        messages: Vec<(String, String)>,
+        messages: String,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
         top_p: Option<f32>,
         stop: Option<Vec<String>>,
         tags: Tags,
+        tools: Option<String>,
+        tool_choice: Option<String>,
+        parallel_tool_calls: Option<bool>,
     ) -> PyResult<SyncStream> {
-        let req = chat_request(model, messages, max_tokens, temperature, top_p, stop, tags)?;
+        let req = chat_request(
+            py,
+            model,
+            messages,
+            max_tokens,
+            temperature,
+            top_p,
+            stop,
+            tags,
+            ToolArgs {
+                tools,
+                tool_choice,
+                parallel_tool_calls,
+            },
+        )?;
         let client = self.inner.clone();
         let r = wait(py, open_stream(client, req))?;
         r.map(|shared| SyncStream { shared })
@@ -413,14 +515,31 @@ impl AsyncClient {
         &self,
         py: Python<'py>,
         model: String,
-        messages: Vec<(String, String)>,
+        messages: String,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
         top_p: Option<f32>,
         stop: Option<Vec<String>>,
         tags: Tags,
+        tools: Option<String>,
+        tool_choice: Option<String>,
+        parallel_tool_calls: Option<bool>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let req = chat_request(model, messages, max_tokens, temperature, top_p, stop, tags)?;
+        let req = chat_request(
+            py,
+            model,
+            messages,
+            max_tokens,
+            temperature,
+            top_p,
+            stop,
+            tags,
+            ToolArgs {
+                tools,
+                tool_choice,
+                parallel_tool_calls,
+            },
+        )?;
         let client = self.inner.clone();
         future_into_py(py, async move {
             client.chat(req).await.map(chat_out).map_err(async_err)
@@ -432,14 +551,31 @@ impl AsyncClient {
         &self,
         py: Python<'py>,
         model: String,
-        messages: Vec<(String, String)>,
+        messages: String,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
         top_p: Option<f32>,
         stop: Option<Vec<String>>,
         tags: Tags,
+        tools: Option<String>,
+        tool_choice: Option<String>,
+        parallel_tool_calls: Option<bool>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let req = chat_request(model, messages, max_tokens, temperature, top_p, stop, tags)?;
+        let req = chat_request(
+            py,
+            model,
+            messages,
+            max_tokens,
+            temperature,
+            top_p,
+            stop,
+            tags,
+            ToolArgs {
+                tools,
+                tool_choice,
+                parallel_tool_calls,
+            },
+        )?;
         let client = self.inner.clone();
         future_into_py(py, async move {
             open_stream(client, req)
