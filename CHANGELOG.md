@@ -13,11 +13,21 @@ response cache, and the same in the playground and the clients.
 ### Added
 - **Tools** on `/v1/chat/completions` and `/v1/messages`, for every provider
   kind (OpenAI, Azure, Anthropic, Gemini, OpenAI-compatible), streaming and
-  not. Tool arguments are passed through as the model wrote them. With `tools`
-  empty or absent, `tool_choice` `auto` / `none` and `parallel_tool_calls` are
-  ignored; `required` or a named tool is a 400. Gemini tool call ids are
-  `call_<n>` and tool schemas are sent as `parametersJsonSchema` (full JSON
-  Schema).
+  not. Tool arguments pass through unchanged between OpenAI-format callers
+  and OpenAI-format providers; otherwise they are converted from or to the
+  provider's JSON object. With `tools` empty or absent, `tool_choice` `auto` /
+  `none` and `parallel_tool_calls` are ignored; `required` or a named tool is a
+  400, and so is a named tool that is not in `tools`. `function.strict` is sent
+  to OpenAI and Azure (Anthropic and Gemini ignore it). A `tool` message may
+  carry `name`. Gemini tool call ids are `call_<8 hex>_<n>` (the hex from the
+  response id, so they differ from answer to answer), tool schemas are sent as
+  `parametersJsonSchema` (full JSON Schema), and earlier tool calls carry
+  Google's placeholder thought signature `skip_thought_signature_validator`
+  (Gemini 3 refuses history without one).
+- Anthropic-format streams never interleave content blocks: the first tool
+  call streams live, later calls and text after a call are sent whole after it.
+- OpenAI-format answers with tool calls that end as `stop` are reported as
+  `tool_calls`.
 - **Images** in user messages: PNG, JPEG, GIF and WebP as `http(s)` or `data:`
   URLs (Anthropic `image` blocks with a `base64` or `url` source). The gateway
   never fetches an image URL; Gemini takes `data:` URLs only (`https` is a 400).
@@ -39,7 +49,9 @@ response cache, and the same in the playground and the clients.
 ### Known limits
 - No Responses API, image or audio output, or `response_format` / structured
   outputs yet (phase 2).
-- Gemini thinking signatures are not echoed back in multi-turn tool use.
+- Gemini thought signatures are not carried; the documented placeholder is
+  sent instead.
+- A tool result's `is_error` flag is not carried.
 - Single-flight is per process; clearing the cache on configuration changes
   stays.
 - The Python wheels, the npm package and the crates are still not published.

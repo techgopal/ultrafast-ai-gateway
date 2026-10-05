@@ -140,8 +140,11 @@ client.messages.create(model="anthropic/claude-sonnet-5", max_tokens=256,
 The gateway accepts the key as `Authorization: Bearer` or `x-api-key`.
 
 **Tools.** Send `tools` on `/v1/chat/completions` or `/v1/messages`, to any
-provider kind, streaming or not; the gateway translates them and passes the
-arguments through as the model wrote them (a JSON string you parse yourself).
+provider kind, streaming or not; the gateway translates them. The arguments of
+a call are a JSON string you parse yourself. Between an OpenAI-format caller and
+an OpenAI-format provider (OpenAI, Azure, compatibles) the text passes through
+unchanged; otherwise it is converted from or to the provider's JSON object
+(Anthropic, Gemini), so it is serialized once and its keys come out sorted.
 
 ```bash
 curl http://127.0.0.1:3000/v1/chat/completions \
@@ -166,9 +169,14 @@ client.chat.completions.create(model="openai/gpt-4o", messages=messages, tools=t
 
 `tool_choice` is `auto`, `none`, `required` or a named tool. With `tools` empty
 or absent, `auto`, `none` and `parallel_tool_calls` are ignored (SDKs send them
-anyway); `required` or a named tool is a 400. Gemini names its tool calls
-`call_<n>` and receives tool schemas as `parametersJsonSchema` (full JSON
-Schema).
+anyway); `required` is a 400, and so is a named tool, with no tools or when it
+is not among `tools`. A `tool` message may carry `name` (OpenAI's older form);
+Anthropic ignores it and Gemini uses it when the call id matches no earlier
+call. `function.strict` is sent to OpenAI and Azure; Anthropic and Gemini have
+no such setting and ignore it. Gemini has no call ids, so the gateway names
+its tool calls `call_<8 hex>_<n>`, where the hex comes from the response id and
+differs from answer to answer (the same answer always gets the same ids), and
+sends tool schemas as `parametersJsonSchema` (full JSON Schema).
 
 **Images.** Send an `image_url` part in a user message (PNG, JPEG, GIF or WebP;
 an `http(s)` URL or a `data:` URL). Only user messages may carry images.
@@ -419,7 +427,12 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
 - A backup restore is manual, and a configuration import never deletes.
 - No Responses API, image or audio output, or `response_format` / structured
   outputs yet (phase 2). SQLite only.
-- Gemini thinking signatures are not echoed back in multi-turn tool use.
+- Gemini thought signatures are not carried: no other format has them. Every
+  earlier tool call sent to Gemini carries Google's documented placeholder
+  signature (`skip_thought_signature_validator`), which Gemini 3 models need
+  to accept the history.
+- A tool result's `is_error` flag (Anthropic) is not carried; its text is kept.
+- `function.strict` reaches OpenAI and Azure only.
 - The image is linux/amd64; the crates are not on crates.io.
 
 ## Development
