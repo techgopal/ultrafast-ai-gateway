@@ -650,3 +650,45 @@ async fn a_playground_calls_cost_reaches_the_users_budget_through_the_log_writer
 async fn a_playground_calls_cost_reaches_the_teams_budget_through_the_log_writer() {
     spend_reaches(LimitScope::Team, "arjun").await;
 }
+
+#[tokio::test]
+async fn playground_accepts_tools_and_images() {
+    let w = world().await;
+    let lena = w.org.sign_in("lena").await;
+    let body = json!({
+        "model": "p/open",
+        "messages": [
+            { "role": "user", "content": [
+                { "type": "text", "text": "what is this" },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+            ]},
+            { "role": "assistant", "content": null, "tool_calls": [
+                { "id": "call_1", "type": "function",
+                  "function": { "name": "look", "arguments": "{}" } }
+            ]},
+            { "role": "tool", "tool_call_id": "call_1", "content": "a cat" }
+        ],
+        "tools": [{ "type": "function", "function": {
+            "name": "look", "parameters": { "type": "object" } } }],
+        "tool_choice": "auto",
+        "parallel_tool_calls": false
+    });
+    let (status, _, out) = w.play(&lena, body).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&out));
+    let sent = w.upstream.received_requests().await.unwrap();
+    assert_eq!(sent.len(), 1);
+    let sent: Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(sent["tools"][0]["function"]["name"], "look");
+    assert_eq!(sent["messages"][0]["content"][1]["type"], "image_url");
+    assert_eq!(sent["messages"][2]["tool_call_id"], "call_1");
+    // Without the CSRF token the same call is refused before any upstream call.
+    let (status, _, _) = post_to(
+        &w.org.api.app,
+        "/api/playground/chat",
+        &[("cookie", &lena.cookie)],
+        "{}",
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(w.upstream.received_requests().await.unwrap().len(), 1);
+}

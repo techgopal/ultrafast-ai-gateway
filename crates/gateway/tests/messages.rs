@@ -394,3 +394,90 @@ async fn a_route_skips_a_target_the_key_may_not_call() {
     );
     assert_eq!(h.upstream.received_requests().await.unwrap().len(), 1);
 }
+
+mod tools {
+    use super::*;
+
+    fn tool_message(stream: bool) -> String {
+        json!({
+            "model": "p/m", "max_tokens": 50, "stream": stream,
+            "messages": [{ "role": "user", "content": "weather in Paris?" }],
+            "tools": [{ "name": "get_weather", "description": "Weather by city",
+                "input_schema": { "type": "object", "properties": { "city": { "type": "string" } } } }],
+            "tool_choice": { "type": "auto" }
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn anthropic_ingress_tool_call_to_openai_provider() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_partial_json(json!({
+                "tools": [{ "type": "function", "function": { "name": "get_weather" } }],
+                "tool_choice": "auto"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "c1", "model": "m",
+                "choices": [{ "message": { "role": "assistant", "content": null,
+                    "tool_calls": [{ "id": "call_1", "type": "function",
+                        "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" } }] },
+                    "finish_reason": "tool_calls" }],
+                "usage": { "prompt_tokens": 4, "completion_tokens": 6 }
+            })))
+            .expect(1)
+            .mount(&h.upstream)
+            .await;
+        let (status, _, body) = messages(&h, &tool_message(false)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let v = json_of(&body);
+        assert_eq!(v["stop_reason"], "tool_use");
+        assert_eq!(
+            v["content"],
+            json!([{ "type": "tool_use", "id": "call_1", "name": "get_weather",
+                "input": { "city": "Paris" } }])
+        );
+        let records = h.sink.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].status, 200);
+        assert_eq!(records[0].endpoint, "messages");
+        assert_eq!(records[0].attempts[0].outcome, AttemptOutcome::Ok);
+    }
+
+    #[tokio::test]
+    async fn anthropic_ingress_streamed_tool_call_from_openai_provider() {
+        let h = harness("openai").await;
+        let chunks = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Paris\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":6}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(sse(chunks))
+            .mount(&h.upstream)
+            .await;
+        let (status, _, body) = messages(&h, &tool_message(true)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let evs = events(&body);
+        let start = evs
+            .iter()
+            .find(|(n, d)| n == "content_block_start" && d["content_block"]["type"] == "tool_use")
+            .expect("a tool_use block");
+        assert_eq!(start.1["content_block"]["id"], "call_1");
+        assert_eq!(start.1["content_block"]["name"], "get_weather");
+        let args: String = evs
+            .iter()
+            .filter_map(|(_, d)| d["delta"]["partial_json"].as_str())
+            .collect();
+        assert_eq!(args, r#"{"city":"Paris"}"#);
+        let delta = evs.iter().find(|(n, _)| n == "message_delta").unwrap();
+        assert_eq!(delta.1["delta"]["stop_reason"], "tool_use");
+        let records = h.sink.wait_for(1).await;
+        assert_eq!(records[0].status, 200);
+        assert_eq!(records[0].attempts[0].outcome, AttemptOutcome::Ok);
+    }
+}

@@ -7166,6 +7166,10 @@
             "type": "string",
             "description": "A model as `provider/name`, or a route name."
           },
+          "parallel_tool_calls": {
+            "type": "boolean",
+            "description": "As in `/v1/chat/completions`; ignored without `tools`."
+          },
           "stop": {
             "type": "array",
             "items": {
@@ -7179,6 +7183,17 @@
           "temperature": {
             "type": "number",
             "format": "double"
+          },
+          "tool_choice": {
+            "type": "object",
+            "description": "`auto`, `none`, `required` or a named function, as in\n`/v1/chat/completions`. Without `tools`, `required` and a named\nfunction are refused with 400."
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Functions the model may call, as in `/v1/chat/completions`."
           },
           "top_p": {
             "type": "number",
@@ -7228,11 +7243,33 @@
         ],
         "properties": {
           "content": {
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            ],
+            "description": "Text, or a list of parts (`text` and `image_url`) as in `/v1/chat/completions`. Null is allowed on an assistant message that has `tool_calls`. Images are `data:` URLs or, except for Gemini, `http(s)` URLs, and count toward the request body limit (10 MiB)."
           },
           "role": {
             "type": "string",
-            "description": "`system`, `user` or `assistant`."
+            "description": "`system`, `user`, `assistant` or `tool`."
+          },
+          "tool_call_id": {
+            "type": "string",
+            "description": "On a `tool` message: the id of the call it answers."
+          },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The calls of an assistant message, as in `/v1/chat/completions`."
           }
         }
       },

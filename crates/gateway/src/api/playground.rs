@@ -30,13 +30,46 @@ pub struct PlaygroundChatRequest {
     /// Answer as server-sent events.
     #[schema(nullable = false)]
     pub stream: Option<bool>,
+    /// Functions the model may call, as in `/v1/chat/completions`.
+    #[schema(value_type = Vec<Object>, nullable = false, required = false)]
+    pub tools: Option<Vec<serde_json::Value>>,
+    /// `auto`, `none`, `required` or a named function, as in
+    /// `/v1/chat/completions`. Without `tools`, `required` and a named
+    /// function are refused with 400.
+    #[schema(value_type = Object, nullable = false, required = false)]
+    pub tool_choice: Option<serde_json::Value>,
+    /// As in `/v1/chat/completions`; ignored without `tools`.
+    #[schema(nullable = false)]
+    pub parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct PlaygroundMessage {
-    /// `system`, `user` or `assistant`.
+    /// `system`, `user`, `assistant` or `tool`.
     pub role: String,
-    pub content: String,
+    #[schema(schema_with = content_schema)]
+    pub content: serde_json::Value,
+    /// The calls of an assistant message, as in `/v1/chat/completions`.
+    #[schema(value_type = Vec<Object>, nullable = false, required = false)]
+    pub tool_calls: Option<Vec<serde_json::Value>>,
+    /// On a `tool` message: the id of the call it answers.
+    #[schema(nullable = false)]
+    pub tool_call_id: Option<String>,
+}
+
+/// A string, or a list of content parts.
+fn content_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    use utoipa::openapi::schema::{ArrayBuilder, ObjectBuilder, OneOfBuilder, Type};
+    OneOfBuilder::new()
+        .description(Some(
+            "Text, or a list of parts (`text` and `image_url`) as in \
+             `/v1/chat/completions`. Null is allowed on an assistant message that has \
+             `tool_calls`. Images are `data:` URLs or, except for Gemini, `http(s)` \
+             URLs, and count toward the request body limit (10 MiB).",
+        ))
+        .item(ObjectBuilder::new().schema_type(Type::String))
+        .item(ArrayBuilder::new().items(ObjectBuilder::new().schema_type(Type::Object)))
+        .into()
 }
 
 /// The answer of `/v1/chat/completions`, in the OpenAI shape.

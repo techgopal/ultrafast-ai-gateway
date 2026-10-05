@@ -676,3 +676,201 @@ async fn azure_without_an_api_version_uses_the_default() {
     let (status, out) = post_chat(&h.app, Some(&h.key), BODY).await;
     assert_eq!(status, StatusCode::OK, "{out}");
 }
+
+mod tools_and_images {
+    use super::*;
+    use common::upstream_calls;
+    use ultrafast_gateway::telemetry::AttemptOutcome;
+
+    const PNG: &str = "iVBORw0KGgo=";
+
+    fn tool_request(model: &str, stream: bool) -> String {
+        json!({
+            "model": model,
+            "stream": stream,
+            "messages": [{ "role": "user", "content": "weather in Paris?" }],
+            "tools": [{ "type": "function", "function": {
+                "name": "get_weather", "description": "Weather by city",
+                "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+            }}],
+            "tool_choice": "auto"
+        })
+        .to_string()
+    }
+
+    fn data_lines(body: &str) -> Vec<Value> {
+        body.lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter(|d| *d != "[DONE]")
+            .map(|d| serde_json::from_str(d).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn openai_ingress_tool_call_to_anthropic_provider() {
+        let h = harness("anthropic").await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_partial_json(json!({
+                "tools": [{ "name": "get_weather", "description": "Weather by city",
+                    "input_schema": { "type": "object" } }],
+                "tool_choice": { "type": "auto" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "m1", "model": "claude-sonnet-5",
+                "content": [{ "type": "tool_use", "id": "toolu_1", "name": "get_weather",
+                    "input": { "city": "Paris" } }],
+                "stop_reason": "tool_use",
+                "usage": { "input_tokens": 4, "output_tokens": 5 }
+            })))
+            .expect(1)
+            .mount(&h.upstream)
+            .await;
+        let (status, out) = post_chat(
+            &h.app,
+            Some(&h.key),
+            &tool_request("p/claude-sonnet-5", false),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let choice = &v["choices"][0];
+        assert_eq!(choice["finish_reason"], "tool_calls");
+        let call = &choice["message"]["tool_calls"][0];
+        assert_eq!(call["id"], "toolu_1");
+        assert_eq!(call["type"], "function");
+        assert_eq!(call["function"]["name"], "get_weather");
+        let args: Value =
+            serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args, json!({ "city": "Paris" }));
+        let records = h.sink.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].status, 200);
+        assert_eq!(records[0].attempts[0].outcome, AttemptOutcome::Ok);
+        assert_eq!(records[0].usage.unwrap().output_tokens, 5);
+    }
+
+    #[tokio::test]
+    async fn openai_ingress_streamed_tool_call_from_anthropic_provider() {
+        let h = harness("anthropic").await;
+        let events = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"get_weather\",\"input\":{}}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"Paris\\\"}\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":7}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(events.to_string(), "text/event-stream"),
+            )
+            .mount(&h.upstream)
+            .await;
+        let (status, out) = post_chat(
+            &h.app,
+            Some(&h.key),
+            &tool_request("p/claude-sonnet-5", true),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        let chunks = data_lines(&out);
+        let mut id = None;
+        let mut name = None;
+        let mut args = String::new();
+        let mut finish = None;
+        for c in &chunks {
+            if let Some(call) = c["choices"][0]["delta"]["tool_calls"].get(0) {
+                assert_eq!(call["index"], 0);
+                if let Some(i) = call["id"].as_str() {
+                    id = Some(i.to_string());
+                    name = call["function"]["name"].as_str().map(str::to_string);
+                }
+                args.push_str(call["function"]["arguments"].as_str().unwrap_or(""));
+            }
+            if let Some(f) = c["choices"][0]["finish_reason"].as_str() {
+                finish = Some(f.to_string());
+            }
+        }
+        assert_eq!(id.as_deref(), Some("toolu_1"));
+        assert_eq!(name.as_deref(), Some("get_weather"));
+        assert_eq!(args, r#"{"city":"Paris"}"#);
+        assert_eq!(finish.as_deref(), Some("tool_calls"));
+        let records = h.sink.wait_for(1).await;
+        assert_eq!(records[0].status, 200);
+        assert_eq!(records[0].attempts[0].outcome, AttemptOutcome::Ok);
+        assert!(!records[0].estimated);
+    }
+
+    #[tokio::test]
+    async fn gemini_https_image_is_400_without_upstream_call() {
+        let h = harness("gemini").await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{ "content": { "role": "model", "parts": [{ "text": "a cat" }] },
+                    "finishReason": "STOP" }],
+                "usageMetadata": { "promptTokenCount": 4, "candidatesTokenCount": 5 }
+            })))
+            .mount(&h.upstream)
+            .await;
+        let body = json!({ "model": "p/m", "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "what is this" },
+            { "type": "image_url", "image_url": { "url": "https://example.com/cat.png" } }
+        ]}]})
+        .to_string();
+        let (status, out) = post_chat(&h.app, Some(&h.key), &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{out}");
+        assert!(error_message(&out).contains("data: URLs only"), "{out}");
+        assert_eq!(upstream_calls(&h.upstream).await, 0);
+
+        // A data: URL is accepted and does reach the provider.
+        let ok = json!({ "model": "p/m", "messages": [{ "role": "user", "content": [
+            { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{PNG}") } }
+        ]}]})
+        .to_string();
+        let (status, out) = post_chat(&h.app, Some(&h.key), &ok).await;
+        assert_eq!(status, StatusCode::OK, "{out}");
+        assert_eq!(upstream_calls(&h.upstream).await, 1);
+    }
+
+    #[tokio::test]
+    async fn image_body_over_limit_is_413() {
+        let h = harness_with_limit("openai", 4096).await;
+        Mock::given(method("POST"))
+            .respond_with(openai_ok())
+            .mount(&h.upstream)
+            .await;
+        let big = "A".repeat(8192);
+        let body = json!({ "model": "p/m", "messages": [{ "role": "user", "content": [
+            { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{big}") } }
+        ]}]})
+        .to_string();
+        let (status, out) = post_chat(&h.app, Some(&h.key), &body).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{out}");
+        assert!(!error_message(&out).is_empty());
+        assert_eq!(upstream_calls(&h.upstream).await, 0);
+    }
+
+    #[tokio::test]
+    async fn empty_tools_with_required_choice_is_400_and_auto_is_ignored() {
+        let h = harness("openai").await;
+        Mock::given(method("POST"))
+            .respond_with(openai_ok())
+            .mount(&h.upstream)
+            .await;
+        let make = |choice: Value| {
+            json!({ "model": "p/m", "tools": [], "tool_choice": choice,
+                "parallel_tool_calls": false,
+                "messages": [{ "role": "user", "content": "hi" }] })
+            .to_string()
+        };
+        let (status, _) = post_chat(&h.app, Some(&h.key), &make(json!("required"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(upstream_calls(&h.upstream).await, 0);
+        let (status, _) = post_chat(&h.app, Some(&h.key), &make(json!("auto"))).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(upstream_calls(&h.upstream).await, 1);
+    }
+}

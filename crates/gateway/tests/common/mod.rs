@@ -675,3 +675,8 @@ pub async fn hanging_upstream() -> (String, tokio::sync::oneshot::Receiver<()>) 
     });
     (uri, rx)
 }
+
+/// How many requests the mock upstream has received.
+pub async fn upstream_calls(upstream: &MockServer) -> usize {
+    upstream.received_requests().await.unwrap().len()
+}

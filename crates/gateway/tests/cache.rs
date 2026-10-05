@@ -789,3 +789,78 @@ async fn the_log_row_of_a_hit_names_who_gave_the_answer() {
     }
     assert!(records[1].cached);
 }
+
+fn tools_body(description: &str) -> String {
+    json!({
+        "model": "r", "max_tokens": 10, "temperature": 0,
+        "messages": [{ "role": "user", "content": "weather in Paris?" }],
+        "tools": [{ "type": "function", "function": {
+            "name": "get_weather", "description": description,
+            "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+        }}]
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn cached_tool_call_answer_is_served_from_cache() {
+    let w = world(CacheScope::Team).await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "c1", "model": "gpt-4o",
+            "choices": [{ "message": { "role": "assistant", "content": null,
+                "tool_calls": [{ "id": "call_1", "type": "function",
+                    "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" } }] },
+                "finish_reason": "tool_calls" }],
+            "usage": { "prompt_tokens": 9, "completion_tokens": 7 }
+        })))
+        .with_priority(1)
+        .mount(&w.h.upstream)
+        .await;
+    let (a, _) = w.two_teams().await;
+    let body = tools_body("Weather by city");
+    let (s1, _, first) = w.chat_as(&a, &body).await;
+    let (s2, _, second) = w.chat_as(&a, &body).await;
+    assert_eq!((s1, s2), (StatusCode::OK, StatusCode::OK));
+    assert_eq!(w.provider_calls().await, 1);
+    assert_eq!(first, second, "a hit is answered as the first call was");
+    let v: Value = serde_json::from_str(&second).unwrap();
+    assert_eq!(v["choices"][0]["finish_reason"], "tool_calls");
+    assert_eq!(
+        v["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        "{\"city\":\"Paris\"}"
+    );
+    assert!(w.h.sink.records()[1].cached);
+    // A changed tool description is another request.
+    assert_eq!(
+        w.chat(&a, &tools_body("Weather by town")).await,
+        StatusCode::OK
+    );
+    assert_eq!(w.provider_calls().await, 2);
+    // So is the same request without tools.
+    let plain = json!({ "model": "r", "max_tokens": 10, "temperature": 0,
+        "messages": [{ "role": "user", "content": "weather in Paris?" }] })
+    .to_string();
+    assert_eq!(w.chat(&a, &plain).await, StatusCode::OK);
+    assert_eq!(w.provider_calls().await, 3);
+}
+
+#[tokio::test]
+async fn images_are_part_of_the_cache_key() {
+    let w = world(CacheScope::Team).await;
+    let (a, _) = w.two_teams().await;
+    let with = |data: &str| {
+        json!({ "model": "r", "max_tokens": 10, "temperature": 0,
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "what is this" },
+                { "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{data}") } }
+            ]}] })
+        .to_string()
+    };
+    assert_eq!(w.chat(&a, &with("AAAA")).await, StatusCode::OK);
+    assert_eq!(w.chat(&a, &with("AAAA")).await, StatusCode::OK);
+    assert_eq!(w.provider_calls().await, 1);
+    assert_eq!(w.chat(&a, &with("BBBB")).await, StatusCode::OK);
+    assert_eq!(w.provider_calls().await, 2);
+}

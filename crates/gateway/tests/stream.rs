@@ -413,6 +413,34 @@ mod records {
     }
 
     #[tokio::test]
+    async fn stream_estimate_counts_tool_arguments() {
+        let h = harness("openai").await;
+        let args = "x".repeat(400);
+        let event = |arguments: &str| {
+            format!(
+                "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"function\":{{\"arguments\":\"{arguments}\"}}}}]}},\"finish_reason\":null}}]}}\n\n"
+            )
+        };
+        let start = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n";
+        // The stream breaks after the tool deltas: no finish, no usage.
+        Mock::given(method("POST"))
+            .respond_with(sse(&format!("{start}{}{}", event(&args), event(&args))))
+            .mount(&h.upstream)
+            .await;
+        let body = r#"{"model":"p/gpt-4o","stream":true,"messages":[{"role":"user","content":"12345678"}]}"#;
+        post_chat(&h.app, Some(&h.key), body).await;
+        let records = h.sink.wait_for(1).await;
+        let usage = records[0].usage.expect("an estimate");
+        assert_eq!(usage.input_tokens, 2);
+        assert!(
+            usage.output_tokens >= 200,
+            "800 argument characters are about 200 tokens, got {}",
+            usage.output_tokens
+        );
+        assert!(records[0].estimated);
+    }
+
+    #[tokio::test]
     async fn a_stream_that_fails_before_any_content_is_not_charged() {
         let h = harness("openai").await;
         Mock::given(method("POST"))
