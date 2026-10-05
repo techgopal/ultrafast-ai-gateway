@@ -56,35 +56,43 @@ chat.
 
 ## Quickstart
 
-Build the console and the gateway (Node 22 with pnpm, Rust 1.94):
+### 1. Get it
+
+**Docker** (linux/amd64; listens on 3000, keeps its data in `/var/lib/ultrafast`):
 
 ```bash
-pnpm --dir ui install --frozen-lockfile && pnpm --dir ui build
-cargo build --release -p ultrafast-gateway
-```
-
-Or use Docker (the image builds both; it listens on 3000 and keeps its data in
-the volume `/var/lib/ultrafast`):
-
-```bash
-docker build -t ultrafast .
 # The first admin, in a file of its own: not on the command line, where the
 # password would be in the shell history and in `docker inspect`.
 printf 'UF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' > admin.env
 chmod 600 admin.env
-docker run -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast --env-file admin.env ultrafast
+docker run -d --name ultrafast -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast \
+  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.1
 ```
 
-Start it. `UF_ADMIN_EMAIL` and `UF_ADMIN_PASSWORD` create the first admin when
-there is no user yet (password 12 to 256 characters). They are read only then:
-once the admin exists, start the gateway without them (run the container again
-without `--env-file` and delete `admin.env`, or unset them) so the password
-does not stay in the environment.
+**Or a binary** from the [latest release](https://github.com/techgopal/ultrafast-ai-gateway/releases)
+(Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x64). For Linux x86_64:
 
 ```bash
+V=2.0.0-beta.1; T=x86_64-unknown-linux-musl
+curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/ultrafast-v$V-$T.tar.gz
+curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c
+tar xzf ultrafast-v$V-$T.tar.gz && cd ultrafast-v$V-$T
 UF_DATA_DIR=./data UF_ADMIN_EMAIL=you@example.com UF_ADMIN_PASSWORD='a long password' \
-  ./target/release/ultrafast serve
+  ./ultrafast serve
 ```
+
+(Other targets: `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`,
+`aarch64-apple-darwin`, and `x86_64-pc-windows-msvc.zip`. To build from source,
+see [Development](#development).)
+
+### 2. First admin
+
+`UF_ADMIN_EMAIL` and `UF_ADMIN_PASSWORD` create the first admin when there is
+no user yet (password 12 to 256 characters). They are read only then: once the
+admin exists, start the gateway without them (run the container again without
+`--env-file` and delete `admin.env`, or unset them) so the password does not
+stay in the environment.
 
 Without them, the console asks you to create the first admin on first visit,
 and for a **setup code**: a gateway that starts with no user prints a one-time
@@ -93,7 +101,9 @@ first admin.`, see `docker logs` for the container). Only who can read the log
 can create the first admin, so a gateway reachable by others before setup
 cannot be taken over. A restart prints a new code.
 
-Then, in the console at <http://127.0.0.1:3000> (plain HTTP works on localhost):
+### 3. Provider, model, key
+
+In the console at <http://127.0.0.1:3000> (plain HTTP works on localhost):
 
 1. **Providers**, Add: a name, a kind (`openai`, `anthropic`, `gemini`,
    `azure`), the base URL (for example `https://api.openai.com/v1`) and the API key.
@@ -102,7 +112,9 @@ Then, in the console at <http://127.0.0.1:3000> (plain HTTP works on localhost):
    enabled and granted.
 3. **Virtual keys**, Create: the key (`uf-sk-...`) is shown once.
 
-Call it with a model written `provider/model`:
+### 4. Call it
+
+Use a model written `provider/model`:
 
 ```bash
 curl http://127.0.0.1:3000/v1/chat/completions \
@@ -130,10 +142,11 @@ directory:
 
 ```bash
 export UF_DATA_DIR=./data
-UF_PROVIDER_API_KEY=sk-... ./target/release/ultrafast provider add \
+UF_PROVIDER_API_KEY=sk-... ./ultrafast provider add \
   --name openai --kind openai --base-url https://api.openai.com/v1
-./target/release/ultrafast model add --provider openai --model gpt-4o --enable --everyone
-./target/release/ultrafast key create --name my-app     # printed once
+./ultrafast model add --provider openai --model gpt-4o --enable --everyone
+./ultrafast key create --name my-app     # printed once
+# In Docker: docker exec -e UF_PROVIDER_API_KEY=sk-... ultrafast ultrafast provider add ...
 ```
 
 A running gateway picks up CLI changes within 30 seconds; changes through the
@@ -347,7 +360,15 @@ All three also stream and make embeddings, and send `tags` as `x-uf-tags`.
 
 ## Development
 
-Release builds embed `ui/dist`, so build the console first (as in Quickstart).
+Building from source needs Rust 1.94+, Node 22 and pnpm 11. Release builds
+embed `ui/dist`, so build the console first:
+
+```bash
+pnpm --dir ui install --frozen-lockfile
+pnpm --dir ui build && cargo build --release -p ultrafast-gateway   # target/release/ultrafast
+docker build -t ultrafast .                                         # or the image
+```
+
 A plain `cargo build` works without Node: `/` then says the console was not
 built, while `/api`, `/v1`, `/health` and `/metrics` work.
 
