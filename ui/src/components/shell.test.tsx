@@ -8,6 +8,7 @@ const sections = ["Observe", "Configure", "Govern"];
 const items = [
   "Overview",
   "Logs",
+  "Alerts",
   "Playground",
   "Providers",
   "Models",
@@ -48,6 +49,7 @@ describe("sidebar", () => {
       "Observe",
       "Overview",
       "Logs",
+      "Alerts",
       "Playground",
       "Configure",
       "Providers",
@@ -77,6 +79,7 @@ describe("sidebar", () => {
     expect(hrefs).toEqual([
       ["Overview", "/"],
       ["Logs", "/logs"],
+      ["Alerts", "/alerts"],
       ["Playground", "/playground"],
       ["Providers", "/providers"],
       ["Models", "/models"],
@@ -128,6 +131,17 @@ describe("sidebar", () => {
     expect(within(sidebar()).getByRole("link", { name: "Settings" })).toHaveAttribute(
       "href",
       "/settings",
+    );
+  });
+
+  test("alerts is for admins", async () => {
+    const first = await renderWithApp(null, { user: memberUser });
+    expect(within(sidebar()).queryByRole("link", { name: "Alerts" })).toBeNull();
+    first.unmount();
+    await renderWithApp(null, { user: adminUser });
+    expect(within(sidebar()).getByRole("link", { name: "Alerts" })).toHaveAttribute(
+      "href",
+      "/alerts",
     );
   });
 

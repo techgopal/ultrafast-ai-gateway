@@ -113,6 +113,7 @@ describe("guards", () => {
     ["set and delete limits", { type: "manageLimits" }, [true, false, false, false]],
     ["set and delete budgets", { type: "manageBudgets" }, [true, false, false, false]],
     ["change the settings", { type: "manageSettings" }, [true, false, false, false]],
+    ["manage alert rules and channels", { type: "manageAlerts" }, [true, false, false, false]],
     // The overview counts users and teams for who manages some: admins, and leads.
     ["view the counts of users and teams", { type: "viewUserAndTeamCounts" }, [true, true, false, false]],
     // Logs and usage of others: filters by key, user and team, and the top keys.
@@ -153,6 +154,7 @@ describe("guards", () => {
       manageLimits: true,
       manageBudgets: true,
       manageSettings: true,
+      manageAlerts: true,
       viewUserAndTeamCounts: true,
       viewOthersUsage: true,
       usePlayground: true,

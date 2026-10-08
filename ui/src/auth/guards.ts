@@ -66,6 +66,8 @@ export type ConsoleAction =
   | { type: "manageLimits" }
   | { type: "manageBudgets" }
   | { type: "manageSettings" }
+  /** Sees and changes alert rules and channels, and reads their history: what only an admin may. */
+  | { type: "manageAlerts" }
   /**
    * Sees how many users and teams there are, on the overview: who manages
    * some, which is an admin and the lead of a team. The gateway lists users
@@ -119,6 +121,7 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "manageLimits":
     case "manageBudgets":
     case "manageSettings":
+    case "manageAlerts":
     case "editKeyTags":
       return false;
     case "renameUser":

@@ -27,6 +27,9 @@ export type UsagePage = Schemas["UsagePage"];
 export type Limit = Schemas["LimitView"];
 export type Budget = Schemas["BudgetView"];
 export type Settings = Schemas["SettingsView"];
+export type AlertChannel = Schemas["ChannelView"];
+export type AlertRule = Schemas["RuleView"];
+export type AlertEvent = Schemas["EventView"];
 
 /**
  * The time of the fixtures: what they call past (the expired key and token,
@@ -53,6 +56,10 @@ export const newKeySecret = `uf-sk-${"0123456789abcdef".repeat(4)}`;
 export const newTokenSecret = `uf-at-${"fedcba9876543210".repeat(4)}`;
 export const newInviteToken = `uf-inv-${"00ff".repeat(16)}`;
 export const newInviteLink = `/accept-invite#token=${newInviteToken}`;
+
+// crates/gateway/src/alerts/sign.rs, new_secret: `whsec_` and 32 random bytes as hex.
+export const newChannelSecret = `whsec_${"0123456789abcdef".repeat(4)}`;
+export const rotatedChannelSecret = `whsec_${"fedcba9876543210".repeat(4)}`;
 
 /** What the gateway shows of a secret: the prefix, an ellipsis and the last 4 characters. */
 function displayOf(prefix: "uf-sk-" | "uf-at-", last4: string): string {
@@ -946,3 +953,150 @@ export const playgroundChunks: readonly string[] = [
   'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\n',
   "data: [DONE]\n\n",
 ];
+
+// alerts: channels, rules and events as `/api/alerts` shows them
+
+/**
+ * The API description types a free-form JSON object (the parameters of a
+ * rule, the details of an event, a delivery) as `Record<string, never>`: this
+ * is how a fixture says "an object". The pages read these by kind (`lib/alerts`).
+ */
+export function freeForm(value: object): Record<string, never> {
+  return value as Record<string, never>;
+}
+
+export const alertChannels = {
+  ops: {
+    id: 1,
+    name: "ops-webhook",
+    kind: "webhook",
+    url_host: "https://hooks.example.test",
+    enabled: true,
+    created_at: "2026-09-20 09:00:00",
+    rules: [
+      { id: 1, name: "Search budget 80%" },
+      { id: 2, name: "Chat errors" },
+    ],
+  },
+  slack: {
+    id: 2,
+    name: "team-slack",
+    kind: "slack",
+    url_host: "https://hooks.slack.com",
+    enabled: true,
+    created_at: "2026-09-21 09:00:00",
+    rules: [
+      { id: 1, name: "Search budget 80%" },
+      { id: 3, name: "Circuit anywhere" },
+    ],
+  },
+  // From a configuration file: no URL yet, and so disabled.
+  imported: {
+    id: 3,
+    name: "imported-pager",
+    kind: "webhook",
+    url_host: "",
+    enabled: false,
+    created_at: "2026-09-22 09:00:00",
+    rules: [],
+  },
+} satisfies Record<string, AlertChannel>;
+
+export const alertChannelList: AlertChannel[] = Object.values(alertChannels);
+
+export const alertRules = {
+  budget: {
+    id: 1,
+    name: "Search budget 80%",
+    kind: "budget",
+    enabled: true,
+    created_at: "2026-09-20 10:00:00",
+    params: freeForm({ budget_id: budgets.team.id, percent: 80 }),
+    channels: [
+      { id: 1, name: "ops-webhook" },
+      { id: 2, name: "team-slack" },
+    ],
+    firing: [{ subject: `budget:${budgets.team.id}:2026-09-28`, since: "2026-09-30 10:00:00" }],
+  },
+  errors: {
+    id: 2,
+    name: "Chat errors",
+    kind: "error_rate",
+    enabled: true,
+    created_at: "2026-09-20 10:05:00",
+    params: freeForm({
+      scope: "route",
+      subject: "support-chat",
+      percent: 10,
+      window_minutes: 5,
+      min_requests: 20,
+    }),
+    channels: [{ id: 1, name: "ops-webhook" }],
+    firing: [],
+  },
+  circuit: {
+    id: 3,
+    name: "Circuit anywhere",
+    kind: "circuit_open",
+    enabled: false,
+    created_at: "2026-09-20 10:10:00",
+    params: freeForm({ provider: null, model: null }),
+    channels: [{ id: 2, name: "team-slack" }],
+    firing: [],
+  },
+} satisfies Record<string, AlertRule>;
+
+export const alertRuleList: AlertRule[] = Object.values(alertRules);
+
+export const alertEvents = {
+  firing: {
+    id: 3,
+    rule_id: alertRules.budget.id,
+    rule_name: alertRules.budget.name,
+    kind: "budget",
+    subject: `budget:${budgets.team.id}:2026-09-28`,
+    state: "firing",
+    summary: "Budget 'team Platform weekly' passed 80% (8.00 of 10.00 USD)",
+    details: freeForm({ budget_id: budgets.team.id, percent: 80 }),
+    at: "2026-09-30 10:00:00",
+    deliveries: [
+      freeForm({ channel_id: 1, channel_name: "ops-webhook", ok: true, status: 200, tries: 1, error: null }),
+      freeForm({
+        channel_id: 2,
+        channel_name: "team-slack",
+        ok: false,
+        status: 500,
+        tries: 3,
+        error: "the receiver answered 500",
+      }),
+    ],
+  },
+  resolved: {
+    id: 2,
+    rule_id: alertRules.errors.id,
+    rule_name: alertRules.errors.name,
+    kind: "error_rate",
+    subject: "route:support-chat",
+    state: "resolved",
+    summary: "Error rate of route support-chat is back under 10%",
+    details: freeForm({}),
+    at: "2026-09-29 15:00:00",
+    deliveries: [
+      freeForm({ channel_id: 1, channel_name: "ops-webhook", ok: true, status: 204, tries: 1, error: null }),
+    ],
+  },
+  test: {
+    id: 1,
+    rule_id: null,
+    rule_name: "Test",
+    kind: "test",
+    subject: "channel:1",
+    state: "test",
+    summary: "Test notification from the Ultrafast gateway",
+    details: freeForm({}),
+    at: "2026-09-28 08:00:00",
+    deliveries: [],
+  },
+} satisfies Record<string, AlertEvent>;
+
+export const alertEventList: AlertEvent[] = Object.values(alertEvents);

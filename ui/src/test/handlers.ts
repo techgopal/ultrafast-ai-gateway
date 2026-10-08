@@ -297,6 +297,54 @@ export const handlers = [
       }),
   ),
 
+  // alerts
+  handler("get", "/api/alerts/channels", () =>
+    ok("get", "/api/alerts/channels", 200, { channels: fixtures.alertChannelList }),
+  ),
+  handler("post", "/api/alerts/channels", () =>
+    ok("post", "/api/alerts/channels", 201, {
+      channel: fixtures.alertChannels.ops,
+      secret: fixtures.newChannelSecret,
+    }),
+  ),
+  handler("patch", "/api/alerts/channels/{id}", (call) => {
+    const channel = byId(fixtures.alertChannelList, call);
+    return channel === undefined
+      ? notFound()
+      : ok("patch", "/api/alerts/channels/{id}", 200, channel);
+  }),
+  handler("delete", "/api/alerts/channels/{id}", (call) =>
+    byId(fixtures.alertChannelList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("post", "/api/alerts/channels/{id}/rotate-secret", (call) =>
+    byId(fixtures.alertChannelList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/alerts/channels/{id}/rotate-secret", 200, {
+          secret: fixtures.rotatedChannelSecret,
+        }),
+  ),
+  handler("post", "/api/alerts/channels/{id}/test", (call) =>
+    byId(fixtures.alertChannelList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/alerts/channels/{id}/test", 200, { ok: true, status: 200, error: null }),
+  ),
+  handler("get", "/api/alerts/rules", () =>
+    ok("get", "/api/alerts/rules", 200, { rules: fixtures.alertRuleList }),
+  ),
+  handler("post", "/api/alerts/rules", () =>
+    ok("post", "/api/alerts/rules", 201, fixtures.alertRules.budget),
+  ),
+  handler("patch", "/api/alerts/rules/{id}", (call) => {
+    const rule = byId(fixtures.alertRuleList, call);
+    return rule === undefined ? notFound() : ok("patch", "/api/alerts/rules/{id}", 200, rule);
+  }),
+  handler("delete", "/api/alerts/rules/{id}", (call) =>
+    byId(fixtures.alertRuleList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("get", "/api/alerts/events", () =>
+    ok("get", "/api/alerts/events", 200, { events: fixtures.alertEventList }),
+  ),
+
   // audit
   handler("get", "/api/audit", () =>
     ok("get", "/api/audit", 200, { entries: fixtures.auditEntries }),

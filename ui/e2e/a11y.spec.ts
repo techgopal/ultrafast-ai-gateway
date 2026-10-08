@@ -173,6 +173,30 @@ for (const scheme of ["light", "dark"] as const) {
     await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
 
+    // Alerts: a channel and a rule, so that the three views show their tables.
+    const channel = (await api.send("POST", "/api/alerts/channels", {
+      name: "a channel",
+      kind: "webhook",
+      url: "https://alerts.example.test/hook",
+    })) as { channel: { id: number } };
+    await api.send("POST", "/api/alerts/rules", {
+      name: "a rule",
+      kind: "circuit_open",
+      params: {},
+      channel_ids: [channel.channel.id],
+    });
+    await goTo(page, "Alerts");
+    await expect(page.getByRole("main")).toContainText("Circuit opens on any target");
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+    const views = page.getByRole("navigation", { name: "Alerts sections" });
+    await views.getByRole("link", { name: "Channels" }).click();
+    await expect(page.getByRole("main")).toContainText("alerts.example.test");
+    expect(await axeProblems(page)).toEqual([]);
+    await views.getByRole("link", { name: "History" }).click();
+    await expect(page.getByText("No alerts yet")).toBeVisible();
+    expect(await axeProblems(page)).toEqual([]);
+
     await goTo(page, "Virtual keys");
     await expect(page.getByRole("main")).toContainText("a first key");
 

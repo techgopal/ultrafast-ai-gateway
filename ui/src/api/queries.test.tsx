@@ -1364,14 +1364,26 @@ describe("every mutation calls its operation", () => {
       ["useImportConfig", "POST /api/config/import?dry_run=true", q.useImportConfig, { file: fixtures.configFile, dryRun: true }],
       ["useCreateToken", "POST /api/tokens", q.useCreateToken, { name: "t" }],
       ["useRevokeToken", "DELETE /api/tokens/1", q.useRevokeToken, { id: 1 }],
+      ["useCreateAlertChannel", "POST /api/alerts/channels", q.useCreateAlertChannel, { name: "c", kind: "webhook", url: "https://example.test/hook" }],
+      ["useUpdateAlertChannel", "PATCH /api/alerts/channels/1", q.useUpdateAlertChannel, { id: 1, body: { enabled: false } }],
+      ["useDeleteAlertChannel", "DELETE /api/alerts/channels/1", q.useDeleteAlertChannel, { id: 1 }],
+      ["useRotateAlertChannelSecret", "POST /api/alerts/channels/1/rotate-secret", q.useRotateAlertChannelSecret, { id: 1 }],
+      ["useTestAlertChannel", "POST /api/alerts/channels/1/test", q.useTestAlertChannel, { id: 1 }],
+      ["useCreateAlertRule", "POST /api/alerts/rules", q.useCreateAlertRule, { name: "r", kind: "circuit_open", params: {}, channel_ids: [] }],
+      ["useUpdateAlertRule", "PATCH /api/alerts/rules/1", q.useUpdateAlertRule, { id: 1, body: { enabled: false } }],
+      ["useDeleteAlertRule", "DELETE /api/alerts/rules/1", q.useDeleteAlertRule, { id: 1 }],
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 36 of them, 17 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(36);
+  test("there are 44 of them, 20 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(44);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(56);
+    expect(hooks).toHaveLength(67);
+    // The alerts: three queries (channels, rules, events by page), and their eight mutations.
+    for (const name of ["useAlertChannels", "useAlertRules", "useAlertEventsPages"]) {
+      expect(hooks).toContain(name);
+    }
     // What only tests used is not kept: a key read by its id, the audit log
     // read as one page, and `me`, which the session reads itself.
     for (const gone of ["useKey", "keyOptions", "useAuditLog", "auditLogOptions", "useMe"]) {
@@ -1410,6 +1422,8 @@ describe("secrets stay out of the caches", () => {
     [
       ["useCreateKey", q.useCreateKey, { name: "k" }, [fixtures.newKeySecret]],
       ["useCreateToken", q.useCreateToken, { name: "t" }, [fixtures.newTokenSecret]],
+      ["useCreateAlertChannel", q.useCreateAlertChannel, { name: "c", kind: "webhook", url: "https://example.test/hook" }, [fixtures.newChannelSecret, "https://example.test/hook"]],
+      ["useRotateAlertChannelSecret", q.useRotateAlertChannelSecret, { id: 1 }, [fixtures.rotatedChannelSecret]],
       ["useInviteUser", q.useInviteUser, { email: "s@example.test", name: "S", role: "member" }, [fixtures.newInviteLink]],
       ["useReinviteUser", q.useReinviteUser, { id: 6 }, [fixtures.newInviteLink]],
       ["useLogin", q.useLogin, { email: "m@example.test", password }, [password]],

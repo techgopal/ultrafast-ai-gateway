@@ -38,6 +38,8 @@ const statuses: Record<ErrorName, number> = {
   provider_exists: 409,
   model_exists: 409,
   route_exists: 409,
+  alert_channel_exists: 409,
+  alert_rule_exists: 409,
   sync_unsupported: 422,
   sync_failed: 502,
 };
@@ -182,6 +184,24 @@ test("the messages of the routes are in the gateway source", () => {
   expect(source).toContain('"must be {lo} to {hi}"');
   expect(fieldMessages.routeRetries).toBe("must be 0 to 5");
   expect(fieldMessages.routeFirstToken).toBe("must be 1000 to 300000");
+});
+
+test("the messages of the alerts are in the gateway source", () => {
+  const dir = fileURLToPath(new URL("../../../crates/gateway/src/", import.meta.url));
+  const source = ["api/alerts.rs", "config.rs"]
+    .map((file) => readFileSync(dir + file, "utf8"))
+    .join("\n");
+  for (const message of [
+    fieldMessages.channelUrlScheme,
+    fieldMessages.channelUrlInvalid,
+    fieldMessages.channelMissing,
+    fieldMessages.needsUrl,
+    fieldMessages.budgetMissing,
+    errors.alert_channel_exists.body.error.message,
+    errors.alert_rule_exists.body.error.message,
+  ]) {
+    expect(source).toContain(`"${message}`);
+  }
 });
 
 test("the messages of team members, key allowlists and the API version are in the gateway source", () => {

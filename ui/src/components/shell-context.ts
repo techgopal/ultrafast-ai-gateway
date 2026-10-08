@@ -7,6 +7,8 @@ export interface ShellUser {
   teams: readonly { name: string }[];
   /** Whether the settings are theirs to change: `can(me, { type: "manageSettings" })`. */
   maySetSettings: boolean;
+  /** Whether alerts are theirs to see and change: `can(me, { type: "manageAlerts" })`. */
+  mayManageAlerts: boolean;
 }
 
 /**

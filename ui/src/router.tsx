@@ -18,6 +18,7 @@ import type { ShellUser } from "@/components/shell-context";
 import { Button } from "@/components/ui/button";
 import { AcceptInvite } from "@/pages/AcceptInvite";
 import { Account } from "@/pages/Account";
+import { Alerts } from "@/pages/Alerts";
 import { Keys } from "@/pages/Keys";
 import { Limits } from "@/pages/Limits";
 import { Logs } from "@/pages/Logs";
@@ -182,6 +183,7 @@ function ShellLayout() {
             role: me.user.role,
             teams: me.teams,
             maySetSettings: can(me, { type: "manageSettings" }),
+            mayManageAlerts: can(me, { type: "manageAlerts" }),
           },
     [me],
   );
@@ -235,6 +237,13 @@ const logRoute = createRoute({
     const { id } = logRoute.useParams();
     return <LogsDetail key={id} id={id} />;
   },
+});
+
+const alertsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/alerts",
+  staticData: { title: "Alerts" },
+  component: Alerts,
 });
 
 const playgroundRoute = createRoute({
@@ -388,6 +397,7 @@ const routeTree = rootRoute.addChildren([
     overviewRoute,
     logsRoute,
     logRoute,
+    alertsRoute,
     playgroundRoute,
     providersRoute,
     modelsRoute,

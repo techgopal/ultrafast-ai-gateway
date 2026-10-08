@@ -23,6 +23,7 @@ import { ThemeSwitch } from "@/theme/theme";
 type Path =
   | "/"
   | "/logs"
+  | "/alerts"
   | "/playground"
   | "/providers"
   | "/models"
@@ -40,6 +41,8 @@ interface NavItem {
   to?: Path;
   /** Shown only to who may change the settings. */
   settings?: boolean;
+  /** Shown only to who may manage alerts. */
+  alerts?: boolean;
 }
 
 interface NavSection {
@@ -53,6 +56,7 @@ const sections: NavSection[] = [
     items: [
       { label: "Overview", to: "/" },
       { label: "Logs", to: "/logs" },
+      { label: "Alerts", to: "/alerts", alerts: true },
       { label: "Playground", to: "/playground" },
     ],
   },
@@ -142,9 +146,11 @@ export function AppSidebar({ user, onSignOut }: AppSidebarProps) {
               </SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
-                  {section.items.map((item) => (
-                    <NavEntry key={item.label} item={item} pathname={pathname} />
-                  ))}
+                  {section.items
+                    .filter((item) => item.alerts !== true || user?.mayManageAlerts === true)
+                    .map((item) => (
+                      <NavEntry key={item.label} item={item} pathname={pathname} />
+                    ))}
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>

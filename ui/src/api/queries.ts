@@ -109,6 +109,16 @@ export const queryKeys = {
     all: () => ["budgets"] as const,
     list: () => ["budgets", "list"] as const,
   },
+  alerts: {
+    all: () => ["alerts"] as const,
+    channels: () => ["alerts", "channels"] as const,
+    rules: () => ["alerts", "rules"] as const,
+    /** The events as they are read page by page, for one filter and one run. */
+    events: (filter: AlertEventsFilter, run: number) =>
+      ["alerts", "events", filter, run] as const,
+    /** Every way the events are read. */
+    allEvents: () => ["alerts", "events"] as const,
+  },
   settings: () => ["settings"] as const,
   usage: {
     all: () => ["usage"] as const,
@@ -127,6 +137,13 @@ export interface LogsFilter {
   errors?: boolean;
   /** `name:value`, once for each tag the calls must carry. */
   tag?: string[];
+}
+
+/** What narrows the alert history. A part that is not there leaves nothing out. */
+export interface AlertEventsFilter {
+  rule_id?: number;
+  /** `firing`, `resolved` or `test`. */
+  state?: string;
 }
 
 export type UsageGroup = "day" | "model" | "key" | "user" | "team";
@@ -321,6 +338,18 @@ export const budgetsOptions = () =>
     queryFn: ({ signal }) => api.get("/api/budgets", { signal }),
   });
 
+export const alertChannelsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.alerts.channels(),
+    queryFn: ({ signal }) => api.get("/api/alerts/channels", { signal }),
+  });
+
+export const alertRulesOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.alerts.rules(),
+    queryFn: ({ signal }) => api.get("/api/alerts/rules", { signal }),
+  });
+
 export const settingsOptions = () =>
   queryOptions({
     queryKey: queryKeys.settings(),
@@ -350,6 +379,11 @@ export const useLimits = () => useQuery(limitsOptions());
 export const useBudgets = () => useQuery(budgetsOptions());
 /** Admin only. */
 export const useSettings = () => useQuery(settingsOptions());
+/** Admin only. The channels alerts are sent to, with the rules that use each. */
+export const useAlertChannels = (enabled = true) =>
+  useQuery({ ...alertChannelsOptions(), enabled });
+/** Admin only. The alert rules, with what each is firing for. */
+export const useAlertRules = (enabled = true) => useQuery({ ...alertRulesOptions(), enabled });
 
 /** How many entries a page of the audit log has. A page with fewer is the last. */
 export const AUDIT_PAGE_SIZE = 50;
@@ -417,6 +451,35 @@ export const useLogsPages = (filter: LogsFilter, run: number) =>
     initialPageParam: null as number | null,
     getNextPageParam: (last) =>
       last.logs.length < LOGS_PAGE_SIZE ? undefined : last.logs.at(-1)?.id,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    gcTime: 0,
+  });
+
+/** How many events a page of the alert history has. A page with fewer is the last. */
+export const ALERT_EVENTS_PAGE_SIZE = 50;
+
+/**
+ * The alert events, newest first, read page by page with `before_id`, as the
+ * logs are. `run` is part of the key: Refresh starts a new run, which is one
+ * request for the newest page. Not read again by the focus or the network,
+ * and not kept when the page is left.
+ */
+export const useAlertEventsPages = (filter: AlertEventsFilter, run: number) =>
+  useInfiniteQuery({
+    queryKey: queryKeys.alerts.events(filter, run),
+    queryFn: ({ pageParam, signal }) =>
+      api.get("/api/alerts/events", {
+        query: {
+          limit: ALERT_EVENTS_PAGE_SIZE,
+          ...filter,
+          ...(pageParam === null ? {} : { before_id: pageParam }),
+        },
+        signal,
+      }),
+    initialPageParam: null as number | null,
+    getNextPageParam: (last) =>
+      last.events.length < ALERT_EVENTS_PAGE_SIZE ? undefined : last.events.at(-1)?.id,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     gcTime: 0,
@@ -845,6 +908,77 @@ export const useUpdateSettings = () =>
     () => ({ stale: [queryKeys.settings(), audit] }),
   );
 
+// alerts
+
+// A channel shows in the rules that send to it, and a rule in the channels it sends to.
+const anAlertChanged = [queryKeys.alerts.channels(), queryKeys.alerts.rules(), audit];
+// The channel or the rule was deleted meanwhile: the list shows what is not so.
+const channelIsGone = (error: unknown) =>
+  isNotFound(error) ? [queryKeys.alerts.channels(), queryKeys.alerts.rules()] : [];
+const ruleIsGone = (error: unknown) =>
+  isNotFound(error) ? [queryKeys.alerts.rules(), queryKeys.alerts.channels()] : [];
+
+/** The answer holds the signing secret, which is shown once. */
+export const useCreateAlertChannel = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/alerts/channels", "post">) => api.post("/api/alerts/channels", { body }),
+    () => ({ stale: [queryKeys.alerts.channels(), audit] }),
+  );
+
+export const useUpdateAlertChannel = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/alerts/channels/{id}", "patch"> }) =>
+      api.patch("/api/alerts/channels/{id}", { params: { id }, body }),
+    () => ({ stale: anAlertChanged }),
+    channelIsGone,
+  );
+
+export const useDeleteAlertChannel = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/alerts/channels/{id}", { params: { id } }),
+    () => ({ stale: anAlertChanged }),
+    channelIsGone,
+  );
+
+/** The answer holds the new signing secret, which is shown once. */
+export const useRotateAlertChannelSecret = () =>
+  useApiMutation(
+    ({ id }: { id: number }) =>
+      api.post("/api/alerts/channels/{id}/rotate-secret", { params: { id } }),
+    () => ({ stale: [audit] }),
+    channelIsGone,
+  );
+
+/** Sends one test notification; it is stored in the history. */
+export const useTestAlertChannel = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.post("/api/alerts/channels/{id}/test", { params: { id } }),
+    () => ({ stale: [queryKeys.alerts.allEvents(), audit] }),
+    channelIsGone,
+  );
+
+export const useCreateAlertRule = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/alerts/rules", "post">) => api.post("/api/alerts/rules", { body }),
+    () => ({ stale: anAlertChanged }),
+  );
+
+export const useUpdateAlertRule = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/alerts/rules/{id}", "patch"> }) =>
+      api.patch("/api/alerts/rules/{id}", { params: { id }, body }),
+    () => ({ stale: anAlertChanged }),
+    ruleIsGone,
+  );
+
+export const useDeleteAlertRule = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/alerts/rules/{id}", { params: { id } }),
+    // Its events stay, without a rule to filter by.
+    () => ({ stale: [...anAlertChanged, queryKeys.alerts.allEvents()] }),
+    ruleIsGone,
+  );
+
 /**
  * Checks a configuration file (`dryRun`) or applies it. A dry run changes
  * nothing, so it marks nothing as stale. What an applied import changes
@@ -863,6 +997,7 @@ export const useImportConfig = () =>
             queryKeys.routes.all(),
             queryKeys.limits.all(),
             queryKeys.budgets.all(),
+            queryKeys.alerts.all(),
             queryKeys.settings(),
             audit,
           ],

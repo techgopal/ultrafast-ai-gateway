@@ -71,6 +71,12 @@ export const fieldMessages = {
   routeRetries: "must be 0 to 5",
   routeFirstToken: "must be 1000 to 300000",
   routeTotalBelowFirst: "must not be below the first token timeout",
+  // The alerts (`api/alerts.rs`, `config.rs`).
+  channelUrlScheme: "URL must start with http:// or https://",
+  channelUrlInvalid: "URL is not valid",
+  channelMissing: "No such channel.",
+  needsUrl: "Set a URL before enabling this channel.",
+  budgetMissing: "budget_id: no such budget",
 } as const;
 
 /** A 422 of the gateway for these fields. */
@@ -149,6 +155,12 @@ export const errors = {
     "This provider already has a model of this name.",
   ),
   route_exists: error(409, "route_exists", "A route of this name already exists."),
+  alert_channel_exists: error(
+    409,
+    "alert_channel_exists",
+    "An alert channel with this name already exists.",
+  ),
+  alert_rule_exists: error(409, "alert_rule_exists", "An alert rule with this name already exists."),
   sync_unsupported: error(422, "sync_unsupported", "Add Azure deployments as models by name."),
   sync_failed: error(502, "sync_failed", "The provider did not return its models."),
 } as const satisfies Record<string, GatewayError>;

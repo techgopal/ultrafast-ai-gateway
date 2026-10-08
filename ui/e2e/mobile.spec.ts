@@ -94,6 +94,17 @@ async function content(api: GatewayApi) {
     owner_id: user.id,
     team_id: team,
   });
+  const channel = (await api.send("POST", "/api/alerts/channels", {
+    name: "a-channel-with-a-name-that-is-rather-long-for-a-phone",
+    kind: "webhook",
+    url: "https://a-rather-long-host-name.alerts.example.test/hooks/one",
+  })) as { channel: { id: number } };
+  await api.send("POST", "/api/alerts/rules", {
+    name: "a-rule-with-a-name-that-is-also-rather-long-for-a-phone",
+    kind: "error_rate",
+    params: { scope: "route", subject: "a-route-with-a-long-name-for-the-nightly-summaries", percent: 10 },
+    channel_ids: [channel.channel.id],
+  });
 }
 
 test("every page fits a phone; the drawer opens and closes; rows are cards; the dialog fits", async ({
@@ -131,6 +142,7 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     ["Providers", "a-rather-long-host-name"],
     ["Models", "a-model-with-a-very-long-name"],
     ["Routing", "a-route-with-a-long-name"],
+    ["Alerts", "a-rule-with-a-name-that-is-also-rather-long"],
     ["Playground", "Nothing has been said yet"],
     ["Account", "Access tokens"],
     ["Settings", "Session lifetime"],
@@ -141,6 +153,15 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     else await goTo(page, title);
     await expect(page.getByRole("main")).toContainText(shows);
     expect(await scrollsSideways(page), title).toBe(false);
+    if (title === "Alerts") {
+      const views = page.getByRole("navigation", { name: "Alerts sections" });
+      await views.getByRole("link", { name: "Channels" }).click();
+      await expect(page.getByRole("main")).toContainText("a-channel-with-a-name");
+      expect(await scrollsSideways(page), "alert channels").toBe(false);
+      await views.getByRole("link", { name: "History" }).click();
+      await expect(page.getByRole("table", { name: "Alert history" }).or(page.getByText("No alerts yet"))).toBeVisible();
+      expect(await scrollsSideways(page), "alert history").toBe(false);
+    }
   }
 
   // A row of a table is a card.
@@ -211,6 +232,7 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     ["Teams", "developer experience"],
     ["Virtual keys", "nightly batch job"],
     ["Providers", "a-rather-long-host-name"],
+    ["Alerts", "a-rule-with-a-name-that-is-also-rather-long"],
     ["Playground", "Nothing has been said yet"],
     ["Account", "Access tokens"],
     ["Settings", "Session lifetime"],
@@ -221,6 +243,16 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     else await goTo(page, title);
     await expect(page.getByRole("main")).toContainText(shows);
     await measure(page.locator("body"), title);
+    if (title === "Alerts") {
+      await measureDialog("Add rule", "Add rule", "Name");
+      const views = page.getByRole("navigation", { name: "Alerts sections" });
+      await views.getByRole("link", { name: "Channels" }).click();
+      await expect(page.getByRole("main")).toContainText("a-channel-with-a-name");
+      await measure(page.locator("body"), "alert channels");
+      await measureDialog("Add channel", "Add channel", "Name");
+      await views.getByRole("link", { name: "History" }).click();
+      await measure(page.locator("body"), "alert history");
+    }
     if (title === "Users") await measureDialog("Invite user");
     if (title === "Teams") await measureDialog("New team");
     if (title === "Virtual keys") await measureDialog("Create key", "Create key", "Owner");
