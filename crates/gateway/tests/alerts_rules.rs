@@ -391,35 +391,21 @@ async fn a_circuit_episode_whose_target_left_the_catalog_is_resolved() {
     let resolved = w.wait_event(rule, "resolved").await;
     assert_eq!(resolved["summary"], "target removed");
     assert_eq!(resolved["subject"], "target:p/m");
-    // An episode is resolved once, however many ticks follow; the state is
-    // gone. (The engine's own ticker, every 40 ms here, may run between the
-    // delete and the refresh above, while the breaker is still held: it then
-    // sees the target open again, opens a second episode, and the tick
-    // resolves that one too. Each firing still has exactly one resolved.)
+    // One resolved only, however many ticks follow; the state is gone. (The
+    // engine's own ticker, 40 ms here, may run between the delete's commit
+    // and the refresh above, while the breaker is still held: it must not
+    // open a second episode for the removed target.)
     for _ in 0..3 {
         w.h.state.alert_engine.as_ref().unwrap().tick().await;
     }
-    let count = |state: &'static str| {
-        let w = &w;
-        async move {
-            w.events(&format!("?rule_id={rule}&state={state}"))
-                .await
-                .len()
-        }
-    };
-    let (firing, resolved) = (count("firing").await, count("resolved").await);
-    assert!(
-        firing >= 1 && resolved == firing,
-        "{firing} firing, {resolved} resolved"
-    );
-    for _ in 0..3 {
-        w.h.state.alert_engine.as_ref().unwrap().tick().await;
-    }
-    assert_eq!(
-        (count("firing").await, count("resolved").await),
-        (firing, resolved),
-        "ticks went on to make events"
-    );
+    let all: Vec<_> = w
+        .events(&format!("?rule_id={rule}"))
+        .await
+        .iter()
+        .map(|e| format!("{} {} {}", e["id"], e["state"], e["summary"]))
+        .collect();
+    let resolved = w.events(&format!("?rule_id={rule}&state=resolved")).await;
+    assert_eq!(resolved.len(), 1, "{all:?}");
     assert!(w.h.store.alert_states().await.unwrap().is_empty());
     w.shutdown().await;
 }

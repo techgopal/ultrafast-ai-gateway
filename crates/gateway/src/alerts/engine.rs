@@ -659,8 +659,36 @@ impl Engine {
         let Some(health) = self.health.clone() else {
             return;
         };
-        for t in health.view() {
+        let view = health.view();
+        // A breaker whose target left the catalog is still held until the
+        // snapshot refresh after the delete forgets it, and this tick may
+        // come between the delete's commit and that refresh: an open one
+        // must not start an episode that "target removed" then has to end.
+        let catalog = if view.iter().any(|t| t.state != TargetState::Closed) {
+            match self.store.list_models().await {
+                Ok(models) => Some(
+                    models
+                        .into_iter()
+                        .map(|m| (m.provider_name, m.name))
+                        .collect::<std::collections::HashSet<_>>(),
+                ),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read the catalog for the alert engine");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        for t in view {
             let (provider, model) = (t.provider, t.model);
+            if t.state != TargetState::Closed
+                && catalog
+                    .as_ref()
+                    .is_some_and(|c| !c.contains(&(provider.clone(), model.clone())))
+            {
+                continue;
+            }
             let event = if t.state == TargetState::Closed {
                 HealthEvent::Closed { provider, model }
             } else {
