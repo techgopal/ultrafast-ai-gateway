@@ -236,6 +236,55 @@ async fn tag_filters_and_usage_by_day_give_the_same_numbers() {
     assert_eq!(shape, [("a", "a", 3), ("", "(none)", 1), ("b", "b", 1)]);
 }
 
+/// The `to` day is inclusive to its last second, and the next day's first
+/// second is out, on every database.
+#[tokio::test]
+async fn usage_counts_the_to_day_to_its_last_second() {
+    let store = Store::open_in_memory().await.unwrap();
+    store
+        .insert_logs(&[
+            log("2999-01-01 23:59:59", None, 200, 1),
+            log("2999-01-02 00:00:00", None, 200, 10),
+            log("2999-01-02 23:59:59", None, 200, 100),
+            log("2999-01-03 00:00:00", None, 200, 1000),
+        ])
+        .await
+        .unwrap();
+    let rows = store
+        .usage(&LogScope::All, "2999-01-02", "2999-01-02", UsageGroup::Day)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].requests, rows[0].cost_micros), (2, 110));
+}
+
+/// Tags that tie on requests order bytewise on every database (an uppercase
+/// letter before a lowercase one), whatever the server's collation is.
+#[tokio::test]
+async fn tag_groups_that_tie_order_bytewise() {
+    let store = Store::open_in_memory().await.unwrap();
+    store
+        .insert_logs(&[
+            log("2999-01-01 10:00:00", Some(r#"{"team":"a"}"#), 200, 1),
+            log("2999-01-01 10:00:01", Some(r#"{"team":"B"}"#), 200, 1),
+            log("2999-01-01 10:00:02", Some(r#"{"team":"b"}"#), 200, 1),
+            log("2999-01-01 10:00:03", Some(r#"{"team":"A"}"#), 200, 1),
+        ])
+        .await
+        .unwrap();
+    let rows = store
+        .usage(
+            &LogScope::All,
+            "2999-01-01",
+            "2999-01-01",
+            UsageGroup::Tag("team".into()),
+        )
+        .await
+        .unwrap();
+    let order: Vec<&str> = rows.iter().map(|r| r.group.as_str()).collect();
+    assert_eq!(order, ["A", "B", "a", "b"]);
+}
+
 /// A read-then-write transaction started with `begin_immediate` runs alone:
 /// eight of them each add one to what they read, and none is lost or fails.
 #[tokio::test]

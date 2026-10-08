@@ -4,7 +4,10 @@ use anyhow::Result;
 use sqlx::any::AnyRow;
 use sqlx::Row;
 
-use super::dialect::Dialected;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+use super::dialect::{Dialect, Dialected};
 use super::{flag, next_day, Store, DEFAULT_ORG};
 
 /// A row to be written.
@@ -206,38 +209,74 @@ fn log_from(r: &AnyRow) -> LogRow {
     }
 }
 
-impl Store {
-    /// Writes the rows in one transaction.
-    pub async fn insert_logs(&self, rows: &[NewLog]) -> Result<()> {
-        let mut tx = self.pool().begin().await?;
-        for r in rows {
-            self.q("INSERT INTO request_logs
+/// Rows per `INSERT`: 20 binds each, so a chunk stays far under the 32766
+/// (SQLite) and 65535 (PostgreSQL) parameter limits.
+const LOG_INSERT_CHUNK: usize = 1000;
+
+/// The `INSERT` for `rows` rows, as the driver takes it. Built once per
+/// dialect and size: a flush is mostly full chunks of one size.
+fn log_insert_sql(dialect: Dialect, rows: usize) -> String {
+    static CACHE: OnceLock<Mutex<HashMap<(Dialect, usize), String>>> = OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    cache
+        .entry((dialect, rows))
+        .or_insert_with(|| {
+            let mut sql = String::from(
+                "INSERT INTO request_logs
                  (org_id, at, key_id, user_id, team_id, requested, endpoint, stream, status,
                   provider, model, input_tokens, output_tokens, cost_micros, priced, cached,
-                  estimated, duration_ms, attempts, tags)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-                .bind(DEFAULT_ORG)
-                .bind(&r.at)
-                .bind(r.key_id)
-                .bind(r.user_id)
-                .bind(r.team_id)
-                .bind(&r.requested)
-                .bind(&r.endpoint)
-                .bind(flag(r.stream))
-                .bind(r.status)
-                .bind(&r.provider)
-                .bind(&r.model)
-                .bind(r.input_tokens)
-                .bind(r.output_tokens)
-                .bind(r.cost_micros)
-                .bind(flag(r.priced))
-                .bind(flag(r.cached))
-                .bind(flag(r.estimated))
-                .bind(r.duration_ms)
-                .bind(&r.attempts)
-                .bind(&r.tags)
-                .execute(&mut *tx)
-                .await?;
+                  estimated, duration_ms, attempts, tags) VALUES ",
+            );
+            for i in 0..rows {
+                if i > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push_str("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            }
+            dialect.sql(&sql).into_owned()
+        })
+        .clone()
+}
+
+impl Store {
+    /// Writes the rows in one transaction, a multi-row `INSERT` per chunk of
+    /// at most [`LOG_INSERT_CHUNK`] rows (one round trip each, which matters
+    /// when the database is a network away).
+    pub async fn insert_logs(&self, rows: &[NewLog]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool().begin().await?;
+        for chunk in rows.chunks(LOG_INSERT_CHUNK) {
+            let sql = log_insert_sql(self.dialect(), chunk.len());
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+            for r in chunk {
+                query = query
+                    .bind(DEFAULT_ORG)
+                    .bind(&r.at)
+                    .bind(r.key_id)
+                    .bind(r.user_id)
+                    .bind(r.team_id)
+                    .bind(&r.requested)
+                    .bind(&r.endpoint)
+                    .bind(flag(r.stream))
+                    .bind(r.status)
+                    .bind(&r.provider)
+                    .bind(&r.model)
+                    .bind(r.input_tokens)
+                    .bind(r.output_tokens)
+                    .bind(r.cost_micros)
+                    .bind(flag(r.priced))
+                    .bind(flag(r.cached))
+                    .bind(flag(r.estimated))
+                    .bind(r.duration_ms)
+                    .bind(&r.attempts)
+                    .bind(&r.tags);
+            }
+            query.execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -465,7 +504,6 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Dialect;
     use sqlx::AssertSqlSafe;
 
     fn row(i: i64) -> NewLog {
@@ -490,6 +528,45 @@ mod tests {
             attempts: "[]".into(),
             tags: None,
         }
+    }
+
+    /// A batch bigger than one chunk lands complete and in order (ids follow
+    /// the order given), including the NULL columns, on both databases.
+    #[tokio::test]
+    async fn a_batch_of_2500_rows_lands_complete_and_in_order() {
+        let store = Store::open_in_memory().await.unwrap();
+        let rows: Vec<NewLog> = (0..2500)
+            .map(|i| {
+                let mut r = row(i);
+                r.requested = format!("m{i}");
+                if i % 2 == 0 {
+                    r.provider = Some("p".into());
+                    r.tags = Some("{\"a\":\"b\"}".into());
+                }
+                r
+            })
+            .collect();
+        store.insert_logs(&rows).await.unwrap();
+        store.insert_logs(&[]).await.unwrap();
+        let got: Vec<(i64, String, Option<String>)> =
+            sqlx::query_as("SELECT id, requested, provider FROM request_logs ORDER BY id")
+                .fetch_all(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(got.len(), 2500);
+        for (i, (_, requested, provider)) in got.iter().enumerate() {
+            assert_eq!(requested, &format!("m{i}"));
+            assert_eq!(provider.is_some(), i % 2 == 0, "row {i}");
+        }
+        assert!(got.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    #[test]
+    fn the_insert_statement_is_built_once_per_size() {
+        let a = log_insert_sql(Dialect::Postgres, 2);
+        assert!(a.contains("$40") && !a.contains("$41"));
+        assert_eq!(a, log_insert_sql(Dialect::Postgres, 2));
+        assert!(!log_insert_sql(Dialect::Sqlite, 2).contains('$'));
     }
 
     #[tokio::test]

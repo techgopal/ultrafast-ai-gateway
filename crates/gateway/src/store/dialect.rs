@@ -12,7 +12,7 @@ use sqlx::query::{Query, QueryAs, QueryScalar};
 use sqlx::AnyConnection;
 use sqlx::{Any, AssertSqlSafe};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Dialect {
     Sqlite,
     Postgres,
@@ -21,11 +21,8 @@ pub enum Dialect {
 impl Dialect {
     /// The dialect a connection speaks.
     pub fn of(conn: &AnyConnection) -> Self {
-        if conn
-            .backend_name()
-            .to_ascii_lowercase()
-            .starts_with("postgres")
-        {
+        let name = conn.backend_name();
+        if name.len() >= 8 && name.as_bytes()[..8].eq_ignore_ascii_case(b"postgres") {
             Self::Postgres
         } else {
             Self::Sqlite
@@ -82,10 +79,12 @@ impl Dialect {
 
     /// The text at `$.<name>` of a JSON object column, to compare or group
     /// by. It holds one `?` for the argument [`Dialect::tag_key`] makes.
+    /// On PostgreSQL it sorts bytewise (`COLLATE "C"`), as SQLite does, so
+    /// ties order the same on both.
     pub fn json_text(self, column: &str) -> String {
         match self {
             Self::Sqlite => format!("json_extract({column}, ?)"),
-            Self::Postgres => format!("({column}::jsonb ->> ?)"),
+            Self::Postgres => format!("(({column}::jsonb ->> ?) COLLATE \"C\")"),
         }
     }
 
@@ -263,7 +262,7 @@ mod tests {
         );
         assert_eq!(
             Dialect::Postgres.json_text("l.tags"),
-            "(l.tags::jsonb ->> ?)"
+            "((l.tags::jsonb ->> ?) COLLATE \"C\")"
         );
         assert_eq!(Dialect::Sqlite.tag_key("a.b"), "$.\"a.b\"");
         assert_eq!(Dialect::Postgres.tag_key("a.b"), "a.b");
