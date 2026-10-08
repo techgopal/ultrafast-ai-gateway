@@ -1,6 +1,7 @@
 //! The `/api` admin API: its router, its error type and the extractor that
 //! authenticates every request.
 
+pub mod alerts;
 pub mod audit;
 pub mod auth;
 pub mod backup;
@@ -104,6 +105,10 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(config::export))
         .routes(routes!(config::import))
         .routes(routes!(backup::download))
+        .routes(routes!(alerts::list, alerts::create))
+        .routes(routes!(alerts::update, alerts::delete))
+        .routes(routes!(alerts::rotate_secret))
+        .routes(routes!(alerts::test))
 }
 
 pub fn router() -> Router<Arc<AppState>> {

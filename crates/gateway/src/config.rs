@@ -64,6 +64,51 @@ pub fn validate_base_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// The longest webhook URL accepted, in bytes.
+const MAX_WEBHOOK_URL: usize = 2048;
+
+/// Checks the URL of an alert channel. Like a provider base URL it must be
+/// `http://` or `https://` with a host and carry no credentials or fragment,
+/// but a query string is allowed: generic webhooks carry their token there.
+/// Error messages never echo the URL, since it is a credential.
+pub fn validate_webhook_url(url: &str) -> Result<()> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"));
+    let Some(rest) = rest else {
+        bail!("URL must start with http:// or https://");
+    };
+    if url.len() > MAX_WEBHOOK_URL {
+        bail!("URL must be at most {MAX_WEBHOOK_URL} bytes");
+    }
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        bail!("URL must not contain whitespace");
+    }
+    if rest.contains('#') {
+        bail!("URL must not contain a fragment");
+    }
+    let authority = rest.split(['/', '?']).next().unwrap_or_default();
+    if authority.contains('@') {
+        bail!("URL must not contain credentials");
+    }
+    if authority.is_empty() || authority.starts_with(':') {
+        bail!("URL must include a host");
+    }
+    Ok(())
+}
+
+/// The scheme, host and port of a URL, like `https://hooks.slack.com`: what
+/// may be shown of a URL whose path or query is a credential. `None` if the
+/// URL cannot be read.
+pub fn url_origin(url: &str) -> Option<String> {
+    let u = reqwest::Url::parse(url).ok()?;
+    let host = u.host_str()?;
+    Some(match u.port() {
+        Some(port) => format!("{}://{host}:{port}", u.scheme()),
+        None => format!("{}://{host}", u.scheme()),
+    })
+}
+
 /// Whether two base URLs name the same host: scheme, host and port (the
 /// default port of the scheme when none is written). A URL that cannot be
 /// read is another host. A provider's stored credential is sent only to the
@@ -210,6 +255,45 @@ pub fn parse_trusted_proxies(values: &[String]) -> Result<Vec<ipnet::IpNet>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webhook_urls_may_carry_a_query_but_no_credentials_or_fragment() {
+        for ok in [
+            "https://hooks.slack.com/services/T/B/x",
+            "http://h:8080/p?token=abc&x=1",
+            "https://h?token=abc",
+        ] {
+            assert!(validate_webhook_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "ftp://h/x",
+            "h/x",
+            "https://u:p@h/x",
+            "https://h?x=a@b#f",
+            "https://h/x#f",
+            "https:///x",
+            "https://:80/x",
+            "https://h /x",
+        ] {
+            let e = validate_webhook_url(bad).unwrap_err().to_string();
+            assert!(!e.contains(bad), "the message repeats the URL: {e}");
+        }
+        assert!(validate_webhook_url(&format!("https://h/{}", "a".repeat(3000))).is_err());
+    }
+
+    #[test]
+    fn the_origin_of_a_url_is_scheme_host_and_port_only() {
+        assert_eq!(
+            url_origin("https://hooks.slack.com/services/T/B/x?t=1").as_deref(),
+            Some("https://hooks.slack.com")
+        );
+        assert_eq!(
+            url_origin("http://h:8080/p").as_deref(),
+            Some("http://h:8080")
+        );
+        assert_eq!(url_origin("https://h:443/p").as_deref(), Some("https://h"));
+        assert_eq!(url_origin("nope"), None);
+    }
 
     #[test]
     fn same_host_is_scheme_host_and_port() {

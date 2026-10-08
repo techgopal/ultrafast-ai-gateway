@@ -500,6 +500,15 @@ async fn main() -> Result<()> {
                     "exporting traces over OTLP"
                 );
             }
+            let (deliverer, alert_task) = ultrafast_gateway::alerts::Deliverer::spawn(
+                state.store.clone(),
+                state.cipher.clone(),
+                state.http.clone(),
+                state.metrics.clone(),
+                ultrafast_gateway::alerts::DeliveryConfig::default(),
+                stopped.clone(),
+            );
+            state.alerts = Some(deliverer);
             let state = Arc::new(state);
             // Before the listener is bound, so the first call is already
             // counted against what was spent before the restart.
@@ -539,6 +548,8 @@ async fn main() -> Result<()> {
             if let Some(task) = otel_task {
                 let _ = task.await;
             }
+            // Deliveries in progress get 5 seconds to finish.
+            let _ = alert_task.await;
             // After the writer: what it counted while draining is written too.
             let _ = budget_flush.await;
             budgets::flush(&state).await;

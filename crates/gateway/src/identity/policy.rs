@@ -85,6 +85,8 @@ pub enum Action {
     ViewAudit,
     // routing
     ViewRoutingHealth,
+    // alerts: channels, rules and events. Admins only.
+    ManageAlerts,
     // settings: viewing and changing both
     ManageSettings,
     // playground
@@ -167,6 +169,7 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ManageRoutes
         | Action::ViewAudit
         | Action::ViewRoutingHealth
+        | Action::ManageAlerts
         | Action::ManageSettings
         | Action::ManageLimits
         | Action::ManageBudgets => Forbidden,
@@ -1130,6 +1133,19 @@ mod tests {
                 Action::ViewRoutingHealth,
                 Forbidden,
             ),
+            ("manage_alerts: lead", lead, Action::ManageAlerts, Forbidden),
+            (
+                "manage_alerts: member",
+                member,
+                Action::ManageAlerts,
+                Forbidden,
+            ),
+            (
+                "manage_alerts: loner",
+                loner,
+                Action::ManageAlerts,
+                Forbidden,
+            ),
         ];
         let view_log = |user_id, team_id, user_in_led_team| Action::ViewLog {
             user_id,
@@ -1332,6 +1348,7 @@ mod tests {
                 Action::ManageRoutes,
                 Action::ViewAudit,
                 Action::ViewRoutingHealth,
+                Action::ManageAlerts,
                 Action::InviteUser { role: Role::Member },
                 Action::InviteUser { role: Role::Admin },
                 Action::CreateTeam,

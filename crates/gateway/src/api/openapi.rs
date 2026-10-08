@@ -13,6 +13,7 @@ use utoipa::openapi::Required;
 use utoipa::{Modify, OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 
+use super::alerts::ChannelView;
 use super::auth::{UserTeamView, UserView};
 use super::keys::KeyView;
 use super::logs::LogView;
@@ -128,6 +129,26 @@ pub struct CreatedToken {
 }
 
 #[derive(ToSchema)]
+pub struct ChannelList {
+    pub channels: Vec<ChannelView>,
+}
+
+#[derive(ToSchema)]
+pub struct CreatedChannel {
+    pub channel: ChannelView,
+    /// The signing secret of the channel. It is shown once, in this answer,
+    /// and cannot be read again.
+    pub secret: String,
+}
+
+#[derive(ToSchema)]
+pub struct RotatedSecret {
+    /// The new signing secret. It is shown once, in this answer, and cannot
+    /// be read again.
+    pub secret: String,
+}
+
+#[derive(ToSchema)]
 pub struct AuditPage {
     pub entries: Vec<AuditRow>,
 }
@@ -178,6 +199,7 @@ pub struct RoutingHealth {
         (name = "playground", description = "Chat calls made from the console for the signed-in user."),
         (name = "config", description = "The configuration as a file: export and import."),
         (name = "backup", description = "A copy of the database."),
+        (name = "alerts", description = "Alert channels: where notifications are sent."),
     )
 )]
 struct AdminApi;
@@ -257,9 +279,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 61. Its fallbacks are not
+    /// Every route of `api::router`, which has 67. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 61] = [
+    const ROUTES: [(&str, &str); 67] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -321,6 +343,12 @@ mod tests {
         ("GET", "/api/config/export"),
         ("POST", "/api/config/import"),
         ("GET", "/api/backup"),
+        ("GET", "/api/alerts/channels"),
+        ("POST", "/api/alerts/channels"),
+        ("PATCH", "/api/alerts/channels/{id}"),
+        ("DELETE", "/api/alerts/channels/{id}"),
+        ("POST", "/api/alerts/channels/{id}/rotate-secret"),
+        ("POST", "/api/alerts/channels/{id}/test"),
     ];
 
     const SECRET_REQUEST_FIELDS: [&str; 5] = [
@@ -431,7 +459,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 61);
+        assert_eq!(routes.len(), 67);
         assert_eq!(documented, routes);
     }
 
@@ -453,7 +481,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 61);
+        assert_eq!(ids.len(), 67);
     }
 
     #[test]

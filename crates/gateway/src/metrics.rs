@@ -72,6 +72,7 @@ pub struct Metrics {
     otel_exported: AtomicU64,
     otel_dropped: AtomicU64,
     otel_failures: AtomicU64,
+    alert_deliveries: [AtomicU64; 3],
     /// Per provider.
     upstream: Mutex<BTreeMap<String, Histogram>>,
     /// The counters of the log pipeline, once it exists.
@@ -177,6 +178,17 @@ impl Metrics {
     /// One export request failed (an error, or an answer other than 2xx).
     pub fn otel_failure(&self) {
         self.otel_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One alert delivery ended: `ok`, `failed` (after its tries) or
+    /// `dropped` (the queue was full).
+    pub fn alert_delivery(&self, result: &str, n: u64) {
+        let i = match result {
+            "ok" => 0,
+            "failed" => 1,
+            _ => 2,
+        };
+        self.alert_deliveries[i].fetch_add(n, Ordering::Relaxed);
     }
 
     /// The exposition text. `health` is what the circuit breakers show.
@@ -363,6 +375,20 @@ impl Metrics {
             "uf_otel_export_failures_total {}",
             n(&self.otel_failures)
         );
+
+        header(
+            &mut out,
+            "uf_alert_deliveries_total",
+            "counter",
+            "Alert notifications to channels, by result: delivered, failed after all tries, or dropped because the queue was full.",
+        );
+        for (i, result) in ["ok", "failed", "dropped"].iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "uf_alert_deliveries_total{{result=\"{result}\"}} {}",
+                n(&self.alert_deliveries[i])
+            );
+        }
 
         header(&mut out, "uf_circuit_open", "gauge", "1 while the circuit breaker of a target refuses calls, else 0. Targets that were never called are not listed.");
         for t in health {
