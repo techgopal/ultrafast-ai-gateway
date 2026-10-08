@@ -1,14 +1,20 @@
 //! Delivery of stored alert events to channels.
 //!
 //! [`Deliverer::offer`] is a non-blocking send into a bounded queue; a full
-//! queue drops the job and counts it. One task takes jobs off the queue (at
-//! most [`MAX_JOBS_IN_FLIGHT`] at a time, so a burst waits in the queue and
-//! not in memory), and each job sends to its channels from one task per
-//! channel: a host that is down delays only its own retries. When every
-//! channel of a job has finished, the outcomes are written to the event in
-//! one update.
+//! queue drops the job, counts it and records a `dropped` outcome on the
+//! event. One task takes jobs off the queue and starts a task for each job,
+//! which starts one task per channel. Each channel has its own gate: at most
+//! [`CHANNEL_CONCURRENCY`] deliveries to it are in progress (retries
+//! included) and at most [`CHANNEL_BACKLOG`] more wait; the rest are
+//! recorded as dropped. So a host that is down fills only its own gate. The
+//! only shared limit is on HTTP sends in flight, and a delivery holds one of
+//! those only while a request is out, not while it waits to retry. When
+//! every channel of a job has finished, the outcomes are written to the
+//! event in one update.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -25,8 +31,12 @@ use crate::store::{AlertEventRow, ChannelRow, Store};
 pub const QUEUE_CAPACITY: usize = 1024;
 /// How long one try may take.
 pub const TRY_TIMEOUT: Duration = Duration::from_secs(10);
-/// Jobs being delivered at the same moment.
-const MAX_JOBS_IN_FLIGHT: usize = 64;
+/// Deliveries to one channel in progress at the same moment.
+pub const CHANNEL_CONCURRENCY: usize = 4;
+/// Deliveries to one channel that wait for a slot; more are dropped.
+pub const CHANNEL_BACKLOG: usize = 256;
+/// HTTP requests out at the same moment, over all channels.
+const SENDS_IN_FLIGHT: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct DeliveryConfig {
@@ -36,6 +46,8 @@ pub struct DeliveryConfig {
     pub timeout: Duration,
     /// How long the task waits for deliveries in progress once told to stop.
     pub shutdown_cap: Duration,
+    /// Jobs that may wait for the dispatcher.
+    pub queue_capacity: usize,
 }
 
 impl Default for DeliveryConfig {
@@ -46,6 +58,7 @@ impl Default for DeliveryConfig {
             retry_delays: vec![Duration::from_secs(5), Duration::from_secs(30)],
             timeout: TRY_TIMEOUT,
             shutdown_cap: Duration::from_secs(5),
+            queue_capacity: QUEUE_CAPACITY,
         }
     }
 }
@@ -59,6 +72,7 @@ struct Job {
 pub struct Deliverer {
     tx: mpsc::Sender<Job>,
     metrics: Arc<Metrics>,
+    store: Store,
 }
 
 /// One post to a channel.
@@ -82,8 +96,55 @@ struct Delivery {
     error: Option<String>,
 }
 
+impl Delivery {
+    fn failed(channel: &ChannelRow, tries: u32, error: &str) -> Self {
+        Self {
+            channel_id: channel.id,
+            channel_name: channel.name.clone(),
+            ok: false,
+            status: None,
+            tries,
+            error: Some(error.to_string()),
+        }
+    }
+}
+
+/// Limits on deliveries to one channel.
+struct Gate {
+    slots: Semaphore,
+    waiting: AtomicUsize,
+}
+
+#[derive(Default)]
+struct Gates {
+    map: Mutex<HashMap<i64, Arc<Gate>>>,
+}
+
+impl Gates {
+    fn of(&self, channel: i64) -> Arc<Gate> {
+        let mut map = self
+            .map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Gates nobody uses any more are forgotten.
+        if map.len() >= 1024 {
+            map.retain(|_, g| Arc::strong_count(g) > 1);
+        }
+        map.entry(channel)
+            .or_insert_with(|| {
+                Arc::new(Gate {
+                    slots: Semaphore::new(CHANNEL_CONCURRENCY),
+                    waiting: AtomicUsize::new(0),
+                })
+            })
+            .clone()
+    }
+}
+
 #[derive(Clone)]
 struct Context {
+    gates: Arc<Gates>,
+    sends: Arc<Semaphore>,
     store: Store,
     cipher: Cipher,
     http: reqwest::Client,
@@ -103,12 +164,15 @@ impl Deliverer {
         cfg: DeliveryConfig,
         stop: watch::Receiver<bool>,
     ) -> (Self, JoinHandle<()>) {
-        let (tx, rx) = mpsc::channel(QUEUE_CAPACITY);
+        let (tx, rx) = mpsc::channel(cfg.queue_capacity.max(1));
         let deliverer = Self {
             tx,
             metrics: metrics.clone(),
+            store: store.clone(),
         };
         let ctx = Context {
+            gates: Arc::default(),
+            sends: Arc::new(Semaphore::new(SENDS_IN_FLIGHT)),
             store,
             cipher,
             http,
@@ -119,24 +183,57 @@ impl Deliverer {
     }
 
     /// Queues the delivery of a stored event to these channels. Never
-    /// blocks; a full queue drops the job and counts each channel as dropped.
+    /// blocks. A full queue drops the job: each channel is counted as
+    /// dropped and the event is given a `dropped` outcome for it.
     pub fn offer(&self, event_id: i64, channel_ids: Vec<i64>) {
-        let n = channel_ids.len() as u64;
-        if self
-            .tx
-            .try_send(Job {
-                event_id,
-                channel_ids,
-            })
-            .is_err()
-        {
-            self.metrics.alert_delivery("dropped", n);
+        let job = Job {
+            event_id,
+            channel_ids,
+        };
+        if let Err(e) = self.tx.try_send(job) {
+            let job = e.into_inner();
+            self.metrics
+                .alert_delivery("dropped", job.channel_ids.len() as u64);
+            // The write is a task of its own: this call must not wait. With
+            // no runtime there is nobody to write it.
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let store = self.store.clone();
+                runtime.spawn(async move { record_dropped(&store, job).await });
+            }
         }
     }
 
-    /// How many jobs wait for a slot.
+    /// How many jobs wait for the dispatcher.
     pub fn queued(&self) -> usize {
-        QUEUE_CAPACITY - self.tx.capacity()
+        self.tx.max_capacity() - self.tx.capacity()
+    }
+}
+
+const DROPPED_QUEUE: &str = "dropped: the delivery queue was full";
+const DROPPED_BACKLOG: &str = "dropped: too many deliveries were waiting for this channel";
+
+/// Stores a `dropped` outcome for each channel of a job that was not run.
+async fn record_dropped(store: &Store, job: Job) {
+    let Ok(channels) = store.list_alert_channels().await else {
+        return;
+    };
+    let mut seen = Vec::new();
+    let mut deliveries = Vec::new();
+    for id in job.channel_ids {
+        let Some(channel) = channels.iter().find(|c| c.id == id) else {
+            continue;
+        };
+        if !seen.contains(&id) {
+            seen.push(id);
+            deliveries.push(Delivery::failed(channel, 0, DROPPED_QUEUE));
+        }
+    }
+    if deliveries.is_empty() {
+        return;
+    }
+    let json = serde_json::to_string(&deliveries).expect("deliveries serialize");
+    if let Err(e) = store.set_alert_event_deliveries(job.event_id, &json).await {
+        tracing::warn!(error = %e, "could not store a dropped alert delivery");
     }
 }
 
@@ -150,15 +247,8 @@ async fn stopped(stop: &mut watch::Receiver<bool>) {
 }
 
 async fn run(ctx: Context, mut rx: mpsc::Receiver<Job>, mut stop: watch::Receiver<bool>) {
-    let slots = Arc::new(Semaphore::new(MAX_JOBS_IN_FLIGHT));
     let mut jobs: JoinSet<()> = JoinSet::new();
     loop {
-        // A slot first: while all are busy the jobs wait in the queue,
-        // which is bounded.
-        let permit = tokio::select! {
-            permit = slots.clone().acquire_owned() => permit.expect("the semaphore is never closed"),
-            () = stopped(&mut stop) => break,
-        };
         let job = tokio::select! {
             job = rx.recv() => match job {
                 Some(job) => job,
@@ -167,10 +257,7 @@ async fn run(ctx: Context, mut rx: mpsc::Receiver<Job>, mut stop: watch::Receive
             () = stopped(&mut stop) => break,
         };
         let ctx = ctx.clone();
-        jobs.spawn(async move {
-            process(&ctx, job).await;
-            drop(permit);
-        });
+        jobs.spawn(async move { process(&ctx, job).await });
         while jobs.try_join_next().is_some() {}
     }
     // What is queued still goes out, within the cap.
@@ -192,7 +279,8 @@ async fn run(ctx: Context, mut rx: mpsc::Receiver<Job>, mut stop: watch::Receive
     }
 }
 
-/// Sends one event to its channels and stores what happened.
+/// Sends one event to its channels and stores what happened. A channel that
+/// was deleted since the event was queued is left out of the outcomes.
 async fn process(ctx: &Context, job: Job) {
     let event = match ctx.store.alert_event(job.event_id).await {
         Ok(Some(event)) => event,
@@ -243,37 +331,46 @@ async fn process(ctx: &Context, job: Job) {
     }
 }
 
-/// Up to three tries to one channel.
+/// Up to three tries to one channel, inside the channel's gate.
 async fn deliver(ctx: &Context, channel: &ChannelRow, event: &AlertEventRow) -> Delivery {
-    let delivery = |ok, status, tries, error: Option<&str>| Delivery {
-        channel_id: channel.id,
-        channel_name: channel.name.clone(),
-        ok,
-        status,
-        tries,
-        error: error.map(str::to_string),
-    };
     if !channel.enabled {
-        return delivery(false, None, 0, Some("the channel is disabled"));
+        return Delivery::failed(channel, 0, "the channel is disabled");
     }
     let (Some(url), Some(secret)) = (
         decrypted(&ctx.cipher, &channel.url_enc),
         decrypted(&ctx.cipher, &channel.secret_enc),
     ) else {
         ctx.metrics.alert_delivery("failed", 1);
-        return delivery(
-            false,
-            None,
+        return Delivery::failed(
+            channel,
             0,
-            Some("the URL or the secret of the channel could not be read"),
+            "the URL or the secret of the channel could not be read",
         );
     };
+    // The channel's own gate: a host that is down fills this and nothing else.
+    let gate = ctx.gates.of(channel.id);
+    if gate.waiting.fetch_add(1, Ordering::AcqRel) >= CHANNEL_BACKLOG {
+        gate.waiting.fetch_sub(1, Ordering::AcqRel);
+        ctx.metrics.alert_delivery("dropped", 1);
+        return Delivery::failed(channel, 0, DROPPED_BACKLOG);
+    }
+    let slot = gate.slots.acquire().await;
+    gate.waiting.fetch_sub(1, Ordering::AcqRel);
+    let _slot = slot.expect("the semaphore is never closed");
+
     let body = payload(&channel.kind, event);
     let mut tries = 0;
     let mut last;
     loop {
         tries += 1;
+        // Held for the request only, not for the wait before the next try.
+        let send = ctx
+            .sends
+            .acquire()
+            .await
+            .expect("the semaphore is never closed");
         last = send_once(&ctx.http, &url, &secret, &body, ctx.cfg.timeout).await;
+        drop(send);
         if last.ok {
             break;
         }
@@ -284,7 +381,14 @@ async fn deliver(ctx: &Context, channel: &ChannelRow, event: &AlertEventRow) -> 
     }
     ctx.metrics
         .alert_delivery(if last.ok { "ok" } else { "failed" }, 1);
-    delivery(last.ok, last.status, tries, last.error.as_deref())
+    Delivery {
+        channel_id: channel.id,
+        channel_name: channel.name.clone(),
+        ok: last.ok,
+        status: last.status,
+        tries,
+        error: last.error,
+    }
 }
 
 fn decrypted(cipher: &Cipher, bytes: &[u8]) -> Option<String> {

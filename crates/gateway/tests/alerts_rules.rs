@@ -74,6 +74,7 @@ async fn world() -> World {
                 retry_delays: vec![Duration::from_millis(50), Duration::from_millis(100)],
                 timeout: Duration::from_secs(5),
                 shutdown_cap: Duration::from_millis(300),
+                queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
             },
             stopped_in.clone(),
         );
@@ -348,6 +349,50 @@ async fn an_opening_breaker_fires_circuit_open_and_closing_resolves_it() {
     assert_eq!(w.chat().await, StatusCode::OK);
     w.wait_event(rule, "resolved").await;
     assert_eq!(w.events(&format!("?rule_id={rule}")).await.len(), 2);
+    w.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_circuit_episode_whose_target_left_the_catalog_is_resolved() {
+    let w = world().await;
+    w.route(RouteSettings {
+        breaker_failures: 3,
+        breaker_open_s: 60,
+        ..FAIL_FAST
+    })
+    .await;
+    let rule = w.rule("circuit", "circuit_open", json!({})).await;
+    for _ in 0..3 {
+        w.chat().await;
+    }
+    w.wait_event(rule, "firing").await;
+    // Still in the catalog: a tick leaves the episode alone.
+    w.h.state.alert_engine.as_ref().unwrap().tick().await;
+    assert!(w
+        .events(&format!("?rule_id={rule}&state=resolved"))
+        .await
+        .is_empty());
+
+    // The model goes (with the route that used it); its breaker never closes.
+    let mut tx = w.h.store.begin().await.unwrap();
+    assert!(tx.delete_model(w.model_id).await.unwrap());
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    w.h.state.alert_engine.as_ref().unwrap().tick().await;
+    let resolved = w.wait_event(rule, "resolved").await;
+    assert_eq!(resolved["summary"], "target removed");
+    assert_eq!(resolved["subject"], "target:p/m");
+    // One resolved only, however many ticks follow; the state is gone.
+    for _ in 0..3 {
+        w.h.state.alert_engine.as_ref().unwrap().tick().await;
+    }
+    assert_eq!(
+        w.events(&format!("?rule_id={rule}&state=resolved"))
+            .await
+            .len(),
+        1
+    );
+    assert!(w.h.store.alert_states().await.unwrap().is_empty());
     w.shutdown().await;
 }
 

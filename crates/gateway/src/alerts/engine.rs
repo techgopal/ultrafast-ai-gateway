@@ -401,8 +401,62 @@ impl Engine {
         }
     }
 
+    /// Resolves the circuit episodes whose target is no longer in the
+    /// catalog: a deleted model or provider never reports its breaker
+    /// closing, so without this the episode would fire for ever.
+    pub async fn resolve_removed_targets(&mut self) {
+        let mut firing = Vec::new();
+        for (i, r) in self.rules.iter().enumerate() {
+            if r.enabled && matches!(r.params, Params::Circuit(_)) {
+                for subject in self.episodes.firing_subjects(r.id) {
+                    firing.push((i, subject));
+                }
+            }
+        }
+        if firing.is_empty() {
+            return;
+        }
+        let known: std::collections::HashSet<(String, String)> =
+            match self.store.list_models().await {
+                Ok(models) => models
+                    .into_iter()
+                    .map(|m| (m.provider_name, m.name))
+                    .collect(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read the catalog for the alert engine");
+                    return;
+                }
+            };
+        for (i, subject) in firing {
+            let Some((provider, model)) = subject
+                .strip_prefix("target:")
+                .and_then(|s| s.split_once('/'))
+            else {
+                continue;
+            };
+            if known.contains(&(provider.to_string(), model.to_string())) {
+                continue;
+            }
+            let details = json!({ "provider": provider, "model": model });
+            if let Err(e) = self
+                .change(
+                    i,
+                    &subject,
+                    Change::Resolve,
+                    "target removed",
+                    &details,
+                    None,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "could not record an alert");
+            }
+        }
+    }
+
     /// Evaluates every error-rate rule against the windows at bucket `now`.
     pub async fn on_tick(&mut self, now: u32) {
+        self.resolve_removed_targets().await;
         self.windows.prune(now);
         for i in 0..self.rules.len() {
             let r = &self.rules[i];
@@ -532,6 +586,7 @@ pub fn spawn(
                             if let Err(e) = engine.load().await {
                                 tracing::warn!(error = %e, "could not read the alert rules");
                             }
+                            engine.resolve_removed_targets().await;
                             if let Some(done) = done { let _ = done.send(()); }
                         }
                     }

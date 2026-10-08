@@ -37,6 +37,7 @@ fn fast() -> DeliveryConfig {
         retry_delays: vec![Duration::from_millis(50), Duration::from_millis(100)],
         timeout: Duration::from_secs(5),
         shutdown_cap: Duration::from_millis(300),
+        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
     }
 }
 
@@ -641,6 +642,7 @@ async fn a_dead_host_does_not_hold_up_a_healthy_one() {
         retry_delays: vec![Duration::from_millis(400), Duration::from_millis(400)],
         timeout: Duration::from_millis(400),
         shutdown_cap: Duration::from_millis(300),
+        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
     })
     .await;
     // Answers only after the timeout.
@@ -730,6 +732,7 @@ async fn a_full_queue_drops_and_counts_and_never_blocks() {
         retry_delays: vec![],
         timeout: Duration::from_secs(60),
         shutdown_cap: Duration::from_millis(200),
+        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
     })
     .await;
     let hung = MockServer::start().await;
@@ -755,6 +758,7 @@ async fn shutdown_ends_the_deliverer_even_with_a_delivery_in_flight() {
         retry_delays: vec![],
         timeout: Duration::from_secs(60),
         shutdown_cap: Duration::from_millis(200),
+        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
     })
     .await;
     let hung = MockServer::start().await;
@@ -778,4 +782,176 @@ async fn shutdown_ends_the_deliverer_even_with_a_delivery_in_flight() {
         .await
         .expect("the deliverer ended within its cap")
         .unwrap();
+}
+
+async fn hung_server() -> MockServer {
+    let hung = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+        .mount(&hung)
+        .await;
+    hung
+}
+
+#[tokio::test]
+async fn many_events_to_a_dead_host_do_not_starve_a_healthy_channel() {
+    // A try to the dead host takes 2 s; with the old per-job slots, 64 jobs
+    // held every slot for that long (65 s with the default retries).
+    let env = env(DeliveryConfig {
+        retry_delays: vec![Duration::from_millis(500), Duration::from_millis(500)],
+        timeout: Duration::from_secs(2),
+        shutdown_cap: Duration::from_millis(300),
+        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+    })
+    .await;
+    let dead = hung_server().await;
+    let healthy = receiver(200).await;
+    let (dead_id, _) = env.create("a-dead", "webhook", &hook(&dead)).await;
+    let (ok_id, _) = env.create("b-healthy", "webhook", &hook(&healthy)).await;
+    let event = env.event("x").await;
+    for _ in 0..80 {
+        env.deliverer().offer(event, vec![dead_id]);
+    }
+    let healthy_event = env.event("y").await;
+    let started = Instant::now();
+    env.deliverer().offer(healthy_event, vec![ok_id]);
+    let d = env.deliveries(healthy_event).await;
+    assert!(
+        started.elapsed() < Duration::from_millis(800),
+        "the healthy channel waited {:?}",
+        started.elapsed()
+    );
+    assert_eq!(d[0]["ok"], true);
+    assert_eq!(healthy.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn at_most_four_deliveries_to_one_channel_are_in_progress() {
+    let env = env(DeliveryConfig {
+        retry_delays: vec![],
+        timeout: Duration::from_secs(30),
+        shutdown_cap: Duration::from_millis(200),
+        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+    })
+    .await;
+    let hung = hung_server().await;
+    let (id, _) = env.create("hung", "webhook", &hook(&hung)).await;
+    let event = env.event("x").await;
+    for _ in 0..20 {
+        env.deliverer().offer(event, vec![id]);
+    }
+    for _ in 0..200 {
+        if hung.received_requests().await.unwrap().len() >= 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        hung.received_requests().await.unwrap().len(),
+        ultrafast_gateway::alerts::CHANNEL_CONCURRENCY
+    );
+}
+
+#[tokio::test]
+async fn deliveries_beyond_a_channels_backlog_are_dropped_and_recorded() {
+    let env = env(DeliveryConfig {
+        retry_delays: vec![],
+        timeout: Duration::from_secs(30),
+        shutdown_cap: Duration::from_millis(200),
+        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+    })
+    .await;
+    let hung = hung_server().await;
+    let (id, _) = env.create("hung", "webhook", &hook(&hung)).await;
+    let event = env.event("x").await;
+    let over = 40;
+    let total = ultrafast_gateway::alerts::CHANNEL_BACKLOG
+        + ultrafast_gateway::alerts::CHANNEL_CONCURRENCY
+        + over;
+    for _ in 0..total {
+        env.deliverer().offer(event, vec![id]);
+    }
+    for _ in 0..400 {
+        if counter(&env.metrics(), "dropped") >= over as u64 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(counter(&env.metrics(), "dropped"), over as u64);
+    let d = env.deliveries(event).await;
+    assert_eq!(d[0]["ok"], false);
+    assert_eq!(d[0]["tries"], 0);
+    assert!(d[0]["error"].as_str().unwrap().starts_with("dropped:"));
+}
+
+#[tokio::test]
+async fn a_job_dropped_on_a_full_queue_is_recorded_on_its_event() {
+    let env = env(DeliveryConfig {
+        retry_delays: vec![],
+        timeout: Duration::from_secs(5),
+        shutdown_cap: Duration::from_millis(200),
+        queue_capacity: 2,
+    })
+    .await;
+    let server = receiver(200).await;
+    let (id, _) = env.create("ops", "webhook", &hook(&server)).await;
+    let mut events = Vec::new();
+    for i in 0..10 {
+        events.push(env.event(&format!("e{i}")).await);
+    }
+    // The dispatcher cannot run between these (a single-threaded runtime),
+    // so only the first two fit in the queue.
+    for e in &events {
+        env.deliverer().offer(*e, vec![id]);
+    }
+    let mut dropped = 0;
+    for e in &events {
+        let d = env.deliveries(*e).await;
+        assert_eq!(d.len(), 1);
+        if d[0]["error"] == "dropped: the delivery queue was full" {
+            assert_eq!(
+                (d[0]["ok"].clone(), d[0]["tries"].clone()),
+                (json!(false), json!(0))
+            );
+            assert_eq!(d[0]["channel_name"], "ops");
+            dropped += 1;
+        } else {
+            assert_eq!(d[0]["ok"], true);
+        }
+    }
+    assert_eq!(dropped, 8);
+    assert_eq!(counter(&env.metrics(), "dropped"), 8);
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_channel_deleted_before_the_send_is_skipped_and_left_out() {
+    let env = env(fast()).await;
+    let gone = receiver(200).await;
+    let kept = receiver(200).await;
+    let (gone_id, _) = env.create("a-gone", "webhook", &hook(&gone)).await;
+    let (kept_id, _) = env.create("b-kept", "webhook", &hook(&kept)).await;
+    let (status, _) = env
+        .call("DELETE", &format!("/api/alerts/channels/{gone_id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Queued with both ids: the deleted one is not called and has no entry.
+    let event = env.event("x").await;
+    env.deliverer().offer(event, vec![gone_id, kept_id]);
+    let d = env.deliveries(event).await;
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0]["channel_id"], kept_id);
+    assert!(gone.received_requests().await.unwrap().is_empty());
+
+    // Queued for the deleted channel alone: nothing to send, nothing to
+    // record, no panic, and the deliverer carries on.
+    let lonely = env.event("y").await;
+    env.deliverer().offer(lonely, vec![gone_id]);
+    let after = env.event("z").await;
+    env.deliverer().offer(after, vec![kept_id]);
+    env.deliveries(after).await;
+    let e = env.store.alert_event(lonely).await.unwrap().unwrap();
+    assert_eq!(e.deliveries, "[]");
 }
