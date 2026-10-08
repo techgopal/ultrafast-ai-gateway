@@ -464,3 +464,31 @@ async fn rejected_spans_of_a_partial_success_are_counted_as_dropped() {
     assert!(text.contains("uf_otel_spans_exported_total 1"), "{text}");
     assert!(text.contains("uf_otel_spans_dropped_total 1"), "{text}");
 }
+
+#[tokio::test]
+async fn an_oversized_answer_to_a_good_export_is_not_read_to_the_end() {
+    // The refusal is in the first bytes, but the answer runs on past 64 KiB:
+    // only 64 KiB are read, and what does not parse is taken as no refusal.
+    let collector = MockServer::start().await;
+    let mut body = String::from(r#"{"partialSuccess":{"rejectedSpans":"1"}"#);
+    body.push_str(&" ".repeat(200 * 1024));
+    body.push('}');
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&collector)
+        .await;
+    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let (stop, stopped) = watch::channel(false);
+    let (exporter, task) = Exporter::spawn(
+        config(collector.uri(), 1.0),
+        reqwest::Client::new(),
+        metrics.clone(),
+        stopped,
+    );
+    exporter.offer(&record()); // two spans
+    stop.send(true).unwrap();
+    task.await.unwrap();
+    let text = metrics.render(&[]);
+    assert!(text.contains("uf_otel_spans_exported_total 2"), "{text}");
+    assert!(text.contains("uf_otel_spans_dropped_total 0"), "{text}");
+}

@@ -86,6 +86,23 @@ pub struct RequestRecord {
     pub started_unix_ms: u64,
 }
 
+/// The longest `requested` a record keeps, in bytes. The name is whatever the
+/// caller sent (also for models that do not exist); every queue that holds a
+/// record would otherwise hold it whole.
+pub const MAX_REQUESTED: usize = 256;
+
+/// `text` cut to at most `max` bytes, on a char boundary.
+fn truncated(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 /// Receives the records. `record` is called on the request path and must not
 /// block: a sink that does work hands it to a task or a channel.
 pub trait RequestSink: Send + Sync {
@@ -195,7 +212,11 @@ impl Scope {
     /// caller cannot make subjects up.
     pub fn resolved(&mut self, route: Option<&str>) {
         self.resolved = true;
-        self.resolved_route = route.map(str::to_string);
+        // The name is kept only while a rule reads it: no copy per call
+        // otherwise.
+        self.resolved_route = route
+            .filter(|_| self.alerts.as_ref().is_some_and(EngineHandle::is_active))
+            .map(str::to_string);
     }
 
     /// The `traceparent` the caller sent: the call's trace continues it.
@@ -224,7 +245,7 @@ impl Scope {
 
     pub fn requested(&mut self, name: &str, stream: bool) {
         let r = self.record_mut();
-        r.requested = name.to_string();
+        r.requested = truncated(name, MAX_REQUESTED).to_string();
         r.stream = stream;
     }
 
@@ -597,6 +618,51 @@ mod tests {
         assert_eq!(records[0].key_id, Some(7));
         assert_eq!(records[0].requested, "p/m");
         assert!(records[0].stream);
+    }
+
+    #[test]
+    fn a_huge_requested_name_is_cut_on_a_char_boundary() {
+        let sink = Arc::new(Mem::default());
+        // 1 MiB of a two-byte char: the cut must not split one.
+        let mut s = scope(&sink);
+        s.requested(&"\u{e9}".repeat(512 * 1024), false);
+        s.finish(404);
+        let mut s = scope(&sink);
+        s.requested(&format!("a{}", "\u{e9}".repeat(512 * 1024)), false);
+        s.finish(404);
+        let mut s = scope(&sink);
+        s.requested(&"x".repeat(1024 * 1024), false);
+        s.finish(404);
+        let mut s = scope(&sink);
+        s.requested("p/m", false);
+        s.finish(200);
+        let records = sink.0.lock().unwrap();
+        for r in &records[..3] {
+            assert!(r.requested.len() <= 256, "{}", r.requested.len());
+            assert!(r.requested.len() >= 254);
+        }
+        assert_eq!(records[3].requested, "p/m");
+    }
+
+    #[test]
+    fn the_route_name_is_kept_only_while_an_error_rate_rule_reads_it() {
+        let sink = Arc::new(Mem::default());
+        let (engine, _rx) = EngineHandle::unread(4);
+        engine.windows().set_active(false);
+        let mut s = scope(&sink);
+        s.watched(Some(engine.clone()));
+        s.resolved(Some("chat"));
+        assert_eq!(s.resolved_route, None, "no rule: nothing is copied");
+        engine.windows().set_active(true);
+        s.resolved(Some("chat"));
+        assert_eq!(s.resolved_route.as_deref(), Some("chat"));
+        s.resolved(None);
+        assert_eq!(s.resolved_route, None);
+        s.finish(200);
+        let mut no_engine = scope(&sink);
+        no_engine.resolved(Some("chat"));
+        assert_eq!(no_engine.resolved_route, None);
+        no_engine.finish(200);
     }
 
     #[test]

@@ -247,9 +247,13 @@ impl Sender {
             request = request.header(name, value);
         }
         match request.send().await {
-            Ok(resp) if resp.status().is_success() => {
-                // A 2xx may still refuse some spans (`partialSuccess`).
-                let rejected = rejected_spans(&resp.bytes().await.unwrap_or_default()).min(n);
+            Ok(mut resp) if resp.status().is_success() => {
+                // A 2xx may still refuse some spans (`partialSuccess`). Only
+                // a small answer is read; a longer one counts as none refused.
+                let rejected = match read_capped(&mut resp, MAX_ANSWER).await {
+                    Some(bytes) => rejected_spans(&bytes).min(n),
+                    None => 0,
+                };
                 self.metrics.otel_exported(n - rejected);
                 if rejected > 0 {
                     self.metrics.otel_dropped(rejected);
@@ -266,6 +270,23 @@ impl Sender {
             }
         }
     }
+}
+
+/// The most of a collector's answer that is read (the answer to a good
+/// export is a few bytes).
+const MAX_ANSWER: usize = 64 * 1024;
+
+/// The body of `resp`, or `None` when it is longer than `max` bytes or
+/// cannot be read. Stops reading at the cap.
+async fn read_capped(resp: &mut reqwest::Response, max: usize) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        if body.len() + chunk.len() > max {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Some(body)
 }
 
 /// `partialSuccess.rejectedSpans` of an export answer (a number, or a

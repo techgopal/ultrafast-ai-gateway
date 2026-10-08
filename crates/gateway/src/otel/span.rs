@@ -263,6 +263,30 @@ mod tests {
     const T0: u128 = 32_472_144_000_000_000_000; // started_unix_ms in base() // 2999-01-01 00:00:00 UTC
 
     #[test]
+    fn a_huge_requested_name_reaches_the_span_cut() {
+        use crate::telemetry::{RequestSink, Scope};
+        use std::sync::{Arc, Mutex};
+        #[derive(Default)]
+        struct Mem(Mutex<Vec<RequestRecord>>);
+        impl RequestSink for Mem {
+            fn record(&self, record: RequestRecord) {
+                self.0.lock().unwrap().push(record);
+            }
+        }
+        let sink = Arc::new(Mem::default());
+        let mut scope = Scope::begin(sink.clone(), Some(7), Some(1), None, "chat");
+        scope.requested(&"m".repeat(1 << 20), false);
+        scope.finish(404);
+        let record = sink.0.lock().unwrap().remove(0);
+        let spans = spans_of(&record, &mut counter(), [9; 16]);
+        let value = attr(&spans[0], "uf.requested").unwrap()["stringValue"]
+            .as_str()
+            .unwrap()
+            .len();
+        assert!(value <= 256, "{value}");
+    }
+
+    #[test]
     fn spans_of_a_call_with_retry_and_fallback() {
         let mut r = base();
         r.trace_parent = Some(TraceParent {
