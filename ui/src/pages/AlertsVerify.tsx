@@ -1,18 +1,5 @@
 import { control } from "@/components/classes";
-
-const PYTHON = `import hmac, hashlib
-t, v1 = [part.split("=", 1)[1] for part in header.split(",")]
-signed = t.encode() + b"." + raw_body
-expected = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
-if not hmac.compare_digest(expected, v1): reject()
-if abs(time.time() - int(t)) > 300: reject()`;
-
-const NODE = `const crypto = require("node:crypto");
-const [t, v1] = header.split(",").map((part) => part.split("=")[1]);
-const hmac = crypto.createHmac("sha256", secret).update(\`\${t}.\${rawBody}\`);
-const expected = hmac.digest("hex");
-if (expected.length !== v1.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(v1))) reject();
-if (Math.abs(Date.now() / 1000 - Number(t)) > 300) reject();`;
+import { NODE_EXAMPLE, PYTHON_EXAMPLE } from "@/lib/signatures";
 
 const block =
   "rounded-md bg-muted p-3 font-mono text-xs wrap-anywhere whitespace-pre-wrap text-foreground";
@@ -35,11 +22,11 @@ export function VerifySignatures() {
         </p>
         <p className="font-medium">Python</p>
         <pre className={block}>
-          <code>{PYTHON}</code>
+          <code>{PYTHON_EXAMPLE}</code>
         </pre>
         <p className="font-medium">Node.js</p>
         <pre className={block}>
-          <code>{NODE}</code>
+          <code>{NODE_EXAMPLE}</code>
         </pre>
       </div>
     </details>

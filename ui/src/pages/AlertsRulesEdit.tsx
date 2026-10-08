@@ -32,11 +32,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   ANY,
   budgetName,
-  chosen,
   DEFAULT_PERCENT,
   emptyRuleForm,
   KINDS,
   kindText,
+  paramsOnFields,
   ruleChangesOf,
   ruleFormOf,
   ruleRequestOf,
@@ -69,10 +69,18 @@ interface ChooseProps {
   onChange: (value: string) => void;
   hint?: string;
   error?: string | undefined;
+  /** What the rule has, when it is not among the choices: it is shown while it is untouched. */
+  stored?: { value: string; label: string } | undefined;
 }
 
 /** A select among the choices; the choice that leaves a parameter out is first. */
-function Choose({ label, name, value, choices, onChange, hint, error }: ChooseProps) {
+function Choose({ label, name, value: wanted, choices: offered, onChange, hint, error, stored }: ChooseProps) {
+  // What the select shows is what the rule has, and what the request sends.
+  const choices =
+    stored === undefined || wanted !== stored.value || offered.some((one) => one.value === wanted)
+      ? offered
+      : [...offered, { value: stored.value, label: `${stored.label} (not available)` }];
+  const value = choices.some((one) => one.value === wanted) ? wanted : ANY;
   return (
     <Field label={label} name={name} error={error} hint={hint}>
       {({ id, name: fieldName, ...described }) => (
@@ -108,7 +116,7 @@ function offeredOf(lists: Lists): Offered {
     budgets: lists.budgets.map((one) => one.id),
     routes: lists.routes.map((one) => one.name),
     providers: lists.providers.map((one) => one.name),
-    keys: lists.keys.map((one) => one.id),
+    keys: lists.keys.filter((one) => one.status !== "revoked").map((one) => one.id),
     models: lists.models.map((one) => ({ provider: one.provider_name, name: one.name })),
     channels: lists.channels.map((one) => one.id),
   };
@@ -134,7 +142,7 @@ function RuleFormBody({ rule, lists, create, update, onDone, onCancel }: FormPro
     defaultValues: rule === null ? emptyRuleForm() : ruleFormOf(rule),
     onSubmit: async ({ value }) => {
       try {
-        const request = ruleRequestOf(value, offered);
+        const request = ruleRequestOf(value, offered, rule ?? undefined);
         if (rule === null) {
           await create.mutateAsync(request);
           create.reset();
@@ -152,7 +160,7 @@ function RuleFormBody({ rule, lists, create, update, onDone, onCancel }: FormPro
       } catch (error) {
         create.reset();
         update.reset();
-        applyApiError(form, onField(error, "alert_rule_exists", "name"));
+        applyApiError(form, paramsOnFields(onField(error, "alert_rule_exists", "name")));
       }
     },
   });
@@ -161,6 +169,13 @@ function RuleFormBody({ rule, lists, create, update, onDone, onCancel }: FormPro
   const failure = useFormFailure(form, formRef, errorRef);
   const onSubmit = useSubmit(form);
 
+  const was = rule === null ? null : ruleFormOf(rule);
+  const keyName = (id: string) => {
+    const found = lists.keys.find((one) => String(one.id) === id);
+    return found === undefined ? `Key ${id}` : `${found.name} (revoked)`;
+  };
+  const storedOf = (value: string | undefined, label: (value: string) => string) =>
+    value === undefined || value === ANY ? undefined : { value, label: label(value) };
   const budgetChoices: Choice[] = [
     { value: ANY, label: "Any budget" },
     ...lists.budgets.map((one) => ({ value: String(one.id), label: budgetName(one) })),
@@ -270,7 +285,8 @@ function RuleFormBody({ rule, lists, create, update, onDone, onCancel }: FormPro
                   <Choose
                     label="Budget"
                     name={field.name}
-                    value={chosen(field.state.value, offered.budgets)}
+                    value={field.state.value}
+                    stored={storedOf(was?.budget_id, (id) => `Budget ${id}`)}
                     choices={budgetChoices}
                     onChange={field.handleChange}
                     hint="Fires once per budget period, when the spend reaches the percent."
@@ -318,9 +334,10 @@ function RuleFormBody({ rule, lists, create, update, onDone, onCancel }: FormPro
                           <Choose
                             label={noun}
                             name={field.name}
-                            value={chosen(
-                              field.state.value,
-                              choices.map((one) => one.value),
+                            value={field.state.value}
+                            stored={storedOf(
+                              was?.scope === scope ? was.subject : undefined,
+                              scope === "key" ? keyName : (name) => name,
                             )}
                             choices={choices}
                             onChange={field.handleChange}
@@ -380,7 +397,8 @@ function RuleFormBody({ rule, lists, create, update, onDone, onCancel }: FormPro
                   <Choose
                     label="Provider"
                     name={field.name}
-                    value={chosen(field.state.value, offered.providers)}
+                    value={field.state.value}
+                    stored={storedOf(was?.provider, (name) => name)}
                     choices={[
                       { value: ANY, label: "Any provider" },
                       ...lists.providers.map((one) => ({ value: one.name, label: one.name })),
@@ -391,20 +409,23 @@ function RuleFormBody({ rule, lists, create, update, onDone, onCancel }: FormPro
                   />
                 )}
               </form.Field>
-              <form.Subscribe
-                selector={(state) => chosen(state.values.provider, offered.providers)}
-              >
-                {(provider) => (
+              <form.Subscribe selector={(state) => state.values.provider}>
+                {(rawProvider) => (
                   <form.Field name="model">
                     {(field) => {
-                      const choices = modelChoices(provider);
+                      const choices = modelChoices(
+                        rawProvider === was?.provider || offered.providers.includes(rawProvider)
+                          ? rawProvider
+                          : ANY,
+                      );
                       return (
                         <Choose
                           label="Model"
                           name={field.name}
-                          value={chosen(
-                            field.state.value,
-                            choices.map((one) => one.value),
+                          value={field.state.value}
+                          stored={storedOf(
+                            rawProvider === was?.provider ? was.model : undefined,
+                            (name) => name,
                           )}
                           choices={choices}
                           onChange={field.handleChange}

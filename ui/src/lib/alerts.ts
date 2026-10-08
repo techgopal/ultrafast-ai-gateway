@@ -1,7 +1,7 @@
 // What the alerts page knows of rules, subjects and deliveries: the parameters
 // of each kind of rule as the console types them, the words for a condition,
 // and the form of a rule with the request it makes.
-import { ConsoleRefusal } from "@/api/errors";
+import { ApiError, ConsoleRefusal } from "@/api/errors";
 import type { components } from "@/api/schema";
 
 type Budget = components["schemas"]["BudgetView"];
@@ -193,8 +193,8 @@ export function deliveriesOf(event: { deliveries: unknown }): Delivery[] {
   return Array.isArray(event.deliveries) ? (event.deliveries as unknown[]).filter(isDelivery) : [];
 }
 
-export function deliverySummary(deliveries: readonly Delivery[]): string {
-  if (deliveries.length === 0) return "None yet";
+export function deliverySummary(deliveries: readonly Delivery[], noChannels = false): string {
+  if (deliveries.length === 0) return noChannels ? "No channels" : "None yet";
   const delivered = deliveries.filter((one) => one.ok).length;
   return delivered === deliveries.length
     ? `${String(delivered)} delivered`
@@ -318,10 +318,17 @@ function free(value: object): CreateRuleRequest["params"] {
   return value as CreateRuleRequest["params"];
 }
 
-function paramsRequest(form: RuleForm, offered: Offered): CreateRuleRequest["params"] {
+function paramsRequest(
+  form: RuleForm,
+  offered: Offered,
+  untouched: (field: keyof RuleForm) => boolean,
+): CreateRuleRequest["params"] {
+  // A choice the rule already had is kept as it is, offered or not; a choice made now must be offered.
+  const pick = (field: "budget_id" | "subject" | "provider", choices: readonly (string | number)[]) =>
+    untouched(field) ? form[field] : chosen(form[field], choices);
   switch (form.kind) {
     case "budget": {
-      const budget = chosen(form.budget_id, offered.budgets);
+      const budget = pick("budget_id", offered.budgets);
       return free({
         budget_id: budget === ANY ? null : Number(budget),
         percent: whole(form.percent, 1, 100, "percent"),
@@ -331,7 +338,7 @@ function paramsRequest(form: RuleForm, offered: Offered): CreateRuleRequest["par
       const scope = SCOPES.find(([value]) => value === form.scope)?.[0] ?? "gateway";
       const choices =
         scope === "route" ? offered.routes : scope === "provider" ? offered.providers : offered.keys;
-      const subject = scope === "gateway" ? ANY : chosen(form.subject, choices);
+      const subject = scope === "gateway" ? ANY : pick("subject", choices);
       return free({
         scope,
         subject: subject === ANY ? null : subject,
@@ -341,12 +348,14 @@ function paramsRequest(form: RuleForm, offered: Offered): CreateRuleRequest["par
       });
     }
     default: {
-      const provider = chosen(form.provider, offered.providers);
-      const model = offered.models.some(
-        (one) => one.name === form.model && (provider === ANY || one.provider === provider),
-      )
-        ? form.model
-        : ANY;
+      const provider = pick("provider", offered.providers);
+      const model =
+        (untouched("model") && untouched("provider")) ||
+        offered.models.some(
+          (one) => one.name === form.model && (provider === ANY || one.provider === provider),
+        )
+          ? form.model
+          : ANY;
       return free({
         provider: provider === ANY ? null : provider,
         model: model === ANY ? null : model,
@@ -376,7 +385,7 @@ function sameJson(a: unknown, b: unknown): boolean {
  */
 export function ruleChangesOf(rule: Rule, request: CreateRuleRequest): UpdateRuleRequest {
   const changes: UpdateRuleRequest = {};
-  if (request.name.trim() !== rule.name) changes.name = request.name;
+  if (request.name !== rule.name) changes.name = request.name;
   if (!sameJson(request.params, rule.params)) changes.params = request.params;
   const was = rule.channels.map((channel) => channel.id).sort((a, b) => a - b);
   const now = [...request.channel_ids].sort((a, b) => a - b);
@@ -386,16 +395,37 @@ export function ruleChangesOf(rule: Rule, request: CreateRuleRequest): UpdateRul
 
 /**
  * The request of a form, or a `ConsoleRefusal` about the first field that
- * cannot be sent. A choice that is not offered any more is not sent: it
+ * cannot be sent. A choice made now that is not offered is not sent: it
  * becomes "any", and a channel that is gone is left out.
  */
-export function ruleRequestOf(form: RuleForm, offered: Offered): CreateRuleRequest {
+export function ruleRequestOf(
+  form: RuleForm,
+  offered: Offered,
+  /** The rule that is changed: what of it the form did not touch is kept as it is. */
+  original?: Rule,
+): CreateRuleRequest {
+  const was = original === undefined ? null : ruleFormOf(original);
+  const untouched = (field: keyof RuleForm) =>
+    was !== null && original?.kind === form.kind && Object.is(was[field], form[field]);
   return {
-    name: form.name,
+    name: form.name.trim(),
     kind: form.kind,
-    params: paramsRequest(form, offered),
+    params: paramsRequest(form, offered, untouched),
     channel_ids: form.channel_ids
       .filter((id) => offered.channels.some((one) => String(one) === id))
       .map(Number),
   };
+}
+
+/**
+ * The gateway names a parameter that is not valid `params.<name>`; the form
+ * has a field of that name. The error stays what the gateway answered, with
+ * its status, its code and its message; only the names of the fields change.
+ */
+export function paramsOnFields(error: unknown): unknown {
+  if (!(error instanceof ApiError)) return error;
+  const fields = Object.fromEntries(
+    Object.entries(error.fields).map(([name, text]) => [name.replace(/^params\./, ""), text]),
+  );
+  return new ApiError(error.status, error.code, error.message, fields, error.retryAfter);
 }

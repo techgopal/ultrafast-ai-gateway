@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ConsoleRefusal } from "@/api/errors";
+import { ApiError, ConsoleRefusal } from "@/api/errors";
 import {
   ANY,
   budgetName,
@@ -9,6 +9,7 @@ import {
   deliverySummary,
   emptyRuleForm,
   paramsOf,
+  paramsOnFields,
   ruleChangesOf,
   ruleFormOf,
   ruleRequestOf,
@@ -173,6 +174,7 @@ describe("deliveries", () => {
     expect(deliverySummary(deliveriesOf(fixtures.alertEvents.firing))).toBe("1 of 2 delivered");
     expect(deliverySummary(deliveriesOf(fixtures.alertEvents.resolved))).toBe("1 delivered");
     expect(deliverySummary([])).toBe("None yet");
+    expect(deliverySummary([], true)).toBe("No channels");
     expect(
       deliverySummary([
         { channel_id: 1, channel_name: "a", ok: false, status: null, tries: 0, error: "x" },
@@ -253,6 +255,31 @@ describe("the form of a rule", () => {
     expect(ruleRequestOf(form({ channel_ids: ["1", "999"] }), offered).channel_ids).toEqual([1]);
   });
 
+  test("a revoked key is not offered, so the request cannot silently differ from the select", () => {
+    const revoked = fixtures.keyList.find((key) => key.status === "revoked");
+    const keys = fixtures.keyList.filter((key) => key.status !== "revoked").map((key) => key.id);
+    const narrow = { ...offered, keys };
+    const id = String(revoked?.id);
+    const asked = form({ kind: "error_rate", scope: "key", subject: id });
+    expect(ruleRequestOf(asked, narrow).params).toMatchObject({ subject: null });
+  });
+
+  test("what the form did not touch is kept as the rule has it", () => {
+    const rule = {
+      ...fixtures.alertRules.errors,
+      params: fixtures.freeForm({ scope: "route", subject: "gone", percent: 10, window_minutes: 5, min_requests: 20 }),
+    };
+    const kept = ruleRequestOf(ruleFormOf(rule), offered, rule);
+    expect(kept.params).toMatchObject({ subject: "gone" });
+    expect(ruleChangesOf(rule, kept)).toEqual({});
+    const touched = ruleRequestOf({ ...ruleFormOf(rule), subject: "also-gone" }, offered, rule);
+    expect(touched.params).toMatchObject({ subject: null });
+  });
+
+  test("the name is trimmed", () => {
+    expect(ruleRequestOf(form({ name: "  Spaced " }), offered).name).toBe("Spaced");
+  });
+
   test("the subject of the gateway scope is never sent", () => {
     const request = ruleRequestOf(form({ kind: "error_rate", scope: "gateway", subject: "support-chat" }), offered);
     expect(request.params).toMatchObject({ scope: "gateway", subject: null });
@@ -276,6 +303,17 @@ describe("the form of a rule", () => {
     expect(thrown).toBeInstanceOf(ConsoleRefusal);
     expect(thrown).toMatchObject({ message, field });
   });
+});
+
+test("parameter errors of the gateway are named as the form fields", () => {
+  const error = new ApiError(422, "validation_failed", "Some fields are not valid.", {
+    "params.percent": "bad",
+    name: "also bad",
+  });
+  const mapped = paramsOnFields(error);
+  expect(mapped).toBeInstanceOf(ApiError);
+  expect(mapped).toMatchObject({ status: 422, fields: { percent: "bad", name: "also bad" } });
+  expect(paramsOnFields("other")).toBe("other");
 });
 
 describe("what changed in a rule", () => {

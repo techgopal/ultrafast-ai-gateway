@@ -55,7 +55,7 @@ function ChannelForm({ channel, create, update, onCreated, onUpdated, onCancel }
       try {
         if (channel === null) {
           const made = await create.mutateAsync({
-            name: value.name,
+            name: value.name.trim(),
             kind: value.kind,
             url: value.url.trim(),
           });
@@ -66,7 +66,7 @@ function ChannelForm({ channel, create, update, onCreated, onUpdated, onCancel }
           return;
         }
         const changes: UpdateChannelRequest = {};
-        if (value.name.trim() !== channel.name) changes.name = value.name;
+        if (value.name.trim() !== channel.name) changes.name = value.name.trim();
         if (value.url.trim() !== "") changes.url = value.url.trim();
         if (Object.keys(changes).length === 0) {
           onUpdated(false);

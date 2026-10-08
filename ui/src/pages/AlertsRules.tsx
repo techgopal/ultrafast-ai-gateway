@@ -126,7 +126,7 @@ export function AlertsRules() {
       header: "Status",
       cell: (rule) =>
         rule.firing.length === 0 ? (
-          <Badge variant="outline">OK</Badge>
+          <Badge variant="outline">{rule.enabled ? "OK" : "Disabled"}</Badge>
         ) : (
           <span className="inline-flex flex-col items-start gap-1">
             <Badge variant="destructive">Firing</Badge>

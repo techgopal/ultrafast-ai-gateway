@@ -76,7 +76,7 @@ export const fieldMessages = {
   channelUrlInvalid: "URL is not valid",
   channelMissing: "No such channel.",
   needsUrl: "Set a URL before enabling this channel.",
-  budgetMissing: "budget_id: no such budget",
+  budgetMissing: "no such budget",
 } as const;
 
 /** A 422 of the gateway for these fields. */

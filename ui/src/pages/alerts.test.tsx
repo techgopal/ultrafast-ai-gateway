@@ -379,6 +379,9 @@ describe("rules", () => {
     expect(circuit).toHaveTextContent("Circuit opens on any target");
     expect(within(circuit).getByRole("switch", { name: "Circuit anywhere" })).not.toBeChecked();
     expect(names(circuit)).toEqual(["Edit", "Delete"]);
+    // Off is said as off, not as fine.
+    expect(within(circuit).getAllByText("Disabled")).toHaveLength(2);
+    expect(within(circuit).queryByText("OK")).toBeNull();
   });
 
   test("says so when there are none", async () => {
@@ -584,16 +587,6 @@ describe("rules", () => {
     });
   });
 
-  test("an answer about the parameters is said by the form", async () => {
-    const state = keeps();
-    state.refuseRuleCreate.push(validationFailed({ params: fieldMessages.budgetMissing }));
-    await page();
-    const dialog = await openAddRule();
-    await paste(within(dialog).getByLabelText("Name"), "Gone budget");
-    await submit(dialog, "Add rule");
-    expect(await within(dialog).findByText(`params: ${fieldMessages.budgetMissing}`)).toBeInTheDocument();
-  });
-
   test("edits a rule: the kind is shown and cannot be changed, and only the change is sent", async () => {
     const state = keeps();
     await page();
@@ -650,7 +643,7 @@ describe("rules", () => {
     expect(toasts()).toEqual([]);
   });
 
-  test("a route that is gone is not offered, and is not sent as it was", async () => {
+  test("a route that is gone is shown as the rule has it; a rename keeps it", async () => {
     const state = keeps({
       rules: [
         {
@@ -661,12 +654,86 @@ describe("rules", () => {
     });
     await page();
     const dialog = await openEditRule("Chat errors");
-    expect(combo(dialog, "Route")).toHaveTextContent("Each route");
+    expect(combo(dialog, "Route")).toHaveTextContent("route-that-was-deleted (not available)");
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.clear(name);
+    await paste(name, "Renamed");
+    await submit(dialog, "Save rule");
+    await waitFor(() => {
+      expect(state.patchedRules).toHaveLength(1);
+    });
+    expect(state.patchedRules[0]?.body).toEqual({ name: "Renamed" });
+  });
+
+  test("choosing another route for a rule whose route is gone sends the new one", async () => {
+    const state = keeps({
+      rules: [
+        {
+          ...alertRules.errors,
+          params: fixtures.freeForm({ ...alertRules.errors.params, subject: "route-that-was-deleted" }),
+        },
+      ],
+    });
+    await page();
+    const dialog = await openEditRule("Chat errors");
+    await choose(combo(dialog, "Route"), "Each route");
     await submit(dialog, "Save rule");
     await waitFor(() => {
       expect(state.patchedRules).toHaveLength(1);
     });
     expect(state.patchedRules[0]?.body).toMatchObject({ params: { subject: null } });
+  });
+
+  test("a revoked key stays what the rule has, and is said so", async () => {
+    const revoked = fixtures.keyList.find((key) => key.status === "revoked");
+    expect(revoked).toBeDefined();
+    const id = revoked?.id ?? 0;
+    const state = keeps({
+      rules: [
+        {
+          ...alertRules.errors,
+          params: fixtures.freeForm({ scope: "key", subject: String(id), percent: 10, window_minutes: 5, min_requests: 20 }),
+        },
+      ],
+    });
+    await page();
+    const dialog = await openEditRule("Chat errors");
+    expect(combo(dialog, "Key")).toHaveTextContent(`${revoked?.name ?? ""} (revoked) (not available)`);
+    expect(await optionsOf(combo(dialog, "Key"))).not.toContain(revoked?.name);
+    const name = within(dialog).getByLabelText("Name");
+    await userEvent.clear(name);
+    await paste(name, "Key errors");
+    await submit(dialog, "Save rule");
+    await waitFor(() => {
+      expect(state.patchedRules).toHaveLength(1);
+    });
+    expect(state.patchedRules[0]?.body).toEqual({ name: "Key errors" });
+  });
+
+  test("a name is sent without the spaces around it", async () => {
+    const state = keeps();
+    await page();
+    const dialog = await openAddRule();
+    await paste(within(dialog).getByLabelText("Name"), "  Padded  ");
+    await submit(dialog, "Add rule");
+    await waitFor(() => {
+      expect(state.createdRules).toHaveLength(1);
+    });
+    expect(state.createdRules[0]).toMatchObject({ name: "Padded" });
+  });
+
+  test("a parameter the gateway refuses is said on its field", async () => {
+    const state = keeps();
+    state.refuseRuleCreate.push(validationFailed({ "params.percent": "percent must be from 1 to 100" }));
+    await page();
+    const dialog = await openAddRule();
+    await paste(within(dialog).getByLabelText("Name"), "Refused");
+    await submit(dialog, "Add rule");
+    const percent = within(dialog).getByLabelText("Percent of the budget");
+    await waitFor(() => {
+      expect(percent).toHaveAttribute("aria-invalid", "true");
+    });
+    expect(within(dialog).getByText("percent must be from 1 to 100")).toBeInTheDocument();
   });
 
   test("deletes a rule after asking, and says its events stay", async () => {
@@ -1175,6 +1242,21 @@ describe("history", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Some fields are not valid.");
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expectOneH1("Alerts");
+  });
+
+  test("an event of a rule with no channel says so, one still waiting says none yet", async () => {
+    keeps({
+      rules: [{ ...alertRules.budget, channels: [] }],
+      events: [
+        { ...alertEvents.firing, deliveries: [] },
+        { ...alertEvents.test },
+      ],
+    });
+    await page("history");
+    const list = await table("Alert history");
+    const rows = within(list).getAllByRole("row").slice(1);
+    expect(rows[0]).toHaveTextContent("No channels");
+    expect(rows[1]).toHaveTextContent("None yet");
   });
 
   test("a rule that was deleted is still named in its events", async () => {

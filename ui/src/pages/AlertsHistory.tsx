@@ -73,6 +73,10 @@ export function AlertsHistory() {
     [budgets.data, keys.data],
   );
 
+  // A rule that sends to no channel has nothing to deliver; an event of a deleted rule, or a test, is not known to.
+  const noChannels = (event: Event) =>
+    rules.data?.rules.find((one) => one.id === event.rule_id)?.channels.length === 0;
+
   const columns: Column<Event>[] = [
     { id: "time", header: "Time", cell: (event) => <Timestamp value={event.at} /> },
     {
@@ -106,7 +110,7 @@ export function AlertsHistory() {
         const deliveries = deliveriesOf(event);
         return (
           <span className="inline-flex flex-col items-start gap-1">
-            <span>{deliverySummary(deliveries)}</span>
+            <span>{deliverySummary(deliveries, noChannels(event))}</span>
             {deliveries.length === 0 ? null : (
               <ul className="flex flex-col gap-0.5 text-xs text-muted-foreground">
                 {deliveries.map((delivery, index) => (
