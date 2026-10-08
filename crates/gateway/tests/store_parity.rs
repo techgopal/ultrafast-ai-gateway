@@ -276,3 +276,102 @@ async fn transactions_that_read_then_write_are_serialized() {
         "an update was lost"
     );
 }
+
+/// A limit or budget names its team or user without a foreign key, and a log
+/// row names them too: deleting the team or user must take the first two with
+/// it and leave the rows of the logs without an owner, whatever the database
+/// (triggers in both schemas). Rows of others stay.
+#[tokio::test]
+async fn deleting_a_team_or_user_removes_its_limits_and_budgets_and_detaches_its_logs() {
+    use ultrafast_gateway::identity::{Role, TeamRole};
+    let store = Store::open_in_memory().await.unwrap();
+    let gone_user =
+        common::seed_user(&store, "gone@example.com", Role::Member, "pw-pw-pw-pw").await;
+    let kept_user =
+        common::seed_user(&store, "kept@example.com", Role::Member, "pw-pw-pw-pw").await;
+    let gone_team = common::seed_team(&store, "Gone", &[(gone_user, TeamRole::Member)]).await;
+    let kept_team = common::seed_team(&store, "Kept", &[(kept_user, TeamRole::Member)]).await;
+
+    let mut tx = store.begin().await.unwrap();
+    for (scope, id) in [
+        (LimitScope::Gateway, None),
+        (LimitScope::User, Some(gone_user)),
+        (LimitScope::User, Some(kept_user)),
+        (LimitScope::Team, Some(gone_team)),
+        (LimitScope::Team, Some(kept_team)),
+    ] {
+        tx.upsert_limit(scope, id, &limit(5)).await.unwrap();
+        if scope != LimitScope::Gateway {
+            tx.upsert_budget(scope, id, 9, Period::Daily, BudgetAction::Block)
+                .await
+                .unwrap();
+        }
+    }
+    tx.commit().await.unwrap();
+    let mut mine = log("2999-01-01 00:00:00", None, 200, 1);
+    mine.user_id = Some(gone_user);
+    mine.team_id = Some(gone_team);
+    let mut theirs = log("2999-01-01 00:00:01", None, 200, 1);
+    theirs.user_id = Some(kept_user);
+    theirs.team_id = Some(kept_team);
+    store.insert_logs(&[mine, theirs]).await.unwrap();
+
+    let mut tx = store.begin().await.unwrap();
+    assert!(tx.delete_user(gone_user).await.unwrap());
+    assert!(tx.delete_team(gone_team).await.unwrap());
+    tx.commit().await.unwrap();
+
+    let subjects = |rows: Vec<(LimitScope, Option<i64>)>| {
+        let mut rows = rows;
+        rows.sort_by_key(|(s, id)| (s.as_str().to_string(), *id));
+        rows
+    };
+    let limits = subjects(
+        store
+            .list_limits()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.scope, r.scope_id))
+            .collect(),
+    );
+    assert_eq!(
+        limits,
+        subjects(vec![
+            (LimitScope::Gateway, None),
+            (LimitScope::User, Some(kept_user)),
+            (LimitScope::Team, Some(kept_team)),
+        ])
+    );
+    let budgets = subjects(
+        store
+            .list_budgets()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.scope, r.scope_id))
+            .collect(),
+    );
+    assert_eq!(
+        budgets,
+        subjects(vec![
+            (LimitScope::User, Some(kept_user)),
+            (LimitScope::Team, Some(kept_team)),
+        ])
+    );
+    let logs = store
+        .list_logs(&LogScope::All, &LogFilter::default(), 10)
+        .await
+        .unwrap();
+    assert_eq!(logs.len(), 2);
+    for l in &logs {
+        if l.row.at.ends_with(":00") {
+            assert_eq!((l.row.user_id, l.row.team_id), (None, None), "detached");
+        } else {
+            assert_eq!(
+                (l.row.user_id, l.row.team_id),
+                (Some(kept_user), Some(kept_team))
+            );
+        }
+    }
+}
