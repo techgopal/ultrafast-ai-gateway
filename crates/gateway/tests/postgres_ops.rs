@@ -123,12 +123,16 @@ fn a_database_url_must_be_postgres_and_the_pool_size_sane() {
     let err = text(&out.stderr);
     assert!(!out.status.success());
     assert!(err.contains("could not connect"), "{err}");
+    // It waits 10 s for the server. The bound is wide on purpose: a loaded
+    // machine slows the process, and only a hang (the operating system's
+    // own connect timeout is minutes) may fail this.
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(20),
+        started.elapsed() < std::time::Duration::from_secs(60),
         "start-up gives up after about 10 s: {:?}",
         started.elapsed()
     );
     assert!(err.contains("within 10 s"), "{err}");
+    assert!(err.contains("refused"), "{err}");
     assert!(!err.contains("hunter2"), "{err}");
     assert!(!data.exists());
 }

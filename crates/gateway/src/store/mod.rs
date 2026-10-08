@@ -201,6 +201,46 @@ impl Dialected for Store {
     }
 }
 
+/// How long to wait for the PostgreSQL server: at start-up, and for a
+/// connection while it is away.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Tries to connect until the server answers or `wait` is over. A refused
+/// connection is retried (the server may be starting); any other error ends
+/// it at once. Only the connection is timed, never the migrations.
+async fn wait_for_server(url: &str, wait: std::time::Duration) -> Result<()> {
+    use sqlx::Connection;
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut last_refused = false;
+    let mut pause = std::time::Duration::from_millis(50);
+    loop {
+        match tokio::time::timeout_at(deadline, AnyConnection::connect(url)).await {
+            Ok(Ok(conn)) => {
+                let _ = conn.close().await;
+                return Ok(());
+            }
+            Ok(Err(sqlx::Error::Io(e))) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                last_refused = true;
+            }
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {}
+        }
+        if tokio::time::Instant::now() + pause >= deadline {
+            bail!(
+                "no answer within {} s{}",
+                wait.as_secs().max(1),
+                if last_refused {
+                    " (the connection was refused)"
+                } else {
+                    ""
+                }
+            );
+        }
+        tokio::time::sleep(pause).await;
+        pause = (pause * 2).min(std::time::Duration::from_secs(1));
+    }
+}
+
 impl Store {
     /// Opens (creating it if needed) the SQLite database at `path`.
     pub async fn open(path: &Path) -> Result<Self> {
@@ -249,12 +289,31 @@ impl Store {
     /// `postgresql://`) with up to `max` connections, and brings its schema
     /// up to date. The tables live in the schema the connection's
     /// `search_path` starts with (`public` unless the server says otherwise).
+    ///
+    /// The wait for the server is capped at [`CONNECT_TIMEOUT`]; running the
+    /// migrations is not (a large one may take longer).
     pub async fn connect_url(url: &str, max: u32) -> Result<Self> {
+        Self::connect_url_within(url, max, CONNECT_TIMEOUT).await
+    }
+
+    /// [`Store::connect_url`] with the cap on the wait for the server given.
+    /// Nothing the server or the driver said is quoted except the last
+    /// connection error of a server that refused: the URL is never in it.
+    pub async fn connect_url_within(
+        url: &str,
+        max: u32,
+        wait: std::time::Duration,
+    ) -> Result<Self> {
         install_default_drivers();
         if Dialect::of_url(url) != Some(Dialect::Postgres) {
             bail!("the database URL must start with postgres:// or postgresql://");
         }
-        let pool = AnyPoolOptions::new().max_connections(max.max(1));
+        wait_for_server(url, wait).await?;
+        // A call that needs a connection while the database is away answers
+        // after this, not after sqlx's 30 s default.
+        let pool = AnyPoolOptions::new()
+            .max_connections(max.max(1))
+            .acquire_timeout(CONNECT_TIMEOUT);
         Self::connect(url, pool, None).await
     }
 
@@ -679,6 +738,10 @@ mod tests {
         let sep = if base.contains('?') { '&' } else { '?' };
         let url = format!("{base}{sep}options=-c%20search_path%3D{schema}");
         let store = Store::connect_url(&url, 3).await.unwrap();
+        assert_eq!(
+            store.pool().options().get_acquire_timeout(),
+            CONNECT_TIMEOUT
+        );
         store.insert_key("k", "h", "d", None).await.unwrap();
         assert!(store.active_key_by_hash("h").await.unwrap().is_some());
         let tables: i64 = admin
@@ -697,5 +760,66 @@ mod tests {
             .execute(admin.pool())
             .await
             .unwrap();
+    }
+
+    /// The wait for the server is capped; the migrations are not: a run held
+    /// up longer than the cap by a lock on its own table still finishes.
+    #[tokio::test]
+    async fn a_slow_migration_is_not_cut_off_by_the_connect_cap() {
+        use sqlx::Connection;
+        let Some(base) = scratch::test_database_url() else {
+            eprintln!("SKIPPED without UF_TEST_DATABASE_URL: no PostgreSQL to connect to");
+            return;
+        };
+        let admin = Store::open_in_memory().await.unwrap();
+        let schema = format!("t_slow_{}", std::process::id());
+        for sql in [
+            format!("DROP SCHEMA IF EXISTS {schema} CASCADE"),
+            format!("CREATE SCHEMA {schema}"),
+        ] {
+            admin.q_dyn(sql).execute(admin.pool()).await.unwrap();
+        }
+        let sep = if base.contains('?') { '&' } else { '?' };
+        let url = format!("{base}{sep}options=-c%20search_path%3D{schema}");
+        drop(Store::connect_url(&url, 2).await.unwrap());
+        // Another session holds the migration table for 3 s.
+        let mut holder = sqlx::postgres::PgConnection::connect(&url).await.unwrap();
+        sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
+        sqlx::query("LOCK TABLE _sqlx_migrations IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut holder)
+            .await
+            .unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            sqlx::query("COMMIT").execute(&mut holder).await.unwrap();
+        });
+        let started = std::time::Instant::now();
+        let store = Store::connect_url_within(&url, 2, std::time::Duration::from_secs(1))
+            .await
+            .expect("the cap is for the connection, not the migrations");
+        assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+        drop(store);
+        release.await.unwrap();
+        admin
+            .q_dyn(format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(admin.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refused_port_is_reported_with_the_wait() {
+        let e = Store::connect_url_within(
+            "postgres://u:hunter2-secret@127.0.0.1:1/db",
+            2,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .err()
+        .unwrap();
+        let text = format!("{e:#}");
+        assert!(text.contains("within 1 s"), "{text}");
+        assert!(text.contains("refused"), "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
     }
 }
