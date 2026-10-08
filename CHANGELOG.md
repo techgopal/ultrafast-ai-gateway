@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   +30 s, per-channel limits); a console page, `/api/alerts/*` (admin only),
   and alert channels and rules in configuration export and import. Metric
   `uf_alert_deliveries_total{result}`.
+- A circuit alert resolves only after its breaker has stayed closed for
+  5 minutes, so a flapping provider is one episode. Budget alerts of a past
+  period no longer show as firing. The `requested` name in logs, traces and
+  error windows is cut at 256 bytes.
 
 ## [2.0.0-beta.2] - 2026-10-05
 

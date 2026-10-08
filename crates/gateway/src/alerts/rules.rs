@@ -17,7 +17,8 @@ pub const DEFAULT_MIN_REQUESTS: i64 = 20;
 /// The longest a name in the parameters may be.
 const MAX_NAME: usize = 200;
 
-/// `circuit_open`: fires when a breaker opens, resolves when it closes.
+/// `circuit_open`: fires when a breaker opens, resolves after it has stayed
+/// closed for a quiet period (see the engine).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CircuitParams {
     /// `null` or left out: any provider.

@@ -380,7 +380,7 @@ impl Metrics {
             &mut out,
             "uf_alert_deliveries_total",
             "counter",
-            "Alert notifications to channels, by result: delivered, failed after all tries, or dropped because the queue was full.",
+            "Alert notifications to channels, by result: delivered, failed after all tries, or dropped (the queue was full, or too many were waiting for one channel).",
         );
         for (i, result) in ["ok", "failed", "dropped"].iter().enumerate() {
             let _ = writeln!(

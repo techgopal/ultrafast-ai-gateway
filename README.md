@@ -360,8 +360,8 @@ Series: `uf_requests_total{endpoint,status_class}`, `uf_tokens_total{direction}`
 key, user, team or prompt. `GET /health` answers `{"status":"ok"}`.
 
 **Tracing.** Set `UF_OTEL_ENDPOINT` and every `/v1` call (chat, messages,
-embeddings) becomes a trace, exported in the background over OTLP/HTTP with
-JSON bodies:
+embeddings) and every playground call becomes a trace, exported in the
+background over OTLP/HTTP with JSON bodies:
 
 ```bash
 UF_OTEL_ENDPOINT=http://localhost:4318 \
@@ -378,9 +378,9 @@ UF_OTEL_SAMPLE_RATIO=0.25 ultrafast serve
   flag of 0 means the call is not exported. Without one, the gateway starts a
   trace and `UF_OTEL_SAMPLE_RATIO` decides. A call that carries a sampled
   `traceparent` is exported at any ratio.
-- *Spans.* One server span per call, named `uf.chat`, `uf.messages` or
-  `uf.embeddings`, with `uf.endpoint`, `uf.requested` (the model or route the
-  caller asked for), `http.response.status_code`, `uf.stream`, `uf.cached`,
+- *Spans.* One server span per call, named `uf.chat`, `uf.messages`,
+  `uf.embeddings` or `uf.playground`, with `uf.endpoint`, `uf.requested` (the
+  model or route the caller asked for, cut at 256 bytes), `http.response.status_code`, `uf.stream`, `uf.cached`,
   `uf.estimated`, `uf.key_id` / `uf.user_id` / `uf.team_id` when known,
   `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` when counted, and
   the call's tags as `uf.tags.<name>`. Status is an error for 5xx. Under it, one
@@ -414,7 +414,8 @@ incoming webhooks (Slack, Mattermost, Rocket.Chat) accept. The URL is
 `http://` or `https://` and is stored encrypted; it is never shown again (the
 console shows the host only). Creating a channel returns its signing secret
 (`whsec_...`) once; rotating it shows the new one once. A **Test** button sends
-a sample event and reports the result without counting it.
+a sample event and reports the result. It is stored in History as a `test`
+event and is not counted in `uf_alert_deliveries_total`.
 
 A webhook body:
 
@@ -427,8 +428,10 @@ A webhook body:
   "at": "2026-10-08T10:20:30Z", "gateway": "ultrafast 2.0.0" }
 ```
 
-`state` is `firing` or `resolved`. The body holds metadata only: no prompt,
-answer or key.
+`state` is `firing` or `resolved` (`test` for a Send test). The body holds
+metadata only: no prompt, answer or key. Budget summaries name the budget's
+subject (a team name, a user's email, a key's name), and that text goes to the
+channel's third party.
 
 *Signature.* Every delivery (slack channels too) carries
 `x-uf-signature: t=<unix seconds>,v1=<hex>`, where `v1` is the lower-case hex
@@ -461,8 +464,9 @@ answer other than 2xx, a timeout or a connection error counts as a failure.
 Up to three tries: now, 5 s later, 30 s after that. Delivery runs on a
 background task behind a bounded queue and never touches `/v1`. Each channel
 has at most 4 deliveries in progress (retries included) and 256 waiting; more
-are dropped. A full queue drops too. Every drop is recorded on the event and
-counted in `uf_alert_deliveries_total{result="dropped"}` (`ok` and `failed`
+are dropped. A full queue drops too. Every drop (a full queue, or a channel's
+backlog) is recorded on the event and counted in
+`uf_alert_deliveries_total{result="dropped"}` (`ok` and `failed`
 are the other results). A delivery still waiting or retrying when the gateway
 shuts down (5 s allowed) is cut off and not retried at the next start; its
 event keeps no outcome. The outcome of each channel (tries, last error as a
@@ -470,7 +474,7 @@ fixed phrase, never the URL) is on the event.
 
 *Rules.*
 
-- `budget` (`budget_id`, or none for every gateway/team/user budget; `percent`
+- `budget` (`budget_id`, or none for every budget, key budgets included; `percent`
   1 to 100): fires once per budget period when the spend passes that share of
   the limit. It is evaluated when spend is recorded (about every 5 s), so a
   budget already past the percent when the rule is created fires on its next
@@ -484,17 +488,22 @@ fixed phrase, never the URL) is on the event.
   `window_minutes` 5 to 60, default 5; `min_requests` 1 to 100 000, default 20):
   fires when the share of failed calls in the window reaches `percent` and the
   window holds at least `min_requests` calls. A failure is a 5xx answer,
-  including a provider's 429 passed back; the gateway's own 429s (rate limit,
+  or a 429 the provider gave; the gateway's own 429s (rate limit,
   budget), other 4xx and 499 (caller left) are not failures. A route subject
   counts only configured routes (a call to `provider/model` counts under its
   provider, key and the gateway, not under a route), and a call that never
-  resolved to a model or route (404, 403) is not counted. It resolves after the
+  resolved to a model or route (404, 403) is not counted. Playground calls are
+  counted like any other. It resolves after the
   rate has stayed under `percent` for one full window; because old failures
   must also leave the window, that is up to about two windows after the last
   failure.
 - `circuit_open` (`provider`, `model`, each optional: left out means any):
-  fires when a matching target's circuit breaker opens, resolves when it closes (or when the target is removed from the
-  catalog).
+  fires when a matching target's circuit breaker opens. It resolves only after
+  the breaker has stayed closed for a quiet period of 5 minutes (checked every
+  30 s), or when the target is removed from the catalog. A breaker that opens
+  again inside the quiet period continues the same episode and says nothing, so
+  a provider that flaps is one `firing` and one `resolved`, not a pair for
+  every flap.
 
 Disabling a rule forgets what it was firing for, silently: no `resolved`
 notice is sent, and enabling it again starts fresh. Changing a rule's params
@@ -579,6 +588,8 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
   models or grants, clears the whole response cache.
 - Single-flight is per process, and a caller waiting on another's call keeps
   its concurrency slot while it waits.
+- A logged `requested` name (the model or route a caller asked for) is cut at
+  256 bytes.
 - Request logs keep metadata only. Logs of a deleted user or team stay, with no
   owner.
 - Members see their own usage and budgets, team leads their teams', admins
@@ -592,7 +603,10 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
   Webhooks only (generic and Slack-compatible): no email, no PagerDuty format.
   Delivery is at most three tries and a delivery cut off at shutdown is not
   retried. Webhook URLs are not restricted to public addresses (admins already
-  set provider URLs). Only admins see alerts; leads cannot.
+  set provider URLs). Only admins see alerts; leads cannot. A circuit alert
+  resolves only after its breaker has stayed closed for 5 minutes. Alert
+  history (events) is kept until the database is deleted; it is not pruned by
+  log retention.
 - A backup restore is manual, and a configuration import never deletes.
 - No Responses API, image or audio output, or `response_format` / structured
   outputs yet (phase 2). SQLite only.
