@@ -514,6 +514,7 @@ async fn main() -> Result<()> {
             let (engine, engine_task) = ultrafast_gateway::alerts::engine::spawn(
                 state.store.clone(),
                 Some(deliverer.clone()),
+                Some(state.health.clone()),
                 ultrafast_gateway::alerts::EngineConfig::default(),
                 stopped.clone(),
             );

@@ -1,9 +1,10 @@
 //! What a rule is about: the parameters of each kind, checked.
 //!
-//! A rule's `params` are JSON. They are checked when the rule is written
-//! (unknown fields are refused) and again when the engine loads them.
+//! A rule's `params` are JSON, by kind: `budget` `{budget_id: id|null,
+//! percent: 1-100}`; `error_rate` `{scope, subject, percent, window_minutes
+//! 5-60 (5), min_requests 1-100000 (20)}`; `circuit_open` `{provider, model}`.
+//! They are checked when the rule is written (unknown fields are refused) and again when the engine loads them.
 
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::errors_window::Scope;
@@ -16,55 +17,12 @@ pub const DEFAULT_MIN_REQUESTS: i64 = 20;
 /// The longest a name in the parameters may be.
 const MAX_NAME: usize = 200;
 
-/// `budget`: fires once per budget period when the spend reaches `percent`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BudgetParams {
-    /// The budget; `null` or left out: every budget.
-    #[serde(default)]
-    pub budget_id: Option<i64>,
-    /// 1 to 100.
-    pub percent: i64,
-}
-
-/// `error_rate`: fires when, over the window, the share of calls that ended
-/// in a server error (5xx, or 429 from the provider) reaches `percent`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ErrorRateParams {
-    /// `gateway`, `route`, `provider` or `key`.
-    pub scope: String,
-    /// The route or provider name, or the key id; `null` or left out: each
-    /// subject of the scope on its own. Not used for `gateway`.
-    #[serde(default)]
-    pub subject: Option<String>,
-    /// 1 to 100.
-    pub percent: i64,
-    /// 5 to 60; 5 when left out.
-    #[serde(default = "default_window")]
-    pub window_minutes: i64,
-    /// 1 to 100000; 20 when left out. Fewer calls in the window never fire.
-    #[serde(default = "default_min_requests")]
-    pub min_requests: i64,
-}
-
-fn default_window() -> i64 {
-    DEFAULT_WINDOW_MINUTES
-}
-
-fn default_min_requests() -> i64 {
-    DEFAULT_MIN_REQUESTS
-}
-
 /// `circuit_open`: fires when a breaker opens, resolves when it closes.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CircuitParams {
     /// `null` or left out: any provider.
-    #[serde(default)]
     pub provider: Option<String>,
     /// `null` or left out: any model.
-    #[serde(default)]
     pub model: Option<String>,
 }
 
@@ -86,70 +44,152 @@ pub struct ErrorRate {
     pub min_requests: u32,
 }
 
-fn range(name: &str, value: i64, low: i64, high: i64) -> Result<i64, String> {
-    if (low..=high).contains(&value) {
-        Ok(value)
-    } else {
-        Err(format!("{name} must be from {low} to {high}"))
+/// What is wrong with the parameters: the field to show it on
+/// (`params`, or `params.<name>`) and a message that never repeats a value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamError {
+    pub field: String,
+    pub message: String,
+}
+
+impl ParamError {
+    fn on(name: &str, message: impl Into<String>) -> Self {
+        Self {
+            field: format!("params.{name}"),
+            message: message.into(),
+        }
+    }
+
+    fn whole(message: impl Into<String>) -> Self {
+        Self {
+            field: "params".to_string(),
+            message: message.into(),
+        }
     }
 }
 
-fn name_ok(what: &str, value: &str) -> Result<(), String> {
+type Fields = serde_json::Map<String, Value>;
+
+fn object<'a>(value: &'a Value, known: &[&str]) -> Result<&'a Fields, ParamError> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| ParamError::whole("params must be an object"))?;
+    // Names are the caller's: they are named in the field key, not repeated
+    // in the message.
+    if let Some(unknown) = map.keys().find(|k| !known.contains(&k.as_str())) {
+        let shown: String = unknown.chars().take(60).collect();
+        return Err(ParamError::on(&shown, "unknown field"));
+    }
+    Ok(map)
+}
+
+fn integer(map: &Fields, name: &str, default: Option<i64>) -> Result<i64, ParamError> {
+    match map.get(name) {
+        None => default.ok_or_else(|| ParamError::on(name, "is required")),
+        Some(v) => v
+            .as_i64()
+            .ok_or_else(|| ParamError::on(name, "must be a whole number")),
+    }
+}
+
+fn ranged(
+    map: &Fields,
+    name: &str,
+    default: Option<i64>,
+    low: i64,
+    high: i64,
+) -> Result<i64, ParamError> {
+    let value = integer(map, name, default)?;
+    if (low..=high).contains(&value) {
+        Ok(value)
+    } else {
+        Err(ParamError::on(
+            name,
+            format!("must be from {low} to {high}"),
+        ))
+    }
+}
+
+/// A text or null.
+fn optional_text<'a>(map: &'a Fields, name: &str) -> Result<Option<&'a str>, ParamError> {
+    match map.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(ParamError::on(name, "must be text or null")),
+    }
+}
+
+fn name_ok(what: &str, value: &str) -> Result<(), ParamError> {
     if value.trim().is_empty() || value.trim() != value {
-        return Err(format!(
-            "{what} must not be empty or start or end with a space"
+        return Err(ParamError::on(
+            what,
+            "must not be empty or start or end with a space",
         ));
     }
     if value.len() > MAX_NAME || value.chars().any(char::is_control) {
-        return Err(format!(
-            "{what} must be at most {MAX_NAME} bytes, without control characters"
+        return Err(ParamError::on(
+            what,
+            format!("must be at most {MAX_NAME} bytes, without control characters"),
         ));
     }
     Ok(())
 }
 
-/// The message names the problem and never repeats more than the field name.
-pub fn parse(kind: &str, value: &Value) -> Result<Params, String> {
-    fn read<T: serde::de::DeserializeOwned>(value: &Value) -> Result<T, String> {
-        serde_json::from_value(value.clone()).map_err(|e| e.to_string())
-    }
+pub fn parse(kind: &str, value: &Value) -> Result<Params, ParamError> {
     match kind {
         "budget" => {
-            let p: BudgetParams = read(value)?;
-            if let Some(id) = p.budget_id {
-                if id < 1 {
-                    return Err("budget_id must be a budget id or null".to_string());
-                }
-            }
-            let percent = range("percent", p.percent, 1, 100)?;
+            let map = object(value, &["budget_id", "percent"])?;
+            let budget_id = match map.get("budget_id") {
+                None | Some(Value::Null) => None,
+                Some(v) => match v.as_i64() {
+                    Some(id) if id >= 1 => Some(id),
+                    _ => return Err(ParamError::on("budget_id", "must be a budget id or null")),
+                },
+            };
+            let percent = ranged(map, "percent", None, 1, 100)?;
             Ok(Params::Budget {
-                budget_id: p.budget_id,
+                budget_id,
                 percent: percent as u8,
             })
         }
         "error_rate" => {
-            let p: ErrorRateParams = read(value)?;
-            let scope = Scope::parse(&p.scope)
-                .ok_or("scope must be gateway, route, provider or key".to_string())?;
-            let subject = match (&p.subject, scope) {
+            let map = object(
+                value,
+                &[
+                    "scope",
+                    "subject",
+                    "percent",
+                    "window_minutes",
+                    "min_requests",
+                ],
+            )?;
+            let scope = optional_text(map, "scope")?
+                .ok_or_else(|| ParamError::on("scope", "is required"))?;
+            let scope = Scope::parse(scope).ok_or_else(|| {
+                ParamError::on("scope", "must be gateway, route, provider or key")
+            })?;
+            let subject = match (optional_text(map, "subject")?, scope) {
                 (None, _) => None,
                 (Some(_), Scope::Gateway) => {
-                    return Err("subject is not used for the scope gateway".to_string())
+                    return Err(ParamError::on(
+                        "subject",
+                        "is not used for the scope gateway",
+                    ))
                 }
                 (Some(s), Scope::Key) => {
                     if s.parse::<i64>().map_or(true, |id| id < 1) || s.starts_with('+') {
-                        return Err("subject must be a key id for the scope key".to_string());
+                        return Err(ParamError::on("subject", "must be a key id"));
                     }
-                    Some(s.clone())
+                    Some(s.to_string())
                 }
                 (Some(s), _) => {
                     name_ok("subject", s)?;
-                    Some(s.clone())
+                    Some(s.to_string())
                 }
             };
-            let percent = range("percent", p.percent, 1, 100)?;
-            let window = range("window_minutes", p.window_minutes, 5, 60)?;
-            let min = range("min_requests", p.min_requests, 1, 100_000)?;
+            let percent = ranged(map, "percent", None, 1, 100)?;
+            let window = ranged(map, "window_minutes", Some(DEFAULT_WINDOW_MINUTES), 5, 60)?;
+            let min = ranged(map, "min_requests", Some(DEFAULT_MIN_REQUESTS), 1, 100_000)?;
             Ok(Params::ErrorRate(ErrorRate {
                 scope,
                 subject,
@@ -159,15 +199,22 @@ pub fn parse(kind: &str, value: &Value) -> Result<Params, String> {
             }))
         }
         "circuit_open" => {
-            let p: CircuitParams = read(value)?;
-            for (what, v) in [("provider", &p.provider), ("model", &p.model)] {
-                if let Some(v) = v {
+            let map = object(value, &["provider", "model"])?;
+            let mut out = CircuitParams {
+                provider: None,
+                model: None,
+            };
+            for (what, slot) in [("provider", &mut out.provider), ("model", &mut out.model)] {
+                if let Some(v) = optional_text(map, what)? {
                     name_ok(what, v)?;
+                    *slot = Some(v.to_string());
                 }
             }
-            Ok(Params::Circuit(p))
+            Ok(Params::Circuit(out))
         }
-        _ => Err("kind must be budget, error_rate or circuit_open".to_string()),
+        _ => Err(ParamError::whole(
+            "kind must be budget, error_rate or circuit_open",
+        )),
     }
 }
 
@@ -232,9 +279,20 @@ mod tests {
         ] {
             assert!(parse("budget", &bad).is_err(), "{bad}");
         }
-        assert!(parse("budget", &json!({ "percent": 5, "extra": 1 }))
-            .unwrap_err()
-            .contains("unknown field"));
+        let e = parse("budget", &json!({ "percent": 5, "extra": 1 })).unwrap_err();
+        assert_eq!(
+            (e.field.as_str(), e.message.as_str()),
+            ("params.extra", "unknown field")
+        );
+        let e = parse("budget", &json!({ "percent": 500 })).unwrap_err();
+        assert_eq!(e.field, "params.percent");
+        let e = parse("budget", &json!({})).unwrap_err();
+        assert_eq!(
+            (e.field.as_str(), e.message.as_str()),
+            ("params.percent", "is required")
+        );
+        let e = parse("budget", &json!([])).unwrap_err();
+        assert_eq!(e.field, "params");
     }
 
     #[test]

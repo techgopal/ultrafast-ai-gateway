@@ -81,6 +81,7 @@ async fn world() -> World {
         let (handle, engine_task) = engine::spawn(
             state.store.clone(),
             Some(deliverer.clone()),
+            Some(state.health.clone()),
             cfg(),
             stopped_in,
         );
@@ -181,7 +182,11 @@ impl World {
     }
 
     async fn chat(&self) -> StatusCode {
-        let body = json!({ "model": "r", "messages": [{ "role": "user", "content": "hi" }] });
+        self.chat_model("r").await
+    }
+
+    async fn chat_model(&self, model: &str) -> StatusCode {
+        let body = json!({ "model": model, "messages": [{ "role": "user", "content": "hi" }] });
         post_chat(&self.h.app, Some(&self.h.key), &body.to_string())
             .await
             .0
@@ -462,10 +467,10 @@ async fn rules_are_validated_listed_changed_and_deleted_and_audited() {
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert!(body["error"]["fields"]["params"]
-        .as_str()
-        .unwrap()
-        .contains("percent"));
+    assert_eq!(
+        body["error"]["fields"]["params.percent"],
+        "must be from 1 to 100"
+    );
     for (bad, field) in [
         (
             json!({ "name": "x", "kind": "latency", "params": {}, "channel_ids": [] }),
@@ -473,7 +478,15 @@ async fn rules_are_validated_listed_changed_and_deleted_and_audited() {
         ),
         (
             json!({ "name": "x", "kind": "budget", "params": { "percent": 5, "extra": 1 }, "channel_ids": [] }),
-            "params",
+            "params.extra",
+        ),
+        (
+            json!({ "name": "x", "kind": "budget", "params": {}, "channel_ids": [] }),
+            "params.percent",
+        ),
+        (
+            json!({ "name": "x", "kind": "error_rate", "params": { "scope": "route", "percent": 5, "window_minutes": 1 }, "channel_ids": [] }),
+            "params.window_minutes",
         ),
         (
             json!({ "name": " ", "kind": "budget", "params": { "percent": 5 }, "channel_ids": [] }),
@@ -485,7 +498,7 @@ async fn rules_are_validated_listed_changed_and_deleted_and_audited() {
         ),
         (
             json!({ "name": "x", "kind": "budget", "params": { "percent": 5, "budget_id": 4242 }, "channel_ids": [] }),
-            "params",
+            "params.budget_id",
         ),
     ] {
         let (status, body) = w.api("POST", "/api/alerts/rules", Some(bad.clone())).await;
@@ -952,7 +965,7 @@ async fn an_import_with_bad_alert_entries_is_refused_whole_and_a_dry_run_writes_
                     json!([])
                 )]),
             ),
-            "alert_rules[0].params",
+            "alert_rules[0].params.percent",
         ),
         (
             base(
@@ -1081,5 +1094,157 @@ async fn an_import_with_bad_alert_entries_is_refused_whole_and_a_dry_run_writes_
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{report}");
     assert_eq!(report["errors"][0]["at"], "alert_rules[0].kind");
+    w.shutdown().await;
+}
+
+fn windows(w: &World) -> &Arc<ultrafast_gateway::alerts::errors_window::ErrorWindows> {
+    w.h.state.alert_engine.as_ref().unwrap().windows()
+}
+
+#[tokio::test]
+async fn names_a_caller_makes_up_are_never_subjects_of_an_error_window() {
+    use ultrafast_gateway::alerts::errors_window::Scope;
+    let w = world().await;
+    w.route(FAIL_FAST).await;
+    w.rule(
+        "any route",
+        "error_rate",
+        json!({ "scope": "route", "percent": 50, "min_requests": 2 }),
+    )
+    .await;
+    for i in 0..300 {
+        let status = w.chat_model(&format!("junk-{i}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    let _ = w.chat_model("nope/model").await;
+    // A direct call counts for the gateway, its provider and its key, not for a route.
+    let _ = w.chat_model("p/m").await;
+    // A real route is tracked alongside.
+    for _ in 0..3 {
+        assert!(w.chat().await.as_u16() >= 500);
+    }
+    let windows = windows(&w);
+    let now = windows.current();
+    assert_eq!(windows.tracked_in(Scope::Route), 1, "only the route r");
+    assert_eq!(windows.total_of(Scope::Route, "r", now, 5).requests, 3);
+    assert_eq!(windows.tracked_in(Scope::Provider), 1);
+    assert_eq!(windows.total_of(Scope::Provider, "p", now, 5).requests, 4);
+    assert_eq!(windows.total_of(Scope::Gateway, "", now, 5).requests, 4);
+    assert_eq!(windows.tracked_in(Scope::Key), 1);
+    w.shutdown().await;
+}
+
+#[tokio::test]
+async fn calls_are_counted_only_while_an_enabled_error_rate_rule_exists() {
+    use ultrafast_gateway::alerts::errors_window::Scope;
+    let w = world().await;
+    w.route(FAIL_FAST).await;
+    for _ in 0..3 {
+        w.chat().await;
+    }
+    let windows = windows(&w);
+    assert!(!windows.is_active());
+    assert_eq!(
+        windows
+            .total_of(Scope::Gateway, "", windows.current(), 5)
+            .requests,
+        0
+    );
+    assert_eq!(windows.tracked(), 0);
+    // Other kinds of rule do not ask for it.
+    w.rule("circuit", "circuit_open", json!({})).await;
+    assert!(!windows.is_active());
+    let rule = w
+        .rule(
+            "rate",
+            "error_rate",
+            json!({ "scope": "gateway", "percent": 50 }),
+        )
+        .await;
+    assert!(windows.is_active());
+    w.chat().await;
+    assert_eq!(
+        windows
+            .total_of(Scope::Gateway, "", windows.current(), 5)
+            .requests,
+        1
+    );
+    // Switched off, it is forgotten.
+    let (status, _) = w
+        .api(
+            "PATCH",
+            &format!("/api/alerts/rules/{rule}"),
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!windows.is_active());
+    assert_eq!(windows.tracked_in(Scope::Gateway), 0);
+    w.shutdown().await;
+}
+
+#[tokio::test]
+async fn disabling_a_rule_forgets_its_episodes_and_enabling_it_starts_fresh() {
+    let w = world().await;
+    w.route(RouteSettings {
+        breaker_failures: 3,
+        breaker_open_s: 1,
+        ..FAIL_FAST
+    })
+    .await;
+    let rule = w.rule("circuit", "circuit_open", json!({})).await;
+    for _ in 0..3 {
+        w.chat().await;
+    }
+    w.wait_event(rule, "firing").await;
+    let (_, rules) = w.api("GET", "/api/alerts/rules", None).await;
+    assert_eq!(rules["rules"][0]["firing"].as_array().unwrap().len(), 1);
+    let path = format!("/api/alerts/rules/{rule}");
+    let (status, body) = w
+        .api("PATCH", &path, Some(json!({ "enabled": false })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["firing"], json!([]), "forgotten at once");
+    // Silently: no resolved notice.
+    assert_eq!(w.events(&format!("?rule_id={rule}")).await.len(), 1);
+    // The breaker closes while the rule is off; nobody hears of it.
+    w.h.upstream.reset().await;
+    Mock::given(method("POST"))
+        .respond_with(ok_response())
+        .mount(&w.h.upstream)
+        .await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    assert_eq!(w.chat().await, StatusCode::OK);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(w.events(&format!("?rule_id={rule}")).await.len(), 1);
+    // Switched on, the next opening fires.
+    let (status, _) = w
+        .api("PATCH", &path, Some(json!({ "enabled": true })))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    w.h.upstream.reset().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&w.h.upstream)
+        .await;
+    for _ in 0..3 {
+        w.chat().await;
+    }
+    for _ in 0..200 {
+        if w.events(&format!("?rule_id={rule}&state=firing"))
+            .await
+            .len()
+            == 2
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        w.events(&format!("?rule_id={rule}&state=firing"))
+            .await
+            .len(),
+        2
+    );
     w.shutdown().await;
 }

@@ -532,6 +532,10 @@ async fn dispatch(
         Err(Denied::Unknown) => return not_found(shape, call.model()),
         Err(Denied::Forbidden) => return forbidden(shape, call.model()),
     };
+    record.resolved(match &resolved {
+        Resolved::Route(route) => Some(route.name.as_str()),
+        _ => None,
+    });
     // 3b. The rate limits of the key, its owner, their teams and the gateway.
     // The permit goes with the scope, which a stream carries to its end. A
     // call that a limit refuses counts nowhere; one that is refused after

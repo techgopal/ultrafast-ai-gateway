@@ -680,8 +680,8 @@ async fn checked_params(
     fields: &mut BTreeMap<String, String>,
 ) -> Option<String> {
     match rules::parse(kind, params) {
-        Err(message) => {
-            fields.insert("params".to_string(), message);
+        Err(e) => {
+            fields.insert(e.field, e.message);
             None
         }
         Ok(parsed) => {
@@ -693,10 +693,7 @@ async fn checked_params(
                 match store.list_budgets().await {
                     Ok(budgets) if budgets.iter().any(|b| b.id == *id) => {}
                     Ok(_) => {
-                        fields.insert(
-                            "params".to_string(),
-                            "budget_id: no such budget".to_string(),
-                        );
+                        fields.insert("params.budget_id".to_string(), "no such budget".to_string());
                         return None;
                     }
                     Err(_) => return None,
@@ -941,7 +938,11 @@ pub async fn rules_update(
     if let Some(ids) = &channel_ids {
         tx.set_alert_rule_channels(id, ids).await?;
     }
-    if params_changed {
+    if req.enabled == Some(false) && was.enabled {
+        // Off: what it was firing for is forgotten, without a notice that it
+        // resolved. Switched on again, it starts fresh.
+        tx.clear_alert_states(id).await?;
+    } else if params_changed {
         // A new condition is a new episode: what the old one fired for is
         // forgotten, without a notice that it resolved.
         tx.clear_alert_states(id).await?;

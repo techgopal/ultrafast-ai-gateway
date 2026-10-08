@@ -19,7 +19,7 @@ use super::errors_window::{ErrorWindows, Sample, Scope, Totals};
 use super::rules::{self, rate_subject, ErrorRate, Params};
 use super::Deliverer;
 use crate::budgets::{usd, Budget};
-use crate::routing::HealthEvent;
+use crate::routing::{HealthEvent, HealthStore, TargetState};
 use crate::store::{now, NewAlertEvent, Store};
 
 pub const INPUT_CAPACITY: usize = 1024;
@@ -65,19 +65,44 @@ pub struct EngineHandle {
 }
 
 impl EngineHandle {
+    /// Whether finished calls are counted at all (an enabled error-rate rule
+    /// exists).
+    pub fn is_active(&self) -> bool {
+        self.windows.is_active()
+    }
+
     /// Counts a finished call. Never waits.
     pub fn observe(&self, sample: &Sample<'_>) {
         self.windows.record(sample);
     }
 
-    /// A budget's spend. Never waits; a full queue drops it (the next flush
-    /// says it again).
-    pub fn spend(&self, budget: Arc<Budget>, period_start: String, spent_micros: u64) {
-        let _ = self.tx.try_send(EngineInput::BudgetSpend {
-            budget,
-            period_start,
-            spent_micros,
-        });
+    /// A budget's spend. Never waits. `false`: the queue was full and the
+    /// spend was not taken; the caller keeps the counter dirty so the next
+    /// flush says it again.
+    #[must_use]
+    pub fn spend(&self, budget: Arc<Budget>, period_start: String, spent_micros: u64) -> bool {
+        self.tx
+            .try_send(EngineInput::BudgetSpend {
+                budget,
+                period_start,
+                spent_micros,
+            })
+            .is_ok()
+    }
+
+    /// A handle whose engine never reads: for a test of a full queue.
+    #[cfg(test)]
+    pub(crate) fn unread(capacity: usize) -> (Self, mpsc::Receiver<EngineInput>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        let (health, _) = mpsc::channel(1);
+        (
+            Self {
+                tx,
+                health,
+                windows: Arc::new(ErrorWindows::new(Duration::from_secs(60))),
+            },
+            rx,
+        )
     }
 
     /// Where breaker changes go.
@@ -213,16 +238,25 @@ pub struct Engine {
     store: Store,
     deliverer: Option<Deliverer>,
     windows: Arc<ErrorWindows>,
+    /// What the breakers say now, to settle circuit episodes whose events
+    /// were lost.
+    health: Option<Arc<dyn HealthStore>>,
     rules: Vec<Loaded>,
     episodes: Episodes,
 }
 
 impl Engine {
-    pub fn new(store: Store, deliverer: Option<Deliverer>, windows: Arc<ErrorWindows>) -> Self {
+    pub fn new(
+        store: Store,
+        deliverer: Option<Deliverer>,
+        windows: Arc<ErrorWindows>,
+        health: Option<Arc<dyn HealthStore>>,
+    ) -> Self {
         Self {
             store,
             deliverer,
             windows,
+            health,
             rules: Vec::new(),
             episodes: Episodes::default(),
         }
@@ -234,8 +268,8 @@ impl Engine {
         let mut rules = Vec::new();
         for row in rows {
             let parsed = serde_json::from_str::<Value>(&row.params)
-                .map_err(|e| e.to_string())
-                .and_then(|v| rules::parse(&row.kind, &v));
+                .map_err(|_| ())
+                .and_then(|v| rules::parse(&row.kind, &v).map_err(|_| ()));
             match parsed {
                 Ok(params) => rules.push(Loaded {
                     id: row.id,
@@ -251,6 +285,12 @@ impl Engine {
             }
         }
         let states = self.store.alert_states().await?;
+        // Calls are counted only while a rule reads them.
+        self.windows.set_active(
+            rules
+                .iter()
+                .any(|r| r.enabled && matches!(r.params, Params::ErrorRate(_))),
+        );
         self.rules = rules;
         self.episodes
             .replace(states.into_iter().map(|s| (s.rule_id, s.subject)));
@@ -454,9 +494,28 @@ impl Engine {
         }
     }
 
+    /// Settles circuit episodes against what the breakers say now: an open
+    /// target without an episode fires, an episode whose target is closed
+    /// resolves. A lost event is mended within a tick.
+    async fn resync_circuits(&mut self) {
+        let Some(health) = self.health.clone() else {
+            return;
+        };
+        for t in health.view() {
+            let (provider, model) = (t.provider, t.model);
+            let event = if t.state == TargetState::Closed {
+                HealthEvent::Closed { provider, model }
+            } else {
+                HealthEvent::Opened { provider, model }
+            };
+            self.on_health(&event).await;
+        }
+    }
+
     /// Evaluates every error-rate rule against the windows at bucket `now`.
     pub async fn on_tick(&mut self, now: u32) {
         self.resolve_removed_targets().await;
+        self.resync_circuits().await;
         self.windows.prune(now);
         for i in 0..self.rules.len() {
             let r = &self.rules[i];
@@ -546,6 +605,7 @@ impl Engine {
 pub fn spawn(
     store: Store,
     deliverer: Option<Deliverer>,
+    health: Option<Arc<dyn HealthStore>>,
     cfg: EngineConfig,
     mut stop: watch::Receiver<bool>,
 ) -> (EngineHandle, JoinHandle<()>) {
@@ -558,7 +618,7 @@ pub fn spawn(
         windows: windows.clone(),
     };
     let task = tokio::spawn(async move {
-        let mut engine = Engine::new(store, deliverer, windows.clone());
+        let mut engine = Engine::new(store, deliverer, windows.clone(), health);
         if let Err(e) = engine.load().await {
             tracing::warn!(error = %e, "could not read the alert rules");
         }
@@ -720,6 +780,7 @@ mod tests {
             store.clone(),
             None,
             Arc::new(ErrorWindows::new(Duration::from_secs(60))),
+            None,
         );
         e.load().await.unwrap();
         e
@@ -852,7 +913,7 @@ mod tests {
         let mut e = engine(&store).await;
         let w = e.windows.clone();
         let call = |error| Sample {
-            route: "chat",
+            route: Some("chat"),
             provider: Some("p"),
             key_id: None,
             error,
@@ -886,5 +947,66 @@ mod tests {
             ]
         );
         assert!(store.alert_states().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn circuit_episodes_are_settled_against_the_breakers_on_each_tick() {
+        use crate::routing::{BreakerSettings, InMemoryHealth, TargetRef};
+        use tokio::time::Instant;
+        const S: BreakerSettings = BreakerSettings {
+            failures: 2,
+            window: Duration::from_secs(60),
+            open: Duration::from_secs(30),
+        };
+        let store = Store::open_in_memory().await.unwrap();
+        rule(&store, "any", "circuit_open", json!({})).await;
+        let provider = store
+            .insert_provider("p", "openai", "http://p.example", None)
+            .await
+            .unwrap();
+        let mut tx = store.begin().await.unwrap();
+        tx.insert_model(provider, "m").await.unwrap();
+        tx.commit().await.unwrap();
+        let health = Arc::new(InMemoryHealth::new());
+        let mut e = Engine::new(
+            store.clone(),
+            None,
+            Arc::new(ErrorWindows::new(Duration::from_secs(60))),
+            Some(health.clone()),
+        );
+        e.load().await.unwrap();
+        // Nobody listens to the breaker: no event reaches the engine.
+        let t = TargetRef {
+            provider: "p".into(),
+            model: "m".into(),
+            model_id: 1,
+        };
+        let start = Instant::now();
+        health.report(&t, false, true, Some(500), start, &S);
+        e.on_tick(1).await;
+        assert!(events(&store).await.is_empty(), "one failure: closed");
+        health.report(&t, false, true, Some(500), start, &S);
+        e.on_tick(2).await;
+        e.on_tick(3).await;
+        assert_eq!(
+            events(&store).await,
+            [("firing".to_string(), "target:p/m".to_string())],
+            "an open target without an episode fires, once"
+        );
+        // Half open is still open; the trial succeeds and it closes.
+        let later = start + Duration::from_secs(31);
+        assert!(health.allow(&t, later, &S));
+        e.on_tick(4).await;
+        assert_eq!(events(&store).await.len(), 1);
+        health.report(&t, true, false, Some(200), later, &S);
+        e.on_tick(5).await;
+        e.on_tick(6).await;
+        assert_eq!(
+            events(&store).await,
+            [
+                ("firing".to_string(), "target:p/m".to_string()),
+                ("resolved".to_string(), "target:p/m".to_string())
+            ]
+        );
     }
 }

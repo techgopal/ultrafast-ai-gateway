@@ -521,7 +521,14 @@ pub async fn flush(state: &AppState) {
             let budgets = state.snapshot.load().all_budgets();
             for row in &drained.usage {
                 if let Some(budget) = budgets.iter().find(|b| b.id == row.budget_id) {
-                    engine.spend(budget.clone(), row.period_start.clone(), row.spent_micros);
+                    if !engine.spend(budget.clone(), row.period_start.clone(), row.spent_micros) {
+                        // The engine's queue was full: the counter stays
+                        // dirty, so the next flush says it again.
+                        state.budgets.requeue(Drained {
+                            usage: vec![row.clone()],
+                            alerts: Vec::new(),
+                        });
+                    }
                 }
             }
         }
@@ -566,4 +573,66 @@ pub fn spawn_flush(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::alerts::engine::EngineInput;
+    use crate::alerts::EngineHandle;
+    use crate::secrets::Cipher;
+    use crate::store::Store;
+
+    #[tokio::test]
+    async fn a_spend_the_engine_could_not_take_stays_dirty_for_the_next_flush() {
+        let store = Store::open_in_memory().await.unwrap();
+        let mut tx = store.begin().await.unwrap();
+        tx.upsert_budget(
+            LimitScope::Gateway,
+            None,
+            1_000,
+            Period::Monthly,
+            BudgetAction::Block,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
+        let mut state = AppState::new(store, cipher).await.unwrap();
+        let (engine, mut rx) = EngineHandle::unread(1);
+        state.alert_engine = Some(engine);
+        let now = OffsetDateTime::now_utc();
+        let budgets = state.snapshot.load().all_budgets();
+        state.budgets.spend(&budgets, 100, now);
+        flush(&state).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(EngineInput::BudgetSpend {
+                spent_micros: 100,
+                ..
+            })
+        ));
+        // The queue (of one) is full when the next flush has something to say.
+        state.budgets.spend(&budgets, 100, now);
+        flush(&state).await;
+        state.budgets.spend(&budgets, 100, now);
+        flush(&state).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(EngineInput::BudgetSpend {
+                spent_micros: 200,
+                ..
+            })
+        ));
+        // Nothing new was spent, yet the counter the full queue refused is
+        // still to be told: the next flush sends it.
+        flush(&state).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(EngineInput::BudgetSpend {
+                spent_micros: 300,
+                ..
+            })
+        ));
+    }
 }

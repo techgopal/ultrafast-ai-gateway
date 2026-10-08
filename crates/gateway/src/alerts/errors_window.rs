@@ -3,17 +3,22 @@
 //! Per subject a ring of 60 one-minute buckets of `(requests, errors)`. The
 //! calls themselves feed it from [`Scope::emit`](crate::telemetry::Scope);
 //! the engine reads it every 30 seconds. Memory is bounded: subjects beyond
-//! [`MAX_SUBJECTS`] are not tracked, and subjects idle for a full hour are
+//! the cap of their scope are not tracked, and subjects idle for a full hour are
 //! forgotten.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Buckets in a ring: the longest window there is, in minutes.
 pub const BUCKETS: usize = 60;
-/// Subjects tracked besides the gateway as a whole.
-pub const MAX_SUBJECTS: usize = 10_000;
+/// Subjects tracked per scope besides the gateway as a whole. Route and
+/// provider names are those of the catalog (a call that names anything else
+/// is never counted), so these are safety nets; keys are one per virtual key.
+pub const MAX_ROUTES: usize = 5_000;
+pub const MAX_PROVIDERS: usize = 1_000;
+pub const MAX_KEYS: usize = 10_000;
 
 /// What a window counts calls by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,8 +53,9 @@ impl Scope {
 /// One finished call, as the windows see it.
 #[derive(Debug, Clone, Copy)]
 pub struct Sample<'a> {
-    /// The route or model name the caller asked for; empty if unknown.
-    pub route: &'a str,
+    /// The configured route the call resolved to; none for a direct
+    /// `provider/model` call.
+    pub route: Option<&'a str>,
     /// The provider of the final attempt, if a provider was called.
     pub provider: Option<&'a str>,
     pub key_id: Option<i64>,
@@ -145,9 +151,37 @@ impl Ring {
 #[derive(Default)]
 struct Inner {
     gateway: Option<Ring>,
-    /// Every other subject.
-    rings: HashMap<(Scope, String), Ring>,
-    warned: bool,
+    routes: HashMap<String, Ring>,
+    providers: HashMap<String, Ring>,
+    keys: HashMap<i64, Ring>,
+    /// Which scopes already warned about their cap.
+    warned: [bool; 3],
+}
+
+/// Adds to the ring of `name`, making it if there is room.
+fn add_named(
+    rings: &mut HashMap<String, Ring>,
+    cap: usize,
+    warned: &mut bool,
+    scope: &str,
+    name: &str,
+    bucket: u32,
+    error: bool,
+) {
+    if let Some(ring) = rings.get_mut(name) {
+        ring.add(bucket, error);
+    } else if rings.len() < cap {
+        let mut ring = Ring::new();
+        ring.add(bucket, error);
+        rings.insert(name.to_string(), ring);
+    } else if !*warned {
+        *warned = true;
+        tracing::warn!(
+            scope,
+            limit = cap,
+            "error rates are not tracked for more subjects"
+        );
+    }
 }
 
 /// The windows of every subject. Shared by the calls that feed it and the
@@ -157,6 +191,9 @@ pub struct ErrorWindows {
     /// How long a bucket is: a minute, except in tests.
     bucket: Duration,
     origin: Instant,
+    /// Whether any enabled error-rate rule exists. While none does, calls
+    /// are not counted at all.
+    active: AtomicBool,
 }
 
 impl ErrorWindows {
@@ -165,6 +202,7 @@ impl ErrorWindows {
             inner: Mutex::new(Inner::default()),
             bucket: bucket.max(Duration::from_millis(1)),
             origin: Instant::now(),
+            active: AtomicBool::new(true),
         }
     }
 
@@ -173,38 +211,73 @@ impl ErrorWindows {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Whether calls are counted now.
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
+
+    /// Turns counting on or off. Turning it off forgets what was counted: a
+    /// rule that comes later starts with empty windows.
+    pub fn set_active(&self, active: bool) {
+        if self.active.swap(active, Ordering::Relaxed) && !active {
+            *self.lock() = Inner::default();
+        }
+    }
+
     /// The bucket the clock is in.
     pub fn current(&self) -> u32 {
         let n = self.origin.elapsed().as_nanos() / self.bucket.as_nanos();
         u32::try_from(n).unwrap_or(u32::MAX - 1)
     }
 
+    /// Counts a call now, if counting is on.
     pub fn record(&self, sample: &Sample<'_>) {
-        self.record_at(self.current(), sample);
+        if self.is_active() {
+            self.record_at(self.current(), sample);
+        }
     }
 
     pub fn record_at(&self, bucket: u32, sample: &Sample<'_>) {
         let mut inner = self.lock();
+        let inner = &mut *inner;
         inner
             .gateway
             .get_or_insert_with(Ring::new)
             .add(bucket, sample.error);
-        let route = (!sample.route.is_empty()).then_some((Scope::Route, sample.route));
-        let provider = sample.provider.map(|p| (Scope::Provider, p));
-        let key = sample.key_id.map(|k| (Scope::Key, k.to_string()));
-        let key_ref = key.as_ref().map(|(s, k)| (*s, k.as_str()));
-        for (scope, subject) in [route, provider, key_ref].into_iter().flatten() {
-            let id = (scope, subject.to_string());
-            if let Some(ring) = inner.rings.get_mut(&id) {
+        if let Some(route) = sample.route.filter(|r| !r.is_empty()) {
+            add_named(
+                &mut inner.routes,
+                MAX_ROUTES,
+                &mut inner.warned[0],
+                "route",
+                route,
+                bucket,
+                sample.error,
+            );
+        }
+        if let Some(provider) = sample.provider {
+            add_named(
+                &mut inner.providers,
+                MAX_PROVIDERS,
+                &mut inner.warned[1],
+                "provider",
+                provider,
+                bucket,
+                sample.error,
+            );
+        }
+        if let Some(key) = sample.key_id {
+            if let Some(ring) = inner.keys.get_mut(&key) {
                 ring.add(bucket, sample.error);
-            } else if inner.rings.len() < MAX_SUBJECTS {
+            } else if inner.keys.len() < MAX_KEYS {
                 let mut ring = Ring::new();
                 ring.add(bucket, sample.error);
-                inner.rings.insert(id, ring);
-            } else if !inner.warned {
-                inner.warned = true;
+                inner.keys.insert(key, ring);
+            } else if !inner.warned[2] {
+                inner.warned[2] = true;
                 tracing::warn!(
-                    limit = MAX_SUBJECTS,
+                    scope = "key",
+                    limit = MAX_KEYS,
                     "error rates are not tracked for more subjects"
                 );
             }
@@ -217,7 +290,9 @@ impl ErrorWindows {
         let inner = self.lock();
         let ring = match scope {
             Scope::Gateway => inner.gateway.as_ref(),
-            _ => inner.rings.get(&(scope, subject.to_string())),
+            Scope::Route => inner.routes.get(subject),
+            Scope::Provider => inner.providers.get(subject),
+            Scope::Key => subject.parse::<i64>().ok().and_then(|k| inner.keys.get(&k)),
         };
         ring.map(|r| r.sum(now, window)).unwrap_or_default()
     }
@@ -225,38 +300,68 @@ impl ErrorWindows {
     /// Every subject of a scope with calls in the window.
     pub fn totals_of(&self, scope: Scope, now: u32, window: u32) -> Vec<(String, Totals)> {
         let inner = self.lock();
-        if scope == Scope::Gateway {
-            return inner
+        let live = |name: String, ring: &Ring| {
+            let t = ring.sum(now, window);
+            (t.requests > 0).then_some((name, t))
+        };
+        match scope {
+            Scope::Gateway => inner
                 .gateway
-                .as_ref()
-                .map(|r| r.sum(now, window))
-                .filter(|t| t.requests > 0)
-                .map(|t| vec![("gateway".to_string(), t)])
-                .unwrap_or_default();
+                .iter()
+                .filter_map(|r| live("gateway".to_string(), r))
+                .collect(),
+            Scope::Route => inner
+                .routes
+                .iter()
+                .filter_map(|(n, r)| live(n.clone(), r))
+                .collect(),
+            Scope::Provider => inner
+                .providers
+                .iter()
+                .filter_map(|(n, r)| live(n.clone(), r))
+                .collect(),
+            Scope::Key => inner
+                .keys
+                .iter()
+                .filter_map(|(k, r)| live(k.to_string(), r))
+                .collect(),
         }
-        inner
-            .rings
-            .iter()
-            .filter(|((s, _), _)| *s == scope)
-            .map(|((_, subject), ring)| (subject.clone(), ring.sum(now, window)))
-            .filter(|(_, t)| t.requests > 0)
-            .collect()
     }
 
     /// Forgets subjects with no call in a whole ring.
     pub fn prune(&self, now: u32) {
         let mut inner = self.lock();
-        inner
-            .rings
-            .retain(|_, ring| now.saturating_sub(ring.last) < BUCKETS as u32);
-        if inner.rings.len() < MAX_SUBJECTS {
-            inner.warned = false;
+        let idle = |r: &Ring| now.saturating_sub(r.last) >= BUCKETS as u32;
+        inner.routes.retain(|_, r| !idle(r));
+        inner.providers.retain(|_, r| !idle(r));
+        inner.keys.retain(|_, r| !idle(r));
+        let sizes = [
+            inner.routes.len() < MAX_ROUTES,
+            inner.providers.len() < MAX_PROVIDERS,
+            inner.keys.len() < MAX_KEYS,
+        ];
+        for (w, room) in inner.warned.iter_mut().zip(sizes) {
+            if room {
+                *w = false;
+            }
         }
     }
 
     /// How many subjects are tracked (the gateway not counted).
     pub fn tracked(&self) -> usize {
-        self.lock().rings.len()
+        let inner = self.lock();
+        inner.routes.len() + inner.providers.len() + inner.keys.len()
+    }
+
+    /// How many subjects of a scope are tracked.
+    pub fn tracked_in(&self, scope: Scope) -> usize {
+        let inner = self.lock();
+        match scope {
+            Scope::Gateway => usize::from(inner.gateway.is_some()),
+            Scope::Route => inner.routes.len(),
+            Scope::Provider => inner.providers.len(),
+            Scope::Key => inner.keys.len(),
+        }
     }
 }
 
@@ -275,7 +380,7 @@ mod tests {
         error: bool,
     ) -> Sample<'a> {
         Sample {
-            route,
+            route: (!route.is_empty()).then_some(route),
             provider,
             key_id: key,
             error,
@@ -352,29 +457,53 @@ mod tests {
     }
 
     #[test]
-    fn subjects_beyond_the_cap_are_not_tracked_and_idle_ones_are_forgotten() {
+    fn each_scope_has_its_own_cap_and_idle_subjects_are_forgotten() {
         let w = windows();
-        for i in 0..(MAX_SUBJECTS + 50) {
+        for i in 0..(MAX_ROUTES + 50) {
             w.record_at(1, &call(&format!("route-{i}"), None, None, false));
         }
-        assert_eq!(w.tracked(), MAX_SUBJECTS);
+        assert_eq!(w.tracked_in(Scope::Route), MAX_ROUTES);
+        // A full route scope does not keep providers or keys out.
+        w.record_at(1, &call("", Some("openai"), Some(7), true));
+        assert_eq!(w.total_of(Scope::Provider, "openai", 1, 5).requests, 1);
+        assert_eq!(w.total_of(Scope::Key, "7", 1, 5).requests, 1);
         // The gateway as a whole is still counted.
         assert_eq!(
             w.total_of(Scope::Gateway, "", 1, 5).requests,
-            (MAX_SUBJECTS + 50) as u64
+            (MAX_ROUTES + 51) as u64
         );
         // A subject that was admitted keeps counting.
         w.record_at(2, &call("route-0", None, None, true));
         assert_eq!(w.total_of(Scope::Route, "route-0", 2, 5).requests, 2);
         assert_eq!(
-            w.total_of(Scope::Route, &format!("route-{MAX_SUBJECTS}"), 2, 5),
+            w.total_of(Scope::Route, &format!("route-{MAX_ROUTES}"), 2, 5),
             Totals::default()
         );
         // After an hour of silence they are forgotten and new ones fit.
         w.prune(2 + BUCKETS as u32);
-        assert_eq!(w.tracked(), 0);
+        assert_eq!(w.tracked_in(Scope::Route), 0);
         w.record_at(70, &call("fresh", None, None, false));
-        assert_eq!(w.tracked(), 1);
+        assert_eq!(w.tracked_in(Scope::Route), 1);
+        for k in 0..(MAX_KEYS as i64 + 5) {
+            w.record_at(70, &call("", None, Some(k), false));
+        }
+        assert_eq!(w.tracked_in(Scope::Key), MAX_KEYS);
+    }
+
+    #[test]
+    fn nothing_is_counted_while_no_rule_wants_it_and_turning_off_forgets() {
+        let w = windows();
+        w.set_active(false);
+        w.record(&call("chat", Some("p"), Some(1), true));
+        assert_eq!(w.total_of(Scope::Gateway, "", w.current(), 5).requests, 0);
+        assert_eq!(w.tracked(), 0);
+        w.set_active(true);
+        w.record(&call("chat", Some("p"), Some(1), true));
+        assert_eq!(w.total_of(Scope::Gateway, "", w.current(), 5).requests, 1);
+        w.set_active(false);
+        w.set_active(true);
+        assert_eq!(w.total_of(Scope::Gateway, "", w.current(), 5).requests, 0);
+        assert_eq!(w.tracked(), 0);
     }
 
     #[test]

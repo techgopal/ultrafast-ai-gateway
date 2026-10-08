@@ -125,6 +125,11 @@ pub struct Scope {
     otel: Option<Exporter>,
     /// Counts the call toward error rates, when alert rules exist.
     alerts: Option<EngineHandle>,
+    /// Set once the name the caller asked for resolved to something it may
+    /// call: only such calls are counted toward error rates.
+    resolved: bool,
+    /// The configured route it resolved to, if it is a route.
+    resolved_route: Option<String>,
 }
 
 impl Scope {
@@ -145,6 +150,8 @@ impl Scope {
             streamed_chars: 0,
             otel: None,
             alerts: None,
+            resolved: false,
+            resolved_route: None,
             record: Some(RequestRecord {
                 key_id,
                 user_id,
@@ -180,6 +187,15 @@ impl Scope {
     /// The call is counted toward error rates by `engine` when it is recorded.
     pub fn watched(&mut self, engine: Option<EngineHandle>) {
         self.alerts = engine;
+    }
+
+    /// The name the caller asked for resolved: to the configured route
+    /// `route`, or (none) to a `provider/model`. Calls that never get here
+    /// (unknown names, refused ones) are not counted toward error rates, so a
+    /// caller cannot make subjects up.
+    pub fn resolved(&mut self, route: Option<&str>) {
+        self.resolved = true;
+        self.resolved_route = route.map(str::to_string);
     }
 
     /// The `traceparent` the caller sent: the call's trace continues it.
@@ -409,8 +425,12 @@ impl Scope {
             if let Some(otel) = &self.otel {
                 otel.offer(&record);
             }
-            if let Some(engine) = &self.alerts {
-                if let Some(sample) = alert_sample(&record) {
+            if let Some(engine) = self
+                .alerts
+                .as_ref()
+                .filter(|e| self.resolved && e.is_active())
+            {
+                if let Some(sample) = alert_sample(&record, self.resolved_route.as_deref()) {
                     engine.observe(&sample);
                 }
             }
@@ -426,7 +446,7 @@ impl Scope {
 /// provider gave (the last attempt that reached a provider answered 429); a
 /// 429 of the gateway's own limits and budgets, and any other 4xx, are the
 /// caller's.
-pub fn alert_sample(record: &RequestRecord) -> Option<Sample<'_>> {
+pub fn alert_sample<'a>(record: &'a RequestRecord, route: Option<&'a str>) -> Option<Sample<'a>> {
     if record.status == CALLER_GONE {
         return None;
     }
@@ -439,7 +459,7 @@ pub fn alert_sample(record: &RequestRecord) -> Option<Sample<'_>> {
     let error = record.status >= 500
         || (record.status == 429 && last.is_some_and(|a| a.status == Some(429)));
     Some(Sample {
-        route: &record.requested,
+        route,
         provider: last.map(|a| a.provider.as_str()),
         key_id: record.key_id,
         error,
@@ -504,7 +524,7 @@ mod tests {
 
     #[test]
     fn what_counts_as_an_error_for_alerts() {
-        let sample = |r: &RequestRecord| alert_sample(r).map(|s| s.error);
+        let sample = |r: &RequestRecord| alert_sample(r, Some("r")).map(|s| s.error);
         // Server errors are errors.
         for status in [500, 502, 503, 504] {
             let r = finished(
@@ -519,7 +539,7 @@ mod tests {
             vec![attempt("p", AttemptOutcome::Retryable, Some(429))],
         );
         assert_eq!(sample(&r), Some(true));
-        assert_eq!(alert_sample(&r).unwrap().provider, Some("p"));
+        assert_eq!(alert_sample(&r, Some("r")).unwrap().provider, Some("p"));
         let r = finished(429, vec![]);
         assert_eq!(
             sample(&r),
@@ -544,7 +564,7 @@ mod tests {
             assert_eq!(sample(&r), Some(false), "{status}");
         }
         // A caller that went away is not counted at all.
-        assert!(alert_sample(&finished(CALLER_GONE, vec![])).is_none());
+        assert!(alert_sample(&finished(CALLER_GONE, vec![]), None).is_none());
     }
 
     #[test]
@@ -557,11 +577,12 @@ mod tests {
                 attempt("c", AttemptOutcome::CircuitOpen, None),
             ],
         );
-        assert_eq!(alert_sample(&r).unwrap().provider, Some("b"));
+        assert_eq!(alert_sample(&r, Some("r")).unwrap().provider, Some("b"));
         let r = finished(200, vec![attempt("a", AttemptOutcome::Cached, None)]);
-        assert_eq!(alert_sample(&r).unwrap().provider, None);
-        assert_eq!(alert_sample(&r).unwrap().key_id, Some(7));
-        assert_eq!(alert_sample(&r).unwrap().route, "r");
+        assert_eq!(alert_sample(&r, Some("r")).unwrap().provider, None);
+        assert_eq!(alert_sample(&r, Some("r")).unwrap().key_id, Some(7));
+        assert_eq!(alert_sample(&r, Some("r")).unwrap().route, Some("r"));
+        assert_eq!(alert_sample(&r, None).unwrap().route, None);
     }
 
     #[test]

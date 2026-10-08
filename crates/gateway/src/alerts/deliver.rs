@@ -2,15 +2,17 @@
 //!
 //! [`Deliverer::offer`] is a non-blocking send into a bounded queue; a full
 //! queue drops the job, counts it and records a `dropped` outcome on the
-//! event. One task takes jobs off the queue and starts a task for each job,
-//! which starts one task per channel. Each channel has its own gate: at most
+//! event. One task takes jobs off the queue one at a time: it reads the event
+//! and the channels (two quick reads) and starts a task per channel, so the
+//! queue drains no faster than that and a flood backs up into it, where it is
+//! dropped and recorded. Each channel has its own gate: at most
 //! [`CHANNEL_CONCURRENCY`] deliveries to it are in progress (retries
 //! included) and at most [`CHANNEL_BACKLOG`] more wait; the rest are
 //! recorded as dropped. So a host that is down fills only its own gate. The
 //! only shared limit is on HTTP sends in flight, and a delivery holds one of
-//! those only while a request is out, not while it waits to retry. When
-//! every channel of a job has finished, the outcomes are written to the
-//! event in one update.
+//! those only while a request is out, not while it waits to retry. Each
+//! channel's outcome is written to the event as soon as that channel is
+//! done, so a healthy channel is not hidden behind a dead one.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,6 +37,10 @@ pub const TRY_TIMEOUT: Duration = Duration::from_secs(10);
 pub const CHANNEL_CONCURRENCY: usize = 4;
 /// Deliveries to one channel that wait for a slot; more are dropped.
 pub const CHANNEL_BACKLOG: usize = 256;
+/// Deliveries started and not finished, over all channels. At this many the
+/// dispatcher stops taking jobs until one finishes, so a flood backs up into
+/// the queue, which drops what does not fit.
+pub const MAX_PENDING: usize = 1024;
 /// HTTP requests out at the same moment, over all channels.
 const SENDS_IN_FLIGHT: usize = 64;
 
@@ -247,7 +253,7 @@ async fn stopped(stop: &mut watch::Receiver<bool>) {
 }
 
 async fn run(ctx: Context, mut rx: mpsc::Receiver<Job>, mut stop: watch::Receiver<bool>) {
-    let mut jobs: JoinSet<()> = JoinSet::new();
+    let mut sends: JoinSet<()> = JoinSet::new();
     loop {
         let job = tokio::select! {
             job = rx.recv() => match job {
@@ -256,32 +262,44 @@ async fn run(ctx: Context, mut rx: mpsc::Receiver<Job>, mut stop: watch::Receive
             },
             () = stopped(&mut stop) => break,
         };
-        let ctx = ctx.clone();
-        jobs.spawn(async move { process(&ctx, job).await });
-        while jobs.try_join_next().is_some() {}
+        start(&ctx, job, &mut sends).await;
+        while sends.try_join_next().is_some() {}
+        // Too many in progress: take no more jobs until some finish.
+        while sends.len() >= MAX_PENDING {
+            tokio::select! {
+                _ = sends.join_next() => {}
+                () = stopped(&mut stop) => break,
+            }
+        }
     }
     // What is queued still goes out, within the cap.
     while let Ok(job) = rx.try_recv() {
-        let ctx = ctx.clone();
-        jobs.spawn(async move { process(&ctx, job).await });
+        start(&ctx, job, &mut sends).await;
     }
     let drained = tokio::time::timeout(ctx.cfg.shutdown_cap, async {
-        while jobs.join_next().await.is_some() {}
+        while sends.join_next().await.is_some() {}
     })
     .await;
     if drained.is_err() {
         tracing::warn!(
-            unfinished = jobs.len(),
+            unfinished = sends.len(),
             "alert deliveries were cut short by shutdown"
         );
-        jobs.abort_all();
-        while jobs.join_next().await.is_some() {}
+        sends.abort_all();
+        while sends.join_next().await.is_some() {}
     }
 }
 
-/// Sends one event to its channels and stores what happened. A channel that
-/// was deleted since the event was queued is left out of the outcomes.
-async fn process(ctx: &Context, job: Job) {
+/// The outcomes of one event so far, by the position of the channel in the
+/// job. Whoever finishes adds its own and stores the list.
+struct Outcomes {
+    event_id: i64,
+    done: tokio::sync::Mutex<Vec<(usize, Delivery)>>,
+}
+
+/// Reads an event and starts the delivery to each of its channels. A channel
+/// that was deleted since the event was queued is left out of the outcomes.
+async fn start(ctx: &Context, job: Job, sends: &mut JoinSet<()>) {
     let event = match ctx.store.alert_event(job.event_id).await {
         Ok(Some(event)) => event,
         Ok(None) => return,
@@ -298,7 +316,10 @@ async fn process(ctx: &Context, job: Job) {
         }
     };
     let event = Arc::new(event);
-    let mut sends: JoinSet<(usize, Delivery)> = JoinSet::new();
+    let outcomes = Arc::new(Outcomes {
+        event_id: event.id,
+        done: tokio::sync::Mutex::new(Vec::new()),
+    });
     let mut seen = Vec::new();
     for id in job.channel_ids {
         // A channel deleted since is not delivered to; one named twice is
@@ -310,24 +331,23 @@ async fn process(ctx: &Context, job: Job) {
             continue;
         }
         seen.push(id);
-        let (ctx, event, position) = (ctx.clone(), event.clone(), seen.len() - 1);
-        sends.spawn(async move { (position, deliver(&ctx, &channel, &event).await) });
-    }
-    let mut results = Vec::new();
-    while let Some(done) = sends.join_next().await {
-        match done {
-            Ok(result) => results.push(result),
-            Err(e) => tracing::warn!(error = %e, "an alert delivery task failed"),
-        }
-    }
-    if results.is_empty() {
-        return;
-    }
-    results.sort_by_key(|(position, _)| *position);
-    let deliveries: Vec<Delivery> = results.into_iter().map(|(_, d)| d).collect();
-    let json = serde_json::to_string(&deliveries).expect("deliveries serialize");
-    if let Err(e) = ctx.store.set_alert_event_deliveries(event.id, &json).await {
-        tracing::warn!(error = %e, "could not store the outcome of an alert delivery");
+        let (ctx, event, outcomes, position) =
+            (ctx.clone(), event.clone(), outcomes.clone(), seen.len() - 1);
+        sends.spawn(async move {
+            let delivery = deliver(&ctx, &channel, &event).await;
+            let mut done = outcomes.done.lock().await;
+            done.push((position, delivery));
+            done.sort_by_key(|(position, _)| *position);
+            let list: Vec<&Delivery> = done.iter().map(|(_, d)| d).collect();
+            let json = serde_json::to_string(&list).expect("deliveries serialize");
+            if let Err(e) = ctx
+                .store
+                .set_alert_event_deliveries(outcomes.event_id, &json)
+                .await
+            {
+                tracing::warn!(error = %e, "could not store the outcome of an alert delivery");
+            }
+        });
     }
 }
 

@@ -135,6 +135,19 @@ impl Env {
         panic!("the deliveries of event {event} were never recorded");
     }
 
+    /// Like `deliveries`, once `n` channels have an outcome.
+    async fn deliveries_n(&self, event: i64, n: usize) -> Vec<Value> {
+        for _ in 0..400 {
+            let e = self.store.alert_event(event).await.unwrap().unwrap();
+            let d: Vec<Value> = serde_json::from_str(&e.deliveries).unwrap();
+            if d.len() >= n {
+                return d;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("the deliveries of event {event} never reached {n}");
+    }
+
     fn metrics(&self) -> String {
         self.state.metrics.render(&[])
     }
@@ -670,11 +683,17 @@ async fn a_dead_host_does_not_hold_up_a_healthy_one() {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    // ... while the dead one is still on its tries.
-    let e = env.store.alert_event(event).await.unwrap().unwrap();
-    assert_eq!(e.deliveries, "[]");
-    // Both are recorded together once the dead one gave up.
-    let d = env.deliveries(event).await;
+    // ... and its outcome is on the event at once, while the dead one is
+    // still on its tries.
+    let early = env.deliveries(event).await;
+    assert!(started.elapsed() < Duration::from_millis(800));
+    assert_eq!(early.len(), 1);
+    assert_eq!(
+        (early[0]["channel_id"].clone(), early[0]["ok"].clone()),
+        (json!(ok_id), json!(true))
+    );
+    // The dead one is added when it gave up, ahead of the other (job order).
+    let d = env.deliveries_n(event, 2).await;
     assert!(started.elapsed() > Duration::from_millis(1200));
     assert_eq!(d.len(), 2);
     assert_eq!(
@@ -954,4 +973,58 @@ async fn a_channel_deleted_before_the_send_is_skipped_and_left_out() {
     env.deliveries(after).await;
     let e = env.store.alert_event(lonely).await.unwrap().unwrap();
     assert_eq!(e.deliveries, "[]");
+}
+
+#[tokio::test]
+async fn a_flood_to_dead_hosts_backs_up_into_the_queue_which_drops_and_records() {
+    // Five hosts that never answer, each with more waiting than its gate
+    // keeps: together more than MAX_PENDING deliveries are unfinished, the
+    // dispatcher stops taking jobs, and what does not fit in the small queue
+    // is dropped and recorded on its event.
+    let env = env(DeliveryConfig {
+        retry_delays: vec![],
+        timeout: Duration::from_secs(30),
+        shutdown_cap: Duration::from_millis(200),
+        queue_capacity: 8,
+    })
+    .await;
+    let mut servers = Vec::new();
+    let mut ids = Vec::new();
+    for i in 0..5 {
+        let hung = hung_server().await;
+        ids.push(
+            env.create(&format!("hung{i}"), "webhook", &hook(&hung))
+                .await
+                .0,
+        );
+        servers.push(hung);
+    }
+    let event = env.event("x").await;
+    let per_channel = ultrafast_gateway::alerts::CHANNEL_BACKLOG + 40;
+    for _ in 0..per_channel {
+        for id in &ids {
+            env.deliverer().offer(event, vec![*id]);
+        }
+        tokio::task::yield_now().await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let text = env.metrics();
+    assert!(counter(&text, "dropped") > 0);
+    let queue_full = env
+        .store
+        .alert_event(event)
+        .await
+        .unwrap()
+        .unwrap()
+        .deliveries
+        .contains("the delivery queue was full");
+    assert!(queue_full, "a drop at the queue is recorded on its event");
+    assert!(env.deliverer().queued() <= 8);
+    // Each hung host has at most its gate's worth in progress.
+    for s in &servers {
+        assert!(
+            s.received_requests().await.unwrap().len()
+                <= ultrafast_gateway::alerts::CHANNEL_CONCURRENCY
+        );
+    }
 }

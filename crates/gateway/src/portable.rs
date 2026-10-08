@@ -1472,11 +1472,11 @@ impl Planner<'_> {
                         };
                         if p.budget.is_some() && reference.is_none() {
                             // already reported
-                        } else if let Err(message) = alert_rules::parse(
+                        } else if let Err(e) = alert_rules::parse(
                             "budget",
                             &json!({ "budget_id": null, "percent": p.percent }),
                         ) {
-                            self.error(format!("{at}.params"), message);
+                            self.error(format!("{at}.{}", e.field), e.message);
                         } else {
                             normal = Some(json!({ "budget": p.budget, "percent": p.percent }));
                             budget = reference;
@@ -1485,7 +1485,7 @@ impl Planner<'_> {
                 }
             } else {
                 match alert_rules::parse(&entry.kind, &entry.params) {
-                    Err(message) => self.error(format!("{at}.params"), message),
+                    Err(e) => self.error(format!("{at}.{}", e.field), e.message),
                     Ok(p) => normal = Some(p.to_value()),
                 }
             }
@@ -1977,7 +1977,7 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                     Some(id) => {
                         tx.update_alert_rule(id, None, Some(&text), Some(entry.enabled))
                             .await?;
-                        if params_changed {
+                        if params_changed || !entry.enabled {
                             tx.clear_alert_states(id).await?;
                         }
                         id
