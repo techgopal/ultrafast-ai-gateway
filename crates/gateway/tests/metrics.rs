@@ -370,6 +370,7 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         outcome,
         status: None,
         duration_ms: 0,
+        offset_ms: 0,
     };
     let mut record = RequestRecord {
         tags: Default::default(),
@@ -392,6 +393,8 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         estimated: false,
         started_at: ultrafast_gateway::store::now(),
         duration_ms: 1,
+        trace_parent: None,
+        provider_kinds: Vec::new(),
     };
     record.attempts[1].status = Some(400);
     metrics.record(&record);
@@ -588,6 +591,8 @@ async fn a_budget_refusal_is_counted() {
         estimated: false,
         started_at: ultrafast_gateway::store::now(),
         duration_ms: 1,
+        trace_parent: None,
+        provider_kinds: Vec::new(),
     };
     account(&h.state, &record, 500, OffsetDateTime::now_utc());
     assert_eq!(

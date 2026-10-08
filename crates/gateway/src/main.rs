@@ -17,6 +17,7 @@ use ultrafast_gateway::config::{
 };
 use ultrafast_gateway::identity::password;
 use ultrafast_gateway::logs::{self, LogSink, QUEUE_CAPACITY};
+use ultrafast_gateway::otel::{Exporter, OtelConfig};
 use ultrafast_gateway::portable;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
 use ultrafast_gateway::store::Store;
@@ -69,6 +70,25 @@ enum Command {
         /// variable: a flag value is visible in the process list.
         #[arg(long, env = "UF_METRICS_TOKEN", hide_env_values = true)]
         metrics_token: Option<String>,
+        /// Export a trace of every `/v1` call over OTLP/HTTP (JSON) to this
+        /// URL, the collector's traces endpoint, like
+        /// http://localhost:4318/v1/traces. Unset: no traces are exported.
+        /// A span holds no prompt, answer or credential.
+        #[arg(long, env = "UF_OTEL_ENDPOINT")]
+        otel_endpoint: Option<String>,
+        /// Headers sent with each export, like `authorization=Bearer abc,x-team=a`
+        /// (name=value pairs separated by commas). Prefer the UF_OTEL_HEADERS
+        /// environment variable: a flag value is visible in the process list.
+        #[arg(long, env = "UF_OTEL_HEADERS", hide_env_values = true)]
+        otel_headers: Option<String>,
+        /// The `service.name` of the exported traces.
+        #[arg(long, env = "UF_OTEL_SERVICE_NAME", default_value = "ultrafast")]
+        otel_service_name: String,
+        /// The share of traces exported, 0.0 to 1.0, decided per trace. A
+        /// call whose `traceparent` says sampled is always exported, one that
+        /// says not sampled never.
+        #[arg(long, env = "UF_OTEL_SAMPLE_RATIO", default_value_t = 1.0)]
+        otel_sample_ratio: f64,
     },
     /// Manage providers.
     Provider {
@@ -188,10 +208,20 @@ fn validate(command: &mut Command) -> Result<()> {
             host,
             port,
             trusted_proxies,
+            otel_endpoint,
+            otel_headers,
+            otel_service_name,
+            otel_sample_ratio,
             ..
         } => {
             serve_address(host, *port)?;
             parse_trusted_proxies(trusted_proxies)?;
+            validate_otel(
+                otel_endpoint.as_deref(),
+                otel_headers.as_deref(),
+                otel_service_name,
+                *otel_sample_ratio,
+            )?;
         }
         Command::Provider {
             command:
@@ -229,6 +259,32 @@ fn validate(command: &mut Command) -> Result<()> {
             *name = trimmed_name(name).map_err(anyhow::Error::msg)?.to_string();
         }
         Command::Backup { .. } | Command::Config { .. } | Command::Openapi => {}
+    }
+    Ok(())
+}
+
+/// Checks the trace export settings; the messages never show a header value.
+fn validate_otel(
+    endpoint: Option<&str>,
+    headers: Option<&str>,
+    service_name: &str,
+    ratio: f64,
+) -> Result<()> {
+    if let Some(endpoint) = endpoint.filter(|e| !e.trim().is_empty()) {
+        let parsed = reqwest::Url::parse(endpoint.trim())
+            .map_err(|_| anyhow::anyhow!("the OTLP endpoint is not a valid URL"))?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            bail!("the OTLP endpoint must be an http:// or https:// URL");
+        }
+    }
+    if let Some(headers) = headers {
+        ultrafast_gateway::otel::parse_headers(headers).map_err(anyhow::Error::msg)?;
+    }
+    if service_name.trim().is_empty() {
+        bail!("the OTLP service name must not be empty");
+    }
+    if !(0.0..=1.0).contains(&ratio) {
+        bail!("the OTLP sample ratio must be between 0.0 and 1.0");
     }
     Ok(())
 }
@@ -377,6 +433,10 @@ async fn main() -> Result<()> {
             insecure_cookies,
             trusted_proxies,
             metrics_token,
+            otel_endpoint,
+            otel_headers,
+            otel_service_name,
+            otel_sample_ratio,
         } => {
             let addr = serve_address(&host, port)?;
             tokio::task::spawn_blocking(password::warm_up)
@@ -414,6 +474,31 @@ async fn main() -> Result<()> {
             if insecure_cookies {
                 tracing::warn!("session cookies are sent without Secure");
             }
+            let (stop, stopped) = tokio::sync::watch::channel(false);
+            let mut otel_task = None;
+            if let Some(endpoint) = otel_endpoint.filter(|e| !e.trim().is_empty()) {
+                let headers = ultrafast_gateway::otel::parse_headers(
+                    otel_headers.as_deref().unwrap_or_default(),
+                )
+                .map_err(anyhow::Error::msg)?;
+                let (exporter, task) = Exporter::spawn(
+                    OtelConfig {
+                        endpoint: endpoint.trim().to_string(),
+                        headers,
+                        service_name: otel_service_name.trim().to_string(),
+                        sample_ratio: otel_sample_ratio,
+                    },
+                    state.http.clone(),
+                    state.metrics.clone(),
+                    stopped.clone(),
+                );
+                state.otel = Some(exporter);
+                otel_task = Some(task);
+                tracing::info!(
+                    sample_ratio = otel_sample_ratio,
+                    "exporting traces over OTLP"
+                );
+            }
             let state = Arc::new(state);
             // Before the listener is bound, so the first call is already
             // counted against what was spent before the restart.
@@ -424,7 +509,6 @@ async fn main() -> Result<()> {
                 .await
                 .with_context(|| format!("could not listen on {addr}"))?;
             tracing::info!(%addr, "gateway listening");
-            let (stop, stopped) = tokio::sync::watch::channel(false);
             let refresher = spawn_refresher(state.clone(), stopped.clone());
             let log_writer = logs::writer::spawn_accounted(
                 state.store.clone(),
@@ -450,6 +534,10 @@ async fn main() -> Result<()> {
             let _ = refresher.await;
             // The writer writes what is still queued before the process ends.
             let _ = log_writer.await;
+            // Then the traces: the last of them are sent within 5 seconds.
+            if let Some(task) = otel_task {
+                let _ = task.await;
+            }
             // After the writer: what it counted while draining is written too.
             let _ = budget_flush.await;
             budgets::flush(&state).await;

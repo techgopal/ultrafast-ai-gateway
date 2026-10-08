@@ -401,6 +401,8 @@ impl World {
             estimated: false,
             started_at: ultrafast_gateway::store::now(),
             duration_ms: 1,
+            trace_parent: None,
+            provider_kinds: Vec::new(),
         }
     }
 

@@ -73,6 +73,8 @@ pub struct AppState {
     pub health: Arc<dyn HealthStore>,
     /// The counters `/metrics` shows.
     pub metrics: Arc<Metrics>,
+    /// Exports a trace of every call over OTLP/HTTP. `None`: off.
+    pub otel: Option<crate::otel::Exporter>,
     /// The bearer token of `/metrics`. None: the path does not exist.
     pub metrics_token: Option<String>,
     /// The one-time code that `POST /api/setup` needs, made when the
@@ -106,6 +108,7 @@ impl AppState {
             budgets: Arc::new(MemoryBudgets::new()),
             health: Arc::new(InMemoryHealth::new()),
             metrics: Arc::new(Metrics::new()),
+            otel: None,
             metrics_token: None,
             refreshes: AtomicU64::new(0),
             cache_fingerprint: std::sync::Mutex::new(snapshot_fingerprint),

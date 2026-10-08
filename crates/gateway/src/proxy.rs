@@ -10,6 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::time::timeout_at;
 
+use crate::otel::TraceParent;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
@@ -306,6 +307,15 @@ async fn run(
         endpoint.name(),
     );
     begun.metered(state.metrics.clone());
+    begun.traced(state.otel.clone());
+    // Only the `/v1` handlers pass headers: the playground has no parent.
+    if let Some(parent) = headers
+        .and_then(|h| h.get("traceparent"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(TraceParent::parse)
+    {
+        begun.parented(parent);
+    }
     // The caller's tags, under the key's. An invalid header is the caller's
     // mistake: refused here, and recorded as the call it was.
     let call_tags = headers.map_or(Ok(Tags::new()), tags::from_headers);
@@ -557,6 +567,17 @@ async fn dispatch(
         candidates
             .iter()
             .map(|c| (c.target.provider.clone(), c.target.model.clone()))
+            .collect(),
+    );
+    record.provider_kinds(
+        candidates
+            .iter()
+            .filter_map(|c| {
+                let name = &c.target.provider;
+                snapshot
+                    .provider(name)
+                    .map(|p| (name.clone(), p.kind.as_str()))
+            })
             .collect(),
     );
     if candidates.is_empty() {

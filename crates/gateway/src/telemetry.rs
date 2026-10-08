@@ -11,6 +11,7 @@ use ultrafast_translate::types::Usage;
 
 use crate::limits::Permit;
 use crate::metrics::Metrics;
+use crate::otel::{Exporter, TraceParent};
 use crate::store;
 use crate::tags::Tags;
 
@@ -40,6 +41,9 @@ pub struct Attempt {
     /// What the provider answered, when it did.
     pub status: Option<u16>,
     pub duration_ms: u64,
+    /// Milliseconds from the start of the call to the start of the attempt.
+    /// Only the trace export reads it; the request log does not store it.
+    pub offset_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +73,12 @@ pub struct RequestRecord {
     pub duration_ms: u64,
     /// What the call sent in `x-uf-tags`, overlaid by the tags of its key.
     pub tags: Tags,
+    /// The incoming W3C `traceparent` of the call, when it had a valid one.
+    /// Only the trace export reads it; the request log does not store it.
+    pub trace_parent: Option<TraceParent>,
+    /// The kind (`openai`, `anthropic`, ...) of each provider the call may
+    /// try, by provider name, for the trace export.
+    pub provider_kinds: Vec<(String, &'static str)>,
 }
 
 /// Receives the records. `record` is called on the request path and must not
@@ -106,6 +116,8 @@ pub struct Scope {
     stream_input: Option<u64>,
     /// Characters of answer streamed to the caller so far.
     streamed_chars: u64,
+    /// Where a copy of the record goes to become a trace, when enabled.
+    otel: Option<Exporter>,
 }
 
 impl Scope {
@@ -124,6 +136,7 @@ impl Scope {
             metrics: None,
             stream_input: None,
             streamed_chars: 0,
+            otel: None,
             record: Some(RequestRecord {
                 key_id,
                 user_id,
@@ -139,6 +152,8 @@ impl Scope {
                 started_at: store::now(),
                 duration_ms: 0,
                 tags: Tags::new(),
+                trace_parent: None,
+                provider_kinds: Vec::new(),
             }),
         }
     }
@@ -146,6 +161,26 @@ impl Scope {
     /// The call is counted in `metrics` when it is recorded.
     pub fn metered(&mut self, metrics: Arc<Metrics>) {
         self.metrics = Some(metrics);
+    }
+
+    /// The call is exported as a trace by `exporter` when it is recorded.
+    pub fn traced(&mut self, exporter: Option<Exporter>) {
+        self.otel = exporter;
+    }
+
+    /// The `traceparent` the caller sent: the call's trace continues it.
+    pub fn parented(&mut self, parent: TraceParent) {
+        self.record_mut().trace_parent = Some(parent);
+    }
+
+    /// The kind of each provider the call may try, by provider name.
+    pub fn provider_kinds(&mut self, kinds: Vec<(String, &'static str)>) {
+        self.record_mut().provider_kinds = kinds;
+    }
+
+    fn offset_of(&self, started: Instant) -> u64 {
+        u64::try_from(started.saturating_duration_since(self.started).as_millis())
+            .unwrap_or(u64::MAX)
     }
 
     fn record_mut(&mut self) -> &mut RequestRecord {
@@ -171,12 +206,14 @@ impl Scope {
         status: Option<u16>,
         started: Instant,
     ) {
+        let offset_ms = self.offset_of(started);
         self.record_mut().attempts.push(Attempt {
             provider: provider.to_string(),
             model: model.to_string(),
             outcome,
             status,
             duration_ms: elapsed_ms(started),
+            offset_ms,
         });
     }
 
@@ -184,12 +221,14 @@ impl Scope {
     /// [`settle_attempt`](Self::settle_attempt) it reads as retryable with no
     /// status, which is what a caller that goes away leaves behind.
     pub fn begin_attempt(&mut self, provider: &str, model: &str) {
+        let offset_ms = self.offset_of(Instant::now());
         self.record_mut().attempts.push(Attempt {
             provider: provider.to_string(),
             model: model.to_string(),
             outcome: AttemptOutcome::Retryable,
             status: None,
             duration_ms: 0,
+            offset_ms,
         });
     }
 
@@ -200,10 +239,12 @@ impl Scope {
         status: Option<u16>,
         started: Instant,
     ) {
+        let offset_ms = self.offset_of(started);
         if let Some(a) = self.record_mut().attempts.last_mut() {
             a.outcome = outcome;
             a.status = status;
             a.duration_ms = elapsed_ms(started);
+            a.offset_ms = offset_ms;
         }
     }
 
@@ -273,6 +314,7 @@ impl Scope {
             outcome: AttemptOutcome::Cached,
             status: None,
             duration_ms: 0,
+            offset_ms: 0,
         });
     }
 
@@ -309,6 +351,7 @@ impl Scope {
                         outcome: AttemptOutcome::Skipped,
                         status: None,
                         duration_ms: 0,
+                        offset_ms: 0,
                     });
                 }
             }
@@ -346,6 +389,10 @@ impl Scope {
             }
             if let Some(metrics) = &self.metrics {
                 metrics.record(&record);
+            }
+            // Offered before the sink takes the record; never blocks.
+            if let Some(otel) = &self.otel {
+                otel.offer(&record);
             }
             self.sink.record(record);
         }
@@ -455,6 +502,20 @@ mod tests {
                 (AttemptOutcome::Fatal, Some(400))
             ]
         );
+    }
+
+    #[test]
+    fn attempts_record_their_offset_from_the_start_of_the_call() {
+        let sink = Arc::new(Mem::default());
+        let mut s = scope(&sink);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        s.begin_attempt("a", "m1");
+        let started = Instant::now();
+        s.settle_attempt(AttemptOutcome::Ok, Some(200), started);
+        s.finish(200);
+        let r = sink.0.lock().unwrap()[0].clone();
+        assert!(r.attempts[0].offset_ms >= 30, "{}", r.attempts[0].offset_ms);
+        assert!(r.attempts[0].offset_ms < 5_000);
     }
 
     #[test]

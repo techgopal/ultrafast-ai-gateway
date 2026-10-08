@@ -13,6 +13,7 @@ pub mod identity;
 pub mod limits;
 pub mod logs;
 pub mod metrics;
+pub mod otel;
 pub mod portable;
 pub mod proxy;
 pub mod routing;

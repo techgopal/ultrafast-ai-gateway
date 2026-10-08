@@ -82,6 +82,7 @@ pub async fn harness_with_sink(kind: &str, sink: Arc<dyn RequestSink>) -> Harnes
         Some(sink),
         None,
         None,
+        None,
     )
     .await
 }
@@ -95,6 +96,7 @@ pub async fn harness_with_metrics_token(kind: &str, token: Option<&str>) -> Harn
         None,
         None,
         token,
+        None,
     )
     .await
 }
@@ -107,6 +109,7 @@ pub async fn harness_with_rate(kind: &str, rate: Arc<dyn Limiter>) -> Harness {
         DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
         None,
         Some(rate),
+        None,
         None,
     )
     .await
@@ -124,9 +127,13 @@ async fn harness_with_limits(
         None,
         None,
         None,
+        None,
     )
     .await
 }
+
+/// Changes the state before it is shared.
+type Tweak = Box<dyn FnOnce(&mut AppState)>;
 
 async fn build_harness(
     kind: &str,
@@ -135,6 +142,7 @@ async fn build_harness(
     own_sink: Option<Arc<dyn RequestSink>>,
     rate: Option<Arc<dyn Limiter>>,
     metrics_token: Option<&str>,
+    tweak: Option<Tweak>,
 ) -> Harness {
     let upstream = MockServer::start().await;
     let store = Store::open_in_memory().await.unwrap();
@@ -163,6 +171,9 @@ async fn build_harness(
         state.rate = rate;
     }
     state.metrics_token = metrics_token.map(str::to_string);
+    if let Some(tweak) = tweak {
+        tweak(&mut state);
+    }
     let state = Arc::new(state);
     Harness {
         sink,
@@ -679,4 +690,21 @@ pub async fn hanging_upstream() -> (String, tokio::sync::oneshot::Receiver<()>) 
 /// How many requests the mock upstream has received.
 pub async fn upstream_calls(upstream: &MockServer) -> usize {
     upstream.received_requests().await.unwrap().len()
+}
+
+/// Like [`harness`], with `tweak` run on the state before it is shared.
+pub async fn harness_with_state(
+    kind: &str,
+    tweak: impl FnOnce(&mut AppState) + 'static,
+) -> Harness {
+    build_harness(
+        kind,
+        DEFAULT_MAX_BODY_BYTES,
+        DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+        None,
+        None,
+        None,
+        Some(Box::new(tweak)),
+    )
+    .await
 }

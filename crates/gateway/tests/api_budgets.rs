@@ -251,6 +251,8 @@ async fn spent_is_shown_only_where_the_caller_may_see_it() {
         estimated: false,
         started_at: ultrafast_gateway::store::now(),
         duration_ms: 1,
+        trace_parent: None,
+        provider_kinds: Vec::new(),
     };
     ultrafast_gateway::budgets::account(
         &w.org.api.state,

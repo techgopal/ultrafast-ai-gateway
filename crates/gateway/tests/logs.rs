@@ -38,11 +38,14 @@ fn record(requested: &str) -> RequestRecord {
             outcome: AttemptOutcome::Ok,
             status: Some(200),
             duration_ms: 12,
+            offset_ms: 0,
         }],
         cached: false,
         estimated: false,
         started_at: "2999-01-01 00:00:00".into(),
         duration_ms: 20,
+        trace_parent: None,
+        provider_kinds: Vec::new(),
     }
 }
 
@@ -293,6 +296,7 @@ async fn the_answering_attempt_names_the_provider_and_model() {
         outcome,
         status: Some(200),
         duration_ms: 1,
+        offset_ms: 0,
     };
     let mut fell_back = record("fell back");
     fell_back.attempts = vec![

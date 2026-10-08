@@ -69,6 +69,9 @@ pub struct Metrics {
     cache_flight_waits: AtomicU64,
     rate_limited: [AtomicU64; LIMITS.len()],
     budget_blocked: AtomicU64,
+    otel_exported: AtomicU64,
+    otel_dropped: AtomicU64,
+    otel_failures: AtomicU64,
     /// Per provider.
     upstream: Mutex<BTreeMap<String, Histogram>>,
     /// The counters of the log pipeline, once it exists.
@@ -159,6 +162,21 @@ impl Metrics {
 
     pub fn budget_blocked(&self) {
         self.budget_blocked.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `n` spans were accepted by the collector.
+    pub fn otel_exported(&self, n: u64) {
+        self.otel_exported.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// `n` spans were lost: the export queue was full, or a batch failed.
+    pub fn otel_dropped(&self, n: u64) {
+        self.otel_dropped.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// One export request failed (an error, or an answer other than 2xx).
+    pub fn otel_failure(&self) {
+        self.otel_failures.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The exposition text. `health` is what the circuit breakers show.
@@ -315,6 +333,36 @@ impl Metrics {
             "Calls refused because a budget was spent.",
         );
         let _ = writeln!(out, "uf_budget_blocked_total {}", n(&self.budget_blocked));
+
+        header(
+            &mut out,
+            "uf_otel_spans_exported_total",
+            "counter",
+            "Spans the OTLP collector accepted.",
+        );
+        let _ = writeln!(
+            out,
+            "uf_otel_spans_exported_total {}",
+            n(&self.otel_exported)
+        );
+        header(
+            &mut out,
+            "uf_otel_spans_dropped_total",
+            "counter",
+            "Spans lost because the export queue was full or their batch failed.",
+        );
+        let _ = writeln!(out, "uf_otel_spans_dropped_total {}", n(&self.otel_dropped));
+        header(
+            &mut out,
+            "uf_otel_export_failures_total",
+            "counter",
+            "OTLP export requests that failed or were answered with a status other than 2xx.",
+        );
+        let _ = writeln!(
+            out,
+            "uf_otel_export_failures_total {}",
+            n(&self.otel_failures)
+        );
 
         header(&mut out, "uf_circuit_open", "gauge", "1 while the circuit breaker of a target refuses calls, else 0. Targets that were never called are not listed.");
         for t in health {

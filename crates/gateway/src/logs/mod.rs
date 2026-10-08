@@ -256,12 +256,15 @@ mod tests {
                 outcome: AttemptOutcome::Retryable,
                 status: Some(200),
                 duration_ms: 1,
+                offset_ms: 0,
             }],
             cached: false,
             estimated: true,
             started_at: "2999-01-01 00:00:00".into(),
             duration_ms: 1,
             tags: Default::default(),
+            trace_parent: None,
+            provider_kinds: Vec::new(),
         };
         let prices: PriceLookup = Arc::new(|_, _| price(Some(2_000_000), Some(4_000_000)));
         let row = row_of(&record, &prices);
