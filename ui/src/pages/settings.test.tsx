@@ -425,6 +425,30 @@ describe("backup", () => {
     expect(link.className.split(/\s+/)).toContain("min-h-11");
   });
 
+  test("the database kind is shown read-only, SQLite with the download", async () => {
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Backup" });
+    expect(within(section).getByText("Database: SQLite")).toBeInTheDocument();
+    expect(within(section).getByRole("link", { name: "Download backup" })).toBeInTheDocument();
+    expect(within(section).queryByText("Use pg_dump to back up a Postgres database.")).toBeNull();
+  });
+
+  test("on Postgres the panel says to use pg_dump and offers no download", async () => {
+    override("get", "/api/settings", () =>
+      ok("get", "/api/settings", 200, { ...fixtures.settings, database: "postgres" }),
+    );
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Backup" });
+    expect(within(section).getByText("Database: PostgreSQL")).toBeInTheDocument();
+    expect(
+      within(section).getByText("Use pg_dump to back up a Postgres database."),
+    ).toBeInTheDocument();
+    expect(within(section).queryByRole("link", { name: "Download backup" })).toBeNull();
+    expect(within(section).queryByText(/useless without it/)).toBeNull();
+  });
+
   test("the session is checked first, then the download starts", async () => {
     const started = downloads();
     const check = counted("get", "/api/settings", () => ok("get", "/api/settings", 200, fixtures.settings));

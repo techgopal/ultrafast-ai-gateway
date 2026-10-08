@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **PostgreSQL (optional).** `UF_DATABASE_URL` (a `postgres://` URL, TLS by
+  `sslmode`; `UF_DATABASE_MAX_CONNECTIONS`, default 10) runs the gateway on
+  PostgreSQL instead of SQLite, so several processes can share one database.
+  `UF_MASTER_KEY` is required there. Budgets are shared (each process flushes
+  its spend about every 5 s); rate limits, the response cache, single-flight,
+  breaker health, the setup code and alert error windows stay per process.
+  Back up with `pg_dump`: the console's Backup panel says so, `GET /api/backup`
+  answers 409 `backup_unsupported`, and `settings` reports `database`. A
+  Settings panel shows which database is in use. Docker Compose example in
+  `docs/compose/postgres.yml`; README section "Using PostgreSQL", including
+  what a configuration export and import moves from SQLite. The browser tests
+  run on PostgreSQL with `UF_E2E_DATABASE_URL`. No online migration from
+  SQLite.
 - **Tracing.** `UF_OTEL_ENDPOINT` (also `UF_OTEL_HEADERS`, `UF_OTEL_SERVICE_NAME`,
   `UF_OTEL_SAMPLE_RATIO`): every `/v1` call is exported as an OpenTelemetry
   trace over OTLP/HTTP (JSON), one server span per call and one span per

@@ -59,7 +59,7 @@ and briefs add to these; they do not repeat them.
 
 ## Gateway (Rust)
 
-- axum 0.8, sqlx 0.9 SQLite (WAL), tokio. Rust 1.94 (`rust-toolchain.toml`).
+- axum 0.8, sqlx 0.9 (SQLite in WAL mode, and optionally PostgreSQL), tokio. Rust 1.94 (`rust-toolchain.toml`).
 - The database is the source of truth; `/v1` reads an in-memory `ArcSwap`
   snapshot and never waits on the database. Writes on the hot path go through a
   background writer.
@@ -85,6 +85,29 @@ and briefs add to these; they do not repeat them.
   schema: it serializes these transactions across every gateway process (and every test
   schema) sharing that database. Code that reads, decides and writes (a last-admin
   check, a first-user check) must use it; a plain transaction is READ COMMITTED there.
+- The store speaks two databases (SQLite by default, PostgreSQL with
+  `UF_DATABASE_URL`):
+  - No SQLite-only (or Postgres-only) SQL outside `Dialect` (`store/mod.rs`):
+    `last_insert_rowid`, `INSERT OR IGNORE`, `rowid`, `?` binds the database must
+    infer (cast or type them), integer booleans, `BLOB` columns are all
+    spelled through the dialect helpers.
+  - Every migration exists in both directories: `migrations/sqlite/` (next
+    number, today 0016) and `migrations/postgres/` (its own next number, today
+    0002: the Postgres baseline `0001_baseline.sql` folds SQLite 0001-0015 into
+    one, so the numbers differ). Pinned files never change. A schema change in
+    only one fails the baseline parity test in `store/mod.rs`, which runs only
+    with `UF_TEST_DATABASE_URL` set.
+  - Run the whole suite on Postgres before a store change is done: build with
+    `--features test-support` and set `UF_TEST_DATABASE_URL` to a throwaway
+    server; each test gets a schema of its own. The Rust suite and, once for a
+    release, the browser tests (`UF_E2E_DATABASE_URL`) pass on both.
+  - On Postgres a failed statement aborts the whole transaction (every later
+    statement fails until rollback): do not catch an error inside a transaction
+    and carry on; check first (`ON CONFLICT DO NOTHING`, a `SELECT`) or roll
+    back.
+  - State shared by several processes belongs in the database; anything kept
+    in memory (rate limits, cache, breaker health, alert error windows) is per
+    process and documented as such in the README's Known limits.
 - Sign-in methods other than the password sit behind the `SignInProvider` trait
   (`identity/external.rs`): `begin(return_to)` returns the redirect and a flow
   cookie value, `complete(&CallbackParams, flow_cookie)` returns

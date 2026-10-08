@@ -10,18 +10,53 @@
 // failed to start, and when the test process exits; a watchdog process stops
 // it and removes its data directory also when the test process dies without
 // a chance to do so. `launcher.spec.ts` checks these.
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { accessSync, constants, realpathSync, rmSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 /** The port of the gateway that is in use on this machine. Never taken here. */
 export const IN_USE_PORT = 3900;
 /** The binary to start in place of `target/release/ultrafast` of this repository. */
 export const BINARY_VARIABLE = "UF_E2E_BINARY";
+
+/**
+ * A PostgreSQL URL (`postgres://user:password@host:port/db`): the gateways
+ * then run on it instead of SQLite, each in a schema of its own that is made
+ * when it starts and dropped when it stops, with a master key of its own
+ * (`UF_MASTER_KEY`, which a gateway on PostgreSQL needs). Needs `psql`. CI
+ * runs the browser tests on SQLite; this is for running them once on
+ * PostgreSQL by hand.
+ */
+export const DATABASE_VARIABLE = "UF_E2E_DATABASE_URL";
+
+/** The PostgreSQL URL the gateways run on, or `null` for SQLite. */
+export function databaseUrl(): string | null {
+  const given = process.env[DATABASE_VARIABLE];
+  return given === undefined || given === "" ? null : given;
+}
+
+const run = promisify(execFile);
+
+/** Runs one statement on the database with `psql`; the URL's parts go in the environment, not the command line. */
+async function psql(url: string, statement: string): Promise<void> {
+  const parts = new URL(url);
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? "",
+    PGHOST: parts.hostname,
+    PGPORT: parts.port === "" ? "5432" : parts.port,
+    PGUSER: decodeURIComponent(parts.username),
+    PGPASSWORD: decodeURIComponent(parts.password),
+    PGDATABASE: decodeURIComponent(parts.pathname.slice(1)),
+    PGSSLMODE: parts.searchParams.get("sslmode") ?? "prefer",
+  };
+  await run("psql", ["-v", "ON_ERROR_STOP=1", "-q", "-c", statement], { env });
+}
 
 /** The directory of the deployed gateway: no binary under it is started. */
 const DEPLOYED = join(homedir(), ".local", "share", "ultrafast-gateway");
@@ -137,6 +172,7 @@ function environment(
   port: number,
   admin: Account | undefined,
   publicUrl: string | undefined,
+  database: { url: string; masterKey: string } | null,
 ) {
   const env: Record<string, string> = {
     UF_DATA_DIR: dataDir,
@@ -149,6 +185,10 @@ function environment(
     NO_COLOR: "1",
   };
   if (publicUrl !== undefined) env.UF_PUBLIC_URL = publicUrl;
+  if (database !== null) {
+    env.UF_DATABASE_URL = database.url;
+    env.UF_MASTER_KEY = database.masterKey;
+  }
   if (admin !== undefined) {
     env.UF_ADMIN_EMAIL = admin.email;
     env.UF_ADMIN_PASSWORD = admin.password;
@@ -264,12 +304,28 @@ async function startOnce(binary: string, options: GatewayOptions): Promise<Try> 
   const dataDir = await mkdtemp(join(tmpdir(), "uf-e2e-"));
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;
+  // On PostgreSQL: a schema of its own, so that this gateway starts empty.
+  const base = databaseUrl();
+  const schema = `uf_e2e_${randomBytes(8).toString("hex")}`;
+  let database: { url: string; masterKey: string } | null = null;
+  if (base !== null) {
+    await psql(base, `CREATE SCHEMA ${schema}`);
+    const separator = base.includes("?") ? "&" : "?";
+    database = {
+      url: `${base}${separator}options=-c%20search_path%3D${schema}`,
+      masterKey: randomBytes(32).toString("hex"),
+    };
+  }
+  const dropSchema = async () => {
+    if (base !== null) await psql(base, `DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => undefined);
+  };
   const child = spawn(binary, ["serve"], {
     env: environment(
       dataDir,
       port,
       options.admin,
       options.publicUrl === true ? origin : options.publicUrl || undefined,
+      database,
     ),
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -297,6 +353,7 @@ async function startOnce(binary: string, options: GatewayOptions): Promise<Try> 
     watchdog?.stdin.end();
     if (watchdog !== null) await exited(watchdog);
     await rm(dataDir, { recursive: true, force: true });
+    await dropSchema();
   };
 
   try {

@@ -163,7 +163,7 @@ function General() {
           <Skeleton className="h-8 w-full" />
         </div>
       )}
-      <BackupSection />
+      <BackupSection database={settings.data?.database} />
       <ConfigSection />
     </div>
   );

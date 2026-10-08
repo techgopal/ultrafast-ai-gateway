@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { databaseUrl } from "./gateway";
 import { expect, goTo, signInFromStart, test } from "./fixtures";
 import { startMockProvider } from "./mock-provider";
 
@@ -8,6 +9,7 @@ test("the backup downloaded from Settings is a SQLite file with the tables and t
   apiAs,
   gateway,
 }) => {
+  test.skip(databaseUrl() !== null, "SQLite only: see the PostgreSQL test below");
   const mock = await startMockProvider(["e2e-model"]);
   try {
     const api = await apiAs(admin);
@@ -55,4 +57,21 @@ test("the backup downloaded from Settings is a SQLite file with the tables and t
   } finally {
     await mock.close();
   }
+});
+
+test("on PostgreSQL, Settings says to use pg_dump, offers no download, and the gateway refuses the endpoint", async ({
+  page,
+  admin,
+}) => {
+  test.skip(databaseUrl() === null, "needs UF_E2E_DATABASE_URL");
+  await signInFromStart(page, admin);
+  await goTo(page, "Settings");
+  const section = page.getByRole("region", { name: "Backup" });
+  await expect(section).toContainText("Database: PostgreSQL");
+  await expect(section).toContainText("Use pg_dump to back up a Postgres database.");
+  await expect(section.getByRole("link", { name: "Download backup" })).toHaveCount(0);
+
+  const answer = await page.request.get("/api/backup");
+  expect(answer.status()).toBe(409);
+  expect(await answer.text()).toContain("backup_unsupported");
 });

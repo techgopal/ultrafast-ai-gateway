@@ -9,7 +9,7 @@
 Ultrafast is one small Rust binary that sits between your apps and your LLM
 providers. It speaks the OpenAI and Anthropic APIs, adds an admin API, and
 serves a built-in web console, with SQLite for storage and nothing else to
-run. It is for small teams who host it themselves. This is v2; the v1 code is
+run (or PostgreSQL, when several processes share one database). It is for small teams who host it themselves. This is v2; the v1 code is
 tagged `v1-final`.
 
 ## Screenshots
@@ -221,8 +221,10 @@ secrets: a flag shows in the process list.
 
 | Variable | Flag | Default | Meaning |
 | --- | --- | --- | --- |
-| `UF_DATA_DIR` | `--data-dir` | `./data` (`/var/lib/ultrafast` in the image) | Directory of the database (`gateway.db`) and `master.key`. Any subcommand. |
-| `UF_MASTER_KEY` | `--master-key` | generated into `master.key` | 64 hex characters; encrypts provider credentials. Any subcommand. |
+| `UF_DATA_DIR` | `--data-dir` | `./data` (`/var/lib/ultrafast` in the image) | Directory of the SQLite database (`gateway.db`) and `master.key`. Not used with `UF_DATABASE_URL`. Any subcommand. |
+| `UF_MASTER_KEY` | `--master-key` | generated into `master.key` | 64 hex characters; encrypts provider credentials. Any subcommand. Required with `UF_DATABASE_URL`, and the same for every gateway on that database. |
+| `UF_DATABASE_URL` | `--database-url` | unset (SQLite in the data directory) | A PostgreSQL URL (`postgres://user:password@host:5432/db`). Set: the gateway uses that database and `UF_MASTER_KEY` is required. Add `?sslmode=require` (or `verify-full` with `sslrootcert=/path/ca.pem`) for TLS. Prefer the variable: the URL holds the password. Any subcommand. See Using PostgreSQL. |
+| `UF_DATABASE_MAX_CONNECTIONS` | `--database-max-connections` | `10` | The most connections one gateway process opens to PostgreSQL, 1 to 1000. Ignored on SQLite. |
 | `UF_HOST` | `--host` | `127.0.0.1` (`0.0.0.0` in the image) | Address to listen on. `serve`. |
 | `UF_PORT` | `--port` | `3000` | Port to listen on. `serve`. |
 | `UF_ADMIN_EMAIL` | none | unset | With `UF_ADMIN_PASSWORD`: create the first admin at start when no user exists. Setting only one is an error. `serve`. |
@@ -239,7 +241,10 @@ secrets: a flag shows in the process list.
 | `RUST_LOG` | none | `info` | Log filter. A gateway that starts with no user logs its one-time setup code at `info` under the target `ultrafast::setup`: when you lower the level, keep it, as in `RUST_LOG=warn,ultrafast::setup=info`. |
 
 For the dev tooling only: `UF_DEV_GATEWAY` (where `pnpm --dir ui dev` proxies
-to) and `UF_E2E_BINARY` (the binary the browser tests run).
+to), `UF_E2E_BINARY` (the binary the browser tests run), `UF_E2E_DATABASE_URL`
+(run the browser tests on PostgreSQL, one schema per gateway; needs `psql`) and
+`UF_TEST_DATABASE_URL` (run the Rust tests on PostgreSQL; build with
+`--features test-support`).
 
 Subcommands: `serve`, `provider add`, `model add`, `key create`,
 `backup <path>`, `config export|import <file>`, `openapi`.
@@ -452,9 +457,78 @@ set it names, and reports what it found. Only admins can use it; the address
 it contacts is the issuer you typed, and the second request goes where the
 discovery document points.
 
+## Using PostgreSQL
+
+SQLite is the default and needs nothing. Use PostgreSQL when more than one
+gateway process should share a database (several replicas behind a load
+balancer) or when you already run and back up PostgreSQL. It is tested on
+PostgreSQL 17; the gateway creates its tables itself (migrations run at start) in the
+database and schema the URL names, so give it a database of its own.
+
+```bash
+export UF_MASTER_KEY=$(openssl rand -hex 32)      # keep it: see below
+export UF_DATABASE_URL='postgres://ultrafast:PASSWORD@db.example.com:5432/ultrafast?sslmode=require'
+ultrafast serve
+```
+
+A complete example with PostgreSQL in a container is
+[`docs/compose/postgres.yml`](docs/compose/postgres.yml).
+
+- **The master key is required.** There is no data directory to keep a
+  `master.key` in, and every gateway on the database must have the same key, or
+  provider credentials cannot be read by the others. `UF_MASTER_KEY` is 64 hex
+  characters; the gateway refuses to start without it. Keep it apart from the
+  database backups.
+- **TLS** is the URL's `sslmode`: `disable`, `prefer`, `require` (encrypted, the
+  server's certificate is not checked) or `verify-full` (checked; give the
+  authority with `sslrootcert=/path/ca.pem`). Use `require` or `verify-full`
+  for any database that is not on a private network. The gateway gives up
+  connecting after 10 s and says so at start.
+- **Connections.** Each process opens up to `UF_DATABASE_MAX_CONNECTIONS` (10).
+  Keep processes times that number below the server's `max_connections`.
+- **Several processes behind a load balancer.** They share the database, so
+  users, sessions, keys, models, routes, teams, logs, the audit log and alert
+  channels, rules and history are the same on every one, and a change made on
+  one reaches the others' routing snapshot within about 30 s (each re-reads
+  the database at that interval), while the process that took the change
+  applies it at once. Budgets are shared too: each process adds its
+  spend to the database about every 5 s and reads the others' back, so a
+  `block` budget can be overshot by what the processes spend inside that
+  interval. Budget alert states are shared and fire once. These stay **per
+  process**: rate limits (a limit of 60 requests a minute is 60 on each
+  process), the response cache, single-flight, routing and circuit-breaker
+  health, the first-run setup code, and the error windows and circuit
+  episodes that alerts are evaluated from. Use sticky routing if a client
+  relies on cache hits.
+- **Backup** is `pg_dump` (or your provider's snapshots); the console's Backup
+  panel and `ultrafast backup` say so and do nothing. Back up the database and
+  keep `UF_MASTER_KEY` separately. Restore with `pg_restore` or `psql` into an
+  empty database, with the gateways stopped, and start them with the same key.
+- **Upgrade.** Migrations run when the first gateway starts and take a
+  database-wide lock, so processes started together wait for each other. Take
+  a `pg_dump` first.
+
+**Moving from SQLite to Postgres.** There is no online migration. A
+configuration export and import moves the setup, not the data:
+
+| Moves (`config export`, then `config import` on the Postgres gateway) | Does not move |
+| --- | --- |
+| providers (name, kind, URL), models with their grants, routes, teams, gateway/team/user limits and budgets, alert channels (name and kind) and rules, the retention and session-hour settings | provider credentials (set them again, or the providers stay without one), users and their passwords, invitations and sessions (people are invited again, or the first admin is made from `UF_ADMIN_EMAIL`/`UF_ADMIN_PASSWORD`), virtual keys (create new ones), request logs and usage history, the audit log, alert history, alert channel URLs and secrets, single sign-on settings, and the response cache |
+
+```bash
+ultrafast --data-dir ./data config export ./config.json
+UF_DATABASE_URL=... UF_MASTER_KEY=... UF_ADMIN_EMAIL=... UF_ADMIN_PASSWORD=... ultrafast serve   # first start: makes the admin
+UF_DATABASE_URL=... UF_MASTER_KEY=... ultrafast config import ./config.json --dry-run
+UF_DATABASE_URL=... UF_MASTER_KEY=... ultrafast config import ./config.json
+```
+
+Users and keys are not in the file, so the people and the applications that
+call the gateway start over; keep the old gateway running until they have
+moved. Going from Postgres back to SQLite is the same, the other way round.
+
 ## Operations
 
-**Backup.** A consistent copy of the database while it runs: Settings, Backup;
+**Backup.** (SQLite; on PostgreSQL use `pg_dump`, see Using PostgreSQL.) A consistent copy of the database while it runs: Settings, Backup;
 `GET /api/backup` (admin); or
 
 ```bash
@@ -735,9 +809,14 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
 
 ## Known limits
 
-- Rate limits, budgets, the response cache and routing health live in the
-  memory of one process: they start empty (budgets are rebuilt from the logs)
-  and are not shared between processes. One gateway per database.
+- SQLite: one gateway per database. Postgres: several processes may share one
+  database, with per-process rate limits, response cache, single-flight,
+  routing and breaker health, setup code and alert error windows (a limit of
+  N is N on each process). Budgets are shared and converge about every 5 s, so
+  a `block` budget can be overshot across processes by one interval's spend.
+  A change made on one process reaches the others within about 30 s.
+  On either database these start empty after a restart (budgets are rebuilt
+  from the logs).
 - A `block` budget can be overshot: spend is counted when the log writer
   prices a call (batches of about a second), and a long call is charged when
   it ends.
@@ -775,9 +854,11 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
   authorization code only once, as the standard requires. The
   provider's groups claim can be missing (Entra ID overage), in which case
   the role stays as it is.
-- A backup restore is manual, and a configuration import never deletes.
+- A backup restore is manual, and a configuration import never deletes. There
+  is no online migration between SQLite and Postgres (see Using PostgreSQL).
+- On Postgres the console and `ultrafast backup` do not back up: use `pg_dump`.
 - No Responses API, image or audio output, or `response_format` / structured
-  outputs yet (phase 2). SQLite only.
+  outputs yet (phase 2).
 - Gemini thought signatures are not carried: no other format has them. Every
   earlier tool call sent to Gemini carries Google's documented placeholder
   signature (`skip_thought_signature_validator`), which Gemini 3 models need
