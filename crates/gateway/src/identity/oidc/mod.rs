@@ -16,7 +16,7 @@ use self::discovery::{Discovery, DiscoveryCache, Jwks};
 use self::flow::FlowState;
 use self::token::{Claims, Expected};
 use super::external::{
-    Begin, BoxFuture, CallbackParams, ExternalError, ExternalIdentity, SignInProvider,
+    Begin, BoxFuture, CallbackParams, Completed, ExternalError, ExternalIdentity, SignInProvider,
 };
 use crate::secrets::Cipher;
 
@@ -224,7 +224,7 @@ impl SignInProvider for OidcProvider {
         &'a self,
         params: &'a CallbackParams,
         flow_cookie: &'a str,
-    ) -> BoxFuture<'a, Result<ExternalIdentity, ExternalError>> {
+    ) -> BoxFuture<'a, Result<Completed, ExternalError>> {
         Box::pin(async move {
             // The provider's refusal is told by its code alone; its
             // description is text an attacker could have chosen.
@@ -265,7 +265,11 @@ impl SignInProvider for OidcProvider {
                 }
                 _ => None,
             };
-            identity_from(&self.issuer, &id, info.as_ref(), &self.groups_claim)
+            let identity = identity_from(&self.issuer, &id, info.as_ref(), &self.groups_claim)?;
+            Ok(Completed {
+                identity,
+                return_to: flow.return_to,
+            })
         })
     }
 }
@@ -486,6 +490,8 @@ mod tests {
             .complete(&callback(&flow), &begin.flow_cookie)
             .await
             .unwrap();
+        assert_eq!(who.return_to, "/keys?tab=1");
+        let who = who.identity;
         assert_eq!(who.provider, "oidc");
         assert_eq!(who.external_id, format!("{}|sub-1", idp.server.uri()));
         assert_eq!(who.email, "ann@example.com");
@@ -686,6 +692,7 @@ mod tests {
             .complete(&callback(&flow), &begin.flow_cookie)
             .await
             .unwrap();
+        let who = who.identity;
         assert_eq!(who.email, "ann@example.com");
         assert!(who.email_verified);
 
@@ -835,31 +842,39 @@ pub(crate) mod testkit {
 
     use std::sync::OnceLock;
 
+    use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
+    use aws_lc_rs::rsa::{KeyPair as RsaKeyPair, KeySize};
+    use aws_lc_rs::signature::{
+        EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING,
+    };
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
-    use p256::pkcs8::EncodePrivateKey;
-    use rsa::pkcs1::EncodeRsaPrivateKey;
-    use rsa::traits::PublicKeyParts;
     use serde_json::{json, Value};
 
     pub struct TestKeys {
-        rsa: rsa::RsaPrivateKey,
-        other_rsa: rsa::RsaPrivateKey,
-        ec: p256::ecdsa::SigningKey,
-        ec384: p384::ecdsa::SigningKey,
+        rsa: RsaKeyPair,
+        other_rsa: RsaKeyPair,
+        ec: (Vec<u8>, EcdsaKeyPair),
+        ec384: (Vec<u8>, EcdsaKeyPair),
+    }
+
+    fn ec_pair(
+        alg: &'static aws_lc_rs::signature::EcdsaSigningAlgorithm,
+    ) -> (Vec<u8>, EcdsaKeyPair) {
+        let rng = aws_lc_rs::rand::SystemRandom::new();
+        let der = EcdsaKeyPair::generate_pkcs8(alg, &rng).unwrap();
+        let pair = EcdsaKeyPair::from_pkcs8(alg, der.as_ref()).unwrap();
+        (der.as_ref().to_vec(), pair)
     }
 
     pub fn test_keys() -> &'static TestKeys {
         static KEYS: OnceLock<TestKeys> = OnceLock::new();
-        KEYS.get_or_init(|| {
-            let mut rng = rsa::rand_core::OsRng;
-            TestKeys {
-                rsa: rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap(),
-                other_rsa: rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap(),
-                ec: p256::ecdsa::SigningKey::random(&mut rng),
-                ec384: p384::ecdsa::SigningKey::random(&mut rng),
-            }
+        KEYS.get_or_init(|| TestKeys {
+            rsa: RsaKeyPair::generate(KeySize::Rsa2048).unwrap(),
+            other_rsa: RsaKeyPair::generate(KeySize::Rsa2048).unwrap(),
+            ec: ec_pair(&ECDSA_P256_SHA256_FIXED_SIGNING),
+            ec384: ec_pair(&ECDSA_P384_SHA384_FIXED_SIGNING),
         })
     }
 
@@ -867,40 +882,66 @@ pub(crate) mod testkit {
         URL_SAFE_NO_PAD.encode(bytes)
     }
 
+    /// Reads one DER element at the start of `der`: (tag, content, rest).
+    fn der_element(der: &[u8]) -> (u8, &[u8], &[u8]) {
+        let (tag, len_byte) = (der[0], der[1]);
+        let (len, header) = if len_byte < 0x80 {
+            (usize::from(len_byte), 2)
+        } else {
+            let n = usize::from(len_byte & 0x7f);
+            let len = der[2..2 + n]
+                .iter()
+                .fold(0usize, |a, b| (a << 8) | usize::from(*b));
+            (len, 2 + n)
+        };
+        (tag, &der[header..header + len], &der[header + len..])
+    }
+
+    /// The RSA key as PKCS#1 DER, which is what the signing side of
+    /// `jsonwebtoken` takes. aws-lc-rs exports PKCS#8 only, so the
+    /// `RSAPrivateKey` is cut out of it: PrivateKeyInfo is
+    /// SEQUENCE { version, algorithm, OCTET STRING { RSAPrivateKey } }.
+    fn rsa_pkcs1(key: &RsaKeyPair) -> Vec<u8> {
+        let der: Pkcs8V1Der<'static> = key.as_der().unwrap();
+        let (_, info, _) = der_element(der.as_ref());
+        let (_, _version, rest) = der_element(info);
+        let (_, _algorithm, rest) = der_element(rest);
+        let (tag, private_key, _) = der_element(rest);
+        assert_eq!(tag, 0x04);
+        private_key.to_vec()
+    }
+
+    /// x and y of an uncompressed point (0x04 || x || y).
+    fn xy(point: &[u8]) -> (String, String) {
+        let half = (point.len() - 1) / 2;
+        (b64(&point[1..=half]), b64(&point[1 + half..]))
+    }
+
     impl TestKeys {
         pub fn rsa_jwk(&self, kid: &str) -> Value {
+            let public = self.rsa.public_key();
             json!({
                 "kty": "RSA", "kid": kid, "use": "sig",
-                "n": b64(&self.rsa.n().to_bytes_be()),
-                "e": b64(&self.rsa.e().to_bytes_be()),
+                "n": b64(public.modulus().big_endian_without_leading_zero()),
+                "e": b64(public.exponent().big_endian_without_leading_zero()),
             })
         }
 
         pub fn ec_jwk(&self, kid: &str) -> Value {
-            let point = self.ec.verifying_key().to_encoded_point(false);
-            json!({
-                "kty": "EC", "crv": "P-256", "kid": kid,
-                "x": b64(point.x().unwrap()), "y": b64(point.y().unwrap()),
-            })
+            let (x, y) = xy(self.ec.1.public_key().as_ref());
+            json!({"kty": "EC", "crv": "P-256", "kid": kid, "x": x, "y": y})
         }
 
         pub fn ec384_jwk(&self, kid: &str) -> Value {
-            let point = self.ec384.verifying_key().to_encoded_point(false);
-            json!({
-                "kty": "EC", "crv": "P-384", "kid": kid,
-                "x": b64(point.x().unwrap()), "y": b64(point.y().unwrap()),
-            })
+            let (x, y) = xy(self.ec384.1.public_key().as_ref());
+            json!({"kty": "EC", "crv": "P-384", "kid": kid, "x": x, "y": y})
         }
 
         fn encoding_key(&self, alg: Algorithm) -> EncodingKey {
             match alg {
-                Algorithm::ES256 => {
-                    EncodingKey::from_ec_der(self.ec.to_pkcs8_der().unwrap().as_bytes())
-                }
-                Algorithm::ES384 => {
-                    EncodingKey::from_ec_der(self.ec384.to_pkcs8_der().unwrap().as_bytes())
-                }
-                _ => EncodingKey::from_rsa_der(self.rsa.to_pkcs1_der().unwrap().as_bytes()),
+                Algorithm::ES256 => EncodingKey::from_ec_der(&self.ec.0),
+                Algorithm::ES384 => EncodingKey::from_ec_der(&self.ec384.0),
+                _ => EncodingKey::from_rsa_der(&rsa_pkcs1(&self.rsa)),
             }
         }
 
@@ -914,7 +955,7 @@ pub(crate) mod testkit {
         pub fn sign_with_other_key(&self, alg: Algorithm, kid: &str, claims: &Value) -> String {
             let mut header = Header::new(alg);
             header.kid = Some(kid.to_string());
-            let key = EncodingKey::from_rsa_der(self.other_rsa.to_pkcs1_der().unwrap().as_bytes());
+            let key = EncodingKey::from_rsa_der(&rsa_pkcs1(&self.other_rsa));
             jsonwebtoken::encode(&header, claims, &key).unwrap()
         }
 
@@ -926,9 +967,7 @@ pub(crate) mod testkit {
 
         /// The classic confusion attack: the RSA public key as the HMAC secret.
         pub fn hs256_with_public_key(&self, kid: &str, claims: &Value) -> String {
-            use rsa::pkcs1::EncodeRsaPublicKey;
-            let public = self.rsa.to_public_key().to_pkcs1_der().unwrap();
-            self.sign_hs256(public.as_bytes(), kid, claims)
+            self.sign_hs256(self.rsa.public_key().as_ref(), kid, claims)
         }
 
         /// A token with an unsigned `none` header.

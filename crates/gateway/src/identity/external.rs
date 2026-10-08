@@ -36,6 +36,16 @@ pub struct ExternalIdentity {
     pub groups: Vec<String>,
 }
 
+/// A finished sign-in: who the provider vouches for, and where to send the
+/// browser next. The provider owns its relay state (OIDC keeps the path in
+/// its flow cookie, SAML in RelayState), so the caller never opens it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completed {
+    pub identity: ExternalIdentity,
+    /// The path `begin` was given; the caller checks it again before use.
+    pub return_to: String,
+}
+
 /// Where to send the browser, and what to remember until it returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Begin {
@@ -123,7 +133,7 @@ pub trait SignInProvider: Send + Sync {
         &'a self,
         params: &'a CallbackParams,
         flow_cookie: &'a str,
-    ) -> BoxFuture<'a, Result<ExternalIdentity, ExternalError>>;
+    ) -> BoxFuture<'a, Result<Completed, ExternalError>>;
 }
 
 /// Makes the OpenID Connect provider from complete settings. `cipher`
@@ -183,18 +193,21 @@ mod tests {
             &'a self,
             params: &'a CallbackParams,
             flow_cookie: &'a str,
-        ) -> BoxFuture<'a, Result<ExternalIdentity, ExternalError>> {
+        ) -> BoxFuture<'a, Result<Completed, ExternalError>> {
             Box::pin(async move {
                 if params.get("state") != Some(flow_cookie) {
                     return Err(ExternalError::BadState);
                 }
-                Ok(ExternalIdentity {
-                    provider: "fixed",
-                    external_id: "issuer|sub".into(),
-                    email: "a@example.com".into(),
-                    email_verified: true,
-                    name: None,
-                    groups: vec![],
+                Ok(Completed {
+                    identity: ExternalIdentity {
+                        provider: "fixed",
+                        external_id: "issuer|sub".into(),
+                        email: "a@example.com".into(),
+                        email_verified: true,
+                        name: None,
+                        groups: vec![],
+                    },
+                    return_to: "/keys".into(),
                 })
             })
         }
@@ -217,7 +230,8 @@ mod tests {
             .complete(&params, &begun.flow_cookie)
             .await
             .unwrap();
-        assert_eq!(who.external_id, "issuer|sub");
+        assert_eq!(who.identity.external_id, "issuer|sub");
+        assert_eq!(who.return_to, "/keys");
         let wrong = CallbackParams::default();
         assert_eq!(
             provider.complete(&wrong, &begun.flow_cookie).await,
