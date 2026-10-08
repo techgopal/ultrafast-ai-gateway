@@ -2,7 +2,6 @@
 
 use serde_json::{json, Value};
 
-use crate::store;
 use crate::telemetry::{Attempt, AttemptOutcome, RequestRecord};
 
 /// OTLP `SpanKind` and `StatusCode` values.
@@ -23,13 +22,10 @@ fn boolean(key: &str, value: bool) -> Value {
     json!({ "key": key, "value": { "boolValue": value } })
 }
 
-/// Nanoseconds since the epoch of the call's start. A `u128` as the year
-/// 2999 does not fit 64 bits of nanoseconds. A start that cannot be read is
-/// the epoch.
+/// Nanoseconds since the epoch of the call's start, as a `u128` (the year
+/// 2999 does not fit 64 bits of nanoseconds).
 fn start_nanos(record: &RequestRecord) -> u128 {
-    store::parse_timestamp(&record.started_at)
-        .and_then(|t| u128::try_from(t.unix_timestamp()).ok())
-        .map_or(0, |s| s * 1_000_000_000)
+    u128::from(record.started_unix_ms) * 1_000_000
 }
 
 fn at(start: u128, ms: u64) -> String {
@@ -241,6 +237,7 @@ mod tests {
             tags: [("team".to_string(), "red".to_string())].into(),
             trace_parent: None,
             provider_kinds: vec![("a".into(), "openai"), ("b".into(), "anthropic")],
+            started_unix_ms: 32_472_144_000_000,
         }
     }
 
@@ -260,7 +257,7 @@ mod tests {
             .map(|a| &a["value"])
     }
 
-    const T0: u128 = 32_472_144_000_000_000_000; // 2999-01-01 00:00:00 UTC
+    const T0: u128 = 32_472_144_000_000_000_000; // started_unix_ms in base() // 2999-01-01 00:00:00 UTC
 
     #[test]
     fn spans_of_a_call_with_retry_and_fallback() {
@@ -330,6 +327,22 @@ mod tests {
         );
         assert!(attr(&c[1], "http.response.status_code").is_none());
         assert_eq!(attr(&c[2], "uf.outcome").unwrap()["stringValue"], "ok");
+    }
+
+    #[test]
+    fn the_server_span_encloses_its_children() {
+        let mut r = base();
+        r.duration_ms = 500;
+        r.attempts = vec![
+            attempt("a", AttemptOutcome::Retryable, Some(500), 5, 100),
+            attempt("b", AttemptOutcome::Ok, Some(200), 120, 380),
+        ];
+        let spans = spans_of(&r, &mut counter(), [1; 16]);
+        let n = |v: &Value, k: &str| v[k].as_str().unwrap().parse::<u128>().unwrap();
+        for c in &spans[1..] {
+            assert!(n(&spans[0], "startTimeUnixNano") <= n(c, "startTimeUnixNano"));
+            assert!(n(&spans[0], "endTimeUnixNano") >= n(c, "endTimeUnixNano"));
+        }
     }
 
     #[test]

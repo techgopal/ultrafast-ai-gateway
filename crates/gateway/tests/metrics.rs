@@ -395,6 +395,7 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         duration_ms: 1,
         trace_parent: None,
         provider_kinds: Vec::new(),
+        started_unix_ms: 0,
     };
     record.attempts[1].status = Some(400);
     metrics.record(&record);
@@ -593,6 +594,7 @@ async fn a_budget_refusal_is_counted() {
         duration_ms: 1,
         trace_parent: None,
         provider_kinds: Vec::new(),
+        started_unix_ms: 0,
     };
     account(&h.state, &record, 500, OffsetDateTime::now_utc());
     assert_eq!(

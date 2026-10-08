@@ -70,9 +70,10 @@ enum Command {
         /// variable: a flag value is visible in the process list.
         #[arg(long, env = "UF_METRICS_TOKEN", hide_env_values = true)]
         metrics_token: Option<String>,
-        /// Export a trace of every `/v1` call over OTLP/HTTP (JSON) to this
-        /// URL, the collector's traces endpoint, like
-        /// http://localhost:4318/v1/traces. Unset: no traces are exported.
+        /// Export a trace of every `/v1` call over OTLP/HTTP (JSON) to the
+        /// collector at this base URL, like http://localhost:4318 (spans are
+        /// posted to <URL>/v1/traces; a URL that already ends with that is
+        /// used as it is). Unset: no traces are exported.
         /// A span holds no prompt, answer or credential.
         #[arg(long, env = "UF_OTEL_ENDPOINT")]
         otel_endpoint: Option<String>,

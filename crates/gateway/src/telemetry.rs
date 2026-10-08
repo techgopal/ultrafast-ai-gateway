@@ -79,6 +79,9 @@ pub struct RequestRecord {
     /// The kind (`openai`, `anthropic`, ...) of each provider the call may
     /// try, by provider name, for the trace export.
     pub provider_kinds: Vec<(String, &'static str)>,
+    /// Wall-clock start of the call, milliseconds since the epoch: the
+    /// precise form of `started_at`, for the trace export only.
+    pub started_unix_ms: u64,
 }
 
 /// Receives the records. `record` is called on the request path and must not
@@ -154,6 +157,7 @@ impl Scope {
                 tags: Tags::new(),
                 trace_parent: None,
                 provider_kinds: Vec::new(),
+                started_unix_ms: unix_ms_now(),
             }),
         }
     }
@@ -404,6 +408,12 @@ impl Drop for Scope {
     fn drop(&mut self) {
         self.emit(CALLER_GONE);
     }
+}
+
+fn unix_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 pub fn elapsed_ms(since: Instant) -> u64 {

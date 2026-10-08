@@ -46,6 +46,7 @@ fn record(requested: &str) -> RequestRecord {
         duration_ms: 20,
         trace_parent: None,
         provider_kinds: Vec::new(),
+        started_unix_ms: 0,
     }
 }
 

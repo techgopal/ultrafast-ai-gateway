@@ -265,6 +265,7 @@ mod tests {
             tags: Default::default(),
             trace_parent: None,
             provider_kinds: Vec::new(),
+            started_unix_ms: 0,
         };
         let prices: PriceLookup = Arc::new(|_, _| price(Some(2_000_000), Some(4_000_000)));
         let row = row_of(&record, &prices);

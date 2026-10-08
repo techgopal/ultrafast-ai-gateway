@@ -212,6 +212,7 @@ mod tests {
             tags: Default::default(),
             trace_parent: None,
             provider_kinds: Vec::new(),
+            started_unix_ms: 0,
         }
     }
 

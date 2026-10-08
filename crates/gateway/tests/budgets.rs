@@ -403,6 +403,7 @@ impl World {
             duration_ms: 1,
             trace_parent: None,
             provider_kinds: Vec::new(),
+            started_unix_ms: 0,
         }
     }
 

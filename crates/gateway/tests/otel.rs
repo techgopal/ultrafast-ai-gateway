@@ -53,7 +53,7 @@ async fn traced(ratio: f64, delay: Option<Duration>) -> Traced {
         .mount(&collector)
         .await;
     let (stop, stopped) = watch::channel(false);
-    let endpoint = format!("{}/v1/traces", collector.uri());
+    let endpoint = collector.uri();
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
     let slot2 = slot.clone();
     let h = harness_with_state("openai", move |state| {
@@ -108,6 +108,7 @@ async fn a_chat_call_is_exported_with_the_expected_shape_and_headers() {
     let reqs = t.exports().await;
     assert_eq!(reqs.len(), 1);
     let r = &reqs[0];
+    assert_eq!(r.url.path(), "/v1/traces");
     assert_eq!(r.headers.get("x-collector-key").unwrap(), "c0llector");
     assert_eq!(r.headers.get("content-type").unwrap(), "application/json");
     let v: Value = serde_json::from_slice(&r.body).unwrap();
@@ -155,6 +156,33 @@ async fn a_batch_is_sent_on_its_own_within_the_flush_interval() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(seen, 1);
+}
+
+#[tokio::test]
+async fn a_full_traces_url_is_used_as_it_is() {
+    let collector = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/traces"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&collector)
+        .await;
+    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let (stop, stopped) = watch::channel(false);
+    let (exporter, task) = Exporter::spawn(
+        config(format!("{}/v1/traces", collector.uri()), 1.0),
+        reqwest::Client::new(),
+        metrics,
+        stopped,
+    );
+    exporter.offer(&record());
+    stop.send(true).unwrap();
+    task.await.unwrap();
+    assert_eq!(collector.received_requests().await.unwrap().len(), 1);
+    assert_eq!(
+        collector.received_requests().await.unwrap()[0].url.path(),
+        "/v1/traces"
+    );
 }
 
 #[tokio::test]
@@ -274,6 +302,7 @@ fn record() -> RequestRecord {
         tags: Default::default(),
         trace_parent: None,
         provider_kinds: Vec::new(),
+        started_unix_ms: 0,
     }
 }
 
@@ -287,7 +316,7 @@ async fn a_full_queue_drops_and_counts_and_stays_bounded() {
     let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
     let (_stop, stopped) = watch::channel(false);
     let (exporter, _task) = Exporter::spawn(
-        config(format!("{}/v1/traces", collector.uri()), 1.0),
+        config(collector.uri(), 1.0),
         reqwest::Client::new(),
         metrics.clone(),
         stopped,
@@ -320,7 +349,7 @@ async fn a_failing_collector_counts_failures_and_drops_the_batch() {
     let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
     let (stop, stopped) = watch::channel(false);
     let (exporter, task) = Exporter::spawn(
-        config(format!("{}/v1/traces", collector.uri()), 1.0),
+        config(collector.uri(), 1.0),
         reqwest::Client::new(),
         metrics.clone(),
         stopped,

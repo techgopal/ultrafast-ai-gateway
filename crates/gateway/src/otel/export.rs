@@ -30,7 +30,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_CAP: Duration = Duration::from_secs(5);
 
 pub struct OtelConfig {
-    /// The collector's traces URL, like `http://localhost:4318/v1/traces`.
+    /// The OTLP base URL, like `http://localhost:4318`; `/v1/traces` is
+    /// added unless the URL already ends with it.
     pub endpoint: String,
     pub headers: Vec<(String, String)>,
     pub service_name: String,
@@ -98,6 +99,17 @@ async fn stopped(stop: &mut watch::Receiver<bool>) {
     }
 }
 
+/// The URL spans are posted to: the OTLP base URL plus `/v1/traces`, or the
+/// URL itself when it already ends so.
+pub(crate) fn traces_url(endpoint: &str) -> String {
+    let base = endpoint.trim().trim_end_matches('/');
+    if base.ends_with("/v1/traces") {
+        base.to_string()
+    } else {
+        format!("{base}/v1/traces")
+    }
+}
+
 fn random_ids() -> impl FnMut() -> [u8; 8] {
     || loop {
         let mut id = [0u8; 8];
@@ -129,6 +141,8 @@ async fn run(
     mut rx: mpsc::Receiver<RequestRecord>,
     mut stop: watch::Receiver<bool>,
 ) {
+    let mut cfg = cfg;
+    cfg.endpoint = traces_url(&cfg.endpoint);
     let sender = Sender { cfg, http, metrics };
     let mut batch: Vec<Value> = Vec::new();
     let mut tick = interval_at(Instant::now() + FLUSH_EVERY, FLUSH_EVERY);
@@ -210,5 +224,18 @@ impl Sender {
                 self.metrics.otel_dropped(n);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::traces_url;
+
+    #[test]
+    fn the_traces_path_is_added_once() {
+        assert_eq!(traces_url("http://h:4318"), "http://h:4318/v1/traces");
+        assert_eq!(traces_url("http://h:4318/"), "http://h:4318/v1/traces");
+        assert_eq!(traces_url("http://h/v1/traces"), "http://h/v1/traces");
+        assert_eq!(traces_url("http://h/p/"), "http://h/p/v1/traces");
     }
 }
