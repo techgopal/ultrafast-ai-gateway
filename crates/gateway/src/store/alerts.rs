@@ -575,6 +575,20 @@ impl Store {
         Ok(r.rows_affected())
     }
 
+    /// Deletes up to `limit` alert events older than `cutoff` (`at <
+    /// cutoff`, in the form of `store::now`) and returns how many went.
+    pub async fn delete_alert_events_before(&self, cutoff: &str, limit: i64) -> Result<u64> {
+        let r = self
+            .q("DELETE FROM alert_events WHERE id IN
+             (SELECT id FROM alert_events WHERE org_id = ? AND at < ? ORDER BY id LIMIT ?)")
+            .bind(DEFAULT_ORG)
+            .bind(cutoff)
+            .bind(limit)
+            .execute(self.pool())
+            .await?;
+        Ok(r.rows_affected())
+    }
+
     /// The enabled channels a rule sends to.
     pub async fn enabled_channel_ids_of_rule(&self, rule_id: i64) -> Result<Vec<i64>> {
         let rows = self

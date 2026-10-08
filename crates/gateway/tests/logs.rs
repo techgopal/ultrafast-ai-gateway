@@ -9,10 +9,12 @@ use std::time::{Duration, Instant};
 use common::{harness_with_sink, post_chat};
 use serde_json::json;
 use tokio::sync::watch;
-use ultrafast_gateway::logs::retention::{self, purge, Purged, RetentionConfig};
+use ultrafast_gateway::logs::retention::{
+    self, purge, purge_alert_events, Purged, RetentionConfig,
+};
 use ultrafast_gateway::logs::writer::{spawn, WriterConfig};
 use ultrafast_gateway::logs::{snapshot_prices, LogSink, Price, PriceLookup, QUEUE_CAPACITY};
-use ultrafast_gateway::store::{NewLog, Store};
+use ultrafast_gateway::store::{NewAlertEvent, NewLog, Store};
 use ultrafast_gateway::telemetry::{Attempt, AttemptOutcome, RequestRecord, RequestSink};
 use ultrafast_translate::types::Usage;
 use wiremock::matchers::method;
@@ -533,6 +535,82 @@ async fn retention_deletes_only_old_rows_in_batches() {
             batches: 0
         }
     );
+}
+
+async fn alert_event_at(store: &Store, at: &str, subject: &str) {
+    let mut tx = store.begin().await.unwrap();
+    tx.insert_alert_event(NewAlertEvent {
+        rule_id: None,
+        rule_name: "r",
+        kind: "circuit_open",
+        subject,
+        state: "firing",
+        summary: "s",
+        details: "{}",
+        at,
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn retention_deletes_only_old_alert_events_in_batches() {
+    let store = Store::open_in_memory().await.unwrap();
+    for i in 0..7 {
+        alert_event_at(&store, "2000-01-01 00:00:00", &format!("old{i}")).await;
+    }
+    alert_event_at(&store, "2500-01-01 00:00:00", "boundary-after").await;
+    alert_event_at(&store, "2999-01-01 00:00:00", "new").await;
+    let purged = purge_alert_events(&store, "2500-01-01 00:00:00", 3, Duration::from_millis(1))
+        .await
+        .unwrap();
+    assert_eq!(
+        purged,
+        Purged {
+            rows: 7,
+            batches: 3
+        }
+    );
+    let left: Vec<String> = store
+        .alert_events(100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.subject)
+        .collect();
+    assert_eq!(left, ["new", "boundary-after"]);
+}
+
+#[tokio::test]
+async fn the_retention_task_also_deletes_old_alert_events() {
+    let store = Store::open_in_memory().await.unwrap();
+    alert_event_at(&store, "2000-01-01 00:00:00", "old").await;
+    alert_event_at(&store, "2999-01-01 00:00:00", "new").await;
+    let (stop, stopped) = watch::channel(false);
+    let task = retention::spawn(
+        store.clone(),
+        RetentionConfig {
+            interval: Duration::from_millis(20),
+            batch: 1_000,
+            pause: Duration::from_millis(1),
+        },
+        stopped,
+    );
+    for _ in 0..400 {
+        if store.alert_events(10).await.unwrap().len() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let left = store.alert_events(10).await.unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].subject, "new");
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("the task ends")
+        .unwrap();
 }
 
 #[tokio::test]

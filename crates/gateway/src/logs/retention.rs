@@ -1,5 +1,5 @@
-//! Deletes request logs older than the retention setting, in small batches
-//! so the table is never locked for long.
+//! Deletes request logs and alert events older than the retention setting, in
+//! small batches so the tables are never locked for long.
 
 use std::time::Duration;
 
@@ -35,16 +35,45 @@ pub struct Purged {
     pub batches: u64,
 }
 
-/// Deletes every row older than `cutoff`, `batch` rows at a time with
-/// `pause` between the batches.
+/// Deletes every request log older than `cutoff`, `batch` rows at a time
+/// with `pause` between the batches.
 pub async fn purge(store: &Store, cutoff: &str, batch: i64, pause: Duration) -> Result<Purged> {
+    purge_with(cutoff, batch, pause, |cutoff, batch| {
+        store.delete_logs_before(cutoff, batch)
+    })
+    .await
+}
+
+/// [`purge`] for the alert events (the history of what fired and resolved).
+pub async fn purge_alert_events(
+    store: &Store,
+    cutoff: &str,
+    batch: i64,
+    pause: Duration,
+) -> Result<Purged> {
+    purge_with(cutoff, batch, pause, |cutoff, batch| {
+        store.delete_alert_events_before(cutoff, batch)
+    })
+    .await
+}
+
+async fn purge_with<'a, F, Fut>(
+    cutoff: &'a str,
+    batch: i64,
+    pause: Duration,
+    delete: F,
+) -> Result<Purged>
+where
+    F: Fn(&'a str, i64) -> Fut,
+    Fut: std::future::Future<Output = Result<u64>>,
+{
     let batch = batch.max(1);
     let mut purged = Purged {
         rows: 0,
         batches: 0,
     };
     loop {
-        let deleted = store.delete_logs_before(cutoff, batch).await?;
+        let deleted = delete(cutoff, batch).await?;
         if deleted == 0 {
             return Ok(purged);
         }
@@ -57,16 +86,23 @@ pub async fn purge(store: &Store, cutoff: &str, batch: i64, pause: Duration) -> 
     }
 }
 
-/// One pass by the current setting.
+/// One pass by the current setting: the request logs, then the alert
+/// events. The result is the request logs'; a failure of either is returned
+/// after the other has run.
 async fn pass(store: &Store, config: &RetentionConfig) -> Result<Purged> {
     let days = store.log_retention_days().await?;
-    purge(
-        store,
-        &after(-days.saturating_mul(86_400)),
-        config.batch,
-        config.pause,
-    )
-    .await
+    let cutoff = after(-days.saturating_mul(86_400));
+    let logs = purge(store, &cutoff, config.batch, config.pause).await;
+    match purge_alert_events(store, &cutoff, config.batch, config.pause).await {
+        Ok(p) if p.rows > 0 => tracing::info!(rows = p.rows, "deleted old alert events"),
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "could not delete old alert events");
+            logs?;
+            return Err(e);
+        }
+    }
+    logs
 }
 
 /// A pass, then the planner's statistics, which follow the table as it grows
