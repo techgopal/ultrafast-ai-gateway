@@ -20,7 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/compose/postgres.yml`; README section "Using PostgreSQL", including
   what a configuration export and import moves from SQLite. The browser tests
   run on PostgreSQL with `UF_E2E_DATABASE_URL`. No online migration from
-  SQLite.
+  SQLite. Tested on PostgreSQL 14 and 17; the gateway logs `database: sqlite`
+  or `database: postgres` at start. Revocations (keys, users, grants) and
+  single sign-on settings reach the other processes within about 30 s. An
+  error-rate or circuit alert episode belongs to the process that opened it
+  (migrations: SQLite 0016, PostgreSQL 0002).
 - **Tracing.** `UF_OTEL_ENDPOINT` (also `UF_OTEL_HEADERS`, `UF_OTEL_SERVICE_NAME`,
   `UF_OTEL_SAMPLE_RATIO`): every `/v1` call is exported as an OpenTelemetry
   trace over OTLP/HTTP (JSON), one server span per call and one span per
@@ -33,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   +30 s, per-channel limits); a console page, `/api/alerts/*` (admin only),
   and alert channels and rules in configuration export and import. Metric
   `uf_alert_deliveries_total{result}`.
+- Alert history is now deleted with the request logs, after the log retention
+  period (it was kept for ever).
 - A circuit alert resolves only after its breaker has stayed closed for
   5 minutes, so a flapping provider is one episode. Budget alerts of a past
   period no longer show as firing. The `requested` name in logs and traces is

@@ -87,7 +87,7 @@ and briefs add to these; they do not repeat them.
   check, a first-user check) must use it; a plain transaction is READ COMMITTED there.
 - The store speaks two databases (SQLite by default, PostgreSQL with
   `UF_DATABASE_URL`):
-  - No SQLite-only (or Postgres-only) SQL outside `Dialect` (`store/mod.rs`):
+  - No SQLite-only (or Postgres-only) SQL outside `Dialect` (`store/dialect.rs`):
     `last_insert_rowid`, `INSERT OR IGNORE`, `rowid`, `?` binds the database must
     infer (cast or type them), integer booleans, `BLOB` columns are all
     spelled through the dialect helpers.
@@ -101,6 +101,9 @@ and briefs add to these; they do not repeat them.
     `--features test-support` and set `UF_TEST_DATABASE_URL` to a throwaway
     server; each test gets a schema of its own. The Rust suite and, once for a
     release, the browser tests (`UF_E2E_DATABASE_URL`) pass on both.
+  - A transaction that reads several tables and must see one moment (the
+    snapshot, the configuration export) starts with `Store::begin_read`:
+    PostgreSQL would otherwise give each `SELECT` its own moment (READ COMMITTED).
   - On Postgres a failed statement aborts the whole transaction (every later
     statement fails until rollback): do not catch an error inside a transaction
     and carry on; check first (`ON CONFLICT DO NOTHING`, a `SELECT`) or roll
@@ -122,6 +125,9 @@ and briefs add to these; they do not repeat them.
   identity, its own cookie attributes and a POST callback route. Nothing a
   provider sent (claims, codes, tokens, error text) is logged or reflected;
   failures are fixed codes.
+  The provider is rebuilt when the saved settings change, on every process:
+  the refresher calls `reload_sign_in_if_changed`, and start and callback also
+  refuse when the stored `enabled` is off.
 - Errors to clients use the gateway's error shape; never leak provider keys or
   internal paths.
 

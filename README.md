@@ -242,7 +242,9 @@ secrets: a flag shows in the process list.
 
 For the dev tooling only: `UF_DEV_GATEWAY` (where `pnpm --dir ui dev` proxies
 to), `UF_E2E_BINARY` (the binary the browser tests run), `UF_E2E_DATABASE_URL`
-(run the browser tests on PostgreSQL, one schema per gateway; needs `psql`) and
+(run the browser tests on PostgreSQL, one schema per gateway; needs `psql`;
+point it at a throwaway server: a run that is killed leaves its `uf_e2e_*`
+schemas behind) and
 `UF_TEST_DATABASE_URL` (run the Rust tests on PostgreSQL; build with
 `--features test-support`).
 
@@ -462,8 +464,10 @@ discovery document points.
 SQLite is the default and needs nothing. Use PostgreSQL when more than one
 gateway process should share a database (several replicas behind a load
 balancer) or when you already run and back up PostgreSQL. It is tested on
-PostgreSQL 17; the gateway creates its tables itself (migrations run at start) in the
-database and schema the URL names, so give it a database of its own.
+PostgreSQL 14 and 17; the gateway creates its tables itself (migrations run at start) in the
+database and schema the URL names, so give it a database of its own. The
+gateway logs `database: postgres` (or `sqlite`) when it starts; the URL, which
+holds the password, is never logged.
 
 ```bash
 export UF_MASTER_KEY=$(openssl rand -hex 32)      # keep it: see below
@@ -472,7 +476,9 @@ ultrafast serve
 ```
 
 A complete example with PostgreSQL in a container is
-[`docs/compose/postgres.yml`](docs/compose/postgres.yml).
+[`docs/compose/postgres.yml`](docs/compose/postgres.yml). It pins
+`2.0.0-beta.3`, the first release that can use PostgreSQL: a gateway of an
+older release ignores `UF_DATABASE_URL` and runs SQLite, so use beta.3 or later.
 
 - **The master key is required.** There is no data directory to keep a
   `master.key` in, and every gateway on the database must have the same key, or
@@ -483,7 +489,9 @@ A complete example with PostgreSQL in a container is
   server's certificate is not checked) or `verify-full` (checked; give the
   authority with `sslrootcert=/path/ca.pem`). Use `require` or `verify-full`
   for any database that is not on a private network. The gateway gives up
-  connecting after 10 s and says so at start.
+  connecting after 10 s and says so at start (a refused connection is retried
+  until then, and named); running the migrations is not timed. During an
+  outage the console's and the API's database calls also answer after 10 s.
 - **Connections.** Each process opens up to `UF_DATABASE_MAX_CONNECTIONS` (10).
   Keep processes times that number below the server's `max_connections`.
 - **Several processes behind a load balancer.** They share the database, so
@@ -491,22 +499,41 @@ A complete example with PostgreSQL in a container is
   channels, rules and history are the same on every one, and a change made on
   one reaches the others' routing snapshot within about 30 s (each re-reads
   the database at that interval), while the process that took the change
-  applies it at once. Budgets are shared too: each process adds its
+  applies it at once. **That includes revocations**: after you revoke a key,
+  disable a user or remove a grant, `/v1` on the other processes may keep
+  accepting it for up to 30 s. Console sessions are checked in the database
+  on every call and end at once on every process. Single sign-on settings
+  follow the same interval (a start or a callback also checks the stored
+  on/off switch at once). Budgets are shared too: each process adds its
   spend to the database about every 5 s and reads the others' back, so a
   `block` budget can be overshot by what the processes spend inside that
-  interval. Budget alert states are shared and fire once. These stay **per
+  interval. A process that starts next to running ones rebuilds its budgets
+  from the logs, which already hold what the others have not yet added, and
+  may count up to one interval of their spend a second time, once. Budget
+  alert states are shared and fire once. An error-rate or circuit alert
+  episode belongs to the process that opened it (it rests on that process's
+  own calls or breaker): the other processes leave it alone, and take it over
+  only when its owner has been silent for three alert ticks (90 s), when they
+  resolve it or go on with it. These stay **per
   process**: rate limits (a limit of 60 requests a minute is 60 on each
   process), the response cache, single-flight, routing and circuit-breaker
-  health, the first-run setup code, and the error windows and circuit
-  episodes that alerts are evaluated from. Use sticky routing if a client
-  relies on cache hits.
+  health, the first-run setup code, the sign-in attempt limits (a client
+  limited on one process can still try the next), and the error windows and
+  circuit episodes that alerts are evaluated from. Use sticky routing if a
+  client relies on cache hits.
+- **First start of several processes.** Each process makes a setup code of its
+  own while no user exists, so give the first start `UF_ADMIN_EMAIL` and
+  `UF_ADMIN_PASSWORD` (the admin is made once, whichever process gets there
+  first), or start one process and finish the setup before starting the rest.
 - **Backup** is `pg_dump` (or your provider's snapshots); the console's Backup
   panel and `ultrafast backup` say so and do nothing. Back up the database and
   keep `UF_MASTER_KEY` separately. Restore with `pg_restore` or `psql` into an
   empty database, with the gateways stopped, and start them with the same key.
 - **Upgrade.** Migrations run when the first gateway starts and take a
   database-wide lock, so processes started together wait for each other. Take
-  a `pg_dump` first.
+  a `pg_dump` first. A binary older than the schema refuses to start once a
+  newer one has migrated the database, so going back to an older release means
+  restoring the dump taken before the upgrade.
 
 **Moving from SQLite to Postgres.** There is no online migration. A
 configuration export and import moves the setup, not the data:
@@ -814,7 +841,10 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
   routing and breaker health, setup code and alert error windows (a limit of
   N is N on each process). Budgets are shared and converge about every 5 s, so
   a `block` budget can be overshot across processes by one interval's spend.
-  A change made on one process reaches the others within about 30 s.
+  A change made on one process reaches the others within about 30 s,
+  revocations of keys, users and grants included: `/v1` on another process
+  may accept a revoked key for up to that long (console sessions end at
+  once). Sign-in attempt limits are per process too.
   On either database these start empty after a restart (budgets are rebuilt
   from the logs).
 - A `block` budget can be overshot: spend is counted when the log writer
@@ -843,8 +873,8 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
   retried. Webhook URLs are not restricted to public addresses (admins already
   set provider URLs). Only admins see alerts; leads cannot. A circuit alert
   resolves only after its breaker has stayed closed for 5 minutes. Alert
-  history (events) is kept until the database is deleted; it is not pruned by
-  log retention.
+  history (events) is deleted with the request logs, after the log retention
+  period.
 - Single sign-on: one OIDC provider; no SAML, SCIM, group-to-team sync,
   sign-in-only-with-SSO enforcement, provider-initiated sign-in or back-channel
   logout. Signing out of the gateway does not sign out of the identity
