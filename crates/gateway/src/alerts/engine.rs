@@ -836,6 +836,7 @@ mod tests {
     use super::*;
     use crate::budgets::{BudgetAction, Period};
     use crate::limits::LimitScope;
+    use crate::store::dialect::Dialected;
 
     fn episodes_with(rule: i64, subject: &str) -> Episodes {
         let mut e = Episodes::default();
@@ -1017,7 +1018,8 @@ mod tests {
         )
         .await;
         let off = rule(&store, "off", "budget", json!({ "percent": 1 })).await;
-        sqlx::query("UPDATE alert_rules SET enabled = 0 WHERE id = ?")
+        store
+            .q("UPDATE alert_rules SET enabled = 0 WHERE id = ?")
             .bind(off)
             .execute(store.pool())
             .await
@@ -1313,7 +1315,8 @@ mod tests {
         let mut e = engine(&store).await;
         // The API disables the rule (and clears its states) after the engine
         // read it and before the engine writes.
-        sqlx::query("UPDATE alert_rules SET enabled = 0 WHERE id = ?")
+        store
+            .q("UPDATE alert_rules SET enabled = 0 WHERE id = ?")
             .bind(rule_id)
             .execute(store.pool())
             .await

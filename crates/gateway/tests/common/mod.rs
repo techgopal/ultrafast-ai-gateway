@@ -14,9 +14,41 @@ use ultrafast_gateway::identity::password::{hash_password, warm_up};
 use ultrafast_gateway::identity::{Role, TeamRole, UserStatus};
 use ultrafast_gateway::limits::Limiter;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
-use ultrafast_gateway::store::{Grants, NewUser, Store};
+use ultrafast_gateway::store::{Dialect, Grants, NewUser, Store};
 use ultrafast_gateway::telemetry::{RequestRecord, RequestSink};
 use wiremock::MockServer;
+
+/// A row id that was deleted and then asked for again. SQLite gives the id of
+/// a deleted row out again, which is the case the protections against
+/// inheriting what it left behind exist for; PostgreSQL never does, so there
+/// the new id must differ and the protections have nothing to do.
+pub fn assert_id_given_again(store: &Store, old: i64, new: i64, what: &str) {
+    match store.dialect() {
+        Dialect::Sqlite => assert_eq!(new, old, "{what}: the id is given out again"),
+        Dialect::Postgres => assert_ne!(new, old, "{what}: PostgreSQL never reuses an id"),
+    }
+}
+
+/// Ends the test early, with the reason on stderr, when the store is not
+/// SQLite: for what only a SQLite file has (its pragmas, its file, its backup).
+/// Returns whether the caller should stop.
+pub fn skipped_on_postgres(store: &Store, reason: &str) -> bool {
+    if store.dialect() == Dialect::Postgres {
+        eprintln!("SKIPPED on PostgreSQL: {reason}");
+        return true;
+    }
+    false
+}
+
+/// A store whose writers really run side by side: the SQLite file
+/// `gateway.db` in `dir`, or, when `UF_TEST_DATABASE_URL` is set, a fresh
+/// schema in that PostgreSQL database (`dir` is then not used).
+pub async fn concurrent_store(dir: &std::path::Path) -> Store {
+    match std::env::var("UF_TEST_DATABASE_URL") {
+        Ok(url) if !url.trim().is_empty() => Store::open_in_memory().await.unwrap(),
+        _ => Store::open(&dir.join("gateway.db")).await.unwrap(),
+    }
+}
 
 /// A sink that keeps every record, for tests.
 #[derive(Default)]
@@ -533,6 +565,16 @@ pub async fn org_with_public_url(url: &str) -> Org {
 pub async fn org_on_disk() -> Org {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("gateway.db")).await.unwrap();
+    let mut org = build_org(api_full(store, false, &[], None).await).await;
+    org.dir = Some(dir);
+    org
+}
+
+/// [`org`] on a store whose writers really run side by side (see
+/// [`concurrent_store`]).
+pub async fn org_concurrent() -> Org {
+    let dir = tempfile::tempdir().unwrap();
+    let store = concurrent_store(dir.path()).await;
     let mut org = build_org(api_full(store, false, &[], None).await).await;
     org.dir = Some(dir);
     org

@@ -599,6 +599,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::secrets::Cipher;
+    use crate::store::Dialect;
     use crate::store::StoreError;
 
     fn cipher() -> Cipher {
@@ -656,7 +657,8 @@ mod tests {
         );
         assert_eq!(c.decrypt(&row.secret_enc).unwrap(), b"whsec_abc");
         // Nothing readable is in the stored bytes.
-        let raw: Vec<u8> = sqlx::query_scalar("SELECT url_enc FROM alert_channels WHERE id = ?")
+        let raw: Vec<u8> = s
+            .scalar("SELECT url_enc FROM alert_channels WHERE id = ?")
             .bind(id)
             .fetch_one(s.pool())
             .await
@@ -773,20 +775,18 @@ mod tests {
         .fetch_one(s.pool())
         .await
         .unwrap();
-        sqlx::query("INSERT INTO alert_rule_channels (rule_id, channel_id) VALUES (?, ?)")
+        s.q("INSERT INTO alert_rule_channels (rule_id, channel_id) VALUES (?, ?)")
             .bind(old)
             .bind(channel)
             .execute(s.pool())
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO alert_state (rule_id, subject, firing, since)
-             VALUES (?, 'target:p/m', 1, '2999-01-01 00:00:00')",
-        )
-        .bind(old)
-        .execute(s.pool())
-        .await
-        .unwrap();
+        s.q("INSERT INTO alert_state (rule_id, subject, firing, since)
+             VALUES (?, 'target:p/m', 1, '2999-01-01 00:00:00')")
+            .bind(old)
+            .execute(s.pool())
+            .await
+            .unwrap();
         let mut tx = s.begin().await.unwrap();
         let event = tx
             .insert_alert_event(NewAlertEvent {
@@ -802,7 +802,7 @@ mod tests {
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        sqlx::query("DELETE FROM alert_rules WHERE id = ?")
+        s.q("DELETE FROM alert_rules WHERE id = ?")
             .bind(old)
             .execute(s.pool())
             .await
@@ -814,15 +814,19 @@ mod tests {
         .fetch_one(s.pool())
         .await
         .unwrap();
-        assert_eq!(new, old, "the id is given out again");
+        match s.dialect() {
+            // SQLite gives the id out again; that is what this test is about.
+            Dialect::Sqlite => assert_eq!(new, old, "the id is given out again"),
+            // PostgreSQL never does, so nothing could be inherited anyway.
+            Dialect::Postgres => assert_ne!(new, old),
+        }
         for table in ["alert_state", "alert_rule_channels"] {
-            let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-                "SELECT COUNT(*) FROM {table} WHERE rule_id = ?"
-            )))
-            .bind(new)
-            .fetch_one(s.pool())
-            .await
-            .unwrap();
+            let n: i64 = s
+                .scalar_dyn(format!("SELECT COUNT(*) FROM {table} WHERE rule_id = ?"))
+                .bind(new)
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
             assert_eq!(n, 0, "{table}");
         }
         // The old rule's event stays, tied to no rule, with its name.

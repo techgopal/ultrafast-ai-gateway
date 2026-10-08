@@ -128,6 +128,16 @@ impl Dialect {
             )
     }
 
+    /// Whether a failed write named a row that does not exist (a foreign key).
+    pub fn is_foreign_key_violation(e: &dyn DatabaseError) -> bool {
+        e.is_foreign_key_violation()
+            || matches!(
+                e.code().as_deref(),
+                // SQLITE_CONSTRAINT_FOREIGNKEY, foreign_key_violation
+                Some("787" | "23503")
+            )
+    }
+
     /// A statement written once for every database.
     pub fn query<'q>(self, sql: &'static str) -> Query<'q, Any, AnyArguments> {
         match self.sql(sql) {

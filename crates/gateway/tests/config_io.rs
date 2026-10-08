@@ -1074,7 +1074,7 @@ fn fresh_file(n: usize) -> ConfigFile {
 
 #[tokio::test]
 async fn an_import_survives_another_connection_writing_meanwhile() {
-    let org = common::org_on_disk().await;
+    let org = common::org_concurrent().await;
     let store = org.api.store.clone();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let writer = {
@@ -1117,7 +1117,7 @@ async fn an_import_survives_another_connection_writing_meanwhile() {
 
 #[tokio::test]
 async fn two_imports_at_once_both_succeed() {
-    let org = common::org_on_disk().await;
+    let org = common::org_concurrent().await;
     let store = org.api.store.clone();
     let mut tasks = Vec::new();
     for n in 0..8 {

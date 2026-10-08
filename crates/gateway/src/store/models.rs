@@ -297,6 +297,10 @@ mod tests {
             .insert_model(p, "meta-llama/Llama-3.3-70B")
             .await
             .unwrap();
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction, so the refusal
+        // runs in a transaction of its own.
+        let mut tx = s.begin().await.unwrap();
         let dup = tx
             .insert_model(p, "meta-llama/Llama-3.3-70B")
             .await
@@ -305,6 +309,8 @@ mod tests {
             dup.downcast_ref::<StoreError>(),
             Some(StoreError::Duplicate)
         ));
+        drop(tx);
+        let mut tx = s.begin().await.unwrap();
         let team = tx.insert_team("t").await.unwrap();
         tx.replace_grants(
             m,
@@ -345,7 +351,7 @@ mod tests {
         let m = tx.insert_model(p, "m").await.unwrap();
         tx.commit().await.unwrap();
         let insert = || {
-            sqlx::query("INSERT INTO model_grants (model_id) VALUES (?)")
+            s.q("INSERT INTO model_grants (model_id) VALUES (?)")
                 .bind(m)
                 .execute(s.pool())
         };

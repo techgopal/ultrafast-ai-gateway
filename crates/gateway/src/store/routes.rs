@@ -6,7 +6,7 @@ use sqlx::any::AnyRow;
 use sqlx::AnyConnection;
 use sqlx::Row;
 
-use super::dialect::Dialected;
+use super::dialect::{Dialect, Dialected};
 use super::{flag, write_error, Store, Tx, DEFAULT_ORG};
 use crate::cache::{CacheScope, RouteCache};
 
@@ -103,7 +103,7 @@ const TARGET_SELECT: &str = "SELECT t.route_id, t.model_id, t.tier, t.weight,
 pub fn is_missing_reference(e: &anyhow::Error) -> bool {
     matches!(
         e.downcast_ref::<sqlx::Error>(),
-        Some(sqlx::Error::Database(db)) if db.is_foreign_key_violation()
+        Some(sqlx::Error::Database(db)) if Dialect::is_foreign_key_violation(db.as_ref())
     )
 }
 
@@ -381,6 +381,9 @@ mod tests {
         let s = Store::open_in_memory().await.unwrap();
         let mut tx = s.begin().await.unwrap();
         let r = tx.insert_route("r", &DEFAULTS, true).await.unwrap();
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction: one each.
+        let mut tx = s.begin().await.unwrap();
         let e = tx
             .replace_targets(
                 r,
@@ -392,6 +395,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(is_missing_reference(&e));
+        drop(tx);
+        let mut tx = s.begin().await.unwrap();
         let e = tx.replace_route_grants(r, &[999]).await.unwrap_err();
         assert!(is_missing_reference(&e));
     }
@@ -408,11 +413,16 @@ mod tests {
         let m2 = tx.insert_model(p, "m2").await.unwrap();
         let team = tx.insert_team("t").await.unwrap();
         let r = tx.insert_route("r", &DEFAULTS, true).await.unwrap();
-        let dup = tx.insert_route("r", &DEFAULTS, true).await.unwrap_err();
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction: it gets its own.
+        let mut dup_tx = s.begin().await.unwrap();
+        let dup = dup_tx.insert_route("r", &DEFAULTS, true).await.unwrap_err();
         assert!(matches!(
             dup.downcast_ref::<StoreError>(),
             Some(StoreError::Duplicate)
         ));
+        drop(dup_tx);
+        let mut tx = s.begin().await.unwrap();
         tx.replace_targets(
             r,
             &TargetsInput {

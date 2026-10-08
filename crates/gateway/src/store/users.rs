@@ -484,7 +484,10 @@ mod tests {
             .link_external(ids[0], "oidc", "https://idp|sub-1")
             .await
             .unwrap());
-        // Another user cannot take the same identity.
+        tx.commit().await.unwrap();
+        // Another user cannot take the same identity. (A failed statement
+        // ends a PostgreSQL transaction: it gets its own.)
+        let mut tx = s.begin().await.unwrap();
         let err = tx
             .link_external(ids[1], "oidc", "https://idp|sub-1")
             .await
@@ -493,6 +496,8 @@ mod tests {
             err.downcast_ref::<StoreError>(),
             Some(StoreError::Duplicate)
         ));
+        drop(tx);
+        let mut tx = s.begin().await.unwrap();
         // The same id under another provider is another identity.
         assert!(tx
             .link_external(ids[1], "other", "https://idp|sub-1")

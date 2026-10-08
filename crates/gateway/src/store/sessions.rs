@@ -343,6 +343,7 @@ mod tests {
     use super::*;
     use crate::identity::{Role, UserStatus};
     use crate::secrets::{generate_secret, NewKey, KEY_PREFIX};
+    use crate::store::Dialect;
     use crate::store::{check_timestamp, NewUser, StoreError};
     use sqlx::AssertSqlSafe;
 
@@ -431,10 +432,16 @@ mod tests {
         .fetch_one(s.pool())
         .await
         .unwrap();
-        let columns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('sessions')")
-            .fetch_one(s.pool())
-            .await
-            .unwrap();
+        let columns: i64 = match s.dialect() {
+            Dialect::Sqlite => s.scalar("SELECT COUNT(*) FROM pragma_table_info('sessions')"),
+            Dialect::Postgres => s.scalar(
+                "SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = 'sessions'",
+            ),
+        }
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
         assert_eq!(columns, 7, "a new column must be added to this test");
         for i in 0..7 {
             let value: String = row.get(i);
@@ -477,7 +484,7 @@ mod tests {
         let old = s.create_session(user).await.unwrap();
         let fresh = s.create_session(user).await.unwrap();
         assert_eq!(s.delete_expired_sessions().await.unwrap(), 0);
-        sqlx::query("UPDATE sessions SET expires_at = ? WHERE id_hash = ?")
+        s.q("UPDATE sessions SET expires_at = ? WHERE id_hash = ?")
             .bind(after(-1))
             .bind(hash_key(&old.id))
             .execute(s.pool())
@@ -518,7 +525,7 @@ mod tests {
     }
 
     async fn s_row_id(tx: &mut Tx<'_>, cookie_value: &str) -> i64 {
-        sqlx::query_scalar("SELECT id FROM sessions WHERE id_hash = ?")
+        tx.scalar("SELECT id FROM sessions WHERE id_hash = ?")
             .bind(hash_key(cookie_value))
             .fetch_one(tx.conn())
             .await
@@ -762,7 +769,7 @@ mod tests {
         let (two, _) = add_token(&s, maya, "two", None).await;
         let (three, _) = add_token(&s, maya, "three", None).await;
         add_token(&s, omar, "other", None).await;
-        sqlx::query("UPDATE access_tokens SET created_at = '2030-01-01 00:00:00' WHERE id = ?")
+        s.q("UPDATE access_tokens SET created_at = '2030-01-01 00:00:00' WHERE id = ?")
             .bind(one)
             .execute(s.pool())
             .await

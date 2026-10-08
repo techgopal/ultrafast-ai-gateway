@@ -13,6 +13,7 @@ mod models;
 mod portable;
 mod providers;
 mod routes;
+mod scratch;
 mod sessions;
 mod settings;
 mod teams;
@@ -83,6 +84,10 @@ pub fn after(seconds: i64) -> String {
         .format(TIMESTAMP)
         .expect("a UTC time formats with a fixed numeric layout")
 }
+
+/// The advisory lock that serializes the transactions that start with
+/// [`Store::begin_immediate`] on PostgreSQL.
+const WRITE_LOCK: i64 = 0x5546_4741_5445_0001;
 
 /// A file path as the path part of a `sqlite:` URL.
 fn encode_path(path: &Path) -> String {
@@ -183,6 +188,8 @@ pub struct Store {
     /// How many times `teams_of_users` was called, so a test can see that
     /// a list asks once and not once per row.
     teams_of_users_calls: Arc<AtomicU64>,
+    /// Drops a test's private schema when the last clone goes away.
+    scratch: Option<Arc<scratch::Schema>>,
 }
 
 impl Dialected for Store {
@@ -217,13 +224,33 @@ impl Store {
 
     /// One connection only: every in-memory connection is its own database,
     /// so that connection must never be reaped.
+    ///
+    /// When `UF_TEST_DATABASE_URL` names a PostgreSQL database, this is a
+    /// fresh, private schema in it instead (dropped when the store goes
+    /// away), so the whole test suite can run on either database.
     pub async fn open_in_memory() -> Result<Self> {
+        if let Some(url) = scratch::test_database_url() {
+            return scratch::open(&url).await;
+        }
         let pool = AnyPoolOptions::new()
             .max_connections(1)
             .min_connections(1)
             .idle_timeout(None)
             .max_lifetime(None);
         Self::connect("sqlite::memory:", pool, None).await
+    }
+
+    /// Connects to the PostgreSQL database at `url` (`postgres://` or
+    /// `postgresql://`) with up to `max` connections, and brings its schema
+    /// up to date. The tables live in the schema the connection's
+    /// `search_path` starts with (`public` unless the server says otherwise).
+    pub async fn connect_url(url: &str, max: u32) -> Result<Self> {
+        install_default_drivers();
+        if Dialect::of_url(url) != Some(Dialect::Postgres) {
+            bail!("the database URL must start with postgres:// or postgresql://");
+        }
+        let pool = AnyPoolOptions::new().max_connections(max.max(1));
+        Self::connect(url, pool, None).await
     }
 
     async fn connect(
@@ -238,13 +265,14 @@ impl Store {
         let pool = pool.connect(url).await?;
         match dialect {
             Dialect::Sqlite => sqlx::migrate!("./migrations/sqlite").run(&pool).await?,
-            Dialect::Postgres => bail!("PostgreSQL is not supported yet"),
+            Dialect::Postgres => sqlx::migrate!("./migrations/postgres").run(&pool).await?,
         }
         let store = Self {
             pool,
             dialect,
             dir,
             teams_of_users_calls: Arc::default(),
+            scratch: None,
         };
         // So the planner has statistics for `request_logs` from the first
         // call on (without them the lead's scope OR chose a temporary
@@ -327,7 +355,20 @@ impl Store {
                 inner: self.pool.begin_with("BEGIN IMMEDIATE").await?,
                 dialect: self.dialect,
             }),
-            Dialect::Postgres => bail!("PostgreSQL is not supported yet"),
+            Dialect::Postgres => {
+                let mut inner = self.pool.begin().await?;
+                // One writer at a time, as BEGIN IMMEDIATE gives on SQLite;
+                // the lock goes with the transaction. The function answers
+                // void, a type the driver cannot decode, so it is not selected.
+                self.q("SELECT 1 WHERE pg_advisory_xact_lock(?) IS NOT NULL")
+                    .bind(WRITE_LOCK)
+                    .fetch_optional(&mut *inner)
+                    .await?;
+                Ok(Tx {
+                    inner,
+                    dialect: self.dialect,
+                })
+            }
         }
     }
 
@@ -549,5 +590,106 @@ mod tests {
         assert_eq!(k.name, "old");
         assert_eq!(k.user_id, None);
         assert_eq!(k.team_id, None);
+    }
+
+    /// `(table, column)` of every column and the name of every named index,
+    /// from the catalog of the database behind `s`.
+    async fn shape_of(
+        s: &Store,
+    ) -> (
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+    ) {
+        let (columns, indexes) = match s.dialect() {
+            Dialect::Sqlite => (
+                "SELECT m.name || '.' || p.name FROM sqlite_master m, pragma_table_info(m.name) p
+                 WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> '_sqlx_migrations'",
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'",
+            ),
+            Dialect::Postgres => (
+                "SELECT table_name || '.' || column_name FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name <> '_sqlx_migrations'",
+                "SELECT CAST(c.relname AS TEXT) FROM pg_index i
+                 JOIN pg_class c ON c.oid = i.indexrelid
+                 JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE n.nspname = current_schema()
+                   AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid)"
+            ),
+        };
+        let columns: Vec<String> = s.scalar(columns).fetch_all(s.pool()).await.unwrap();
+        let indexes: Vec<String> = s.scalar(indexes).fetch_all(s.pool()).await.unwrap();
+        (columns.into_iter().collect(), indexes.into_iter().collect())
+    }
+
+    /// The PostgreSQL baseline is the SQLite migrations 0001 to 0015: the same
+    /// tables, columns and named indexes (PostgreSQL adds `route_grants.seq`,
+    /// what SQLite's rowid is). A later migration must go into both.
+    #[tokio::test]
+    async fn the_postgres_baseline_has_the_tables_of_the_sqlite_migrations() {
+        if scratch::test_database_url().is_none() {
+            eprintln!("SKIPPED without UF_TEST_DATABASE_URL: nothing to compare with");
+            return;
+        }
+        let pg = Store::open_in_memory().await.unwrap();
+        assert_eq!(pg.dialect(), Dialect::Postgres);
+        let dir = tempfile::tempdir().unwrap();
+        let lite = Store::open(&dir.path().join("gateway.db")).await.unwrap();
+        let (mut pg_columns, pg_indexes) = shape_of(&pg).await;
+        let (lite_columns, lite_indexes) = shape_of(&lite).await;
+        assert!(pg_columns.remove("route_grants.seq"));
+        assert_eq!(pg_columns, lite_columns);
+        assert_eq!(pg_indexes, lite_indexes);
+        assert!(
+            lite_columns.contains("users.external_id") && lite_indexes.contains("users_external")
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_url_takes_only_postgres_urls_and_lands_in_the_url_schema() {
+        let e = Store::connect_url("sqlite::memory:", 2)
+            .await
+            .err()
+            .unwrap();
+        assert!(e.to_string().contains("postgres"), "{e}");
+        let e = Store::connect_url("mysql://x/y", 2).await.err().unwrap();
+        assert!(e.to_string().contains("postgres"), "{e}");
+        let Some(base) = scratch::test_database_url() else {
+            eprintln!("SKIPPED without UF_TEST_DATABASE_URL: no PostgreSQL to connect to");
+            return;
+        };
+        // An own schema, chosen the way an operator can: by the URL.
+        let admin = Store::open_in_memory().await.unwrap();
+        let schema = format!("t_url_{}", std::process::id());
+        admin
+            .q_dyn(format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+            .execute(admin.pool())
+            .await
+            .unwrap();
+        admin
+            .q_dyn(format!("CREATE SCHEMA {schema}"))
+            .execute(admin.pool())
+            .await
+            .unwrap();
+        let sep = if base.contains('?') { '&' } else { '?' };
+        let url = format!("{base}{sep}options=-c%20search_path%3D{schema}");
+        let store = Store::connect_url(&url, 3).await.unwrap();
+        store.insert_key("k", "h", "d", None).await.unwrap();
+        assert!(store.active_key_by_hash("h").await.unwrap().is_some());
+        let tables: i64 = admin
+            .scalar_dyn(format!(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '{schema}' AND table_name = 'virtual_keys'"
+            ))
+            .fetch_one(admin.pool())
+            .await
+            .unwrap();
+        assert_eq!(tables, 1, "the tables are in the schema of the URL");
+        // Opening it again changes nothing (the migrations are recorded).
+        let again = Store::connect_url(&url, 3).await.unwrap();
+        assert!(again.active_key_by_hash("h").await.unwrap().is_some());
+        admin
+            .q_dyn(format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(admin.pool())
+            .await
+            .unwrap();
     }
 }

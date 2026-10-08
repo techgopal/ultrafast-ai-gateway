@@ -1,9 +1,10 @@
-//! A user or team id is given out again after a delete (rowid reuse). What
-//! the old one left in the logs must not pass to the new one.
+//! A user or team id is given out again after a delete on SQLite (rowid
+//! reuse; PostgreSQL never does). What the old one left in the logs must not
+//! pass to the new one.
 
 mod common;
 
-use common::{email_of, org, seed_team, seed_user, Org, ORG_PASSWORD};
+use common::{assert_id_given_again, email_of, org, seed_team, seed_user, Org, ORG_PASSWORD};
 use ultrafast_gateway::budgets::{self, BudgetAction, Period};
 use ultrafast_gateway::identity::{Role, TeamRole};
 use ultrafast_gateway::limits::LimitScope;
@@ -61,9 +62,14 @@ async fn reused() -> Reused {
     tx.commit().await.unwrap();
     let user2 = seed_user(&store, "zed2@example.com", Role::Member, ORG_PASSWORD).await;
     let team2 = seed_team(&store, "Ops again", &[(user2, TeamRole::Lead)]).await;
-    assert_eq!(user2, user, "the id is given out again");
-    assert_eq!(team2, team, "the id is given out again");
-    Reused { org, user, team }
+    assert_id_given_again(&store, user, user2, "user");
+    assert_id_given_again(&store, team, team2, "team");
+    // The new ones (on SQLite, with the old ids): they must see nothing of the old rows.
+    Reused {
+        org,
+        user: user2,
+        team: team2,
+    }
 }
 
 #[tokio::test]

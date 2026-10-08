@@ -444,6 +444,9 @@ mod tests {
         let mut tx = s.begin().await.unwrap();
         let platform = tx.insert_team("platform").await.unwrap();
         let data = tx.insert_team("data").await.unwrap();
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction: it gets its own.
+        let mut tx = s.begin().await.unwrap();
         let err = tx
             .insert_team("platform")
             .await
@@ -452,7 +455,7 @@ mod tests {
             err.downcast_ref::<StoreError>(),
             Some(StoreError::Duplicate)
         ));
-        tx.commit().await.unwrap();
+        drop(tx);
 
         let t = s.team_by_id(platform).await.unwrap().unwrap();
         assert_eq!(t.id, platform);
@@ -478,13 +481,16 @@ mod tests {
         tx.insert_team("b").await.unwrap();
         assert!(tx.rename_team(a, "c").await.unwrap());
         assert!(!tx.rename_team(a + 1000, "d").await.unwrap());
+        assert!(!tx.delete_team(a + 1000).await.unwrap());
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction: it gets its own.
+        let mut tx = s.begin().await.unwrap();
         let err = tx.rename_team(a, "b").await.expect_err("name is taken");
         assert!(matches!(
             err.downcast_ref::<StoreError>(),
             Some(StoreError::Duplicate)
         ));
-        assert!(!tx.delete_team(a + 1000).await.unwrap());
-        tx.commit().await.unwrap();
+        drop(tx);
         assert_eq!(s.team_by_id(a).await.unwrap().unwrap().name, "c");
     }
 
@@ -500,11 +506,14 @@ mod tests {
         tx.put_member(team, noor, TeamRole::Member).await.unwrap();
         tx.put_member(other, maya, TeamRole::Member).await.unwrap();
         tx.put_member(team, maya, TeamRole::Lead).await.unwrap();
-        assert!(tx
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction: it gets its own.
+        let mut refused = s.begin().await.unwrap();
+        assert!(refused
             .put_member(team, noor + 1000, TeamRole::Lead)
             .await
             .is_err());
-        tx.commit().await.unwrap();
+        drop(refused);
 
         let lead = MemberRow {
             team_id: team,

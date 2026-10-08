@@ -360,7 +360,9 @@ impl Store {
         let order = if group == UsageGroup::Day {
             "a.gid"
         } else {
-            "a.requests DESC, a.gid"
+            // The rows without a value first, as SQLite sorts a NULL (a
+            // NULL sorts last in PostgreSQL).
+            "a.requests DESC, (a.gid IS NOT NULL), a.gid"
         };
         // Both bounds are text over the `at` index; the day after `to`
         // is excluded, so a whole last day counts.
@@ -463,6 +465,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Dialect;
     use sqlx::AssertSqlSafe;
 
     fn row(i: i64) -> NewLog {
@@ -492,6 +495,10 @@ mod tests {
     #[tokio::test]
     async fn the_lead_scope_has_no_correlated_subquery() {
         let store = Store::open_in_memory().await.unwrap();
+        if store.dialect() != Dialect::Sqlite {
+            eprintln!("SKIPPED on PostgreSQL: EXPLAIN QUERY PLAN is SQLite's planner output");
+            return;
+        }
         let scope = LogScope::Teams {
             team_ids: vec![1, 2],
             own_user_id: 3,
@@ -522,6 +529,10 @@ mod tests {
     #[tokio::test]
     async fn optimize_gives_the_planner_statistics_for_the_logs() {
         let store = Store::open_in_memory().await.unwrap();
+        if store.dialect() != Dialect::Sqlite {
+            eprintln!("SKIPPED on PostgreSQL: sqlite_stat1 and PRAGMA optimize are SQLite's");
+            return;
+        }
         let rows: Vec<NewLog> = (0..500).map(row).collect();
         store.insert_logs(&rows).await.unwrap();
         // A read through the indexes, as the API does, then the pragma.

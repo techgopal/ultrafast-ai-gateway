@@ -391,15 +391,34 @@ async fn a_circuit_episode_whose_target_left_the_catalog_is_resolved() {
     let resolved = w.wait_event(rule, "resolved").await;
     assert_eq!(resolved["summary"], "target removed");
     assert_eq!(resolved["subject"], "target:p/m");
-    // One resolved only, however many ticks follow; the state is gone.
+    // An episode is resolved once, however many ticks follow; the state is
+    // gone. (The engine's own ticker, every 40 ms here, may run between the
+    // delete and the refresh above, while the breaker is still held: it then
+    // sees the target open again, opens a second episode, and the tick
+    // resolves that one too. Each firing still has exactly one resolved.)
+    for _ in 0..3 {
+        w.h.state.alert_engine.as_ref().unwrap().tick().await;
+    }
+    let count = |state: &'static str| {
+        let w = &w;
+        async move {
+            w.events(&format!("?rule_id={rule}&state={state}"))
+                .await
+                .len()
+        }
+    };
+    let (firing, resolved) = (count("firing").await, count("resolved").await);
+    assert!(
+        firing >= 1 && resolved == firing,
+        "{firing} firing, {resolved} resolved"
+    );
     for _ in 0..3 {
         w.h.state.alert_engine.as_ref().unwrap().tick().await;
     }
     assert_eq!(
-        w.events(&format!("?rule_id={rule}&state=resolved"))
-            .await
-            .len(),
-        1
+        (count("firing").await, count("resolved").await),
+        (firing, resolved),
+        "ticks went on to make events"
     );
     assert!(w.h.store.alert_states().await.unwrap().is_empty());
     w.shutdown().await;
@@ -1187,6 +1206,14 @@ async fn names_a_caller_makes_up_are_never_subjects_of_an_error_window() {
 async fn calls_are_counted_only_while_an_enabled_error_rate_rule_exists() {
     use ultrafast_gateway::alerts::errors_window::Scope;
     let w = world().await;
+    // Counting starts on and the engine turns it off once it has read the
+    // rules (no error-rate rule yet); a slower database takes longer to answer.
+    for _ in 0..200 {
+        if !windows(&w).is_active() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     w.route(FAIL_FAST).await;
     for _ in 0..3 {
         w.chat().await;

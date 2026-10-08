@@ -400,7 +400,7 @@ mod tests {
     }
 
     async fn revoked_at(s: &Store, id: i64) -> Option<String> {
-        sqlx::query("SELECT revoked_at FROM virtual_keys WHERE id = ?")
+        s.q("SELECT revoked_at FROM virtual_keys WHERE id = ?")
             .bind(id)
             .fetch_one(s.pool())
             .await
@@ -415,7 +415,7 @@ mod tests {
 
         assert!(s.revoke_key(id).await.unwrap());
         // Backdate the stamp so a second revoke that rewrote it would show.
-        sqlx::query("UPDATE virtual_keys SET revoked_at = '2000-01-01 00:00:00' WHERE id = ?")
+        s.q("UPDATE virtual_keys SET revoked_at = '2000-01-01 00:00:00' WHERE id = ?")
             .bind(id)
             .execute(s.pool())
             .await
@@ -464,7 +464,7 @@ mod tests {
             .unwrap();
         tx.revoke_key(gone).await.unwrap();
         tx.commit().await.unwrap();
-        sqlx::query("UPDATE virtual_keys SET revoked_at = '2000-01-01 00:00:00' WHERE id = ?")
+        s.q("UPDATE virtual_keys SET revoked_at = '2000-01-01 00:00:00' WHERE id = ?")
             .bind(gone)
             .execute(s.pool())
             .await

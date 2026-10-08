@@ -1422,9 +1422,7 @@ async fn two_admins_demoted_at_once_leave_one_on_a_file_database() {
     // A file: a deferred transaction fails there when another commits
     // between its read and its write; the callback takes the lock first.
     let dir = tempfile::tempdir().unwrap();
-    let store = ultrafast_gateway::store::Store::open(&dir.path().join("gateway.db"))
-        .await
-        .unwrap();
+    let store = common::concurrent_store(dir.path()).await;
     let api =
         common::api_tweaked(store, |s| s.public_url = Some(PUBLIC_URL.parse().unwrap())).await;
     let ada = common::seed_user(&api.store, "ada@example.com", Role::Admin, ORG_PASSWORD).await;
