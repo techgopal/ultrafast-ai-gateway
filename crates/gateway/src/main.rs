@@ -528,6 +528,15 @@ async fn main() -> Result<()> {
             otel_sample_ratio,
         } => {
             let addr = serve_address(&host, port)?;
+            // So a wrong image (one that ignores UF_DATABASE_URL) is visible.
+            // Never the URL: it holds the password.
+            tracing::info!(
+                "database: {}",
+                match store.dialect() {
+                    ultrafast_gateway::store::Dialect::Sqlite => "sqlite",
+                    ultrafast_gateway::store::Dialect::Postgres => "postgres",
+                }
+            );
             tokio::task::spawn_blocking(password::warm_up)
                 .await?
                 .context("password hashing does not work")?;

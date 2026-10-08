@@ -724,6 +724,10 @@ pub async fn flush(state: &AppState) {
         Ok(totals) => totals,
         Err(e) => {
             tracing::warn!(error = %e, "could not write budget usage");
+            // Accepted: if the commit went through and only its answer was
+            // lost (a connection dropped at that instant), the next flush adds
+            // the same deltas a second time. The window is a single round trip
+            // and the error is the amount of one flush interval of spend, once.
             state.budgets.requeue(drained);
             return;
         }

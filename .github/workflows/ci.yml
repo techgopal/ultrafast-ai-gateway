@@ -93,7 +93,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-postgres-${{ hashFiles('Cargo.lock') }}
       - name: Tests on PostgreSQL
-        run: cargo test --workspace --exclude ultrafast-client-py --no-fail-fast
+        run: cargo test --locked --workspace --exclude ultrafast-client-py --no-fail-fast
 
   secrets:
     name: Secret scan

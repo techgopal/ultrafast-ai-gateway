@@ -15,15 +15,18 @@
 # database is on another host, use sslmode=require or verify-full instead (see
 # "Using PostgreSQL" in the README).
 #
-# Pin a version in place of `latest`, as in the README's quickstart
-# (for example `:2.0.0-beta.2`), so that an upgrade is your decision.
+# The image is pinned: 2.0.0-beta.3 or later (the first release that can use
+# PostgreSQL; older images ignore UF_DATABASE_URL and would keep everything in
+# the container, which has no volume). `latest` is published for final
+# releases only. Change the tag deliberately, so that an upgrade is your
+# decision.
 #
 # The admin variables create the first admin only when no user exists; after
 # that, remove them from the env file.
 
 services:
   gateway:
-    image: ghcr.io/techgopal/ultrafast-ai-gateway:latest # pin a version
+    image: ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.3 # pin a version
     restart: unless-stopped
     ports:
       - "3000:3000"

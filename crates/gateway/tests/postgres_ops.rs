@@ -33,6 +33,102 @@ fn text(bytes: &[u8]) -> String {
 
 const NOWHERE: &str = "postgres://nobody:hunter2-secret@127.0.0.1:1/none";
 
+/// Starts the gateway on a port the system gives out and returns the line of
+/// its log that says which database it uses (and everything it printed up to
+/// that line). Stopped by process id.
+fn startup_database_line(env: &[(&str, &str)]) -> String {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ultrafast"))
+        .env_clear()
+        .envs(env.iter().copied())
+        .arg("--data-dir")
+        .arg(dir.path().join("data"))
+        .args(["serve", "--host", "127.0.0.1", "--port", "0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the program runs");
+    let stderr = child.stderr.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    for pipe in [
+        Box::new(stderr) as Box<dyn std::io::Read + Send>,
+        Box::new(stdout),
+    ] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                let _ = tx.send(line);
+            }
+        });
+    }
+    let mut seen = String::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(line) => {
+                // The one-time setup code is not copied into a failure message.
+                if !line.contains("Setup code") {
+                    seen.push_str(&line);
+                    seen.push('\n');
+                }
+                if line.contains("database: ") || line.contains("gateway listening") {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    seen
+}
+
+#[test]
+fn start_up_says_which_database_it_uses_and_never_the_url() {
+    let key = Cipher::generate_master_hex();
+    let log = startup_database_line(&[("UF_MASTER_KEY", &key)]);
+    assert!(log.contains("database: sqlite"), "{log}");
+    let Some(url) = std::env::var("UF_TEST_DATABASE_URL")
+        .ok()
+        .filter(|u| !u.trim().is_empty())
+    else {
+        eprintln!("SKIPPED the Postgres half without UF_TEST_DATABASE_URL");
+        return;
+    };
+    let log = startup_database_line(&[("UF_MASTER_KEY", &key), ("UF_DATABASE_URL", &url)]);
+    assert!(log.contains("database: postgres"), "{log}");
+    assert!(!log.contains(&url), "the URL is never logged");
+}
+
+/// The compose example runs an image that knows `UF_DATABASE_URL` (beta.2 and
+/// older ignore it and would run SQLite inside the container, losing
+/// everything on recreate) and one that exists (`latest` is published for
+/// final releases only).
+#[test]
+fn the_compose_example_pins_a_release_with_postgres() {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/compose/postgres.yml");
+    let yml = std::fs::read_to_string(file).unwrap();
+    let image = yml
+        .lines()
+        .find(|l| {
+            l.trim_start()
+                .starts_with("image: ghcr.io/techgopal/ultrafast-ai-gateway")
+        })
+        .expect("the gateway service has an image");
+    assert!(
+        image.contains("ultrafast-ai-gateway:2.0.0-beta.3") && !image.contains(":latest"),
+        "{image}"
+    );
+    assert!(
+        yml.contains("2.0.0-beta.3 or later"),
+        "the comment says why"
+    );
+    assert!(yml.contains("pin a version"));
+}
+
 #[test]
 fn backup_on_postgres_says_to_use_pg_dump_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
