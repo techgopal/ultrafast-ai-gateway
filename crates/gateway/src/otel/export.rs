@@ -99,10 +99,19 @@ async fn stopped(stop: &mut watch::Receiver<bool>) {
     }
 }
 
-/// The URL spans are posted to: the OTLP base URL plus `/v1/traces`, or the
-/// URL itself when it already ends so.
+/// The URL spans are posted to: the OTLP base URL plus `/v1/traces` in its
+/// path (a query string stays after it), or the URL itself when its path
+/// already ends so.
 pub(crate) fn traces_url(endpoint: &str) -> String {
-    let base = endpoint.trim().trim_end_matches('/');
+    let endpoint = endpoint.trim();
+    if let Ok(mut url) = reqwest::Url::parse(endpoint) {
+        let path = url.path().trim_end_matches('/').to_string();
+        if !path.ends_with("/v1/traces") {
+            url.set_path(&format!("{path}/v1/traces"));
+        }
+        return url.to_string();
+    }
+    let base = endpoint.trim_end_matches('/');
     if base.ends_with("/v1/traces") {
         base.to_string()
     } else {
@@ -147,27 +156,29 @@ async fn run(
     let mut batch: Vec<Value> = Vec::new();
     let mut tick = interval_at(Instant::now() + FLUSH_EVERY, FLUSH_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    loop {
+    // Set once stop is seen; everything after it ends by this time.
+    let mut deadline = None;
+    while deadline.is_none() {
         tokio::select! {
             record = rx.recv() => match record {
                 Some(record) => {
                     spans_for(&record, &mut batch);
                     if batch.len() >= MAX_BATCH_SPANS {
-                        sender.send(std::mem::take(&mut batch)).await;
+                        deadline = sender.send_unless_stopped(std::mem::take(&mut batch), &mut stop).await;
                     }
                 }
-                None => break,
+                None => deadline = Some(Instant::now() + SHUTDOWN_CAP),
             },
             _ = tick.tick() => {
                 if !batch.is_empty() {
-                    sender.send(std::mem::take(&mut batch)).await;
+                    deadline = sender.send_unless_stopped(std::mem::take(&mut batch), &mut stop).await;
                 }
             }
-            () = stopped(&mut stop) => break,
+            () = stopped(&mut stop) => deadline = Some(Instant::now() + SHUTDOWN_CAP),
         }
     }
     // The last flush: what is queued, within the cap.
-    let deadline = Instant::now() + SHUTDOWN_CAP;
+    let deadline = deadline.expect("the loop ends with a deadline");
     while let Ok(record) = rx.try_recv() {
         spans_for(&record, &mut batch);
     }
@@ -175,8 +186,7 @@ async fn run(
         let rest = batch.split_off(batch.len().min(MAX_BATCH_SPANS));
         let chunk = std::mem::replace(&mut batch, rest);
         let n = chunk.len() as u64;
-        let left = deadline.saturating_duration_since(Instant::now());
-        if tokio::time::timeout(left, sender.send(chunk))
+        if tokio::time::timeout_at(deadline, sender.send(chunk))
             .await
             .is_err()
         {
@@ -194,6 +204,30 @@ struct Sender {
 }
 
 impl Sender {
+    /// Sends a batch. If `stop` turns true while it is out, the send gets
+    /// what is left of the shutdown cap (counted as failed and dropped when
+    /// it does not finish) and the deadline of the shutdown is returned.
+    async fn send_unless_stopped(
+        &self,
+        spans: Vec<Value>,
+        stop: &mut watch::Receiver<bool>,
+    ) -> Option<Instant> {
+        let n = spans.len() as u64;
+        let send = self.send(spans);
+        tokio::pin!(send);
+        tokio::select! {
+            () = &mut send => None,
+            () = stopped(stop) => {
+                let deadline = Instant::now() + SHUTDOWN_CAP;
+                if tokio::time::timeout_at(deadline, send).await.is_err() {
+                    self.metrics.otel_failure();
+                    self.metrics.otel_dropped(n);
+                }
+                Some(deadline)
+            }
+        }
+    }
+
     /// Posts one batch. Whatever the answer, the batch is gone afterwards.
     async fn send(&self, spans: Vec<Value>) {
         let n = spans.len() as u64;
@@ -213,7 +247,14 @@ impl Sender {
             request = request.header(name, value);
         }
         match request.send().await {
-            Ok(resp) if resp.status().is_success() => self.metrics.otel_exported(n),
+            Ok(resp) if resp.status().is_success() => {
+                // A 2xx may still refuse some spans (`partialSuccess`).
+                let rejected = rejected_spans(&resp.bytes().await.unwrap_or_default()).min(n);
+                self.metrics.otel_exported(n - rejected);
+                if rejected > 0 {
+                    self.metrics.otel_dropped(rejected);
+                }
+            }
             outcome => {
                 // The status only: neither the URL nor a header is logged.
                 tracing::warn!(
@@ -227,6 +268,19 @@ impl Sender {
     }
 }
 
+/// `partialSuccess.rejectedSpans` of an export answer (a number, or a
+/// string as the JSON mapping of an int64 allows); 0 when absent.
+fn rejected_spans(body: &[u8]) -> u64 {
+    let Ok(v) = serde_json::from_slice::<Value>(body) else {
+        return 0;
+    };
+    match &v["partialSuccess"]["rejectedSpans"] {
+        Value::Number(n) => n.as_u64().unwrap_or(0),
+        Value::String(s) => s.parse().unwrap_or(0),
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::traces_url;
@@ -237,5 +291,25 @@ mod tests {
         assert_eq!(traces_url("http://h:4318/"), "http://h:4318/v1/traces");
         assert_eq!(traces_url("http://h/v1/traces"), "http://h/v1/traces");
         assert_eq!(traces_url("http://h/p/"), "http://h/p/v1/traces");
+        assert_eq!(traces_url("http://h/?x=1"), "http://h/v1/traces?x=1");
+        assert_eq!(
+            traces_url("http://h/v1/traces?x=1"),
+            "http://h/v1/traces?x=1"
+        );
+    }
+
+    #[test]
+    fn rejected_spans_reads_numbers_and_strings() {
+        use super::rejected_spans;
+        assert_eq!(
+            rejected_spans(br#"{"partialSuccess":{"rejectedSpans":"3"}}"#),
+            3
+        );
+        assert_eq!(
+            rejected_spans(br#"{"partialSuccess":{"rejectedSpans":2}}"#),
+            2
+        );
+        assert_eq!(rejected_spans(b"{}"), 0);
+        assert_eq!(rejected_spans(b""), 0);
     }
 }

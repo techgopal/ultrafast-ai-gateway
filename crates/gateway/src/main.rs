@@ -489,7 +489,9 @@ async fn main() -> Result<()> {
                         service_name: otel_service_name.trim().to_string(),
                         sample_ratio: otel_sample_ratio,
                     },
-                    state.http.clone(),
+                    // Its own client: no redirects, so a custom header is
+                    // never sent to another host.
+                    ultrafast_gateway::app::http_client(),
                     state.metrics.clone(),
                     stopped.clone(),
                 );

@@ -274,6 +274,24 @@ async fn collector_down_never_slows_calls() {
     );
     let exporter = t.h.state.otel.as_ref().unwrap();
     assert!(exporter.queued() <= 4096);
+    // The full-queue path, on top of the calls: more records than it holds.
+    let one = t.h.sink.records().remove(0);
+    for _ in 0..5_000 {
+        exporter.offer(&one);
+    }
+    assert!(exporter.queued() <= 4096);
+    assert!(
+        t.h.state
+            .metrics
+            .render(&[])
+            .contains("uf_otel_spans_dropped_total ")
+            && !t
+                .h
+                .state
+                .metrics
+                .render(&[])
+                .contains("uf_otel_spans_dropped_total 0\n")
+    );
     let _ = (&t.stop, &t.task, &t.collector);
 }
 
@@ -361,4 +379,88 @@ async fn a_failing_collector_counts_failures_and_drops_the_batch() {
     assert!(text.contains("uf_otel_export_failures_total 1"), "{text}");
     assert!(text.contains("uf_otel_spans_exported_total 0"), "{text}");
     assert_eq!(collector.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn shutdown_ends_within_the_cap_even_with_a_send_in_flight() {
+    let collector = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+        .mount(&collector)
+        .await;
+    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let (stop, stopped) = watch::channel(false);
+    let (exporter, task) = Exporter::spawn(
+        config(collector.uri(), 1.0),
+        reqwest::Client::new(),
+        metrics.clone(),
+        stopped,
+    );
+    // 256 records of two spans make a full batch, which is sent at once.
+    let r = record();
+    for _ in 0..300 {
+        exporter.offer(&r);
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let started = Instant::now();
+    stop.send(true).unwrap();
+    task.await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(7),
+        "{:?}",
+        started.elapsed()
+    );
+    let text = metrics.render(&[]);
+    assert!(!text.contains("uf_otel_spans_dropped_total 0\n"), "{text}");
+}
+
+#[tokio::test]
+async fn a_query_string_stays_after_the_traces_path() {
+    let collector = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/traces"))
+        .and(wiremock::matchers::query_param("token", "t"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&collector)
+        .await;
+    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let (stop, stopped) = watch::channel(false);
+    let (exporter, task) = Exporter::spawn(
+        config(format!("{}/?token=t", collector.uri()), 1.0),
+        reqwest::Client::new(),
+        metrics.clone(),
+        stopped,
+    );
+    exporter.offer(&record());
+    stop.send(true).unwrap();
+    task.await.unwrap();
+    assert!(metrics
+        .render(&[])
+        .contains("uf_otel_spans_exported_total 2"));
+}
+
+#[tokio::test]
+async fn rejected_spans_of_a_partial_success_are_counted_as_dropped() {
+    let collector = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({ "partialSuccess": { "rejectedSpans": "1", "errorMessage": "no" } }),
+        ))
+        .mount(&collector)
+        .await;
+    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let (stop, stopped) = watch::channel(false);
+    let (exporter, task) = Exporter::spawn(
+        config(collector.uri(), 1.0),
+        reqwest::Client::new(),
+        metrics.clone(),
+        stopped,
+    );
+    exporter.offer(&record()); // two spans
+    stop.send(true).unwrap();
+    task.await.unwrap();
+    let text = metrics.render(&[]);
+    assert!(text.contains("uf_otel_spans_exported_total 1"), "{text}");
+    assert!(text.contains("uf_otel_spans_dropped_total 1"), "{text}");
 }

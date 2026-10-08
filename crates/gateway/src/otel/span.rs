@@ -168,11 +168,14 @@ fn attempt_span(
     start: u128,
     kind: &str,
 ) -> Value {
-    let mut attributes = vec![
-        string("gen_ai.system", kind),
-        string("uf.provider", &a.provider),
-        string("gen_ai.request.model", &a.model),
-    ];
+    let mut attributes = Vec::new();
+    // Only when the kind is known (a provider removed mid-call has none).
+    if !kind.is_empty() {
+        attributes.push(string("gen_ai.system", kind));
+        attributes.push(string("gen_ai.provider.name", kind));
+    }
+    attributes.push(string("uf.provider", &a.provider));
+    attributes.push(string("gen_ai.request.model", &a.model));
     if let Some(status) = a.status {
         attributes.push(int("http.response.status_code", status));
     }
@@ -245,7 +248,7 @@ mod tests {
         let mut n = 0u64;
         move || {
             n += 1;
-            n.to_be_bytes()
+            (0x1000 + n).to_be_bytes()
         }
     }
 
@@ -343,6 +346,26 @@ mod tests {
             assert!(n(&spans[0], "startTimeUnixNano") <= n(c, "startTimeUnixNano"));
             assert!(n(&spans[0], "endTimeUnixNano") >= n(c, "endTimeUnixNano"));
         }
+    }
+
+    #[test]
+    fn the_provider_kind_is_named_only_when_known() {
+        let mut r = base();
+        r.attempts = vec![
+            attempt("a", AttemptOutcome::Ok, Some(200), 0, 5),
+            attempt("gone", AttemptOutcome::Retryable, None, 6, 5),
+        ];
+        let spans = spans_of(&r, &mut counter(), [1; 16]);
+        assert_eq!(
+            attr(&spans[1], "gen_ai.system").unwrap()["stringValue"],
+            "openai"
+        );
+        assert_eq!(
+            attr(&spans[1], "gen_ai.provider.name").unwrap()["stringValue"],
+            "openai"
+        );
+        assert!(attr(&spans[2], "gen_ai.system").is_none());
+        assert!(attr(&spans[2], "gen_ai.provider.name").is_none());
     }
 
     #[test]

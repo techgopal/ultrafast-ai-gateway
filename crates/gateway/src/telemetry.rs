@@ -355,7 +355,8 @@ impl Scope {
                         outcome: AttemptOutcome::Skipped,
                         status: None,
                         duration_ms: 0,
-                        offset_ms: 0,
+                        // Passed over when the call ended.
+                        offset_ms: elapsed_ms(self.started),
                     });
                 }
             }
@@ -526,6 +527,18 @@ mod tests {
         let r = sink.0.lock().unwrap()[0].clone();
         assert!(r.attempts[0].offset_ms >= 30, "{}", r.attempts[0].offset_ms);
         assert!(r.attempts[0].offset_ms < 5_000);
+    }
+
+    #[test]
+    fn a_target_passed_over_is_stamped_when_the_call_ended() {
+        let sink = Arc::new(Mem::default());
+        let mut s = scope(&sink);
+        s.targets(vec![("b".into(), "m2".into())]);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        s.finish(200);
+        let r = sink.0.lock().unwrap()[0].clone();
+        assert_eq!(r.attempts[0].outcome, AttemptOutcome::Skipped);
+        assert!(r.attempts[0].offset_ms >= 30);
     }
 
     #[test]
