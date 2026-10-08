@@ -369,7 +369,9 @@ pub async fn update(
         return Err(ApiError::validation(fields));
     }
 
-    let mut tx = store.begin().await?;
+    // The last-admin check reads after the write: take the write lock first, so two
+    // changes at once cannot each see the other admin still there.
+    let mut tx = store.begin_immediate().await?;
     // What is compared, checked and recorded is what the transaction sees.
     let was = tx
         .user_by_id(target.id)
@@ -534,7 +536,9 @@ pub async fn delete(
         ));
     }
 
-    let mut tx = store.begin().await?;
+    // The last-admin check reads after the write: take the write lock first, so two
+    // changes at once cannot each see the other admin still there.
+    let mut tx = store.begin_immediate().await?;
     let was = tx
         .user_by_id(target.id)
         .await?

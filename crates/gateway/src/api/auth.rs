@@ -301,7 +301,8 @@ async fn create_first_admin(
     name: &str,
     password_hash: &str,
 ) -> anyhow::Result<Option<i64>> {
-    let mut tx = store.begin().await?;
+    // Read then write: alone, so two setups at once cannot both find no user.
+    let mut tx = store.begin_immediate().await?;
     if tx.count_users().await? != 0 {
         return Ok(None);
     }
