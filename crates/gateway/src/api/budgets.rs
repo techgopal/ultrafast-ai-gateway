@@ -210,6 +210,12 @@ pub async fn set(
     };
 
     let mut tx = state.store.begin().await?;
+    // A new budget (a subject and period without one) counts what was
+    // already spent; an edit of an existing one keeps its counter.
+    let existed = tx
+        .budget_id_of(scope, req.scope_id, period)
+        .await?
+        .is_some();
     let id = tx
         .upsert_budget(scope, req.scope_id, amount, period, action)
         .await?;
@@ -237,8 +243,10 @@ pub async fn set(
     refresh_snapshot(&state).await?;
     // A budget that is new counts what was already spent in its period.
     let now = OffsetDateTime::now_utc();
-    if let Err(e) = seed_from_logs(&state, &budget_of(&row), now).await {
-        tracing::warn!(error = %e, "could not count the spend of a new budget from the logs");
+    if !existed {
+        if let Err(e) = seed_from_logs(&state, &budget_of(&row), now).await {
+            tracing::warn!(error = %e, "could not count the spend of a new budget from the logs");
+        }
     }
     Ok(Json(view(&state, &row, now)).into_response())
 }

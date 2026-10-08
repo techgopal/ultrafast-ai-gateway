@@ -324,6 +324,28 @@ impl Tx<'_> {
         row.as_ref().map(budget_from).transpose()
     }
 
+    /// The id of the budget of a subject for a period, if there is one.
+    pub async fn budget_id_of(
+        &mut self,
+        scope: LimitScope,
+        scope_id: Option<i64>,
+        period: Period,
+    ) -> Result<Option<i64>> {
+        let id: Option<i64> = self
+            .scalar(
+                "SELECT id FROM budgets
+                 WHERE org_id = ? AND scope = ? AND COALESCE(scope_id, 0) = COALESCE(?, 0)
+                   AND period = ?",
+            )
+            .bind(DEFAULT_ORG)
+            .bind(scope.as_str())
+            .bind(scope_id)
+            .bind(period.as_str())
+            .fetch_optional(self.conn())
+            .await?;
+        Ok(id)
+    }
+
     /// Sets the amount and action of the budget of a subject for a period,
     /// creating it when it is new. Returns the id of the row, which stays
     /// the same for a subject and period.

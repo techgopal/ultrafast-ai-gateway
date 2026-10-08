@@ -19,6 +19,10 @@
 //! by what the other processes spend within one [`FLUSH_INTERVAL`]. An
 //! `alert` budget alerts once per period for all of them: the stored
 //! `alerted` flag is set by a conditional update that only one process wins.
+//!
+//! A process that starts next to running ones rebuilds from the logs, which
+//! already hold what the others have counted but not yet flushed; it may add
+//! up to one [`FLUSH_INTERVAL`] of their spend a second time, once.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -486,15 +490,23 @@ impl Budgets for MemoryBudgets {
         let mut guard = self.lock();
         let inner = &mut *guard;
         let counter = match inner.counters.remove(&budget.id) {
-            Some(c) if c.period_start == period_start => Counter {
-                spent: base
-                    .saturating_add(c.spent.saturating_sub(c.flushed).saturating_sub(c.seeded)),
-                flushed: stored.min(base),
-                seeded: base.saturating_sub(stored),
-                alerted: c.alerted || alerted,
-                dirty: true,
-                ..c
-            },
+            Some(c) if c.period_start == period_start => {
+                // What this process counted since its last flush (not the
+                // part an earlier seed put there). The call that made it is
+                // usually in the logs already, so it is not added to them:
+                // the seed is the larger of the logs and "stored + local".
+                let local = c.spent.saturating_sub(c.flushed).saturating_sub(c.seeded);
+                let flushed = stored.min(base);
+                let spent = base.max(flushed.saturating_add(local));
+                Counter {
+                    spent,
+                    flushed,
+                    seeded: spent.saturating_sub(flushed).saturating_sub(local),
+                    alerted: c.alerted || alerted,
+                    dirty: true,
+                    ..c
+                }
+            }
             // A counter of a later period is the live one.
             Some(c) if c.period_start.as_str() > period_start => c,
             _ => Counter {
@@ -668,8 +680,12 @@ pub async fn rebuild(state: &AppState, now: OffsetDateTime) -> Result<()> {
 }
 
 /// Counts the spend of a budget that is new (or whose counter is not
-/// there) from the logs of its period.
+/// there) from the logs of its period. Not for a plain edit of an existing
+/// budget: its counter is right, and the logs would add the spend of the
+/// last flush interval a second time. Holds the flush lock, so a flush
+/// cannot drain between the read and the seed.
 pub async fn seed_from_logs(state: &AppState, budget: &Budget, now: OffsetDateTime) -> Result<()> {
+    let _no_flush = state.flushing.lock().await;
     let start = budget.period.start_string(now);
     let scope_id = (budget.scope != LimitScope::Gateway).then_some(budget.scope_id);
     let logged = state
@@ -931,12 +947,8 @@ mod tests {
         assert_eq!(state.budgets.spent(&all[0], now), 1_100);
     }
 
-    /// The logs say more than the database holds: the difference and the
-    /// local spend are both added, each once.
-    #[test]
-    fn a_seed_keeps_the_local_spend_when_the_logs_are_ahead_of_the_database() {
-        let b = MemoryBudgets::new();
-        let budget = Budget {
+    fn gateway_budget() -> Budget {
+        Budget {
             id: 1,
             scope: LimitScope::Gateway,
             scope_id: 0,
@@ -944,15 +956,66 @@ mod tests {
             amount_micros: 1_000_000,
             period: Period::Monthly,
             action: BudgetAction::Block,
-        };
+        }
+    }
+
+    /// The logs say more than the database holds, and this process has spend
+    /// that is not flushed: the call is most likely in the logs already, so
+    /// the seed takes the larger of "the logs" and "the database plus the
+    /// local spend", and never both.
+    #[test]
+    fn a_seed_does_not_count_local_spend_the_logs_already_hold() {
+        let b = MemoryBudgets::new();
+        let budget = gateway_budget();
         let now = time::macros::datetime!(2999-01-10 08:00:00 UTC);
         b.spend(&[Arc::new(budget.clone())], 100, now);
         // Logs 500, stored 200, and this process has 100 not flushed.
         b.seed_stored(&budget, "2999-01-01", 500, 200, false);
-        assert_eq!(b.spent(&budget, now), 600);
+        assert_eq!(b.spent(&budget, now), 500);
         let drained = b.drain();
         assert_eq!(drained.deltas.len(), 1);
-        assert_eq!(drained.deltas[0].delta_micros, 400);
+        assert_eq!(drained.deltas[0].delta_micros, 300);
+    }
+
+    /// Local spend the logs do not hold (a write that lags) is kept.
+    #[test]
+    fn a_seed_keeps_local_spend_the_logs_lack() {
+        let b = MemoryBudgets::new();
+        let budget = gateway_budget();
+        let now = time::macros::datetime!(2999-01-10 08:00:00 UTC);
+        b.spend(&[Arc::new(budget.clone())], 100, now);
+        // Logs 250, stored 200, local 100: the database plus local is more.
+        b.seed_stored(&budget, "2999-01-01", 250, 200, false);
+        assert_eq!(b.spent(&budget, now), 300);
+        assert_eq!(b.drain().deltas[0].delta_micros, 100);
+    }
+
+    /// After a flush committed the seeded shortfall, a new seed counts the
+    /// spend since as local again (`reconcile` resets what was seeded).
+    #[test]
+    fn reconcile_resets_what_was_seeded() {
+        let b = MemoryBudgets::new();
+        let budget = Arc::new(gateway_budget());
+        let now = time::macros::datetime!(2999-01-10 08:00:00 UTC);
+        b.seed_stored(&budget, "2999-01-01", 500, 0, false);
+        let drained = b.drain();
+        let total = UsageTotal {
+            budget_id: 1,
+            period_start: "2999-01-01".into(),
+            spent_micros: 500,
+            alerted: false,
+        };
+        b.reconcile(
+            std::slice::from_ref(&budget),
+            &drained.deltas,
+            &[total],
+            &drained.usage,
+        );
+        // 50 more, not yet in the logs: a seed from logs of 500 keeps it.
+        b.spend(std::slice::from_ref(&budget), 50, now);
+        b.seed_stored(&budget, "2999-01-01", 500, 500, false);
+        assert_eq!(b.spent(&budget, now), 550);
+        assert_eq!(b.drain().deltas[0].delta_micros, 50);
     }
 
     /// Seeding again (a budget changed through the API) before the first
@@ -974,6 +1037,30 @@ mod tests {
         b.seed_stored(&budget, "2999-01-01", 500, 0, false);
         assert_eq!(b.spent(&budget, now), 500);
         assert_eq!(b.drain().deltas[0].delta_micros, 500);
+    }
+
+    /// A seed waits for a flush in progress (a flush drains, writes and
+    /// reconciles; a seed between those would be taken for local spend).
+    #[tokio::test]
+    async fn a_seed_waits_for_a_flush_in_progress() {
+        let (state, _) = state_with_budget(1_000_000_000).await;
+        let all = state.snapshot.load().all_budgets();
+        let held = state.flushing.lock().await;
+        let seeding = {
+            let (state, budget) = (state.clone(), all[0].clone());
+            tokio::spawn(async move {
+                seed_from_logs(&state, &budget, OffsetDateTime::now_utc())
+                    .await
+                    .unwrap()
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!seeding.is_finished(), "the seed ran during a flush");
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(10), seeding)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

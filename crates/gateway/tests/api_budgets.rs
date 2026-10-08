@@ -465,6 +465,67 @@ async fn a_new_budget_counts_what_the_period_already_spent_and_the_list_shows_it
     assert_eq!(again["spent_micros"], 1_500_000);
 }
 
+/// A call that is counted and logged, then a plain edit of the budget's
+/// amount: the stored spend is that call once, however often it is flushed.
+#[tokio::test]
+async fn editing_a_budget_does_not_count_a_logged_call_twice() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    let state = w.org.api.state.clone();
+    let (_, made) = put(&w, &maya, team_budget(w.org.platform, 5_000_000)).await;
+    let id = made["id"].as_i64().unwrap();
+    let now = time::OffsetDateTime::now_utc();
+    let budgets = state.snapshot.load().all_budgets();
+    // The writer counts the call, then its row is written.
+    state.budgets.spend(&budgets, 100, now);
+    w.org
+        .api
+        .store
+        .insert_logs(&[log(
+            &ultrafast_gateway::store::now(),
+            w.lena_key,
+            w.org.lena,
+            w.org.platform,
+            100,
+        )])
+        .await
+        .unwrap();
+    let (status, again) = put(&w, &maya, team_budget(w.org.platform, 8_000_000)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["spent_micros"], 100);
+    ultrafast_gateway::budgets::flush(&state).await;
+    ultrafast_gateway::budgets::flush(&state).await;
+    let start = Period::Monthly.start_string(now);
+    assert_eq!(
+        w.org.api.store.budget_usage(id, &start).await.unwrap(),
+        Some((100, false))
+    );
+}
+
+/// A plain edit never reads the logs again: what other processes spent and
+/// have not flushed is in the logs, and they add it themselves.
+#[tokio::test]
+async fn editing_a_budget_does_not_read_the_logs_again() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    let (_, made) = put(&w, &maya, team_budget(w.org.platform, 5_000_000)).await;
+    assert_eq!(made["spent_micros"], 0);
+    w.org
+        .api
+        .store
+        .insert_logs(&[log(
+            &ultrafast_gateway::store::now(),
+            w.lena_key,
+            w.org.lena,
+            w.org.platform,
+            700,
+        )])
+        .await
+        .unwrap();
+    let (_, again) = put(&w, &maya, team_budget(w.org.platform, 8_000_000)).await;
+    assert_eq!(again["spent_micros"], 0);
+}
+
 #[tokio::test]
 async fn writes_refresh_the_snapshot() {
     let w = world().await;
