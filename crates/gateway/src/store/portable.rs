@@ -84,7 +84,7 @@ async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
 impl Store {
     /// The configuration, read in one transaction.
     pub async fn config_state(&self) -> Result<ConfigState> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.begin_read().await?;
         let state = read(&mut tx).await?;
         tx.commit().await?;
         Ok(state)

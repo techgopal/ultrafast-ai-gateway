@@ -366,7 +366,7 @@ impl Store {
     /// Reads every table the snapshot needs inside one read transaction, so
     /// the rows never mix two moments.
     pub async fn snapshot_rows(&self) -> Result<SnapshotRows> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_read().await?;
         let conn: &mut AnyConnection = &mut tx;
         let keys = keys::live_keys_in(conn).await?;
         let providers = providers::list_providers_in(conn).await?;
@@ -400,6 +400,21 @@ impl Store {
     /// How many times `teams_of_users` has been called on this store.
     pub fn teams_of_users_calls(&self) -> u64 {
         self.teams_of_users_calls.load(Ordering::Relaxed)
+    }
+
+    /// A transaction for reads that must see one moment: PostgreSQL would
+    /// otherwise give each statement its own (READ COMMITTED), so a
+    /// concurrent delete could show up in one table and not in another. Here
+    /// it is `REPEATABLE READ, READ ONLY`. SQLite's WAL mode already holds a
+    /// read transaction to the moment of its first read.
+    pub(crate) async fn begin_read(&self) -> Result<sqlx::Transaction<'static, Any>> {
+        let mut tx = self.pool.begin().await?;
+        if self.dialect == Dialect::Postgres {
+            self.q("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                .execute(&mut *tx)
+                .await?;
+        }
+        Ok(tx)
     }
 
     pub async fn begin(&self) -> Result<Tx<'_>> {
@@ -820,5 +835,57 @@ mod tests {
         assert!(text.contains("within 1 s"), "{text}");
         assert!(text.contains("refused"), "{text}");
         assert!(!text.contains("hunter2"), "{text}");
+    }
+
+    /// A read transaction sees one moment: what another session commits
+    /// meanwhile is not in its later reads (on PostgreSQL this is
+    /// REPEATABLE READ, READ ONLY; on SQLite the WAL snapshot).
+    #[tokio::test]
+    async fn a_read_transaction_sees_one_moment() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = if scratch::test_database_url().is_some() {
+            Store::open_in_memory().await.unwrap()
+        } else {
+            // An in-memory SQLite store has one connection only.
+            Store::open(&dir.path().join("gateway.db")).await.unwrap()
+        };
+        async fn count(store: &Store, tx: &mut sqlx::Transaction<'static, Any>) -> i64 {
+            store
+                .scalar("SELECT COUNT(*) FROM teams")
+                .fetch_one(&mut **tx)
+                .await
+                .unwrap()
+        }
+        let mut tx = store.begin_read().await.unwrap();
+        let before: i64 = count(&store, &mut tx).await;
+        let mut other = store.begin().await.unwrap();
+        other.insert_team("Late").await.unwrap();
+        other.commit().await.unwrap();
+        assert_eq!(
+            count(&store, &mut tx).await,
+            before,
+            "the later commit is not seen"
+        );
+        if store.dialect() == Dialect::Postgres {
+            let iso: String = store
+                .scalar("SHOW transaction_isolation")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            assert_eq!(iso, "repeatable read");
+            let write = store
+                .q("INSERT INTO teams (org_id, name) VALUES (1, 'No')")
+                .execute(&mut *tx)
+                .await;
+            assert!(write.is_err(), "the transaction is read only");
+        }
+        drop(tx);
+        // And it is the transaction the snapshot and the export read in.
+        assert_eq!(
+            store.snapshot_rows().await.unwrap().team_stamps.len() as i64,
+            before + 1
+        );
+        let fresh = store.begin_read().await.unwrap();
+        drop(fresh);
     }
 }
