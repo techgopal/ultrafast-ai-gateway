@@ -14,6 +14,10 @@ use crate::secrets::{fill_random, secrets_equal, Cipher};
 pub const FLOW_MAX_AGE_SECS: i64 = 600;
 /// How far `issued_at` may lie ahead of this machine's clock.
 const CLOCK_SKEW_SECS: i64 = 60;
+/// Starts every cookie plaintext. The master key also protects stored
+/// secrets; the label keeps a ciphertext made for another purpose from ever
+/// being read as a flow.
+const LABEL: &[u8] = b"uf-oidc-flow-v1\n";
 /// A cookie longer than this is refused unread (a cookie is at most 4 KiB).
 const MAX_COOKIE_BYTES: usize = 4096;
 
@@ -59,8 +63,9 @@ impl FlowState {
 
     /// The cookie value: the JSON, encrypted, as base64url.
     pub fn seal(&self, cipher: &Cipher) -> String {
-        let json = serde_json::to_vec(self).expect("a flow state serializes");
-        URL_SAFE_NO_PAD.encode(cipher.encrypt(&json))
+        let mut plain = LABEL.to_vec();
+        serde_json::to_writer(&mut plain, self).expect("a flow state serializes");
+        URL_SAFE_NO_PAD.encode(cipher.encrypt(&plain))
     }
 
     /// Reads a cookie value. Anything that is not exactly what `seal` made
@@ -76,7 +81,8 @@ impl FlowState {
         let plain = cipher
             .decrypt(&bytes)
             .map_err(|_| ExternalError::BadState)?;
-        let flow: Self = serde_json::from_slice(&plain).map_err(|_| ExternalError::BadState)?;
+        let json = plain.strip_prefix(LABEL).ok_or(ExternalError::BadState)?;
+        let flow: Self = serde_json::from_slice(json).map_err(|_| ExternalError::BadState)?;
         if flow.issued_at > now + CLOCK_SKEW_SECS {
             return Err(ExternalError::BadState);
         }
@@ -168,6 +174,23 @@ mod tests {
         }
         assert_eq!(
             FlowState::open(&other, &cookie, 5001).unwrap_err(),
+            ExternalError::BadState
+        );
+    }
+
+    #[test]
+    fn a_ciphertext_made_for_another_purpose_is_not_a_flow() {
+        let flow = FlowState::new("/", 5000);
+        let json = serde_json::to_vec(&flow).unwrap();
+        let bare = URL_SAFE_NO_PAD.encode(cipher().encrypt(&json));
+        assert_eq!(
+            FlowState::open(&cipher(), &bare, 5001).unwrap_err(),
+            ExternalError::BadState
+        );
+        // A stored secret (encrypted the same way) is not one either.
+        let secret = URL_SAFE_NO_PAD.encode(cipher().encrypt(b"provider-api-key"));
+        assert_eq!(
+            FlowState::open(&cipher(), &secret, 5001).unwrap_err(),
             ExternalError::BadState
         );
     }

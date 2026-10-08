@@ -23,6 +23,8 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const CACHE_TTL: Duration = Duration::from_secs(3600);
 /// How soon after a fetch an unknown `kid` may cause another one.
 pub const MIN_REFETCH: Duration = Duration::from_secs(60);
+/// How long a failed discovery fetch is remembered.
+pub const FAILURE_TTL: Duration = Duration::from_secs(30);
 const MAX_KEYS: usize = 100;
 const MIN_RSA_BITS: usize = 2048;
 
@@ -85,6 +87,17 @@ pub async fn read_json(
 /// An endpoint address the gateway may call: https, or http on this
 /// machine for tests; a host; no credentials, no fragment.
 pub fn usable_endpoint(value: &str) -> Option<Url> {
+    usable_endpoint_for(value, None)
+}
+
+/// Like [`usable_endpoint`], and when `issuer` is given the endpoint must
+/// also be of the issuer's kind: the same scheme, so a provider reached over
+/// https cannot send the client secret and the code to a plain http
+/// address, not even a loopback one. Loopback http is therefore possible
+/// only when the issuer itself is loopback http (tests, local providers).
+/// Private addresses are not blocked: the provider is chosen by an admin,
+/// as the provider URLs are.
+fn usable_endpoint_for(value: &str, issuer: Option<&Url>) -> Option<Url> {
     if value.len() > 2048 {
         return None;
     }
@@ -96,6 +109,9 @@ pub fn usable_endpoint(value: &str) -> Option<Url> {
         "http" => loopback,
         _ => false,
     };
+    if issuer.is_some_and(|i| i.scheme() != url.scheme()) {
+        return None;
+    }
     (scheme_ok && url.username().is_empty() && url.password().is_none() && url.fragment().is_none())
         .then_some(url)
 }
@@ -120,10 +136,11 @@ impl Discovery {
         if doc.get("issuer").and_then(Value::as_str) != Some(issuer) {
             return Err("the document names another issuer".to_string());
         }
+        let issuer_url = usable_endpoint(issuer).ok_or("the issuer is not usable")?;
         let endpoint = |name: &str| {
             doc.get(name)
                 .and_then(Value::as_str)
-                .and_then(usable_endpoint)
+                .and_then(|v| usable_endpoint_for(v, Some(&issuer_url)))
                 .ok_or_else(|| format!("the document has no usable {name}"))
         };
         let basic_auth = match doc
@@ -144,7 +161,7 @@ impl Discovery {
             userinfo_endpoint: doc
                 .get("userinfo_endpoint")
                 .and_then(Value::as_str)
-                .and_then(usable_endpoint),
+                .and_then(|v| usable_endpoint_for(v, Some(&issuer_url))),
             basic_auth,
         })
     }
@@ -154,7 +171,15 @@ pub struct DiscoveryCache {
     http: reqwest::Client,
     issuer: String,
     pub(super) ttl: Duration,
-    slot: Mutex<Option<(Instant, Arc<Discovery>)>>,
+    /// How long a failed fetch is remembered.
+    pub(super) failure_ttl: Duration,
+    slot: Mutex<DiscoverySlot>,
+}
+
+#[derive(Default)]
+struct DiscoverySlot {
+    found: Option<(Instant, Arc<Discovery>)>,
+    failed: Option<(Instant, ExternalError)>,
 }
 
 impl DiscoveryCache {
@@ -163,19 +188,43 @@ impl DiscoveryCache {
             http,
             issuer: issuer.to_string(),
             ttl: CACHE_TTL,
-            slot: Mutex::new(None),
+            failure_ttl: FAILURE_TTL,
+            slot: Mutex::new(DiscoverySlot::default()),
         }
     }
 
     /// The cached document, or a fresh one. Callers that arrive while a
     /// fetch is under way wait for it and share its result.
+    ///
+    /// A failure is remembered for [`FAILURE_TTL`] and given again meanwhile:
+    /// the sign-in start is open to anyone, and a provider that is down must
+    /// not turn each request into an outbound call.
     pub async fn get(&self) -> Result<Arc<Discovery>, ExternalError> {
         let mut slot = self.slot.lock().await;
-        if let Some((at, found)) = slot.as_ref() {
+        if let Some((at, found)) = slot.found.as_ref() {
             if at.elapsed() < self.ttl {
                 return Ok(found.clone());
             }
         }
+        if let Some((at, error)) = slot.failed.as_ref() {
+            if at.elapsed() < self.failure_ttl {
+                return Err(error.clone());
+            }
+        }
+        match self.fetch().await {
+            Ok(found) => {
+                slot.failed = None;
+                slot.found = Some((Instant::now(), found.clone()));
+                Ok(found)
+            }
+            Err(error) => {
+                slot.failed = Some((Instant::now(), error.clone()));
+                Err(error)
+            }
+        }
+    }
+
+    async fn fetch(&self) -> Result<Arc<Discovery>, ExternalError> {
         let url = Url::parse(&format!(
             "{}/.well-known/openid-configuration",
             self.issuer.trim_end_matches('/')
@@ -184,11 +233,9 @@ impl DiscoveryCache {
         let doc = get_json(&self.http, &url, None)
             .await
             .map_err(ExternalError::Discovery)?;
-        let found = Arc::new(
+        Ok(Arc::new(
             Discovery::from_document(&self.issuer, &doc).map_err(ExternalError::Discovery)?,
-        );
-        *slot = Some((Instant::now(), found.clone()));
-        Ok(found)
+        ))
     }
 }
 
@@ -287,7 +334,13 @@ pub struct Jwks {
 #[derive(Default)]
 struct JwksState {
     keys: Vec<SigKey>,
+    /// The last successful fetch.
     fetched: Option<Instant>,
+    /// The last attempt, successful or not, and whether it failed. The
+    /// throttle counts attempts: a provider that is failing is not asked
+    /// again within the minute either.
+    attempted: Option<Instant>,
+    failed: bool,
 }
 
 impl Jwks {
@@ -315,13 +368,22 @@ impl Jwks {
     pub async fn find(&self, kid: Option<&str>) -> Result<SigKey, ExternalError> {
         let mut state = self.state.lock().await;
         if state.fetched.is_none_or(|at| at.elapsed() >= self.ttl) {
+            if state.failed
+                && state
+                    .attempted
+                    .is_some_and(|at| at.elapsed() < self.min_refetch)
+            {
+                return Err(ExternalError::Discovery(
+                    "key set: the last attempt failed".to_string(),
+                ));
+            }
             self.refresh(&mut state).await?;
         }
         if let Some(key) = lookup(&state.keys, kid) {
             return Ok(key);
         }
         if state
-            .fetched
+            .attempted
             .is_some_and(|at| at.elapsed() >= self.min_refetch)
         {
             self.refresh(&mut state).await?;
@@ -333,6 +395,8 @@ impl Jwks {
     }
 
     async fn refresh(&self, state: &mut JwksState) -> Result<(), ExternalError> {
+        state.attempted = Some(Instant::now());
+        state.failed = true;
         let doc = get_json(&self.http, &self.uri, None)
             .await
             .map_err(|m| ExternalError::Discovery(format!("key set: {m}")))?;
@@ -346,6 +410,7 @@ impl Jwks {
             .filter_map(SigKey::from_json)
             .collect();
         state.fetched = Some(Instant::now());
+        state.failed = false;
         Ok(())
     }
 }
@@ -513,6 +578,107 @@ mod tests {
                 .unwrap()
                 .basic_auth
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_discovery_is_remembered_for_a_while() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let mut cache = DiscoveryCache::new(http(), &server.uri());
+        for _ in 0..5 {
+            assert!(matches!(
+                cache.get().await,
+                Err(ExternalError::Discovery(_))
+            ));
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        cache.failure_ttl = Duration::ZERO;
+        assert!(cache.get().await.is_err());
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn endpoints_must_be_of_the_issuers_kind() {
+        let doc = |issuer: &str, token: &str| {
+            serde_json::json!({
+                "issuer": issuer,
+                "authorization_endpoint": format!("{issuer}/a"),
+                "token_endpoint": token,
+                "jwks_uri": format!("{issuer}/k"),
+            })
+        };
+        // An https issuer may not send the code and secret to http, even on loopback.
+        for token in ["http://127.0.0.1/t", "http://localhost:9/t"] {
+            assert!(
+                Discovery::from_document(
+                    "https://idp.example.com",
+                    &doc("https://idp.example.com", token)
+                )
+                .is_err(),
+                "{token}"
+            );
+        }
+        // A loopback http issuer may not point at https endpoints.
+        assert!(Discovery::from_document(
+            "http://127.0.0.1:9",
+            &doc("http://127.0.0.1:9", "https://idp.example.com/t")
+        )
+        .is_err());
+        assert!(Discovery::from_document(
+            "http://127.0.0.1:9",
+            &doc("http://127.0.0.1:9", "http://127.0.0.1:9/t")
+        )
+        .is_ok());
+        // An unusable userinfo endpoint of the wrong kind is ignored.
+        let mut d = doc("https://idp.example.com", "https://idp.example.com/t");
+        d["userinfo_endpoint"] = "http://127.0.0.1/u".into();
+        assert!(Discovery::from_document("https://idp.example.com", &d)
+            .unwrap()
+            .userinfo_endpoint
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failing_key_set_is_not_asked_again_within_the_minute() {
+        // Cold, failing: one request for any number of lookups.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let jwks = jwks_for(&server);
+        for _ in 0..5 {
+            assert!(jwks.find(Some("k1")).await.is_err());
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+
+        // Warm, then failing on the refetch for an unknown kid: one more request only.
+        let server = MockServer::start().await;
+        let good = Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"keys": [test_keys().rsa_jwk("k1")]})),
+            )
+            .up_to_n_times(1)
+            .mount_as_scoped(&server)
+            .await;
+        let mut jwks = jwks_for(&server);
+        jwks.find(Some("k1")).await.unwrap();
+        drop(good);
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        jwks.min_refetch = Duration::ZERO;
+        assert!(jwks.find(Some("nope")).await.is_err());
+        jwks.min_refetch = MIN_REFETCH;
+        for _ in 0..5 {
+            assert!(jwks.find(Some("nope")).await.is_err());
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
     #[tokio::test]
