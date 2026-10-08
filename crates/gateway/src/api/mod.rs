@@ -94,6 +94,8 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(audit::list))
         .routes(routes!(health::routing_health))
         .routes(routes!(settings::view, settings::update))
+        .routes(routes!(settings::oidc_view, settings::oidc_update))
+        .routes(routes!(settings::oidc_test))
         .routes(routes!(limits::list, limits::set))
         .routes(routes!(limits::delete))
         .routes(routes!(budgets::list, budgets::set))

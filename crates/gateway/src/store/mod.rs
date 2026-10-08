@@ -41,7 +41,10 @@ pub use portable::ConfigState;
 pub use providers::ProviderRow;
 pub use routes::{is_missing_reference, RouteRow, RouteSettings, TargetRow, TargetsInput};
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
-pub use settings::{DEFAULT_LOG_RETENTION_DAYS, DEFAULT_SESSION_HOURS, SESSION_HOURS_RANGE};
+pub use settings::{
+    OidcSettings, DEFAULT_LOG_RETENTION_DAYS, DEFAULT_OIDC_GROUPS_CLAIM, DEFAULT_OIDC_LABEL,
+    DEFAULT_SESSION_HOURS, SESSION_HOURS_RANGE,
+};
 pub use teams::{MemberDetail, MemberRow, TeamRow, TeamSummary, UserTeam};
 pub use users::{InviteRow, NewUser, UserRow};
 

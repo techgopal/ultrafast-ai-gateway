@@ -523,6 +523,15 @@ fn table() -> Vec<Row> {
             [204, 403, 403, 401]),
         row(75, "GET", "/api/alerts/events", "", |_, _| "/api/alerts/events".into(), no_body,
             [200, 403, 403, 401]),
+        row(76, "GET", "/api/settings/oidc", "", |_, _| "/api/settings/oidc".into(), no_body,
+            [200, 403, 403, 401]),
+        row(77, "PUT", "/api/settings/oidc", "", |_, _| "/api/settings/oidc".into(),
+            || Some(json!({ "enabled": false, "label": "SSO" })),
+            [200, 403, 403, 401]),
+        // Nothing listens on port 1: the test answers 200 with `ok: false`.
+        row(78, "POST", "/api/settings/oidc/test", "an unreachable issuer", |_, _| "/api/settings/oidc/test".into(),
+            || Some(json!({ "issuer": "http://127.0.0.1:1" })),
+            [200, 403, 403, 401]),
     ]
 }
 
@@ -595,7 +604,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=75).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=78).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -721,7 +730,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 72);
+    assert_eq!(operations, 75);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

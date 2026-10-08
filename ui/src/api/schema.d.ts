@@ -638,6 +638,38 @@ export interface paths {
         patch: operations["settings_update"];
         trace?: never;
     };
+    "/api/settings/oidc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["settings_oidc_view"];
+        put: operations["settings_oidc_update"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/settings/oidc/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["settings_oidc_test"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/setup": {
         parameters: {
             query?: never;
@@ -1517,6 +1549,104 @@ export interface components {
             /** Format: int64 */
             provider_id: number;
             provider_name: string;
+        };
+        OidcTestRequest: {
+            /** @description The issuer to test. Left out or empty: the saved one. */
+            issuer?: string;
+        };
+        OidcTestResult: {
+            authorization_endpoint?: string | null;
+            /** @description What is wrong, when `ok` is false. It never repeats a URL. */
+            error?: string | null;
+            /** @description The issuer the provider named, when its discovery document was read. */
+            issuer?: string | null;
+            /**
+             * Format: int32
+             * @description How many keys the provider publishes to verify ID tokens.
+             */
+            jwks_keys?: number | null;
+            /** @description Whether the discovery document and the key set could be used. */
+            ok: boolean;
+            token_endpoint?: string | null;
+        };
+        /**
+         * @description Every setting. A field left out takes its default, except
+         *     `client_secret`: left out, the stored secret is kept.
+         */
+        OidcUpdateRequest: {
+            admin_group?: string;
+            /** @description At most 100 domains; stored in lower case. */
+            allowed_domains?: string[];
+            /** @description Needs at least one allowed domain. Default false. */
+            auto_create?: boolean;
+            /** @description At most 512 bytes. May be empty while single sign-on is off. */
+            client_id?: string;
+            /**
+             * @description Write only: replaces the stored secret. Left out: the stored secret
+             *     stays. At most 4096 bytes.
+             */
+            client_secret?: string;
+            /** @description Needs `UF_PUBLIC_URL`, an issuer, a client id and a client secret. */
+            enabled?: boolean;
+            /** @description Default "groups". */
+            groups_claim?: string;
+            /**
+             * @description An `https` URL (`http` only for localhost, 127.0.0.1 and [::1]),
+             *     without credentials, query or fragment. May be empty while single
+             *     sign-on is off.
+             */
+            issuer?: string;
+            /** @description 1 to 40 characters. Default "SSO". */
+            label?: string;
+            /** @description Default true. */
+            link_by_email?: boolean;
+            /** @description Extra scopes, space separated. */
+            scopes?: string;
+        };
+        OidcView: {
+            /**
+             * @description Members of this group become admins on sign-in; empty: roles are
+             *     never changed by sign-in.
+             */
+            admin_group: string;
+            /** @description Lower case domains, like `example.com`. */
+            allowed_domains: string[];
+            /**
+             * @description Whether a person from an allowed domain gets a Member account on
+             *     first sign-in.
+             */
+            auto_create: boolean;
+            client_id: string;
+            /**
+             * @description Whether a client secret is stored. The secret itself is never
+             *     returned.
+             */
+            client_secret_set: boolean;
+            /** @description Whether the sign-in button is offered. */
+            enabled: boolean;
+            /** @description The ID token claim that lists the user's groups. */
+            groups_claim: string;
+            /** @description The issuer URL of the identity provider; empty until set. */
+            issuer: string;
+            /** @description The name on the button: "Sign in with <label>". */
+            label: string;
+            /**
+             * @description Whether a person who signs in is matched to an existing user by a
+             *     verified email address.
+             */
+            link_by_email: boolean;
+            /**
+             * @description Whether the gateway was started with `UF_PUBLIC_URL`. Single
+             *     sign-on cannot be turned on without it.
+             */
+            public_url_set: boolean;
+            /**
+             * @description The address to register at the identity provider; null without a
+             *     public URL.
+             */
+            redirect_uri?: string | null;
+            /** @description Scopes asked for besides `openid email profile`, space separated. */
+            scopes: string;
         };
         /** @description The answer of `/v1/chat/completions`, in the OpenAI shape. */
         PlaygroundChatAnswer: {
@@ -5707,6 +5837,215 @@ export interface operations {
                 };
             };
             /** @description A value is out of range; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    settings_oidc_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The single sign-on settings, without the secret. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OidcView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    settings_oidc_update: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OidcUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description The settings after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OidcView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description A value is not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    settings_oidc_test: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OidcTestRequest"];
+            };
+        };
+        responses: {
+            /** @description What the provider answered. A provider that cannot be used is `ok: false` with an `error`, not an HTTP error. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OidcTestResult"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description There is no issuer to test, or it is not valid; `fields` names it. */
             422: {
                 headers: {
                     [name: string]: unknown;

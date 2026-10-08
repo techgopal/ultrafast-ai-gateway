@@ -4854,6 +4854,280 @@
         ]
       }
     },
+    "/api/settings/oidc": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "settings_oidc_view",
+        "responses": {
+          "200": {
+            "description": "The single sign-on settings, without the secret.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "settings_oidc_update",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OidcUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value is not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/settings/oidc/test": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "settings_oidc_test",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OidcTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the provider answered. A provider that cannot be used is `ok: false` with an `error`, not an HTTP error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcTestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "There is no issuer to test, or it is not valid; `fields` names it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/setup": {
       "get": {
         "tags": [
@@ -8502,6 +8776,192 @@
           },
           "provider_name": {
             "type": "string"
+          }
+        }
+      },
+      "OidcTestRequest": {
+        "type": "object",
+        "properties": {
+          "issuer": {
+            "type": "string",
+            "description": "The issuer to test. Left out or empty: the saved one."
+          }
+        },
+        "additionalProperties": false
+      },
+      "OidcTestResult": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "authorization_endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What is wrong, when `ok` is false. It never repeats a URL."
+          },
+          "issuer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The issuer the provider named, when its discovery document was read."
+          },
+          "jwks_keys": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many keys the provider publishes to verify ID tokens.",
+            "minimum": 0
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Whether the discovery document and the key set could be used."
+          },
+          "token_endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "OidcUpdateRequest": {
+        "type": "object",
+        "description": "Every setting. A field left out takes its default, except\n`client_secret`: left out, the stored secret is kept.",
+        "properties": {
+          "admin_group": {
+            "type": "string"
+          },
+          "allowed_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "At most 100 domains; stored in lower case."
+          },
+          "auto_create": {
+            "type": "boolean",
+            "description": "Needs at least one allowed domain. Default false."
+          },
+          "client_id": {
+            "type": "string",
+            "description": "At most 512 bytes. May be empty while single sign-on is off."
+          },
+          "client_secret": {
+            "type": "string",
+            "description": "Write only: replaces the stored secret. Left out: the stored secret\nstays. At most 4096 bytes."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Needs `UF_PUBLIC_URL`, an issuer, a client id and a client secret."
+          },
+          "groups_claim": {
+            "type": "string",
+            "description": "Default \"groups\"."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "An `https` URL (`http` only for localhost, 127.0.0.1 and [::1]),\nwithout credentials, query or fragment. May be empty while single\nsign-on is off."
+          },
+          "label": {
+            "type": "string",
+            "description": "1 to 40 characters. Default \"SSO\"."
+          },
+          "link_by_email": {
+            "type": "boolean",
+            "description": "Default true."
+          },
+          "scopes": {
+            "type": "string",
+            "description": "Extra scopes, space separated."
+          }
+        },
+        "additionalProperties": false
+      },
+      "OidcView": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "label",
+          "issuer",
+          "client_id",
+          "client_secret_set",
+          "scopes",
+          "groups_claim",
+          "admin_group",
+          "link_by_email",
+          "auto_create",
+          "allowed_domains",
+          "public_url_set"
+        ],
+        "properties": {
+          "admin_group": {
+            "type": "string",
+            "description": "Members of this group become admins on sign-in; empty: roles are\nnever changed by sign-in."
+          },
+          "allowed_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Lower case domains, like `example.com`."
+          },
+          "auto_create": {
+            "type": "boolean",
+            "description": "Whether a person from an allowed domain gets a Member account on\nfirst sign-in."
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret_set": {
+            "type": "boolean",
+            "description": "Whether a client secret is stored. The secret itself is never\nreturned."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the sign-in button is offered."
+          },
+          "groups_claim": {
+            "type": "string",
+            "description": "The ID token claim that lists the user's groups."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The issuer URL of the identity provider; empty until set."
+          },
+          "label": {
+            "type": "string",
+            "description": "The name on the button: \"Sign in with <label>\"."
+          },
+          "link_by_email": {
+            "type": "boolean",
+            "description": "Whether a person who signs in is matched to an existing user by a\nverified email address."
+          },
+          "public_url_set": {
+            "type": "boolean",
+            "description": "Whether the gateway was started with `UF_PUBLIC_URL`. Single\nsign-on cannot be turned on without it."
+          },
+          "redirect_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address to register at the identity provider; null without a\npublic URL."
+          },
+          "scopes": {
+            "type": "string",
+            "description": "Scopes asked for besides `openid email profile`, space separated."
           }
         }
       },

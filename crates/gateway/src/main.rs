@@ -12,8 +12,8 @@ use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState}
 use ultrafast_gateway::budgets::{self, FLUSH_INTERVAL};
 use ultrafast_gateway::catalog::{add_model, describe_model_add, validate_model_name};
 use ultrafast_gateway::config::{
-    db_path, load_master_key, parse_trusted_proxies, restrict_permissions, validate_api_version,
-    validate_base_url, validate_provider_name,
+    db_path, load_master_key, parse_public_url, parse_trusted_proxies, restrict_permissions,
+    validate_api_version, validate_base_url, validate_provider_name,
 };
 use ultrafast_gateway::identity::password;
 use ultrafast_gateway::logs::{self, LogSink, QUEUE_CAPACITY};
@@ -64,6 +64,13 @@ enum Command {
             value_delimiter = ','
         )]
         trusted_proxies: Vec<String>,
+        /// The address people reach the gateway at, like
+        /// https://gateway.example.com. Single sign-on needs it: the
+        /// identity provider sends the browser back to
+        /// <URL>/api/auth/oidc/callback. Unset: single sign-on cannot be
+        /// turned on.
+        #[arg(long, env = "UF_PUBLIC_URL", value_name = "URL")]
+        public_url: Option<String>,
         /// Serve Prometheus metrics at `GET /metrics` to callers that send
         /// this token as `Authorization: Bearer <token>`. Unset (or empty):
         /// `/metrics` does not exist. Prefer the UF_METRICS_TOKEN environment
@@ -209,6 +216,7 @@ fn validate(command: &mut Command) -> Result<()> {
             host,
             port,
             trusted_proxies,
+            public_url,
             otel_endpoint,
             otel_headers,
             otel_service_name,
@@ -217,6 +225,9 @@ fn validate(command: &mut Command) -> Result<()> {
         } => {
             serve_address(host, *port)?;
             parse_trusted_proxies(trusted_proxies)?;
+            if let Some(url) = public_url.as_deref().filter(|u| !u.trim().is_empty()) {
+                parse_public_url(url)?;
+            }
             validate_otel(
                 otel_endpoint.as_deref(),
                 otel_headers.as_deref(),
@@ -434,6 +445,7 @@ async fn main() -> Result<()> {
             port,
             insecure_cookies,
             trusted_proxies,
+            public_url,
             metrics_token,
             otel_endpoint,
             otel_headers,
@@ -467,6 +479,11 @@ async fn main() -> Result<()> {
                 .filter(|t| !t.is_empty());
             state.cookie_secure = !insecure_cookies;
             state.trusted_proxies = parse_trusted_proxies(&trusted_proxies)?;
+            state.public_url = public_url
+                .filter(|u| !u.trim().is_empty())
+                .map(|u| parse_public_url(&u))
+                .transpose()?;
+            state.reload_sign_in().await?;
             if !state.trusted_proxies.is_empty() {
                 tracing::info!(
                     count = state.trusted_proxies.len(),
@@ -646,6 +663,31 @@ mod tests {
                 api_key: None,
                 api_version: api_version.map(str::to_string),
             },
+        }
+    }
+
+    #[test]
+    fn serve_checks_the_public_url() {
+        let serve = |url: Option<&str>| Command::Serve {
+            host: "127.0.0.1".into(),
+            port: 3000,
+            insecure_cookies: false,
+            trusted_proxies: vec![],
+            public_url: url.map(str::to_string),
+            metrics_token: None,
+            otel_endpoint: None,
+            otel_headers: None,
+            otel_service_name: "ultrafast".into(),
+            otel_sample_ratio: 1.0,
+        };
+        for (url, ok) in [
+            (None, true),
+            (Some(""), true),
+            (Some("https://gateway.example.com"), true),
+            (Some("gateway.example.com"), false),
+            (Some("https://u:p@gateway.example.com"), false),
+        ] {
+            assert_eq!(validate(&mut serve(url)).is_ok(), ok, "{url:?}");
         }
     }
 

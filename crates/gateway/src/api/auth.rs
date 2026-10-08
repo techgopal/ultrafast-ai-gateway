@@ -835,6 +835,8 @@ mod tests {
                 role: Role::Admin,
                 status: UserStatus::Active,
                 password_hash: Some("$argon2id$secret-hash".into()),
+                auth_provider: "password".into(),
+                external_id: None,
                 created_at: "2026-01-01 00:00:00".into(),
                 last_active_at: None,
             },

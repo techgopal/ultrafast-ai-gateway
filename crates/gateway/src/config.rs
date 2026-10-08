@@ -252,9 +252,52 @@ pub fn parse_trusted_proxies(values: &[String]) -> Result<Vec<ipnet::IpNet>> {
         .collect()
 }
 
+/// The address people reach the gateway at, from `--public-url` /
+/// `UF_PUBLIC_URL`, like `https://gateway.example.com`. Only an `http` or
+/// `https` URL with a host, without credentials, query or fragment, is
+/// accepted. The error never repeats the value.
+pub fn parse_public_url(value: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(value.trim())
+        .map_err(|_| anyhow::anyhow!("the public URL is not a valid URL"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        anyhow::bail!("the public URL must be an http:// or https:// URL with a host");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!("the public URL must not hold a user name or password");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        anyhow::bail!("the public URL must not hold a query or a fragment");
+    }
+    Ok(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_urls_are_plain_http_addresses() {
+        for ok in [
+            "https://gateway.example.com",
+            "https://gateway.example.com/",
+            " http://localhost:3000 ",
+            "https://example.com/gateway",
+        ] {
+            assert!(parse_public_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "gateway.example.com",
+            "ftp://gateway.example.com",
+            "https://u:p@gateway.example.com",
+            "https://gateway.example.com/?a=1",
+            "https://gateway.example.com/#a",
+            "mailto:a@example.com",
+        ] {
+            let e = parse_public_url(bad).expect_err(bad).to_string();
+            assert!(!e.contains("gateway.example.com"), "{bad}: {e}");
+        }
+    }
 
     #[test]
     fn webhook_urls_may_carry_a_query_but_no_credentials_or_fragment() {

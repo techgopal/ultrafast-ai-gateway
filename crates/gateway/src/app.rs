@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use axum::http::header::{CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::map_response;
@@ -20,6 +20,7 @@ use crate::api;
 use crate::budgets::{Budgets, MemoryBudgets};
 use crate::cache::{Flights, MemoryCache, ResponseCache};
 use crate::errors::error_response;
+use crate::identity::external::SignInProvider;
 use crate::identity::limiter::LoginLimiter;
 use crate::limits::{Limiter, MemoryLimiter};
 use crate::metrics::{self, Metrics};
@@ -59,6 +60,13 @@ pub struct AppState {
     /// Networks whose peers may name the client in `CF-Connecting-IP` or
     /// `X-Forwarded-For`. Empty: those headers are never read.
     pub trusted_proxies: Vec<IpNet>,
+    /// The address people reach the gateway at (`UF_PUBLIC_URL`). Needed
+    /// to turn single sign-on on: the identity provider returns the
+    /// browser to `<public_url>/api/auth/oidc/callback`.
+    pub public_url: Option<reqwest::Url>,
+    /// The provider of single sign-on, when it is on and set up. Rebuilt by
+    /// [`AppState::reload_sign_in`] whenever its settings change.
+    pub sign_in: ArcSwapOption<Arc<dyn SignInProvider>>,
     /// Receives one record per authenticated `/v1` call.
     pub sink: Arc<dyn RequestSink>,
     /// The rate limits of `/v1`: requests, tokens and concurrency.
@@ -106,6 +114,8 @@ impl AppState {
             snapshot: ArcSwap::from_pointee(snapshot),
             refresh_interval: DEFAULT_REFRESH_INTERVAL,
             trusted_proxies: Vec::new(),
+            public_url: None,
+            sign_in: ArcSwapOption::empty(),
             sink: Arc::new(NoopSink),
             rate: Arc::new(MemoryLimiter::new()),
             cache: Arc::new(MemoryCache::new()),
@@ -129,6 +139,40 @@ impl AppState {
             cookie_secure: true,
             hashing: Arc::new(Semaphore::new(MAX_CONCURRENT_HASHES)),
         })
+    }
+
+    /// The address to register at the identity provider: the public URL
+    /// followed by the callback path. `None` without a public URL.
+    pub fn oidc_redirect_uri(&self) -> Option<String> {
+        let base = self.public_url.as_ref()?.as_str().trim_end_matches('/');
+        Some(format!("{base}/api/auth/oidc/callback"))
+    }
+
+    /// Rebuilds the sign-in provider from the stored settings: none when
+    /// single sign-on is off or not complete (no public URL, issuer, client
+    /// id or readable secret). Call it after the settings change, and
+    /// never while a `Tx` is open.
+    pub async fn reload_sign_in(&self) -> anyhow::Result<()> {
+        let settings = self.store.oidc_settings().await?;
+        let secret = settings
+            .client_secret_enc
+            .as_deref()
+            .and_then(|hex| hex::decode(hex).ok())
+            .and_then(|bytes| self.cipher.decrypt(&bytes).ok())
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        let provider = match (
+            settings.enabled,
+            self.oidc_redirect_uri(),
+            secret,
+            settings.issuer.is_empty() || settings.client_id.is_empty(),
+        ) {
+            (true, Some(redirect_uri), Some(secret), false) => {
+                crate::identity::external::build_oidc(&settings, &secret, &redirect_uri, &self.http)
+            }
+            _ => None,
+        };
+        self.sign_in.store(provider.map(Arc::new));
+        Ok(())
     }
 
     /// Rebuilds the snapshot from the database and swaps it in. Do not call

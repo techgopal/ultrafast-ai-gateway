@@ -10,7 +10,7 @@ use super::{check_timestamp, write_error, Store, Tx, DEFAULT_ORG};
 use crate::identity::{Role, UserStatus};
 
 const USER_COLUMNS: &str =
-    "id, email, name, role, status, password_hash, created_at, last_active_at";
+    "id, email, name, role, status, password_hash, auth_provider, external_id, created_at, last_active_at";
 
 const COUNT_ACTIVE_ADMINS: &str =
     "SELECT COUNT(*) FROM users WHERE org_id = ? AND role = 'admin' AND status = 'active'";
@@ -23,6 +23,10 @@ pub struct UserRow {
     pub role: Role,
     pub status: UserStatus,
     pub password_hash: Option<String>,
+    /// `password`, or the id of the sign-in provider the user is linked to.
+    pub auth_provider: String,
+    /// The user's identity at that provider; `None` for password users.
+    pub external_id: Option<String>,
     pub created_at: String,
     pub last_active_at: Option<String>,
 }
@@ -42,6 +46,8 @@ impl fmt::Debug for UserRow {
             .field("role", &self.role)
             .field("status", &self.status)
             .field("password_hash", &password_hash)
+            .field("auth_provider", &self.auth_provider)
+            .field("external_id", &self.external_id)
             .field("created_at", &self.created_at)
             .field("last_active_at", &self.last_active_at)
             .finish()
@@ -76,6 +82,8 @@ fn user_from(r: &SqliteRow) -> Result<UserRow> {
         status: UserStatus::parse(&status)
             .ok_or_else(|| anyhow!("stored user status is not known"))?,
         password_hash: r.get("password_hash"),
+        auth_provider: r.get("auth_provider"),
+        external_id: r.get("external_id"),
         created_at: r.get("created_at"),
         last_active_at: r.get("last_active_at"),
     })
@@ -120,6 +128,26 @@ impl Store {
     }
 
     /// Ordered by email.
+    /// The user linked to this identity at a sign-in provider, whatever
+    /// the user's status.
+    pub async fn user_by_external(
+        &self,
+        provider: &str,
+        external_id: &str,
+    ) -> Result<Option<UserRow>> {
+        let sql = format!(
+            "SELECT {USER_COLUMNS} FROM users
+             WHERE org_id = ? AND auth_provider = ? AND external_id = ?"
+        );
+        let row = sqlx::query(AssertSqlSafe(sql))
+            .bind(DEFAULT_ORG)
+            .bind(provider)
+            .bind(external_id)
+            .fetch_optional(self.pool())
+            .await?;
+        row.as_ref().map(user_from).transpose()
+    }
+
     pub async fn list_users(&self) -> Result<Vec<UserRow>> {
         let mut conn = self.pool().acquire().await?;
         list_users_in(&mut conn).await
@@ -252,6 +280,28 @@ impl Tx<'_> {
         Ok(r.last_insert_rowid())
     }
 
+    /// Links the user to an identity at a sign-in provider. Fails with
+    /// `StoreError::Duplicate` when another user has that identity; false
+    /// when the user does not exist.
+    pub async fn link_external(
+        &mut self,
+        user_id: i64,
+        provider: &str,
+        external_id: &str,
+    ) -> Result<bool> {
+        let r = sqlx::query(
+            "UPDATE users SET auth_provider = ?, external_id = ? WHERE id = ? AND org_id = ?",
+        )
+        .bind(provider)
+        .bind(external_id)
+        .bind(user_id)
+        .bind(DEFAULT_ORG)
+        .execute(self.conn())
+        .await
+        .map_err(write_error)?;
+        Ok(r.rows_affected() == 1)
+    }
+
     pub async fn set_user_name(&mut self, id: i64, name: &str) -> Result<bool> {
         self.set_user_column(
             "UPDATE users SET name = ? WHERE id = ? AND org_id = ?",
@@ -373,6 +423,76 @@ pub(crate) async fn list_users_in(conn: &mut sqlx::SqliteConnection) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn external_identities_are_unique_and_found() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let mut ids = Vec::new();
+        for email in ["a@example.com", "b@example.com", "c@example.com"] {
+            ids.push(
+                tx.insert_user(new_user(email, Role::Member, UserStatus::Active))
+                    .await
+                    .unwrap(),
+            );
+        }
+        // Password users all have no external id and never collide.
+        assert!(tx
+            .user_by_id(ids[0])
+            .await
+            .unwrap()
+            .unwrap()
+            .external_id
+            .is_none());
+        assert!(tx
+            .link_external(ids[0], "oidc", "https://idp|sub-1")
+            .await
+            .unwrap());
+        // Another user cannot take the same identity.
+        let err = tx
+            .link_external(ids[1], "oidc", "https://idp|sub-1")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<StoreError>(),
+            Some(StoreError::Duplicate)
+        ));
+        // The same id under another provider is another identity.
+        assert!(tx
+            .link_external(ids[1], "other", "https://idp|sub-1")
+            .await
+            .unwrap());
+        // Linking again to the same value is fine; a missing user is false.
+        assert!(tx
+            .link_external(ids[0], "oidc", "https://idp|sub-1")
+            .await
+            .unwrap());
+        assert!(!tx.link_external(9999, "oidc", "x|y").await.unwrap());
+        tx.commit().await.unwrap();
+
+        let found = s
+            .user_by_external("oidc", "https://idp|sub-1")
+            .await
+            .unwrap()
+            .expect("linked");
+        assert_eq!(found.id, ids[0]);
+        assert_eq!(found.auth_provider, "oidc");
+        assert_eq!(found.external_id.as_deref(), Some("https://idp|sub-1"));
+        assert!(s
+            .user_by_external("oidc", "https://idp|sub-2")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(s
+            .user_by_external("password", "https://idp|sub-1")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            s.user_by_id(ids[2]).await.unwrap().unwrap().auth_provider,
+            "password"
+        );
+    }
 
     #[tokio::test]
     async fn users_of_teams_and_shared_led_teams() {
@@ -532,6 +652,8 @@ mod tests {
             role: Role::Admin,
             status: UserStatus::Active,
             password_hash: Some("$argon2id$very-secret-hash".into()),
+            auth_provider: "password".into(),
+            external_id: None,
             created_at: "2026-01-01 00:00:00".into(),
             last_active_at: None,
         };

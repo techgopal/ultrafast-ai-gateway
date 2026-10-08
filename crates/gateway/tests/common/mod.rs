@@ -316,6 +316,21 @@ pub async fn api_full(
     }
 }
 
+/// A gateway whose state is changed by `tweak` before it is shared.
+pub async fn api_tweaked(store: Store, tweak: impl FnOnce(&mut AppState)) -> Api {
+    warm_up().unwrap();
+    let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
+    let mut state = AppState::new(store.clone(), cipher).await.unwrap();
+    state.cookie_secure = false;
+    tweak(&mut state);
+    let state = Arc::new(state);
+    Api {
+        app: router(state.clone()),
+        store,
+        state,
+    }
+}
+
 /// Hashing is slow on purpose, so each test password is hashed once.
 fn hash_of(password: &str) -> String {
     static HASHES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
@@ -501,6 +516,16 @@ pub async fn org_behind(trusted: &[&str]) -> Org {
 /// [`org`], with `sink` receiving the request records.
 pub async fn org_with_sink(sink: Option<Arc<dyn RequestSink>>) -> Org {
     build_org(api_full(Store::open_in_memory().await.unwrap(), false, &[], sink).await).await
+}
+
+/// [`org`], started with `UF_PUBLIC_URL` set to this URL.
+pub async fn org_with_public_url(url: &str) -> Org {
+    let url = url.parse().unwrap();
+    let api = api_tweaked(Store::open_in_memory().await.unwrap(), |s| {
+        s.public_url = Some(url);
+    })
+    .await;
+    build_org(api).await
 }
 
 /// [`org`], with its database in a file of a directory of its own, as a
