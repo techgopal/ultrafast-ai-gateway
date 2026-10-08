@@ -271,7 +271,7 @@ describe("Settings: single sign-on", () => {
     await page();
     const one = within(await section());
     await one.findByLabelText("Issuer");
-    const form = one.getByRole("form", { name: "Single sign-on" });
+    const form = one.getByRole("form", { name: "Single sign-on settings" });
     act(() => {
       form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -377,6 +377,27 @@ describe("Settings: single sign-on", () => {
     for (const field of one.getAllByRole("textbox")) {
       expect(field.className.split(/\s+/)).toContain("min-h-11");
     }
+  });
+
+  test("the switch is the only control called Single sign-on", async () => {
+    readOidc(fixtures.oidc.configured);
+    await page();
+    const one = within(await section());
+    await one.findByLabelText("Issuer");
+    // Exactly one: the form has a name of its own.
+    expect(one.getByLabelText("Single sign-on")).toBe(one.getByRole("switch", { name: "Single sign-on" }));
+    expect(one.getByRole("form", { name: "Single sign-on settings" })).toBeInTheDocument();
+  });
+
+  test("the address and its Copy button are one group named by the label", async () => {
+    readOidc(fixtures.oidc.configured);
+    await page();
+    const one = within(await section());
+    const group = await one.findByRole("group", {
+      name: "Address to register at the provider (redirect URI)",
+    });
+    expect(within(group).getByText(fixtures.oidc.configured.redirect_uri)).toBeInTheDocument();
+    expect(within(group).getByRole("button", { name: "Copy address" })).toBeInTheDocument();
   });
 
   test("every field has a name, and the password manager is told not to fill the secret", async () => {

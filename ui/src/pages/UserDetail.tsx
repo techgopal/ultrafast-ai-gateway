@@ -304,7 +304,7 @@ function Details({ id }: { id: number }) {
           <StatusBadge status={shown.status} />
         </dd>
         <dt className="text-muted-foreground">Sign-in</dt>
-        <dd>{signInName(shown.auth_provider)}</dd>
+        <dd>{signInName(shown)}</dd>
         <dt className="text-muted-foreground">Teams</dt>
         <dd className="min-w-0">
           {shown.teams.length === 0 ? (

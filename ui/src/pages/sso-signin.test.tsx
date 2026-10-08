@@ -27,7 +27,7 @@ const SSO_MESSAGES = [
   ["config", "Single sign-on is not set up correctly. Ask an admin."],
   ["not_allowed", "Your account is not allowed to sign in here. Ask an admin to invite you."],
   ["disabled", "Your account is disabled."],
-  ["rate_limited", "Too many sign-in attempts. Wait a minute and try again."],
+  ["rate_limited", "Too many sign-in attempts. Try again in a few minutes."],
 ] as const;
 
 describe("the sign-in page with single sign-on", () => {
@@ -131,6 +131,34 @@ describe("the sign-in page with single sign-on", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Single sign-on is not set up correctly. Ask an admin.",
     );
+  });
+
+  test("the code leaves the address once the message is shown, and next stays", async () => {
+    withSso();
+    startGateway();
+    const app = await renderWithApp(null, {
+      route: `/sign-in?sso_error=idp&next=${encodeURIComponent("/keys")}`,
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your identity provider refused");
+    await waitFor(() => {
+      expect(app.router.state.location.search).toEqual({ next: "/keys" });
+    });
+    // Still said after the address changed.
+    expect(screen.getByRole("alert")).toHaveTextContent("Your identity provider refused");
+    expect(
+      await screen.findByRole("link", { name: "Sign in with Test IdP" }),
+    ).toHaveAttribute("href", `/api/auth/oidc/start?return_to=${encodeURIComponent("/keys")}`);
+  });
+
+  test("without a next the address is the plain sign-in page", async () => {
+    withSso();
+    startGateway();
+    const app = await renderWithApp(null, { route: "/sign-in?sso_error=state" });
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(app.router.state.location.search).toEqual({});
+    });
+    expect(app.router.state.location.href).toBe("/sign-in");
   });
 
   test("a password attempt replaces the message", async () => {

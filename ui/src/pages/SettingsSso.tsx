@@ -97,8 +97,8 @@ function RedirectUri({ uri }: { uri: string | null | undefined }) {
       {uri === null || uri === undefined ? (
         <p className="text-sm text-muted-foreground">{NEEDS_PUBLIC_URL}</p>
       ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          <code aria-labelledby={id} className="min-w-0 break-all rounded-md bg-muted px-2 py-1 text-sm">
+        <div role="group" aria-labelledby={id} className="flex flex-wrap items-center gap-2">
+          <code className="min-w-0 break-all rounded-md bg-muted px-2 py-1 text-sm">
             {uri}
           </code>
           <Button
@@ -173,7 +173,7 @@ function SsoForm({ view }: { view: Oidc }) {
   return (
     <form
       ref={formRef}
-      aria-label="Single sign-on"
+      aria-label="Single sign-on settings"
       noValidate
       className="flex max-w-md flex-col gap-4"
       onSubmit={onSubmit}

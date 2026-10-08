@@ -1,4 +1,5 @@
-import { useRef, useState, type SyntheticEvent } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import { ApiError, messageOfError } from "@/api/errors";
 import { useLogin, useSignInMethods } from "@/api/queries";
 import { safePath } from "@/auth/guards";
@@ -35,7 +36,7 @@ export const SSO_MESSAGES: Readonly<Record<string, string>> = {
   config: SSO_NOT_SET_UP,
   not_allowed: "Your account is not allowed to sign in here. Ask an admin to invite you.",
   disabled: "Your account is disabled.",
-  rate_limited: "Too many sign-in attempts. Wait a minute and try again.",
+  rate_limited: "Too many sign-in attempts. Try again in a few minutes.",
 };
 export const SSO_UNKNOWN = "Single sign-on did not work. Try again.";
 
@@ -66,6 +67,17 @@ export function SignIn({ next, ssoError }: { next?: string | undefined; ssoError
   const error = useRef<HTMLDivElement>(null);
   const failed = useFocusOnFailure(form, error);
   const [message, setMessage] = useState<string | null>(() => ssoMessage(ssoError));
+  const navigate = useNavigate();
+  // The code is said once and then dropped from the address, so that a reload
+  // or a failed password does not bring the same message back. `next` stays.
+  useEffect(() => {
+    if (ssoError === undefined) return;
+    void navigate({
+      to: "/sign-in",
+      search: next === undefined ? {} : { next },
+      replace: true,
+    });
+  }, [ssoError, next, navigate]);
   const methods = useSignInMethods();
   const sso = methods?.oidc ?? null;
   // A full-page navigation: the gateway sends the browser to the provider and

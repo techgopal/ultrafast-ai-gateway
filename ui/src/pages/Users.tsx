@@ -179,8 +179,9 @@ function InviteDialog({ open, invite, onInvited, onCancel }: InviteDialogProps) 
 }
 
 /** How a user signs in, said to people. */
-export function signInName(provider: User["auth_provider"]): string {
-  return provider === "oidc" ? "SSO" : "Password";
+export function signInName(user: Pick<User, "auth_provider" | "has_password">): string {
+  if (user.auth_provider !== "oidc") return "Password";
+  return user.has_password ? "Password and SSO" : "SSO only";
 }
 
 const SIGN_IN_CHOICES: readonly Choice[] = [
@@ -238,7 +239,7 @@ export function Users() {
       {
         id: "sign_in",
         header: "Sign-in",
-        cell: (user) => signInName(user.auth_provider),
+        cell: (user) => signInName(user),
         sortValue: (user) => user.auth_provider,
       },
       {

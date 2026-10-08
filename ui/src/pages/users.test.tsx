@@ -879,16 +879,20 @@ describe("the list after a change", () => {
   });
 });
 
-const sso = { ...fixtures.users.priya, auth_provider: "oidc" } as const;
+/** Made by single sign-on: no password. */
+const sso = { ...fixtures.users.priya, auth_provider: "oidc", has_password: false } as const;
+/** Linked to the provider, and keeps the password they had. */
+const linked = { ...fixtures.users.lena, auth_provider: "oidc", has_password: true } as const;
 
 describe("how users sign in", () => {
-  test("the Sign-in column says Password or SSO", async () => {
-    usersAre([maya, sso]);
+  test("the Sign-in column says Password, SSO only, or Password and SSO", async () => {
+    usersAre([maya, sso, linked]);
     await list();
     await table();
     const cell = (user: fixtures.User) => within(rowOf(user.name)).getAllByRole("cell")[5];
-    expect(cell(maya)).toHaveTextContent("Password");
-    expect(cell(sso)).toHaveTextContent("SSO");
+    expect(cell(maya)).toHaveTextContent(/^Password$/);
+    expect(cell(sso)).toHaveTextContent(/^SSO only$/);
+    expect(cell(linked)).toHaveTextContent(/^Password and SSO$/);
   });
 
   test("the filter shows only users who sign in one way, and says when none match", async () => {
@@ -933,7 +937,16 @@ describe("how users sign in", () => {
     await detail(sso);
     const details = await screen.findByLabelText("Details");
     const term = within(details).getByText("Sign-in");
-    expect(term.nextElementSibling).toHaveTextContent("SSO");
+    expect(term.nextElementSibling?.textContent).toBe("SSO only");
+  });
+
+  test("the page of a linked user with a password says both", async () => {
+    override("get", "/api/users/{id}", () => ok("get", "/api/users/{id}", 200, linked));
+    await detail(linked);
+    const details = await screen.findByLabelText("Details");
+    expect(within(details).getByText("Sign-in").nextElementSibling?.textContent).toBe(
+      "Password and SSO",
+    );
   });
 
   test("a user with a password is said to sign in with it", async () => {

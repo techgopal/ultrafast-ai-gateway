@@ -13,12 +13,18 @@ export function Account() {
     <>
       <PageHeader title="Account" />
       <Profile me={session.me} />
-      <Part
-        title="Password"
-        description="Changing it ends your other sessions and revokes all your access tokens."
-      >
-        <PasswordForm email={session.me.user.email} />
-      </Part>
+      {session.me.user.has_password ? (
+        <Part
+          title="Password"
+          description="Changing it ends your other sessions and revokes all your access tokens."
+        >
+          <PasswordForm email={session.me.user.email} />
+        </Part>
+      ) : (
+        <Part title="Password">
+          <p className="text-sm text-muted-foreground">You sign in with single sign-on.</p>
+        </Part>
+      )}
       <Tokens />
     </>
   );

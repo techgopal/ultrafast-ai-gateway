@@ -2,6 +2,7 @@ import { screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { queryKeys } from "@/api/queries";
 import { active, changeButton, fields, main, maya, page, part, table } from "@/test/account";
+import * as fixtures from "@/test/fixtures";
 import { startGateway } from "@/test/gateway";
 import {
   expectOneH1,
@@ -34,6 +35,28 @@ describe("the account page", () => {
     expectOneMain();
     expectOneH1();
     expect(toasts()).toEqual([]);
+  });
+
+  test("someone without a password is told so, and gets no password form", async () => {
+    const sso = { ...maya, auth_provider: "oidc", has_password: false } as const;
+    startGateway({ signedIn: true, me: { ...fixtures.me.maya, user: sso } });
+    await page();
+    await table();
+    const password = part("Password");
+    expect(password).toHaveTextContent("You sign in with single sign-on.");
+    expect(screen.queryByRole("form", { name: "Change password" })).toBeNull();
+    expect(screen.queryByLabelText("Current password")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change password" })).toBeNull();
+    expectOneMain();
+    expectOneH1();
+  });
+
+  test("someone linked to the provider who keeps a password can change it", async () => {
+    const linked = { ...maya, auth_provider: "oidc", has_password: true } as const;
+    startGateway({ signedIn: true, me: { ...fixtures.me.maya, user: linked } });
+    await page();
+    await table();
+    expect(screen.getByRole("form", { name: "Change password" })).toBeInTheDocument();
   });
 
   test("the session ends while the page is open", async () => {
