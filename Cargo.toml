@@ -31,7 +31,7 @@ rust-embed = { version = "8", features = ["interpolate-folder-path", "debug-embe
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "any", "migrate", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "any", "migrate", "macros", "tls-rustls-aws-lc-rs"] }
 tempfile = "3"
 thiserror = "2"
 time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
