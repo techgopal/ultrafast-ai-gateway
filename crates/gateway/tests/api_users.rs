@@ -669,6 +669,49 @@ async fn two_admins_disabling_each_other_at_once_leave_one() {
     }
 }
 
+/// Two admins who delete each other at the same moment: the guard counts the
+/// admins left after the delete, so the deletes must run one at a time.
+#[tokio::test]
+async fn two_admins_deleting_each_other_at_once_leave_one() {
+    let org = common::org_concurrent().await;
+    let store = org.api.store.clone();
+    let mut tx = store.begin().await.unwrap();
+    tx.set_user_role(org.maya, Role::Member).await.unwrap();
+    tx.commit().await.unwrap();
+    for round in 0..15 {
+        let (ea, eb) = (
+            format!("da{round}@example.com"),
+            format!("db{round}@example.com"),
+        );
+        let a = common::seed_user(&store, &ea, Role::Admin, ORG_PASSWORD).await;
+        let b = common::seed_user(&store, &eb, Role::Admin, ORG_PASSWORD).await;
+        org.api.state.refresh().await.unwrap();
+        let sa = common::sign_in(&org.api.app, &ea, ORG_PASSWORD).await;
+        let sb = common::sign_in(&org.api.app, &eb, ORG_PASSWORD).await;
+        let (path_a, path_b) = (user_path(a), user_path(b));
+        let ((s1, _), (s2, _)) = tokio::join!(
+            org.call(Some(&sa), "DELETE", &path_b, None),
+            org.call(Some(&sb), "DELETE", &path_a, None),
+        );
+        assert!(
+            s1 == StatusCode::NO_CONTENT || s2 == StatusCode::NO_CONTENT,
+            "round {round}: neither delete was made: {s1} {s2}"
+        );
+        assert_eq!(
+            store.count_active_admins().await.unwrap(),
+            1,
+            "round {round}: {s1} {s2}"
+        );
+        // The survivor goes, so the next round's pair are the only admins.
+        let survivor = if s1 == StatusCode::NO_CONTENT { a } else { b };
+        let mut tx = store.begin().await.unwrap();
+        tx.set_user_status(survivor, UserStatus::Disabled)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn activating_a_user_without_password_is_refused() {
     let org = org().await;

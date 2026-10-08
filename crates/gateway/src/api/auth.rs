@@ -980,4 +980,37 @@ mod tests {
         assert!(!text.contains("argon2"));
         assert!(!text.contains("password_hash"));
     }
+
+    /// Four setups reach the insert at the same moment: exactly one makes
+    /// the first admin (on PostgreSQL a plain transaction lets several in).
+    #[tokio::test]
+    async fn simultaneous_first_admins_are_one() {
+        for round in 0..10 {
+            let store = Store::open_in_memory().await.unwrap();
+            // Connections already open, so the tasks really run side by side
+            // (a new connection takes longer than a whole setup).
+            if store.dialect() == crate::store::Dialect::Postgres {
+                let mut warm = Vec::new();
+                for _ in 0..4 {
+                    warm.push(store.pool().acquire().await.unwrap());
+                }
+            }
+            let tasks: Vec<_> = (0..4)
+                .map(|i| {
+                    let store = store.clone();
+                    tokio::spawn(async move {
+                        create_first_admin(&store, &format!("a{i}@example.com"), "A", "hash")
+                            .await
+                            .unwrap()
+                    })
+                })
+                .collect();
+            let mut made = 0;
+            for t in tasks {
+                made += usize::from(t.await.unwrap().is_some());
+            }
+            assert_eq!(made, 1, "round {round}");
+            assert_eq!(store.count_users().await.unwrap(), 1);
+        }
+    }
 }

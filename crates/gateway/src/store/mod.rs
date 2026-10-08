@@ -678,38 +678,65 @@ mod tests {
         assert_eq!(k.team_id, None);
     }
 
-    /// `(table, column)` of every column and the name of every named index,
-    /// from the catalog of the database behind `s`.
-    async fn shape_of(
-        s: &Store,
-    ) -> (
-        std::collections::BTreeSet<String>,
-        std::collections::BTreeSet<String>,
-    ) {
-        let (columns, indexes) = match s.dialect() {
+    type Shape = std::collections::BTreeSet<String>;
+
+    /// Every column (`table.column`, with `NOT NULL` where it is), every
+    /// named index and every foreign key with its ON DELETE action, from the
+    /// catalog of the database behind `s`.
+    async fn shape_of(s: &Store) -> (Shape, Shape, Shape) {
+        let (columns, indexes, keys) = match s.dialect() {
             Dialect::Sqlite => (
-                "SELECT m.name || '.' || p.name FROM sqlite_master m, pragma_table_info(m.name) p
+                "SELECT m.name || '.' || p.name ||
+                        CASE WHEN p.\"notnull\" = 1 OR p.pk > 0 THEN ' NOT NULL' ELSE '' END
+                 FROM sqlite_master m, pragma_table_info(m.name) p
                  WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> '_sqlx_migrations'",
                 "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'",
+                "SELECT m.name || '.' || f.\"from\" || ' -> ' || f.\"table\" || '.' || f.\"to\" ||
+                        ' ON DELETE ' || f.on_delete
+                 FROM sqlite_master m, pragma_foreign_key_list(m.name) f
+                 WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'",
             ),
             Dialect::Postgres => (
-                "SELECT table_name || '.' || column_name FROM information_schema.columns
+                "SELECT table_name || '.' || column_name ||
+                        CASE WHEN is_nullable = 'NO' THEN ' NOT NULL' ELSE '' END
+                 FROM information_schema.columns
                  WHERE table_schema = current_schema() AND table_name <> '_sqlx_migrations'",
                 "SELECT CAST(c.relname AS TEXT) FROM pg_index i
                  JOIN pg_class c ON c.oid = i.indexrelid
                  JOIN pg_namespace n ON n.oid = c.relnamespace
                  WHERE n.nspname = current_schema()
-                   AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid)"
+                   AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid)",
+                "SELECT CAST(cl.relname AS TEXT) || '.' || CAST(a.attname AS TEXT) || ' -> ' ||
+                        CAST(rc.relname AS TEXT) || '.' || CAST(ra.attname AS TEXT) ||
+                        ' ON DELETE ' || CASE c.confdeltype
+                            WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
+                            WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL'
+                            ELSE 'SET DEFAULT' END
+                 FROM pg_constraint c
+                 JOIN pg_class cl ON cl.oid = c.conrelid
+                 JOIN pg_class rc ON rc.oid = c.confrelid
+                 JOIN pg_namespace n ON n.oid = cl.relnamespace
+                 CROSS JOIN LATERAL unnest(c.conkey, c.confkey) AS k(attnum, refnum)
+                 JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+                 JOIN pg_attribute ra ON ra.attrelid = c.confrelid AND ra.attnum = k.refnum
+                 WHERE c.contype = 'f' AND n.nspname = current_schema()",
             ),
         };
-        let columns: Vec<String> = s.scalar(columns).fetch_all(s.pool()).await.unwrap();
-        let indexes: Vec<String> = s.scalar(indexes).fetch_all(s.pool()).await.unwrap();
-        (columns.into_iter().collect(), indexes.into_iter().collect())
+        let mut out = Vec::new();
+        for sql in [columns, indexes, keys] {
+            let rows: Vec<String> = s.scalar(sql).fetch_all(s.pool()).await.unwrap();
+            out.push(rows.into_iter().collect::<Shape>());
+        }
+        let keys = out.pop().unwrap();
+        let indexes = out.pop().unwrap();
+        (out.pop().unwrap(), indexes, keys)
     }
 
-    /// The PostgreSQL baseline plus its later migrations are the SQLite migrations: the same
-    /// tables, columns and named indexes (PostgreSQL adds `route_grants.seq`,
-    /// what SQLite's rowid is). A later migration must go into both.
+    /// The PostgreSQL baseline plus its later migrations are the SQLite
+    /// migrations: the same tables, columns (and which may be NULL), named
+    /// indexes and foreign keys with their ON DELETE action (PostgreSQL adds
+    /// `route_grants.seq`, what SQLite's rowid is). A later migration must go
+    /// into both.
     #[tokio::test]
     async fn the_postgres_baseline_has_the_tables_of_the_sqlite_migrations() {
         if scratch::test_database_url().is_none() {
@@ -720,11 +747,16 @@ mod tests {
         assert_eq!(pg.dialect(), Dialect::Postgres);
         let dir = tempfile::tempdir().unwrap();
         let lite = Store::open(&dir.path().join("gateway.db")).await.unwrap();
-        let (mut pg_columns, pg_indexes) = shape_of(&pg).await;
-        let (lite_columns, lite_indexes) = shape_of(&lite).await;
-        assert!(pg_columns.remove("route_grants.seq"));
-        assert_eq!(pg_columns, lite_columns);
+        let (mut pg_columns, pg_indexes, pg_keys) = shape_of(&pg).await;
+        let (lite_columns, lite_indexes, lite_keys) = shape_of(&lite).await;
+        assert!(pg_columns.remove("route_grants.seq NOT NULL"));
+        assert_eq!(pg_columns, lite_columns, "columns and nullability");
         assert_eq!(pg_indexes, lite_indexes);
+        assert_eq!(pg_keys, lite_keys, "foreign keys and their ON DELETE");
+        assert!(
+            lite_keys.contains("team_members.team_id -> teams.id ON DELETE CASCADE"),
+            "{lite_keys:?}"
+        );
         assert!(
             lite_columns.contains("users.external_id") && lite_indexes.contains("users_external")
         );
