@@ -43,6 +43,12 @@ export interface Account {
 export interface GatewayOptions {
   /** The first admin, from `UF_ADMIN_EMAIL` and `UF_ADMIN_PASSWORD`. None: the gateway needs setup. */
   admin?: Account | undefined;
+  /**
+   * `UF_PUBLIC_URL`: the address people reach the gateway at, which single
+   * sign-on needs. `true`: the gateway's own origin, which is known only once
+   * its port is (the usual case). A text: that address. None: not set.
+   */
+  publicUrl?: boolean | string | undefined;
 }
 
 export interface Gateway {
@@ -126,7 +132,12 @@ export async function freePort(): Promise<number> {
 }
 
 /** The whole environment of the gateway. */
-function environment(dataDir: string, port: number, admin: Account | undefined) {
+function environment(
+  dataDir: string,
+  port: number,
+  admin: Account | undefined,
+  publicUrl: string | undefined,
+) {
   const env: Record<string, string> = {
     UF_DATA_DIR: dataDir,
     UF_HOST: "127.0.0.1",
@@ -137,6 +148,7 @@ function environment(dataDir: string, port: number, admin: Account | undefined) 
     RUST_LOG: "warn,ultrafast::setup=info",
     NO_COLOR: "1",
   };
+  if (publicUrl !== undefined) env.UF_PUBLIC_URL = publicUrl;
   if (admin !== undefined) {
     env.UF_ADMIN_EMAIL = admin.email;
     env.UF_ADMIN_PASSWORD = admin.password;
@@ -253,7 +265,12 @@ async function startOnce(binary: string, options: GatewayOptions): Promise<Try> 
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;
   const child = spawn(binary, ["serve"], {
-    env: environment(dataDir, port, options.admin),
+    env: environment(
+      dataDir,
+      port,
+      options.admin,
+      options.publicUrl === true ? origin : options.publicUrl || undefined,
+    ),
     stdio: ["ignore", "pipe", "pipe"],
   });
   running.set(child, dataDir);

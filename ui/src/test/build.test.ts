@@ -90,6 +90,12 @@ const allowedUrls: AllowedUrl[] = [
   // URL looks like ("... for example https://my-resource.openai.azure.com."). It is a text of
   // the page, with the full stop that ends the sentence. No request: nothing fetches it.
   { text: "https://my-resource.openai.azure.com.", match: "exact" },
+  // pages/SettingsSso.tsx: examples of an issuer (Google, Microsoft Entra ID, where the
+  // text goes on with the tenant) and of the public address of the gateway, as text of
+  // the form's hints. No request: they are not links, and nothing fetches them.
+  { text: "https://accounts.google.com", match: "exact" },
+  { text: "https://login.microsoftonline.com/", match: "exact" },
+  { text: "https://gateway.example.com", match: "exact" },
 ];
 
 // What may follow a `prefix` entry: characters of a path and a query, nothing else.
@@ -144,10 +150,13 @@ describe("the allow-list of the URL scan", () => {
       "http://localhost:11434/v1",
       "https://generativelanguage.googleapis.com",
       "https://my-resource.openai.azure.com.",
+      "https://accounts.google.com",
+      "https://login.microsoftonline.com/",
+      "https://gateway.example.com",
     ]) {
       expect(allowedEntry(url)).toEqual({ text: url, match: "exact" });
     }
-    expect(allowedUrls).toHaveLength(10);
+    expect(allowedUrls).toHaveLength(13);
   });
 });
 

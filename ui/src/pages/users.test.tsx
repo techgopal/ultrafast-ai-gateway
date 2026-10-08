@@ -28,10 +28,10 @@ import {
   expectTheDialogCanBeLeft,
   forbid,
   forgetToasts,
+  installSelect,
   held,
   href,
   inside,
-  installPointerCapture,
   NOT_FOUND,
   sendAndLeaveAtOnce,
   SESSION_ENDED,
@@ -57,7 +57,7 @@ const DELETE_ACTIVE =
   "Their virtual keys keep working without an owner. Revoke the keys first if they should stop.";
 const DELETE_NOT_ACTIVE = "Their virtual keys are revoked.";
 
-beforeAll(installPointerCapture);
+beforeAll(installSelect);
 afterEach(forgetToasts);
 
 function usersAre(list: readonly fixtures.User[]) {
@@ -165,6 +165,7 @@ describe("the list of users", () => {
       "Role",
       "Teams",
       "Status",
+      "Sign-in",
       "Last active",
     ]);
     for (const user of fixtures.userList) {
@@ -345,6 +346,7 @@ describe("the list of users", () => {
       "Role",
       "Teams",
       "Status",
+      "Sign-in",
       "Last active",
     ]);
     const link = within(first).getByRole("link", { name: maya.name });
@@ -877,6 +879,70 @@ describe("the list after a change", () => {
   });
 });
 
+const sso = { ...fixtures.users.priya, auth_provider: "oidc" } as const;
+
+describe("how users sign in", () => {
+  test("the Sign-in column says Password or SSO", async () => {
+    usersAre([maya, sso]);
+    await list();
+    await table();
+    const cell = (user: fixtures.User) => within(rowOf(user.name)).getAllByRole("cell")[5];
+    expect(cell(maya)).toHaveTextContent("Password");
+    expect(cell(sso)).toHaveTextContent("SSO");
+  });
+
+  test("the filter shows only users who sign in one way, and says when none match", async () => {
+    usersAre([maya, arjun, sso]);
+    await list();
+    await table();
+    await userEvent.click(screen.getByRole("combobox", { name: "Sign-in" }));
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual(["All", "Password", "SSO"]);
+    await userEvent.click(screen.getByRole("option", { name: "SSO" }));
+    expect(screen.getByRole("link", { name: sso.name })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: maya.name })).toBeNull();
+    await userEvent.click(screen.getByRole("combobox", { name: "Sign-in" }));
+    await userEvent.click(screen.getByRole("option", { name: "Password" }));
+    expect(screen.queryByRole("link", { name: sso.name })).toBeNull();
+    expect(screen.getByRole("link", { name: maya.name })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: arjun.name })).toBeInTheDocument();
+  });
+
+  test("no filter is offered while nobody signs in with SSO", async () => {
+    await list();
+    await table();
+    expect(screen.queryByRole("combobox", { name: "Sign-in" })).toBeNull();
+  });
+
+  test("a filter that matches nobody says so, and All brings the users back", async () => {
+    usersAre([sso]);
+    await list();
+    await table();
+    await userEvent.click(screen.getByRole("combobox", { name: "Sign-in" }));
+    await userEvent.click(screen.getByRole("option", { name: "Password" }));
+    expect(await screen.findByText("No users match")).toBeInTheDocument();
+    expect(screen.getByText("Change the filter to see more users.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("combobox", { name: "Sign-in" }));
+    await userEvent.click(screen.getByRole("option", { name: "All" }));
+    expect(screen.getByRole("link", { name: sso.name })).toBeInTheDocument();
+  });
+
+  test("the page of a user says how they sign in", async () => {
+    override("get", "/api/users/{id}", () => ok("get", "/api/users/{id}", 200, sso));
+    await detail(sso);
+    const details = await screen.findByLabelText("Details");
+    const term = within(details).getByText("Sign-in");
+    expect(term.nextElementSibling).toHaveTextContent("SSO");
+  });
+
+  test("a user with a password is said to sign in with it", async () => {
+    await detail(lena);
+    const details = await screen.findByLabelText("Details");
+    expect(within(details).getByText("Sign-in").nextElementSibling).toHaveTextContent("Password");
+  });
+});
+
 describe("the page of a user", () => {
   test("it shows the fields of the user", async () => {
     await detail(dana);
@@ -886,6 +952,7 @@ describe("the page of a user", () => {
       "Email",
       "Role",
       "Status",
+      "Sign-in",
       "Teams",
       "Created",
       "Last active",

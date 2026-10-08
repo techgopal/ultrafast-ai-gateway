@@ -894,6 +894,51 @@ export const settings: Settings = {
   login_limits: { window_minutes: 15, max_per_email: 5, max_per_address: 20 },
 };
 
+type OidcView = components["schemas"]["OidcView"];
+type SignInMethods = components["schemas"]["SignInMethods"];
+
+/** `GET /api/auth/methods`: password only, and with single sign-on. */
+export const signInMethods = {
+  passwordOnly: { password: true, oidc: null },
+  withOidc: { password: true, oidc: { label: "Test IdP" } },
+} satisfies Record<string, SignInMethods>;
+
+/** `GET /api/settings/oidc`: as it is before anything is set, and a working setup. */
+export const oidc = {
+  fresh: {
+    enabled: false,
+    label: "SSO",
+    issuer: "",
+    client_id: "",
+    client_secret_set: false,
+    client_secret_unreadable: false,
+    scopes: "",
+    groups_claim: "groups",
+    admin_group: "",
+    link_by_email: true,
+    auto_create: false,
+    allowed_domains: [],
+    redirect_uri: "https://gateway.example.test/api/auth/oidc/callback",
+    public_url_set: true,
+  },
+  configured: {
+    enabled: true,
+    label: "Test IdP",
+    issuer: "https://idp.example.test",
+    client_id: "gateway-client",
+    client_secret_set: true,
+    client_secret_unreadable: false,
+    scopes: "offline_access",
+    groups_claim: "groups",
+    admin_group: "gateway-admins",
+    link_by_email: true,
+    auto_create: true,
+    allowed_domains: ["example.test"],
+    redirect_uri: "https://gateway.example.test/api/auth/oidc/callback",
+    public_url_set: true,
+  },
+} satisfies Record<string, OidcView>;
+
 type ImportReport = components["schemas"]["ImportReport"];
 
 /** What an import reports: what it would do, nothing to do, and a file with errors. */

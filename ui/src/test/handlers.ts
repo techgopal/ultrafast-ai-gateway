@@ -93,6 +93,9 @@ export const handlers = [
   ),
   handler("post", "/api/auth/logout", noContent),
   handler("get", "/api/auth/me", () => ok("get", "/api/auth/me", 200, fixtures.me.maya)),
+  handler("get", "/api/auth/methods", () =>
+    ok("get", "/api/auth/methods", 200, fixtures.signInMethods.passwordOnly),
+  ),
   handler("post", "/api/auth/accept-invite", noContent),
   handler("post", "/api/auth/password", noContent),
 
@@ -262,6 +265,19 @@ export const handlers = [
   ),
   handler("get", "/api/settings", () => ok("get", "/api/settings", 200, fixtures.settings)),
   handler("patch", "/api/settings", () => ok("patch", "/api/settings", 200, fixtures.settings)),
+  handler("get", "/api/settings/oidc", () =>
+    ok("get", "/api/settings/oidc", 200, fixtures.oidc.fresh),
+  ),
+  handler("put", "/api/settings/oidc", () =>
+    ok("put", "/api/settings/oidc", 200, fixtures.oidc.configured),
+  ),
+  handler("post", "/api/settings/oidc/test", () =>
+    ok("post", "/api/settings/oidc/test", 200, {
+      ok: true,
+      issuer: "https://idp.example.test",
+      jwks_keys: 2,
+    }),
+  ),
 
   // logs and usage
   handler("get", "/api/logs", () => ok("get", "/api/logs", 200, { logs: fixtures.logList })),

@@ -108,6 +108,19 @@ test("the gateway gets only its own environment, and leaves nothing when it stop
   }
 });
 
+test("publicUrl sets UF_PUBLIC_URL to the gateway's own address, or to the text given, and is otherwise left out", async () => {
+  const own = await startGateway({ publicUrl: true });
+  const given = await startGateway({ publicUrl: "https://gateway.example.test" });
+  const none = await startGateway({ publicUrl: false });
+  try {
+    expect(variable(own.pid, "UF_PUBLIC_URL")).toBe(own.origin);
+    expect(variable(given.pid, "UF_PUBLIC_URL")).toBe("https://gateway.example.test");
+    expect(environmentNames(none.pid)).not.toContain("UF_PUBLIC_URL");
+  } finally {
+    await Promise.all([own.stop(), given.stop(), none.stop()]);
+  }
+});
+
 /**
  * A test process of its own, which starts a gateway, says which, and waits to
  * be killed. `group`: in a process group of its own, as the job of a terminal

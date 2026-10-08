@@ -1361,6 +1361,8 @@ describe("every mutation calls its operation", () => {
       ["useSetBudget", "PUT /api/budgets", q.useSetBudget, { scope: "gateway", amount_micros: 1, period: "daily", action: "block" }],
       ["useDeleteBudget", "DELETE /api/budgets/1", q.useDeleteBudget, { id: 1 }],
       ["useUpdateSettings", "PATCH /api/settings", q.useUpdateSettings, { log_retention_days: 30 }],
+      ["useUpdateOidcSettings", "PUT /api/settings/oidc", q.useUpdateOidcSettings, { enabled: false }],
+      ["useTestOidc", "POST /api/settings/oidc/test", q.useTestOidc, { issuer: "https://idp.example.test" }],
       ["useImportConfig", "POST /api/config/import?dry_run=true", q.useImportConfig, { file: fixtures.configFile, dryRun: true }],
       ["useCreateToken", "POST /api/tokens", q.useCreateToken, { name: "t" }],
       ["useRevokeToken", "DELETE /api/tokens/1", q.useRevokeToken, { id: 1 }],
@@ -1376,10 +1378,10 @@ describe("every mutation calls its operation", () => {
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 44 of them, 20 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(44);
+  test("there are 46 of them, 22 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(46);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(67);
+    expect(hooks).toHaveLength(71);
     // The alerts: three queries (channels, rules, events by page), and their eight mutations.
     for (const name of ["useAlertChannels", "useAlertRules", "useAlertEventsPages"]) {
       expect(hooks).toContain(name);

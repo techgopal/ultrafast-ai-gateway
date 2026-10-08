@@ -22,7 +22,8 @@ import {
   type Query,
   type QueryKey,
 } from "@tanstack/react-query";
-import { api, importConfig, type BodyOf } from "./client";
+import { useEffect, useState } from "react";
+import { api, importConfig, type BodyOf, type ResponseOf } from "./client";
 import { ApiError, NetworkError, type SessionOverError } from "./errors";
 
 declare module "@tanstack/react-query" {
@@ -120,6 +121,8 @@ export const queryKeys = {
     allEvents: () => ["alerts", "events"] as const,
   },
   settings: () => ["settings"] as const,
+  /** Admin only: the single sign-on settings. */
+  oidc: () => ["settings", "oidc"] as const,
   usage: {
     all: () => ["usage"] as const,
     sums: (group: UsageGroup) => ["usage", group] as const,
@@ -356,7 +359,33 @@ export const settingsOptions = () =>
     queryFn: ({ signal }) => api.get("/api/settings", { signal }),
   });
 
+export const oidcSettingsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.oidc(),
+    queryFn: ({ signal }) => api.get("/api/settings/oidc", { signal }),
+  });
+
 export const useSetupStatus = () => useQuery(setupStatusOptions());
+/**
+ * Public: whether the sign-in page offers single sign-on, and under which
+ * name. `undefined` until the answer, and when there is none. It is the one
+ * read that is not a query of the cache: it belongs to no session, so it is
+ * not kept with what a session ends (the caches are empty then), and the
+ * sign-in page asks it afresh each time it opens.
+ */
+export function useSignInMethods(): ResponseOf<"/api/auth/methods", "get"> | undefined {
+  const [methods, setMethods] = useState<ResponseOf<"/api/auth/methods", "get">>();
+  useEffect(() => {
+    const control = new AbortController();
+    api.get("/api/auth/methods", { signal: control.signal }).then(setMethods, () => undefined);
+    return () => {
+      control.abort();
+    };
+  }, []);
+  return methods;
+}
+/** Admin only. */
+export const useOidcSettings = () => useQuery(oidcSettingsOptions());
 export const useUsers = () => useQuery(usersOptions());
 export const useUser = (id: number) => useQuery(userOptions(id));
 export const useTeams = () => useQuery(teamsOptions());
@@ -906,6 +935,22 @@ export const useUpdateSettings = () =>
   useApiMutation(
     (body: BodyOf<"/api/settings", "patch">) => api.patch("/api/settings", { body }),
     () => ({ stale: [queryKeys.settings(), audit] }),
+  );
+
+/** The answer never holds the client secret; the form keeps it in its field only. */
+export const useUpdateOidcSettings = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/settings/oidc", "put">) => api.put("/api/settings/oidc", { body }),
+    // Users show how they sign in.
+    () => ({ stale: [queryKeys.oidc(), queryKeys.users.all(), audit] }),
+  );
+
+/** Asks the provider and says what it found. Changes nothing. */
+export const useTestOidc = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/settings/oidc/test", "post">) =>
+      api.post("/api/settings/oidc/test", { body }),
+    () => ({ stale: [] }),
   );
 
 // alerts

@@ -362,13 +362,16 @@ const signInRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/sign-in",
   // Only a text is taken; whether it is followed is decided after the sign-in.
-  validateSearch: (search): { next?: string } =>
-    typeof search.next === "string" ? { next: search.next } : {},
+  // `sso_error` is the code the gateway sends back after a failed single sign-on.
+  validateSearch: (search): { next?: string; sso_error?: string } => ({
+    ...(typeof search.next === "string" ? { next: search.next } : {}),
+    ...(typeof search.sso_error === "string" ? { sso_error: search.sso_error } : {}),
+  }),
   component: function SignInRoute() {
     const session = useSession();
-    const { next } = signInRoute.useSearch();
+    const { next, sso_error: ssoError } = signInRoute.useSearch();
     if (session.status === "signedIn") return <GoTo path={safePath(next) ?? "/"} />;
-    return <SignIn />;
+    return <SignIn next={next} ssoError={ssoError} />;
   },
 });
 

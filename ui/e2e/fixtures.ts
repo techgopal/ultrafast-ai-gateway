@@ -29,6 +29,8 @@ export * from "./steps";
 interface Fixtures {
   /** Whether the gateway starts with an admin. Default true; the setup flow sets false. */
   withAdmin: boolean;
+  /** Whether the gateway starts with `UF_PUBLIC_URL` set to its own address (single sign-on needs it). Default false. */
+  publicUrl: boolean;
   /** The first admin: the gateway's when `withAdmin`, else the one the test creates. */
   admin: Account;
   gateway: Gateway;
@@ -43,14 +45,15 @@ interface Fixtures {
 // here: the lint rules of React hooks take a function named `use` for a hook.
 export const test = base.extend<Fixtures>({
   withAdmin: [true, { option: true }],
+  publicUrl: [false, { option: true }],
 
   // eslint-disable-next-line no-empty-pattern -- Playwright reads the dependencies from this pattern.
   admin: async ({}, provide) => {
     await provide(newAccount("admin"));
   },
 
-  gateway: async ({ withAdmin, admin }, provide, testInfo) => {
-    const gateway = await startGateway(withAdmin ? { admin } : {});
+  gateway: async ({ withAdmin, admin, publicUrl }, provide, testInfo) => {
+    const gateway = await startGateway({ ...(withAdmin ? { admin } : {}), publicUrl });
     try {
       await provide(gateway);
     } finally {

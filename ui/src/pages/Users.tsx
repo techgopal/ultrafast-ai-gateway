@@ -9,6 +9,7 @@ import { useSession } from "@/auth/session";
 import { control } from "@/components/classes";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
+import { FilterSelect, type Choice } from "@/components/FilterSelect";
 import { Field } from "@/components/Field";
 import { applyApiError, onField, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
@@ -177,12 +178,24 @@ function InviteDialog({ open, invite, onInvited, onCancel }: InviteDialogProps) 
   );
 }
 
+/** How a user signs in, said to people. */
+export function signInName(provider: User["auth_provider"]): string {
+  return provider === "oidc" ? "SSO" : "Password";
+}
+
+const SIGN_IN_CHOICES: readonly Choice[] = [
+  { value: "all", label: "All" },
+  { value: "password", label: "Password" },
+  { value: "oidc", label: "SSO" },
+];
+
 export function Users() {
   const session = useSession();
   const users = useUsers();
   const invite = useInviteUser();
   const once = useSecretOnce(invite);
   const [inviting, setInviting] = useState(false);
+  const [signIn, setSignIn] = useState("all");
   const ownId = session.status === "signedIn" ? session.me.user.id : null;
 
   const columns = useMemo(
@@ -223,6 +236,12 @@ export function Users() {
         sortValue: (user) => user.status,
       },
       {
+        id: "sign_in",
+        header: "Sign-in",
+        cell: (user) => signInName(user.auth_provider),
+        sortValue: (user) => user.auth_provider,
+      },
+      {
         id: "last_active_at",
         header: "Last active",
         cell: (user) => <Timestamp value={user.last_active_at} />,
@@ -253,6 +272,10 @@ export function Users() {
   ) : undefined;
 
   const failed = users.error !== null && users.data === undefined;
+  const all = users.data?.users ?? [];
+  // Nobody to tell apart, nothing to filter: the filter shows once someone signs in with SSO.
+  const anySso = all.some((user) => user.auth_provider === "oidc");
+  const rows = anySso && signIn !== "all" ? all.filter((user) => user.auth_provider === signIn) : all;
   return (
     <>
       {failed ? null : <PageHeader title="Users" actions={inviteButton} />}
@@ -265,14 +288,32 @@ export function Users() {
           }}
         />
       ) : (
-        <DataTable
-          caption="Users"
-          columns={columns}
-          rows={users.data?.users ?? []}
-          loading={users.isPending}
-          getRowId={(user) => String(user.id)}
-          empty={<EmptyState title="No users" description="Nobody is here for you to see." />}
-        />
+        <>
+          {anySso ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <FilterSelect
+                label="Sign-in"
+                value={signIn}
+                choices={SIGN_IN_CHOICES}
+                onChange={setSignIn}
+              />
+            </div>
+          ) : null}
+          <DataTable
+            caption="Users"
+            columns={columns}
+            rows={rows}
+            loading={users.isPending}
+            getRowId={(user) => String(user.id)}
+            empty={
+              all.length === 0 ? (
+                <EmptyState title="No users" description="Nobody is here for you to see." />
+              ) : (
+                <EmptyState title="No users match" description="Change the filter to see more users." />
+              )
+            }
+          />
+        </>
       )}
       {mayInvite ? (
         <>

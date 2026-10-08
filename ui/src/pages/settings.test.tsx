@@ -218,12 +218,19 @@ describe("the sections of the page", () => {
   test("the page has its sections, each with a heading, and a way to the audit log", async () => {
     await page();
     await days();
+    await screen.findByLabelText("Issuer");
     expectOneMain();
     expectOneH1("Settings");
     const headings = within(screen.getByRole("main"))
       .getAllByRole("heading", { level: 2 })
       .map((h) => h.textContent);
-    expect(headings).toEqual(["Retention", "Sign-in", "Backup", "Configuration"]);
+    expect(headings).toEqual([
+      "Retention",
+      "Sign-in",
+      "Single sign-on (OIDC)",
+      "Backup",
+      "Configuration",
+    ]);
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     expect(within(nav).getByRole("link", { name: "General" })).toHaveAttribute("aria-current", "page");
     expect(within(nav).getByRole("link", { name: "Audit log" })).toHaveAttribute(

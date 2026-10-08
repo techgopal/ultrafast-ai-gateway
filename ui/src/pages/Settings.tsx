@@ -20,6 +20,7 @@ import { BackupSection } from "@/pages/SettingsBackup";
 import { ConfigSection } from "@/pages/SettingsConfig";
 import { AuditSection } from "@/pages/SettingsAudit";
 import { SignInSection } from "@/pages/SettingsSignIn";
+import { SsoSection } from "@/pages/SettingsSso";
 
 export const DONE = "Settings saved.";
 export const RETENTION_RULE = "Enter a whole number from 1 to 3650.";
@@ -142,6 +143,7 @@ function General() {
         <>
           <RetentionSection days={settings.data.log_retention_days} />
           <SignInSection settings={settings.data} />
+          <SsoSection />
         </>
       ) : settings.error !== null ? (
         <ErrorState

@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { YouBadge } from "@/components/YouBadge";
 import { idOf } from "@/lib/id";
-import { INVITE_LINK_DESCRIPTION, INVITE_LINK_TITLE, inviteUrl } from "@/pages/Users";
+import { INVITE_LINK_DESCRIPTION, INVITE_LINK_TITLE, inviteUrl, signInName } from "@/pages/Users";
 
 type User = components["schemas"]["UserView"];
 
@@ -303,6 +303,8 @@ function Details({ id }: { id: number }) {
         <dd>
           <StatusBadge status={shown.status} />
         </dd>
+        <dt className="text-muted-foreground">Sign-in</dt>
+        <dd>{signInName(shown.auth_provider)}</dd>
         <dt className="text-muted-foreground">Teams</dt>
         <dd className="min-w-0">
           {shown.teams.length === 0 ? (
