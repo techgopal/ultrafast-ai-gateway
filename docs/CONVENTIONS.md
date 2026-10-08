@@ -81,6 +81,10 @@ and briefs add to these; they do not repeat them.
 - A write transaction that reads before it writes starts with `BEGIN IMMEDIATE`
   (as the configuration import does); a deferred one fails at once with SQLite
   code 517 when another writer commits in between.
+  On PostgreSQL `begin_immediate` takes an advisory lock that is per database, not per
+  schema: it serializes these transactions across every gateway process (and every test
+  schema) sharing that database. Code that reads, decides and writes (a last-admin
+  check, a first-user check) must use it; a plain transaction is READ COMMITTED there.
 - Sign-in methods other than the password sit behind the `SignInProvider` trait
   (`identity/external.rs`): `begin(return_to)` returns the redirect and a flow
   cookie value, `complete(&CallbackParams, flow_cookie)` returns
