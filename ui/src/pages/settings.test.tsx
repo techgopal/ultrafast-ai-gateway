@@ -447,6 +447,25 @@ describe("backup", () => {
     ).toBeInTheDocument();
     expect(within(section).queryByRole("link", { name: "Download backup" })).toBeNull();
     expect(within(section).queryByText(/useless without it/)).toBeNull();
+    // The master key is still the one thing a dump cannot carry.
+    expect(
+      within(section).getByText(
+        "Keep UF_MASTER_KEY apart from the dumps: without it the stored provider credentials cannot be read.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test("while the settings are not known the panel describes no download", async () => {
+    override("get", "/api/settings", () => refuse(errors.internal_error));
+    await page();
+    const section = await screen.findByRole("region", { name: "Backup" });
+    expect(
+      within(section).getByText("Backup options appear once the settings have loaded."),
+    ).toBeInTheDocument();
+    expect(within(section).queryByText(/Database:/)).toBeNull();
+    expect(within(section).queryByText(/A consistent copy/)).toBeNull();
+    expect(within(section).queryByText(/master key/)).toBeNull();
+    expect(within(section).queryByRole("link", { name: "Download backup" })).toBeNull();
   });
 
   test("the session is checked first, then the download starts", async () => {
