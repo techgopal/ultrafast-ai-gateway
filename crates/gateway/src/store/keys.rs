@@ -1,10 +1,12 @@
 //! Virtual keys.
 
 use anyhow::{Context, Result};
-use sqlx::sqlite::SqliteRow;
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::AnyConnection;
+use sqlx::Row;
 
-use super::{check_timestamp, write_error, Store, Tx, DEFAULT_ORG};
+use super::dialect::Dialected;
+use super::{check_timestamp, flag, now, write_error, Store, Tx, DEFAULT_ORG};
 use crate::tags::{self, Tags};
 
 /// A virtual key as stored. It never holds the key or its hash.
@@ -43,14 +45,14 @@ pub fn parse_allowed(raw: Option<&str>) -> Option<Vec<String>> {
 const KEY_SELECT: &str = "SELECT k.id, k.name, k.display, k.user_id, k.team_id,
             k.expires_at, k.revoked_at, k.created_at, k.allowed, k.tags, k.team_only,
             u.email AS owner_email, t.name AS team_name,
-            (u.id IS NOT NULL AND u.status <> 'active') AS owner_inactive
+            CASE WHEN u.id IS NOT NULL AND u.status <> 'active' THEN 1 ELSE 0 END AS owner_inactive
      FROM virtual_keys k
      LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
      LEFT JOIN teams t ON t.id = k.team_id AND t.org_id = k.org_id";
 
 const KEY_ORDER: &str = "ORDER BY k.created_at DESC, k.id DESC";
 
-fn key_from(r: &SqliteRow) -> KeyRow {
+fn key_from(r: &AnyRow) -> KeyRow {
     KeyRow {
         id: r.get("id"),
         name: r.get("name"),
@@ -62,10 +64,10 @@ fn key_from(r: &SqliteRow) -> KeyRow {
         created_at: r.get("created_at"),
         owner_email: r.get("owner_email"),
         team_name: r.get("team_name"),
-        owner_inactive: r.get("owner_inactive"),
+        owner_inactive: r.get::<i64, _>("owner_inactive") != 0,
         allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
         tags: tags::parse_stored(r.get::<Option<String>, _>("tags").as_deref()),
-        team_only: r.get("team_only"),
+        team_only: r.get::<i64, _>("team_only") != 0,
     }
 }
 
@@ -113,11 +115,13 @@ impl Store {
              WHERE k.key_hash = ?
                AND k.org_id = ?
                AND k.revoked_at IS NULL
-               AND (k.expires_at IS NULL OR k.expires_at > datetime('now'))"
+               AND (k.expires_at IS NULL OR k.expires_at > ?)"
         );
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(hash)
             .bind(DEFAULT_ORG)
+            .bind(now())
             .fetch_optional(self.pool())
             .await?;
         Ok(row.as_ref().map(key_from))
@@ -126,7 +130,8 @@ impl Store {
     /// Finds a key whether or not it is live.
     pub async fn key_by_id(&self, id: i64) -> Result<Option<KeyRow>> {
         let sql = format!("{KEY_SELECT} WHERE k.id = ? AND k.org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -137,7 +142,8 @@ impl Store {
     /// Newest first, including revoked and expired keys.
     pub async fn list_keys(&self) -> Result<Vec<KeyRow>> {
         let sql = format!("{KEY_SELECT} WHERE k.org_id = ? {KEY_ORDER}");
-        let rows = sqlx::query(AssertSqlSafe(sql))
+        let rows = self
+            .q_dyn(sql)
             .bind(DEFAULT_ORG)
             .fetch_all(self.pool())
             .await?;
@@ -155,9 +161,7 @@ impl Store {
              WHERE k.org_id = ? AND (k.user_id = ? OR k.team_id IN ({marks}))
              {KEY_ORDER}"
         );
-        let mut query = sqlx::query(AssertSqlSafe(sql))
-            .bind(DEFAULT_ORG)
-            .bind(own_id);
+        let mut query = self.q_dyn(sql).bind(DEFAULT_ORG).bind(own_id);
         for team_id in team_ids {
             query = query.bind(team_id);
         }
@@ -188,42 +192,41 @@ impl Tx<'_> {
         if let Some(value) = expires_at {
             check_timestamp(value).context("expires_at is not valid")?;
         }
-        let r = sqlx::query(
-            "INSERT INTO virtual_keys
+        let id: i64 = self
+            .scalar(
+                "INSERT INTO virtual_keys
                  (org_id, name, key_hash, display, expires_at, user_id, team_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(name)
-        .bind(hash)
-        .bind(display)
-        .bind(expires_at)
-        .bind(user_id)
-        .bind(team_id)
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
-        Ok(r.last_insert_rowid())
+             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            )
+            .bind(DEFAULT_ORG)
+            .bind(name)
+            .bind(hash)
+            .bind(display)
+            .bind(expires_at)
+            .bind(user_id)
+            .bind(team_id)
+            .fetch_one(self.conn())
+            .await
+            .map_err(write_error)?;
+        Ok(id)
     }
 
     /// Records who made the key, and whether it acts for its team only.
     pub async fn set_key_origin(&mut self, id: i64, user_id: i64, team_only: bool) -> Result<()> {
-        sqlx::query(
-            "UPDATE virtual_keys SET created_by = ?, team_only = ? WHERE id = ? AND org_id = ?",
-        )
-        .bind(user_id)
-        .bind(team_only)
-        .bind(id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await?;
+        self.q("UPDATE virtual_keys SET created_by = ?, team_only = ? WHERE id = ? AND org_id = ?")
+            .bind(user_id)
+            .bind(flag(team_only))
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
         Ok(())
     }
 
     /// Sets the names the key may call. `None` removes the allowlist.
     pub async fn set_key_allowed(&mut self, id: i64, allowed: Option<&[String]>) -> Result<()> {
         let json = allowed.map(serde_json::to_string).transpose()?;
-        sqlx::query("UPDATE virtual_keys SET allowed = ? WHERE id = ? AND org_id = ?")
+        self.q("UPDATE virtual_keys SET allowed = ? WHERE id = ? AND org_id = ?")
             .bind(json)
             .bind(id)
             .bind(DEFAULT_ORG)
@@ -234,7 +237,8 @@ impl Tx<'_> {
 
     /// Sets the tags of the key; an empty set removes them.
     pub async fn set_key_tags(&mut self, id: i64, tags: &Tags) -> Result<bool> {
-        let r = sqlx::query("UPDATE virtual_keys SET tags = ? WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("UPDATE virtual_keys SET tags = ? WHERE id = ? AND org_id = ?")
             .bind(tags::to_stored(tags))
             .bind(id)
             .bind(DEFAULT_ORG)
@@ -245,71 +249,74 @@ impl Tx<'_> {
 
     /// Revokes every key of the user that is not revoked yet. Returns how many.
     pub async fn revoke_keys_of(&mut self, user_id: i64) -> Result<u64> {
-        let r = sqlx::query(
-            "UPDATE virtual_keys SET revoked_at = datetime('now')
-             WHERE user_id = ? AND org_id = ? AND revoked_at IS NULL",
-        )
-        .bind(user_id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await?;
+        let r = self
+            .q("UPDATE virtual_keys SET revoked_at = ?
+             WHERE user_id = ? AND org_id = ? AND revoked_at IS NULL")
+            .bind(now())
+            .bind(user_id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
         Ok(r.rows_affected())
     }
 
     /// Revokes the team keys the user owns: such a key needs its owner.
     pub async fn revoke_team_keys_of(&mut self, user_id: i64) -> Result<u64> {
-        let r = sqlx::query(
-            "UPDATE virtual_keys SET revoked_at = datetime('now')
-             WHERE user_id = ? AND org_id = ? AND team_only = 1 AND revoked_at IS NULL",
-        )
-        .bind(user_id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await?;
+        let r = self
+            .q("UPDATE virtual_keys SET revoked_at = ?
+             WHERE user_id = ? AND org_id = ? AND team_only = 1 AND revoked_at IS NULL")
+            .bind(now())
+            .bind(user_id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
         Ok(r.rows_affected())
     }
 
     /// How many keys of the user work: not revoked and not expired.
     pub async fn count_live_keys_of(&mut self, user_id: i64) -> Result<i64> {
-        let count = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM virtual_keys
+        let count = self
+            .scalar(
+                "SELECT COUNT(*) FROM virtual_keys
              WHERE user_id = ? AND org_id = ? AND revoked_at IS NULL
-               AND (expires_at IS NULL OR expires_at > datetime('now'))",
-        )
-        .bind(user_id)
-        .bind(DEFAULT_ORG)
-        .fetch_one(self.conn())
-        .await?;
+               AND (expires_at IS NULL OR expires_at > ?)",
+            )
+            .bind(user_id)
+            .bind(DEFAULT_ORG)
+            .bind(now())
+            .fetch_one(self.conn())
+            .await?;
         Ok(count)
     }
 
     /// Returns whether a live key was revoked. Revoking again changes nothing.
     pub async fn revoke_key(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query(
-            "UPDATE virtual_keys SET revoked_at = datetime('now')
-             WHERE id = ? AND org_id = ? AND revoked_at IS NULL",
-        )
-        .bind(id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await?;
+        let r = self
+            .q("UPDATE virtual_keys SET revoked_at = ?
+             WHERE id = ? AND org_id = ? AND revoked_at IS NULL")
+            .bind(now())
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
         Ok(r.rows_affected() == 1)
     }
 }
 
-pub(crate) async fn live_keys_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<LiveKey>> {
-    let rows = sqlx::query(
-        "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at, k.allowed,
+pub(crate) async fn live_keys_in(conn: &mut AnyConnection) -> Result<Vec<LiveKey>> {
+    let rows = conn
+        .q(
+            "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at, k.allowed,
                 k.tags, k.team_only
          FROM virtual_keys k
          LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
          WHERE k.org_id = ?
            AND k.revoked_at IS NULL
            AND (k.user_id IS NULL OR u.status = 'active')",
-    )
-    .bind(DEFAULT_ORG)
-    .fetch_all(&mut *conn)
-    .await?;
+        )
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
     Ok(rows
         .iter()
         .map(|r| LiveKey {
@@ -321,7 +328,7 @@ pub(crate) async fn live_keys_in(conn: &mut sqlx::SqliteConnection) -> Result<Ve
             expires_at: r.get("expires_at"),
             allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
             tags: tags::parse_stored(r.get::<Option<String>, _>("tags").as_deref()),
-            team_only: r.get("team_only"),
+            team_only: r.get::<i64, _>("team_only") != 0,
         })
         .collect())
 }

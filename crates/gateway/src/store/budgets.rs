@@ -1,9 +1,11 @@
 //! Budgets, their cached usage, and the spend counted in the request logs.
 
 use anyhow::{anyhow, Result};
-use sqlx::sqlite::{SqliteConnection, SqliteRow};
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::AnyConnection;
+use sqlx::Row;
 
+use super::dialect::Dialected;
 use super::{AuditEntry, Store, Tx, DEFAULT_ORG};
 use crate::budgets::{BudgetAction, Period};
 use crate::limits::LimitScope;
@@ -57,7 +59,7 @@ const SELECT: &str = "SELECT b.id, b.scope, b.scope_id, b.amount_micros, b.perio
      LEFT JOIN users u ON b.scope = 'user' AND u.id = b.scope_id AND u.org_id = b.org_id
      LEFT JOIN teams t ON b.scope = 'team' AND t.id = b.scope_id AND t.org_id = b.org_id";
 
-fn budget_from(r: &SqliteRow) -> Result<BudgetRow> {
+fn budget_from(r: &AnyRow) -> Result<BudgetRow> {
     let scope: String = r.get("scope");
     let period: String = r.get("period");
     let action: String = r.get("action");
@@ -79,12 +81,9 @@ fn budget_from(r: &SqliteRow) -> Result<BudgetRow> {
 }
 
 /// Every budget, oldest first, on the connection of a transaction.
-pub(super) async fn list_budgets_in(conn: &mut SqliteConnection) -> Result<Vec<BudgetRow>> {
+pub(super) async fn list_budgets_in(conn: &mut AnyConnection) -> Result<Vec<BudgetRow>> {
     let sql = format!("{SELECT} WHERE b.org_id = ? ORDER BY b.id");
-    let rows = sqlx::query(AssertSqlSafe(sql))
-        .bind(DEFAULT_ORG)
-        .fetch_all(conn)
-        .await?;
+    let rows = conn.q_dyn(sql).bind(DEFAULT_ORG).fetch_all(conn).await?;
     rows.iter().map(budget_from).collect()
 }
 
@@ -105,7 +104,7 @@ impl Store {
         budget_id: i64,
         period_start: &str,
     ) -> Result<Option<(u64, bool)>> {
-        let row: Option<(i64, i64)> = sqlx::query_as(
+        let row: Option<(i64, i64)> = self.query_as(
             "SELECT spent_micros, alerted FROM budget_usage WHERE budget_id = ? AND period_start = ?",
         )
         .bind(budget_id)
@@ -136,12 +135,10 @@ impl Store {
             ),
         };
         let sql = format!(
-            "SELECT COALESCE(SUM(cost_micros), 0) FROM request_logs
+            "SELECT CAST(COALESCE(SUM(cost_micros), 0) AS BIGINT) FROM request_logs
              WHERE org_id = ? AND at >= ? AND {filter}"
         );
-        let mut q = sqlx::query_scalar(AssertSqlSafe(sql))
-            .bind(DEFAULT_ORG)
-            .bind(since);
+        let mut q = self.scalar_dyn(sql).bind(DEFAULT_ORG).bind(since);
         for _ in 0..binds {
             q = q.bind(scope_id);
         }
@@ -176,15 +173,14 @@ impl Store {
         let mut tx = self.begin().await?;
         tx.write_usage(period_start, budget_id, spent_micros)
             .await?;
-        let marked = sqlx::query(
-            "UPDATE budget_usage SET alerted = 1
-             WHERE budget_id = ? AND period_start = ? AND alerted = 0",
-        )
-        .bind(budget_id)
-        .bind(period_start)
-        .execute(tx.conn())
-        .await?
-        .rows_affected();
+        let marked = self
+            .q("UPDATE budget_usage SET alerted = 1
+             WHERE budget_id = ? AND period_start = ? AND alerted = 0")
+            .bind(budget_id)
+            .bind(period_start)
+            .execute(tx.conn())
+            .await?
+            .rows_affected();
         if marked == 1 {
             tx.audit(AuditEntry {
                 actor_user_id: None,
@@ -206,11 +202,14 @@ impl Tx<'_> {
         // Within a period spend only grows, so a late or older write never
         // lowers what the row holds. The WHERE clause keeps a budget that was deleted meanwhile from
         // failing the foreign key.
-        sqlx::query(
+        let greatest = self
+            .dialect()
+            .greatest("budget_usage.spent_micros", "excluded.spent_micros");
+        self.q_dyn(format!(
             "INSERT INTO budget_usage (budget_id, period_start, spent_micros)
              SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM budgets WHERE id = ?)
-             ON CONFLICT (budget_id, period_start) DO UPDATE SET spent_micros = MAX(spent_micros, excluded.spent_micros)",
-        )
+             ON CONFLICT (budget_id, period_start) DO UPDATE SET spent_micros = {greatest}"
+        ))
         .bind(budget_id)
         .bind(period_start)
         .bind(to_i64(spent))
@@ -222,7 +221,8 @@ impl Tx<'_> {
 
     pub async fn budget_by_id(&mut self, id: i64) -> Result<Option<BudgetRow>> {
         let sql = format!("{SELECT} WHERE b.id = ? AND b.org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())
@@ -242,27 +242,29 @@ impl Tx<'_> {
         action: BudgetAction,
     ) -> Result<i64> {
         let amount = i64::try_from(amount_micros).map_err(|_| anyhow!("budget is too large"))?;
-        let id: i64 = sqlx::query_scalar(
-            "INSERT INTO budgets (org_id, scope, scope_id, amount_micros, period, action)
+        let id: i64 = self
+            .scalar(
+                "INSERT INTO budgets (org_id, scope, scope_id, amount_micros, period, action)
              VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT (org_id, scope, COALESCE(scope_id, 0), period) DO UPDATE SET
                  amount_micros = excluded.amount_micros,
                  action = excluded.action
              RETURNING id",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(scope.as_str())
-        .bind(scope_id)
-        .bind(amount)
-        .bind(period.as_str())
-        .bind(action.as_str())
-        .fetch_one(self.conn())
-        .await?;
+            )
+            .bind(DEFAULT_ORG)
+            .bind(scope.as_str())
+            .bind(scope_id)
+            .bind(amount)
+            .bind(period.as_str())
+            .bind(action.as_str())
+            .fetch_one(self.conn())
+            .await?;
         Ok(id)
     }
 
     pub async fn delete_budget(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM budgets WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM budgets WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())

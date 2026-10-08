@@ -2,9 +2,10 @@
 //! as they are at one moment, with the names that identify them.
 
 use anyhow::Result;
-use sqlx::sqlite::SqliteConnection;
+use sqlx::AnyConnection;
 use sqlx::Row;
 
+use super::dialect::Dialected;
 use super::{
     budgets, limits, models, providers, routes, settings, BudgetRow, GrantRow, LimitRow, ModelRow,
     ProviderRow, RouteRow, Store, TargetRow, Tx, DEFAULT_ORG,
@@ -33,18 +34,20 @@ pub struct ConfigState {
     pub alert_rules: Vec<super::alerts::RuleRow>,
 }
 
-async fn read(conn: &mut SqliteConnection) -> Result<ConfigState> {
+async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
     let providers = providers::list_providers_in(conn).await?;
     let models = models::list_models_in(conn).await?;
     let model_grants = models::list_model_grants_in(conn).await?;
-    let teams = sqlx::query("SELECT id, name FROM teams WHERE org_id = ? ORDER BY name")
+    let teams = conn
+        .q("SELECT id, name FROM teams WHERE org_id = ? ORDER BY name")
         .bind(DEFAULT_ORG)
         .fetch_all(&mut *conn)
         .await?
         .iter()
         .map(|r| (r.get("id"), r.get("name")))
         .collect();
-    let users = sqlx::query("SELECT id, email FROM users WHERE org_id = ? ORDER BY email")
+    let users = conn
+        .q("SELECT id, email FROM users WHERE org_id = ? ORDER BY email")
         .bind(DEFAULT_ORG)
         .fetch_all(&mut *conn)
         .await?

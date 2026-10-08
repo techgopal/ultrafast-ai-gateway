@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 
+use super::dialect::Dialected;
 use super::Store;
 
 impl Store {
@@ -20,6 +21,9 @@ impl Store {
     /// the master key, which is not in it: provider credentials in the copy
     /// are unreadable without that key.
     pub async fn backup_to(&self, path: &Path) -> Result<()> {
+        if self.dialect != super::Dialect::Sqlite {
+            bail!("only a SQLite database can be copied this way");
+        }
         if self.dir.is_none() {
             // SQLite writes nothing for an in-memory database.
             bail!("an in-memory database cannot be backed up");
@@ -34,7 +38,8 @@ impl Store {
         // readable by others while it is written (`VACUUM INTO` takes an
         // empty file that exists).
         create_private(path)?;
-        let done = sqlx::query("VACUUM INTO ?")
+        let done = self
+            .q("VACUUM INTO ?")
             .bind(target)
             .execute(self.pool())
             .await;

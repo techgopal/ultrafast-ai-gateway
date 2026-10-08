@@ -4,9 +4,10 @@ use std::collections::HashMap;
 use std::fmt;
 
 use anyhow::Result;
-use sqlx::sqlite::SqliteConnection;
+use sqlx::AnyConnection;
 use sqlx::Row;
 
+use super::dialect::Dialected;
 use super::{Store, Tx};
 
 const LOG_RETENTION_DAYS: &str = "log_retention_days";
@@ -89,8 +90,9 @@ impl fmt::Debug for OidcSettings {
     }
 }
 
-async fn oidc_settings_in(conn: &mut SqliteConnection) -> Result<OidcSettings> {
-    let rows = sqlx::query("SELECT key, value FROM settings WHERE substr(key, 1, 5) = 'oidc.'")
+async fn oidc_settings_in(conn: &mut AnyConnection) -> Result<OidcSettings> {
+    let rows = conn
+        .q("SELECT key, value FROM settings WHERE substr(key, 1, 5) = 'oidc.'")
         .fetch_all(conn)
         .await?;
     let mut values: HashMap<String, String> = rows
@@ -129,21 +131,20 @@ async fn oidc_settings_in(conn: &mut SqliteConnection) -> Result<OidcSettings> {
     Ok(s)
 }
 
-async fn put_setting(conn: &mut SqliteConnection, key: &str, value: &str) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO settings (key, value) VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    )
-    .bind(key)
-    .bind(value)
-    .execute(conn)
-    .await?;
+async fn put_setting(conn: &mut AnyConnection, key: &str, value: &str) -> Result<()> {
+    conn.q("INSERT INTO settings (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(key)
+        .bind(value)
+        .execute(conn)
+        .await?;
     Ok(())
 }
 
 /// How many days request logs are kept, on the connection of a transaction.
-pub(super) async fn log_retention_days_in(conn: &mut SqliteConnection) -> Result<i64> {
-    let value: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+pub(super) async fn log_retention_days_in(conn: &mut AnyConnection) -> Result<i64> {
+    let value: Option<String> = conn
+        .scalar("SELECT value FROM settings WHERE key = ?")
         .bind(LOG_RETENTION_DAYS)
         .fetch_optional(conn)
         .await?;
@@ -154,8 +155,9 @@ pub(super) async fn log_retention_days_in(conn: &mut SqliteConnection) -> Result
 }
 
 /// How many hours a new session lives, on the connection of a transaction.
-pub(super) async fn session_hours_in(conn: &mut SqliteConnection) -> Result<i64> {
-    let value: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+pub(super) async fn session_hours_in(conn: &mut AnyConnection) -> Result<i64> {
+    let value: Option<String> = conn
+        .scalar("SELECT value FROM settings WHERE key = ?")
         .bind(SESSION_HOURS)
         .fetch_optional(conn)
         .await?;
@@ -218,26 +220,22 @@ impl Tx<'_> {
     }
 
     pub async fn set_session_hours(&mut self, hours: i64) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO settings (key, value) VALUES (?, ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .bind(SESSION_HOURS)
-        .bind(hours.to_string())
-        .execute(self.conn())
-        .await?;
+        self.q("INSERT INTO settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(SESSION_HOURS)
+            .bind(hours.to_string())
+            .execute(self.conn())
+            .await?;
         Ok(())
     }
 
     pub async fn set_log_retention_days(&mut self, days: i64) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO settings (key, value) VALUES (?, ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .bind(LOG_RETENTION_DAYS)
-        .bind(days.to_string())
-        .execute(self.conn())
-        .await?;
+        self.q("INSERT INTO settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(LOG_RETENTION_DAYS)
+            .bind(days.to_string())
+            .execute(self.conn())
+            .await?;
         Ok(())
     }
 }

@@ -4,10 +4,12 @@
 use std::fmt;
 
 use anyhow::Result;
-use sqlx::sqlite::{SqliteConnection, SqliteRow};
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::AnyConnection;
+use sqlx::Row;
 
-use super::{now, write_error, Store, Tx, DEFAULT_ORG};
+use super::dialect::Dialected;
+use super::{flag, now, write_error, Store, Tx, DEFAULT_ORG};
 
 const CHANNEL_SELECT: &str =
     "SELECT id, name, kind, url_enc, url_host, secret_enc, enabled, created_at FROM alert_channels";
@@ -45,7 +47,7 @@ impl fmt::Debug for ChannelRow {
     }
 }
 
-fn channel_from(r: &SqliteRow) -> ChannelRow {
+fn channel_from(r: &AnyRow) -> ChannelRow {
     ChannelRow {
         id: r.get("id"),
         name: r.get("name"),
@@ -53,7 +55,7 @@ fn channel_from(r: &SqliteRow) -> ChannelRow {
         url_enc: r.get("url_enc"),
         url_host: r.get("url_host"),
         secret_enc: r.get("secret_enc"),
-        enabled: r.get("enabled"),
+        enabled: r.get::<i64, _>("enabled") != 0,
         created_at: r.get("created_at"),
     }
 }
@@ -83,36 +85,36 @@ pub struct StateRow {
     pub since: String,
 }
 
-fn rule_from(r: &SqliteRow) -> RuleRow {
+fn rule_from(r: &AnyRow) -> RuleRow {
     RuleRow {
         id: r.get("id"),
         name: r.get("name"),
         kind: r.get("kind"),
         params: r.get("params"),
-        enabled: r.get("enabled"),
+        enabled: r.get::<i64, _>("enabled") != 0,
         created_at: r.get("created_at"),
         channel_ids: Vec::new(),
     }
 }
 
 /// Every rule by name, with its channels, on any connection.
-pub(super) async fn list_alert_rules_in(conn: &mut SqliteConnection) -> Result<Vec<RuleRow>> {
+pub(super) async fn list_alert_rules_in(conn: &mut AnyConnection) -> Result<Vec<RuleRow>> {
     let sql = format!("{RULE_SELECT} WHERE org_id = ? ORDER BY name");
-    let mut rules: Vec<RuleRow> = sqlx::query(AssertSqlSafe(sql))
+    let mut rules: Vec<RuleRow> = conn
+        .q_dyn(sql)
         .bind(DEFAULT_ORG)
         .fetch_all(&mut *conn)
         .await?
         .iter()
         .map(rule_from)
         .collect();
-    let links = sqlx::query(
-        "SELECT l.rule_id, l.channel_id FROM alert_rule_channels l
+    let links = conn
+        .q("SELECT l.rule_id, l.channel_id FROM alert_rule_channels l
          JOIN alert_rules r ON r.id = l.rule_id
-         WHERE r.org_id = ? ORDER BY l.channel_id",
-    )
-    .bind(DEFAULT_ORG)
-    .fetch_all(&mut *conn)
-    .await?;
+         WHERE r.org_id = ? ORDER BY l.channel_id")
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
     for link in &links {
         let (rule_id, channel_id): (i64, i64) = (link.get(0), link.get(1));
         if let Some(rule) = rules.iter_mut().find(|r| r.id == rule_id) {
@@ -124,13 +126,13 @@ pub(super) async fn list_alert_rules_in(conn: &mut SqliteConnection) -> Result<V
 
 /// `(id, name, kind)` of every channel: no URL and no secret, not even encrypted.
 pub(super) async fn list_channel_names_in(
-    conn: &mut SqliteConnection,
+    conn: &mut AnyConnection,
 ) -> Result<Vec<(i64, String, String)>> {
-    let rows =
-        sqlx::query("SELECT id, name, kind FROM alert_channels WHERE org_id = ? ORDER BY name")
-            .bind(DEFAULT_ORG)
-            .fetch_all(conn)
-            .await?;
+    let rows = conn
+        .q("SELECT id, name, kind FROM alert_channels WHERE org_id = ? ORDER BY name")
+        .bind(DEFAULT_ORG)
+        .fetch_all(conn)
+        .await?;
     Ok(rows
         .iter()
         .map(|r| (r.get(0), r.get(1), r.get(2)))
@@ -167,7 +169,7 @@ pub struct AlertEventRow {
     pub deliveries: String,
 }
 
-fn event_from(r: &SqliteRow) -> AlertEventRow {
+fn event_from(r: &AnyRow) -> AlertEventRow {
     AlertEventRow {
         id: r.get("id"),
         rule_id: r.get("rule_id"),
@@ -193,29 +195,31 @@ impl Tx<'_> {
         secret_enc: &[u8],
         enabled: bool,
     ) -> Result<i64> {
-        let r = sqlx::query(
-            "INSERT INTO alert_channels
+        let id: i64 = self
+            .scalar(
+                "INSERT INTO alert_channels
                  (org_id, name, kind, url_enc, url_host, secret_enc, enabled, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(name)
-        .bind(kind)
-        .bind(url_enc)
-        .bind(url_host)
-        .bind(secret_enc)
-        .bind(enabled)
-        .bind(now())
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
-        Ok(r.last_insert_rowid())
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            )
+            .bind(DEFAULT_ORG)
+            .bind(name)
+            .bind(kind)
+            .bind(url_enc)
+            .bind(url_host)
+            .bind(secret_enc)
+            .bind(flag(enabled))
+            .bind(now())
+            .fetch_one(self.conn())
+            .await
+            .map_err(write_error)?;
+        Ok(id)
     }
 
     /// For a read inside a transaction; see `Store::alert_channel_by_id`.
     pub async fn alert_channel_by_id(&mut self, id: i64) -> Result<Option<ChannelRow>> {
         let sql = format!("{CHANNEL_SELECT} WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())
@@ -232,28 +236,28 @@ impl Tx<'_> {
         url: Option<(&[u8], &str)>,
         enabled: Option<bool>,
     ) -> Result<bool> {
-        let r = sqlx::query(
-            "UPDATE alert_channels
+        let r = self
+            .q("UPDATE alert_channels
              SET name = COALESCE(?, name),
                  url_enc = COALESCE(?, url_enc),
                  url_host = COALESCE(?, url_host),
                  enabled = COALESCE(?, enabled)
-             WHERE id = ? AND org_id = ?",
-        )
-        .bind(name)
-        .bind(url.map(|(enc, _)| enc))
-        .bind(url.map(|(_, host)| host))
-        .bind(enabled)
-        .bind(id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
+             WHERE id = ? AND org_id = ?")
+            .bind(name)
+            .bind(url.map(|(enc, _)| enc))
+            .bind(url.map(|(_, host)| host))
+            .bind(enabled.map(flag))
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await
+            .map_err(write_error)?;
         Ok(r.rows_affected() == 1)
     }
 
     pub async fn set_alert_channel_secret(&mut self, id: i64, secret_enc: &[u8]) -> Result<bool> {
-        let r = sqlx::query("UPDATE alert_channels SET secret_enc = ? WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("UPDATE alert_channels SET secret_enc = ? WHERE id = ? AND org_id = ?")
             .bind(secret_enc)
             .bind(id)
             .bind(DEFAULT_ORG)
@@ -264,7 +268,8 @@ impl Tx<'_> {
 
     /// Its links to rules go with it. Returns `false` if there is no such channel.
     pub async fn delete_alert_channel(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM alert_channels WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM alert_channels WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -280,20 +285,21 @@ impl Tx<'_> {
         params: &str,
         enabled: bool,
     ) -> Result<i64> {
-        let r = sqlx::query(
-            "INSERT INTO alert_rules (org_id, name, kind, params, enabled, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(name)
-        .bind(kind)
-        .bind(params)
-        .bind(enabled)
-        .bind(now())
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
-        Ok(r.last_insert_rowid())
+        let id: i64 = self
+            .scalar(
+                "INSERT INTO alert_rules (org_id, name, kind, params, enabled, created_at)
+             VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            )
+            .bind(DEFAULT_ORG)
+            .bind(name)
+            .bind(kind)
+            .bind(params)
+            .bind(flag(enabled))
+            .bind(now())
+            .fetch_one(self.conn())
+            .await
+            .map_err(write_error)?;
+        Ok(id)
     }
 
     /// Changes what is given. A taken name is `StoreError::Duplicate`;
@@ -305,21 +311,20 @@ impl Tx<'_> {
         params: Option<&str>,
         enabled: Option<bool>,
     ) -> Result<bool> {
-        let r = sqlx::query(
-            "UPDATE alert_rules
+        let r = self
+            .q("UPDATE alert_rules
              SET name = COALESCE(?, name),
                  params = COALESCE(?, params),
                  enabled = COALESCE(?, enabled)
-             WHERE id = ? AND org_id = ?",
-        )
-        .bind(name)
-        .bind(params)
-        .bind(enabled)
-        .bind(id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
+             WHERE id = ? AND org_id = ?")
+            .bind(name)
+            .bind(params)
+            .bind(enabled.map(flag))
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await
+            .map_err(write_error)?;
         Ok(r.rows_affected() == 1)
     }
 
@@ -329,13 +334,14 @@ impl Tx<'_> {
         rule_id: i64,
         channel_ids: &[i64],
     ) -> Result<()> {
-        sqlx::query("DELETE FROM alert_rule_channels WHERE rule_id = ?")
+        self.q("DELETE FROM alert_rule_channels WHERE rule_id = ?")
             .bind(rule_id)
             .execute(self.conn())
             .await?;
         for channel_id in channel_ids {
-            sqlx::query(
-                "INSERT OR IGNORE INTO alert_rule_channels (rule_id, channel_id) VALUES (?, ?)",
+            self.q(
+                "INSERT INTO alert_rule_channels (rule_id, channel_id) VALUES (?, ?)
+                 ON CONFLICT DO NOTHING",
             )
             .bind(rule_id)
             .bind(channel_id)
@@ -347,7 +353,8 @@ impl Tx<'_> {
 
     /// Its links, states and channels' links go with it; its events stay.
     pub async fn delete_alert_rule(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM alert_rules WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM alert_rules WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -357,7 +364,7 @@ impl Tx<'_> {
 
     /// Forgets every subject a rule is firing for.
     pub async fn clear_alert_states(&mut self, rule_id: i64) -> Result<()> {
-        sqlx::query("DELETE FROM alert_state WHERE rule_id = ?")
+        self.q("DELETE FROM alert_state WHERE rule_id = ?")
             .bind(rule_id)
             .execute(self.conn())
             .await?;
@@ -373,22 +380,21 @@ impl Tx<'_> {
         subject: &str,
         since: &str,
     ) -> Result<bool> {
-        let r = sqlx::query(
-            "INSERT INTO alert_state (rule_id, subject, firing, since)
+        let r = self
+            .q("INSERT INTO alert_state (rule_id, subject, firing, since)
              SELECT ?, ?, 1, ? WHERE EXISTS (SELECT 1 FROM alert_rules WHERE id = ? AND enabled = 1)
-             ON CONFLICT (rule_id, subject) DO UPDATE SET firing = 1, since = excluded.since",
-        )
-        .bind(rule_id)
-        .bind(subject)
-        .bind(since)
-        .bind(rule_id)
-        .execute(self.conn())
-        .await?;
+             ON CONFLICT (rule_id, subject) DO UPDATE SET firing = 1, since = excluded.since")
+            .bind(rule_id)
+            .bind(subject)
+            .bind(since)
+            .bind(rule_id)
+            .execute(self.conn())
+            .await?;
         Ok(r.rows_affected() > 0)
     }
 
     pub async fn delete_alert_state(&mut self, rule_id: i64, subject: &str) -> Result<()> {
-        sqlx::query("DELETE FROM alert_state WHERE rule_id = ? AND subject = ?")
+        self.q("DELETE FROM alert_state WHERE rule_id = ? AND subject = ?")
             .bind(rule_id)
             .bind(subject)
             .execute(self.conn())
@@ -404,44 +410,44 @@ impl Tx<'_> {
         prefix: &str,
         keep: &str,
     ) -> Result<()> {
-        sqlx::query(
-            "DELETE FROM alert_state
-             WHERE rule_id = ? AND substr(subject, 1, length(?)) = ? AND subject <> ?",
-        )
-        .bind(rule_id)
-        .bind(prefix)
-        .bind(prefix)
-        .bind(keep)
-        .execute(self.conn())
-        .await?;
+        self.q("DELETE FROM alert_state
+             WHERE rule_id = ? AND substr(subject, 1, length(?)) = ? AND subject <> ?")
+            .bind(rule_id)
+            .bind(prefix)
+            .bind(prefix)
+            .bind(keep)
+            .execute(self.conn())
+            .await?;
         Ok(())
     }
 
     pub async fn insert_alert_event(&mut self, e: NewAlertEvent<'_>) -> Result<i64> {
-        let r = sqlx::query(
-            "INSERT INTO alert_events
+        let id: i64 = self
+            .scalar(
+                "INSERT INTO alert_events
                  (org_id, rule_id, rule_name, kind, subject, state, summary, details, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(e.rule_id)
-        .bind(e.rule_name)
-        .bind(e.kind)
-        .bind(e.subject)
-        .bind(e.state)
-        .bind(e.summary)
-        .bind(e.details)
-        .bind(e.at)
-        .execute(self.conn())
-        .await?;
-        Ok(r.last_insert_rowid())
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            )
+            .bind(DEFAULT_ORG)
+            .bind(e.rule_id)
+            .bind(e.rule_name)
+            .bind(e.kind)
+            .bind(e.subject)
+            .bind(e.state)
+            .bind(e.summary)
+            .bind(e.details)
+            .bind(e.at)
+            .fetch_one(self.conn())
+            .await?;
+        Ok(id)
     }
 }
 
 impl Store {
     pub async fn alert_channel_by_id(&self, id: i64) -> Result<Option<ChannelRow>> {
         let sql = format!("{CHANNEL_SELECT} WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -452,7 +458,8 @@ impl Store {
     /// Ordered by name.
     pub async fn list_alert_channels(&self) -> Result<Vec<ChannelRow>> {
         let sql = format!("{CHANNEL_SELECT} WHERE org_id = ? ORDER BY name");
-        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let rows = self
+            .q_dyn(sql)
             .bind(DEFAULT_ORG)
             .fetch_all(self.pool())
             .await?;
@@ -461,16 +468,15 @@ impl Store {
 
     /// `(channel id, rule id, rule name)` of every link, by rule name.
     pub async fn alert_channel_rules(&self) -> Result<Vec<(i64, i64, String)>> {
-        let rows = sqlx::query(
-            "SELECT l.channel_id, r.id, r.name
+        let rows = self
+            .q("SELECT l.channel_id, r.id, r.name
              FROM alert_rule_channels l
              JOIN alert_rules r ON r.id = l.rule_id
              WHERE r.org_id = ?
-             ORDER BY r.name",
-        )
-        .bind(DEFAULT_ORG)
-        .fetch_all(self.pool())
-        .await?;
+             ORDER BY r.name")
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.pool())
+            .await?;
         Ok(rows
             .iter()
             .map(|r| (r.get(0), r.get(1), r.get(2)))
@@ -479,7 +485,8 @@ impl Store {
 
     pub async fn alert_event(&self, id: i64) -> Result<Option<AlertEventRow>> {
         let sql = format!("{EVENT_SELECT} WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -503,14 +510,13 @@ impl Store {
 
     /// What rules are firing for, by rule then subject.
     pub async fn alert_states(&self) -> Result<Vec<StateRow>> {
-        let rows = sqlx::query(
-            "SELECT s.rule_id, s.subject, s.since FROM alert_state s
+        let rows = self
+            .q("SELECT s.rule_id, s.subject, s.since FROM alert_state s
              JOIN alert_rules r ON r.id = s.rule_id
-             WHERE r.org_id = ? AND s.firing = 1 ORDER BY s.rule_id, s.subject",
-        )
-        .bind(DEFAULT_ORG)
-        .fetch_all(self.pool())
-        .await?;
+             WHERE r.org_id = ? AND s.firing = 1 ORDER BY s.rule_id, s.subject")
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.pool())
+            .await?;
         Ok(rows
             .iter()
             .map(|r| StateRow {
@@ -523,14 +529,13 @@ impl Store {
 
     /// The enabled channels a rule sends to.
     pub async fn enabled_channel_ids_of_rule(&self, rule_id: i64) -> Result<Vec<i64>> {
-        let rows = sqlx::query(
-            "SELECT c.id FROM alert_rule_channels l
+        let rows = self
+            .q("SELECT c.id FROM alert_rule_channels l
              JOIN alert_channels c ON c.id = l.channel_id
-             WHERE l.rule_id = ? AND c.enabled = 1 ORDER BY c.id",
-        )
-        .bind(rule_id)
-        .fetch_all(self.pool())
-        .await?;
+             WHERE l.rule_id = ? AND c.enabled = 1 ORDER BY c.id")
+            .bind(rule_id)
+            .fetch_all(self.pool())
+            .await?;
         Ok(rows.iter().map(|r| r.get(0)).collect())
     }
 
@@ -549,7 +554,8 @@ impl Store {
                AND (? IS NULL OR id < ?)
              ORDER BY id DESC LIMIT ?"
         );
-        let rows = sqlx::query(AssertSqlSafe(sql))
+        let rows = self
+            .q_dyn(sql)
             .bind(DEFAULT_ORG)
             .bind(rule_id)
             .bind(rule_id)
@@ -566,7 +572,8 @@ impl Store {
     /// Newest first.
     pub async fn alert_events(&self, limit: i64) -> Result<Vec<AlertEventRow>> {
         let sql = format!("{EVENT_SELECT} WHERE org_id = ? ORDER BY id DESC LIMIT ?");
-        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let rows = self
+            .q_dyn(sql)
             .bind(DEFAULT_ORG)
             .bind(limit)
             .fetch_all(self.pool())
@@ -577,7 +584,8 @@ impl Store {
     /// Writes the outcome of every channel in one statement. Returns
     /// `false` if there is no such event.
     pub async fn set_alert_event_deliveries(&self, id: i64, deliveries: &str) -> Result<bool> {
-        let r = sqlx::query("UPDATE alert_events SET deliveries = ? WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("UPDATE alert_events SET deliveries = ? WHERE id = ? AND org_id = ?")
             .bind(deliveries)
             .bind(id)
             .bind(DEFAULT_ORG)

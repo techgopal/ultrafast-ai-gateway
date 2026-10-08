@@ -1,12 +1,14 @@
 //! The model catalog and who may call each model.
 
+use sqlx::AnyConnection;
 use std::collections::HashSet;
 
 use anyhow::Result;
-use sqlx::sqlite::SqliteRow;
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::Row;
 
-use super::{write_error, Store, Tx, DEFAULT_ORG};
+use super::dialect::Dialected;
+use super::{flag, write_error, Store, Tx, DEFAULT_ORG};
 
 const MODEL_SELECT: &str = "SELECT m.id, m.provider_id, p.name AS provider_name, m.name,
             m.enabled, m.created_at, m.input_price_micros, m.output_price_micros
@@ -26,7 +28,7 @@ pub struct ModelRow {
     pub output_price_micros: Option<i64>,
 }
 
-fn model_from(r: &SqliteRow) -> ModelRow {
+fn model_from(r: &AnyRow) -> ModelRow {
     ModelRow {
         id: r.get("id"),
         provider_id: r.get("provider_id"),
@@ -58,7 +60,8 @@ pub struct Grants {
 impl Tx<'_> {
     pub async fn model_by_id(&mut self, id: i64) -> Result<Option<ModelRow>> {
         let sql = format!("{MODEL_SELECT} WHERE m.id = ? AND m.org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())
@@ -68,55 +71,56 @@ impl Tx<'_> {
 
     /// The id of the provider's model of this name, if it has one.
     pub async fn model_id_by_name(&mut self, provider_id: i64, name: &str) -> Result<Option<i64>> {
-        let id = sqlx::query_scalar(
-            "SELECT id FROM models WHERE provider_id = ? AND name = ? AND org_id = ?",
-        )
-        .bind(provider_id)
-        .bind(name)
-        .bind(DEFAULT_ORG)
-        .fetch_optional(self.conn())
-        .await?;
+        let id = self
+            .scalar("SELECT id FROM models WHERE provider_id = ? AND name = ? AND org_id = ?")
+            .bind(provider_id)
+            .bind(name)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(self.conn())
+            .await?;
         Ok(id)
     }
 
     /// The names the provider already has.
     pub async fn model_names_of(&mut self, provider_id: i64) -> Result<HashSet<String>> {
-        let names: Vec<String> =
-            sqlx::query_scalar("SELECT name FROM models WHERE provider_id = ? AND org_id = ?")
-                .bind(provider_id)
-                .bind(DEFAULT_ORG)
-                .fetch_all(self.conn())
-                .await?;
+        let names: Vec<String> = self
+            .scalar("SELECT name FROM models WHERE provider_id = ? AND org_id = ?")
+            .bind(provider_id)
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.conn())
+            .await?;
         Ok(names.into_iter().collect())
     }
 
     pub async fn count_models_of(&mut self, provider_id: i64) -> Result<i64> {
-        let n =
-            sqlx::query_scalar("SELECT COUNT(*) FROM models WHERE provider_id = ? AND org_id = ?")
-                .bind(provider_id)
-                .bind(DEFAULT_ORG)
-                .fetch_one(self.conn())
-                .await?;
+        let n = self
+            .scalar("SELECT COUNT(*) FROM models WHERE provider_id = ? AND org_id = ?")
+            .bind(provider_id)
+            .bind(DEFAULT_ORG)
+            .fetch_one(self.conn())
+            .await?;
         Ok(n)
     }
 
     /// A disabled model with nobody granted. A taken name is
     /// `StoreError::Duplicate`.
     pub async fn insert_model(&mut self, provider_id: i64, name: &str) -> Result<i64> {
-        let r = sqlx::query("INSERT INTO models (org_id, provider_id, name) VALUES (?, ?, ?)")
+        let id: i64 = self
+            .scalar("INSERT INTO models (org_id, provider_id, name) VALUES (?, ?, ?) RETURNING id")
             .bind(DEFAULT_ORG)
             .bind(provider_id)
             .bind(name)
-            .execute(self.conn())
+            .fetch_one(self.conn())
             .await
             .map_err(write_error)?;
-        Ok(r.last_insert_rowid())
+        Ok(id)
     }
 
     /// Returns `false` if there is no such model.
     pub async fn set_model_enabled(&mut self, id: i64, enabled: bool) -> Result<bool> {
-        let r = sqlx::query("UPDATE models SET enabled = ? WHERE id = ? AND org_id = ?")
-            .bind(enabled)
+        let r = self
+            .q("UPDATE models SET enabled = ? WHERE id = ? AND org_id = ?")
+            .bind(flag(enabled))
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -127,7 +131,8 @@ impl Tx<'_> {
     /// Sets the price of input tokens; `None` makes it unknown. Returns
     /// `false` if there is no such model.
     pub async fn set_model_input_price(&mut self, id: i64, price: Option<i64>) -> Result<bool> {
-        let r = sqlx::query("UPDATE models SET input_price_micros = ? WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("UPDATE models SET input_price_micros = ? WHERE id = ? AND org_id = ?")
             .bind(price)
             .bind(id)
             .bind(DEFAULT_ORG)
@@ -138,19 +143,20 @@ impl Tx<'_> {
 
     /// Like `set_model_input_price`, for output tokens.
     pub async fn set_model_output_price(&mut self, id: i64, price: Option<i64>) -> Result<bool> {
-        let r =
-            sqlx::query("UPDATE models SET output_price_micros = ? WHERE id = ? AND org_id = ?")
-                .bind(price)
-                .bind(id)
-                .bind(DEFAULT_ORG)
-                .execute(self.conn())
-                .await?;
+        let r = self
+            .q("UPDATE models SET output_price_micros = ? WHERE id = ? AND org_id = ?")
+            .bind(price)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
         Ok(r.rows_affected() == 1)
     }
 
     /// Returns `false` if there is no such model. Its grants go with it.
     pub async fn delete_model(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM models WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM models WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -161,7 +167,7 @@ impl Tx<'_> {
     /// Replaces every grant of the model. The ids must be distinct and
     /// exist; the caller checks.
     pub async fn replace_grants(&mut self, model_id: i64, grants: &Grants) -> Result<()> {
-        sqlx::query("DELETE FROM model_grants WHERE model_id = ? AND org_id = ?")
+        self.q("DELETE FROM model_grants WHERE model_id = ? AND org_id = ?")
             .bind(model_id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -173,7 +179,7 @@ impl Tx<'_> {
             .chain(grants.team_ids.iter().map(|t| (Some(*t), None)))
             .chain(grants.user_ids.iter().map(|u| (None, Some(*u))));
         for (team_id, user_id) in rows {
-            sqlx::query(
+            self.q(
                 "INSERT INTO model_grants (org_id, model_id, team_id, user_id) VALUES (?, ?, ?, ?)",
             )
             .bind(DEFAULT_ORG)
@@ -187,19 +193,18 @@ impl Tx<'_> {
     }
 
     pub async fn grants_of(&mut self, model_id: i64) -> Result<Grants> {
-        let rows = sqlx::query(
-            "SELECT model_id, team_id, user_id FROM model_grants
-             WHERE model_id = ? AND org_id = ? ORDER BY id",
-        )
-        .bind(model_id)
-        .bind(DEFAULT_ORG)
-        .fetch_all(self.conn())
-        .await?;
+        let rows = self
+            .q("SELECT model_id, team_id, user_id FROM model_grants
+             WHERE model_id = ? AND org_id = ? ORDER BY id")
+            .bind(model_id)
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.conn())
+            .await?;
         Ok(grants_of_rows(rows.iter().map(grant_from)))
     }
 }
 
-fn grant_from(r: &SqliteRow) -> GrantRow {
+fn grant_from(r: &AnyRow) -> GrantRow {
     GrantRow {
         model_id: r.get("model_id"),
         team_id: r.get("team_id"),
@@ -229,7 +234,8 @@ impl Store {
 
     pub async fn model_by_id(&self, id: i64) -> Result<Option<ModelRow>> {
         let sql = format!("{MODEL_SELECT} WHERE m.id = ? AND m.org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -244,36 +250,33 @@ impl Store {
     }
 
     pub async fn grants_of(&self, model_id: i64) -> Result<Grants> {
-        let rows = sqlx::query(
-            "SELECT model_id, team_id, user_id FROM model_grants
-             WHERE model_id = ? AND org_id = ? ORDER BY id",
-        )
-        .bind(model_id)
-        .bind(DEFAULT_ORG)
-        .fetch_all(self.pool())
-        .await?;
+        let rows = self
+            .q("SELECT model_id, team_id, user_id FROM model_grants
+             WHERE model_id = ? AND org_id = ? ORDER BY id")
+            .bind(model_id)
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.pool())
+            .await?;
         Ok(grants_of_rows(rows.iter().map(grant_from)))
     }
 }
 
-pub(crate) async fn list_models_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<ModelRow>> {
+pub(crate) async fn list_models_in(conn: &mut AnyConnection) -> Result<Vec<ModelRow>> {
     let sql = format!("{MODEL_SELECT} WHERE m.org_id = ? ORDER BY p.name, m.name");
-    let rows = sqlx::query(AssertSqlSafe(sql))
+    let rows = conn
+        .q_dyn(sql)
         .bind(DEFAULT_ORG)
         .fetch_all(&mut *conn)
         .await?;
     Ok(rows.iter().map(model_from).collect())
 }
 
-pub(crate) async fn list_model_grants_in(
-    conn: &mut sqlx::SqliteConnection,
-) -> Result<Vec<GrantRow>> {
-    let rows = sqlx::query(
-        "SELECT model_id, team_id, user_id FROM model_grants WHERE org_id = ? ORDER BY id",
-    )
-    .bind(DEFAULT_ORG)
-    .fetch_all(&mut *conn)
-    .await?;
+pub(crate) async fn list_model_grants_in(conn: &mut AnyConnection) -> Result<Vec<GrantRow>> {
+    let rows = conn
+        .q("SELECT model_id, team_id, user_id FROM model_grants WHERE org_id = ? ORDER BY id")
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
     Ok(rows.iter().map(grant_from).collect())
 }
 

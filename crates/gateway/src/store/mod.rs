@@ -1,9 +1,11 @@
-//! SQLite storage. Nothing outside this module writes SQL.
+//! Storage on one connection API (`sqlx::Any`), SQLite today. Nothing outside
+//! this module writes SQL, and nothing in it names a database except `dialect`.
 
 mod alerts;
 mod audit;
 mod backup;
 mod budgets;
+pub mod dialect;
 mod keys;
 mod limits;
 mod logs;
@@ -17,15 +19,13 @@ mod teams;
 mod users;
 
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteConnection, SqliteJournalMode, SqlitePool, SqlitePoolOptions,
-};
-use sqlx::Sqlite;
+use sqlx::any::{install_default_drivers, AnyPoolOptions};
+use sqlx::Any;
+use sqlx::{AnyConnection, AnyPool};
 use time::format_description::BorrowedFormatItem;
 use time::macros::format_description;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
@@ -33,6 +33,8 @@ use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 pub use alerts::{AlertEventRow, ChannelRow, NewAlertEvent, RuleRow, StateRow};
 pub use audit::{AuditEntry, AuditRow};
 pub use budgets::{BudgetRow, UsageRow};
+pub use dialect::Dialect;
+pub(crate) use dialect::Dialected;
 pub use keys::{parse_allowed, KeyRow, LiveKey};
 pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
@@ -54,7 +56,7 @@ pub const DEFAULT_ORG: i64 = 1;
 const TIMESTAMP: &[BorrowedFormatItem<'static>] =
     format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
 
-/// Timestamps are compared as text against each other and `datetime('now')`,
+/// Timestamps are compared as text against each other and [`now`],
 /// so anything other than exactly `YYYY-MM-DD HH:MM:SS` could compare wrongly.
 pub fn check_timestamp(value: &str) -> Result<()> {
     if value.len() == 19 && PrimitiveDateTime::parse(value, TIMESTAMP).is_ok() {
@@ -82,6 +84,33 @@ pub fn after(seconds: i64) -> String {
         .expect("a UTC time formats with a fixed numeric layout")
 }
 
+/// A file path as the path part of a `sqlite:` URL.
+fn encode_path(path: &Path) -> String {
+    let mut out = String::new();
+    for b in path.to_string_lossy().bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(char::from(b));
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// A flag as it is stored: an integer, on every database.
+pub(crate) fn flag(on: bool) -> i64 {
+    i64::from(on)
+}
+
+/// The day after `day` (`YYYY-MM-DD`), or `None` when it is not a date.
+pub(crate) fn next_day(day: &str) -> Option<String> {
+    let date = time::Date::parse(day, format_description!("[year]-[month]-[day]")).ok()?;
+    date.next_day()?
+        .format(format_description!("[year]-[month]-[day]"))
+        .ok()
+}
+
 /// A failure a caller can act on. Every other failure is a plain error.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -92,7 +121,9 @@ pub enum StoreError {
 /// Turns a unique-constraint failure into `StoreError::Duplicate`.
 pub(crate) fn write_error(e: sqlx::Error) -> anyhow::Error {
     match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => StoreError::Duplicate.into(),
+        sqlx::Error::Database(db) if Dialect::is_unique_violation(db.as_ref()) => {
+            StoreError::Duplicate.into()
+        }
         _ => e.into(),
     }
 }
@@ -105,7 +136,14 @@ pub(crate) fn write_error(e: sqlx::Error) -> anyhow::Error {
 /// (the in-memory database) that call waits forever. Read what you need
 /// first, then `begin`, write, and `commit`.
 pub struct Tx<'c> {
-    inner: sqlx::Transaction<'c, Sqlite>,
+    inner: sqlx::Transaction<'c, Any>,
+    dialect: Dialect,
+}
+
+impl Dialected for Tx<'_> {
+    fn dialect(&self) -> Dialect {
+        self.dialect
+    }
 }
 
 impl Tx<'_> {
@@ -114,7 +152,7 @@ impl Tx<'_> {
         Ok(())
     }
 
-    pub(crate) fn conn(&mut self) -> &mut SqliteConnection {
+    pub(crate) fn conn(&mut self) -> &mut AnyConnection {
         &mut self.inner
     }
 }
@@ -138,7 +176,8 @@ pub struct SnapshotRows {
 
 #[derive(Clone)]
 pub struct Store {
-    pool: SqlitePool,
+    pool: AnyPool,
+    dialect: Dialect,
     /// The directory of the database file; `None` for an in-memory one.
     dir: Option<std::path::PathBuf>,
     /// How many times `teams_of_users` was called, so a test can see that
@@ -146,41 +185,64 @@ pub struct Store {
     teams_of_users_calls: Arc<AtomicU64>,
 }
 
+impl Dialected for Store {
+    fn dialect(&self) -> Dialect {
+        self.dialect
+    }
+}
+
 impl Store {
+    /// Opens (creating it if needed) the SQLite database at `path`.
     pub async fn open(path: &Path) -> Result<Self> {
-        let opts = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .foreign_keys(true);
+        // sqlx's SQLite defaults give foreign keys on and a busy timeout of
+        // 5 s; WAL is set on each connection (a no-op once the file is in
+        // it). `mode=rwc` creates the file.
+        let url = format!("sqlite:{}?mode=rwc", encode_path(path));
         let dir = match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
             _ => std::path::PathBuf::from("."),
         };
-        Self::connect(opts, SqlitePoolOptions::new().max_connections(8), Some(dir)).await
+        let pool = AnyPoolOptions::new()
+            .max_connections(8)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    sqlx::query("PRAGMA journal_mode = WAL")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            });
+        Self::connect(&url, pool, Some(dir)).await
     }
 
     /// One connection only: every in-memory connection is its own database,
     /// so that connection must never be reaped.
     pub async fn open_in_memory() -> Result<Self> {
-        let opts = SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
+        let pool = AnyPoolOptions::new()
             .max_connections(1)
             .min_connections(1)
             .idle_timeout(None)
             .max_lifetime(None);
-        Self::connect(opts, pool, None).await
+        Self::connect("sqlite::memory:", pool, None).await
     }
 
     async fn connect(
-        opts: SqliteConnectOptions,
-        pool: SqlitePoolOptions,
+        url: &str,
+        pool: AnyPoolOptions,
         dir: Option<std::path::PathBuf>,
     ) -> Result<Self> {
-        let pool = pool.connect_with(opts).await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        install_default_drivers();
+        let dialect = Dialect::of_url(url).ok_or_else(|| {
+            anyhow::anyhow!("the database URL must start with sqlite: or postgres://")
+        })?;
+        let pool = pool.connect(url).await?;
+        match dialect {
+            Dialect::Sqlite => sqlx::migrate!("./migrations/sqlite").run(&pool).await?,
+            Dialect::Postgres => bail!("PostgreSQL is not supported yet"),
+        }
         let store = Self {
             pool,
+            dialect,
             dir,
             teams_of_users_calls: Arc::default(),
         };
@@ -193,11 +255,18 @@ impl Store {
         Ok(store)
     }
 
+    pub fn dialect(&self) -> Dialect {
+        self.dialect
+    }
+
     /// Lets SQLite refresh the statistics the planner uses. Cheap; it only
     /// analyzes what changed enough to matter. The log list is meant to walk
-    /// the primary key downwards and stop at its limit.
+    /// the primary key downwards and stop at its limit. Other databases keep
+    /// their own statistics.
     pub async fn optimize(&self) -> Result<()> {
-        sqlx::query("PRAGMA optimize").execute(&self.pool).await?;
+        if self.dialect == Dialect::Sqlite {
+            self.q("PRAGMA optimize").execute(&self.pool).await?;
+        }
         Ok(())
     }
 
@@ -205,7 +274,7 @@ impl Store {
     /// the rows never mix two moments.
     pub async fn snapshot_rows(&self) -> Result<SnapshotRows> {
         let mut tx = self.pool.begin().await?;
-        let conn: &mut SqliteConnection = &mut tx;
+        let conn: &mut AnyConnection = &mut tx;
         let keys = keys::live_keys_in(conn).await?;
         let providers = providers::list_providers_in(conn).await?;
         let models = models::list_models_in(conn).await?;
@@ -244,6 +313,7 @@ impl Store {
     pub async fn begin(&self) -> Result<Tx<'_>> {
         Ok(Tx {
             inner: self.pool.begin().await?,
+            dialect: self.dialect,
         })
     }
 
@@ -252,9 +322,13 @@ impl Store {
     /// deferred one fails with SQLITE_BUSY_SNAPSHOT, which the busy timeout
     /// does not retry, when anything else commits in between.
     pub async fn begin_immediate(&self) -> Result<Tx<'_>> {
-        Ok(Tx {
-            inner: self.pool.begin_with("BEGIN IMMEDIATE").await?,
-        })
+        match self.dialect {
+            Dialect::Sqlite => Ok(Tx {
+                inner: self.pool.begin_with("BEGIN IMMEDIATE").await?,
+                dialect: self.dialect,
+            }),
+            Dialect::Postgres => bail!("PostgreSQL is not supported yet"),
+        }
     }
 
     /// Closes every connection. Every later call fails.
@@ -262,7 +336,7 @@ impl Store {
         self.pool.close().await;
     }
 
-    pub(crate) fn pool(&self) -> &SqlitePool {
+    pub(crate) fn pool(&self) -> &AnyPool {
         &self.pool
     }
 }
@@ -270,6 +344,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
     const MALFORMED: [&str; 16] = [
         "",
@@ -438,12 +513,12 @@ mod tests {
                 .connect_with(opts)
                 .await
                 .unwrap();
-            let mut m = sqlx::migrate!("./migrations");
+            let mut m = sqlx::migrate!("./migrations/sqlite");
             m.migrations.to_mut().retain(|x| x.version == 1);
             assert_eq!(m.migrations.len(), 1);
             assert_eq!(
                 m.migrations[0].sql.as_ref(),
-                include_str!("../../migrations/0001_init.sql")
+                include_str!("../../migrations/sqlite/0001_init.sql")
             );
             m.run(&pool).await.unwrap();
             sqlx::query(

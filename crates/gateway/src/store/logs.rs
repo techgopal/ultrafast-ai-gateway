@@ -1,10 +1,11 @@
 //! Request logs.
 
 use anyhow::Result;
-use sqlx::sqlite::SqliteRow;
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::Row;
 
-use super::{Store, DEFAULT_ORG};
+use super::dialect::Dialected;
+use super::{flag, next_day, Store, DEFAULT_ORG};
 
 /// A row to be written.
 #[derive(Debug, Clone, PartialEq)]
@@ -118,12 +119,6 @@ pub enum UsageGroup {
     Tag(String),
 }
 
-/// The JSON path of a tag, to bind: names are checked, and quoted here so
-/// a `.`, `:` or `-` in one is part of the name.
-fn tag_path(name: &str) -> String {
-    format!("$.\"{name}\"")
-}
-
 /// Sums over the rows of one group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageSums {
@@ -151,7 +146,7 @@ const DETAIL_SELECT: &str = "SELECT l.*, k.name AS key_name, u.email AS user_ema
      LEFT JOIN users u ON u.id = l.user_id AND u.org_id = l.org_id
      LEFT JOIN teams t ON t.id = l.team_id AND t.org_id = l.org_id";
 
-fn detail_from(r: &SqliteRow) -> LogDetail {
+fn detail_from(r: &AnyRow) -> LogDetail {
     LogDetail {
         row: log_from(r),
         key_name: r.get("key_name"),
@@ -186,7 +181,7 @@ fn scope_sql(scope: &LogScope) -> (String, Vec<i64>) {
     }
 }
 
-fn log_from(r: &SqliteRow) -> LogRow {
+fn log_from(r: &AnyRow) -> LogRow {
     LogRow {
         id: r.get("id"),
         at: r.get("at"),
@@ -216,35 +211,33 @@ impl Store {
     pub async fn insert_logs(&self, rows: &[NewLog]) -> Result<()> {
         let mut tx = self.pool().begin().await?;
         for r in rows {
-            sqlx::query(
-                "INSERT INTO request_logs
+            self.q("INSERT INTO request_logs
                  (org_id, at, key_id, user_id, team_id, requested, endpoint, stream, status,
                   provider, model, input_tokens, output_tokens, cost_micros, priced, cached,
                   estimated, duration_ms, attempts, tags)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(DEFAULT_ORG)
-            .bind(&r.at)
-            .bind(r.key_id)
-            .bind(r.user_id)
-            .bind(r.team_id)
-            .bind(&r.requested)
-            .bind(&r.endpoint)
-            .bind(r.stream)
-            .bind(r.status)
-            .bind(&r.provider)
-            .bind(&r.model)
-            .bind(r.input_tokens)
-            .bind(r.output_tokens)
-            .bind(r.cost_micros)
-            .bind(r.priced)
-            .bind(r.cached)
-            .bind(r.estimated)
-            .bind(r.duration_ms)
-            .bind(&r.attempts)
-            .bind(&r.tags)
-            .execute(&mut *tx)
-            .await?;
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .bind(DEFAULT_ORG)
+                .bind(&r.at)
+                .bind(r.key_id)
+                .bind(r.user_id)
+                .bind(r.team_id)
+                .bind(&r.requested)
+                .bind(&r.endpoint)
+                .bind(flag(r.stream))
+                .bind(r.status)
+                .bind(&r.provider)
+                .bind(&r.model)
+                .bind(r.input_tokens)
+                .bind(r.output_tokens)
+                .bind(r.cost_micros)
+                .bind(flag(r.priced))
+                .bind(flag(r.cached))
+                .bind(flag(r.estimated))
+                .bind(r.duration_ms)
+                .bind(&r.attempts)
+                .bind(&r.tags)
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -252,12 +245,12 @@ impl Store {
 
     /// The newest rows first. `limit` is clamped to 1..=200.
     pub async fn recent_logs(&self, limit: i64) -> Result<Vec<LogRow>> {
-        let rows =
-            sqlx::query("SELECT * FROM request_logs WHERE org_id = ? ORDER BY id DESC LIMIT ?")
-                .bind(DEFAULT_ORG)
-                .bind(limit.clamp(1, 200))
-                .fetch_all(self.pool())
-                .await?;
+        let rows = self
+            .q("SELECT * FROM request_logs WHERE org_id = ? ORDER BY id DESC LIMIT ?")
+            .bind(DEFAULT_ORG)
+            .bind(limit.clamp(1, 200))
+            .fetch_all(self.pool())
+            .await?;
         Ok(rows.iter().map(log_from).collect())
     }
 
@@ -305,9 +298,13 @@ impl Store {
             text_values.push(v);
         }
         // The path is bound, never written into the statement.
-        let tag_paths: Vec<String> = filter.tags.iter().map(|(n, _)| tag_path(n)).collect();
+        let tag_paths: Vec<String> = filter
+            .tags
+            .iter()
+            .map(|(n, _)| self.dialect().tag_key(n))
+            .collect();
         for ((_, value), path) in filter.tags.iter().zip(&tag_paths) {
-            clauses.push("json_extract(l.tags, ?) = ?".into());
+            clauses.push(format!("{} = ?", self.dialect().json_text("l.tags")));
             text_values.push(path);
             text_values.push(value);
         }
@@ -315,7 +312,7 @@ impl Store {
             "{DETAIL_SELECT} WHERE {} ORDER BY l.id DESC LIMIT ?",
             clauses.join(" AND ")
         );
-        let mut query = sqlx::query(AssertSqlSafe(sql));
+        let mut query = self.q_dyn(sql);
         for v in &ints {
             query = query.bind(*v);
         }
@@ -341,13 +338,14 @@ impl Store {
     ) -> Result<Vec<UsageSums>> {
         let (scope_clause, scope_ints) = scope_sql(scope);
         // (group expression, joined table with its name column)
+        let json_tag = self.dialect().json_text("l.tags");
         let (expr, names) = match group {
             UsageGroup::Day => ("substr(l.at, 1, 10)", None),
             UsageGroup::Model => ("coalesce(l.provider || '/' || l.model, l.requested)", None),
             UsageGroup::Key => ("l.key_id", Some(("virtual_keys", "name"))),
             UsageGroup::User => ("l.user_id", Some(("users", "email"))),
             UsageGroup::Team => ("l.team_id", Some(("teams", "name"))),
-            UsageGroup::Tag(_) => ("json_extract(l.tags, ?)", None),
+            UsageGroup::Tag(_) => (json_tag.as_str(), None),
         };
         let (label, join) = match names {
             None if matches!(group, UsageGroup::Tag(_)) => {
@@ -372,30 +370,34 @@ impl Store {
                     a.cost_micros, a.unpriced
              FROM (SELECT {expr} AS gid,
                           COUNT(*) AS requests,
-                          coalesce(SUM(l.status >= 400 AND l.status <> 499), 0) AS errors,
-                          coalesce(SUM(l.status = 499), 0) AS cancelled,
-                          coalesce(SUM(l.input_tokens), 0) AS input_tokens,
-                          coalesce(SUM(l.output_tokens), 0) AS output_tokens,
-                          coalesce(SUM(l.cost_micros), 0) AS cost_micros,
-                          coalesce(SUM(l.priced = 0 AND
-                              (l.input_tokens IS NOT NULL OR l.output_tokens IS NOT NULL)), 0)
-                              AS unpriced
+                          CAST(coalesce(SUM(CASE WHEN l.status >= 400 AND l.status <> 499 THEN 1 ELSE 0 END), 0) AS BIGINT) AS errors,
+                          CAST(coalesce(SUM(CASE WHEN l.status = 499 THEN 1 ELSE 0 END), 0) AS BIGINT) AS cancelled,
+                          CAST(coalesce(SUM(l.input_tokens), 0) AS BIGINT) AS input_tokens,
+                          CAST(coalesce(SUM(l.output_tokens), 0) AS BIGINT) AS output_tokens,
+                          CAST(coalesce(SUM(l.cost_micros), 0) AS BIGINT) AS cost_micros,
+                          CAST(coalesce(SUM(CASE WHEN l.priced = 0 AND
+                              (l.input_tokens IS NOT NULL OR l.output_tokens IS NOT NULL)
+                              THEN 1 ELSE 0 END), 0) AS BIGINT) AS unpriced
                    FROM request_logs l
-                   WHERE l.org_id = ? AND {scope_clause} AND l.at >= ? AND l.at < date(?, '+1 day')
+                   WHERE l.org_id = ? AND {scope_clause} AND l.at >= ? AND l.at < ?
                    GROUP BY gid) a
              {join}
              ORDER BY {order}"
         );
-        let mut query = sqlx::query(AssertSqlSafe(sql));
+        let mut query = self.q_dyn(sql);
         // The group expression comes first in the statement.
         if let UsageGroup::Tag(name) = &group {
-            query = query.bind(tag_path(name));
+            query = query.bind(self.dialect().tag_key(name));
         }
         let mut query = query.bind(DEFAULT_ORG);
         for v in &scope_ints {
             query = query.bind(*v);
         }
-        let rows = query.bind(from).bind(to).fetch_all(self.pool()).await?;
+        let rows = query
+            .bind(from)
+            .bind(next_day(to))
+            .fetch_all(self.pool())
+            .await?;
         Ok(rows
             .iter()
             .map(|r| UsageSums {
@@ -416,7 +418,8 @@ impl Store {
     /// whether the reader may see it.
     pub async fn log_by_id(&self, id: i64) -> Result<Option<LogDetail>> {
         let sql = format!("{DETAIL_SELECT} WHERE l.org_id = ? AND l.id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(DEFAULT_ORG)
             .bind(id)
             .fetch_optional(self.pool())
@@ -431,30 +434,28 @@ impl Store {
         }
         let marks = vec!["?"; team_ids.len()].join(", ");
         let sql = format!(
-            "SELECT EXISTS (SELECT 1 FROM team_members
-             WHERE org_id = ? AND user_id = ? AND team_id IN ({marks}))"
+            "SELECT CASE WHEN EXISTS (SELECT 1 FROM team_members
+             WHERE org_id = ? AND user_id = ? AND team_id IN ({marks})) THEN 1 ELSE 0 END"
         );
-        let mut query = sqlx::query_scalar(AssertSqlSafe(sql))
-            .bind(DEFAULT_ORG)
-            .bind(user_id);
+        let mut query = self.scalar_dyn(sql).bind(DEFAULT_ORG).bind(user_id);
         for t in team_ids {
             query = query.bind(*t);
         }
-        Ok(query.fetch_one(self.pool()).await?)
+        let found: i64 = query.fetch_one(self.pool()).await?;
+        Ok(found != 0)
     }
 
     /// Deletes up to `limit` rows older than `cutoff` (`at < cutoff`, in the
     /// form of `store::now`) and returns how many went.
     pub async fn delete_logs_before(&self, cutoff: &str, limit: i64) -> Result<u64> {
-        let r = sqlx::query(
-            "DELETE FROM request_logs WHERE id IN
-             (SELECT id FROM request_logs WHERE org_id = ? AND at < ? ORDER BY id LIMIT ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(cutoff)
-        .bind(limit)
-        .execute(self.pool())
-        .await?;
+        let r = self
+            .q("DELETE FROM request_logs WHERE id IN
+             (SELECT id FROM request_logs WHERE org_id = ? AND at < ? ORDER BY id LIMIT ?)")
+            .bind(DEFAULT_ORG)
+            .bind(cutoff)
+            .bind(limit)
+            .execute(self.pool())
+            .await?;
         Ok(r.rows_affected())
     }
 }
@@ -462,6 +463,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::AssertSqlSafe;
 
     fn row(i: i64) -> NewLog {
         NewLog {
