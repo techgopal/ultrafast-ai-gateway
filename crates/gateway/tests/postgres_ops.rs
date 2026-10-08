@@ -111,6 +111,7 @@ fn a_database_url_must_be_postgres_and_the_pool_size_sane() {
     assert!(!out.status.success());
     assert!(text(&out.stderr).contains("UF_DATABASE_MAX_CONNECTIONS must be between"));
     // An unreachable database is a plain failure that does not show the URL.
+    let started = std::time::Instant::now();
     let out = run(
         &data,
         &[
@@ -122,6 +123,12 @@ fn a_database_url_must_be_postgres_and_the_pool_size_sane() {
     let err = text(&out.stderr);
     assert!(!out.status.success());
     assert!(err.contains("could not connect"), "{err}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "start-up gives up after about 10 s: {:?}",
+        started.elapsed()
+    );
+    assert!(err.contains("within 10 s"), "{err}");
     assert!(!err.contains("hunter2"), "{err}");
     assert!(!data.exists());
 }

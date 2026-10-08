@@ -100,6 +100,8 @@ pub struct AppState {
     /// Held while a snapshot is loaded and swapped in, so an older one
     /// can never replace a newer one.
     refreshing: Mutex<()>,
+    /// Held by a budget flush, so two never overlap.
+    pub flushing: Mutex<()>,
 }
 
 impl AppState {
@@ -130,6 +132,7 @@ impl AppState {
             refreshes: AtomicU64::new(0),
             cache_fingerprint: std::sync::Mutex::new(snapshot_fingerprint),
             refreshing: Mutex::new(()),
+            flushing: Mutex::new(()),
             store,
             cipher,
             http: http_client(),

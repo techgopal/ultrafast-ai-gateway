@@ -110,6 +110,15 @@ fn to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
+/// The deltas worth writing, in the order every process locks the rows in
+/// (budget, then period), so two processes adding to the same rows cannot
+/// wait on each other.
+pub(super) fn in_lock_order(deltas: &[UsageDelta]) -> Vec<&UsageDelta> {
+    let mut ordered: Vec<&UsageDelta> = deltas.iter().filter(|d| d.delta_micros > 0).collect();
+    ordered.sort_by(|a, b| (a.budget_id, &a.period_start).cmp(&(b.budget_id, &b.period_start)));
+    ordered
+}
+
 impl Store {
     /// Every budget, oldest first.
     pub async fn list_budgets(&self) -> Result<Vec<BudgetRow>> {
@@ -190,28 +199,28 @@ impl Store {
         wanted: &[(i64, String)],
     ) -> Result<Vec<UsageTotal>> {
         let mut tx = self.begin().await?;
-        // Always in the same order, so two processes adding to the same
-        // rows cannot wait on each other.
-        let mut ordered: Vec<&UsageDelta> = deltas.iter().filter(|d| d.delta_micros > 0).collect();
-        ordered.sort_by(|a, b| (a.budget_id, &a.period_start).cmp(&(b.budget_id, &b.period_start)));
-        for d in ordered {
+        for d in in_lock_order(deltas) {
             tx.add_usage(&d.period_start, d.budget_id, d.delta_micros)
                 .await?;
         }
         let mut totals = Vec::with_capacity(wanted.len());
-        for (budget_id, period_start) in wanted {
-            let row: Option<(i64, i64)> = tx
-                .query_as(
-                    "SELECT spent_micros, alerted FROM budget_usage WHERE budget_id = ? AND period_start = ?",
-                )
-                .bind(*budget_id)
-                .bind(period_start)
-                .fetch_optional(tx.conn())
-                .await?;
-            if let Some((spent, alerted)) = row {
+        if !wanted.is_empty() {
+            // One query for all of them.
+            let pairs = vec!["(?, ?)"; wanted.len()].join(", ");
+            let sql = format!(
+                "SELECT budget_id, period_start, spent_micros, alerted FROM budget_usage
+                 WHERE (budget_id, period_start) IN ({pairs})"
+            );
+            let mut q = tx.q_dyn(sql);
+            for (budget_id, period_start) in wanted {
+                q = q.bind(*budget_id).bind(period_start);
+            }
+            for r in q.fetch_all(tx.conn()).await? {
+                let spent: i64 = r.get("spent_micros");
+                let alerted: i64 = r.get("alerted");
                 totals.push(UsageTotal {
-                    budget_id: *budget_id,
-                    period_start: period_start.clone(),
+                    budget_id: r.get("budget_id"),
+                    period_start: r.get("period_start"),
                     spent_micros: u64::try_from(spent).unwrap_or(0),
                     alerted: alerted != 0,
                 });
@@ -350,5 +359,88 @@ impl Tx<'_> {
             .execute(self.conn())
             .await?;
         Ok(r.rows_affected() == 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delta(budget_id: i64, period: &str, n: u64) -> UsageDelta {
+        UsageDelta {
+            budget_id,
+            period_start: period.to_string(),
+            delta_micros: n,
+        }
+    }
+
+    /// Every process locks the rows in this order; with another order two
+    /// processes adding to the same budgets can wait on each other.
+    #[test]
+    fn deltas_are_written_by_budget_then_period_and_empty_ones_are_skipped() {
+        let shuffled = [
+            delta(9, "2999-02-01", 1),
+            delta(3, "2999-02-01", 1),
+            delta(9, "2999-01-01", 1),
+            delta(5, "2999-01-01", 0),
+            delta(3, "2999-01-01", 1),
+        ];
+        let order: Vec<(i64, &str)> = in_lock_order(&shuffled)
+            .into_iter()
+            .map(|d| (d.budget_id, d.period_start.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (3, "2999-01-01"),
+                (3, "2999-02-01"),
+                (9, "2999-01-01"),
+                (9, "2999-02-01")
+            ]
+        );
+    }
+
+    /// Two processes adding to the same budgets, each given them in the
+    /// opposite order, neither fails and the sums are exact.
+    #[tokio::test]
+    async fn opposite_callers_do_not_deadlock_and_add_up() {
+        let store = Store::open_in_memory().await.unwrap();
+        let mut ids = Vec::new();
+        let mut tx = store.begin().await.unwrap();
+        for scope_id in 1..=4 {
+            ids.push(
+                tx.upsert_budget(
+                    LimitScope::Team,
+                    Some(scope_id),
+                    1_000_000,
+                    Period::Monthly,
+                    BudgetAction::Block,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        tx.commit().await.unwrap();
+        let deltas: Vec<UsageDelta> = ids.iter().map(|id| delta(*id, "2999-01-01", 1)).collect();
+        let reversed: Vec<UsageDelta> = deltas.iter().rev().cloned().collect();
+        let (a, b) = (store.clone(), store.clone());
+        let one = tokio::spawn(async move {
+            for _ in 0..25 {
+                a.add_budget_usage(&deltas, &[]).await.unwrap();
+            }
+        });
+        let two = tokio::spawn(async move {
+            for _ in 0..25 {
+                b.add_budget_usage(&reversed, &[]).await.unwrap();
+            }
+        });
+        one.await.unwrap();
+        two.await.unwrap();
+        for id in ids {
+            assert_eq!(
+                store.budget_usage(id, "2999-01-01").await.unwrap(),
+                Some((50, false))
+            );
+        }
     }
 }

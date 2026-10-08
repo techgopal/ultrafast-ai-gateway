@@ -236,10 +236,20 @@ pub trait Budgets: Send + Sync {
     /// alerted raises its alert.
     fn seed(&self, budget: &Budget, period_start: &str, spent_micros: u64, alerted: bool);
 
-    /// Records that `flushed` of the counter is in the database (what the
-    /// cache held when the counter was seeded), so a flush adds only the
-    /// rest.
-    fn mark_flushed(&self, budget_id: i64, period_start: &str, flushed: u64);
+    /// [`Budgets::seed`] for a process that shares its database: `base` is
+    /// what the logs and the cache say was spent (the larger of the two),
+    /// `stored` what `budget_usage` holds. What this process counted and
+    /// the database does not have yet (`spent - flushed`) stays on top of
+    /// `base`, and only the part of `base` the cache lacks is added at the
+    /// next flush: nothing is lost and nothing is added twice.
+    fn seed_stored(
+        &self,
+        budget: &Budget,
+        period_start: &str,
+        base: u64,
+        stored: u64,
+        alerted: bool,
+    );
 
     /// After the database took `committed` and answered with `totals` for
     /// the current periods of `budgets`: every counter becomes the stored
@@ -277,6 +287,9 @@ struct Counter {
     spent: u64,
     /// The part of `spent` that the database has.
     flushed: u64,
+    /// Of `spent - flushed`, what a seed read from the logs rather than
+    /// what this process counted: a later seed does not keep it as local.
+    seeded: u64,
     alerted: bool,
     dirty: bool,
 }
@@ -318,6 +331,22 @@ fn alert_of(budget: &Budget, period_start: &str, spent: u64) -> Alert {
             usd(budget.amount_micros)
         ),
     }
+}
+
+/// Raises the alert of an `alert` budget a seed took over its amount, and
+/// puts the counter back.
+fn settle_seed(inner: &mut Inner, budget: &Budget, period_start: &str, mut counter: Counter) {
+    if counter.period_start == period_start
+        && budget.action == BudgetAction::Alert
+        && !counter.alerted
+        && counter.spent >= budget.amount_micros
+    {
+        counter.alerted = true;
+        inner
+            .alerts
+            .push(alert_of(budget, period_start, counter.spent));
+    }
+    inner.counters.insert(budget.id, counter);
 }
 
 impl Budgets for MemoryBudgets {
@@ -385,6 +414,7 @@ impl Budgets for MemoryBudgets {
                 period_start: start.clone(),
                 spent: 0,
                 flushed: 0,
+                seeded: 0,
                 alerted: false,
                 dirty: true,
             });
@@ -393,6 +423,7 @@ impl Budgets for MemoryBudgets {
                     period_start: start.clone(),
                     spent: 0,
                     flushed: 0,
+                    seeded: 0,
                     alerted: false,
                     dirty: true,
                 };
@@ -436,33 +467,46 @@ impl Budgets for MemoryBudgets {
                 period_start: period_start.to_string(),
                 spent: spent_micros,
                 flushed: 0,
+                seeded: 0,
                 alerted,
                 dirty: true,
             },
         };
-        let mut counter = counter;
-        if counter.period_start == period_start
-            && budget.action == BudgetAction::Alert
-            && !counter.alerted
-            && counter.spent >= budget.amount_micros
-        {
-            counter.alerted = true;
-            inner
-                .alerts
-                .push(alert_of(budget, period_start, counter.spent));
-        }
-        inner.counters.insert(budget.id, counter);
+        settle_seed(inner, budget, period_start, counter);
     }
 
-    fn mark_flushed(&self, budget_id: i64, period_start: &str, flushed: u64) {
-        let mut inner = self.lock();
-        if let Some(c) = inner
-            .counters
-            .get_mut(&budget_id)
-            .filter(|c| c.period_start == period_start)
-        {
-            c.flushed = flushed.min(c.spent);
-        }
+    fn seed_stored(
+        &self,
+        budget: &Budget,
+        period_start: &str,
+        base: u64,
+        stored: u64,
+        alerted: bool,
+    ) {
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let counter = match inner.counters.remove(&budget.id) {
+            Some(c) if c.period_start == period_start => Counter {
+                spent: base
+                    .saturating_add(c.spent.saturating_sub(c.flushed).saturating_sub(c.seeded)),
+                flushed: stored.min(base),
+                seeded: base.saturating_sub(stored),
+                alerted: c.alerted || alerted,
+                dirty: true,
+                ..c
+            },
+            // A counter of a later period is the live one.
+            Some(c) if c.period_start.as_str() > period_start => c,
+            _ => Counter {
+                period_start: period_start.to_string(),
+                spent: base,
+                flushed: stored.min(base),
+                seeded: base.saturating_sub(stored),
+                alerted,
+                dirty: true,
+            },
+        };
+        settle_seed(inner, budget, period_start, counter);
     }
 
     fn reconcile(
@@ -481,6 +525,7 @@ impl Budgets for MemoryBudgets {
                 .filter(|c| c.period_start == d.period_start)
             {
                 c.flushed = c.flushed.saturating_add(d.delta_micros).min(c.spent);
+                c.seeded = 0;
             }
         }
         let mut out = Reconciled::default();
@@ -507,6 +552,7 @@ impl Budgets for MemoryBudgets {
                             period_start: t.period_start.clone(),
                             spent: t.spent_micros,
                             flushed: t.spent_micros,
+                            seeded: 0,
                             alerted: t.alerted,
                             dirty: false,
                         },
@@ -635,11 +681,10 @@ pub async fn seed_from_logs(state: &AppState, budget: &Budget, now: OffsetDateTi
         .budget_usage(budget.id, &start)
         .await?
         .unwrap_or((0, false));
+    // The cache already holds `cached` of it: only the rest is to be added.
     state
         .budgets
-        .seed(budget, &start, logged.max(cached), alerted);
-    // The cache already holds `cached` of it: only the rest is to be added.
-    state.budgets.mark_flushed(budget.id, &start, cached);
+        .seed_stored(budget, &start, logged.max(cached), cached, alerted);
     Ok(())
 }
 
@@ -647,6 +692,8 @@ pub async fn seed_from_logs(state: &AppState, budget: &Budget, now: OffsetDateTi
 /// back so every process agrees on the spend, and writes the alerts raised to
 /// the audit log. What cannot be written is tried again next time.
 pub async fn flush(state: &AppState) {
+    // One flush at a time: two overlapping ones would send the same delta twice.
+    let _one_at_a_time = state.flushing.lock().await;
     let mut drained = state.budgets.drain();
     let all = state.snapshot.load().all_budgets();
     let now = OffsetDateTime::now_utc();
@@ -733,7 +780,7 @@ mod tests {
     use crate::alerts::engine::EngineInput;
     use crate::alerts::EngineHandle;
     use crate::secrets::Cipher;
-    use crate::store::Store;
+    use crate::store::{Store, UsageDelta};
 
     #[tokio::test]
     async fn a_spend_the_engine_could_not_take_stays_dirty_for_the_next_flush() {
@@ -831,6 +878,124 @@ mod tests {
         assert_eq!(
             store.budget_usage(id, &start).await.unwrap(),
             Some((150, false))
+        );
+    }
+
+    async fn state_with_budget(limit: u64) -> (Arc<AppState>, i64) {
+        let store = Store::open_in_memory().await.unwrap();
+        let mut tx = store.begin().await.unwrap();
+        let id = tx
+            .upsert_budget(
+                LimitScope::Gateway,
+                None,
+                limit,
+                Period::Monthly,
+                BudgetAction::Block,
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
+        (Arc::new(AppState::new(store, cipher).await.unwrap()), id)
+    }
+
+    /// Another process stored more than the logs say, while this one has
+    /// spent something that is not flushed: the seed keeps it, once.
+    #[tokio::test]
+    async fn a_seed_keeps_the_local_spend_when_the_database_is_ahead_of_the_logs() {
+        let (state, id) = state_with_budget(1_000_000_000).await;
+        let now = OffsetDateTime::now_utc();
+        let all = state.snapshot.load().all_budgets();
+        let start = Period::Monthly.start_string(now);
+        state.budgets.spend(&all, 100, now);
+        state
+            .store
+            .add_budget_usage(
+                &[UsageDelta {
+                    budget_id: id,
+                    period_start: start.clone(),
+                    delta_micros: 1_000,
+                }],
+                &[],
+            )
+            .await
+            .unwrap();
+        seed_from_logs(&state, &all[0], now).await.unwrap();
+        assert_eq!(state.budgets.spent(&all[0], now), 1_100);
+        flush(&state).await;
+        flush(&state).await;
+        assert_eq!(
+            state.store.budget_usage(id, &start).await.unwrap(),
+            Some((1_100, false))
+        );
+        assert_eq!(state.budgets.spent(&all[0], now), 1_100);
+    }
+
+    /// The logs say more than the database holds: the difference and the
+    /// local spend are both added, each once.
+    #[test]
+    fn a_seed_keeps_the_local_spend_when_the_logs_are_ahead_of_the_database() {
+        let b = MemoryBudgets::new();
+        let budget = Budget {
+            id: 1,
+            scope: LimitScope::Gateway,
+            scope_id: 0,
+            scope_label: "gateway".into(),
+            amount_micros: 1_000_000,
+            period: Period::Monthly,
+            action: BudgetAction::Block,
+        };
+        let now = time::macros::datetime!(2999-01-10 08:00:00 UTC);
+        b.spend(&[Arc::new(budget.clone())], 100, now);
+        // Logs 500, stored 200, and this process has 100 not flushed.
+        b.seed_stored(&budget, "2999-01-01", 500, 200, false);
+        assert_eq!(b.spent(&budget, now), 600);
+        let drained = b.drain();
+        assert_eq!(drained.deltas.len(), 1);
+        assert_eq!(drained.deltas[0].delta_micros, 400);
+    }
+
+    /// Seeding again (a budget changed through the API) before the first
+    /// seed was flushed does not count the logged spend twice.
+    #[test]
+    fn a_second_seed_does_not_count_the_first_one_as_local_spend() {
+        let b = MemoryBudgets::new();
+        let budget = Budget {
+            id: 1,
+            scope: LimitScope::Gateway,
+            scope_id: 0,
+            scope_label: "gateway".into(),
+            amount_micros: 1_000_000,
+            period: Period::Monthly,
+            action: BudgetAction::Block,
+        };
+        let now = time::macros::datetime!(2999-01-10 08:00:00 UTC);
+        b.seed_stored(&budget, "2999-01-01", 500, 0, false);
+        b.seed_stored(&budget, "2999-01-01", 500, 0, false);
+        assert_eq!(b.spent(&budget, now), 500);
+        assert_eq!(b.drain().deltas[0].delta_micros, 500);
+    }
+
+    #[tokio::test]
+    async fn flushes_that_overlap_in_one_process_add_each_spend_once() {
+        let (state, id) = state_with_budget(1_000_000_000).await;
+        let now = OffsetDateTime::now_utc();
+        let all = state.snapshot.load().all_budgets();
+        let task = |state: Arc<AppState>, all: Vec<Arc<Budget>>| async move {
+            for _ in 0..20 {
+                state.budgets.spend(&all, 1, now);
+                flush(&state).await;
+            }
+        };
+        let a = tokio::spawn(task(state.clone(), all.clone()));
+        let b = tokio::spawn(task(state.clone(), all.clone()));
+        a.await.unwrap();
+        b.await.unwrap();
+        flush(&state).await;
+        let start = Period::Monthly.start_string(now);
+        assert_eq!(
+            state.store.budget_usage(id, &start).await.unwrap(),
+            Some((40, false))
         );
     }
 }

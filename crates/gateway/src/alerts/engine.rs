@@ -388,7 +388,13 @@ impl Engine {
                     tx.delete_alert_states_except(id, prefix, subject).await?;
                 }
             }
-            Change::Resolve => tx.delete_alert_state(id, subject).await?,
+            Change::Resolve => {
+                if !tx.delete_alert_state(id, subject).await? {
+                    // Another process resolved it first: it said so.
+                    self.episodes.apply(id, subject, change);
+                    return Ok(());
+                }
+            }
         }
         let event_id = tx
             .insert_alert_event(NewAlertEvent {
@@ -1053,6 +1059,35 @@ mod tests {
             [("firing".to_string(), "budget:9:2999-01-01".to_string())]
         );
         assert_eq!(store.alert_states().await.unwrap().len(), 1);
+    }
+
+    /// Two processes see the quiet period out: one resolves, the other finds
+    /// the state gone and says nothing.
+    #[tokio::test]
+    async fn an_episode_is_resolved_once_across_two_processes() {
+        let store = Store::open_in_memory().await.unwrap();
+        rule(&store, "c", "circuit_open", json!({})).await;
+        let mut first = engine(&store).await;
+        first
+            .change(0, "target:p/m", Change::Fire, "open", &json!({}), None)
+            .await
+            .unwrap();
+        let mut one = engine(&store).await;
+        let mut two = engine(&store).await;
+        one.change(0, "target:p/m", Change::Resolve, "closed", &json!({}), None)
+            .await
+            .unwrap();
+        two.change(0, "target:p/m", Change::Resolve, "closed", &json!({}), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            events(&store).await,
+            [
+                ("firing".to_string(), "target:p/m".to_string()),
+                ("resolved".to_string(), "target:p/m".to_string())
+            ]
+        );
+        assert!(store.alert_states().await.unwrap().is_empty());
     }
 
     #[tokio::test]

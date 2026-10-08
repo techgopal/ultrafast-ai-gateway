@@ -397,13 +397,16 @@ impl Tx<'_> {
         Ok(r.rows_affected() > 0)
     }
 
-    pub async fn delete_alert_state(&mut self, rule_id: i64, subject: &str) -> Result<()> {
-        self.q("DELETE FROM alert_state WHERE rule_id = ? AND subject = ?")
+    /// Forgets one firing state. `false`: there was none (another process
+    /// resolved it first, or the rule was cleared), so nothing is to be said.
+    pub async fn delete_alert_state(&mut self, rule_id: i64, subject: &str) -> Result<bool> {
+        let r = self
+            .q("DELETE FROM alert_state WHERE rule_id = ? AND subject = ?")
             .bind(rule_id)
             .bind(subject)
             .execute(self.conn())
             .await?;
-        Ok(())
+        Ok(r.rows_affected() > 0)
     }
 
     /// Forgets the subjects of a rule that start with `prefix`, except `keep`:

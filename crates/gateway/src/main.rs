@@ -319,6 +319,9 @@ fn validate_otel(
     Ok(())
 }
 
+/// How long start-up waits for PostgreSQL.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Where the database is: the SQLite file in the data directory, or the
 /// PostgreSQL database `UF_DATABASE_URL` names.
 struct Database {
@@ -340,9 +343,15 @@ impl Database {
 
     /// Opens PostgreSQL. The error never shows the URL (it holds the password).
     async fn connect(url: &str, max: u32) -> Result<Store> {
-        Store::connect_url(url, max)
+        let opened = tokio::time::timeout(CONNECT_TIMEOUT, Store::connect_url(url, max))
             .await
-            .context("could not connect to the PostgreSQL database named by UF_DATABASE_URL")
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "could not connect to the PostgreSQL database named by UF_DATABASE_URL within {} s",
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            })?;
+        opened.context("could not connect to the PostgreSQL database named by UF_DATABASE_URL")
     }
 }
 
