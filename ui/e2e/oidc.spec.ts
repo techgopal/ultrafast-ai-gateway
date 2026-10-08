@@ -192,6 +192,44 @@ test("a refusal by the provider, and an account that is not allowed, are said on
   await expect(heading(page, "Overview")).toBeVisible();
 });
 
+test("the callback of a signed-in browser arrives without its session cookie", async ({
+  page,
+  admin,
+  apiAs,
+  context,
+  gateway,
+  rules,
+}) => {
+  idp = await startMockIdp({ sub: "stranger", email: newAccount("nobody").email });
+  rules.allowSite(idp.origin);
+  const api = await apiAs(admin);
+  await api.send("PUT", "/api/settings/oidc", settingsFor(idp));
+  await signInFromStart(page, admin);
+  const before = await context.cookies();
+  expect(before.map((cookie) => cookie.name)).toContain("uf_session");
+
+  // The callback requests the browser makes, with the headers it sent.
+  const callback = `${gateway.origin}/api/auth/oidc/callback?code=x&state=y`;
+  const sent: Promise<Record<string, string>>[] = [];
+  page.on("request", (request) => {
+    if (request.url() === callback) sent.push(request.allHeaders());
+  });
+  // A page of another site sends the browser to the callback: a cross-site
+  // navigation, which the browser does without the Strict session cookie.
+  await page.goto(`${idp.origin}/elsewhere`);
+  await page.evaluate((address) => {
+    const link = document.createElement("a");
+    link.href = address;
+    document.body.append(link);
+    link.click();
+  }, callback);
+  await expect.poll(() => sent.length).toBe(1);
+  const headers = (await sent[0]) ?? {};
+  expect(headers["cookie"] ?? "", "no session cookie crosses sites").not.toContain("uf_session");
+  // It was in the jar all along.
+  expect((await context.cookies()).map((cookie) => cookie.name)).toContain("uf_session");
+});
+
 test("with accounts made on first sign-in, a new person signs in as a member, and a disabled one is refused", async ({
   page,
   admin,

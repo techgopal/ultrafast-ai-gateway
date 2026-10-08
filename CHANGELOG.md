@@ -33,10 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   http only for localhost unless `--insecure-cookies`). Users are linked by
   `<issuer>|<sub>`, by verified email, or created for allowed domains; an
   optional admin group sets the role at each sign-in (a missing groups claim
-  leaves the role; the last admin is never demoted). Starting a sign-in has its
-  own rate limit; `sso_error` codes on the sign-in page; metric
-  `uf_oidc_signins_total{result}`. Users show how they sign in (Password or
-  SSO). Migration 0015.
+  leaves the role; the last admin is never demoted). Starting a sign-in and the
+  callback each have a rate limit of their own, apart from password failures;
+  `sso_error` codes on the sign-in page; metric
+  `uf_oidc_signins_total{result}`. Users show how they sign in (Password, SSO only
+  or Password and SSO; `has_password` in the user view), and the Account page
+  tells a user without a password so. Migration 0015.
 
 ## [2.0.0-beta.2] - 2026-10-05
 

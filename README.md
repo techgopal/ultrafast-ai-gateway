@@ -323,12 +323,18 @@ password sign-in makes.
    configuration, then switch it on. The sign-in page then offers
    "Sign in with <label>". The client secret is stored encrypted with the
    master key and is never shown again; leave the field empty to keep it.
+   If the master key changes, the stored secret can no longer be read: single
+   sign-on stays off (Settings shows an alert) until the client secret is
+   entered again and saved, and a sign-in already under way fails with `state`.
 
 Issuer and where to register, per provider:
 
 - **Google.** Issuer `https://accounts.google.com`. Google Cloud console, APIs
   and Services, Credentials, OAuth client ID, type "Web application"; add the
-  redirect URI. Google sends `email_verified`; it has no groups claim.
+  redirect URI. Google sends `email_verified`; it has no groups claim. With
+  this issuer any Google account can attempt to sign in: only users who
+  already exist are linked, and new accounts are made only for Allowed domains,
+  so keep link by email and auto-create restricted to your own domains.
 - **Microsoft Entra ID.** Issuer `https://login.microsoftonline.com/<tenant-id>/v2.0`
   (use the tenant ID, not `common`). App registrations, New registration, platform
   "Web", add the redirect URI; Certificates and secrets, new client secret
@@ -406,7 +412,7 @@ shown):
 | `config` | Single sign-on is not set up correctly. Ask an admin. | Single sign-on is off or incomplete, the provider's discovery cannot be reached, or an internal error (see the log). |
 | `not_allowed` | Your account is not allowed to sign in here. Ask an admin to invite you. | No linked user, and no verified email that links or creates one (see Who gets in). |
 | `disabled` | Your account is disabled. | The user is disabled. |
-| `rate_limited` | Too many sign-in attempts. Wait a minute and try again. | See below. |
+| `rate_limited` | Too many sign-in attempts. Try again in a few minutes. | See below. |
 
 Any other value is shown as "Single sign-on did not work. Try again." Details
 of a failure go to the log as a reason code only; tokens, codes and cookies are
@@ -415,16 +421,30 @@ callback by `ok`, `state`, `expired`, `idp`, `token`, `not_allowed`,
 `disabled`, `rate_limited` and `config`.
 
 **Limits and caching.** Starting a sign-in is limited to 60 per client address
-in 15 minutes, counted apart from password failures, so a third party cannot
-lock out password sign-in by hitting the start address. Callbacks share the
-bucket of password sign-in (20 failures in 15 minutes per address; a successful
-sign-in forgives its own attempt), so set `UF_TRUSTED_PROXIES` behind a proxy.
+in 15 minutes, and so is the callback (60 per client address in 15 minutes, a
+successful sign-in forgives its own attempt); each is counted in a bucket of its
+own, apart from password failures, so a third party cannot lock out password
+sign-in by hitting either address. With single sign-on off the callback answers
+`config` and counts nothing. Password sign-in keeps its own limit (20 failures
+in 15 minutes per address), so set `UF_TRUSTED_PROXIES` behind a proxy.
 The provider's discovery document is cached for 1 hour (a failure for 30
 seconds); its key set for 1 hour, refetched when a token names an unknown key
 but at most once a minute. Saving the settings starts with empty caches.
 Accepted ID token algorithms: RS256, RS384, RS512, PS256, PS384, PS512, ES256
 and ES384 (never `none`, HMAC or EdDSA). The client authenticates to the token
 endpoint with HTTP basic, or in the body when the provider offers only that.
+
+**Turning single sign-on off.** Users made by single sign-on have no password
+and can sign in only while single sign-on works. If it is turned off, the
+issuer is changed so that they no longer match, or the master key changes, they
+get the same "Email or password is incorrect." as for any wrong password. The
+Users page shows who is affected: "SSO only" users have no password, "Password
+and SSO" users keep the password they had. Before turning it off, filter Users
+by SSO and check the "SSO only" ones. To recover, turn single sign-on back on;
+an admin can also delete the user and invite them again (which loses their keys
+and ownership), and a user who had a password keeps signing in with it. A
+disabled user made by single sign-on can be enabled again without a password.
+Setting a password for an active user who has none is not available yet.
 
 **Test configuration.** The Test button (`POST /api/settings/oidc/test`, admin
 only) makes the gateway fetch the issuer's discovery document and then the key

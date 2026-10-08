@@ -206,6 +206,10 @@ export async function startMockIdp(
       authorize(url, response);
     } else if (url.pathname === "/token" && request.method === "POST") {
       void token(request, response);
+    } else if (url.pathname === "/elsewhere") {
+      // A page of another site, from which the browser can be sent to the gateway.
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!doctype html><title>Elsewhere</title><p>Another site.</p>");
     } else {
       response.writeHead(404);
       response.end();

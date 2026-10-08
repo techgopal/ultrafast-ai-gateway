@@ -89,7 +89,10 @@ and briefs add to these; they do not repeat them.
   `CallbackParams` is transport neutral (name/value pairs, from a query or a
   form post; a name sent twice reads as absent). A provider only proves
   who the person is: mapping to a user, roles, the session and audit are done
-  once in `api/sso.rs`, and the caller re-checks `return_to`. Nothing a
+  once in `api/sso.rs`, and the caller re-checks `return_to`. That mapping
+  reads `OidcSettings` and the callback is a GET today, so a SAML provider would
+  still need a provider-neutral mapping policy, an issuer or realm on the
+  identity, its own cookie attributes and a POST callback route. Nothing a
   provider sent (claims, codes, tokens, error text) is logged or reflected;
   failures are fixed codes.
 - Errors to clients use the gateway's error shape; never leak provider keys or
