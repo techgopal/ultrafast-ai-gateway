@@ -37,7 +37,8 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
 - **Routing and resilience.** Routes with weighted targets, ordered fallbacks,
   retries, timeouts and circuit breakers; an exact-match response cache that
   sends concurrent identical calls to the provider once (single-flight).
-- **Access control.** Email and password sign-in, roles (admin, team lead,
+- **Access control.** Email and password sign-in or single sign-on with OpenID
+  Connect, roles (admin, team lead,
   member), teams, virtual keys with expiry and an allowlist of models and
   routes, a model catalog with enable and grant rules, an audit log.
 - **Usage, logs, limits, budgets.** Request logs (metadata only; no prompt or
@@ -228,6 +229,7 @@ secrets: a flag shows in the process list.
 | `UF_ADMIN_PASSWORD` | none | unset | See above. 12 to 256 characters. |
 | `UF_INSECURE_COOKIES` | `--insecure-cookies` | off | Send the session cookie without `Secure`, for plain HTTP on a trusted network or while developing. |
 | `UF_TRUSTED_PROXIES` | `--trusted-proxy CIDR` (repeatable) | none | Networks of reverse proxies whose `CF-Connecting-IP` and `X-Forwarded-For` are believed. Comma separated in the variable. |
+| `UF_PUBLIC_URL` | `--public-url` | unset | The address people reach the gateway at, like `https://gateway.example.com`: origin only, no path. Needed for single sign-on, whose redirect URI is `<url>/api/auth/oidc/callback`. Plain `http` only for localhost unless `--insecure-cookies`. `serve`. See Single sign-on. |
 | `UF_METRICS_TOKEN` | `--metrics-token` | unset | Enables `GET /metrics` for callers sending this bearer token. |
 | `UF_OTEL_ENDPOINT` | `--otel-endpoint` | unset | Enables trace export. The OTLP base URL of a collector or backend (`http://localhost:4318`): spans are posted to `<base>/v1/traces`. A URL that already ends in `/v1/traces` is used as it is; a query string is kept. `serve`. See Tracing. |
 | `UF_OTEL_HEADERS` | `--otel-headers` | unset | Headers sent with every export, `name=value` pairs separated by commas (for example `authorization=Bearer ...`). Prefer the variable: it can hold a credential. |
@@ -292,6 +294,143 @@ history), tools as JSON with a tool choice, and shows the model's tool calls and
 the results you send back.
 
 Guardrails and MCP tools appear in the navigation as coming.
+
+## Single sign-on
+
+Besides email and password, people can sign in with one OpenID Connect (OIDC)
+identity provider: Google, Microsoft Entra ID, Okta, Keycloak or any other
+provider that publishes `/.well-known/openid-configuration`. Passwords keep
+working next to it. The gateway uses the authorization code flow with PKCE
+(S256) and checks the ID token (signature, issuer, audience, nonce, expiry)
+before it trusts anything in it. Every sign-in ends in the same session a
+password sign-in makes.
+
+**Set up.**
+
+1. Start the gateway with its public address: `UF_PUBLIC_URL=https://gateway.example.com`
+   (or `--public-url`). It is the origin people type in the browser: `http` or
+   `https`, a host and optionally a port, **no path**, query or credentials
+   (the console is served at the root). Plain `http` is accepted only for
+   `localhost`, `127.0.0.1` and `[::1]`, unless you start with
+   `--insecure-cookies`. A wrong value stops `serve` at start.
+2. In your provider, register a web application (a confidential client with a
+   client secret) with the redirect URI
+   `<UF_PUBLIC_URL>/api/auth/oidc/callback`, for example
+   `https://gateway.example.com/api/auth/oidc/callback`. Settings in the
+   console shows it, with a copy button, once the public URL is set.
+3. As an admin open Settings, Single sign-on (OIDC): enter the issuer, client
+   ID and client secret, choose how users are mapped (below), use Test
+   configuration, then switch it on. The sign-in page then offers
+   "Sign in with <label>". The client secret is stored encrypted with the
+   master key and is never shown again; leave the field empty to keep it.
+
+Issuer and where to register, per provider:
+
+- **Google.** Issuer `https://accounts.google.com`. Google Cloud console, APIs
+  and Services, Credentials, OAuth client ID, type "Web application"; add the
+  redirect URI. Google sends `email_verified`; it has no groups claim.
+- **Microsoft Entra ID.** Issuer `https://login.microsoftonline.com/<tenant-id>/v2.0`
+  (use the tenant ID, not `common`). App registrations, New registration, platform
+  "Web", add the redirect URI; Certificates and secrets, new client secret
+  (use its Value). To use groups for the admin role, add a groups claim in
+  Token configuration and use the group's object ID as the admin group.
+- **Okta.** Issuer `https://<your-domain>.okta.com` (the org authorization server)
+  or `https://<your-domain>.okta.com/oauth2/default`. Applications, Create App
+  Integration, OIDC, "Web Application"; add the redirect URI as a sign-in
+  redirect URI. For groups, add a groups claim to the ID token (filter on the
+  groups you need).
+- **Keycloak.** Issuer `https://<host>/realms/<realm>`. Clients, Create client,
+  OpenID Connect, "Client authentication" on, add the redirect URI as a valid
+  redirect URI. For groups, add a "Group Membership" mapper to the client with
+  "Add to ID token" on (set "Full group path" off to match plain names).
+
+The authorization, token and key-set endpoints the provider announces must use
+the same scheme as the issuer: an `https` issuer cannot send the gateway to an
+`http` or loopback endpoint. `http` is accepted only when the issuer itself is
+a loopback `http` address (development). The gateway asks for the scopes
+`openid email profile` plus any extra scopes you list.
+
+**Who gets in.** The gateway never creates a session for an identity it cannot
+map to a user. For each sign-in, in this order:
+
+1. The identity is already linked: the user whose link is
+   `<issuer>|<subject>` (the provider's stable `sub`). Changing the email at
+   the provider changes nothing here. A disabled user is refused.
+2. Not linked yet, "Link existing users by email" on, and the provider says
+   the email is **verified** (`email_verified`): the user with that email is
+   linked to this identity. An invited user becomes active (the pending
+   invitation is dropped), a password user keeps the password. A disabled user
+   is refused. If that user is already linked to the same issuer under another
+   `sub`, the sign-in is refused (a reassigned address is another person).
+   Microsoft Entra ID usually omits `email_verified`: for an issuer under
+   `https://login.microsoftonline.com/` the email counts as verified only when
+   it is the ID token's own `email` claim and the token's `tid` equals the
+   tenant in the issuer. An email taken from the userinfo endpoint is never
+   treated as verified that way.
+3. Otherwise, "Create users on first sign-in" on, a verified email, and an
+   email domain in "Allowed domains" (exact domain, not subdomains; list
+   internationalized domains as punycode, `xn--...`): a new active Member is
+   created, with no password.
+4. Otherwise the sign-in is refused (`not_allowed`).
+
+An unverified email never links or creates anyone.
+
+**Roles.** With an "admin group" set, the user's role follows the provider on
+every sign-in: in the group (the groups claim, `groups` unless you name
+another) means admin, not in it means member. Without an admin group, roles are
+never changed by sign-in, and you change them in the console as before.
+
+- If the ID token has **no** groups claim, the gateway does not know the groups
+  and leaves the role as it is (a note goes to the log). Entra ID leaves the
+  claim out when a user is in too many groups ("groups overage", it sends a
+  link instead): such a user keeps their role. Reduce the groups sent (assign
+  only the needed groups to the application) or use app roles.
+- An explicitly **empty** list means "in no group": an admin who is in none is
+  made a member.
+- The last active admin is never demoted by the provider. The sign-in works,
+  the role stays, and the audit log records
+  `user.role_from_idp` explaining why.
+
+Team membership is not synchronized.
+
+**Sign-in errors.** A failed sign-in returns to the sign-in page with
+`?sso_error=<code>`; the page shows this message (the code itself is never
+shown):
+
+| Code | Console message | Usual cause |
+| --- | --- | --- |
+| `state` | Sign-in took too long or was interrupted. Try again. | The attempt's cookie is missing, altered, or does not match (a second tab, a blocked cookie, a reused link). |
+| `expired` | Sign-in took too long or was interrupted. Try again. | The attempt is older than 10 minutes. |
+| `idp` | Your identity provider refused the sign-in. | The provider answered with an error (the user said no, or the app is not assigned to them). |
+| `token` | Single sign-on is not set up correctly. Ask an admin. | The code exchange failed or the ID token is not acceptable: wrong client secret, wrong issuer or client ID, unsupported algorithm, no usable email, a clock off by more than a minute. |
+| `config` | Single sign-on is not set up correctly. Ask an admin. | Single sign-on is off or incomplete, the provider's discovery cannot be reached, or an internal error (see the log). |
+| `not_allowed` | Your account is not allowed to sign in here. Ask an admin to invite you. | No linked user, and no verified email that links or creates one (see Who gets in). |
+| `disabled` | Your account is disabled. | The user is disabled. |
+| `rate_limited` | Too many sign-in attempts. Wait a minute and try again. | See below. |
+
+Any other value is shown as "Single sign-on did not work. Try again." Details
+of a failure go to the log as a reason code only; tokens, codes and cookies are
+never logged. `uf_oidc_signins_total{result}` on `/metrics` counts every
+callback by `ok`, `state`, `expired`, `idp`, `token`, `not_allowed`,
+`disabled`, `rate_limited` and `config`.
+
+**Limits and caching.** Starting a sign-in is limited to 60 per client address
+in 15 minutes, counted apart from password failures, so a third party cannot
+lock out password sign-in by hitting the start address. Callbacks share the
+bucket of password sign-in (20 failures in 15 minutes per address; a successful
+sign-in forgives its own attempt), so set `UF_TRUSTED_PROXIES` behind a proxy.
+The provider's discovery document is cached for 1 hour (a failure for 30
+seconds); its key set for 1 hour, refetched when a token names an unknown key
+but at most once a minute. Saving the settings starts with empty caches.
+Accepted ID token algorithms: RS256, RS384, RS512, PS256, PS384, PS512, ES256
+and ES384 (never `none`, HMAC or EdDSA). The client authenticates to the token
+endpoint with HTTP basic, or in the body when the provider offers only that.
+
+**Test configuration.** The Test button (`POST /api/settings/oidc/test`, admin
+only) makes the gateway fetch the issuer's discovery document and then the key
+set it names, and reports what it found. Only admins can use it; the address
+it contacts is the issuer you typed, and the second request goes where the
+discovery document points.
 
 ## Operations
 
@@ -607,6 +746,15 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
   resolves only after its breaker has stayed closed for 5 minutes. Alert
   history (events) is kept until the database is deleted; it is not pruned by
   log retention.
+- Single sign-on: one OIDC provider; no SAML, SCIM, group-to-team sync,
+  sign-in-only-with-SSO enforcement, provider-initiated sign-in or back-channel
+  logout. Signing out of the gateway does not sign out of the identity
+  provider, and a role changed at the provider takes effect at the user's next
+  sign-in. There is no unlink. The attempt's cookie is stateless (encrypted,
+  10 minutes): replaying a callback relies on the provider accepting an
+  authorization code only once, as the standard requires. The
+  provider's groups claim can be missing (Entra ID overage), in which case
+  the role stays as it is.
 - A backup restore is manual, and a configuration import never deletes.
 - No Responses API, image or audio output, or `response_format` / structured
   outputs yet (phase 2). SQLite only.

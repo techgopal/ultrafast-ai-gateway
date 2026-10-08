@@ -22,8 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `uf_alert_deliveries_total{result}`.
 - A circuit alert resolves only after its breaker has stayed closed for
   5 minutes, so a flapping provider is one episode. Budget alerts of a past
-  period no longer show as firing. The `requested` name in logs, traces and
-  error windows is cut at 256 bytes.
+  period no longer show as firing. The `requested` name in logs and traces is
+  cut at 256 bytes.
+- **Single sign-on.** Sign in with one OpenID Connect provider (Google,
+  Microsoft Entra ID, Okta, Keycloak, any with discovery): authorization code
+  flow with PKCE, ID token checks (RS/PS256-512, ES256/384), settings in the
+  console (Settings, Single sign-on) and `GET/PUT /api/settings/oidc`, a test
+  endpoint that fetches the issuer's discovery and key set (admin only).
+  `UF_PUBLIC_URL` / `--public-url` names the gateway's address (no path; plain
+  http only for localhost unless `--insecure-cookies`). Users are linked by
+  `<issuer>|<sub>`, by verified email, or created for allowed domains; an
+  optional admin group sets the role at each sign-in (a missing groups claim
+  leaves the role; the last admin is never demoted). Starting a sign-in has its
+  own rate limit; `sso_error` codes on the sign-in page; metric
+  `uf_oidc_signins_total{result}`. Users show how they sign in (Password or
+  SSO). Migration 0015.
 
 ## [2.0.0-beta.2] - 2026-10-05
 

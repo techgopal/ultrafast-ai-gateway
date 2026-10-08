@@ -81,6 +81,17 @@ and briefs add to these; they do not repeat them.
 - A write transaction that reads before it writes starts with `BEGIN IMMEDIATE`
   (as the configuration import does); a deferred one fails at once with SQLite
   code 517 when another writer commits in between.
+- Sign-in methods other than the password sit behind the `SignInProvider` trait
+  (`identity/external.rs`): `begin(return_to)` returns the redirect and a flow
+  cookie value, `complete(&CallbackParams, flow_cookie)` returns
+  `Completed { identity, return_to }`. Both return boxed futures (`BoxFuture`)
+  so the trait stays object safe for `Arc<dyn SignInProvider>`;
+  `CallbackParams` is transport neutral (name/value pairs, from a query or a
+  form post; a name sent twice reads as absent). A provider only proves
+  who the person is: mapping to a user, roles, the session and audit are done
+  once in `api/sso.rs`, and the caller re-checks `return_to`. Nothing a
+  provider sent (claims, codes, tokens, error text) is logged or reflected;
+  failures are fixed codes.
 - Errors to clients use the gateway's error shape; never leak provider keys or
   internal paths.
 
