@@ -199,6 +199,9 @@ pub struct OidcView {
     /// Whether a client secret is stored. The secret itself is never
     /// returned.
     pub client_secret_set: bool,
+    /// True when a secret is stored but cannot be decrypted (the master key
+    /// changed). Single sign-on stays off until a new secret is saved.
+    pub client_secret_unreadable: bool,
     /// Scopes asked for besides `openid email profile`, space separated.
     pub scopes: String,
     /// The ID token claim that lists the user's groups.
@@ -229,6 +232,8 @@ fn oidc_view_of(state: &AppState, s: &OidcSettings) -> OidcView {
         issuer: s.issuer.clone(),
         client_id: s.client_id.clone(),
         client_secret_set: s.client_secret_enc.is_some(),
+        client_secret_unreadable: s.client_secret_enc.is_some()
+            && state.oidc_client_secret(s).is_none(),
         scopes: s.scopes.clone(),
         groups_claim: s.groups_claim.clone(),
         admin_group: s.admin_group.clone(),
@@ -501,7 +506,9 @@ pub async fn oidc_update(
     let before = state.store.oidc_settings().await?;
     let next = checked_oidc(
         &req,
-        before.client_secret_enc.is_some(),
+        // A stored secret that cannot be read does not count: enabling
+        // would not start a provider.
+        state.oidc_client_secret(&before).is_some(),
         state.public_url.is_some(),
         &state.cipher,
     )?;
@@ -618,13 +625,15 @@ async fn probe_issuer(http: &reqwest::Client, issuer: &str) -> OidcTestResult {
         Err(m) => return fail(result, &m),
     };
     let text = |name: &str| doc.get(name).and_then(|v| v.as_str()).map(str::to_string);
-    result.issuer = text("issuer");
-    if result.issuer.as_deref() != Some(issuer) {
+    // What the provider calls itself is shown only once it is the issuer
+    // that was entered: a document that names another is not repeated.
+    if text("issuer").as_deref() != Some(issuer) {
         return fail(
             result,
             "The issuer in the discovery document is not the one you entered; they must match exactly.",
         );
     }
+    result.issuer = text("issuer");
     result.authorization_endpoint = text("authorization_endpoint");
     result.token_endpoint = text("token_endpoint");
     let jwks_uri = text("jwks_uri");

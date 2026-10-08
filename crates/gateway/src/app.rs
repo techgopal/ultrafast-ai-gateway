@@ -148,18 +148,31 @@ impl AppState {
         Some(format!("{base}/api/auth/oidc/callback"))
     }
 
+    /// The client secret stored in `settings`, decrypted. `None` when none
+    /// is stored, or when the stored value cannot be read (the master key
+    /// changed).
+    pub fn oidc_client_secret(&self, settings: &crate::store::OidcSettings) -> Option<String> {
+        settings
+            .client_secret_enc
+            .as_deref()
+            .and_then(|hex| hex::decode(hex).ok())
+            .and_then(|bytes| self.cipher.decrypt(&bytes).ok())
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+    }
+
     /// Rebuilds the sign-in provider from the stored settings: none when
     /// single sign-on is off or not complete (no public URL, issuer, client
     /// id or readable secret). Call it after the settings change, and
     /// never while a `Tx` is open.
     pub async fn reload_sign_in(&self) -> anyhow::Result<()> {
         let settings = self.store.oidc_settings().await?;
-        let secret = settings
-            .client_secret_enc
-            .as_deref()
-            .and_then(|hex| hex::decode(hex).ok())
-            .and_then(|bytes| self.cipher.decrypt(&bytes).ok())
-            .and_then(|bytes| String::from_utf8(bytes).ok());
+        let secret = self.oidc_client_secret(&settings);
+        if settings.client_secret_enc.is_some() && secret.is_none() {
+            tracing::warn!(
+                "the stored single sign-on client secret cannot be decrypted \
+                 (the master key changed?): single sign-on stays off until a new secret is saved"
+            );
+        }
         let provider = match (
             settings.enabled,
             self.oidc_redirect_uri(),

@@ -27,7 +27,7 @@ use crate::identity::password::{
 use crate::identity::policy::Action;
 use crate::identity::{normalize_email, Principal, Role, TeamRole, UserStatus};
 use crate::secrets::{hash_key, setup_code_matches, INVITE_PREFIX};
-use crate::store::{AuditEntry, NewUser, Store, UserRow, UserTeam};
+use crate::store::{AuditEntry, NewSession, NewUser, Store, Tx, UserRow, UserTeam};
 
 /// The name of an admin created from the environment at startup.
 const BOOTSTRAP_NAME: &str = "Admin";
@@ -40,11 +40,31 @@ pub struct UserView {
     pub name: String,
     pub role: Role,
     pub status: UserStatus,
+    /// How the user signs in: with a `password`, or through the single
+    /// sign-on provider (`oidc`) they are linked to. Read only.
+    pub auth_provider: AuthProviderView,
     pub created_at: String,
     #[schema(required)]
     pub last_active_at: Option<String>,
     /// The user's teams, ordered by name.
     pub teams: Vec<UserTeamView>,
+}
+
+/// How a user signs in, as `/api` shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthProviderView {
+    Password,
+    Oidc,
+}
+
+impl AuthProviderView {
+    fn of(stored: &str) -> Self {
+        match stored {
+            "oidc" => Self::Oidc,
+            _ => Self::Password,
+        }
+    }
 }
 
 impl UserView {
@@ -55,6 +75,7 @@ impl UserView {
             name: u.name,
             role: u.role,
             status: u.status,
+            auth_provider: AuthProviderView::of(&u.auth_provider),
             created_at: u.created_at,
             last_active_at: u.last_active_at,
             teams: teams.into_iter().map(UserTeamView::from).collect(),
@@ -197,13 +218,75 @@ async fn verify_blocking(
 }
 
 /// The `Set-Cookie` value for the session cookie.
-fn cookie_header(value: &str, max_age: i64, secure: bool) -> anyhow::Result<HeaderValue> {
+pub(super) fn cookie_header(
+    value: &str,
+    max_age: i64,
+    secure: bool,
+) -> anyhow::Result<HeaderValue> {
     let secure = if secure { "; Secure" } else { "" };
     let text = format!(
         "{SESSION_COOKIE}={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}{secure}"
     );
     // The error would quote the cookie, so it is not passed on.
     HeaderValue::from_str(&text).map_err(|_| anyhow!("the session cookie is not a valid header"))
+}
+
+/// Starts a session for `user` in `tx` and records `auth.login`. Every way
+/// to sign in ends here, so a session is the same whatever made it: the same
+/// lifetime (`session_hours`), CSRF token and audit entry. The caller commits
+/// and sets the cookie with [`session_cookie_header`].
+pub(super) async fn open_session(
+    tx: &mut Tx<'_>,
+    user: &UserRow,
+    summary: &str,
+) -> anyhow::Result<NewSession> {
+    let session = tx.create_session(user.id).await?;
+    tx.audit(AuditEntry {
+        actor_user_id: Some(user.id),
+        actor_email: &user.email,
+        action: "auth.login",
+        target_type: "user",
+        target_id: Some(user.id),
+        summary,
+    })
+    .await?;
+    Ok(session)
+}
+
+/// The `Set-Cookie` header that gives the browser a new session.
+pub(super) fn session_cookie_header(
+    state: &AppState,
+    session: &NewSession,
+) -> anyhow::Result<HeaderValue> {
+    cookie_header(&session.id, session.max_age_seconds, state.cookie_secure)
+}
+
+/// The longest return path kept.
+const MAX_RETURN_TO_BYTES: usize = 2048;
+
+/// Where the console may send the browser after a sign-in: a path inside
+/// the console that starts with a single `/`. Anything else (a scheme, a
+/// host, `//`, a backslash, a space or control character, anything outside
+/// printable ASCII, or a path into `/api` or `/v1`) becomes `/`. Used when a
+/// sign-in starts and again when it ends, so a path is never trusted for
+/// having been checked once.
+pub(super) fn safe_return_to(raw: &str) -> String {
+    let printable = raw.bytes().all(|b| (0x21..=0x7e).contains(&b));
+    let path = raw.split(['?', '#']).next().unwrap_or_default();
+    let into_api = ["/api", "/v1"]
+        .iter()
+        .any(|p| path == *p || path.starts_with(&format!("{p}/")));
+    let ok = raw.len() <= MAX_RETURN_TO_BYTES
+        && printable
+        && raw.starts_with('/')
+        && !raw.starts_with("//")
+        && !raw.contains('\\')
+        && !into_api;
+    if ok {
+        raw.to_string()
+    } else {
+        "/".to_string()
+    }
 }
 
 /// Inserts the first admin unless a user exists, which is checked in the
@@ -417,23 +500,32 @@ pub async fn login(
     };
 
     let mut tx = store.begin().await?;
-    let session = tx.create_session(user.id).await?;
-    tx.audit(AuditEntry {
-        actor_user_id: Some(user.id),
-        actor_email: &user.email,
-        action: "auth.login",
-        target_type: "user",
-        target_id: Some(user.id),
-        summary: &format!("{} signed in", user.email),
-    })
-    .await?;
+    let session = open_session(&mut tx, &user, &format!("{} signed in", user.email)).await?;
     tx.commit().await?;
     attempt_succeeded(&state, &key, addr);
 
-    let cookie = cookie_header(&session.id, session.max_age_seconds, state.cookie_secure)?;
+    let cookie = session_cookie_header(&state, &session)?;
     let user = user_view(&state.store, user).await?;
     let body = json!({ "user": user, "csrf_token": session.csrf_token });
     Ok(([(SET_COOKIE, cookie)], Json(body)).into_response())
+}
+
+#[utoipa::path(
+    get,
+    path = "/auth/methods",
+    tag = "auth",
+    operation_id = "auth_methods",
+    responses(
+        (status = 200, description = "How people can sign in: always with a password, and with the configured single sign-on provider when it is on.", body = super::openapi::SignInMethods),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+)]
+pub async fn methods(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {
+    let oidc = state
+        .sign_in
+        .load_full()
+        .map(|provider| json!({ "label": provider.label() }));
+    Ok(Json(json!({ "password": true, "oidc": oidc })).into_response())
 }
 
 #[utoipa::path(
@@ -812,6 +904,42 @@ mod tests {
     }
 
     #[test]
+    fn return_paths_are_relative_console_paths() {
+        for ok in [
+            "/",
+            "/keys",
+            "/ok?x=1",
+            "/keys/12?tab=a&b=c#top",
+            "/a//b",
+            "/%2Fevil.com",
+        ] {
+            assert_eq!(safe_return_to(ok), ok);
+        }
+        for bad in [
+            "",
+            "keys",
+            "//evil.com",
+            "//",
+            "/\\evil.com",
+            "\\\\evil.com",
+            "https://evil.com",
+            "javascript:alert(1)",
+            "/ok\r\nSet-Cookie: x=y",
+            "/ok\tx",
+            "/with space",
+            "/caf\u{e9}",
+            "/api/backup",
+            "/api",
+            "/v1/models",
+            " /keys",
+        ] {
+            assert_eq!(safe_return_to(bad), "/", "{bad:?}");
+        }
+        assert_eq!(safe_return_to(&format!("/{}", "a".repeat(3000))), "/");
+        assert_eq!(safe_return_to(&format!("/{}", "a".repeat(100))).len(), 101);
+    }
+
+    #[test]
     fn limiter_keys_are_bounded() {
         assert_eq!(
             limiter_key(" Maya@Example.com", Some("maya@example.com")),
@@ -844,6 +972,6 @@ mod tests {
         );
         let text = serde_json::to_string(&view).unwrap();
         assert!(!text.contains("argon2"));
-        assert!(!text.contains("password"));
+        assert!(!text.contains("password_hash"));
     }
 }

@@ -67,8 +67,9 @@ enum Command {
         /// The address people reach the gateway at, like
         /// https://gateway.example.com. Single sign-on needs it: the
         /// identity provider sends the browser back to
-        /// <URL>/api/auth/oidc/callback. Unset: single sign-on cannot be
-        /// turned on.
+        /// <URL>/api/auth/oidc/callback. Only the address: no path. Plain
+        /// http is accepted for localhost, or with --insecure-cookies.
+        /// Unset: single sign-on cannot be turned on.
         #[arg(long, env = "UF_PUBLIC_URL", value_name = "URL")]
         public_url: Option<String>,
         /// Serve Prometheus metrics at `GET /metrics` to callers that send
@@ -217,6 +218,7 @@ fn validate(command: &mut Command) -> Result<()> {
             port,
             trusted_proxies,
             public_url,
+            insecure_cookies,
             otel_endpoint,
             otel_headers,
             otel_service_name,
@@ -226,7 +228,7 @@ fn validate(command: &mut Command) -> Result<()> {
             serve_address(host, *port)?;
             parse_trusted_proxies(trusted_proxies)?;
             if let Some(url) = public_url.as_deref().filter(|u| !u.trim().is_empty()) {
-                parse_public_url(url)?;
+                parse_public_url(url, *insecure_cookies)?;
             }
             validate_otel(
                 otel_endpoint.as_deref(),
@@ -481,7 +483,7 @@ async fn main() -> Result<()> {
             state.trusted_proxies = parse_trusted_proxies(&trusted_proxies)?;
             state.public_url = public_url
                 .filter(|u| !u.trim().is_empty())
-                .map(|u| parse_public_url(&u))
+                .map(|u| parse_public_url(&u, insecure_cookies))
                 .transpose()?;
             state.reload_sign_in().await?;
             if !state.trusted_proxies.is_empty() {
@@ -668,10 +670,10 @@ mod tests {
 
     #[test]
     fn serve_checks_the_public_url() {
-        let serve = |url: Option<&str>| Command::Serve {
+        let serve = |url: Option<&str>, insecure_cookies: bool| Command::Serve {
             host: "127.0.0.1".into(),
             port: 3000,
-            insecure_cookies: false,
+            insecure_cookies,
             trusted_proxies: vec![],
             public_url: url.map(str::to_string),
             metrics_token: None,
@@ -680,14 +682,22 @@ mod tests {
             otel_service_name: "ultrafast".into(),
             otel_sample_ratio: 1.0,
         };
-        for (url, ok) in [
-            (None, true),
-            (Some(""), true),
-            (Some("https://gateway.example.com"), true),
-            (Some("gateway.example.com"), false),
-            (Some("https://u:p@gateway.example.com"), false),
+        for (url, insecure, ok) in [
+            (None, false, true),
+            (Some(""), false, true),
+            (Some("https://gateway.example.com"), false, true),
+            (Some("gateway.example.com"), false, false),
+            (Some("https://u:p@gateway.example.com"), false, false),
+            (Some("https://gateway.example.com/gw"), false, false),
+            (Some("http://gateway.example.com"), false, false),
+            (Some("http://gateway.example.com"), true, true),
+            (Some("http://localhost:3000"), false, true),
         ] {
-            assert_eq!(validate(&mut serve(url)).is_ok(), ok, "{url:?}");
+            assert_eq!(
+                validate(&mut serve(url, insecure)).is_ok(),
+                ok,
+                "{url:?} {insecure}"
+            );
         }
     }
 

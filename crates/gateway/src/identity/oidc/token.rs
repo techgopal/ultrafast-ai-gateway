@@ -30,10 +30,17 @@ pub struct Expected<'a> {
 }
 
 /// The claims of an accepted token.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Claims {
     pub subject: String,
     pub raw: Map<String, Value>,
+}
+
+/// Claims name a person (email, name, groups): they are never printed.
+impl std::fmt::Debug for Claims {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Claims(<redacted>)")
+    }
 }
 
 /// Longest ID token read (they are a few KiB).
@@ -64,16 +71,20 @@ impl Claims {
     }
 
     /// Strings of an array claim, or the one string of a string claim.
-    pub fn strings(&self, name: &str) -> Vec<String> {
+    /// `None` when the claim is absent or of another kind: the value is
+    /// unknown, which is not the same as an empty list.
+    pub fn strings_if_present(&self, name: &str) -> Option<Vec<String>> {
         match self.raw.get(name) {
-            Some(Value::String(s)) => vec![s.clone()],
-            Some(Value::Array(items)) => items
-                .iter()
-                .filter_map(Value::as_str)
-                .take(MAX_GROUPS)
-                .map(str::to_string)
-                .collect(),
-            _ => Vec::new(),
+            Some(Value::String(s)) => Some(vec![s.clone()]),
+            Some(Value::Array(items)) => Some(
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .take(MAX_GROUPS)
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            _ => None,
         }
     }
 }
@@ -506,11 +517,14 @@ mod tests {
         assert_eq!(c.flag("d"), None);
         assert_eq!(c.flag("e"), None);
         assert_eq!(c.flag("missing"), None);
-        assert_eq!(c.strings("g1"), vec!["x", "y"]);
-        assert_eq!(c.strings("g2"), vec!["solo"]);
-        assert!(c.strings("g3").is_empty());
-        assert!(c.strings("g4").is_empty());
-        assert!(c.strings("missing").is_empty());
+        let strings = |name: &str| c.strings_if_present(name);
+        assert_eq!(strings("g1"), Some(vec!["x".to_string(), "y".to_string()]));
+        assert_eq!(strings("g2"), Some(vec!["solo".to_string()]));
+        // A claim of another kind, or none, is unknown; an empty list is not.
+        assert_eq!(strings("g3"), None);
+        assert_eq!(strings("g4"), Some(vec![]));
+        assert_eq!(strings("missing"), None);
+        assert!(!format!("{c:?}").contains("Ann"));
         assert_eq!(c.text("name").as_deref(), Some("Ann"));
         assert_eq!(c.text("empty"), None);
         assert_eq!(c.text("e"), None);

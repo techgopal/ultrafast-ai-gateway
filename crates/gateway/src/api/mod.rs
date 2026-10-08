@@ -17,6 +17,7 @@ pub mod playground;
 pub mod providers;
 pub mod routes;
 pub mod settings;
+pub mod sso;
 pub mod teams;
 pub mod tokens;
 pub mod usage;
@@ -68,6 +69,9 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(auth::setup_status, auth::setup))
         .routes(routes!(auth::login))
+        .routes(routes!(auth::methods))
+        .routes(routes!(sso::oidc_start))
+        .routes(routes!(sso::oidc_callback))
         .routes(routes!(auth::logout))
         .routes(routes!(auth::me))
         .routes(routes!(auth::accept_invite))
@@ -473,16 +477,21 @@ pub struct Authed {
     pub via: AuthVia,
 }
 
-/// The value of the session cookie, if the request has one.
-fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+/// The value of the cookie `name`, if the request has one.
+pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get_all(COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(';'))
         .filter_map(|pair| pair.trim().split_once('='))
-        .find(|(name, _)| *name == SESSION_COOKIE)
+        .find(|(n, _)| *n == name)
         .map(|(_, value)| value)
+}
+
+/// The value of the session cookie, if the request has one.
+fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+    cookie_value(headers, SESSION_COOKIE)
 }
 
 /// The token of an `Authorization: Bearer <token>` header value.

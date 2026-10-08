@@ -158,6 +158,19 @@ impl LoginLimiter {
         true
     }
 
+    /// Like [`try_begin`](Self::try_begin) for an attempt that has no email
+    /// (a single sign-on callback): only the address bucket is checked and
+    /// counted. Call `forgive` for the address if the attempt succeeds.
+    pub fn try_begin_address(&self, addr: IpAddr, now: Instant) -> bool {
+        let mut failures = self.lock();
+        let key = address_key(addr);
+        if failures.count(&key, now) >= MAX_PER_ADDRESS {
+            return false;
+        }
+        failures.push(key, now, self.capacity);
+        true
+    }
+
     /// Clears the failures of the email from this address: the address
     /// keeps its count.
     pub fn record_success(&self, email: &str, addr: IpAddr) {
@@ -293,6 +306,27 @@ mod tests {
         assert_eq!(limiter.count(&pair_key("fresh@example.com", addr(1))), 0);
         assert!(limiter.try_begin("fresh@example.com", addr(2), t0));
         assert!(limiter.try_begin("fresh@example.com", addr(1), t0 + minutes(16)));
+    }
+
+    #[test]
+    fn the_address_bucket_alone_limits_by_address() {
+        let limiter = LoginLimiter::new();
+        let t0 = Instant::now();
+        for n in 0..MAX_PER_ADDRESS {
+            assert!(limiter.try_begin_address(addr(1), t0), "attempt {n}");
+        }
+        assert!(!limiter.try_begin_address(addr(1), t0));
+        // A refused attempt counts nothing; another address is not affected.
+        assert_eq!(limiter.count(&address_key(addr(1))), MAX_PER_ADDRESS);
+        assert!(limiter.try_begin_address(addr(2), t0));
+        // It shares the bucket with sign-in attempts by email.
+        assert!(!limiter.try_begin(EMAIL, addr(1), t0));
+        // A success gives its attempt back, and the window ends.
+        limiter.forgive(addr(1));
+        assert!(limiter.try_begin_address(addr(1), t0));
+        assert!(limiter.try_begin_address(addr(1), t0 + minutes(16)));
+        // No pair name was made.
+        assert_eq!(limiter.entries(), 2);
     }
 
     #[test]

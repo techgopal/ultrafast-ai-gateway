@@ -200,6 +200,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["auth_methods"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/oidc/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A browser navigation: a GET without a CSRF header. Limited per client
+         *     address like sign-in with a password.
+         */
+        get: operations["auth_oidc_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/oidc/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A browser navigation: a GET without a CSRF header. */
+        get: operations["auth_oidc_start"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/password": {
         parameters: {
             query?: never;
@@ -927,6 +980,11 @@ export interface components {
             target_id: number | null;
             target_type: string;
         };
+        /**
+         * @description How a user signs in, as `/api` shows it.
+         * @enum {string}
+         */
+        AuthProviderView: "password" | "oidc";
         BudgetEntry: {
             /** @description `block` or `alert`. */
             action: string;
@@ -1622,6 +1680,11 @@ export interface components {
              *     returned.
              */
             client_secret_set: boolean;
+            /**
+             * @description True when a secret is stored but cannot be decrypted (the master key
+             *     changed). Single sign-on stays off until a new secret is saved.
+             */
+            client_secret_unreadable: boolean;
             /** @description Whether the sign-in button is offered. */
             enabled: boolean;
             /** @description The ID token claim that lists the user's groups. */
@@ -2033,6 +2096,15 @@ export interface components {
             /** @description True while no user exists. */
             needs_setup: boolean;
         };
+        SignInMethodOidc: {
+            /** @description The name for the sign-in button. */
+            label: string;
+        };
+        SignInMethods: {
+            oidc: components["schemas"]["SignInMethodOidc"] | null;
+            /** @description Always true: passwords are never turned off. */
+            password: boolean;
+        };
         SyncResult: {
             /** @description The names that were new, now in the catalog and disabled. */
             added: string[];
@@ -2263,6 +2335,11 @@ export interface components {
         };
         /** @description A user as `/api` shows it. It has no field for the password hash. */
         UserView: {
+            /**
+             * @description How the user signs in: with a `password`, or through the single
+             *     sign-on provider (`oidc`) they are linked to. Read only.
+             */
+            auth_provider: components["schemas"]["AuthProviderView"];
             created_at: string;
             email: string;
             /** Format: int64 */
@@ -3362,6 +3439,118 @@ export interface operations {
             };
             /** @description No valid session or access token. */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    auth_methods: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description How people can sign in: always with a password, and with the configured single sign-on provider when it is on. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignInMethods"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    auth_oidc_callback: {
+        parameters: {
+            query?: {
+                /** @description The authorization code the identity provider made. */
+                code?: string;
+                /** @description The `state` of the attempt. */
+                state?: string;
+                /** @description The error code when the identity provider refused. */
+                error?: string;
+                /** @description Ignored. */
+                error_description?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed in: the session cookie is set and the browser is sent to the path given at the start (`/` when it was not a console path). Not signed in: the browser is sent to `/sign-in?sso_error=<code>` with code `state`, `expired`, `idp`, `token`, `not_allowed`, `disabled`, `rate_limited` or `config`. The flow cookie is cleared either way. */
+            302: {
+                headers: {
+                    /** @description The console path, or the sign-in page with the reason. */
+                    Location?: string;
+                    /** @description The cleared flow cookie, and the session cookie when signed in. */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    auth_oidc_start: {
+        parameters: {
+            query?: {
+                /** @description Where to send the browser after sign-in: a path inside the console that starts with a single `/`. Anything else means `/`. */
+                return_to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The browser is sent to the identity provider. The flow cookie `uf_oidc` (HttpOnly, SameSite=Lax, Path=/api/auth/oidc, 10 minutes) is set. Without a provider that can be reached, to `/sign-in?sso_error=config`. */
+            302: {
+                headers: {
+                    /** @description The identity provider's authorization address. */
+                    Location?: string;
+                    /** @description The flow cookie `uf_oidc`. */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `oidc_disabled`: single sign-on is not turned on. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

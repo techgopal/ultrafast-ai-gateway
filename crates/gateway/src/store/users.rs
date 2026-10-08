@@ -253,6 +253,26 @@ impl Tx<'_> {
         row.as_ref().map(user_from).transpose()
     }
 
+    /// The user linked to this identity at a sign-in provider, as the
+    /// transaction sees them, whatever the user's status.
+    pub async fn user_by_external(
+        &mut self,
+        provider: &str,
+        external_id: &str,
+    ) -> Result<Option<UserRow>> {
+        let sql = format!(
+            "SELECT {USER_COLUMNS} FROM users
+             WHERE org_id = ? AND auth_provider = ? AND external_id = ?"
+        );
+        let row = sqlx::query(AssertSqlSafe(sql))
+            .bind(DEFAULT_ORG)
+            .bind(provider)
+            .bind(external_id)
+            .fetch_optional(self.conn())
+            .await?;
+        row.as_ref().map(user_from).transpose()
+    }
+
     /// Counts inside the transaction, so it sees the transaction's own changes.
     pub async fn count_users(&mut self) -> Result<i64> {
         let n = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE org_id = ?")

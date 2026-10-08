@@ -22,8 +22,9 @@ use thiserror::Error;
 /// The boxed future a provider method returns.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Who the provider says the user is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Who the provider says the user is. `Debug` shows no personal data: an
+/// identity is never printed, whatever the caller does.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ExternalIdentity {
     /// The provider's id, as `SignInProvider::id`; stored as `auth_provider`.
     pub provider: &'static str,
@@ -33,7 +34,20 @@ pub struct ExternalIdentity {
     /// Whether the provider vouches that the user controls `email`.
     pub email_verified: bool,
     pub name: Option<String>,
-    pub groups: Vec<String>,
+    /// The groups the provider listed. `None`: it said nothing about groups
+    /// (no such claim, or one too large to include), which is not the same
+    /// as `Some(vec![])`, a user who is in none. Roles are left alone when
+    /// the groups are unknown.
+    pub groups: Option<Vec<String>>,
+}
+
+impl std::fmt::Debug for ExternalIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalIdentity")
+            .field("provider", &self.provider)
+            .field("email_verified", &self.email_verified)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A finished sign-in: who the provider vouches for, and where to send the
@@ -205,7 +219,7 @@ mod tests {
                         email: "a@example.com".into(),
                         email_verified: true,
                         name: None,
-                        groups: vec![],
+                        groups: None,
                     },
                     return_to: "/keys".into(),
                 })
@@ -237,5 +251,27 @@ mod tests {
             provider.complete(&wrong, &begun.flow_cookie).await,
             Err(ExternalError::BadState)
         );
+    }
+
+    #[test]
+    fn an_identity_is_never_printed() {
+        let who = ExternalIdentity {
+            provider: "oidc",
+            external_id: "https://idp.example.com|sub-secret".into(),
+            email: "ann@example.com".into(),
+            email_verified: true,
+            name: Some("Ann Example".into()),
+            groups: Some(vec!["admins".into()]),
+        };
+        let shown = format!(
+            "{who:?} {:?}",
+            Completed {
+                identity: who.clone(),
+                return_to: "/".into()
+            }
+        );
+        for private in ["ann@", "Ann", "sub-secret", "admins", "idp.example.com"] {
+            assert!(!shown.contains(private), "{private} in {shown}");
+        }
     }
 }

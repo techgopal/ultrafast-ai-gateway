@@ -1469,6 +1469,171 @@
         ]
       }
     },
+    "/api/auth/methods": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_methods",
+        "responses": {
+          "200": {
+            "description": "How people can sign in: always with a password, and with the configured single sign-on provider when it is on.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInMethods"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/oidc/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "A browser navigation: a GET without a CSRF header. Limited per client\naddress like sign-in with a password.",
+        "operationId": "auth_oidc_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "description": "The authorization code the identity provider made.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "The `state` of the attempt.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "The error code when the identity provider refused.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error_description",
+            "in": "query",
+            "description": "Ignored.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Signed in: the session cookie is set and the browser is sent to the path given at the start (`/` when it was not a console path). Not signed in: the browser is sent to `/sign-in?sso_error=<code>` with code `state`, `expired`, `idp`, `token`, `not_allowed`, `disabled`, `rate_limited` or `config`. The flow cookie is cleared either way.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The console path, or the sign-in page with the reason."
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The cleared flow cookie, and the session cookie when signed in."
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/oidc/start": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "A browser navigation: a GET without a CSRF header.",
+        "operationId": "auth_oidc_start",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "Where to send the browser after sign-in: a path inside the console that starts with a single `/`. Anything else means `/`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "The browser is sent to the identity provider. The flow cookie `uf_oidc` (HttpOnly, SameSite=Lax, Path=/api/auth/oidc, 10 minutes) is set. Without a provider that can be reached, to `/sign-in?sso_error=config`.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The identity provider's authorization address."
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The flow cookie `uf_oidc`."
+              }
+            }
+          },
+          "404": {
+            "description": "`oidc_disabled`: single sign-on is not turned on.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/password": {
       "post": {
         "tags": [
@@ -7141,6 +7306,14 @@
           }
         }
       },
+      "AuthProviderView": {
+        "type": "string",
+        "description": "How a user signs in, as `/api` shows it.",
+        "enum": [
+          "password",
+          "oidc"
+        ]
+      },
       "BudgetEntry": {
         "type": "object",
         "required": [
@@ -8897,6 +9070,7 @@
           "issuer",
           "client_id",
           "client_secret_set",
+          "client_secret_unreadable",
           "scopes",
           "groups_claim",
           "admin_group",
@@ -8927,6 +9101,10 @@
           "client_secret_set": {
             "type": "boolean",
             "description": "Whether a client secret is stored. The secret itself is never\nreturned."
+          },
+          "client_secret_unreadable": {
+            "type": "boolean",
+            "description": "True when a secret is stored but cannot be decrypted (the master key\nchanged). Single sign-on stays off until a new secret is saved."
           },
           "enabled": {
             "type": "boolean",
@@ -9873,6 +10051,42 @@
           }
         }
       },
+      "SignInMethodOidc": {
+        "type": "object",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "The name for the sign-in button."
+          }
+        }
+      },
+      "SignInMethods": {
+        "type": "object",
+        "required": [
+          "password",
+          "oidc"
+        ],
+        "properties": {
+          "oidc": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SignInMethodOidc",
+                "description": "The single sign-on provider, when it is on; `null` otherwise."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "password": {
+            "type": "boolean",
+            "description": "Always true: passwords are never turned off."
+          }
+        }
+      },
       "SyncResult": {
         "type": "object",
         "required": [
@@ -10480,11 +10694,16 @@
           "name",
           "role",
           "status",
+          "auth_provider",
           "created_at",
           "last_active_at",
           "teams"
         ],
         "properties": {
+          "auth_provider": {
+            "$ref": "#/components/schemas/AuthProviderView",
+            "description": "How the user signs in: with a `password`, or through the single\nsign-on provider (`oidc`) they are linked to. Read only."
+          },
           "created_at": {
             "type": "string"
           },

@@ -657,10 +657,13 @@ async fn every_endpoint_for_every_role() {
 }
 
 /// The operations anyone may call. A new one is added here on purpose.
-const PUBLIC: [(&str, &str); 4] = [
+const PUBLIC: [(&str, &str); 7] = [
     ("GET", "/api/setup"),
     ("POST", "/api/setup"),
     ("POST", "/api/auth/login"),
+    ("GET", "/api/auth/methods"),
+    ("GET", "/api/auth/oidc/start"),
+    ("GET", "/api/auth/oidc/callback"),
     ("POST", "/api/auth/accept-invite"),
 ];
 
@@ -721,7 +724,10 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             // Without credentials no handler answers 404, so a 404 here
             // comes from the fallback.
             let (status, _, body) = send(app, &method, &path, &[], None).await;
-            assert_ne!(status, StatusCode::NOT_FOUND, "{method} {path}: {body}");
+            // Single sign-on is off here: its start answers with a code of its own.
+            if error_code(&body) != "oidc_disabled" {
+                assert_ne!(status, StatusCode::NOT_FOUND, "{method} {path}: {body}");
+            }
             assert_ne!(
                 status,
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -730,7 +736,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 75);
+    assert_eq!(operations, 78);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

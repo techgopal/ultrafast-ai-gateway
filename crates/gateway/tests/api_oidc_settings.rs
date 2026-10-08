@@ -81,6 +81,7 @@ async fn the_defaults_are_off_and_unconfigured() {
             "issuer": "",
             "client_id": "",
             "client_secret_set": false,
+            "client_secret_unreadable": false,
             "scopes": "",
             "groups_claim": "groups",
             "admin_group": "",
@@ -508,6 +509,13 @@ async fn the_test_reports_what_is_wrong_without_failing() {
             !error.contains(&issuer),
             "{what}: the message repeats the URL"
         );
+        // What a provider claims to be is shown only once it is the issuer
+        // that was entered.
+        assert_eq!(
+            body["issuer"].is_null(),
+            what != "no keys",
+            "{what}: {body}"
+        );
     }
 }
 
@@ -532,4 +540,33 @@ async fn the_test_refuses_a_missing_or_unusable_issuer() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {answer}");
         assert!(answer["error"]["fields"]["issuer"].is_string(), "{answer}");
     }
+}
+
+#[tokio::test]
+async fn a_secret_that_cannot_be_read_is_told_and_logged() {
+    let org = org_with_public_url("https://gateway.example.com").await;
+    let maya = org.sign_in("maya").await;
+    let (status, saved) = put(&org, &maya, full("https://idp.example.com")).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["client_secret_set"], true);
+    assert_eq!(saved["client_secret_unreadable"], false);
+
+    // The master key changed since: the stored value is not ours.
+    let mut settings = org.api.store.oidc_settings().await.unwrap();
+    let mut tx = org.api.store.begin().await.unwrap();
+    settings.client_secret_enc = Some("00ff00ff00ff00ff00ff00ff00ff00ff00ff".to_string());
+    tx.set_oidc_settings(&settings).await.unwrap();
+    tx.commit().await.unwrap();
+    let (_, read) = org
+        .call(Some(&maya), "GET", "/api/settings/oidc", None)
+        .await;
+    assert_eq!(read["client_secret_set"], true);
+    assert_eq!(read["client_secret_unreadable"], true);
+    assert!(!read.to_string().contains("00ff00ff"));
+
+    // A new secret makes it readable again.
+    let mut body = full("https://idp.example.com");
+    body["client_secret"] = json!("another-secret-value");
+    let (_, saved) = put(&org, &maya, body).await;
+    assert_eq!(saved["client_secret_unreadable"], false);
 }

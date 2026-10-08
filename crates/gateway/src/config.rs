@@ -253,10 +253,14 @@ pub fn parse_trusted_proxies(values: &[String]) -> Result<Vec<ipnet::IpNet>> {
 }
 
 /// The address people reach the gateway at, from `--public-url` /
-/// `UF_PUBLIC_URL`, like `https://gateway.example.com`. Only an `http` or
-/// `https` URL with a host, without credentials, query or fragment, is
-/// accepted. The error never repeats the value.
-pub fn parse_public_url(value: &str) -> Result<reqwest::Url> {
+/// `UF_PUBLIC_URL`, like `https://gateway.example.com`: the origin the
+/// console is served from. Only an `http` or `https` URL with a host,
+/// without credentials, path, query or fragment, is accepted (the sign-in
+/// callback and the console live at the root of the host). Plain `http` is
+/// accepted only for the machine itself (`localhost`, `127.0.0.1`,
+/// `[::1]`), unless `allow_plain_http` (`--insecure-cookies`) says the
+/// operator knows. The error never repeats the value.
+pub fn parse_public_url(value: &str, allow_plain_http: bool) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(value.trim())
         .map_err(|_| anyhow::anyhow!("the public URL is not a valid URL"))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -268,6 +272,15 @@ pub fn parse_public_url(value: &str) -> Result<reqwest::Url> {
     if url.query().is_some() || url.fragment().is_some() {
         anyhow::bail!("the public URL must not hold a query or a fragment");
     }
+    if url.path() != "/" {
+        anyhow::bail!("the public URL must not hold a path: the console is served at the root");
+    }
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if url.scheme() == "http" && !loopback && !allow_plain_http {
+        anyhow::bail!(
+            "the public URL must be https (plain http only for localhost, or with --insecure-cookies)"
+        );
+    }
     Ok(url)
 }
 
@@ -276,14 +289,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn public_urls_are_plain_http_addresses() {
+    fn public_urls_are_plain_origins() {
         for ok in [
             "https://gateway.example.com",
             "https://gateway.example.com/",
+            "https://gateway.example.com:8443",
             " http://localhost:3000 ",
-            "https://example.com/gateway",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000/",
         ] {
-            assert!(parse_public_url(ok).is_ok(), "{ok}");
+            assert!(parse_public_url(ok, false).is_ok(), "{ok}");
         }
         for bad in [
             "",
@@ -293,9 +308,27 @@ mod tests {
             "https://gateway.example.com/?a=1",
             "https://gateway.example.com/#a",
             "mailto:a@example.com",
+            // The console and the callback live at the root of the host.
+            "https://example.com/gateway",
+            "https://example.com/gateway/",
+            // Plain http away from the machine itself.
+            "http://gateway.example.com",
+            "http://192.168.1.10:3000",
         ] {
-            let e = parse_public_url(bad).expect_err(bad).to_string();
+            let e = parse_public_url(bad, false).expect_err(bad).to_string();
             assert!(!e.contains("gateway.example.com"), "{bad}: {e}");
+            assert!(!e.contains("192.168"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn plain_http_is_allowed_with_insecure_cookies() {
+        for ok in ["http://gateway.example.com", "http://192.168.1.10:3000"] {
+            assert!(parse_public_url(ok, true).is_ok(), "{ok}");
+        }
+        // The other rules still hold.
+        for bad in ["http://gateway.example.com/gw", "http://u:p@h.example.com"] {
+            assert!(parse_public_url(bad, true).is_err(), "{bad}");
         }
     }
 

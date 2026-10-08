@@ -49,6 +49,21 @@ pub struct SetupStatus {
 }
 
 #[derive(ToSchema)]
+pub struct SignInMethods {
+    /// Always true: passwords are never turned off.
+    pub password: bool,
+    /// The single sign-on provider, when it is on; `null` otherwise.
+    #[schema(required)]
+    pub oidc: Option<SignInMethodOidc>,
+}
+
+#[derive(ToSchema)]
+pub struct SignInMethodOidc {
+    /// The name for the sign-in button.
+    pub label: String,
+}
+
+#[derive(ToSchema)]
 pub struct LoginResponse {
     pub user: UserView,
     /// Send it as the `x-csrf-token` header with every request of this
@@ -289,12 +304,15 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 72. Its fallbacks are not
+    /// Every route of `api::router`, which has 78. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 75] = [
+    const ROUTES: [(&str, &str); 78] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
+        ("GET", "/api/auth/methods"),
+        ("GET", "/api/auth/oidc/start"),
+        ("GET", "/api/auth/oidc/callback"),
         ("POST", "/api/auth/logout"),
         ("GET", "/api/auth/me"),
         ("POST", "/api/auth/accept-invite"),
@@ -477,7 +495,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 75);
+        assert_eq!(routes.len(), 78);
         assert_eq!(documented, routes);
     }
 
@@ -499,7 +517,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 75);
+        assert_eq!(ids.len(), 78);
     }
 
     #[test]
@@ -565,7 +583,8 @@ mod tests {
         let spec = spec_json();
         for (method, path, operation) in operations(&spec) {
             for (status, response) in operation["responses"].as_object().unwrap() {
-                if status.starts_with('2') {
+                // A redirect of a browser navigation has no body.
+                if status.starts_with('2') || status.starts_with('3') {
                     continue;
                 }
                 let schema = &response["content"]["application/json"]["schema"];

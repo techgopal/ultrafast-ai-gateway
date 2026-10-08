@@ -35,6 +35,19 @@ pub const CONTENT_TYPE_TEXT: &str = "text/plain; version=0.0.4; charset=utf-8";
 const ENDPOINTS: [&str; 4] = ["chat", "messages", "embeddings", "playground"];
 /// `499` is a caller that went away: no answer was sent, so it is no 4xx.
 const CLASSES: [&str; 5] = ["2xx", "4xx", "499", "5xx", "other"];
+/// The results of a single sign-on callback: `ok`, then the reason codes of
+/// `sso_error` on the sign-in page.
+const OIDC_RESULTS: [&str; 9] = [
+    "ok",
+    "state",
+    "expired",
+    "idp",
+    "token",
+    "not_allowed",
+    "disabled",
+    "rate_limited",
+    "config",
+];
 const LIMITS: [&str; 3] = ["requests_per_minute", "tokens_per_minute", "concurrent"];
 /// Upper bounds of the upstream duration buckets, in milliseconds.
 const BUCKETS_MS: [u64; 12] = [
@@ -73,6 +86,7 @@ pub struct Metrics {
     otel_dropped: AtomicU64,
     otel_failures: AtomicU64,
     alert_deliveries: [AtomicU64; 3],
+    oidc_signins: [AtomicU64; OIDC_RESULTS.len()],
     /// Per provider.
     upstream: Mutex<BTreeMap<String, Histogram>>,
     /// The counters of the log pipeline, once it exists.
@@ -189,6 +203,16 @@ impl Metrics {
             _ => 2,
         };
         self.alert_deliveries[i].fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// One single sign-on callback ended: `ok` or the reason code it was
+    /// refused with. An unknown result counts as `config`.
+    pub fn oidc_signin(&self, result: &str) {
+        let i = OIDC_RESULTS
+            .iter()
+            .position(|r| *r == result)
+            .unwrap_or(OIDC_RESULTS.len() - 1);
+        self.oidc_signins[i].fetch_add(1, Ordering::Relaxed);
     }
 
     /// The exposition text. `health` is what the circuit breakers show.
@@ -387,6 +411,20 @@ impl Metrics {
                 out,
                 "uf_alert_deliveries_total{{result=\"{result}\"}} {}",
                 n(&self.alert_deliveries[i])
+            );
+        }
+
+        header(
+            &mut out,
+            "uf_oidc_signins_total",
+            "counter",
+            "Single sign-on callbacks, by result: ok, or the reason the sign-in was refused.",
+        );
+        for (i, result) in OIDC_RESULTS.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "uf_oidc_signins_total{{result=\"{result}\"}} {}",
+                n(&self.oidc_signins[i])
             );
         }
 

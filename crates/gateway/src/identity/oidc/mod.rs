@@ -317,9 +317,9 @@ fn identity_from(
         }
     });
     let groups = if groups_claim.is_empty() {
-        Vec::new()
+        None
     } else {
-        id.strings(groups_claim)
+        id.strings_if_present(groups_claim)
     };
     Ok(ExternalIdentity {
         provider: "oidc",
@@ -497,7 +497,10 @@ mod tests {
         assert_eq!(who.email, "ann@example.com");
         assert!(who.email_verified);
         assert_eq!(who.name.as_deref(), Some("Ann"));
-        assert_eq!(who.groups, vec!["eng", "admins"]);
+        assert_eq!(
+            who.groups,
+            Some(vec!["eng".to_string(), "admins".to_string()])
+        );
         let requests = idp.server.received_requests().await.unwrap();
         let token_request = requests.iter().find(|r| r.url.path() == "/token").unwrap();
         let auth = token_request
@@ -808,7 +811,7 @@ mod tests {
         .unwrap();
         assert_eq!(id.email, "ann@example.com");
         assert_eq!(id.name.as_deref(), Some("Ann"));
-        assert_eq!(id.groups, vec!["solo"]);
+        assert_eq!(id.groups, Some(vec!["solo".to_string()]));
         assert_eq!(id.external_id, "https://idp.example.com|s");
         for bad in ["not an email", "a@b", "@example.com", ""] {
             assert!(
@@ -822,15 +825,34 @@ mod tests {
                 "{bad}"
             );
         }
-        // No groups claim: no groups.
-        let none = identity_from(
-            "https://idp.example.com",
-            &claims_of(json!({"email": "a@example.com"})),
-            None,
-            "groups",
-        )
-        .unwrap();
-        assert!(none.groups.is_empty());
+        // No groups claim: the groups are unknown, which is not the same
+        // as an empty list (a token whose claim was too large for the
+        // provider to include, as Entra's "groups overage", has none).
+        let groups_of = |claims: serde_json::Value, claim: &str| {
+            identity_from("https://idp.example.com", &claims_of(claims), None, claim)
+                .unwrap()
+                .groups
+        };
+        let base = json!({"email": "a@example.com"});
+        assert_eq!(groups_of(base.clone(), "groups"), None);
+        assert_eq!(
+            groups_of(json!({"email": "a@example.com", "groups": []}), "groups"),
+            Some(vec![])
+        );
+        for odd in [json!(null), json!(7), json!({"a": 1}), json!(true)] {
+            assert_eq!(
+                groups_of(json!({"email": "a@example.com", "groups": odd}), "groups"),
+                None,
+                "{odd}"
+            );
+        }
+        // No claim name configured: nothing to read.
+        assert_eq!(
+            groups_of(json!({"email": "a@example.com", "groups": ["x"]}), ""),
+            None
+        );
+        let none =
+            identity_from("https://idp.example.com", &claims_of(base), None, "groups").unwrap();
         assert_eq!(none.name, None);
     }
 }
