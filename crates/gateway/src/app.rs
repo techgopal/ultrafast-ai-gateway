@@ -167,7 +167,13 @@ impl AppState {
             settings.issuer.is_empty() || settings.client_id.is_empty(),
         ) {
             (true, Some(redirect_uri), Some(secret), false) => {
-                crate::identity::external::build_oidc(&settings, &secret, &redirect_uri, &self.http)
+                crate::identity::external::build_oidc(
+                    &settings,
+                    &secret,
+                    &redirect_uri,
+                    &self.http,
+                    &self.cipher,
+                )
             }
             _ => None,
         };

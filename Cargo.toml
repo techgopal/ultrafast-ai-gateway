@@ -42,3 +42,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 utoipa = { version = "6", features = ["axum_extras"] }
 utoipa-axum = "0.3"
 wiremock = "0.6"
+
+# The tests generate RSA keys; big-integer arithmetic without optimization
+# takes tens of seconds.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3

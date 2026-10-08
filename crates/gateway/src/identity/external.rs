@@ -45,14 +45,44 @@ pub struct Begin {
     pub flow_cookie: String,
 }
 
-/// The query of the browser's return from the provider.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct CallbackQuery {
-    pub code: Option<String>,
-    pub state: Option<String>,
-    /// Set by the provider when the user or the provider refused.
-    pub error: Option<String>,
-    pub error_description: Option<String>,
+/// What the browser brought back from the provider, as name/value pairs.
+/// The transport does not matter to a provider: the pairs come from the
+/// query string of a redirect (OpenID Connect) or from a form POST body
+/// (SAML and OIDC's `form_post`), and the caller collects them either way.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallbackParams(Vec<(String, String)>);
+
+impl CallbackParams {
+    pub fn new(pairs: Vec<(String, String)>) -> Self {
+        Self(pairs)
+    }
+
+    /// The value of `name`. A name that was sent more than once is
+    /// ambiguous and counts as absent.
+    pub fn get(&self, name: &str) -> Option<&str> {
+        let mut found = self.0.iter().filter(|(k, _)| k == name);
+        match (found.next(), found.next()) {
+            (Some((_, v)), None) => Some(v.as_str()),
+            _ => None,
+        }
+    }
+}
+
+impl FromIterator<(String, String)> for CallbackParams {
+    fn from_iter<I: IntoIterator<Item = (String, String)>>(pairs: I) -> Self {
+        Self(pairs.into_iter().collect())
+    }
+}
+
+impl<'a> FromIterator<(&'a str, &'a str)> for CallbackParams {
+    fn from_iter<I: IntoIterator<Item = (&'a str, &'a str)>>(pairs: I) -> Self {
+        Self(
+            pairs
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
 }
 
 /// Why a sign-in could not be completed. No message holds a token, a secret
@@ -87,24 +117,32 @@ pub trait SignInProvider: Send + Sync {
     /// caller has already checked; the provider keeps it in the flow cookie.
     fn begin<'a>(&'a self, return_to: &'a str) -> BoxFuture<'a, Result<Begin, ExternalError>>;
 
-    /// Finishes a sign-in from the browser's return and the flow cookie
+    /// Finishes a sign-in from the parameters of the browser's return and the flow cookie
     /// value that `begin` made.
     fn complete<'a>(
         &'a self,
-        query: &'a CallbackQuery,
+        params: &'a CallbackParams,
         flow_cookie: &'a str,
     ) -> BoxFuture<'a, Result<ExternalIdentity, ExternalError>>;
 }
 
-/// Makes the OpenID Connect provider from complete settings. The flow
-/// itself is not part of this change: until it is, no provider is made.
+/// Makes the OpenID Connect provider from complete settings. `cipher`
+/// protects the flow cookie. Nothing is fetched here: the provider reads
+/// its discovery document when the first sign-in starts.
 pub fn build_oidc(
-    _settings: &crate::store::OidcSettings,
-    _client_secret: &str,
-    _redirect_uri: &str,
-    _http: &reqwest::Client,
+    settings: &crate::store::OidcSettings,
+    client_secret: &str,
+    redirect_uri: &str,
+    http: &reqwest::Client,
+    cipher: &crate::secrets::Cipher,
 ) -> Option<std::sync::Arc<dyn SignInProvider>> {
-    None
+    Some(std::sync::Arc::new(super::oidc::OidcProvider::new(
+        settings,
+        client_secret,
+        redirect_uri,
+        http,
+        cipher,
+    )))
 }
 
 #[cfg(test)]
@@ -112,6 +150,16 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn params_read_a_name_once_and_refuse_an_ambiguous_one() {
+        let params: CallbackParams = [("a", "1"), ("b", "2"), ("b", "3")].into_iter().collect();
+        assert_eq!(params.get("a"), Some("1"));
+        assert_eq!(params.get("b"), None);
+        assert_eq!(params.get("c"), None);
+        let owned = CallbackParams::new(vec![("x".into(), "y".into())]);
+        assert_eq!(owned.get("x"), Some("y"));
+    }
 
     /// A provider that needs nothing outside the process.
     struct Fixed;
@@ -133,11 +181,11 @@ mod tests {
         }
         fn complete<'a>(
             &'a self,
-            query: &'a CallbackQuery,
+            params: &'a CallbackParams,
             flow_cookie: &'a str,
         ) -> BoxFuture<'a, Result<ExternalIdentity, ExternalError>> {
             Box::pin(async move {
-                if query.state.as_deref() != Some(flow_cookie) {
+                if params.get("state") != Some(flow_cookie) {
                     return Err(ExternalError::BadState);
                 }
                 Ok(ExternalIdentity {
@@ -162,13 +210,15 @@ mod tests {
             .unwrap();
         assert_eq!(provider.id(), "fixed");
         assert_eq!(provider.label(), "Fixed");
-        let query = CallbackQuery {
-            state: Some(begun.flow_cookie.clone()),
-            ..CallbackQuery::default()
-        };
-        let who = provider.complete(&query, &begun.flow_cookie).await.unwrap();
+        let params: CallbackParams = [("state", begun.flow_cookie.as_str())]
+            .into_iter()
+            .collect();
+        let who = provider
+            .complete(&params, &begun.flow_cookie)
+            .await
+            .unwrap();
         assert_eq!(who.external_id, "issuer|sub");
-        let wrong = CallbackQuery::default();
+        let wrong = CallbackParams::default();
         assert_eq!(
             provider.complete(&wrong, &begun.flow_cookie).await,
             Err(ExternalError::BadState)
