@@ -305,34 +305,60 @@ pub(crate) async fn team_stamps_in(conn: &mut AnyConnection) -> Result<Vec<(i64,
         .collect())
 }
 
-pub(crate) async fn teams_of_users_in(
-    conn: &mut AnyConnection,
-    user_ids: &[i64],
-) -> Result<HashMap<i64, Vec<UserTeam>>> {
-    if user_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let marks = vec!["?"; user_ids.len()].join(", ");
-    let sql = format!(
-        "SELECT m.user_id, m.team_id, t.name, m.role
+/// Ids per `IN` list: far under every database's parameter limit.
+const USER_CHUNK: usize = 500;
+
+const TEAMS_OF_USERS: &str = "SELECT m.user_id, m.team_id, t.name, m.role
          FROM team_members m
          JOIN teams t ON t.id = m.team_id AND t.org_id = m.org_id
-         WHERE m.org_id = ? AND m.user_id IN ({marks})
-         ORDER BY t.name, t.id"
-    );
-    let mut query = conn.q_dyn(sql).bind(DEFAULT_ORG);
-    for id in user_ids {
-        query = query.bind(id);
-    }
-    let mut teams: HashMap<i64, Vec<UserTeam>> = HashMap::new();
-    for r in query.fetch_all(&mut *conn).await? {
+         WHERE m.org_id = ?";
+
+fn collect_teams(rows: &[sqlx::any::AnyRow], into: &mut HashMap<i64, Vec<UserTeam>>) -> Result<()> {
+    for r in rows {
         let role: String = r.get("role");
-        teams.entry(r.get("user_id")).or_default().push(UserTeam {
+        into.entry(r.get("user_id")).or_default().push(UserTeam {
             team_id: r.get("team_id"),
             name: r.get("name"),
             role: TeamRole::parse(&role).ok_or_else(|| anyhow!("stored team role is not known"))?,
         });
     }
+    Ok(())
+}
+
+/// The teams of the given users, in chunks of [`USER_CHUNK`] ids (so any
+/// number of ids works); each user's teams are ordered by name.
+pub(crate) async fn teams_of_users_in(
+    conn: &mut AnyConnection,
+    user_ids: &[i64],
+) -> Result<HashMap<i64, Vec<UserTeam>>> {
+    let mut teams: HashMap<i64, Vec<UserTeam>> = HashMap::new();
+    for chunk in user_ids.chunks(USER_CHUNK) {
+        let marks = vec!["?"; chunk.len()].join(", ");
+        let sql = format!("{TEAMS_OF_USERS} AND m.user_id IN ({marks}) ORDER BY t.name, t.id");
+        let mut query = conn.q_dyn(sql).bind(DEFAULT_ORG);
+        for id in chunk {
+            query = query.bind(id);
+        }
+        collect_teams(&query.fetch_all(&mut *conn).await?, &mut teams)?;
+    }
+    Ok(teams)
+}
+
+/// The teams of every user, without a list of ids (what the snapshot reads).
+pub(crate) async fn teams_of_all_users_in(
+    conn: &mut AnyConnection,
+) -> Result<HashMap<i64, Vec<UserTeam>>> {
+    let sql = format!(
+        "{TEAMS_OF_USERS} AND m.user_id IN (SELECT id FROM users WHERE org_id = m.org_id)
+         ORDER BY t.name, t.id"
+    );
+    let rows = conn
+        .q_dyn(sql)
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
+    let mut teams = HashMap::new();
+    collect_teams(&rows, &mut teams)?;
     Ok(teams)
 }
 
@@ -590,5 +616,43 @@ mod tests {
         let mut tx = s.begin().await.unwrap();
         assert!(!tx.rename_team(1, "x").await.unwrap());
         assert!(!tx.delete_team(1).await.unwrap());
+    }
+
+    /// Any number of ids is asked for: 40000 of them is more than SQLite
+    /// takes in one statement.
+    #[tokio::test]
+    async fn teams_of_users_takes_any_number_of_ids() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let a = tx.insert_user(member("a@example.com")).await.unwrap();
+        let team = tx.insert_team("Alpha").await.unwrap();
+        tx.put_member(team, a, TeamRole::Member).await.unwrap();
+        tx.commit().await.unwrap();
+        let mut ids: Vec<i64> = (1_000_000..1_040_000).collect();
+        ids.push(a);
+        let teams = s.teams_of_users(&ids).await.unwrap();
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[&a][0].team_id, team);
+    }
+
+    /// The snapshot reads every membership without a list of user ids.
+    #[tokio::test]
+    async fn the_snapshot_holds_every_members_teams() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let a = tx.insert_user(member("a@example.com")).await.unwrap();
+        let b = tx.insert_user(member("b@example.com")).await.unwrap();
+        let _c = tx.insert_user(member("c@example.com")).await.unwrap();
+        let zed = tx.insert_team("Zed").await.unwrap();
+        let alpha = tx.insert_team("Alpha").await.unwrap();
+        tx.put_member(zed, a, TeamRole::Lead).await.unwrap();
+        tx.put_member(alpha, a, TeamRole::Member).await.unwrap();
+        tx.put_member(zed, b, TeamRole::Member).await.unwrap();
+        tx.commit().await.unwrap();
+        let rows = s.snapshot_rows().await.unwrap();
+        let names = |u| -> Vec<String> { rows.teams[&u].iter().map(|t| t.name.clone()).collect() };
+        assert_eq!(names(a), ["Alpha", "Zed"]);
+        assert_eq!(names(b), ["Zed"]);
+        assert_eq!(rows.teams.len(), 2);
     }
 }

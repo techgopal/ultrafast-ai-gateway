@@ -106,6 +106,9 @@ pub(super) async fn list_budgets_in(conn: &mut AnyConnection) -> Result<Vec<Budg
     rows.iter().map(budget_from).collect()
 }
 
+/// Pairs per read-back query.
+const READ_BACK_CHUNK: usize = 500;
+
 fn to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -204,15 +207,17 @@ impl Store {
                 .await?;
         }
         let mut totals = Vec::with_capacity(wanted.len());
-        if !wanted.is_empty() {
-            // One query for all of them.
-            let pairs = vec!["(?, ?)"; wanted.len()].join(", ");
+        // A few queries of at most READ_BACK_CHUNK pairs each, in the same
+        // transaction: one list of any size would break the driver's
+        // parameter limit (SQLite) or the parser's depth (PostgreSQL).
+        for chunk in wanted.chunks(READ_BACK_CHUNK) {
+            let pairs = vec!["(?, ?)"; chunk.len()].join(", ");
             let sql = format!(
                 "SELECT budget_id, period_start, spent_micros, alerted FROM budget_usage
                  WHERE (budget_id, period_start) IN ({pairs})"
             );
             let mut q = tx.q_dyn(sql);
-            for (budget_id, period_start) in wanted {
+            for (budget_id, period_start) in chunk {
                 q = q.bind(*budget_id).bind(period_start);
             }
             for r in q.fetch_all(tx.conn()).await? {
@@ -442,5 +447,43 @@ mod tests {
                 Some((50, false))
             );
         }
+    }
+
+    /// The read-back after a flush has no size limit: 1500 budgets with
+    /// spend, and 17000 pairs asked for in all (more than SQLite takes in
+    /// one statement, and more than PostgreSQL's parser takes in one tuple
+    /// list).
+    #[tokio::test]
+    async fn the_read_back_handles_many_budgets() {
+        let store = Store::open_in_memory().await.unwrap();
+        let mut ids = Vec::new();
+        let mut tx = store.begin().await.unwrap();
+        for scope_id in 1..=1500 {
+            ids.push(
+                tx.upsert_budget(
+                    LimitScope::Team,
+                    Some(scope_id),
+                    1_000_000,
+                    Period::Monthly,
+                    BudgetAction::Block,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        tx.commit().await.unwrap();
+        let deltas: Vec<UsageDelta> = ids.iter().map(|id| delta(*id, "2999-01-01", 3)).collect();
+        let mut wanted: Vec<(i64, String)> = ids
+            .iter()
+            .map(|id| (*id, "2999-01-01".to_string()))
+            .collect();
+        // Pairs nobody has: they are asked for and absent.
+        wanted.extend((0..15_500).map(|i| (1_000_000 + i, "2999-01-01".to_string())));
+        let totals = store.add_budget_usage(&deltas, &wanted).await.unwrap();
+        assert_eq!(totals.len(), 1500);
+        assert!(totals.iter().all(|t| t.spent_micros == 3 && !t.alerted));
+        let mut got: Vec<i64> = totals.iter().map(|t| t.budget_id).collect();
+        got.sort();
+        assert_eq!(got, ids);
     }
 }

@@ -376,8 +376,7 @@ impl Store {
         let route_targets = routes::list_route_targets_in(conn).await?;
         let route_grants = routes::list_route_grants_in(conn).await?;
         let users = users::list_users_in(conn).await?;
-        let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
-        let teams = teams::teams_of_users_in(conn, &ids).await?;
+        let teams = teams::teams_of_all_users_in(conn).await?;
         let team_stamps = teams::team_stamps_in(conn).await?;
         let limits = limits::list_limits_in(conn).await?;
         let budgets = budgets::list_budgets_in(conn).await?;
