@@ -123,12 +123,15 @@ pub async fn oidc_start(
     ClientAddr(addr): ClientAddr,
     RawQuery(raw): RawQuery,
 ) -> Result<Response, ApiError> {
+    let off = || ApiError::not_found_with("oidc_disabled", "Single sign-on is not turned on.");
     let Some(provider) = state.sign_in.load_full() else {
-        return Err(ApiError::not_found_with(
-            "oidc_disabled",
-            "Single sign-on is not turned on.",
-        ));
+        return Err(off());
     };
+    // The provider is rebuilt when the settings change, but another process
+    // may have turned sign-in off a moment ago: the stored switch decides.
+    if !state.store.oidc_settings().await?.enabled {
+        return Err(off());
+    }
     // A start may make the gateway fetch the provider's discovery document:
     // limited per client address, in a bucket of its own. Any web page can
     // make a browser start one, so it must not use up the failures that
@@ -229,6 +232,12 @@ async fn finish_sign_in(
     let Some(provider) = state.sign_in.load_full() else {
         return Err("config");
     };
+    // The stored switch decides, not only the provider this process built:
+    // another process may have turned sign-in off a moment ago.
+    let settings = state.store.oidc_settings().await.map_err(internal)?;
+    if !settings.enabled {
+        return Err("config");
+    }
     // Counted before anything else, so callbacks sent at the same time
     // cannot each get a try; a success gives its attempt back. A bucket of
     // its own: it must never use up the failures of password sign-in.
@@ -243,7 +252,6 @@ async fn finish_sign_in(
         .complete(&params, flow_cookie)
         .await
         .map_err(|e| code_of(&e))?;
-    let settings = state.store.oidc_settings().await.map_err(internal)?;
     let (session, changed) =
         sign_in_identity(state, &settings, provider.label(), completed.identity).await?;
     if changed {

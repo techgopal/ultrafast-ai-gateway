@@ -1491,6 +1491,119 @@ async fn two_admins_demoted_at_once_leave_one_on_a_file_database() {
     }
 }
 
+/// Another process turns sign-in off: this one still holds the provider it
+/// built, until its refresher notices, but neither a start nor a callback
+/// goes on once the stored switch is off.
+#[tokio::test]
+async fn a_stored_off_switch_stops_a_provider_that_is_still_loaded() {
+    let (org, idp) = world().await;
+    let (_, flow) = begin(&org, None).await;
+    let flow = flow.expect("sign-in is on");
+    idp.token_for(&claims(
+        &idp,
+        &flow.nonce,
+        "sub-lena",
+        &email_of("lena"),
+        json!({}),
+    ))
+    .await;
+    // Written by "another process": this one's provider is not rebuilt.
+    let mut settings = org.api.store.oidc_settings().await.unwrap();
+    settings.enabled = false;
+    let mut tx = org.api.store.begin().await.unwrap();
+    tx.set_oidc_settings(&settings).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(org.api.state.sign_in.load_full().is_some());
+
+    let (status, _, body) = send(&org.api.app, "GET", "/api/auth/oidc/start", &[], None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(error_code(&body), "oidc_disabled");
+    callback(
+        &org,
+        &format!("code={CODE}&state={}", flow.state),
+        Some(&flow.cookie),
+    )
+    .await
+    .assert_refused("config");
+    assert_eq!(count_users(&org).await, 5, "nobody was signed in or made");
+    assert_eq!(metric(&org, "ok"), 0);
+}
+
+/// Two processes on one database: what one saves, the other's refresher
+/// applies, in both directions, and an unchanged row rebuilds nothing.
+#[tokio::test]
+async fn the_refresher_follows_sign_in_settings_saved_on_another_process() {
+    use ultrafast_gateway::app::AppState;
+
+    let org = org_with_public_url(PUBLIC_URL).await;
+    let a = org.api.state.clone();
+    // The same master key and public URL, as processes of one deployment have.
+    let mut b = AppState::new(org.api.store.clone(), a.cipher.clone())
+        .await
+        .unwrap();
+    b.public_url = a.public_url.clone();
+    let b = Arc::new(b);
+    // Off in the database: the first look builds nothing, and the next
+    // finds nothing changed.
+    assert!(b.reload_sign_in_if_changed().await.unwrap());
+    assert!(b.sign_in.load().is_none());
+    assert!(!b.reload_sign_in_if_changed().await.unwrap());
+
+    let idp = Idp::start().await;
+    configure(&org, &idp, json!({})).await;
+    assert!(a.sign_in.load().is_some());
+    assert!(b.sign_in.load().is_none(), "B has not looked yet");
+    assert!(b.reload_sign_in_if_changed().await.unwrap());
+    assert!(b.sign_in.load().is_some(), "B follows it on");
+    let built = b.sign_in.load_full().unwrap();
+    assert!(!b.reload_sign_in_if_changed().await.unwrap());
+    assert!(Arc::ptr_eq(&built, &b.sign_in.load_full().unwrap()));
+
+    configure(&org, &idp, json!({ "label": "Renamed" })).await;
+    assert!(b.reload_sign_in_if_changed().await.unwrap());
+    assert_eq!(b.sign_in.load_full().unwrap().label(), "Renamed");
+
+    configure(&org, &idp, json!({ "enabled": false })).await;
+    assert!(b.reload_sign_in_if_changed().await.unwrap());
+    assert!(b.sign_in.load().is_none(), "B follows it off");
+}
+
+/// The refresher task itself applies the change, with no call to it.
+#[tokio::test]
+async fn the_refresher_task_applies_sign_in_settings_by_itself() {
+    use ultrafast_gateway::app::{spawn_refresher, AppState};
+
+    let org = org_with_public_url(PUBLIC_URL).await;
+    let a = org.api.state.clone();
+    let mut b = AppState::new(org.api.store.clone(), a.cipher.clone())
+        .await
+        .unwrap();
+    b.public_url = a.public_url.clone();
+    b.refresh_interval = std::time::Duration::from_millis(20);
+    let b = Arc::new(b);
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let task = spawn_refresher(b.clone(), stopped);
+    let idp = Idp::start().await;
+    configure(&org, &idp, json!({})).await;
+    for _ in 0..300 {
+        if b.sign_in.load().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(b.sign_in.load().is_some(), "the refresher turned it on");
+    configure(&org, &idp, json!({ "enabled": false })).await;
+    for _ in 0..300 {
+        if b.sign_in.load().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(b.sign_in.load().is_none(), "and off");
+    stop.send(true).unwrap();
+    task.await.unwrap();
+}
+
 #[tokio::test]
 async fn saving_the_settings_builds_a_provider_with_empty_caches() {
     let (org, idp) = world().await;

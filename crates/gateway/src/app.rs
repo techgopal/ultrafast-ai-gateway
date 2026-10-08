@@ -67,6 +67,9 @@ pub struct AppState {
     /// The provider of single sign-on, when it is on and set up. Rebuilt by
     /// [`AppState::reload_sign_in`] whenever its settings change.
     pub sign_in: ArcSwapOption<Arc<dyn SignInProvider>>,
+    /// The settings `sign_in` was last built from, to see whether another
+    /// process has changed them since.
+    sign_in_seen: std::sync::Mutex<Option<crate::store::OidcSettings>>,
     /// Receives one record per authenticated `/v1` call.
     pub sink: Arc<dyn RequestSink>,
     /// The rate limits of `/v1`: requests, tokens and concurrency.
@@ -118,6 +121,7 @@ impl AppState {
             trusted_proxies: Vec::new(),
             public_url: None,
             sign_in: ArcSwapOption::empty(),
+            sign_in_seen: std::sync::Mutex::new(None),
             sink: Arc::new(NoopSink),
             rate: Arc::new(MemoryLimiter::new()),
             cache: Arc::new(MemoryCache::new()),
@@ -169,6 +173,31 @@ impl AppState {
     /// never while a `Tx` is open.
     pub async fn reload_sign_in(&self) -> anyhow::Result<()> {
         let settings = self.store.oidc_settings().await?;
+        self.apply_sign_in(settings);
+        Ok(())
+    }
+
+    /// [`AppState::reload_sign_in`] only when the stored settings are not
+    /// the ones the provider was built from: what the refresher calls, so a
+    /// change another process saved reaches this one within a refresh
+    /// interval. One cheap read when nothing changed. Returns whether the
+    /// provider was rebuilt.
+    pub async fn reload_sign_in_if_changed(&self) -> anyhow::Result<bool> {
+        let settings = self.store.oidc_settings().await?;
+        let unchanged = self
+            .sign_in_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            == Some(&settings);
+        if unchanged {
+            return Ok(false);
+        }
+        self.apply_sign_in(settings);
+        Ok(true)
+    }
+
+    fn apply_sign_in(&self, settings: crate::store::OidcSettings) {
         let secret = self.oidc_client_secret(&settings);
         if settings.client_secret_enc.is_some() && secret.is_none() {
             tracing::warn!(
@@ -194,7 +223,10 @@ impl AppState {
             _ => None,
         };
         self.sign_in.store(provider.map(Arc::new));
-        Ok(())
+        *self
+            .sign_in_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(settings);
     }
 
     /// Rebuilds the snapshot from the database and swaps it in. Do not call
@@ -254,6 +286,12 @@ pub fn spawn_refresher(state: Arc<AppState>, mut stop: watch::Receiver<bool>) ->
             }
             if let Err(e) = state.refresh().await {
                 tracing::error!(error = %e, "snapshot refresh failed");
+            }
+            // Single sign-on settings saved on another process.
+            match state.reload_sign_in_if_changed().await {
+                Ok(true) => tracing::info!("single sign-on settings changed: provider rebuilt"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "could not check the single sign-on settings"),
             }
             // The sign-in limiter forgets what left its window here, not
             // on every attempt.
