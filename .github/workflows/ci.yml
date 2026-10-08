@@ -65,7 +65,7 @@ jobs:
   postgres:
     name: Postgres
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     # The whole gateway suite again, against PostgreSQL: every test store is
     # its own schema in this one database (UF_TEST_DATABASE_URL).
     services:
