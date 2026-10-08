@@ -33,7 +33,8 @@ use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
 pub use alerts::{AlertEventRow, ChannelRow, NewAlertEvent, RuleRow, StateRow};
 pub use audit::{AuditEntry, AuditRow};
-pub use budgets::{BudgetRow, UsageRow};
+pub use backup::POSTGRES_BACKUP_TEXT;
+pub use budgets::{BudgetRow, UsageDelta, UsageRow, UsageTotal};
 pub use dialect::Dialect;
 pub(crate) use dialect::Dialected;
 pub use keys::{parse_allowed, KeyRow, LiveKey};

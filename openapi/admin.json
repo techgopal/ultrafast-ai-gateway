@@ -1753,7 +1753,7 @@
         "tags": [
           "backup"
         ],
-        "summary": "Downloads a consistent copy of the database: a SQLite file with every\ntable, taken of one moment while the gateway goes on. It holds\neverything the database holds (users with their password hashes,\nsessions, logs, provider credentials as they are stored) except the\nmaster key, which is not in it: the credentials are unreadable without\nthat key, and so the copy is of little use without it. Admin only; the\ndownload is audited.",
+        "summary": "Downloads a consistent copy of the database: a SQLite file with every\ntable, taken of one moment while the gateway goes on. It holds\neverything the database holds (users with their password hashes,\nsessions, logs, provider credentials as they are stored) except the\nmaster key, which is not in it: the credentials are unreadable without\nthat key, and so the copy is of little use without it. Admin only; the\ndownload is audited. On PostgreSQL there is no file to give: 409\n`backup_unsupported`, with the advice to use `pg_dump`.",
         "operationId": "backup_download",
         "responses": {
           "200": {
@@ -1783,6 +1783,16 @@
           },
           "403": {
             "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The database is PostgreSQL, which is backed up with pg_dump (code backup_unsupported).",
             "content": {
               "application/json": {
                 "schema": {
@@ -7836,6 +7846,14 @@
           }
         }
       },
+      "DatabaseKind": {
+        "type": "string",
+        "description": "Which database the gateway runs on.",
+        "enum": [
+          "sqlite",
+          "postgres"
+        ]
+      },
       "EventList": {
         "type": "object",
         "required": [
@@ -9986,9 +10004,14 @@
           "log_retention_days",
           "session_hours",
           "trusted_proxies",
-          "login_limits"
+          "login_limits",
+          "database"
         ],
         "properties": {
+          "database": {
+            "$ref": "#/components/schemas/DatabaseKind",
+            "description": "The database the gateway runs on. Read only: `UF_DATABASE_URL` set\nmeans `postgres`. A PostgreSQL database is not backed up from here\n(use `pg_dump`)."
+          },
           "log_retention_days": {
             "type": "integer",
             "format": "int64",

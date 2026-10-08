@@ -9,6 +9,16 @@
 //! start: the logs are the source of truth, `budget_usage` is a cache. A
 //! call that is already running is never stopped, so a budget can be
 //! overshot by what was in flight when it was reached.
+//!
+//! Several gateway processes may share one database (PostgreSQL). A flush
+//! adds only what the process counted since its last flush to the stored
+//! spend, then reads the totals back and sets each counter to the stored
+//! total plus what it has counted since: so the spend is the sum of every
+//! process's calls, and all processes agree after one flush each. Between
+//! flushes a process knows only its own calls, so a budget can be overshot
+//! by what the other processes spend within one [`FLUSH_INTERVAL`]. An
+//! `alert` budget alerts once per period for all of them: the stored
+//! `alerted` flag is set by a conditional update that only one process wins.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -22,7 +32,7 @@ use tokio::task::JoinHandle;
 use crate::app::AppState;
 use crate::limits::LimitScope;
 use crate::logs::writer::Accountant;
-use crate::store::UsageRow;
+use crate::store::{UsageDelta, UsageRow, UsageTotal};
 use crate::telemetry::RequestRecord;
 
 /// How often counters are written to the database.
@@ -180,7 +190,11 @@ pub struct Alert {
 /// What changed since the last [`Budgets::drain`].
 #[derive(Debug, Default)]
 pub struct Drained {
+    /// The counters that changed, with what this process has counted.
     pub usage: Vec<UsageRow>,
+    /// Of those, what the database does not have yet: what to add to the
+    /// stored spend.
+    pub deltas: Vec<UsageDelta>,
     pub alerts: Vec<Alert>,
 }
 
@@ -188,6 +202,17 @@ impl Drained {
     pub fn is_empty(&self) -> bool {
         self.usage.is_empty() && self.alerts.is_empty()
     }
+}
+
+/// What [`Budgets::reconcile`] found.
+#[derive(Debug, Default)]
+pub struct Reconciled {
+    /// The counters that were drained or whose spend changed, as they stand
+    /// now (the stored total plus what was counted since).
+    pub told: Vec<UsageRow>,
+    /// Alerts the converged totals raised (an `alert` budget that the
+    /// processes together took over its amount).
+    pub alerts: Vec<Alert>,
 }
 
 /// Spend counters. `check` and `spend` never wait on the database.
@@ -211,6 +236,26 @@ pub trait Budgets: Send + Sync {
     /// alerted raises its alert.
     fn seed(&self, budget: &Budget, period_start: &str, spent_micros: u64, alerted: bool);
 
+    /// Records that `flushed` of the counter is in the database (what the
+    /// cache held when the counter was seeded), so a flush adds only the
+    /// rest.
+    fn mark_flushed(&self, budget_id: i64, period_start: &str, flushed: u64);
+
+    /// After the database took `committed` and answered with `totals` for
+    /// the current periods of `budgets`: every counter becomes the stored
+    /// total plus what it counted since it was drained (a budget this
+    /// process has not counted gets its counter from the total), and an
+    /// `alert` budget the total took over its amount raises its alert.
+    /// `drained` are the counters the flush wrote; they are reported even
+    /// when their spend did not change.
+    fn reconcile(
+        &self,
+        budgets: &[Arc<Budget>],
+        committed: &[UsageDelta],
+        totals: &[UsageTotal],
+        drained: &[UsageRow],
+    ) -> Reconciled;
+
     /// Drops the counter of a deleted budget.
     fn forget(&self, budget_id: i64);
 
@@ -227,7 +272,11 @@ pub trait Budgets: Send + Sync {
 
 struct Counter {
     period_start: String,
+    /// What the budget has spent as this process knows it: the stored total
+    /// it last read plus what it counted since.
     spent: u64,
+    /// The part of `spent` that the database has.
+    flushed: u64,
     alerted: bool,
     dirty: bool,
 }
@@ -335,6 +384,7 @@ impl Budgets for MemoryBudgets {
             let counter = inner.counters.entry(b.id).or_insert_with(|| Counter {
                 period_start: start.clone(),
                 spent: 0,
+                flushed: 0,
                 alerted: false,
                 dirty: true,
             });
@@ -342,6 +392,7 @@ impl Budgets for MemoryBudgets {
                 *counter = Counter {
                     period_start: start.clone(),
                     spent: 0,
+                    flushed: 0,
                     alerted: false,
                     dirty: true,
                 };
@@ -384,6 +435,7 @@ impl Budgets for MemoryBudgets {
             _ => Counter {
                 period_start: period_start.to_string(),
                 spent: spent_micros,
+                flushed: 0,
                 alerted,
                 dirty: true,
             },
@@ -402,6 +454,88 @@ impl Budgets for MemoryBudgets {
         inner.counters.insert(budget.id, counter);
     }
 
+    fn mark_flushed(&self, budget_id: i64, period_start: &str, flushed: u64) {
+        let mut inner = self.lock();
+        if let Some(c) = inner
+            .counters
+            .get_mut(&budget_id)
+            .filter(|c| c.period_start == period_start)
+        {
+            c.flushed = flushed.min(c.spent);
+        }
+    }
+
+    fn reconcile(
+        &self,
+        budgets: &[Arc<Budget>],
+        committed: &[UsageDelta],
+        totals: &[UsageTotal],
+        drained: &[UsageRow],
+    ) -> Reconciled {
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        for d in committed {
+            if let Some(c) = inner
+                .counters
+                .get_mut(&d.budget_id)
+                .filter(|c| c.period_start == d.period_start)
+            {
+                c.flushed = c.flushed.saturating_add(d.delta_micros).min(c.spent);
+            }
+        }
+        let mut out = Reconciled::default();
+        for t in totals {
+            let Some(budget) = budgets.iter().find(|b| b.id == t.budget_id) else {
+                continue;
+            };
+            let changed = match inner.counters.get_mut(&t.budget_id) {
+                // A counter of a later period is the live one.
+                Some(c) if c.period_start > t.period_start => continue,
+                Some(c) if c.period_start == t.period_start => {
+                    let local = c.spent.saturating_sub(c.flushed);
+                    let spent = t.spent_micros.saturating_add(local);
+                    let changed = spent != c.spent || (t.alerted && !c.alerted);
+                    c.spent = spent;
+                    c.flushed = t.spent_micros;
+                    c.alerted |= t.alerted;
+                    changed
+                }
+                _ => {
+                    inner.counters.insert(
+                        t.budget_id,
+                        Counter {
+                            period_start: t.period_start.clone(),
+                            spent: t.spent_micros,
+                            flushed: t.spent_micros,
+                            alerted: t.alerted,
+                            dirty: false,
+                        },
+                    );
+                    true
+                }
+            };
+            let Some(c) = inner.counters.get_mut(&t.budget_id) else {
+                continue;
+            };
+            if budget.action == BudgetAction::Alert && !c.alerted && c.spent >= budget.amount_micros
+            {
+                c.alerted = true;
+                // The stored total, not the local view: this alert must not
+                // raise the stored spend.
+                out.alerts
+                    .push(alert_of(budget, &t.period_start, t.spent_micros));
+            }
+            if changed || drained.iter().any(|r| r.budget_id == t.budget_id) {
+                out.told.push(UsageRow {
+                    budget_id: t.budget_id,
+                    period_start: t.period_start.clone(),
+                    spent_micros: c.spent,
+                });
+            }
+        }
+        out
+    }
+
     fn forget(&self, budget_id: i64) {
         let mut inner = self.lock();
         inner.counters.remove(&budget_id);
@@ -416,21 +550,26 @@ impl Budgets for MemoryBudgets {
 
     fn drain(&self) -> Drained {
         let mut inner = self.lock();
-        let usage = inner
-            .counters
-            .iter_mut()
-            .filter(|(_, c)| c.dirty)
-            .map(|(id, c)| {
-                c.dirty = false;
-                UsageRow {
+        let mut usage = Vec::new();
+        let mut deltas = Vec::new();
+        for (id, c) in inner.counters.iter_mut().filter(|(_, c)| c.dirty) {
+            c.dirty = false;
+            usage.push(UsageRow {
+                budget_id: *id,
+                period_start: c.period_start.clone(),
+                spent_micros: c.spent,
+            });
+            if c.spent > c.flushed {
+                deltas.push(UsageDelta {
                     budget_id: *id,
                     period_start: c.period_start.clone(),
-                    spent_micros: c.spent,
-                }
-            })
-            .collect();
+                    delta_micros: c.spent - c.flushed,
+                });
+            }
+        }
         Drained {
             usage,
+            deltas,
             alerts: std::mem::take(&mut inner.alerts),
         }
     }
@@ -499,36 +638,49 @@ pub async fn seed_from_logs(state: &AppState, budget: &Budget, now: OffsetDateTi
     state
         .budgets
         .seed(budget, &start, logged.max(cached), alerted);
+    // The cache already holds `cached` of it: only the rest is to be added.
+    state.budgets.mark_flushed(budget.id, &start, cached);
     Ok(())
 }
 
-/// Writes what changed to `budget_usage`, and the alerts raised to the
-/// audit log. What cannot be written is tried again next time.
+/// Adds what this process counted to `budget_usage`, reads the stored totals
+/// back so every process agrees on the spend, and writes the alerts raised to
+/// the audit log. What cannot be written is tried again next time.
 pub async fn flush(state: &AppState) {
-    let drained = state.budgets.drain();
-    if drained.is_empty() {
+    let mut drained = state.budgets.drain();
+    let all = state.snapshot.load().all_budgets();
+    let now = OffsetDateTime::now_utc();
+    let wanted: Vec<(i64, String)> = all
+        .iter()
+        .map(|b| (b.id, b.period.start_string(now)))
+        .collect();
+    if drained.is_empty() && wanted.is_empty() {
         return;
     }
-    if let Err(e) = state.store.write_budget_usage(&drained.usage).await {
-        tracing::warn!(error = %e, "could not write budget usage");
-        state.budgets.requeue(drained);
-        return;
-    }
+    let totals = match state.store.add_budget_usage(&drained.deltas, &wanted).await {
+        Ok(totals) => totals,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not write budget usage");
+            state.budgets.requeue(drained);
+            return;
+        }
+    };
+    let found = state
+        .budgets
+        .reconcile(&all, &drained.deltas, &totals, &drained.usage);
+    drained.alerts.extend(found.alerts);
     // Tell the alert rules what was spent; they decide whether a threshold
     // was reached. Only after the counters are safe in the database.
     if let Some(engine) = &state.alert_engine {
-        if !drained.usage.is_empty() {
-            let budgets = state.snapshot.load().all_budgets();
-            for row in &drained.usage {
-                if let Some(budget) = budgets.iter().find(|b| b.id == row.budget_id) {
-                    if !engine.spend(budget.clone(), row.period_start.clone(), row.spent_micros) {
-                        // The engine's queue was full: the counter stays
-                        // dirty, so the next flush says it again.
-                        state.budgets.requeue(Drained {
-                            usage: vec![row.clone()],
-                            alerts: Vec::new(),
-                        });
-                    }
+        for row in &found.told {
+            if let Some(budget) = all.iter().find(|b| b.id == row.budget_id) {
+                if !engine.spend(budget.clone(), row.period_start.clone(), row.spent_micros) {
+                    // The engine's queue was full: the counter stays
+                    // dirty, so the next flush says it again.
+                    state.budgets.requeue(Drained {
+                        usage: vec![row.clone()],
+                        ..Drained::default()
+                    });
                 }
             }
         }
@@ -546,8 +698,8 @@ pub async fn flush(state: &AppState) {
         if let Err(e) = written {
             tracing::warn!(error = %e, "could not write a budget alert");
             state.budgets.requeue(Drained {
-                usage: Vec::new(),
                 alerts: vec![alert],
+                ..Drained::default()
             });
         }
     }
@@ -634,5 +786,51 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// A restart reads the cache back into its counters; flushing them must
+    /// not add the cached spend to itself.
+    #[tokio::test]
+    async fn a_restart_does_not_add_the_cached_spend_again() {
+        let store = Store::open_in_memory().await.unwrap();
+        let mut tx = store.begin().await.unwrap();
+        tx.upsert_budget(
+            LimitScope::Gateway,
+            None,
+            1_000_000,
+            Period::Monthly,
+            BudgetAction::Block,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let cipher = || Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
+        let first = AppState::new(store.clone(), cipher()).await.unwrap();
+        let now = OffsetDateTime::now_utc();
+        let all = first.snapshot.load().all_budgets();
+        first.budgets.spend(&all, 100, now);
+        flush(&first).await;
+        let start = Period::Monthly.start_string(now);
+        let id = all[0].id;
+        assert_eq!(
+            store.budget_usage(id, &start).await.unwrap(),
+            Some((100, false))
+        );
+        let second = AppState::new(store.clone(), cipher()).await.unwrap();
+        rebuild(&second, now).await.unwrap();
+        flush(&second).await;
+        flush(&second).await;
+        assert_eq!(
+            store.budget_usage(id, &start).await.unwrap(),
+            Some((100, false))
+        );
+        assert_eq!(second.budgets.spent(&all[0], now), 100);
+        // Spend after the restart adds to the cache.
+        second.budgets.spend(&all, 50, now);
+        flush(&second).await;
+        assert_eq!(
+            store.budget_usage(id, &start).await.unwrap(),
+            Some((150, false))
+        );
     }
 }

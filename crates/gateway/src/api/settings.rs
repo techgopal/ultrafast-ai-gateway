@@ -14,7 +14,8 @@ use crate::identity::limiter;
 use crate::identity::oidc::discovery::{usable_endpoint, usable_endpoint_for, usable_keys};
 use crate::identity::policy::Action;
 use crate::store::{
-    AuditEntry, OidcSettings, DEFAULT_OIDC_GROUPS_CLAIM, DEFAULT_OIDC_LABEL, SESSION_HOURS_RANGE,
+    AuditEntry, Dialect, OidcSettings, DEFAULT_OIDC_GROUPS_CLAIM, DEFAULT_OIDC_LABEL,
+    SESSION_HOURS_RANGE,
 };
 
 /// The fewest and the most days request logs may be kept.
@@ -31,6 +32,23 @@ pub struct LoginLimits {
     pub max_per_address: u64,
 }
 
+/// Which database the gateway runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DatabaseKind {
+    Sqlite,
+    Postgres,
+}
+
+impl From<Dialect> for DatabaseKind {
+    fn from(d: Dialect) -> Self {
+        match d {
+            Dialect::Sqlite => Self::Sqlite,
+            Dialect::Postgres => Self::Postgres,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SettingsView {
     /// How many days request logs are kept before they are deleted.
@@ -43,6 +61,10 @@ pub struct SettingsView {
     pub trusted_proxies: Vec<String>,
     /// Read only: built in.
     pub login_limits: LoginLimits,
+    /// The database the gateway runs on. Read only: `UF_DATABASE_URL` set
+    /// means `postgres`. A PostgreSQL database is not backed up from here
+    /// (use `pg_dump`).
+    pub database: DatabaseKind,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -70,6 +92,7 @@ async fn view_of(state: &AppState) -> Result<SettingsView, ApiError> {
             max_per_email: limiter::MAX_PER_EMAIL as u64,
             max_per_address: limiter::MAX_PER_ADDRESS as u64,
         },
+        database: state.store.dialect().into(),
     })
 }
 

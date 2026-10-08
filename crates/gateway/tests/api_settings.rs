@@ -99,6 +99,14 @@ async fn only_an_admin_sees_or_changes_settings() {
     let _: Value = body;
 }
 
+/// What the settings say the gateway runs on.
+fn database_of(org: &common::Org) -> &'static str {
+    match org.api.store.dialect() {
+        ultrafast_gateway::store::Dialect::Sqlite => "sqlite",
+        ultrafast_gateway::store::Dialect::Postgres => "postgres",
+    }
+}
+
 fn login_limits() -> Value {
     json!({ "window_minutes": 15, "max_per_email": 5, "max_per_address": 20 })
 }
@@ -116,6 +124,7 @@ async fn the_sign_in_settings_are_shown_and_the_limits_are_read_only() {
             "session_hours": 12,
             "trusted_proxies": ["10.0.0.0/8", "fd00::/8"],
             "login_limits": login_limits(),
+            "database": database_of(&org),
         })
     );
     // Nothing of the read-only parts can be sent.

@@ -899,6 +899,7 @@ export const settings: Settings = {
   session_hours: 12,
   trusted_proxies: ["10.0.0.0/8"],
   login_limits: { window_minutes: 15, max_per_email: 5, max_per_address: 20 },
+  database: "sqlite",
 };
 
 type OidcView = components["schemas"]["OidcView"];

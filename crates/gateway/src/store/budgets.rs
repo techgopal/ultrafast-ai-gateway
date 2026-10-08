@@ -50,6 +50,25 @@ pub struct UsageRow {
     pub spent_micros: u64,
 }
 
+/// What a process adds to a budget's stored spend for a period: the part of
+/// its counter that the database does not have yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageDelta {
+    pub budget_id: i64,
+    pub period_start: String,
+    pub delta_micros: u64,
+}
+
+/// What the database holds for a budget in a period, after every process's
+/// additions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageTotal {
+    pub budget_id: i64,
+    pub period_start: String,
+    pub spent_micros: u64,
+    pub alerted: bool,
+}
+
 const SELECT: &str = "SELECT b.id, b.scope, b.scope_id, b.amount_micros, b.period, b.action,
             CASE b.scope WHEN 'key' THEN k.name WHEN 'user' THEN u.email WHEN 'team' THEN t.name END AS name,
             k.user_id AS key_owner,
@@ -159,6 +178,49 @@ impl Store {
         tx.commit().await
     }
 
+    /// Adds what this process has counted since its last flush to the stored
+    /// spend (`spent_micros = spent_micros + delta`, so processes sharing one
+    /// database add up instead of overwriting each other), then reads back
+    /// what is stored for `wanted` (budget, period start): the totals every
+    /// process converges on. One transaction. A budget that was deleted
+    /// meanwhile is skipped.
+    pub async fn add_budget_usage(
+        &self,
+        deltas: &[UsageDelta],
+        wanted: &[(i64, String)],
+    ) -> Result<Vec<UsageTotal>> {
+        let mut tx = self.begin().await?;
+        // Always in the same order, so two processes adding to the same
+        // rows cannot wait on each other.
+        let mut ordered: Vec<&UsageDelta> = deltas.iter().filter(|d| d.delta_micros > 0).collect();
+        ordered.sort_by(|a, b| (a.budget_id, &a.period_start).cmp(&(b.budget_id, &b.period_start)));
+        for d in ordered {
+            tx.add_usage(&d.period_start, d.budget_id, d.delta_micros)
+                .await?;
+        }
+        let mut totals = Vec::with_capacity(wanted.len());
+        for (budget_id, period_start) in wanted {
+            let row: Option<(i64, i64)> = tx
+                .query_as(
+                    "SELECT spent_micros, alerted FROM budget_usage WHERE budget_id = ? AND period_start = ?",
+                )
+                .bind(*budget_id)
+                .bind(period_start)
+                .fetch_optional(tx.conn())
+                .await?;
+            if let Some((spent, alerted)) = row {
+                totals.push(UsageTotal {
+                    budget_id: *budget_id,
+                    period_start: period_start.clone(),
+                    spent_micros: u64::try_from(spent).unwrap_or(0),
+                    alerted: alerted != 0,
+                });
+            }
+        }
+        tx.commit().await?;
+        Ok(totals)
+    }
+
     /// Writes the alert of a budget for a period, once: the first call for
     /// the period writes the audit row (by `system`) and returns true; any
     /// later call, also after a restart, writes nothing. Nothing is written
@@ -213,6 +275,24 @@ impl Tx<'_> {
         .bind(budget_id)
         .bind(period_start)
         .bind(to_i64(spent))
+        .bind(budget_id)
+        .execute(self.conn())
+        .await?;
+        Ok(())
+    }
+
+    /// Adds `delta` to the spend of a budget in a period, creating the row.
+    /// Nothing is written for a budget that is gone.
+    async fn add_usage(&mut self, period_start: &str, budget_id: i64, delta: u64) -> Result<()> {
+        self.q(
+            "INSERT INTO budget_usage (budget_id, period_start, spent_micros)
+             SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM budgets WHERE id = ?)
+             ON CONFLICT (budget_id, period_start) DO UPDATE
+             SET spent_micros = budget_usage.spent_micros + excluded.spent_micros",
+        )
+        .bind(budget_id)
+        .bind(period_start)
+        .bind(to_i64(delta))
         .bind(budget_id)
         .execute(self.conn())
         .await?;

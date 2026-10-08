@@ -1007,6 +1007,26 @@ mod tests {
         assert_eq!(events(&store).await.len(), 3);
     }
 
+    /// Two gateway processes on one database both see the threshold passed
+    /// (neither knew of the other's episode when it loaded): the state write
+    /// is conditional, so the alert is recorded once.
+    #[tokio::test]
+    async fn a_budget_threshold_fires_once_across_two_processes() {
+        let store = Store::open_in_memory().await.unwrap();
+        rule(&store, "75", "budget", json!({ "percent": 75 })).await;
+        let b = budget(9, 1_000_000);
+        let mut one = engine(&store).await;
+        let mut two = engine(&store).await;
+        one.on_spend(&b, "2999-01-01", 800_000).await;
+        two.on_spend(&b, "2999-01-01", 900_000).await;
+        two.on_spend(&b, "2999-01-01", 950_000).await;
+        assert_eq!(
+            events(&store).await,
+            [("firing".to_string(), "budget:9:2999-01-01".to_string())]
+        );
+        assert_eq!(store.alert_states().await.unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn a_rule_for_one_budget_ignores_the_others_and_a_disabled_one_never_fires() {
         let store = Store::open_in_memory().await.unwrap();

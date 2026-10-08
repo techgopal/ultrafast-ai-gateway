@@ -373,7 +373,10 @@ impl Tx<'_> {
 
     /// Marks `(rule, subject)` as firing, only while the rule exists and is
     /// enabled: a rule the API disabled a moment ago (and cleared) must not
-    /// get a state back. `false`: nothing was written.
+    /// get a state back. Only the first writer wins: with several gateway
+    /// processes on one database, the one that finds the state already
+    /// there records nothing, so an episode is announced once. `false`:
+    /// nothing was written.
     pub async fn upsert_alert_state(
         &mut self,
         rule_id: i64,
@@ -383,7 +386,8 @@ impl Tx<'_> {
         let r = self
             .q("INSERT INTO alert_state (rule_id, subject, firing, since)
              SELECT ?, ?, 1, ? WHERE EXISTS (SELECT 1 FROM alert_rules WHERE id = ? AND enabled = 1)
-             ON CONFLICT (rule_id, subject) DO UPDATE SET firing = 1, since = excluded.since")
+             ON CONFLICT (rule_id, subject) DO UPDATE SET firing = 1, since = excluded.since
+             WHERE alert_state.firing = 0")
             .bind(rule_id)
             .bind(subject)
             .bind(since)

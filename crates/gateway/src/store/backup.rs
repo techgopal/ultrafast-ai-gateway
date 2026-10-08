@@ -7,6 +7,10 @@ use anyhow::{bail, Result};
 use super::dialect::Dialected;
 use super::Store;
 
+/// What is answered where a backup of a PostgreSQL database is asked for:
+/// the gateway does not copy it.
+pub const POSTGRES_BACKUP_TEXT: &str = "Use pg_dump to back up a Postgres database.";
+
 impl Store {
     /// The directory the database file is in; `None` for an in-memory
     /// database.
@@ -22,7 +26,7 @@ impl Store {
     /// are unreadable without that key.
     pub async fn backup_to(&self, path: &Path) -> Result<()> {
         if self.dialect != super::Dialect::Sqlite {
-            bail!("only a SQLite database can be copied this way");
+            bail!("{POSTGRES_BACKUP_TEXT}");
         }
         if self.dir.is_none() {
             // SQLite writes nothing for an in-memory database.

@@ -12,6 +12,46 @@ pub fn db_path(data_dir: &Path) -> PathBuf {
     data_dir.join("gateway.db")
 }
 
+/// The most connections to the database that may be asked for.
+pub const MAX_DATABASE_CONNECTIONS: u32 = 1000;
+
+/// How many connections the gateway opens to PostgreSQL unless told.
+pub const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 10;
+
+/// The PostgreSQL URL from `UF_DATABASE_URL`, or `None` when it is unset or
+/// blank (then the SQLite file in the data directory is used). Error
+/// messages never echo the URL, since it holds the password.
+pub fn parse_database_url(raw: Option<&str>) -> Result<Option<String>> {
+    let Some(url) = raw.map(str::trim).filter(|u| !u.is_empty()) else {
+        return Ok(None);
+    };
+    if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
+        bail!("UF_DATABASE_URL must start with postgres:// or postgresql://");
+    }
+    Ok(Some(url.to_string()))
+}
+
+/// Checks `UF_DATABASE_MAX_CONNECTIONS`.
+pub fn validate_database_max_connections(n: u32) -> Result<u32> {
+    if n == 0 || n > MAX_DATABASE_CONNECTIONS {
+        bail!("UF_DATABASE_MAX_CONNECTIONS must be between 1 and {MAX_DATABASE_CONNECTIONS}");
+    }
+    Ok(n)
+}
+
+/// The master key on PostgreSQL, where there is no data directory to keep a
+/// `master.key` in, and each of several gateway processes must be given the
+/// same key: it must be set, and valid. Nothing is read or created.
+pub fn master_key_from_env_only(from_env: Option<&str>) -> Result<String> {
+    let Some(v) = from_env.map(str::trim).filter(|v| !v.is_empty()) else {
+        bail!(
+            "UF_MASTER_KEY is required when UF_DATABASE_URL is set: 64 hex characters, the same for every gateway on the database (there is no data directory to keep a master.key in)"
+        );
+    };
+    Cipher::from_hex(v).context("UF_MASTER_KEY is not valid")?;
+    Ok(v.to_string())
+}
+
 /// Returns the master key as hex. Uses `from_env` when given. Otherwise reads
 /// `master.key` in the data directory, creating it on first use. The data
 /// directory is created in both cases, since the database lives there too.

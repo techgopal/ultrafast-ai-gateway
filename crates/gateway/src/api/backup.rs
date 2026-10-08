@@ -13,7 +13,7 @@ use tokio::io::AsyncReadExt;
 use super::{require, ApiError, Authed};
 use crate::app::AppState;
 use crate::identity::policy::Action;
-use crate::store::{now, AuditEntry};
+use crate::store::{now, AuditEntry, Dialect, POSTGRES_BACKUP_TEXT};
 
 /// The file is read in pieces of this size.
 const CHUNK: usize = 64 * 1024;
@@ -34,7 +34,8 @@ impl Drop for TempFile {
 /// sessions, logs, provider credentials as they are stored) except the
 /// master key, which is not in it: the credentials are unreadable without
 /// that key, and so the copy is of little use without it. Admin only; the
-/// download is audited.
+/// download is audited. On PostgreSQL there is no file to give: 409
+/// `backup_unsupported`, with the advice to use `pg_dump`.
 #[utoipa::path(
     get,
     path = "/backup",
@@ -44,6 +45,7 @@ impl Drop for TempFile {
         (status = 200, description = "The database as a SQLite file.", content_type = "application/vnd.sqlite3", body = Vec<u8>),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
         (status = 403, description = "The caller is not allowed to do this.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "The database is PostgreSQL, which is backed up with pg_dump (code backup_unsupported).", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
     security(("session" = []), ("token" = [])),
@@ -54,6 +56,12 @@ pub async fn download(
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     require(me, &Action::ManageSettings)?;
+    if state.store.dialect() == Dialect::Postgres {
+        return Err(ApiError::conflict(
+            "backup_unsupported",
+            POSTGRES_BACKUP_TEXT,
+        ));
+    }
 
     // In the data directory, which only the owner can enter. An in-memory
     // database (tests) has none: the system's temporary directory is used.

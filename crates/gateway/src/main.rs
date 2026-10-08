@@ -12,15 +12,16 @@ use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState}
 use ultrafast_gateway::budgets::{self, FLUSH_INTERVAL};
 use ultrafast_gateway::catalog::{add_model, describe_model_add, validate_model_name};
 use ultrafast_gateway::config::{
-    db_path, load_master_key, parse_public_url, parse_trusted_proxies, restrict_permissions,
-    validate_api_version, validate_base_url, validate_provider_name,
+    db_path, load_master_key, master_key_from_env_only, parse_database_url, parse_public_url,
+    parse_trusted_proxies, restrict_permissions, validate_api_version, validate_base_url,
+    validate_database_max_connections, validate_provider_name, DEFAULT_DATABASE_MAX_CONNECTIONS,
 };
 use ultrafast_gateway::identity::password;
 use ultrafast_gateway::logs::{self, LogSink, QUEUE_CAPACITY};
 use ultrafast_gateway::otel::{Exporter, OtelConfig};
 use ultrafast_gateway::portable;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
-use ultrafast_gateway::store::Store;
+use ultrafast_gateway::store::{Store, POSTGRES_BACKUP_TEXT};
 use ultrafast_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
 
 #[derive(Parser)]
@@ -34,6 +35,21 @@ struct Cli {
     /// in the process list and shell history.
     #[arg(long, env = "UF_MASTER_KEY", hide_env_values = true, global = true)]
     master_key: Option<String>,
+    /// Use this PostgreSQL database (postgres://user:password@host/db) instead
+    /// of the SQLite file in the data directory. Then UF_MASTER_KEY is
+    /// required, and several gateways may share the database. Prefer the
+    /// UF_DATABASE_URL environment variable: a flag value is visible in the
+    /// process list and shell history, and the URL holds the password.
+    #[arg(long, env = "UF_DATABASE_URL", hide_env_values = true, global = true)]
+    database_url: Option<String>,
+    /// The most connections one gateway opens to PostgreSQL.
+    #[arg(
+        long,
+        env = "UF_DATABASE_MAX_CONNECTIONS",
+        default_value_t = DEFAULT_DATABASE_MAX_CONNECTIONS,
+        global = true
+    )]
+    database_max_connections: u32,
     #[command(subcommand)]
     command: Command,
 }
@@ -303,8 +319,38 @@ fn validate_otel(
     Ok(())
 }
 
+/// Where the database is: the SQLite file in the data directory, or the
+/// PostgreSQL database `UF_DATABASE_URL` names.
+struct Database {
+    url: Option<String>,
+    max_connections: u32,
+}
+
+impl Database {
+    fn of(cli: &Cli) -> Result<Self> {
+        Ok(Self {
+            url: parse_database_url(cli.database_url.as_deref())?,
+            max_connections: validate_database_max_connections(cli.database_max_connections)?,
+        })
+    }
+
+    fn is_postgres(&self) -> bool {
+        self.url.is_some()
+    }
+
+    /// Opens PostgreSQL. The error never shows the URL (it holds the password).
+    async fn connect(url: &str, max: u32) -> Result<Store> {
+        Store::connect_url(url, max)
+            .await
+            .context("could not connect to the PostgreSQL database named by UF_DATABASE_URL")
+    }
+}
+
 /// `ultrafast backup <path>`.
-async fn backup_command(data_dir: &Path, path: &Path) -> Result<()> {
+async fn backup_command(data_dir: &Path, database: &Database, path: &Path) -> Result<()> {
+    if database.is_postgres() {
+        bail!("{POSTGRES_BACKUP_TEXT}");
+    }
     let db = db_path(data_dir);
     if !db.exists() {
         bail!("there is no database in {}", data_dir.display());
@@ -339,16 +385,24 @@ fn restrict_file(_path: &Path) -> Result<()> {
 
 /// `ultrafast config ...`. It needs no master key: the file holds no secret,
 /// and a key is neither read nor made.
-async fn config_command(data_dir: &Path, command: ConfigCommand) -> Result<()> {
+async fn config_command(
+    data_dir: &Path,
+    database: &Database,
+    command: ConfigCommand,
+) -> Result<()> {
     let db = db_path(data_dir);
     match command {
         ConfigCommand::Export { file } => {
-            if !db.exists() {
-                bail!("there is no database in {}", data_dir.display());
-            }
-            let store = Store::open(&db)
-                .await
-                .context("could not open the database")?;
+            let store = if let Some(url) = &database.url {
+                Database::connect(url, database.max_connections).await?
+            } else {
+                if !db.exists() {
+                    bail!("there is no database in {}", data_dir.display());
+                }
+                Store::open(&db)
+                    .await
+                    .context("could not open the database")?
+            };
             let exported = portable::export(&store).await?;
             let bytes = serde_json::to_vec_pretty(&exported)?;
             let mut out = std::fs::OpenOptions::new()
@@ -381,13 +435,18 @@ async fn config_command(data_dir: &Path, command: ConfigCommand) -> Result<()> {
                 Ok(parsed) => parsed,
                 Err(report) => bail!("{}", report.describe(dry_run)),
             };
-            // An import may start a data directory of its own.
-            std::fs::create_dir_all(data_dir)
-                .with_context(|| format!("could not create {}", data_dir.display()))?;
-            let store = Store::open(&db)
-                .await
-                .context("could not open the database")?;
-            restrict_permissions(data_dir)?;
+            let store = if let Some(url) = &database.url {
+                Database::connect(url, database.max_connections).await?
+            } else {
+                // An import may start a data directory of its own.
+                std::fs::create_dir_all(data_dir)
+                    .with_context(|| format!("could not create {}", data_dir.display()))?;
+                let store = Store::open(&db)
+                    .await
+                    .context("could not open the database")?;
+                restrict_permissions(data_dir)?;
+                store
+            };
             let actor = portable::Actor {
                 user_id: None,
                 email: "cli",
@@ -428,18 +487,32 @@ async fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&spec())?);
         return Ok(());
     }
+    let database = Database::of(&cli)?;
     // Neither needs the master key: it is not read, and not made.
     match cli.command {
-        Command::Config { command } => return config_command(&cli.data_dir, command).await,
-        Command::Backup { path } => return backup_command(&cli.data_dir, &path).await,
+        Command::Config { command } => {
+            return config_command(&cli.data_dir, &database, command).await
+        }
+        Command::Backup { path } => return backup_command(&cli.data_dir, &database, &path).await,
         _ => {}
     }
-    let master = load_master_key(&cli.data_dir, cli.master_key.as_deref())?;
-    let cipher = Cipher::from_hex(&master)?;
-    let store = Store::open(&db_path(&cli.data_dir))
-        .await
-        .context("could not open the database")?;
-    restrict_permissions(&cli.data_dir)?;
+    let (cipher, store) = if let Some(url) = &database.url {
+        // No data directory: nothing to keep a master key in, nothing created.
+        let master = master_key_from_env_only(cli.master_key.as_deref())?;
+        let cipher = Cipher::from_hex(&master)?;
+        (
+            cipher,
+            Database::connect(url, database.max_connections).await?,
+        )
+    } else {
+        let master = load_master_key(&cli.data_dir, cli.master_key.as_deref())?;
+        let cipher = Cipher::from_hex(&master)?;
+        let store = Store::open(&db_path(&cli.data_dir))
+            .await
+            .context("could not open the database")?;
+        restrict_permissions(&cli.data_dir)?;
+        (cipher, store)
+    };
 
     match cli.command {
         Command::Serve {

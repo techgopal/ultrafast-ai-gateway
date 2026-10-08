@@ -286,7 +286,8 @@ export interface paths {
          *     sessions, logs, provider credentials as they are stored) except the
          *     master key, which is not in it: the credentials are unreadable without
          *     that key, and so the copy is of little use without it. Admin only; the
-         *     download is audited.
+         *     download is audited. On PostgreSQL there is no file to give: 409
+         *     `backup_unsupported`, with the advice to use `pg_dump`.
          */
         get: operations["backup_download"];
         put?: never;
@@ -1187,6 +1188,11 @@ export interface components {
             secret: string;
             token: components["schemas"]["TokenView"];
         };
+        /**
+         * @description Which database the gateway runs on.
+         * @enum {string}
+         */
+        DatabaseKind: "sqlite" | "postgres";
         EventList: {
             events: components["schemas"]["EventView"][];
         };
@@ -2066,6 +2072,12 @@ export interface components {
             session_hours: number | null;
         };
         SettingsView: {
+            /**
+             * @description The database the gateway runs on. Read only: `UF_DATABASE_URL` set
+             *     means `postgres`. A PostgreSQL database is not backed up from here
+             *     (use `pg_dump`).
+             */
+            database: components["schemas"]["DatabaseKind"];
             /**
              * Format: int64
              * @description How many days request logs are kept before they are deleted.
@@ -3694,6 +3706,15 @@ export interface operations {
             };
             /** @description The caller is not allowed to do this. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The database is PostgreSQL, which is backed up with pg_dump (code backup_unsupported). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
