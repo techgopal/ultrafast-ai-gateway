@@ -10,6 +10,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use time::OffsetDateTime;
+use tokio::time::Instant;
+
 use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -31,13 +34,20 @@ pub struct EngineConfig {
     pub tick: Duration,
     /// How long a window bucket is: a minute, except in tests.
     pub bucket: Duration,
+    /// How long a breaker must stay closed before its episode resolves, so a
+    /// target that flaps is one episode and not a pair of notices per flap.
+    pub circuit_quiet: Duration,
 }
+
+/// The default of [`EngineConfig::circuit_quiet`].
+pub const CIRCUIT_QUIET: Duration = Duration::from_secs(300);
 
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             tick: Duration::from_secs(30),
             bucket: Duration::from_secs(60),
+            circuit_quiet: CIRCUIT_QUIET,
         }
     }
 }
@@ -151,6 +161,17 @@ pub enum Change {
 struct Episode {
     /// The bucket the rate was first below the threshold in, while firing.
     below_since: Option<u32>,
+    /// A circuit episode: since when its breaker has stayed closed.
+    closed_since: Option<Instant>,
+}
+
+impl Episode {
+    fn new() -> Self {
+        Self {
+            below_since: None,
+            closed_since: None,
+        }
+    }
 }
 
 /// Which `(rule, subject)` pairs are firing. The state machine: an episode
@@ -167,7 +188,7 @@ impl Episodes {
     pub fn replace<I: IntoIterator<Item = (i64, String)>>(&mut self, rows: I) {
         let mut old = std::mem::take(&mut self.map);
         for key in rows {
-            let ep = old.remove(&key).unwrap_or(Episode { below_since: None });
+            let ep = old.remove(&key).unwrap_or_else(Episode::new);
             self.map.insert(key, ep);
         }
     }
@@ -212,12 +233,47 @@ impl Episodes {
         let key = (rule, subject.to_string());
         match change {
             Change::Fire => {
-                self.map.insert(key, Episode { below_since: None });
+                self.map.insert(key, Episode::new());
             }
             Change::Resolve => {
                 self.map.remove(&key);
             }
         }
+    }
+
+    /// The breaker of a firing circuit episode is closed (as of `at`). The
+    /// clock starts at the first report and is not moved by the next ones.
+    fn mark_closed(&mut self, rule: i64, subject: &str, at: Instant) {
+        if let Some(ep) = self.map.get_mut(&(rule, subject.to_string())) {
+            ep.closed_since.get_or_insert(at);
+        }
+    }
+
+    /// The breaker opened again: the episode goes on.
+    fn mark_open(&mut self, rule: i64, subject: &str) {
+        if let Some(ep) = self.map.get_mut(&(rule, subject.to_string())) {
+            ep.closed_since = None;
+        }
+    }
+
+    /// The firing subjects of a rule whose breaker has been closed for at
+    /// least `quiet` as of `at`.
+    fn quiet_subjects(&self, rule: i64, quiet: Duration, at: Instant) -> Vec<String> {
+        self.map
+            .iter()
+            .filter(|((r, _), ep)| {
+                *r == rule
+                    && ep
+                        .closed_since
+                        .is_some_and(|since| at.saturating_duration_since(since) >= quiet)
+            })
+            .map(|((_, s), _)| s.clone())
+            .collect()
+    }
+
+    /// Forgets an episode without a word (its state is dropped elsewhere).
+    fn remove(&mut self, rule: i64, subject: &str) {
+        self.map.remove(&(rule, subject.to_string()));
     }
 
     fn forget_other_periods(&mut self, rule: i64, prefix: &str, keep: &str) {
@@ -243,6 +299,10 @@ pub struct Engine {
     health: Option<Arc<dyn HealthStore>>,
     rules: Vec<Loaded>,
     episodes: Episodes,
+    /// See [`EngineConfig::circuit_quiet`].
+    quiet: Duration,
+    /// The wall clock, for the budget periods (a field so a test sets it).
+    wall: fn() -> OffsetDateTime,
 }
 
 impl Engine {
@@ -259,6 +319,8 @@ impl Engine {
             health,
             rules: Vec::new(),
             episodes: Episodes::default(),
+            quiet: CIRCUIT_QUIET,
+            wall: OffsetDateTime::now_utc,
         }
     }
 
@@ -317,7 +379,11 @@ impl Engine {
         let mut tx = self.store.begin().await?;
         match change {
             Change::Fire => {
-                tx.upsert_alert_state(id, subject, &at).await?;
+                if !tx.upsert_alert_state(id, subject, &at).await? {
+                    // The rule was disabled or deleted since the engine read
+                    // it: nothing to record.
+                    return Ok(());
+                }
                 if let Some(prefix) = keep_only_period {
                     tx.delete_alert_states_except(id, prefix, subject).await?;
                 }
@@ -404,6 +470,13 @@ impl Engine {
 
     /// A breaker opened or closed.
     pub async fn on_health(&mut self, event: &HealthEvent) {
+        self.on_health_at(event, Instant::now()).await;
+    }
+
+    /// A breaker report as of `at`. An opening starts an episode or, inside
+    /// one, goes on with it; a closing only starts the quiet-period clock:
+    /// [`Engine::settle_quiet_circuits`] resolves.
+    async fn on_health_at(&mut self, event: &HealthEvent, at: Instant) {
         let (provider, model, opened) = match event {
             HealthEvent::Opened { provider, model } => (provider, model, true),
             HealthEvent::Closed { provider, model } => (provider, model, false),
@@ -416,27 +489,56 @@ impl Engine {
             };
             let matches = c.provider.as_ref().is_none_or(|p| p == provider)
                 && c.model.as_ref().is_none_or(|m| m == model);
-            let firing = self.episodes.is_firing(r.id, &subject);
-            if !r.enabled || !matches || firing == opened {
+            if !r.enabled || !matches {
                 continue;
             }
-            let (change, summary) = if opened {
-                (
-                    Change::Fire,
-                    format!("Circuit opened for {provider}/{model}: calls to it are refused"),
-                )
-            } else {
-                (
-                    Change::Resolve,
-                    format!("Circuit closed for {provider}/{model}: calls to it pass again"),
-                )
-            };
+            let id = r.id;
+            if self.episodes.is_firing(id, &subject) {
+                if opened {
+                    self.episodes.mark_open(id, &subject);
+                } else {
+                    self.episodes.mark_closed(id, &subject, at);
+                }
+                continue;
+            }
+            if !opened {
+                continue;
+            }
+            let summary = format!("Circuit opened for {provider}/{model}: calls to it are refused");
             let details = json!({ "provider": provider, "model": model });
             if let Err(e) = self
-                .change(i, &subject, change, &summary, &details, None)
+                .change(i, &subject, Change::Fire, &summary, &details, None)
                 .await
             {
                 tracing::warn!(error = %e, "could not record an alert");
+            }
+        }
+    }
+
+    /// Resolves the circuit episodes whose breaker has stayed closed for the
+    /// quiet period.
+    async fn settle_quiet_circuits(&mut self, at: Instant) {
+        for i in 0..self.rules.len() {
+            let r = &self.rules[i];
+            if !r.enabled || !matches!(r.params, Params::Circuit(_)) {
+                continue;
+            }
+            for subject in self.episodes.quiet_subjects(r.id, self.quiet, at) {
+                let Some((provider, model)) = subject
+                    .strip_prefix("target:")
+                    .and_then(|s| s.split_once('/'))
+                else {
+                    continue;
+                };
+                let summary =
+                    format!("Circuit closed for {provider}/{model}: calls to it pass again");
+                let details = json!({ "provider": provider, "model": model });
+                if let Err(e) = self
+                    .change(i, &subject, Change::Resolve, &summary, &details, None)
+                    .await
+                {
+                    tracing::warn!(error = %e, "could not record an alert");
+                }
             }
         }
     }
@@ -494,10 +596,66 @@ impl Engine {
         }
     }
 
+    /// Drops, silently, the budget episodes that are not of their budget's
+    /// current period (or whose budget is gone): they would show as firing
+    /// for ever. Budget rules send no resolved notice.
+    async fn prune_budget_states(&mut self) {
+        let mut stale = Vec::new();
+        for r in &self.rules {
+            if matches!(r.params, Params::Budget { .. }) {
+                for subject in self.episodes.firing_subjects(r.id) {
+                    stale.push((r.id, subject));
+                }
+            }
+        }
+        if stale.is_empty() {
+            return;
+        }
+        let budgets = match self.store.list_budgets().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the budgets for the alert engine");
+                return;
+            }
+        };
+        let wall = (self.wall)();
+        stale.retain(|(_, subject)| {
+            let current = subject
+                .strip_prefix("budget:")
+                .and_then(|s| s.split_once(':'))
+                .and_then(|(id, start)| Some((id.parse::<i64>().ok()?, start)))
+                .is_some_and(|(id, start)| {
+                    budgets
+                        .iter()
+                        .any(|b| b.id == id && b.period.start_string(wall) == start)
+                });
+            !current
+        });
+        if stale.is_empty() {
+            return;
+        }
+        let dropped = async {
+            let mut tx = self.store.begin().await?;
+            for (rule, subject) in &stale {
+                tx.delete_alert_state(*rule, subject).await?;
+            }
+            tx.commit().await
+        }
+        .await;
+        match dropped {
+            Ok(()) => {
+                for (rule, subject) in &stale {
+                    self.episodes.remove(*rule, subject);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "could not drop old alert states"),
+        }
+    }
+
     /// Settles circuit episodes against what the breakers say now: an open
     /// target without an episode fires, an episode whose target is closed
-    /// resolves. A lost event is mended within a tick.
-    async fn resync_circuits(&mut self) {
+    /// starts its quiet period. A lost event is mended within a tick.
+    async fn resync_circuits(&mut self, at: Instant) {
         let Some(health) = self.health.clone() else {
             return;
         };
@@ -508,14 +666,20 @@ impl Engine {
             } else {
                 HealthEvent::Opened { provider, model }
             };
-            self.on_health(&event).await;
+            self.on_health_at(&event, at).await;
         }
     }
 
     /// Evaluates every error-rate rule against the windows at bucket `now`.
     pub async fn on_tick(&mut self, now: u32) {
+        self.on_tick_at(now, Instant::now()).await;
+    }
+
+    async fn on_tick_at(&mut self, now: u32, at: Instant) {
         self.resolve_removed_targets().await;
-        self.resync_circuits().await;
+        self.resync_circuits(at).await;
+        self.settle_quiet_circuits(at).await;
+        self.prune_budget_states().await;
         self.windows.prune(now);
         for i in 0..self.rules.len() {
             let r = &self.rules[i];
@@ -619,6 +783,7 @@ pub fn spawn(
     };
     let task = tokio::spawn(async move {
         let mut engine = Engine::new(store, deliverer, windows.clone(), health);
+        engine.quiet = cfg.circuit_quiet;
         if let Err(e) = engine.load().await {
             tracing::warn!(error = %e, "could not read the alert rules");
         }
@@ -876,6 +1041,7 @@ mod tests {
         )
         .await;
         let mut e = engine(&store).await;
+        e.quiet = Duration::ZERO;
         let opened = HealthEvent::Opened {
             provider: "openai".into(),
             model: "gpt-4o".into(),
@@ -885,11 +1051,14 @@ mod tests {
             model: "gpt-4o".into(),
         };
         e.on_health(&closed).await;
+        e.on_tick(1).await;
         assert!(events(&store).await.is_empty(), "closing what never opened");
         e.on_health(&opened).await;
         e.on_health(&opened).await;
         e.on_health(&closed).await;
         e.on_health(&closed).await;
+        e.on_tick(2).await;
+        e.on_tick(3).await;
         assert_eq!(
             events(&store).await,
             [
@@ -975,6 +1144,7 @@ mod tests {
             Some(health.clone()),
         );
         e.load().await.unwrap();
+        e.quiet = Duration::ZERO;
         // Nobody listens to the breaker: no event reaches the engine.
         let t = TargetRef {
             provider: "p".into(),
@@ -1008,5 +1178,149 @@ mod tests {
                 ("resolved".to_string(), "target:p/m".to_string())
             ]
         );
+    }
+
+    fn flap(provider: &str, model: &str, opened: bool) -> HealthEvent {
+        let (provider, model) = (provider.to_string(), model.to_string());
+        if opened {
+            HealthEvent::Opened { provider, model }
+        } else {
+            HealthEvent::Closed { provider, model }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_flapping_breaker_is_one_episode_that_resolves_after_a_quiet_period() {
+        let store = Store::open_in_memory().await.unwrap();
+        rule(&store, "any", "circuit_open", json!({})).await;
+        let provider = store
+            .insert_provider("p", "openai", "http://p.example", None)
+            .await
+            .unwrap();
+        let mut tx = store.begin().await.unwrap();
+        tx.insert_model(provider, "m").await.unwrap();
+        tx.commit().await.unwrap();
+        let mut e = engine(&store).await;
+        assert_eq!(e.quiet, CIRCUIT_QUIET, "5 minutes unless configured");
+        let t0 = Instant::now();
+        let mut at = t0;
+        // 10 flaps, 10 s apart, a tick after each close: nothing but the
+        // first opening is said.
+        for _ in 0..10 {
+            e.on_health_at(&flap("p", "m", true), at).await;
+            at += Duration::from_secs(10);
+            e.on_health_at(&flap("p", "m", false), at).await;
+            at += Duration::from_secs(10);
+            e.on_tick_at(1, at).await;
+        }
+        assert_eq!(
+            events(&store).await,
+            [("firing".to_string(), "target:p/m".to_string())]
+        );
+        // Closed for a whole quiet period: one resolved, not before.
+        e.on_health_at(&flap("p", "m", true), at).await;
+        let closed_at = at + Duration::from_secs(1);
+        e.on_health_at(&flap("p", "m", false), closed_at).await;
+        e.on_tick_at(2, closed_at + Duration::from_secs(299)).await;
+        assert_eq!(events(&store).await.len(), 1, "299 s: still quiet-pending");
+        // Opening inside the period continues the episode and restarts it.
+        e.on_health_at(&flap("p", "m", true), closed_at + Duration::from_secs(299))
+            .await;
+        let again = closed_at + Duration::from_secs(300);
+        e.on_health_at(&flap("p", "m", false), again).await;
+        e.on_tick_at(3, again + Duration::from_secs(299)).await;
+        assert_eq!(events(&store).await.len(), 1);
+        e.on_tick_at(4, again + Duration::from_secs(300)).await;
+        assert_eq!(
+            events(&store).await,
+            [
+                ("firing".to_string(), "target:p/m".to_string()),
+                ("resolved".to_string(), "target:p/m".to_string())
+            ]
+        );
+        assert!(store.alert_states().await.unwrap().is_empty());
+        // The next opening is a new episode.
+        e.on_health_at(&flap("p", "m", true), again + Duration::from_secs(301))
+            .await;
+        assert_eq!(events(&store).await.len(), 3);
+    }
+
+    async fn gateway_budget(store: &Store) -> i64 {
+        let mut tx = store.begin().await.unwrap();
+        let id = tx
+            .upsert_budget(
+                LimitScope::Gateway,
+                None,
+                1_000_000,
+                Period::Monthly,
+                BudgetAction::Block,
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        id
+    }
+
+    fn in_january() -> OffsetDateTime {
+        time::macros::datetime!(2999-01-15 12:00 UTC)
+    }
+
+    fn in_february() -> OffsetDateTime {
+        time::macros::datetime!(2999-02-15 12:00 UTC)
+    }
+
+    #[tokio::test]
+    async fn a_budget_episode_of_a_past_period_is_dropped_on_the_tick_without_a_word() {
+        let store = Store::open_in_memory().await.unwrap();
+        rule(&store, "80", "budget", json!({ "percent": 80 })).await;
+        let id = gateway_budget(&store).await;
+        let b = budget(id, 1_000_000);
+        let mut e = engine(&store).await;
+        e.wall = in_january;
+        e.on_spend(&b, "2999-01-01", 900_000).await;
+        e.on_tick(1).await;
+        assert_eq!(store.alert_states().await.unwrap().len(), 1, "same period");
+        e.wall = in_february;
+        e.on_tick(2).await;
+        assert!(store.alert_states().await.unwrap().is_empty());
+        assert_eq!(events(&store).await.len(), 1, "no resolved notice");
+        // And the memory forgot it too: the new period fires afresh.
+        e.on_spend(&b, "2999-02-01", 900_000).await;
+        assert_eq!(events(&store).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_budget_episode_of_a_deleted_budget_is_dropped_on_the_tick() {
+        let store = Store::open_in_memory().await.unwrap();
+        rule(&store, "80", "budget", json!({ "percent": 80 })).await;
+        let id = gateway_budget(&store).await;
+        let mut e = engine(&store).await;
+        e.wall = in_january;
+        e.on_spend(&budget(id, 1_000_000), "2999-01-01", 900_000)
+            .await;
+        let mut tx = store.begin().await.unwrap();
+        assert!(tx.delete_budget(id).await.unwrap());
+        tx.commit().await.unwrap();
+        e.on_tick(1).await;
+        assert!(store.alert_states().await.unwrap().is_empty());
+        assert_eq!(events(&store).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_rule_disabled_while_the_engine_changes_it_leaves_no_state_and_no_event() {
+        let store = Store::open_in_memory().await.unwrap();
+        let rule_id = rule(&store, "80", "budget", json!({ "percent": 80 })).await;
+        let mut e = engine(&store).await;
+        // The API disables the rule (and clears its states) after the engine
+        // read it and before the engine writes.
+        sqlx::query("UPDATE alert_rules SET enabled = 0 WHERE id = ?")
+            .bind(rule_id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        e.on_spend(&budget(9, 100), "2999-01-01", 100).await;
+        assert!(store.alert_states().await.unwrap().is_empty());
+        assert!(events(&store).await.is_empty());
+        assert!(!e.episodes.is_firing(rule_id, "budget:9:2999-01-01"));
     }
 }

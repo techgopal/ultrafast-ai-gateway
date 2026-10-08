@@ -38,6 +38,7 @@ fn fast() -> DeliveryConfig {
         timeout: Duration::from_secs(5),
         shutdown_cap: Duration::from_millis(300),
         queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
     }
 }
 
@@ -656,6 +657,7 @@ async fn a_dead_host_does_not_hold_up_a_healthy_one() {
         timeout: Duration::from_millis(400),
         shutdown_cap: Duration::from_millis(300),
         queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
     })
     .await;
     // Answers only after the timeout.
@@ -752,6 +754,7 @@ async fn a_full_queue_drops_and_counts_and_never_blocks() {
         timeout: Duration::from_secs(60),
         shutdown_cap: Duration::from_millis(200),
         queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
     })
     .await;
     let hung = MockServer::start().await;
@@ -778,6 +781,7 @@ async fn shutdown_ends_the_deliverer_even_with_a_delivery_in_flight() {
         timeout: Duration::from_secs(60),
         shutdown_cap: Duration::from_millis(200),
         queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
     })
     .await;
     let hung = MockServer::start().await;
@@ -821,6 +825,7 @@ async fn many_events_to_a_dead_host_do_not_starve_a_healthy_channel() {
         timeout: Duration::from_secs(2),
         shutdown_cap: Duration::from_millis(300),
         queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
     })
     .await;
     let dead = hung_server().await;
@@ -851,6 +856,7 @@ async fn at_most_four_deliveries_to_one_channel_are_in_progress() {
         timeout: Duration::from_secs(30),
         shutdown_cap: Duration::from_millis(200),
         queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
     })
     .await;
     let hung = hung_server().await;
@@ -879,6 +885,7 @@ async fn deliveries_beyond_a_channels_backlog_are_dropped_and_recorded() {
         timeout: Duration::from_secs(30),
         shutdown_cap: Duration::from_millis(200),
         queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
     })
     .await;
     let hung = hung_server().await;
@@ -911,6 +918,7 @@ async fn a_job_dropped_on_a_full_queue_is_recorded_on_its_event() {
         timeout: Duration::from_secs(5),
         shutdown_cap: Duration::from_millis(200),
         queue_capacity: 2,
+        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
     })
     .await;
     let server = receiver(200).await;
@@ -967,25 +975,31 @@ async fn a_channel_deleted_before_the_send_is_skipped_and_left_out() {
     // Queued for the deleted channel alone: nothing to send, nothing to
     // record, no panic, and the deliverer carries on.
     let lonely = env.event("y").await;
+    // A sentinel tells "no write" from "wrote an empty list".
+    let sentinel = r#"[{"sentinel":true}]"#;
+    env.store
+        .set_alert_event_deliveries(lonely, sentinel)
+        .await
+        .unwrap();
     env.deliverer().offer(lonely, vec![gone_id]);
     let after = env.event("z").await;
     env.deliverer().offer(after, vec![kept_id]);
     env.deliveries(after).await;
     let e = env.store.alert_event(lonely).await.unwrap().unwrap();
-    assert_eq!(e.deliveries, "[]");
+    assert_eq!(e.deliveries, sentinel, "nothing was written for it");
 }
 
 #[tokio::test]
 async fn a_flood_to_dead_hosts_backs_up_into_the_queue_which_drops_and_records() {
-    // Five hosts that never answer, each with more waiting than its gate
-    // keeps: together more than MAX_PENDING deliveries are unfinished, the
-    // dispatcher stops taking jobs, and what does not fit in the small queue
-    // is dropped and recorded on its event.
+    // Five hosts that never answer, each with more offered than its gate
+    // keeps. The offers outrun the dispatcher, so what does not fit in the
+    // small queue is dropped and recorded on its event.
     let env = env(DeliveryConfig {
         retry_delays: vec![],
         timeout: Duration::from_secs(30),
         shutdown_cap: Duration::from_millis(200),
         queue_capacity: 8,
+        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
     })
     .await;
     let mut servers = Vec::new();
@@ -1027,4 +1041,141 @@ async fn a_flood_to_dead_hosts_backs_up_into_the_queue_which_drops_and_records()
                 <= ultrafast_gateway::alerts::CHANNEL_CONCURRENCY
         );
     }
+}
+
+/// Offers one job to each channel in turn, waiting after each until the
+/// dispatcher has taken it, so every offer is started or queued behind a
+/// stopped dispatcher and none is lost to the small queue by speed alone.
+async fn offer_in_turn(env: &Env, event: i64, ids: &[i64], rounds: usize) {
+    for _ in 0..rounds {
+        for id in ids {
+            env.deliverer().offer(event, vec![*id]);
+            for _ in 0..20 {
+                if env.deliverer().queued() == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn max_pending_holds_the_dispatcher_and_the_small_queue_fills() {
+    // Two hung hosts hold 4 slots each: 8 deliveries in progress, the limit.
+    let env = env(DeliveryConfig {
+        retry_delays: vec![],
+        timeout: Duration::from_secs(60),
+        shutdown_cap: Duration::from_millis(200),
+        queue_capacity: 8,
+        max_pending: 8,
+    })
+    .await;
+    let (a, b) = (hung_server().await, hung_server().await);
+    let (a_id, _) = env.create("hung-a", "webhook", &hook(&a)).await;
+    let (b_id, _) = env.create("hung-b", "webhook", &hook(&b)).await;
+    let event = env.event("x").await;
+    offer_in_turn(&env, event, &[a_id, b_id], 4).await;
+    for _ in 0..200 {
+        let n =
+            a.received_requests().await.unwrap().len() + b.received_requests().await.unwrap().len();
+        if n >= 8 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // More than the queue holds. The dispatcher may take one job (as a
+    // waiter) before it notices the limit; after that it is stopped, so the
+    // rest wait in the queue (7 or 8) and what does not fit is dropped.
+    for _ in 0..20 {
+        env.deliverer().offer(event, vec![a_id]);
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let queued = env.deliverer().queued();
+    assert!((7..=8).contains(&queued), "{queued}");
+    assert!(counter(&env.metrics(), "dropped") >= 12);
+}
+
+#[tokio::test]
+async fn waiting_for_a_dead_channels_gate_does_not_count_toward_max_pending() {
+    // Two dead hosts with a backlog each: 8 deliveries hold a slot, many
+    // more wait at the gates. Only the 8 count, so a healthy job still runs.
+    let env = env(DeliveryConfig {
+        retry_delays: vec![],
+        timeout: Duration::from_secs(60),
+        shutdown_cap: Duration::from_millis(200),
+        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: 9,
+    })
+    .await;
+    let (a, b) = (hung_server().await, hung_server().await);
+    let healthy = receiver(200).await;
+    let (a_id, _) = env.create("hung-a", "webhook", &hook(&a)).await;
+    let (b_id, _) = env.create("hung-b", "webhook", &hook(&b)).await;
+    let (ok_id, _) = env.create("healthy", "webhook", &hook(&healthy)).await;
+    let event = env.event("x").await;
+    for _ in 0..30 {
+        env.deliverer().offer(event, vec![a_id]);
+        env.deliverer().offer(event, vec![b_id]);
+    }
+    for _ in 0..200 {
+        let n =
+            a.received_requests().await.unwrap().len() + b.received_requests().await.unwrap().len();
+        if n >= 8 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let ok_event = env.event("y").await;
+    env.deliverer().offer(ok_event, vec![ok_id]);
+    let d = env.deliveries(ok_event).await;
+    assert_eq!(d[0]["ok"], true);
+}
+
+#[tokio::test]
+async fn a_send_permit_is_not_held_while_a_delivery_waits_to_retry() {
+    // 17 channels x 4 deliveries = 68 deliveries in progress, more than the
+    // 64 sends that may be out. Each fails at once (500) and waits 3 s for
+    // its retry: if that wait held a send permit, the healthy channel's
+    // try would wait for them.
+    let env = env(DeliveryConfig {
+        retry_delays: vec![Duration::from_secs(3), Duration::from_secs(3)],
+        timeout: Duration::from_secs(5),
+        shutdown_cap: Duration::from_millis(200),
+        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+    })
+    .await;
+    let failing = receiver(500).await;
+    let healthy = receiver(200).await;
+    let mut ids = Vec::new();
+    for i in 0..17 {
+        ids.push(
+            env.create(&format!("failing{i:02}"), "webhook", &hook(&failing))
+                .await
+                .0,
+        );
+    }
+    let (ok_id, _) = env.create("healthy", "webhook", &hook(&healthy)).await;
+    let event = env.event("x").await;
+    for _ in 0..4 {
+        env.deliverer().offer(event, ids.clone());
+    }
+    for _ in 0..200 {
+        if failing.received_requests().await.unwrap().len() >= 68 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(failing.received_requests().await.unwrap().len(), 68);
+    let ok_event = env.event("y").await;
+    let started = Instant::now();
+    env.deliverer().offer(ok_event, vec![ok_id]);
+    let d = env.deliveries(ok_event).await;
+    assert_eq!(d[0]["ok"], true);
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "the healthy channel waited {:?}",
+        started.elapsed()
+    );
 }

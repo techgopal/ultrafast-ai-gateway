@@ -57,6 +57,7 @@ fn cfg() -> EngineConfig {
     EngineConfig {
         tick: Duration::from_millis(40),
         bucket: Duration::from_millis(200),
+        circuit_quiet: Duration::from_millis(100),
     }
 }
 
@@ -75,6 +76,7 @@ async fn world() -> World {
                 timeout: Duration::from_secs(5),
                 shutdown_cap: Duration::from_millis(300),
                 queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+                max_pending: ultrafast_gateway::alerts::MAX_PENDING,
             },
             stopped_in.clone(),
         );
@@ -246,8 +248,10 @@ async fn a_failing_route_fires_an_error_rate_alert_and_recovers() {
         .rule(
             "r errors",
             "error_rate",
+            // 6 = the calls made: the engine ticks while they are made, and
+            // would fire at the fifth under load.
             json!({ "scope": "route", "subject": "r", "percent": 50,
-                    "window_minutes": 5, "min_requests": 5 }),
+                    "window_minutes": 5, "min_requests": 6 }),
         )
         .await;
     for _ in 0..6 {
@@ -905,6 +909,51 @@ async fn the_configuration_carries_rules_and_channel_names_but_no_url() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{report}");
     fresh.shutdown().await;
+    w.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_import_that_disables_a_firing_rule_forgets_its_episodes() {
+    let w = world().await;
+    let rule = w
+        .rule(
+            "errors",
+            "error_rate",
+            json!({ "scope": "route", "subject": "r", "percent": 5, "window_minutes": 60,
+                    "min_requests": 2 }),
+        )
+        .await;
+    let mut tx = w.h.store.begin().await.unwrap();
+    assert!(tx
+        .upsert_alert_state(rule, "route:r", "2999-01-01 00:00:00")
+        .await
+        .unwrap());
+    tx.commit().await.unwrap();
+    let (_, mut file) = w.api("GET", "/api/config/export", None).await;
+    assert_eq!(file["alert_rules"][0]["enabled"], true);
+    // Imported unchanged and enabled, the episode stays.
+    let (status, _, report) = call(
+        &w.h.app,
+        "POST",
+        "/api/config/import?dry_run=false",
+        Some(&w.admin),
+        Some(file.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(w.h.store.alert_states().await.unwrap().len(), 1);
+    // Imported with enabled:false, it is forgotten.
+    file["alert_rules"][0]["enabled"] = json!(false);
+    let (status, _, report) = call(
+        &w.h.app,
+        "POST",
+        "/api/config/import?dry_run=false",
+        Some(&w.admin),
+        Some(file),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert!(w.h.store.alert_states().await.unwrap().is_empty());
     w.shutdown().await;
 }
 

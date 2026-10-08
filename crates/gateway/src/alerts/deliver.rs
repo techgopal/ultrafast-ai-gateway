@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
-use tokio::sync::{mpsc, watch, Semaphore};
+use tokio::sync::{mpsc, watch, Notify, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 
 use super::payload;
@@ -37,9 +37,11 @@ pub const TRY_TIMEOUT: Duration = Duration::from_secs(10);
 pub const CHANNEL_CONCURRENCY: usize = 4;
 /// Deliveries to one channel that wait for a slot; more are dropped.
 pub const CHANNEL_BACKLOG: usize = 256;
-/// Deliveries started and not finished, over all channels. At this many the
-/// dispatcher stops taking jobs until one finishes, so a flood backs up into
-/// the queue, which drops what does not fit.
+/// Deliveries holding a channel slot (a try or a wait for a retry), over all
+/// channels. At this many the dispatcher stops taking jobs until one ends, so
+/// a flood backs up into the queue, which drops what does not fit. A delivery
+/// waiting at a channel's gate does not count: dead channels' backlogs must
+/// not hold up the jobs of healthy ones.
 pub const MAX_PENDING: usize = 1024;
 /// HTTP requests out at the same moment, over all channels.
 const SENDS_IN_FLIGHT: usize = 64;
@@ -54,6 +56,9 @@ pub struct DeliveryConfig {
     pub shutdown_cap: Duration,
     /// Jobs that may wait for the dispatcher.
     pub queue_capacity: usize,
+    /// Deliveries holding a channel slot, over all channels, at which the
+    /// dispatcher stops taking jobs (see [`MAX_PENDING`]).
+    pub max_pending: usize,
 }
 
 impl Default for DeliveryConfig {
@@ -65,6 +70,7 @@ impl Default for DeliveryConfig {
             timeout: TRY_TIMEOUT,
             shutdown_cap: Duration::from_secs(5),
             queue_capacity: QUEUE_CAPACITY,
+            max_pending: MAX_PENDING,
         }
     }
 }
@@ -156,6 +162,33 @@ struct Context {
     http: reqwest::Client,
     metrics: Arc<Metrics>,
     cfg: DeliveryConfig,
+    /// Deliveries that hold a channel slot now.
+    holding: Arc<AtomicUsize>,
+    /// Told when one of them ends.
+    released: Arc<Notify>,
+}
+
+/// A delivery's place among [`MAX_PENDING`]; ends with the delivery.
+struct Holding {
+    count: Arc<AtomicUsize>,
+    released: Arc<Notify>,
+}
+
+impl Holding {
+    fn begin(ctx: &Context) -> Self {
+        ctx.holding.fetch_add(1, Ordering::AcqRel);
+        Self {
+            count: ctx.holding.clone(),
+            released: ctx.released.clone(),
+        }
+    }
+}
+
+impl Drop for Holding {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
+        self.released.notify_waiters();
+    }
 }
 
 impl Deliverer {
@@ -184,6 +217,8 @@ impl Deliverer {
             http,
             metrics,
             cfg,
+            holding: Arc::default(),
+            released: Arc::default(),
         };
         (deliverer, tokio::spawn(run(ctx, rx, stop)))
     }
@@ -252,6 +287,23 @@ async fn stopped(stop: &mut watch::Receiver<bool>) {
     }
 }
 
+/// Waits until fewer than `max_pending` deliveries hold a channel slot (or
+/// `stop`).
+async fn below_limit(ctx: &Context, stop: &mut watch::Receiver<bool>) {
+    loop {
+        let released = ctx.released.notified();
+        tokio::pin!(released);
+        released.as_mut().enable();
+        if ctx.holding.load(Ordering::Acquire) < ctx.cfg.max_pending {
+            return;
+        }
+        tokio::select! {
+            () = &mut released => {}
+            () = stopped(stop) => return,
+        }
+    }
+}
+
 async fn run(ctx: Context, mut rx: mpsc::Receiver<Job>, mut stop: watch::Receiver<bool>) {
     let mut sends: JoinSet<()> = JoinSet::new();
     loop {
@@ -264,19 +316,15 @@ async fn run(ctx: Context, mut rx: mpsc::Receiver<Job>, mut stop: watch::Receive
         };
         start(&ctx, job, &mut sends).await;
         while sends.try_join_next().is_some() {}
-        // Too many in progress: take no more jobs until some finish.
-        while sends.len() >= MAX_PENDING {
-            tokio::select! {
-                _ = sends.join_next() => {}
-                () = stopped(&mut stop) => break,
-            }
-        }
+        // Too many in progress: take no more jobs until some end.
+        below_limit(&ctx, &mut stop).await;
     }
-    // What is queued still goes out, within the cap.
-    while let Ok(job) = rx.try_recv() {
-        start(&ctx, job, &mut sends).await;
-    }
+    // What is queued still goes out, and everything is waited for, all within
+    // the cap: the reads that start the queued jobs count against it too.
     let drained = tokio::time::timeout(ctx.cfg.shutdown_cap, async {
+        while let Ok(job) = rx.try_recv() {
+            start(&ctx, job, &mut sends).await;
+        }
         while sends.join_next().await.is_some() {}
     })
     .await;
@@ -377,6 +425,7 @@ async fn deliver(ctx: &Context, channel: &ChannelRow, event: &AlertEventRow) -> 
     let slot = gate.slots.acquire().await;
     gate.waiting.fetch_sub(1, Ordering::AcqRel);
     let _slot = slot.expect("the semaphore is never closed");
+    let _holding = Holding::begin(ctx);
 
     let body = payload(&channel.kind, event);
     let mut tries = 0;

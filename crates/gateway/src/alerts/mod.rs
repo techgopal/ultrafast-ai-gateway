@@ -13,7 +13,7 @@ pub mod sign;
 
 pub use deliver::{
     send_once, Attempt, Deliverer, DeliveryConfig, CHANNEL_BACKLOG, CHANNEL_CONCURRENCY,
-    QUEUE_CAPACITY, TRY_TIMEOUT,
+    MAX_PENDING, QUEUE_CAPACITY, TRY_TIMEOUT,
 };
 pub use engine::{EngineConfig, EngineHandle};
 
