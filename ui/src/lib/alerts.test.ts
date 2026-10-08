@@ -8,12 +8,14 @@ import {
   deliveryLine,
   deliverySummary,
   emptyRuleForm,
+  offeredOf,
   paramsOf,
   paramsOnFields,
   ruleChangesOf,
   ruleFormOf,
   ruleRequestOf,
   subjectText,
+  type Lists,
   type Offered,
   type RuleForm,
 } from "@/lib/alerts";
@@ -262,6 +264,28 @@ describe("the form of a rule", () => {
     const id = String(revoked?.id);
     const asked = form({ kind: "error_rate", scope: "key", subject: id });
     expect(ruleRequestOf(asked, narrow).params).toMatchObject({ subject: null });
+  });
+
+  test("offeredOf leaves a revoked key out and keeps the others", () => {
+    const revoked = fixtures.keyList.filter((key) => key.status === "revoked");
+    expect(revoked.length).toBeGreaterThan(0);
+    const lists: Lists = {
+      budgets: fixtures.budgetList,
+      routes: fixtures.routeList,
+      providers: fixtures.providerList,
+      keys: fixtures.keyList,
+      models: fixtures.modelList,
+      channels: fixtures.alertChannelList,
+    };
+    const result = offeredOf(lists);
+    for (const key of revoked) {
+      expect(result.keys).not.toContain(key.id);
+    }
+    expect(result.keys).toEqual(
+      fixtures.keyList.filter((key) => key.status !== "revoked").map((key) => key.id),
+    );
+    expect(result.keys.length).toBeGreaterThan(0);
+    expect(result.channels).toEqual(fixtures.alertChannelList.map((one) => one.id));
   });
 
   test("what the form did not touch is kept as the rule has it", () => {

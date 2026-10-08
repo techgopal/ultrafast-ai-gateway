@@ -698,7 +698,8 @@ describe("rules", () => {
     });
     await page();
     const dialog = await openEditRule("Chat errors");
-    expect(combo(dialog, "Key")).toHaveTextContent(`${revoked?.name ?? ""} (revoked) (not available)`);
+    expect(combo(dialog, "Key")).toHaveTextContent(`${revoked?.name ?? ""} (revoked)`);
+    expect(combo(dialog, "Key")).not.toHaveTextContent("(not available)");
     expect(await optionsOf(combo(dialog, "Key"))).not.toContain(revoked?.name);
     const name = within(dialog).getByLabelText("Name");
     await userEvent.clear(name);

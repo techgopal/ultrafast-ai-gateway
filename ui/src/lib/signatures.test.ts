@@ -44,27 +44,47 @@ describe("the Node example", () => {
 const python = spawnSync("python3", ["--version"]).status === 0;
 
 describe.skipIf(!python)("the Python example", () => {
-  function runPython(header: string, secret: string, now: number): number {
+  // The example runs in a namespace of its own that holds only what a
+  // receiver has (`header`, `raw_body`, `secret`, `reject`): its imports are
+  // its own. `time` is replaced in `sys.modules`, so an `import time` in the
+  // example gets the fixed clock and a missing one is a NameError.
+  function runPython(example: string, header: string, secret: string, now: number) {
     const program = [
-      "import time",
-      `time.time = lambda: ${String(now / 1000)}`,
-      "rejected = 0",
-      "def reject():",
-      "    global rejected",
-      "    rejected += 1",
-      `header = ${JSON.stringify(header)}`,
-      `secret = ${JSON.stringify(secret)}`,
-      `raw_body = ${JSON.stringify(BODY)}.encode()`,
-      PYTHON_EXAMPLE,
-      "print(rejected)",
+      "import sys, types, time as real_time",
+      "clock = types.ModuleType('time')",
+      "clock.__dict__.update(real_time.__dict__)",
+      `clock.time = lambda: ${String(now / 1000)}`,
+      "sys.modules['time'] = clock",
+      "rejected = []",
+      "namespace = {",
+      `    'header': ${JSON.stringify(header)},`,
+      `    'secret': ${JSON.stringify(secret)},`,
+      `    'raw_body': ${JSON.stringify(BODY)}.encode(),`,
+      "    'reject': lambda: rejected.append(1),",
+      "}",
+      `exec(compile(${JSON.stringify(example)}, 'example', 'exec'), namespace)`,
+      "print(len(rejected))",
     ].join("\n");
-    const run = spawnSync("python3", ["-c", program], { encoding: "utf8" });
+    return spawnSync("python3", ["-c", program], { encoding: "utf8" });
+  }
+  function rejections(header: string, secret: string, now: number): number {
+    const run = runPython(PYTHON_EXAMPLE, header, secret, now);
     expect(run.stderr).toBe("");
     return Number(run.stdout.trim());
   }
   test("accepts the known answer, and rejects what is wrong", () => {
-    expect(runPython(HEADER, SECRET, NOW_MS)).toBe(0);
-    expect(runPython(HEADER, "whsec_other", NOW_MS)).toBe(1);
-    expect(runPython(HEADER, SECRET, NOW_MS + 3_600_000)).toBe(1);
+    expect(rejections(HEADER, SECRET, NOW_MS)).toBe(0);
+    expect(rejections(HEADER, "whsec_other", NOW_MS)).toBe(1);
+    expect(rejections(HEADER, SECRET, NOW_MS + 3_600_000)).toBe(1);
+  });
+  test("an example that forgets an import fails here", () => {
+    const imports = ["hmac", "hashlib", "time"];
+    for (const name of imports) {
+      const kept = imports.filter((other) => other !== name).join(", ");
+      const broken = PYTHON_EXAMPLE.replace(/^import .*$/m, `import ${kept}`);
+      expect(broken).not.toBe(PYTHON_EXAMPLE);
+      const run = runPython(broken, HEADER, SECRET, NOW_MS);
+      expect(run.stderr, name).toContain("NameError");
+    }
   });
 });

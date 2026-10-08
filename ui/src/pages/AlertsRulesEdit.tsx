@@ -40,8 +40,9 @@ import {
   ruleChangesOf,
   ruleFormOf,
   ruleRequestOf,
+  offeredOf,
   SCOPES,
-  type Offered,
+  type Lists,
 } from "@/lib/alerts";
 
 type Rule = components["schemas"]["RuleView"];
@@ -70,7 +71,14 @@ interface ChooseProps {
   hint?: string;
   error?: string | undefined;
   /** What the rule has, when it is not among the choices: it is shown while it is untouched. */
-  stored?: { value: string; label: string } | undefined;
+  stored?: Stored | undefined;
+}
+
+/** What a rule has that is not offered: its label, and why it is not (default: not available). */
+interface Stored {
+  value: string;
+  label: string;
+  note?: string;
 }
 
 /** A select among the choices; the choice that leaves a parameter out is first. */
@@ -79,7 +87,7 @@ function Choose({ label, name, value: wanted, choices: offered, onChange, hint, 
   const choices =
     stored === undefined || wanted !== stored.value || offered.some((one) => one.value === wanted)
       ? offered
-      : [...offered, { value: stored.value, label: `${stored.label} (not available)` }];
+      : [...offered, { value: stored.value, label: `${stored.label} (${stored.note ?? "not available"})` }];
   const value = choices.some((one) => one.value === wanted) ? wanted : ANY;
   return (
     <Field label={label} name={name} error={error} hint={hint}>
@@ -99,27 +107,6 @@ function Choose({ label, name, value: wanted, choices: offered, onChange, hint, 
       )}
     </Field>
   );
-}
-
-/** What the form offers, read once from the lists. */
-interface Lists {
-  budgets: components["schemas"]["BudgetView"][];
-  routes: components["schemas"]["RouteView"][];
-  providers: components["schemas"]["ProviderView"][];
-  keys: components["schemas"]["KeyView"][];
-  models: components["schemas"]["ModelView"][];
-  channels: components["schemas"]["ChannelView"][];
-}
-
-function offeredOf(lists: Lists): Offered {
-  return {
-    budgets: lists.budgets.map((one) => one.id),
-    routes: lists.routes.map((one) => one.name),
-    providers: lists.providers.map((one) => one.name),
-    keys: lists.keys.filter((one) => one.status !== "revoked").map((one) => one.id),
-    models: lists.models.map((one) => ({ provider: one.provider_name, name: one.name })),
-    channels: lists.channels.map((one) => one.id),
-  };
 }
 
 interface FormProps {
@@ -170,12 +157,21 @@ function RuleFormBody({ rule, lists, create, update, onDone, onCancel }: FormPro
   const onSubmit = useSubmit(form);
 
   const was = rule === null ? null : ruleFormOf(rule);
-  const keyName = (id: string) => {
+  // A key the rule has that is not offered is either revoked (and says so) or gone.
+  const keyName = (id: string): { label: string; note?: string } => {
     const found = lists.keys.find((one) => String(one.id) === id);
-    return found === undefined ? `Key ${id}` : `${found.name} (revoked)`;
+    return found === undefined ? { label: `Key ${id}` } : { label: found.name, note: "revoked" };
   };
-  const storedOf = (value: string | undefined, label: (value: string) => string) =>
-    value === undefined || value === ANY ? undefined : { value, label: label(value) };
+  const storedOf = (
+    value: string | undefined,
+    label: (value: string) => string | { label: string; note?: string },
+  ): Stored | undefined => {
+    if (value === undefined || value === ANY) {
+      return undefined;
+    }
+    const described = label(value);
+    return typeof described === "string" ? { value, label: described } : { value, ...described };
+  };
   const budgetChoices: Choice[] = [
     { value: ANY, label: "Any budget" },
     ...lists.budgets.map((one) => ({ value: String(one.id), label: budgetName(one) })),
@@ -404,7 +400,7 @@ function RuleFormBody({ rule, lists, create, update, onDone, onCancel }: FormPro
                       ...lists.providers.map((one) => ({ value: one.name, label: one.name })),
                     ]}
                     onChange={field.handleChange}
-                    hint="Fires when the breaker of a target opens, and resolves when it closes."
+                    hint="Fires when the breaker of a target opens, and resolves after it has stayed closed for 5 minutes."
                     error={failure.fieldError(field.name)}
                   />
                 )}

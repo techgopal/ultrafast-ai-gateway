@@ -242,6 +242,28 @@ export interface Offered {
   channels: readonly number[];
 }
 
+/** What the form's lists hold, as the gateway sent them. */
+export interface Lists {
+  budgets: components["schemas"]["BudgetView"][];
+  routes: components["schemas"]["RouteView"][];
+  providers: components["schemas"]["ProviderView"][];
+  keys: components["schemas"]["KeyView"][];
+  models: components["schemas"]["ModelView"][];
+  channels: components["schemas"]["ChannelView"][];
+}
+
+/** What the form offers, read once from the lists: a revoked key is not offered. */
+export function offeredOf(lists: Lists): Offered {
+  return {
+    budgets: lists.budgets.map((one) => one.id),
+    routes: lists.routes.map((one) => one.name),
+    providers: lists.providers.map((one) => one.name),
+    keys: lists.keys.filter((one) => one.status !== "revoked").map((one) => one.id),
+    models: lists.models.map((one) => ({ provider: one.provider_name, name: one.name })),
+    channels: lists.channels.map((one) => one.id),
+  };
+}
+
 /** The percent a new rule of the kind starts with. */
 export const DEFAULT_PERCENT: Readonly<Record<string, string>> = {
   budget: "80",
