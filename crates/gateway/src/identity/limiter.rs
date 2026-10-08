@@ -19,6 +19,11 @@ pub const WINDOW: Duration = Duration::from_secs(15 * 60);
 pub const MAX_PER_EMAIL: usize = 5;
 /// Failures one address (an IPv6 /64) may have inside the window.
 pub const MAX_PER_ADDRESS: usize = 20;
+/// Starts of a single sign-on attempt one address (an IPv6 /64) may make
+/// inside the window. Counted apart from failures: any web page can make a
+/// visitor's browser start one, so starts must never use up the budget of
+/// password sign-in.
+pub const MAX_STARTS_PER_ADDRESS: usize = 60;
 /// The most names (an email with an address, or an address) kept at once.
 pub const MAX_ENTRIES: usize = 100_000;
 
@@ -73,6 +78,10 @@ fn pair_key(email: &str, addr: IpAddr) -> String {
 
 fn address_key(addr: IpAddr) -> String {
     format!("addr:{}", client_of(addr))
+}
+
+fn start_key(addr: IpAddr) -> String {
+    format!("start:{}", client_of(addr))
 }
 
 /// Drops the failures of one entry that left the window.
@@ -165,6 +174,21 @@ impl LoginLimiter {
         let mut failures = self.lock();
         let key = address_key(addr);
         if failures.count(&key, now) >= MAX_PER_ADDRESS {
+            return false;
+        }
+        failures.push(key, now, self.capacity);
+        true
+    }
+
+    /// Counts a start of a single sign-on attempt from this address in a
+    /// bucket of its own (`MAX_STARTS_PER_ADDRESS`), or refuses it. Nothing
+    /// here touches the failures `try_begin` and `try_begin_address` count,
+    /// so starts made by a hostile page cannot lock anyone out of password
+    /// sign-in. Starts are not given back.
+    pub fn try_begin_start(&self, addr: IpAddr, now: Instant) -> bool {
+        let mut failures = self.lock();
+        let key = start_key(addr);
+        if failures.count(&key, now) >= MAX_STARTS_PER_ADDRESS {
             return false;
         }
         failures.push(key, now, self.capacity);
@@ -327,6 +351,22 @@ mod tests {
         assert!(limiter.try_begin_address(addr(1), t0 + minutes(16)));
         // No pair name was made.
         assert_eq!(limiter.entries(), 2);
+    }
+
+    #[test]
+    fn starts_have_a_bucket_of_their_own() {
+        let limiter = LoginLimiter::new();
+        let t0 = Instant::now();
+        for n in 0..MAX_STARTS_PER_ADDRESS {
+            assert!(limiter.try_begin_start(addr(1), t0), "start {n}");
+        }
+        assert!(!limiter.try_begin_start(addr(1), t0));
+        assert!(limiter.try_begin_start(addr(2), t0));
+        // Password sign-in and callbacks from that address are not affected.
+        assert!(limiter.try_begin(EMAIL, addr(1), t0));
+        assert!(limiter.try_begin_address(addr(1), t0));
+        assert_eq!(limiter.count(&address_key(addr(1))), 2);
+        assert!(limiter.try_begin_start(addr(1), t0 + minutes(16)));
     }
 
     #[test]

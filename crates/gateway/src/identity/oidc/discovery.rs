@@ -395,8 +395,19 @@ impl Jwks {
     }
 
     async fn refresh(&self, state: &mut JwksState) -> Result<(), ExternalError> {
+        // Recorded only once the fetch has returned: a caller that goes away
+        // while it runs (and drops this future) leaves no failure behind, so
+        // it cannot lock the key set for a minute.
+        let fetched = self.fetch().await;
         state.attempted = Some(Instant::now());
-        state.failed = true;
+        state.failed = fetched.is_err();
+        let keys = fetched?;
+        state.keys = keys;
+        state.fetched = Some(Instant::now());
+        Ok(())
+    }
+
+    async fn fetch(&self) -> Result<Vec<SigKey>, ExternalError> {
         let doc = get_json(&self.http, &self.uri, None)
             .await
             .map_err(|m| ExternalError::Discovery(format!("key set: {m}")))?;
@@ -404,14 +415,11 @@ impl Jwks {
             .get("keys")
             .and_then(Value::as_array)
             .ok_or_else(|| ExternalError::Discovery("key set: no keys".to_string()))?;
-        state.keys = keys
+        Ok(keys
             .iter()
             .take(MAX_KEYS)
             .filter_map(SigKey::from_json)
-            .collect();
-        state.fetched = Some(Instant::now());
-        state.failed = false;
-        Ok(())
+            .collect())
     }
 }
 
@@ -675,9 +683,41 @@ mod tests {
         jwks.min_refetch = Duration::ZERO;
         assert!(jwks.find(Some("nope")).await.is_err());
         jwks.min_refetch = MIN_REFETCH;
+        // The key set is stale too, so only the record of the failed attempt
+        // keeps the provider from being asked again.
+        jwks.state.lock().await.fetched = Instant::now().checked_sub(CACHE_TTL * 2);
         for _ in 0..5 {
             assert!(jwks.find(Some("nope")).await.is_err());
+            assert!(jwks.find(Some("k1")).await.is_err());
         }
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_fetch_leaves_no_failure_behind() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"keys": [test_keys().rsa_jwk("k1")]})),
+            )
+            .mount(&server)
+            .await;
+        let jwks = jwks_for(&server);
+        // The caller gives up while the provider is slow.
+        let slow = tokio::time::timeout(Duration::from_millis(200), jwks.find(Some("k1"))).await;
+        assert!(slow.is_err(), "the fetch was meant to be slow");
+        {
+            let state = jwks.state.lock().await;
+            assert!(!state.failed && state.attempted.is_none());
+        }
+        // The next caller asks again at once and gets the keys.
+        jwks.find(Some("k1")).await.unwrap();
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 

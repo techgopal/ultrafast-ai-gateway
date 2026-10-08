@@ -95,19 +95,20 @@ fn code_of(error: &ExternalError) -> &'static str {
     }
 }
 
-/// A browser navigation: a GET without a CSRF header.
 #[utoipa::path(
     get,
     path = "/auth/oidc/start",
     tag = "auth",
     operation_id = "auth_oidc_start",
+    summary = "Start signing in with the identity provider",
+    description = "A browser navigation, not a call for a script: a GET that needs no session and no CSRF header. Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the limit the browser is sent to `/sign-in?sso_error=rate_limited` and a flow cookie already set is left alone.",
     params(
         ("return_to" = Option<String>, Query, description = "Where to send the browser after sign-in: a path inside the console that starts with a single `/`. Anything else means `/`."),
     ),
     responses(
         (
             status = 302,
-            description = "The browser is sent to the identity provider. The flow cookie `uf_oidc` (HttpOnly, SameSite=Lax, Path=/api/auth/oidc, 10 minutes) is set. Without a provider that can be reached, to `/sign-in?sso_error=config`.",
+            description = "The browser is sent to the identity provider. The flow cookie `uf_oidc` (HttpOnly, SameSite=Lax, Path=/api/auth/oidc, 10 minutes) is set. Without a provider that can be reached, to `/sign-in?sso_error=config`; over the start limit, to `/sign-in?sso_error=rate_limited` (no cookie is set).",
             headers(
                 ("Location" = String, description = "The identity provider's authorization address."),
                 ("Set-Cookie" = String, description = "The flow cookie `uf_oidc`."),
@@ -129,9 +130,10 @@ pub async fn oidc_start(
         ));
     };
     // A start may make the gateway fetch the provider's discovery document:
-    // limited per client address like the callback. A callback that signs
-    // in gives this attempt back too.
-    if !state.limiter.try_begin_address(addr, Instant::now()) {
+    // limited per client address, in a bucket of its own. Any web page can
+    // make a browser start one, so it must not use up the failures that
+    // password sign-in and callbacks are limited by.
+    if !state.limiter.try_begin_start(addr, Instant::now()) {
         tracing::info!(
             reason = "rate_limited",
             "single sign-on could not be started"
@@ -157,13 +159,13 @@ pub async fn oidc_start(
     }
 }
 
-/// A browser navigation: a GET without a CSRF header. Limited per client
-/// address like sign-in with a password.
 #[utoipa::path(
     get,
     path = "/auth/oidc/callback",
     tag = "auth",
     operation_id = "auth_oidc_callback",
+    summary = "Finish signing in with the identity provider",
+    description = "Where the identity provider sends the browser back: a GET that needs no session and no CSRF header, the flow cookie and `state` being what ties it to the start. Limited per client address with the same failure budget as password sign-in; over the limit the browser is sent to `/sign-in?sso_error=rate_limited`.",
     params(
         ("code" = Option<String>, Query, description = "The authorization code the identity provider made."),
         ("state" = Option<String>, Query, description = "The `state` of the attempt."),
@@ -245,8 +247,7 @@ async fn finish_sign_in(
         // Roles and statuses decide access; /v1 must see the change.
         let _ = refresh_snapshot(state).await;
     }
-    // This attempt, and the start of the sign-in it ends.
-    state.limiter.forgive(addr);
+    // This attempt.
     state.limiter.forgive(addr);
     Ok(Done {
         session,

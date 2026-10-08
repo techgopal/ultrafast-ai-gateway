@@ -78,6 +78,29 @@ struct Idp {
     issuer: String,
     /// What the token endpoint answers with, when set.
     id_token: Mutex<Option<String>>,
+    /// Instead of `id_token`: the token for each authorization code.
+    by_code: Mutex<HashMap<String, String>>,
+}
+
+/// Answers the token endpoint with the ID token of the code it was sent.
+struct ByCode(HashMap<String, String>);
+
+impl wiremock::Respond for ByCode {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let mut url = reqwest::Url::parse("http://form.invalid/").unwrap();
+        url.set_query(Some(&String::from_utf8_lossy(&request.body)));
+        let code = url
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.into_owned())
+            .unwrap_or_default();
+        match self.0.get(&code) {
+            Some(token) => ResponseTemplate::new(200).set_body_json(json!({
+                "id_token": token, "access_token": ACCESS_TOKEN, "token_type": "Bearer",
+            })),
+            None => ResponseTemplate::new(400),
+        }
+    }
 }
 
 impl Idp {
@@ -88,6 +111,7 @@ impl Idp {
             server,
             issuer,
             id_token: Mutex::new(None),
+            by_code: Mutex::new(HashMap::new()),
         };
         idp.mount().await;
         idp
@@ -118,8 +142,15 @@ impl Idp {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "keys": [jwk] })))
             .mount(&self.server)
             .await;
+        let by_code = self.by_code.lock().unwrap().clone();
         let token = self.id_token.lock().unwrap().clone();
-        if let Some(token) = token {
+        if !by_code.is_empty() {
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(ByCode(by_code))
+                .mount(&self.server)
+                .await;
+        } else if let Some(token) = token {
             Mock::given(method("POST"))
                 .and(path("/token"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -142,6 +173,25 @@ impl Idp {
     async fn token_for(&self, claims: &Value) {
         *self.id_token.lock().unwrap() = Some(self.sign(claims));
         self.mount().await;
+    }
+
+    /// The token endpoint answers each code with its own ID token.
+    async fn tokens_for_codes(&self, tokens: Vec<(&str, Value)>) {
+        *self.by_code.lock().unwrap() = tokens
+            .into_iter()
+            .map(|(code, claims)| (code.to_string(), self.sign(&claims)))
+            .collect();
+        self.mount().await;
+    }
+
+    async fn fetches(&self, request_path: &str) -> usize {
+        self.server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == request_path)
+            .count()
     }
 
     async fn token_requests(&self) -> usize {
@@ -175,6 +225,23 @@ fn claims(idp: &Idp, nonce: &str, sub: &str, email: &str, extra: Value) -> Value
 }
 
 // ------------------------------------------------------------- the driver
+
+/// What the driver needs of an organization.
+trait HasApp {
+    fn app(&self) -> &axum::Router;
+}
+
+impl HasApp for Org {
+    fn app(&self) -> &axum::Router {
+        &self.api.app
+    }
+}
+
+impl HasApp for common::Api {
+    fn app(&self) -> &axum::Router {
+        &self.app
+    }
+}
 
 async fn configure(org: &Org, idp: &Idp, extra: Value) {
     let mut body = json!({
@@ -282,7 +349,7 @@ struct Flow {
     location: String,
 }
 
-async fn begin(org: &Org, return_to: Option<&str>) -> (Answer, Option<Flow>) {
+async fn begin(org: &impl HasApp, return_to: Option<&str>) -> (Answer, Option<Flow>) {
     let path = match return_to {
         Some(r) => {
             let mut url = reqwest::Url::parse("http://x/api/auth/oidc/start").unwrap();
@@ -291,7 +358,7 @@ async fn begin(org: &Org, return_to: Option<&str>) -> (Answer, Option<Flow>) {
         }
         None => "/api/auth/oidc/start".to_string(),
     };
-    let (status, headers, _) = send(&org.api.app, "GET", &path, &[], None).await;
+    let (status, headers, _) = send(org.app(), "GET", &path, &[], None).await;
     let answer = Answer::of(status, &headers);
     if status != StatusCode::FOUND || answer.location.starts_with("/sign-in") {
         return (answer, None);
@@ -307,10 +374,10 @@ async fn begin(org: &Org, return_to: Option<&str>) -> (Answer, Option<Flow>) {
     (answer, Some(flow))
 }
 
-async fn callback(org: &Org, query: &str, cookie: Option<&str>) -> Answer {
+async fn callback(org: &impl HasApp, query: &str, cookie: Option<&str>) -> Answer {
     let headers: Vec<(&str, &str)> = cookie.map(|c| ("cookie", c)).into_iter().collect();
     let (status, headers, _) = send(
-        &org.api.app,
+        org.app(),
         "GET",
         &format!("/api/auth/oidc/callback?{query}"),
         &headers,
@@ -1301,9 +1368,21 @@ async fn a_token_without_a_groups_claim_leaves_the_role_alone() {
 }
 
 #[tokio::test]
-async fn starting_is_limited_per_client_address_and_a_sign_in_gives_it_back() {
+async fn starts_are_limited_apart_and_never_lock_out_passwords() {
     let (org, _idp) = world().await;
-    for _ in 0..20 {
+    // A hostile page makes a visitor's browser start sign-ins.
+    for _ in 0..25 {
+        let (answer, flow) = begin(&org, None).await;
+        assert!(flow.is_some(), "{answer:?}");
+    }
+    // Password sign-in from the same address still works, and so does a
+    // callback (a refused one is counted, but not for the starts' sake).
+    org.sign_in("lena").await;
+    callback(&org, "code=x&state=y", None)
+        .await
+        .assert_refused("state");
+    // The starts have a limit of their own.
+    for _ in 25..60 {
         let (answer, flow) = begin(&org, None).await;
         assert!(flow.is_some(), "{answer:?}");
     }
@@ -1313,8 +1392,145 @@ async fn starting_is_limited_per_client_address_and_a_sign_in_gives_it_back() {
     assert_eq!(answer.location, "/sign-in?sso_error=rate_limited");
     // An attempt under way keeps its cookie.
     assert!(answer.set_cookie("uf_oidc").is_none());
-    // The callback shares the address bucket.
+    org.sign_in("lena").await;
+}
+
+#[tokio::test]
+async fn a_successful_callback_gives_back_one_attempt_only() {
+    let (org, idp) = world().await;
+    // 19 refused callbacks: one below the limit of 20.
+    for _ in 0..19 {
+        callback(&org, "code=x&state=y", None)
+            .await
+            .assert_refused("state");
+    }
+    sign_in_as(&org, &idp, None, "sub-priya", &email_of("priya"), json!({}))
+        .await
+        .assert_signed_in("/");
+    // Its own attempt was given back and nothing more: 19 are still counted,
+    // so one more is allowed and the next is not.
+    callback(&org, "code=x&state=y", None)
+        .await
+        .assert_refused("state");
     callback(&org, "code=x&state=y", None)
         .await
         .assert_refused("rate_limited");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_admins_demoted_at_once_leave_one_on_a_file_database() {
+    // A file: a deferred transaction fails there when another commits
+    // between its read and its write; the callback takes the lock first.
+    let dir = tempfile::tempdir().unwrap();
+    let store = ultrafast_gateway::store::Store::open(&dir.path().join("gateway.db"))
+        .await
+        .unwrap();
+    let api =
+        common::api_tweaked(store, |s| s.public_url = Some(PUBLIC_URL.parse().unwrap())).await;
+    let ada = common::seed_user(&api.store, "ada@example.com", Role::Admin, ORG_PASSWORD).await;
+    let bob = common::seed_user(&api.store, "bob@example.com", Role::Admin, ORG_PASSWORD).await;
+    let idp = Idp::start().await;
+    let root = common::sign_in(&api.app, "ada@example.com", ORG_PASSWORD).await;
+    let (status, _, saved) = common::call(
+        &api.app,
+        "PUT",
+        "/api/settings/oidc",
+        Some(&root),
+        Some(json!({
+            "enabled": true, "issuer": idp.issuer, "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET, "admin_group": "gw-admins",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+
+    for round in 0..6 {
+        let mut tx = api.store.begin().await.unwrap();
+        tx.set_user_role(ada, Role::Admin).await.unwrap();
+        tx.set_user_role(bob, Role::Admin).await.unwrap();
+        tx.commit().await.unwrap();
+        let (_, fa) = begin(&api, None).await;
+        let (_, fb) = begin(&api, None).await;
+        let (fa, fb) = (fa.unwrap(), fb.unwrap());
+        idp.tokens_for_codes(vec![
+            (
+                "code-a",
+                claims(
+                    &idp,
+                    &fa.nonce,
+                    "sub-ada",
+                    "ada@example.com",
+                    json!({"groups": []}),
+                ),
+            ),
+            (
+                "code-b",
+                claims(
+                    &idp,
+                    &fb.nonce,
+                    "sub-bob",
+                    "bob@example.com",
+                    json!({"groups": []}),
+                ),
+            ),
+        ])
+        .await;
+        let (qa, qb) = (
+            format!("code=code-a&state={}", fa.state),
+            format!("code=code-b&state={}", fb.state),
+        );
+        let (a, b) = tokio::join!(
+            callback(&api, &qa, Some(&fa.cookie)),
+            callback(&api, &qb, Some(&fb.cookie)),
+        );
+        a.assert_signed_in("/");
+        b.assert_signed_in("/");
+        assert_eq!(
+            api.store.count_active_admins().await.unwrap(),
+            1,
+            "round {round}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn saving_the_settings_builds_a_provider_with_empty_caches() {
+    let (org, idp) = world().await;
+    let sign_in = |sub: &'static str| {
+        let (org, idp) = (&org, &idp);
+        async move {
+            let (_, flow) = begin(org, None).await;
+            let flow = flow.unwrap();
+            let discovery = idp.fetches("/.well-known/openid-configuration").await;
+            idp.token_for(&claims(
+                idp,
+                &flow.nonce,
+                sub,
+                &email_of("priya"),
+                json!({}),
+            ))
+            .await;
+            let answer = callback(
+                org,
+                &format!("code={CODE}&state={}", flow.state),
+                Some(&flow.cookie),
+            )
+            .await;
+            answer.assert_signed_in("/");
+            (discovery, idp.fetches("/jwks").await)
+        }
+    };
+    // Cold: discovery at the start, the key set at the callback.
+    assert_eq!(sign_in("sub-priya").await, (1, 1));
+    // Warm: both come from the caches (the mock's counts restart at each
+    // token, so these are the requests of this sign-in alone).
+    assert_eq!(sign_in("sub-priya").await, (0, 0));
+
+    let before = org.api.state.sign_in.load_full().unwrap();
+    configure(&org, &idp, json!({ "label": "Renamed" })).await;
+    let after = org.api.state.sign_in.load_full().unwrap();
+    assert!(!Arc::ptr_eq(&before, &after));
+    assert_eq!(after.label(), "Renamed");
+    // A new provider: nothing it knows is carried over.
+    assert_eq!(sign_in("sub-priya").await, (1, 1));
 }

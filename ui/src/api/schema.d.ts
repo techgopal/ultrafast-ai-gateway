@@ -224,8 +224,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * A browser navigation: a GET without a CSRF header. Limited per client
-         *     address like sign-in with a password.
+         * Finish signing in with the identity provider
+         * @description Where the identity provider sends the browser back: a GET that needs no session and no CSRF header, the flow cookie and `state` being what ties it to the start. Limited per client address with the same failure budget as password sign-in; over the limit the browser is sent to `/sign-in?sso_error=rate_limited`.
          */
         get: operations["auth_oidc_callback"];
         put?: never;
@@ -243,7 +243,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** A browser navigation: a GET without a CSRF header. */
+        /**
+         * Start signing in with the identity provider
+         * @description A browser navigation, not a call for a script: a GET that needs no session and no CSRF header. Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the limit the browser is sent to `/sign-in?sso_error=rate_limited` and a flow cookie already set is left alone.
+         */
         get: operations["auth_oidc_start"];
         put?: never;
         post?: never;
@@ -3538,7 +3541,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The browser is sent to the identity provider. The flow cookie `uf_oidc` (HttpOnly, SameSite=Lax, Path=/api/auth/oidc, 10 minutes) is set. Without a provider that can be reached, to `/sign-in?sso_error=config`. */
+            /** @description The browser is sent to the identity provider. The flow cookie `uf_oidc` (HttpOnly, SameSite=Lax, Path=/api/auth/oidc, 10 minutes) is set. Without a provider that can be reached, to `/sign-in?sso_error=config`; over the start limit, to `/sign-in?sso_error=rate_limited` (no cookie is set). */
             302: {
                 headers: {
                     /** @description The identity provider's authorization address. */
