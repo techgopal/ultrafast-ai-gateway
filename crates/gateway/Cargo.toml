@@ -11,6 +11,12 @@ description = "Ultrafast AI gateway"
 name = "ultrafast"
 path = "src/main.rs"
 
+[features]
+# Test scaffolding: lets `Store::open_in_memory` return a private schema of the
+# PostgreSQL database named by UF_TEST_DATABASE_URL. Switched on for the tests
+# by the self dev-dependency below; never in a release build.
+test-support = []
+
 [dependencies]
 ultrafast-translate = { path = "../translate" }
 anyhow.workspace = true
@@ -46,6 +52,7 @@ jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_
 base64 = "0.22"
 
 [dev-dependencies]
+ultrafast-gateway = { path = ".", features = ["test-support"] }
 aws-lc-rs = "1.18"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

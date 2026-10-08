@@ -13,6 +13,7 @@ mod models;
 mod portable;
 mod providers;
 mod routes;
+#[cfg(feature = "test-support")]
 mod scratch;
 mod sessions;
 mod settings;
@@ -190,6 +191,7 @@ pub struct Store {
     /// a list asks once and not once per row.
     teams_of_users_calls: Arc<AtomicU64>,
     /// Drops a test's private schema when the last clone goes away.
+    #[cfg(feature = "test-support")]
     scratch: Option<Arc<scratch::Schema>>,
 }
 
@@ -226,10 +228,12 @@ impl Store {
     /// One connection only: every in-memory connection is its own database,
     /// so that connection must never be reaped.
     ///
-    /// When `UF_TEST_DATABASE_URL` names a PostgreSQL database, this is a
+    /// With the `test-support` feature (the tests turn it on) and when
+    /// `UF_TEST_DATABASE_URL` names a PostgreSQL database, this is a
     /// fresh, private schema in it instead (dropped when the store goes
     /// away), so the whole test suite can run on either database.
     pub async fn open_in_memory() -> Result<Self> {
+        #[cfg(feature = "test-support")]
         if let Some(url) = scratch::test_database_url() {
             return scratch::open(&url).await;
         }
@@ -273,6 +277,7 @@ impl Store {
             dialect,
             dir,
             teams_of_users_calls: Arc::default(),
+            #[cfg(feature = "test-support")]
             scratch: None,
         };
         // So the planner has statistics for `request_logs` from the first
