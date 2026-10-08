@@ -68,6 +68,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/alerts/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["alerts_events_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/alerts/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["alerts_rules_list"];
+        put?: never;
+        post: operations["alerts_rules_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/alerts/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["alerts_rules_delete"];
+        options?: never;
+        head?: never;
+        patch: operations["alerts_rules_update"];
+        trace?: never;
+    };
     "/api/audit": {
         parameters: {
             query?: never;
@@ -790,6 +838,32 @@ export interface components {
         AddMemberRequest: {
             email: string;
         };
+        /**
+         * @description An alert channel: its name and kind only. Its URL and secret are never in
+         *     a file; a channel an import creates is off until its URL is set.
+         */
+        AlertChannelEntry: {
+            /** @description `webhook` or `slack`. */
+            kind: string;
+            name: string;
+        };
+        /**
+         * @description An alert rule. Its channels are named; a `budget` rule names its budget by
+         *     `{scope, name, period}` (or `null`: every budget) instead of an id.
+         */
+        AlertRuleEntry: {
+            /** @description Names of channels. */
+            channels?: string[];
+            enabled?: boolean;
+            /** @description `budget`, `error_rate` or `circuit_open`. */
+            kind: string;
+            name: string;
+            /**
+             * @description As the API takes them, except that a `budget` rule has
+             *     `{"budget": {"scope", "name", "period"} or null, "percent"}`.
+             */
+            params: Record<string, never>;
+        };
         /** @description Every error of `/api` has this shape. */
         ApiErrorBody: {
             error: components["schemas"]["ApiErrorDetail"];
@@ -906,6 +980,9 @@ export interface components {
         };
         /** @description The configuration file. `format` and `version` come first. */
         ConfigFile: {
+            /** @description Left out of the file when there are none. */
+            alert_channels?: components["schemas"]["AlertChannelEntry"][];
+            alert_rules?: components["schemas"]["AlertRuleEntry"][];
             budgets?: components["schemas"]["BudgetEntry"][];
             /** @description Always `ultrafast-config`. */
             format: string;
@@ -971,6 +1048,24 @@ export interface components {
             kind: string;
             name: string;
         };
+        CreateRuleRequest: {
+            /** @description The channels that are told, by id. */
+            channel_ids: number[];
+            /** @description On when left out. */
+            enabled?: boolean | null;
+            /** @description `budget`, `error_rate` or `circuit_open`. */
+            kind: string;
+            name: string;
+            /**
+             * @description By kind. `budget`: `{"budget_id": id or null, "percent": 1-100}`.
+             *     `error_rate`: `{"scope": "gateway"|"route"|"provider"|"key",
+             *     "subject": name or null, "percent": 1-100, "window_minutes": 5-60
+             *     (5), "min_requests": 1-100000 (20)}`. `circuit_open`:
+             *     `{"provider": name or null, "model": name or null}`. Unknown fields
+             *     are refused.
+             */
+            params: Record<string, never>;
+        };
         CreateTokenRequest: {
             expires_at?: string | null;
             name: string;
@@ -999,6 +1094,34 @@ export interface components {
             secret: string;
             token: components["schemas"]["TokenView"];
         };
+        EventList: {
+            events: components["schemas"]["EventView"][];
+        };
+        /** @description One notification, as `/api` shows it. Metadata only. */
+        EventView: {
+            /** @description UTC, `YYYY-MM-DD HH:MM:SS`. */
+            at: string;
+            /**
+             * @description One entry per channel once every delivery finished:
+             *     `{channel_id, channel_name, ok, status, tries, error}`. Empty before.
+             */
+            deliveries: Record<string, never>[];
+            /** @description What the alert is about, by kind. */
+            details: Record<string, never>;
+            /** Format: int64 */
+            id: number;
+            kind: string;
+            /**
+             * Format: int64
+             * @description `null` once the rule is deleted.
+             */
+            rule_id: number | null;
+            rule_name: string;
+            /** @description `firing`, `resolved` or `test`. */
+            state: string;
+            subject: string;
+            summary: string;
+        };
         FallbackView: {
             enabled: boolean;
             /** @description `provider_name/model_name`. */
@@ -1008,6 +1131,16 @@ export interface components {
              * @description Zero for a caller who is not an admin.
              */
             model_id: number;
+        };
+        /** @description A subject a rule is firing for. */
+        Firing: {
+            /** @description UTC, `YYYY-MM-DD HH:MM:SS`. */
+            since: string;
+            /**
+             * @description `budget:<id>:<period start>`, `route:<name>`, `provider:<name>`,
+             *     `key:<id>`, `gateway` or `target:<provider>/<model>`.
+             */
+            subject: string;
         };
         GrantEntry: {
             everyone?: boolean;
@@ -1065,7 +1198,10 @@ export interface components {
         Item: {
             /** @description For an update: the fields that change. Empty for a creation. */
             changes: string[];
-            /** @description `provider`, `team`, `model`, `route`, `limit`, `budget` or `settings`. */
+            /**
+             * @description `provider`, `team`, `model`, `route`, `limit`, `budget`, `alert_channel`,
+             *     `alert_rule` or `settings`.
+             */
             kind: string;
             name: string;
         };
@@ -1661,6 +1797,24 @@ export interface components {
         RoutingHealth: {
             targets: components["schemas"]["TargetHealth"][];
         };
+        RuleList: {
+            rules: components["schemas"]["RuleView"][];
+        };
+        /** @description A rule as `/api` shows it. */
+        RuleView: {
+            /** @description The channels it sends to. */
+            channels: components["schemas"]["ChannelRule"][];
+            created_at: string;
+            enabled: boolean;
+            /** @description What it is firing for now. */
+            firing: components["schemas"]["Firing"][];
+            /** Format: int64 */
+            id: number;
+            kind: string;
+            name: string;
+            /** @description The parameters with every default written out. */
+            params: Record<string, never>;
+        };
         SetBudgetRequest: {
             /** @description `block` or `alert`. */
             action: string;
@@ -1884,6 +2038,15 @@ export interface components {
             name?: string | null;
             role?: string | null;
             status?: string | null;
+        };
+        UpdateRuleRequest: {
+            channel_ids?: number[] | null;
+            enabled?: boolean | null;
+            /** @description Only the kind the rule has; it cannot change. */
+            kind?: string | null;
+            name?: string | null;
+            /** @description Replaces the parameters. What the rule is firing for is forgotten. */
+            params?: Record<string, never> | null;
         };
         UpdateSettingsRequest: {
             /**
@@ -2395,6 +2558,379 @@ export interface operations {
             };
             /** @description It does not exist. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    alerts_events_list: {
+        parameters: {
+            query?: {
+                /** @description Only the events of this rule. */
+                rule_id?: number;
+                /** @description `firing`, `resolved` or `test`. */
+                state?: string;
+                /** @description From 1 to 200; 50 when left out. */
+                limit?: number;
+                /** @description Only events older than this id: the next page. */
+                before_id?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Events, newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventList"];
+                };
+            };
+            /** @description The query is not valid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some query fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    alerts_rules_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every rule, by name, with what it is firing for. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleList"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    alerts_rules_create: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description The new rule. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `alert_rule_exists`: the name is taken. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    alerts_rules_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the rule. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rule is deleted; its events stay. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    alerts_rules_update: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the rule. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description The rule after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleView"];
+                };
+            };
+            /** @description The request is not of the expected form, or changes nothing. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `alert_rule_exists`: the name is taken. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

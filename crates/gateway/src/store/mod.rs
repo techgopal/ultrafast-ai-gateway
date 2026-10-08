@@ -30,7 +30,7 @@ use time::format_description::BorrowedFormatItem;
 use time::macros::format_description;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
-pub use alerts::{AlertEventRow, ChannelRow, NewAlertEvent};
+pub use alerts::{AlertEventRow, ChannelRow, NewAlertEvent, RuleRow, StateRow};
 pub use audit::{AuditEntry, AuditRow};
 pub use budgets::{BudgetRow, UsageRow};
 pub use keys::{parse_allowed, KeyRow, LiveKey};

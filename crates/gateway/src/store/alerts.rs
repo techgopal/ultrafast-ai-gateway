@@ -4,8 +4,8 @@
 use std::fmt;
 
 use anyhow::Result;
-use sqlx::sqlite::SqliteRow;
-use sqlx::Row;
+use sqlx::sqlite::{SqliteConnection, SqliteRow};
+use sqlx::{AssertSqlSafe, Row};
 
 use super::{now, write_error, Store, Tx, DEFAULT_ORG};
 
@@ -56,6 +56,85 @@ fn channel_from(r: &SqliteRow) -> ChannelRow {
         enabled: r.get("enabled"),
         created_at: r.get("created_at"),
     }
+}
+
+const RULE_SELECT: &str = "SELECT id, name, kind, params, enabled, created_at FROM alert_rules";
+
+/// A rule as stored. `params` is JSON, validated when it was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleRow {
+    pub id: i64,
+    pub name: String,
+    /// `budget`, `error_rate` or `circuit_open`.
+    pub kind: String,
+    pub params: String,
+    pub enabled: bool,
+    pub created_at: String,
+    /// The channels it sends to, by id.
+    pub channel_ids: Vec<i64>,
+}
+
+/// A subject a rule is firing for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateRow {
+    pub rule_id: i64,
+    pub subject: String,
+    /// UTC, `YYYY-MM-DD HH:MM:SS`.
+    pub since: String,
+}
+
+fn rule_from(r: &SqliteRow) -> RuleRow {
+    RuleRow {
+        id: r.get("id"),
+        name: r.get("name"),
+        kind: r.get("kind"),
+        params: r.get("params"),
+        enabled: r.get("enabled"),
+        created_at: r.get("created_at"),
+        channel_ids: Vec::new(),
+    }
+}
+
+/// Every rule by name, with its channels, on any connection.
+pub(super) async fn list_alert_rules_in(conn: &mut SqliteConnection) -> Result<Vec<RuleRow>> {
+    let sql = format!("{RULE_SELECT} WHERE org_id = ? ORDER BY name");
+    let mut rules: Vec<RuleRow> = sqlx::query(AssertSqlSafe(sql))
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?
+        .iter()
+        .map(rule_from)
+        .collect();
+    let links = sqlx::query(
+        "SELECT l.rule_id, l.channel_id FROM alert_rule_channels l
+         JOIN alert_rules r ON r.id = l.rule_id
+         WHERE r.org_id = ? ORDER BY l.channel_id",
+    )
+    .bind(DEFAULT_ORG)
+    .fetch_all(&mut *conn)
+    .await?;
+    for link in &links {
+        let (rule_id, channel_id): (i64, i64) = (link.get(0), link.get(1));
+        if let Some(rule) = rules.iter_mut().find(|r| r.id == rule_id) {
+            rule.channel_ids.push(channel_id);
+        }
+    }
+    Ok(rules)
+}
+
+/// `(id, name, kind)` of every channel: no URL and no secret, not even encrypted.
+pub(super) async fn list_channel_names_in(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<(i64, String, String)>> {
+    let rows =
+        sqlx::query("SELECT id, name, kind FROM alert_channels WHERE org_id = ? ORDER BY name")
+            .bind(DEFAULT_ORG)
+            .fetch_all(conn)
+            .await?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2)))
+        .collect())
 }
 
 /// An event to store. `details` is JSON and holds metadata only.
@@ -193,6 +272,146 @@ impl Tx<'_> {
         Ok(r.rows_affected() == 1)
     }
 
+    /// A taken name is `StoreError::Duplicate`.
+    pub async fn insert_alert_rule(
+        &mut self,
+        name: &str,
+        kind: &str,
+        params: &str,
+        enabled: bool,
+    ) -> Result<i64> {
+        let r = sqlx::query(
+            "INSERT INTO alert_rules (org_id, name, kind, params, enabled, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(DEFAULT_ORG)
+        .bind(name)
+        .bind(kind)
+        .bind(params)
+        .bind(enabled)
+        .bind(now())
+        .execute(self.conn())
+        .await
+        .map_err(write_error)?;
+        Ok(r.last_insert_rowid())
+    }
+
+    /// Changes what is given. A taken name is `StoreError::Duplicate`;
+    /// `false`: no such rule.
+    pub async fn update_alert_rule(
+        &mut self,
+        id: i64,
+        name: Option<&str>,
+        params: Option<&str>,
+        enabled: Option<bool>,
+    ) -> Result<bool> {
+        let r = sqlx::query(
+            "UPDATE alert_rules
+             SET name = COALESCE(?, name),
+                 params = COALESCE(?, params),
+                 enabled = COALESCE(?, enabled)
+             WHERE id = ? AND org_id = ?",
+        )
+        .bind(name)
+        .bind(params)
+        .bind(enabled)
+        .bind(id)
+        .bind(DEFAULT_ORG)
+        .execute(self.conn())
+        .await
+        .map_err(write_error)?;
+        Ok(r.rows_affected() == 1)
+    }
+
+    /// Replaces the channels a rule sends to.
+    pub async fn set_alert_rule_channels(
+        &mut self,
+        rule_id: i64,
+        channel_ids: &[i64],
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM alert_rule_channels WHERE rule_id = ?")
+            .bind(rule_id)
+            .execute(self.conn())
+            .await?;
+        for channel_id in channel_ids {
+            sqlx::query(
+                "INSERT OR IGNORE INTO alert_rule_channels (rule_id, channel_id) VALUES (?, ?)",
+            )
+            .bind(rule_id)
+            .bind(channel_id)
+            .execute(self.conn())
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Its links, states and channels' links go with it; its events stay.
+    pub async fn delete_alert_rule(&mut self, id: i64) -> Result<bool> {
+        let r = sqlx::query("DELETE FROM alert_rules WHERE id = ? AND org_id = ?")
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
+    /// Forgets every subject a rule is firing for.
+    pub async fn clear_alert_states(&mut self, rule_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM alert_state WHERE rule_id = ?")
+            .bind(rule_id)
+            .execute(self.conn())
+            .await?;
+        Ok(())
+    }
+
+    pub async fn upsert_alert_state(
+        &mut self,
+        rule_id: i64,
+        subject: &str,
+        since: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO alert_state (rule_id, subject, firing, since) VALUES (?, ?, 1, ?)
+             ON CONFLICT (rule_id, subject) DO UPDATE SET firing = 1, since = excluded.since",
+        )
+        .bind(rule_id)
+        .bind(subject)
+        .bind(since)
+        .execute(self.conn())
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_alert_state(&mut self, rule_id: i64, subject: &str) -> Result<()> {
+        sqlx::query("DELETE FROM alert_state WHERE rule_id = ? AND subject = ?")
+            .bind(rule_id)
+            .bind(subject)
+            .execute(self.conn())
+            .await?;
+        Ok(())
+    }
+
+    /// Forgets the subjects of a rule that start with `prefix`, except `keep`:
+    /// the periods of a budget that are over.
+    pub async fn delete_alert_states_except(
+        &mut self,
+        rule_id: i64,
+        prefix: &str,
+        keep: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM alert_state
+             WHERE rule_id = ? AND substr(subject, 1, length(?)) = ? AND subject <> ?",
+        )
+        .bind(rule_id)
+        .bind(prefix)
+        .bind(prefix)
+        .bind(keep)
+        .execute(self.conn())
+        .await?;
+        Ok(())
+    }
+
     pub async fn insert_alert_event(&mut self, e: NewAlertEvent<'_>) -> Result<i64> {
         let r = sqlx::query(
             "INSERT INTO alert_events
@@ -261,6 +480,82 @@ impl Store {
             .fetch_optional(self.pool())
             .await?;
         Ok(row.as_ref().map(event_from))
+    }
+
+    /// Every rule by name, with the channels it sends to.
+    pub async fn list_alert_rules(&self) -> Result<Vec<RuleRow>> {
+        let mut conn = self.pool().acquire().await?;
+        list_alert_rules_in(&mut conn).await
+    }
+
+    pub async fn alert_rule_by_id(&self, id: i64) -> Result<Option<RuleRow>> {
+        Ok(self
+            .list_alert_rules()
+            .await?
+            .into_iter()
+            .find(|r| r.id == id))
+    }
+
+    /// What rules are firing for, by rule then subject.
+    pub async fn alert_states(&self) -> Result<Vec<StateRow>> {
+        let rows = sqlx::query(
+            "SELECT s.rule_id, s.subject, s.since FROM alert_state s
+             JOIN alert_rules r ON r.id = s.rule_id
+             WHERE r.org_id = ? AND s.firing = 1 ORDER BY s.rule_id, s.subject",
+        )
+        .bind(DEFAULT_ORG)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| StateRow {
+                rule_id: r.get(0),
+                subject: r.get(1),
+                since: r.get(2),
+            })
+            .collect())
+    }
+
+    /// The enabled channels a rule sends to.
+    pub async fn enabled_channel_ids_of_rule(&self, rule_id: i64) -> Result<Vec<i64>> {
+        let rows = sqlx::query(
+            "SELECT c.id FROM alert_rule_channels l
+             JOIN alert_channels c ON c.id = l.channel_id
+             WHERE l.rule_id = ? AND c.enabled = 1 ORDER BY c.id",
+        )
+        .bind(rule_id)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
+    /// Newest first, at most `limit`, those before `before_id` when given.
+    pub async fn alert_events_page(
+        &self,
+        rule_id: Option<i64>,
+        state: Option<&str>,
+        before_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<AlertEventRow>> {
+        let sql = format!(
+            "{EVENT_SELECT} WHERE org_id = ?
+               AND (? IS NULL OR rule_id = ?)
+               AND (? IS NULL OR state = ?)
+               AND (? IS NULL OR id < ?)
+             ORDER BY id DESC LIMIT ?"
+        );
+        let rows = sqlx::query(AssertSqlSafe(sql))
+            .bind(DEFAULT_ORG)
+            .bind(rule_id)
+            .bind(rule_id)
+            .bind(state)
+            .bind(state)
+            .bind(before_id)
+            .bind(before_id)
+            .bind(limit)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.iter().map(event_from).collect())
     }
 
     /// Newest first.
@@ -520,5 +815,72 @@ mod tests {
         // The old rule's event stays, tied to no rule, with its name.
         let e = s.alert_event(event).await.unwrap().unwrap();
         assert_eq!((e.rule_id, e.rule_name.as_str()), (None, "old"));
+    }
+
+    #[tokio::test]
+    async fn rules_keep_their_channels_states_and_names() {
+        let s = Store::open_in_memory().await.unwrap();
+        let c = cipher();
+        let a = add(&s, &c, "a").await;
+        let b = add(&s, &c, "b").await;
+        let mut tx = s.begin().await.unwrap();
+        let rule = tx
+            .insert_alert_rule("r", "circuit_open", "{}", true)
+            .await
+            .unwrap();
+        tx.set_alert_rule_channels(rule, &[b, a, a]).await.unwrap();
+        let err = tx
+            .insert_alert_rule("r", "circuit_open", "{}", true)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<StoreError>(),
+            Some(StoreError::Duplicate)
+        ));
+        drop(tx);
+        let mut tx = s.begin().await.unwrap();
+        let rule = tx
+            .insert_alert_rule("r", "circuit_open", "{}", true)
+            .await
+            .unwrap();
+        tx.set_alert_rule_channels(rule, &[b, a, a]).await.unwrap();
+        tx.upsert_alert_state(rule, "budget:1:2999-01-01", "2999-01-01 00:00:00")
+            .await
+            .unwrap();
+        tx.upsert_alert_state(rule, "budget:1:2999-02-01", "2999-02-01 00:00:00")
+            .await
+            .unwrap();
+        tx.upsert_alert_state(rule, "budget:2:2999-01-01", "2999-01-01 00:00:00")
+            .await
+            .unwrap();
+        tx.delete_alert_states_except(rule, "budget:1:", "budget:1:2999-02-01")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let row = s.alert_rule_by_id(rule).await.unwrap().unwrap();
+        assert_eq!(row.channel_ids, [a, b], "a link once, by channel id");
+        let subjects: Vec<_> = s
+            .alert_states()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.subject)
+            .collect();
+        assert_eq!(subjects, ["budget:1:2999-02-01", "budget:2:2999-01-01"]);
+        assert_eq!(s.enabled_channel_ids_of_rule(rule).await.unwrap(), [a, b]);
+        let mut tx = s.begin().await.unwrap();
+        assert!(tx
+            .update_alert_channel(a, None, None, Some(false))
+            .await
+            .unwrap());
+        tx.commit().await.unwrap();
+        assert_eq!(s.enabled_channel_ids_of_rule(rule).await.unwrap(), [b]);
+        // Deleting a channel unlinks it; deleting the rule drops its states.
+        let mut tx = s.begin().await.unwrap();
+        tx.delete_alert_channel(b).await.unwrap();
+        assert!(tx.delete_alert_rule(rule).await.unwrap());
+        tx.commit().await.unwrap();
+        assert!(s.alert_rule_by_id(rule).await.unwrap().is_none());
+        assert!(s.alert_states().await.unwrap().is_empty());
     }
 }

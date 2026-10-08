@@ -77,6 +77,9 @@ pub struct AppState {
     pub otel: Option<crate::otel::Exporter>,
     /// Delivers alert events to their channels. `None`: no delivery.
     pub alerts: Option<crate::alerts::Deliverer>,
+    /// Decides when an alert fires; fed by calls, budgets and breakers.
+    /// `None`: no alert rule is evaluated.
+    pub alert_engine: Option<crate::alerts::EngineHandle>,
     /// The bearer token of `/metrics`. None: the path does not exist.
     pub metrics_token: Option<String>,
     /// The one-time code that `POST /api/setup` needs, made when the
@@ -112,6 +115,7 @@ impl AppState {
             metrics: Arc::new(Metrics::new()),
             otel: None,
             alerts: None,
+            alert_engine: None,
             metrics_token: None,
             refreshes: AtomicU64::new(0),
             cache_fingerprint: std::sync::Mutex::new(snapshot_fingerprint),

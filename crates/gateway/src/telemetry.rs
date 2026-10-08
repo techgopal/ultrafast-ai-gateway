@@ -9,6 +9,8 @@ use std::time::Instant;
 
 use ultrafast_translate::types::Usage;
 
+use crate::alerts::errors_window::Sample;
+use crate::alerts::EngineHandle;
 use crate::limits::Permit;
 use crate::metrics::Metrics;
 use crate::otel::{Exporter, TraceParent};
@@ -121,6 +123,8 @@ pub struct Scope {
     streamed_chars: u64,
     /// Where a copy of the record goes to become a trace, when enabled.
     otel: Option<Exporter>,
+    /// Counts the call toward error rates, when alert rules exist.
+    alerts: Option<EngineHandle>,
 }
 
 impl Scope {
@@ -140,6 +144,7 @@ impl Scope {
             stream_input: None,
             streamed_chars: 0,
             otel: None,
+            alerts: None,
             record: Some(RequestRecord {
                 key_id,
                 user_id,
@@ -170,6 +175,11 @@ impl Scope {
     /// The call is exported as a trace by `exporter` when it is recorded.
     pub fn traced(&mut self, exporter: Option<Exporter>) {
         self.otel = exporter;
+    }
+
+    /// The call is counted toward error rates by `engine` when it is recorded.
+    pub fn watched(&mut self, engine: Option<EngineHandle>) {
+        self.alerts = engine;
     }
 
     /// The `traceparent` the caller sent: the call's trace continues it.
@@ -399,10 +409,41 @@ impl Scope {
             if let Some(otel) = &self.otel {
                 otel.offer(&record);
             }
+            if let Some(engine) = &self.alerts {
+                if let Some(sample) = alert_sample(&record) {
+                    engine.observe(&sample);
+                }
+            }
             self.sink.record(record);
         }
         self.permit = None;
     }
+}
+
+/// How a finished call counts toward error rates: `None` for a caller that
+/// went away (it says nothing about the gateway). It is an error when the
+/// caller was answered with a server error (5xx), or with a 429 that the
+/// provider gave (the last attempt that reached a provider answered 429); a
+/// 429 of the gateway's own limits and budgets, and any other 4xx, are the
+/// caller's.
+pub fn alert_sample(record: &RequestRecord) -> Option<Sample<'_>> {
+    if record.status == CALLER_GONE {
+        return None;
+    }
+    let last = record.attempts.iter().rev().find(|a| {
+        !matches!(
+            a.outcome,
+            AttemptOutcome::Skipped | AttemptOutcome::Cached | AttemptOutcome::CircuitOpen
+        )
+    });
+    let error = record.status >= 500
+        || (record.status == 429 && last.is_some_and(|a| a.status == Some(429)));
+    Some(Sample {
+        route: &record.requested,
+        provider: last.map(|a| a.provider.as_str()),
+        key_id: record.key_id,
+        error,
+    })
 }
 
 impl Drop for Scope {
@@ -436,6 +477,91 @@ mod tests {
 
     fn scope(sink: &Arc<Mem>) -> Scope {
         Scope::begin(sink.clone(), Some(7), Some(1), None, "chat")
+    }
+
+    fn attempt(provider: &str, outcome: AttemptOutcome, status: Option<u16>) -> Attempt {
+        Attempt {
+            provider: provider.into(),
+            model: "m".into(),
+            outcome,
+            status,
+            duration_ms: 1,
+            offset_ms: 0,
+        }
+    }
+
+    fn finished(status: u16, attempts: Vec<Attempt>) -> RequestRecord {
+        let sink = Arc::new(Mem::default());
+        let mut s = scope(&sink);
+        s.requested("r", false);
+        for a in attempts {
+            s.attempt(&a.provider, &a.model, a.outcome, a.status, Instant::now());
+        }
+        s.finish(status);
+        let record = sink.0.lock().unwrap().remove(0);
+        record
+    }
+
+    #[test]
+    fn what_counts_as_an_error_for_alerts() {
+        let sample = |r: &RequestRecord| alert_sample(r).map(|s| s.error);
+        // Server errors are errors.
+        for status in [500, 502, 503, 504] {
+            let r = finished(
+                status,
+                vec![attempt("p", AttemptOutcome::Retryable, Some(500))],
+            );
+            assert_eq!(sample(&r), Some(true), "{status}");
+        }
+        // A 429 the provider gave is one; the gateway's own 429 is not.
+        let r = finished(
+            429,
+            vec![attempt("p", AttemptOutcome::Retryable, Some(429))],
+        );
+        assert_eq!(sample(&r), Some(true));
+        assert_eq!(alert_sample(&r).unwrap().provider, Some("p"));
+        let r = finished(429, vec![]);
+        assert_eq!(
+            sample(&r),
+            Some(false),
+            "a rate limit or budget of the gateway"
+        );
+        let r = finished(
+            429,
+            vec![
+                attempt("p", AttemptOutcome::Retryable, Some(503)),
+                attempt("q", AttemptOutcome::Skipped, None),
+            ],
+        );
+        assert_eq!(
+            sample(&r),
+            Some(false),
+            "the last call to a provider was not a 429"
+        );
+        // The caller's mistakes and successes are not.
+        for status in [200, 400, 401, 403, 404, 413, 422] {
+            let r = finished(status, vec![attempt("p", AttemptOutcome::Ok, Some(200))]);
+            assert_eq!(sample(&r), Some(false), "{status}");
+        }
+        // A caller that went away is not counted at all.
+        assert!(alert_sample(&finished(CALLER_GONE, vec![])).is_none());
+    }
+
+    #[test]
+    fn the_provider_is_that_of_the_last_attempt_that_reached_one() {
+        let r = finished(
+            503,
+            vec![
+                attempt("a", AttemptOutcome::Retryable, Some(500)),
+                attempt("b", AttemptOutcome::Retryable, Some(503)),
+                attempt("c", AttemptOutcome::CircuitOpen, None),
+            ],
+        );
+        assert_eq!(alert_sample(&r).unwrap().provider, Some("b"));
+        let r = finished(200, vec![attempt("a", AttemptOutcome::Cached, None)]);
+        assert_eq!(alert_sample(&r).unwrap().provider, None);
+        assert_eq!(alert_sample(&r).unwrap().key_id, Some(7));
+        assert_eq!(alert_sample(&r).unwrap().route, "r");
     }
 
     #[test]

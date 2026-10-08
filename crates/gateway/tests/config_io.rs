@@ -421,9 +421,17 @@ fn file_of(value: Value) -> ConfigFile {
 }
 
 fn actor() -> Actor<'static> {
+    static CIPHER: std::sync::OnceLock<ultrafast_gateway::secrets::Cipher> =
+        std::sync::OnceLock::new();
     Actor {
         user_id: None,
         email: "cli",
+        cipher: Some(CIPHER.get_or_init(|| {
+            ultrafast_gateway::secrets::Cipher::from_hex(
+                &ultrafast_gateway::secrets::Cipher::generate_master_hex(),
+            )
+            .unwrap()
+        })),
     }
 }
 

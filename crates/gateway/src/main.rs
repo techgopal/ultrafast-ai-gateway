@@ -378,6 +378,7 @@ async fn config_command(data_dir: &Path, command: ConfigCommand) -> Result<()> {
             let actor = portable::Actor {
                 user_id: None,
                 email: "cli",
+                cipher: None,
             };
             let report = portable::import(&store, &parsed, &actor, dry_run).await?;
             println!("{}", report.describe(dry_run));
@@ -510,7 +511,15 @@ async fn main() -> Result<()> {
                 ultrafast_gateway::alerts::DeliveryConfig::default(),
                 stopped.clone(),
             );
+            let (engine, engine_task) = ultrafast_gateway::alerts::engine::spawn(
+                state.store.clone(),
+                Some(deliverer.clone()),
+                ultrafast_gateway::alerts::EngineConfig::default(),
+                stopped.clone(),
+            );
+            state.health.watch(engine.health_sender());
             state.alerts = Some(deliverer);
+            state.alert_engine = Some(engine);
             let state = Arc::new(state);
             // Before the listener is bound, so the first call is already
             // counted against what was spent before the restart.
@@ -550,6 +559,7 @@ async fn main() -> Result<()> {
             if let Some(task) = otel_task {
                 let _ = task.await;
             }
+            let _ = engine_task.await;
             // Deliveries in progress get 5 seconds to finish.
             let _ = alert_task.await;
             // After the writer: what it counted while draining is written too.

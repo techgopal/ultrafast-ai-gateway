@@ -109,6 +109,9 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(alerts::update, alerts::delete))
         .routes(routes!(alerts::rotate_secret))
         .routes(routes!(alerts::test))
+        .routes(routes!(alerts::rules_list, alerts::rules_create))
+        .routes(routes!(alerts::rules_update, alerts::rules_delete))
+        .routes(routes!(alerts::events_list))
 }
 
 pub fn router() -> Router<Arc<AppState>> {

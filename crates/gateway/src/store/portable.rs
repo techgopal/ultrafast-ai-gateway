@@ -28,6 +28,9 @@ pub struct ConfigState {
     pub budgets: Vec<BudgetRow>,
     pub log_retention_days: i64,
     pub session_hours: i64,
+    /// `(id, name, kind)`: never a URL or a secret.
+    pub alert_channels: Vec<(i64, String, String)>,
+    pub alert_rules: Vec<super::alerts::RuleRow>,
 }
 
 async fn read(conn: &mut SqliteConnection) -> Result<ConfigState> {
@@ -55,6 +58,8 @@ async fn read(conn: &mut SqliteConnection) -> Result<ConfigState> {
     let budgets = budgets::list_budgets_in(conn).await?;
     let log_retention_days = settings::log_retention_days_in(conn).await?;
     let session_hours = settings::session_hours_in(conn).await?;
+    let alert_channels = super::alerts::list_channel_names_in(conn).await?;
+    let alert_rules = super::alerts::list_alert_rules_in(conn).await?;
     Ok(ConfigState {
         providers,
         models,
@@ -68,6 +73,8 @@ async fn read(conn: &mut SqliteConnection) -> Result<ConfigState> {
         budgets,
         log_retention_days,
         session_hours,
+        alert_channels,
+        alert_rules,
     })
 }
 

@@ -514,6 +514,18 @@ pub async fn flush(state: &AppState) {
         state.budgets.requeue(drained);
         return;
     }
+    // Tell the alert rules what was spent; they decide whether a threshold
+    // was reached. Only after the counters are safe in the database.
+    if let Some(engine) = &state.alert_engine {
+        if !drained.usage.is_empty() {
+            let budgets = state.snapshot.load().all_budgets();
+            for row in &drained.usage {
+                if let Some(budget) = budgets.iter().find(|b| b.id == row.budget_id) {
+                    engine.spend(budget.clone(), row.period_start.clone(), row.spent_micros);
+                }
+            }
+        }
+    }
     for alert in drained.alerts {
         let written = state
             .store

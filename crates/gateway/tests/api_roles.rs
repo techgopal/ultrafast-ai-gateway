@@ -60,6 +60,8 @@ struct World {
     route: i64,
     /// An alert channel that posts to `_upstream`.
     channel: i64,
+    /// An alert rule with no channel.
+    rule: i64,
     /// Keeps `syncable` answering.
     _upstream: MockServer,
     /// Owned by lena, in Platform.
@@ -174,6 +176,10 @@ async fn world() -> World {
         )
         .await
         .unwrap();
+    let rule = tx
+        .insert_alert_rule("table", "circuit_open", "{}", true)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     org.api.state.refresh().await.unwrap();
 
@@ -239,6 +245,7 @@ async fn world() -> World {
         model,
         route,
         channel,
+        rule,
         _upstream: upstream,
         lena_key,
         tomas_key,
@@ -503,6 +510,19 @@ fn table() -> Vec<Row> {
         row(70, "POST", "/api/alerts/channels/{id}/test", "",
             |w, _| format!("/api/alerts/channels/{}/test", w.channel), no_body,
             [200, 403, 403, 401]),
+        row(71, "GET", "/api/alerts/rules", "", |_, _| "/api/alerts/rules".into(), no_body,
+            [200, 403, 403, 401]),
+        row(72, "POST", "/api/alerts/rules", "", |_, _| "/api/alerts/rules".into(),
+            || Some(json!({ "name": "errors", "kind": "error_rate",
+                            "params": { "scope": "gateway", "percent": 10 }, "channel_ids": [] })),
+            [201, 403, 403, 401]),
+        row(73, "PATCH", "/api/alerts/rules/{id}", "", |w, _| format!("/api/alerts/rules/{}", w.rule),
+            || Some(json!({ "enabled": false })),
+            [200, 403, 403, 401]),
+        row(74, "DELETE", "/api/alerts/rules/{id}", "", |w, _| format!("/api/alerts/rules/{}", w.rule), no_body,
+            [204, 403, 403, 401]),
+        row(75, "GET", "/api/alerts/events", "", |_, _| "/api/alerts/events".into(), no_body,
+            [200, 403, 403, 401]),
     ]
 }
 
@@ -575,7 +595,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=70).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=75).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -701,7 +721,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 67);
+    assert_eq!(operations, 72);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

@@ -4,13 +4,14 @@
 //! default keeps it in memory.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 use utoipa::ToSchema;
 
-use super::breaker::{Breaker, BreakerSettings, TargetState};
+use super::breaker::{Breaker, BreakerSettings, TargetState, Transition};
 use super::TargetRef;
 
 /// The health of one target, as `GET /api/routing/health` shows it.
@@ -31,7 +32,19 @@ pub struct TargetHealth {
     pub last_status: Option<u16>,
 }
 
+/// A breaker of a target changed in a way alerts care about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HealthEvent {
+    Opened { provider: String, model: String },
+    Closed { provider: String, model: String },
+}
+
 pub trait HealthStore: Send + Sync {
+    /// Sends every [`HealthEvent`] to `events` from now on. Set once at
+    /// start; a full channel drops the event (a report never waits). The
+    /// default store that keeps nothing to tell ignores it.
+    fn watch(&self, _events: mpsc::Sender<HealthEvent>) {}
+
     /// Whether a call may go to the target. When the breaker is half open
     /// this takes its one trial, so it is followed by a `report`.
     fn allow(&self, t: &TargetRef, now: Instant, s: &BreakerSettings) -> bool;
@@ -59,6 +72,7 @@ pub trait HealthStore: Send + Sync {
 #[derive(Default)]
 pub struct InMemoryHealth {
     targets: Mutex<HashMap<(String, String), Breaker>>,
+    events: OnceLock<mpsc::Sender<HealthEvent>>,
 }
 
 impl InMemoryHealth {
@@ -79,6 +93,10 @@ fn key(t: &TargetRef) -> (String, String) {
 }
 
 impl HealthStore for InMemoryHealth {
+    fn watch(&self, events: mpsc::Sender<HealthEvent>) {
+        let _ = self.events.set(events);
+    }
+
     fn allow(&self, t: &TargetRef, now: Instant, s: &BreakerSettings) -> bool {
         self.lock().entry(key(t)).or_default().allow(now, s)
     }
@@ -92,10 +110,19 @@ impl HealthStore for InMemoryHealth {
         now: Instant,
         s: &BreakerSettings,
     ) {
-        self.lock()
-            .entry(key(t))
-            .or_default()
-            .report(ok, retryable_failure, status, now, s);
+        let transition =
+            self.lock()
+                .entry(key(t))
+                .or_default()
+                .report(ok, retryable_failure, status, now, s);
+        // After the lock is released; never waits.
+        if let (Some(transition), Some(events)) = (transition, self.events.get()) {
+            let (provider, model) = key(t);
+            let _ = events.try_send(match transition {
+                Transition::Opened => HealthEvent::Opened { provider, model },
+                Transition::Closed => HealthEvent::Closed { provider, model },
+            });
+        }
     }
 
     fn retain(&self, keep: &dyn Fn(&str, &str) -> bool) {
@@ -243,5 +270,50 @@ mod tests {
             th.join().unwrap();
         }
         assert_eq!(h.view()[0].successes, 400);
+    }
+
+    #[test]
+    fn a_watcher_hears_each_open_and_close_once() {
+        let h = InMemoryHealth::new();
+        let (tx, mut rx) = mpsc::channel(16);
+        h.watch(tx);
+        let t = target("p", "m");
+        let start = Instant::now();
+        h.report(&t, false, true, Some(500), start, &S);
+        assert!(rx.try_recv().is_err(), "one failure changes nothing");
+        h.report(&t, false, true, Some(500), start, &S);
+        h.report(&t, false, true, Some(500), start, &S);
+        let later = start + Duration::from_secs(31);
+        assert!(h.allow(&t, later, &S));
+        h.report(&t, true, false, Some(200), later, &S);
+        h.report(&t, true, false, Some(200), later, &S);
+        let heard: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let (provider, model) = ("p".to_string(), "m".to_string());
+        assert_eq!(
+            heard,
+            [
+                HealthEvent::Opened {
+                    provider: provider.clone(),
+                    model: model.clone()
+                },
+                HealthEvent::Closed { provider, model },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_full_watcher_channel_never_blocks_a_report() {
+        let h = InMemoryHealth::new();
+        let (tx, _rx) = mpsc::channel(1);
+        h.watch(tx);
+        let start = Instant::now();
+        // 20 targets open; the channel holds one.
+        for i in 0..20 {
+            let t = target("p", &format!("m{i}"));
+            for _ in 0..2 {
+                h.report(&t, false, true, Some(500), start, &S);
+            }
+        }
+        assert_eq!(h.view().len(), 20);
     }
 }

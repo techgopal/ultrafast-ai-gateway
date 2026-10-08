@@ -129,10 +129,14 @@ pub async fn import(
             let actor = Actor {
                 user_id: Some(me.user_id),
                 email: &me.email,
+                cipher: Some(&state.cipher),
             };
             let report = portable::import(&state.store, &file, &actor, dry_run).await?;
             if !dry_run && report.is_clean() {
                 refresh_snapshot(&state).await?;
+                if let Some(engine) = &state.alert_engine {
+                    engine.reload().await;
+                }
             }
             report
         }

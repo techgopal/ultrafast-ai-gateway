@@ -13,7 +13,7 @@ use utoipa::openapi::Required;
 use utoipa::{Modify, OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 
-use super::alerts::ChannelView;
+use super::alerts::{ChannelView, EventView, RuleView};
 use super::auth::{UserTeamView, UserView};
 use super::keys::KeyView;
 use super::logs::LogView;
@@ -134,6 +134,16 @@ pub struct ChannelList {
 }
 
 #[derive(ToSchema)]
+pub struct RuleList {
+    pub rules: Vec<RuleView>,
+}
+
+#[derive(ToSchema)]
+pub struct EventList {
+    pub events: Vec<EventView>,
+}
+
+#[derive(ToSchema)]
 pub struct CreatedChannel {
     pub channel: ChannelView,
     /// The signing secret of the channel. It is shown once, in this answer,
@@ -199,7 +209,7 @@ pub struct RoutingHealth {
         (name = "playground", description = "Chat calls made from the console for the signed-in user."),
         (name = "config", description = "The configuration as a file: export and import."),
         (name = "backup", description = "A copy of the database."),
-        (name = "alerts", description = "Alert channels: where notifications are sent."),
+        (name = "alerts", description = "Alert channels, rules and the events they raised."),
     )
 )]
 struct AdminApi;
@@ -279,9 +289,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 67. Its fallbacks are not
+    /// Every route of `api::router`, which has 72. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 67] = [
+    const ROUTES: [(&str, &str); 72] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -349,6 +359,11 @@ mod tests {
         ("DELETE", "/api/alerts/channels/{id}"),
         ("POST", "/api/alerts/channels/{id}/rotate-secret"),
         ("POST", "/api/alerts/channels/{id}/test"),
+        ("GET", "/api/alerts/rules"),
+        ("POST", "/api/alerts/rules"),
+        ("PATCH", "/api/alerts/rules/{id}"),
+        ("DELETE", "/api/alerts/rules/{id}"),
+        ("GET", "/api/alerts/events"),
     ];
 
     const SECRET_REQUEST_FIELDS: [&str; 5] = [
@@ -459,7 +474,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 67);
+        assert_eq!(routes.len(), 72);
         assert_eq!(documented, routes);
     }
 
@@ -481,7 +496,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 67);
+        assert_eq!(ids.len(), 72);
     }
 
     #[test]

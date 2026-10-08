@@ -6,9 +6,13 @@
 //! call.
 
 mod deliver;
+pub mod engine;
+pub mod errors_window;
+pub mod rules;
 pub mod sign;
 
 pub use deliver::{send_once, Attempt, Deliverer, DeliveryConfig, QUEUE_CAPACITY, TRY_TIMEOUT};
+pub use engine::{EngineConfig, EngineHandle};
 
 use serde_json::{json, Value};
 

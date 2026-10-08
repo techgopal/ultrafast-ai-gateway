@@ -15,18 +15,23 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use ultrafast_translate::provider::ProviderKind;
 
+use crate::alerts::rules as alert_rules;
+use crate::alerts::sign::new_secret;
 use crate::api::budgets::MAX_AMOUNT_MICROS;
 use crate::api::limits::{checked as checked_limit, MAX_COUNT, MAX_TOKENS};
 use crate::api::providers::{check_api_version, checked as checked_provider};
 use crate::api::routes::check_settings;
 use crate::api::teams::valid_team_name;
+use crate::api::trimmed_name;
 use crate::budgets::{BudgetAction, Period};
 use crate::cache::{CacheScope, RouteCache};
 use crate::catalog::validate_model_name;
 use crate::config::{same_host, validate_base_url, validate_provider_name};
 use crate::limits::{LimitScope, RateLimit};
+use crate::secrets::Cipher;
 use crate::store::{
     AuditEntry, ConfigState, Grants, RouteSettings, Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
 };
@@ -180,6 +185,39 @@ pub struct SettingsEntry {
     pub session_hours: Option<i64>,
 }
 
+/// An alert channel: its name and kind only. Its URL and secret are never in
+/// a file; a channel an import creates is off until its URL is set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AlertChannelEntry {
+    pub name: String,
+    /// `webhook` or `slack`.
+    pub kind: String,
+}
+
+/// An alert rule. Its channels are named; a `budget` rule names its budget by
+/// `{scope, name, period}` (or `null`: every budget) instead of an id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AlertRuleEntry {
+    pub name: String,
+    /// `budget`, `error_rate` or `circuit_open`.
+    pub kind: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// As the API takes them, except that a `budget` rule has
+    /// `{"budget": {"scope", "name", "period"} or null, "percent"}`.
+    #[schema(value_type = Object)]
+    pub params: Value,
+    /// Names of channels.
+    #[serde(default)]
+    pub channels: Vec<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
 /// The configuration file. `format` and `version` come first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -202,12 +240,18 @@ pub struct ConfigFile {
     pub budgets: Vec<BudgetEntry>,
     #[serde(default)]
     pub settings: SettingsEntry,
+    /// Left out of the file when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alert_channels: Vec<AlertChannelEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alert_rules: Vec<AlertRuleEntry>,
 }
 
 /// Something the import did, or would do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct Item {
-    /// `provider`, `team`, `model`, `route`, `limit`, `budget` or `settings`.
+    /// `provider`, `team`, `model`, `route`, `limit`, `budget`, `alert_channel`,
+    /// `alert_rule` or `settings`.
     pub kind: String,
     pub name: String,
     /// For an update: the fields that change. Empty for a creation.
@@ -358,6 +402,82 @@ fn grants_by_model(state: &ConfigState) -> HashMap<i64, GrantEntry> {
     out
 }
 
+/// How a rule's budget is named in a file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BudgetRef {
+    scope: String,
+    #[serde(default)]
+    name: Option<String>,
+    period: String,
+}
+
+/// The parameters of a `budget` rule in a file.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileBudgetParams {
+    #[serde(default)]
+    budget: Option<BudgetRef>,
+    percent: i64,
+}
+
+fn budget_ref_of(state: &ConfigState, id: i64) -> Option<BudgetRef> {
+    let b = state
+        .budgets
+        .iter()
+        .find(|b| b.id == id && b.scope != LimitScope::Key && b.has_subject())?;
+    Some(BudgetRef {
+        scope: b.scope.as_str().to_string(),
+        name: b.name.clone(),
+        period: b.period.as_str().to_string(),
+    })
+}
+
+/// The channels and rules of the file. A rule on a budget of a key, or on a
+/// budget that is gone, cannot be named in a file and is left out, as the
+/// budgets of keys are.
+fn alerts_of(state: &ConfigState) -> (Vec<AlertChannelEntry>, Vec<AlertRuleEntry>) {
+    let mut channels: Vec<AlertChannelEntry> = state
+        .alert_channels
+        .iter()
+        .map(|(_, name, kind)| AlertChannelEntry {
+            name: name.clone(),
+            kind: kind.clone(),
+        })
+        .collect();
+    channels.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut rules: Vec<AlertRuleEntry> = state
+        .alert_rules
+        .iter()
+        .filter_map(|r| {
+            let mut params: Value = serde_json::from_str(&r.params).ok()?;
+            if r.kind == "budget" {
+                let budget = match params.get("budget_id").and_then(Value::as_i64) {
+                    Some(id) => Some(budget_ref_of(state, id)?),
+                    None => None,
+                };
+                params = json!({ "budget": budget, "percent": params.get("percent") });
+            }
+            let mut names: Vec<String> = r
+                .channel_ids
+                .iter()
+                .filter_map(|id| state.alert_channels.iter().find(|(c, _, _)| c == id))
+                .map(|(_, name, _)| name.clone())
+                .collect();
+            names.sort();
+            Some(AlertRuleEntry {
+                name: r.name.clone(),
+                kind: r.kind.clone(),
+                enabled: r.enabled,
+                params,
+                channels: names,
+            })
+        })
+        .collect();
+    rules.sort_by(|a, b| a.name.cmp(&b.name));
+    (channels, rules)
+}
+
 /// The file for the configuration as it is stored.
 pub fn file_of(state: &ConfigState) -> ConfigFile {
     let team_names: HashMap<i64, &str> =
@@ -479,9 +599,13 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
         .collect();
     budgets.sort_by(|a, b| (a.0, &a.2.name, a.1).cmp(&(b.0, &b.2.name, b.1)));
 
+    let (alert_channels, alert_rules) = alerts_of(state);
+
     ConfigFile {
         format: FORMAT.to_string(),
         version: VERSION,
+        alert_channels,
+        alert_rules,
         providers,
         models,
         teams,
@@ -506,6 +630,10 @@ pub async fn export(store: &Store) -> Result<ConfigFile> {
 pub struct Actor<'a> {
     pub user_id: Option<i64>,
     pub email: &'a str,
+    /// Encrypts what an import makes that holds a secret (the signing secret
+    /// of an alert channel it creates). The command line has none: its import
+    /// cannot create a channel.
+    pub cipher: Option<&'a Cipher>,
 }
 
 /// What the import writes, in the order it writes it. Names, not ids: the
@@ -551,6 +679,18 @@ enum Op {
         period: Period,
         action: BudgetAction,
     },
+    CreateAlertChannel {
+        name: String,
+        kind: String,
+    },
+    UpsertAlertRule {
+        id: Option<i64>,
+        entry: AlertRuleEntry,
+        /// Its budget, if the rule names one; resolved when the rule is written.
+        budget: Option<BudgetRef>,
+        /// The parameters differ from those stored: its state is forgotten.
+        params_changed: bool,
+    },
     SetRetention(i64),
     SetSessionHours(i64),
 }
@@ -586,6 +726,8 @@ struct Planner<'a> {
     providers: HashSet<String>,
     teams: HashSet<String>,
     models: HashSet<String>,
+    /// Whether the import can encrypt (the API can, the command line cannot).
+    can_encrypt: bool,
 }
 
 impl Planner<'_> {
@@ -1221,6 +1363,221 @@ impl Planner<'_> {
         }
     }
 
+    fn alerts(&mut self) {
+        let file = self.file;
+        let state = self.state;
+        let mut channel_names: HashSet<String> = state
+            .alert_channels
+            .iter()
+            .map(|(_, n, _)| n.clone())
+            .collect();
+        let mut seen = HashSet::new();
+        for (i, entry) in file.alert_channels.iter().enumerate() {
+            let at = format!("alert_channels[{i}]");
+            let before = self.report.errors.len();
+            if let Err(message) = trimmed_name(&entry.name) {
+                self.error(format!("{at}.name"), message);
+            } else if entry.name.trim() != entry.name {
+                self.error(format!("{at}.name"), "must not start or end with a space");
+            }
+            if !["webhook", "slack"].contains(&entry.kind.as_str()) {
+                self.error(format!("{at}.kind"), "kind must be webhook or slack");
+            }
+            if !seen.insert(entry.name.clone()) {
+                self.error(at.clone(), "this name appears more than once");
+            }
+            let existing = state
+                .alert_channels
+                .iter()
+                .find(|(_, n, _)| *n == entry.name);
+            if let Some((_, _, kind)) = existing {
+                if *kind != entry.kind {
+                    self.error(
+                        format!("{at}.kind"),
+                        format!("channel '{}' exists with another kind", entry.name),
+                    );
+                }
+            }
+            channel_names.insert(entry.name.clone());
+            if self.report.errors.len() > before {
+                continue;
+            }
+            if existing.is_some() {
+                self.report.unchanged += 1;
+            } else if !self.can_encrypt {
+                self.error(
+                    at.clone(),
+                    format!(
+                        "channel '{}' does not exist; the command line cannot create one (import the file in the console)",
+                        entry.name
+                    ),
+                );
+            } else {
+                self.report.warnings.push(Issue {
+                    at: at.clone(),
+                    message: format!("channel '{}' needs a URL", entry.name),
+                });
+                self.push(
+                    Op::CreateAlertChannel {
+                        name: entry.name.clone(),
+                        kind: entry.kind.clone(),
+                    },
+                    "alert_channel",
+                    entry.name.clone(),
+                    Vec::new(),
+                    true,
+                );
+            }
+        }
+
+        let mut seen = HashSet::new();
+        for (i, entry) in file.alert_rules.iter().enumerate() {
+            let at = format!("alert_rules[{i}]");
+            let before = self.report.errors.len();
+            if let Err(message) = trimmed_name(&entry.name) {
+                self.error(format!("{at}.name"), message);
+            } else if entry.name.trim() != entry.name {
+                self.error(format!("{at}.name"), "must not start or end with a space");
+            }
+            if !seen.insert(entry.name.clone()) {
+                self.error(at.clone(), "this name appears more than once");
+            }
+            let existing = state.alert_rules.iter().find(|r| r.name == entry.name);
+            if let Some(row) = existing {
+                if row.kind != entry.kind {
+                    self.error(
+                        format!("{at}.kind"),
+                        format!("rule '{}' exists with another kind", entry.name),
+                    );
+                }
+            }
+            for (j, channel) in entry.channels.iter().enumerate() {
+                if !channel_names.contains(channel) {
+                    self.error(
+                        format!("{at}.channels[{j}]"),
+                        format!("channel '{channel}' does not exist"),
+                    );
+                }
+            }
+            // The parameters, in the form the file keeps them.
+            let mut budget = None;
+            let mut normal = None;
+            if entry.kind == "budget" {
+                match serde_json::from_value::<FileBudgetParams>(entry.params.clone()) {
+                    Err(e) => self.error(format!("{at}.params"), e.to_string()),
+                    Ok(p) => {
+                        let reference = match &p.budget {
+                            None => None,
+                            Some(r) => self.budget_ref(&at, r),
+                        };
+                        if p.budget.is_some() && reference.is_none() {
+                            // already reported
+                        } else if let Err(message) = alert_rules::parse(
+                            "budget",
+                            &json!({ "budget_id": null, "percent": p.percent }),
+                        ) {
+                            self.error(format!("{at}.params"), message);
+                        } else {
+                            normal = Some(json!({ "budget": p.budget, "percent": p.percent }));
+                            budget = reference;
+                        }
+                    }
+                }
+            } else {
+                match alert_rules::parse(&entry.kind, &entry.params) {
+                    Err(message) => self.error(format!("{at}.params"), message),
+                    Ok(p) => normal = Some(p.to_value()),
+                }
+            }
+            if self.report.errors.len() > before {
+                continue;
+            }
+            let Some(params) = normal else { continue };
+            let mut channels = entry.channels.clone();
+            channels.sort();
+            channels.dedup();
+            let wanted = AlertRuleEntry {
+                name: entry.name.clone(),
+                kind: entry.kind.clone(),
+                enabled: entry.enabled,
+                params,
+                channels,
+            };
+            let was = self
+                .current
+                .alert_rules
+                .iter()
+                .find(|r| r.name == entry.name);
+            let op = |id: Option<i64>, params_changed: bool| Op::UpsertAlertRule {
+                id,
+                entry: wanted.clone(),
+                budget: budget.clone(),
+                params_changed,
+            };
+            match (existing, was) {
+                (None, _) => self.push(
+                    op(None, false),
+                    "alert_rule",
+                    entry.name.clone(),
+                    Vec::new(),
+                    true,
+                ),
+                (Some(_), Some(was)) if *was == wanted => self.report.unchanged += 1,
+                (Some(row), was) => {
+                    let mut changes = Vec::new();
+                    let params_changed = was.is_none_or(|w| w.params != wanted.params);
+                    if params_changed {
+                        changes.push("params".to_string());
+                    }
+                    if was.is_none_or(|w| w.enabled != wanted.enabled) {
+                        changes.push("enabled".to_string());
+                    }
+                    if was.is_none_or(|w| w.channels != wanted.channels) {
+                        changes.push("channels".to_string());
+                    }
+                    self.push(
+                        op(Some(row.id), params_changed),
+                        "alert_rule",
+                        entry.name.clone(),
+                        changes,
+                        false,
+                    );
+                }
+            }
+        }
+    }
+
+    /// A budget a rule names exists on the gateway or in the file.
+    fn budget_ref(&mut self, at: &str, r: &BudgetRef) -> Option<BudgetRef> {
+        let (scope, name) =
+            self.subject(&format!("{at}.params.budget"), &r.scope, r.name.as_ref())?;
+        let Some(period) = Period::parse(&r.period) else {
+            self.error(
+                format!("{at}.params.budget.period"),
+                "must be daily, weekly or monthly",
+            );
+            return None;
+        };
+        let on_gateway =
+            self.state.budgets.iter().any(|b| {
+                b.scope == scope && b.name == name && b.period == period && b.has_subject()
+            });
+        let in_file = self
+            .file
+            .budgets
+            .iter()
+            .any(|b| b.scope == r.scope && b.name == name && b.period == r.period);
+        if on_gateway || in_file {
+            Some(r.clone())
+        } else {
+            self.error(
+                format!("{at}.params.budget"),
+                "no budget of this scope, name and period",
+            );
+            None
+        }
+    }
+
     fn settings(&mut self) {
         if let Some(days) = self.file.settings.log_retention_days {
             if !(1..=3650).contains(&days) {
@@ -1270,7 +1627,7 @@ fn subject_label(scope: LimitScope, name: Option<&str>) -> String {
 
 /// Checks the whole file against the configuration as it is, and works out
 /// what the import would write.
-fn plan(file: &ConfigFile, state: &ConfigState) -> Plan {
+fn plan(file: &ConfigFile, state: &ConfigState, can_encrypt: bool) -> Plan {
     let mut report = ImportReport::default();
     if file.format != FORMAT {
         report.errors.push(Issue {
@@ -1328,6 +1685,7 @@ fn plan(file: &ConfigFile, state: &ConfigState) -> Plan {
         providers,
         teams,
         models,
+        can_encrypt,
     };
     planner.providers();
     planner.teams();
@@ -1335,6 +1693,7 @@ fn plan(file: &ConfigFile, state: &ConfigState) -> Plan {
     planner.routes();
     planner.limits();
     planner.budgets();
+    planner.alerts();
     planner.settings();
     let mut report = planner.report;
     let mut ops = planner.ops;
@@ -1354,6 +1713,7 @@ struct Ids {
     teams: HashMap<String, i64>,
     users: HashMap<String, i64>,
     models: HashMap<String, i64>,
+    alert_channels: HashMap<String, i64>,
 }
 
 impl Ids {
@@ -1370,6 +1730,11 @@ impl Ids {
                 .models
                 .iter()
                 .map(|m| (format!("{}/{}", m.provider_name, m.name), m.id))
+                .collect(),
+            alert_channels: state
+                .alert_channels
+                .iter()
+                .map(|(id, name, _)| (name.clone(), *id))
                 .collect(),
         }
     }
@@ -1555,6 +1920,85 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                 tx.upsert_budget(scope, subject, amount, period, action)
                     .await?;
             }
+            Op::CreateAlertChannel { name, kind } => {
+                // Off, with no URL: the encrypted empty text. The signing
+                // secret is made now and shown by "rotate secret".
+                let cipher = actor
+                    .cipher
+                    .ok_or_else(|| anyhow::anyhow!("the import has no key to encrypt with"))?;
+                let id = tx
+                    .insert_alert_channel(
+                        &name,
+                        &kind,
+                        &cipher.encrypt(b""),
+                        "",
+                        &cipher.encrypt(new_secret().as_bytes()),
+                        false,
+                    )
+                    .await?;
+                ids.alert_channels.insert(name, id);
+            }
+            Op::UpsertAlertRule {
+                id,
+                entry,
+                budget,
+                params_changed,
+            } => {
+                let params = match entry.kind.as_str() {
+                    "budget" => {
+                        let percent = entry.params.get("percent").and_then(Value::as_u64);
+                        let budget_id = match &budget {
+                            None => None,
+                            Some(r) => {
+                                let scope = LimitScope::parse(&r.scope);
+                                let period = Period::parse(&r.period);
+                                let found =
+                                    tx.config_state().await?.budgets.into_iter().find(|b| {
+                                        Some(b.scope) == scope
+                                            && b.name == r.name
+                                            && Some(b.period) == period
+                                            && b.has_subject()
+                                    });
+                                Some(
+                                    found
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!("a budget of the plan is missing")
+                                        })?
+                                        .id,
+                                )
+                            }
+                        };
+                        json!({ "budget_id": budget_id, "percent": percent })
+                    }
+                    _ => entry.params.clone(),
+                };
+                let text = params.to_string();
+                let rule_id = match id {
+                    Some(id) => {
+                        tx.update_alert_rule(id, None, Some(&text), Some(entry.enabled))
+                            .await?;
+                        if params_changed {
+                            tx.clear_alert_states(id).await?;
+                        }
+                        id
+                    }
+                    None => {
+                        tx.insert_alert_rule(&entry.name, &entry.kind, &text, entry.enabled)
+                            .await?
+                    }
+                };
+                let channel_ids = entry
+                    .channels
+                    .iter()
+                    .map(|n| {
+                        ids.alert_channels
+                            .get(n)
+                            .copied()
+                            .ok_or_else(|| anyhow::anyhow!("a channel of the plan is missing"))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                tx.set_alert_rule_channels(rule_id, &channel_ids).await?;
+            }
             Op::SetRetention(days) => tx.set_log_retention_days(days).await?,
             Op::SetSessionHours(hours) => tx.set_session_hours(hours).await?,
         }
@@ -1597,7 +2041,7 @@ pub async fn import(
 ) -> Result<ImportReport> {
     let mut tx = store.begin_immediate().await?;
     let state = tx.config_state().await?;
-    let planned = plan(file, &state);
+    let planned = plan(file, &state, actor.cipher.is_some());
     let report = planned.report.clone();
     if dry_run || !report.is_clean() {
         // Nothing was written: the transaction is dropped, not committed.

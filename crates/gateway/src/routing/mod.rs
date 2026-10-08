@@ -7,8 +7,8 @@ pub mod select;
 
 use std::time::Duration;
 
-pub use breaker::{BreakerSettings, TargetState};
-pub use health::{HealthStore, InMemoryHealth, TargetHealth};
+pub use breaker::{BreakerSettings, TargetState, Transition};
+pub use health::{HealthEvent, HealthStore, InMemoryHealth, TargetHealth};
 pub use select::plan;
 
 /// A model of a provider, by name, with the id of the catalog row.

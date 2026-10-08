@@ -308,6 +308,7 @@ async fn run(
     );
     begun.metered(state.metrics.clone());
     begun.traced(state.otel.clone());
+    begun.watched(state.alert_engine.clone());
     // Only the `/v1` handlers pass headers: the playground has no parent.
     if let Some(parent) = headers
         .and_then(|h| h.get("traceparent"))
