@@ -136,7 +136,8 @@ async fn a_database_written_by_the_earlier_build_opens_and_reads() {
             (12, "key creator", true),
             (13, "key team only", true),
             (14, "alerts", true),
-            (15, "oidc", true)
+            (15, "oidc", true),
+            (16, "alert owner", true)
         ]
     );
 
