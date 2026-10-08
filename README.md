@@ -48,12 +48,16 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
   users, teams, limits, settings; light and dark themes, phone layout. Compiled
   into the binary; no Node at runtime.
 - **Metrics.** Prometheus at `/metrics` (opt in, token protected).
+- **Tracing.** Every `/v1` call as an OpenTelemetry trace over OTLP/HTTP (JSON),
+  with a span per provider attempt; opt in.
+- **Alerts.** Budget, error-rate and circuit-breaker rules, delivered as signed
+  webhooks (generic or Slack-compatible); managed by admins in the console.
 - **Operations.** Online backup, configuration export and import, a CLI for
   setup, an OpenAPI description of the admin API.
 - **Clients.** Rust, Python and TypeScript, sharing one Rust core.
 
-Not yet (phase 2): guardrails, MCP tools, single sign-on, alerts by email or
-webhook, OpenTelemetry export, an admin SDK, Postgres, the Responses API,
+Not yet (phase 2): guardrails, MCP tools, single sign-on, alerts by email, an
+admin SDK, Postgres, the Responses API,
 image or audio output, and `response_format` / structured outputs.
 
 ## Quickstart
@@ -225,6 +229,10 @@ secrets: a flag shows in the process list.
 | `UF_INSECURE_COOKIES` | `--insecure-cookies` | off | Send the session cookie without `Secure`, for plain HTTP on a trusted network or while developing. |
 | `UF_TRUSTED_PROXIES` | `--trusted-proxy CIDR` (repeatable) | none | Networks of reverse proxies whose `CF-Connecting-IP` and `X-Forwarded-For` are believed. Comma separated in the variable. |
 | `UF_METRICS_TOKEN` | `--metrics-token` | unset | Enables `GET /metrics` for callers sending this bearer token. |
+| `UF_OTEL_ENDPOINT` | `--otel-endpoint` | unset | Enables trace export. The OTLP base URL of a collector or backend (`http://localhost:4318`): spans are posted to `<base>/v1/traces`. A URL that already ends in `/v1/traces` is used as it is; a query string is kept. `serve`. See Tracing. |
+| `UF_OTEL_HEADERS` | `--otel-headers` | unset | Headers sent with every export, `name=value` pairs separated by commas (for example `authorization=Bearer ...`). Prefer the variable: it can hold a credential. |
+| `UF_OTEL_SERVICE_NAME` | `--otel-service-name` | `ultrafast` | The `service.name` resource attribute. |
+| `UF_OTEL_SAMPLE_RATIO` | `--otel-sample-ratio` | `1.0` | Share of calls traced, 0.0 to 1.0, when the caller sent no `traceparent`. |
 | `UF_PROVIDER_API_KEY` | `--api-key` | unset | `provider add` only: the provider's API key. |
 | `RUST_LOG` | none | `info` | Log filter. A gateway that starts with no user logs its one-time setup code at `info` under the target `ultrafast::setup`: when you lower the level, keep it, as in `RUST_LOG=warn,ultrafast::setup=info`. |
 
@@ -345,8 +353,160 @@ Series: `uf_requests_total{endpoint,status_class}`, `uf_tokens_total{direction}`
 `uf_cost_micros_total`, `uf_upstream_duration_seconds{provider}`,
 `uf_cache_hits_total`, `uf_cache_misses_total`, `uf_cache_flight_waits_total`, `uf_rate_limited_total{limit}`,
 `uf_budget_blocked_total`, `uf_circuit_open{provider,model}`,
-`uf_log_records_dropped_total`, `uf_log_write_failures_total`. No label names a
+`uf_log_records_dropped_total`, `uf_log_write_failures_total`,
+`uf_otel_spans_exported_total`, `uf_otel_spans_dropped_total`,
+`uf_otel_export_failures_total`, `uf_alert_deliveries_total{result}`
+(`ok`, `failed`, `dropped`). No label names a
 key, user, team or prompt. `GET /health` answers `{"status":"ok"}`.
+
+**Tracing.** Set `UF_OTEL_ENDPOINT` and every `/v1` call (chat, messages,
+embeddings) becomes a trace, exported in the background over OTLP/HTTP with
+JSON bodies:
+
+```bash
+UF_OTEL_ENDPOINT=http://localhost:4318 \
+UF_OTEL_HEADERS='authorization=Bearer ...' \
+UF_OTEL_SAMPLE_RATIO=0.25 ultrafast serve
+```
+
+- *Format.* Only OTLP JSON over HTTP is spoken: no protobuf, no gRPC, and
+  traces only (no OTLP metrics or logs). For a backend that takes only
+  protobuf or gRPC, put an OpenTelemetry Collector in front, with an OTLP/HTTP
+  receiver (port 4318).
+- *Context.* A valid W3C `traceparent` header on a `/v1` call is honored: the
+  trace continues under the caller's trace id and parent span, and a sampled
+  flag of 0 means the call is not exported. Without one, the gateway starts a
+  trace and `UF_OTEL_SAMPLE_RATIO` decides. A call that carries a sampled
+  `traceparent` is exported at any ratio.
+- *Spans.* One server span per call, named `uf.chat`, `uf.messages` or
+  `uf.embeddings`, with `uf.endpoint`, `uf.requested` (the model or route the
+  caller asked for), `http.response.status_code`, `uf.stream`, `uf.cached`,
+  `uf.estimated`, `uf.key_id` / `uf.user_id` / `uf.team_id` when known,
+  `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` when counted, and
+  the call's tags as `uf.tags.<name>`. Status is an error for 5xx. Under it, one
+  client span per attempt that reached a provider, named
+  `uf.attempt <provider>`, with `uf.provider`, `gen_ai.request.model`,
+  `gen_ai.system` and `gen_ai.provider.name` (the provider kind: `openai`,
+  `anthropic`, ...; left out when unknown), `http.response.status_code` when
+  there was an answer, and `uf.outcome` (`ok`, `retryable`, `fatal`). Targets
+  skipped or refused by an open circuit are events on the server span
+  (`uf.skipped`, `uf.circuit_open`). A cache hit is a server span alone. No
+  prompt, answer, header or credential is ever in a span.
+- *Best effort.* The request path only hands the finished call to a bounded
+  queue (4096 calls); it never waits for the collector. When the queue is full,
+  or a batch cannot be delivered (batches go out every 2 s or when large, 10 s
+  timeout, no retry), those spans are dropped and counted
+  (`uf_otel_spans_dropped_total`, `uf_otel_export_failures_total`; sent spans
+  in `uf_otel_spans_exported_total`). Spans a collector rejects in a partial
+  success count as dropped. Calls not chosen by the sample ratio are not
+  counted as dropped. On shutdown the exporter gets 5 s in all to send what is
+  left; the rest is lost.
+
+**Alerts.** Admins (only admins; leads and members do not see the page) set up
+alerts in the console under Alerts, or with `/api/alerts/*`: channels say where
+to send, rules say when. Each rule has one or more channels. When a rule starts
+firing, and when it resolves, an event is stored (visible in the Alerts
+history) and delivered to its channels.
+
+*Channels.* A `webhook` channel receives JSON; a `slack` channel receives
+`{"text": "Alert firing (Rule name): summary"}`, which Slack-compatible
+incoming webhooks (Slack, Mattermost, Rocket.Chat) accept. The URL is
+`http://` or `https://` and is stored encrypted; it is never shown again (the
+console shows the host only). Creating a channel returns its signing secret
+(`whsec_...`) once; rotating it shows the new one once. A **Test** button sends
+a sample event and reports the result without counting it.
+
+A webhook body:
+
+```json
+{ "version": 1, "id": 42, "state": "firing",
+  "rule": { "id": 3, "name": "Team budget", "kind": "budget" },
+  "subject": "budget:12:2026-10-01",
+  "summary": "Budget '...' passed 80% (...)",
+  "details": { },
+  "at": "2026-10-08T10:20:30Z", "gateway": "ultrafast 2.0.0" }
+```
+
+`state` is `firing` or `resolved`. The body holds metadata only: no prompt,
+answer or key.
+
+*Signature.* Every delivery (slack channels too) carries
+`x-uf-signature: t=<unix seconds>,v1=<hex>`, where `v1` is the lower-case hex
+HMAC-SHA256, keyed by the whole secret string (`whsec_...` included), of
+`<t>.<raw body>`. Check it over the raw bytes, compare in constant time, and
+reject a `t` more than 5 minutes old. Python:
+
+```python
+import hmac, hashlib, time
+t, v1 = [part.split("=", 1)[1] for part in header.split(",")]
+signed = t.encode() + b"." + raw_body
+expected = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+if not hmac.compare_digest(expected, v1): reject()
+if abs(time.time() - int(t)) > 300: reject()
+```
+
+Node:
+
+```js
+const crypto = require("node:crypto");
+const [t, v1] = header.split(",").map((part) => part.split("=")[1]);
+const hmac = crypto.createHmac("sha256", secret).update(`${t}.${rawBody}`);
+const expected = hmac.digest("hex");
+if (expected.length !== v1.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(v1))) reject();
+if (Math.abs(Date.now() / 1000 - Number(t)) > 300) reject();
+```
+
+*Delivery.* A delivery is a POST with a 10 s timeout and no redirects; any
+answer other than 2xx, a timeout or a connection error counts as a failure.
+Up to three tries: now, 5 s later, 30 s after that. Delivery runs on a
+background task behind a bounded queue and never touches `/v1`. Each channel
+has at most 4 deliveries in progress (retries included) and 256 waiting; more
+are dropped. A full queue drops too. Every drop is recorded on the event and
+counted in `uf_alert_deliveries_total{result="dropped"}` (`ok` and `failed`
+are the other results). A delivery still waiting or retrying when the gateway
+shuts down (5 s allowed) is cut off and not retried at the next start; its
+event keeps no outcome. The outcome of each channel (tries, last error as a
+fixed phrase, never the URL) is on the event.
+
+*Rules.*
+
+- `budget` (`budget_id`, or none for every gateway/team/user budget; `percent`
+  1 to 100): fires once per budget period when the spend passes that share of
+  the limit. It is evaluated when spend is recorded (about every 5 s), so a
+  budget already past the percent when the rule is created fires on its next
+  spend. What already fired survives a restart (no second alert in the same
+  period); a new period can fire again. A budget rule sends no `resolved`
+  notice. A rule on a key's budget works but is not part of a configuration
+  export.
+- `error_rate` (`scope` `gateway`, `route`, `provider` or `key`; `subject` the
+  route or provider name or key id, none for gateway, or to watch each route,
+  provider or key on its own; `percent`;
+  `window_minutes` 5 to 60, default 5; `min_requests` 1 to 100 000, default 20):
+  fires when the share of failed calls in the window reaches `percent` and the
+  window holds at least `min_requests` calls. A failure is a 5xx answer,
+  including a provider's 429 passed back; the gateway's own 429s (rate limit,
+  budget), other 4xx and 499 (caller left) are not failures. A route subject
+  counts only configured routes (a call to `provider/model` counts under its
+  provider, key and the gateway, not under a route), and a call that never
+  resolved to a model or route (404, 403) is not counted. It resolves after the
+  rate has stayed under `percent` for one full window; because old failures
+  must also leave the window, that is up to about two windows after the last
+  failure.
+- `circuit_open` (`provider`, `model`, each optional: left out means any):
+  fires when a matching target's circuit breaker opens, resolves when it closes (or when the target is removed from the
+  catalog).
+
+Disabling a rule forgets what it was firing for, silently: no `resolved`
+notice is sent, and enabling it again starts fresh. Changing a rule's params
+does the same. A rule's `kind` cannot be changed.
+
+*Configuration export and import* carry alert channels (name and kind only, no
+URL or secret) and rules (with their channel names, and budget rule targets by
+name). An imported channel is created disabled, with a new secret and no URL:
+an admin sets the URL in the console (Alerts), rotates the secret if needed and
+enables it. `ultrafast config import` cannot create a channel (it has no access
+to the encryption key); use the console for the first import of a file that
+holds new channels. Error windows are not exported.
 
 **Reverse proxy and Cloudflare.** Start with `--trusted-proxy CIDR` (or
 `UF_TRUSTED_PROXIES`) so sign-in limiting counts the client's address, not the
@@ -422,8 +582,17 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
 - Request logs keep metadata only. Logs of a deleted user or team stay, with no
   owner.
 - Members see their own usage and budgets, team leads their teams', admins
-  all; only admins set limits and budgets. A budget alert is an audit entry,
-  not an email or a webhook.
+  all; only admins set limits and budgets. A budget with the `alert` action
+  writes an audit entry; to be notified, add a budget alert rule (Alerts).
+- Traces are best-effort: spans are dropped, and counted, when the collector is
+  slow or down, and what is queued at shutdown beyond 5 s is lost. OTLP JSON
+  over HTTP, traces only; no protobuf, gRPC, OTLP metrics or logs.
+- Alerts are evaluated in one process: error windows are in memory and start
+  empty after a restart (an error-rate alert needs `min_requests` calls again).
+  Webhooks only (generic and Slack-compatible): no email, no PagerDuty format.
+  Delivery is at most three tries and a delivery cut off at shutdown is not
+  retried. Webhook URLs are not restricted to public addresses (admins already
+  set provider URLs). Only admins see alerts; leads cannot.
 - A backup restore is manual, and a configuration import never deletes.
 - No Responses API, image or audio output, or `response_format` / structured
   outputs yet (phase 2). SQLite only.

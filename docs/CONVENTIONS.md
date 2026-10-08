@@ -70,6 +70,12 @@ and briefs add to these; they do not repeat them.
   admin API's lists use the same functions. Every admin write that can change
   access (grants, enabled, routes, membership, role, status, key allowlist,
   provider delete) calls `refresh_snapshot` after commit.
+- Anything that talks to a third party (trace export, alert delivery) runs on a
+  background task fed by a bounded queue: the request path only does a
+  non-blocking send, a full queue drops and counts (a metric, and a record
+  where one exists), memory per destination is bounded, and shutdown waits for
+  the task for a fixed cap (5 s) before abandoning what is left. Nothing on
+  `/v1` ever waits for it.
 - Stateful features (rate limits, budgets, cache) sit behind traits so a shared
   store can replace the in-memory one.
 - A write transaction that reads before it writes starts with `BEGIN IMMEDIATE`

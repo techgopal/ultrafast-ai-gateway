@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Tracing.** `UF_OTEL_ENDPOINT` (also `UF_OTEL_HEADERS`, `UF_OTEL_SERVICE_NAME`,
+  `UF_OTEL_SAMPLE_RATIO`): every `/v1` call is exported as an OpenTelemetry
+  trace over OTLP/HTTP (JSON), one server span per call and one span per
+  provider attempt, with `gen_ai.*` attributes; an incoming `traceparent` is
+  honored. Best effort: bounded queue, drops counted, 5 s cap at shutdown.
+  Metrics `uf_otel_spans_exported_total`, `uf_otel_spans_dropped_total`,
+  `uf_otel_export_failures_total`.
+- **Alerts.** Budget, error-rate and circuit-open rules, delivered to signed
+  webhook or Slack-compatible channels (`x-uf-signature`, retries at now, +5 s,
+  +30 s, per-channel limits); a console page, `/api/alerts/*` (admin only),
+  and alert channels and rules in configuration export and import. Metric
+  `uf_alert_deliveries_total{result}`.
+
 ## [2.0.0-beta.2] - 2026-10-05
 
 Tool calling and image input on both chat endpoints, single-flight for the
