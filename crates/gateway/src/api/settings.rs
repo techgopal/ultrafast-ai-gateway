@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::{require, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::limiter;
+use crate::identity::oidc::discovery::{usable_endpoint, usable_endpoint_for, usable_keys};
 use crate::identity::policy::Action;
 use crate::store::{
     AuditEntry, OidcSettings, DEFAULT_OIDC_GROUPS_CLAIM, DEFAULT_OIDC_LABEL, SESSION_HOURS_RANGE,
@@ -637,6 +638,7 @@ async fn probe_issuer(http: &reqwest::Client, issuer: &str) -> OidcTestResult {
     result.authorization_endpoint = text("authorization_endpoint");
     result.token_endpoint = text("token_endpoint");
     let jwks_uri = text("jwks_uri");
+    let issuer_url = usable_endpoint(issuer);
     let endpoints = [
         (
             "authorization_endpoint",
@@ -648,7 +650,9 @@ async fn probe_issuer(http: &reqwest::Client, issuer: &str) -> OidcTestResult {
     for (name, value) in endpoints {
         match value.as_deref() {
             None => return fail(result, &format!("The discovery document has no {name}.")),
-            Some(v) if check_provider_url(v, false).is_err() => {
+            // The rules of sign-in itself, the same kind of address as the
+            // issuer included.
+            Some(v) if usable_endpoint_for(v, issuer_url.as_ref()).is_none() => {
                 return fail(
                     result,
                     &format!("The {name} in the discovery document is not usable."),
@@ -664,7 +668,7 @@ async fn probe_issuer(http: &reqwest::Client, issuer: &str) -> OidcTestResult {
         );
     };
     let keys = match fetch_document(http, jwks_uri).await {
-        Ok(doc) => doc.get("keys").and_then(|k| k.as_array()).map(Vec::len),
+        Ok(doc) => Some(usable_keys(&doc)),
         Err(m) => return fail(result, &format!("Key set: {m}")),
     };
     let Some(keys) = keys.filter(|n| *n > 0) else {

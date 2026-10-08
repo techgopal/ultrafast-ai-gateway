@@ -1190,7 +1190,7 @@ async fn with_sign_in_off_start_is_missing_and_passwords_still_work() {
 #[tokio::test]
 async fn the_callback_is_limited_per_client_address() {
     let (org, _idp) = world().await;
-    for i in 0..20 {
+    for i in 0..60 {
         callback(&org, "code=x&state=y", None)
             .await
             .assert_refused("state");
@@ -1398,8 +1398,8 @@ async fn starts_are_limited_apart_and_never_lock_out_passwords() {
 #[tokio::test]
 async fn a_successful_callback_gives_back_one_attempt_only() {
     let (org, idp) = world().await;
-    // 19 refused callbacks: one below the limit of 20.
-    for _ in 0..19 {
+    // 59 refused callbacks: one below the limit of 60.
+    for _ in 0..59 {
         callback(&org, "code=x&state=y", None)
             .await
             .assert_refused("state");
@@ -1407,7 +1407,7 @@ async fn a_successful_callback_gives_back_one_attempt_only() {
     sign_in_as(&org, &idp, None, "sub-priya", &email_of("priya"), json!({}))
         .await
         .assert_signed_in("/");
-    // Its own attempt was given back and nothing more: 19 are still counted,
+    // Its own attempt was given back and nothing more: 59 are still counted,
     // so one more is allowed and the next is not.
     callback(&org, "code=x&state=y", None)
         .await
@@ -1533,4 +1533,126 @@ async fn saving_the_settings_builds_a_provider_with_empty_caches() {
     assert_eq!(after.label(), "Renamed");
     // A new provider: nothing it knows is carried over.
     assert_eq!(sign_in("sub-priya").await, (1, 1));
+}
+
+/// Any web page can make a browser call the callback: it must never use up
+/// the failures that password sign-in is limited by, with single sign-on
+/// off or on.
+#[tokio::test]
+async fn callbacks_never_lock_out_password_sign_in() {
+    // Off: no provider, so the answer is `config` and nothing is counted.
+    let org = org_with_public_url(PUBLIC_URL).await;
+    for _ in 0..100 {
+        callback(&org, "", None).await.assert_refused("config");
+    }
+    org.sign_in("lena").await;
+
+    // On: refused callbacks are counted in a bucket of their own.
+    let (org, _idp) = world().await;
+    for _ in 0..100 {
+        let answer = callback(&org, "", None).await;
+        assert!(
+            answer.location.starts_with("/sign-in?sso_error="),
+            "{answer:?}"
+        );
+    }
+    org.sign_in("lena").await;
+}
+
+/// A user made by single sign-on has no password. With sign-in off they get
+/// the same answer as for any wrong password.
+#[tokio::test]
+async fn an_sso_user_cannot_use_a_password_when_sso_is_off() {
+    let (org, idp) = world().await;
+    configure(
+        &org,
+        &idp,
+        json!({ "auto_create": true, "allowed_domains": ["corp.example.org"] }),
+    )
+    .await;
+    sign_in_as(&org, &idp, None, "sub-n", "nia@corp.example.org", json!({}))
+        .await
+        .assert_signed_in("/");
+    configure(&org, &idp, json!({ "enabled": false })).await;
+    let (status, _, body) = send(
+        &org.api.app,
+        "POST",
+        "/api/auth/login",
+        &[],
+        Some(
+            serde_json::to_vec(
+                &json!({ "email": "nia@corp.example.org", "password": "anything-at-all" }),
+            )
+            .unwrap(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(error_code(&body), "invalid_credentials");
+    // The same answer as for an address nobody has.
+    let (status, _, other) = send(
+        &org.api.app,
+        "POST",
+        "/api/auth/login",
+        &[],
+        Some(
+            serde_json::to_vec(
+                &json!({ "email": "nobody@corp.example.org", "password": "anything-at-all" }),
+            )
+            .unwrap(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body, other);
+}
+
+/// A user made by single sign-on can be disabled and enabled again, and
+/// then signs in through the provider.
+#[tokio::test]
+async fn a_disabled_sso_user_can_be_enabled_again() {
+    let (org, idp) = world().await;
+    configure(
+        &org,
+        &idp,
+        json!({ "auto_create": true, "allowed_domains": ["corp.example.org"] }),
+    )
+    .await;
+    sign_in_as(&org, &idp, None, "sub-n", "nia@corp.example.org", json!({}))
+        .await
+        .assert_signed_in("/");
+    let nia = org
+        .api
+        .store
+        .user_by_email("nia@corp.example.org")
+        .await
+        .unwrap()
+        .unwrap();
+    let maya = org.sign_in("maya").await;
+    let path = format!("/api/users/{}", nia.id);
+    let (status, body) = org
+        .call(
+            Some(&maya),
+            "PATCH",
+            &path,
+            Some(json!({ "status": "disabled" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    sign_in_as(&org, &idp, None, "sub-n", "nia@corp.example.org", json!({}))
+        .await
+        .assert_refused("disabled");
+    let (status, body) = org
+        .call(
+            Some(&maya),
+            "PATCH",
+            &path,
+            Some(json!({ "status": "active" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["has_password"], json!(false));
+    sign_in_as(&org, &idp, None, "sub-n", "nia@corp.example.org", json!({}))
+        .await
+        .assert_signed_in("/");
 }

@@ -2,7 +2,11 @@
 
 mod common;
 
+use aws_lc_rs::rsa::{KeyPair as RsaKeyPair, KeySize};
+use aws_lc_rs::signature::KeyPair;
 use axum::http::StatusCode;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use common::{error_code, org, org_with_public_url, Org};
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path};
@@ -393,7 +397,25 @@ fn discovery(issuer: &str) -> Value {
     })
 }
 
+/// A signing key the gateway can verify with.
+fn good_key(kid: &str) -> Value {
+    static KEY: std::sync::OnceLock<RsaKeyPair> = std::sync::OnceLock::new();
+    let key = KEY.get_or_init(|| RsaKeyPair::generate(KeySize::Rsa2048).unwrap());
+    let public = key.public_key();
+    let b64 = |b: &[u8]| URL_SAFE_NO_PAD.encode(b);
+    json!({
+        "kty": "RSA", "kid": kid, "use": "sig",
+        "n": b64(public.modulus().big_endian_without_leading_zero()),
+        "e": b64(public.exponent().big_endian_without_leading_zero()),
+    })
+}
+
 async fn idp(discovery_body: impl FnOnce(&str) -> Value, keys: usize) -> MockServer {
+    let keys: Vec<Value> = (0..keys).map(|i| good_key(&i.to_string())).collect();
+    idp_with_keys(discovery_body, keys).await
+}
+
+async fn idp_with_keys(discovery_body: impl FnOnce(&str) -> Value, keys: Vec<Value>) -> MockServer {
     let server = MockServer::start().await;
     let issuer = server.uri();
     Mock::given(method("GET"))
@@ -401,9 +423,6 @@ async fn idp(discovery_body: impl FnOnce(&str) -> Value, keys: usize) -> MockSer
         .respond_with(ResponseTemplate::new(200).set_body_json(discovery_body(&issuer)))
         .mount(&server)
         .await;
-    let keys: Vec<Value> = (0..keys)
-        .map(|i| json!({ "kty": "RSA", "kid": i.to_string() }))
-        .collect();
     Mock::given(method("GET"))
         .and(path("/jwks"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "keys": keys })))
@@ -569,4 +588,66 @@ async fn a_secret_that_cannot_be_read_is_told_and_logged() {
     body["client_secret"] = json!("another-secret-value");
     let (_, saved) = put(&org, &maya, body).await;
     assert_eq!(saved["client_secret_unreadable"], false);
+}
+
+async fn tested(org: &Org, who: &common::Signed, issuer: &str) -> Value {
+    let (status, body) = org
+        .call(
+            Some(who),
+            "POST",
+            "/api/settings/oidc/test",
+            Some(json!({ "issuer": issuer })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+/// The test counts the keys that sign-in can use, and only those.
+#[tokio::test]
+async fn the_test_counts_only_usable_keys() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let junk = vec![
+        json!({ "kty": "oct", "kid": "s", "k": "c2VjcmV0" }),
+        // A 1024 bit RSA modulus is too short.
+        json!({ "kty": "RSA", "kid": "short", "n": URL_SAFE_NO_PAD.encode([0xc1u8; 128]), "e": "AQAB" }),
+        json!({ "kty": "RSA", "kid": "bare" }),
+        json!("nonsense"),
+    ];
+    let only_junk = idp_with_keys(discovery, junk.clone()).await;
+    let body = tested(&org, &maya, &only_junk.uri()).await;
+    assert_eq!(body["ok"], false, "{body}");
+    assert_eq!(body["error"], "The provider publishes no signing keys.");
+
+    let mut mixed = junk;
+    mixed.insert(1, good_key("good"));
+    let mixed = idp_with_keys(discovery, mixed).await;
+    let body = tested(&org, &maya, &mixed.uri()).await;
+    assert_eq!(body["ok"], true, "{body}");
+    assert_eq!(body["jwks_keys"], 1);
+}
+
+/// The endpoints must be of the issuer's kind, as at sign-in.
+#[tokio::test]
+async fn the_test_applies_the_sign_in_endpoint_rules() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    for name in ["authorization_endpoint", "token_endpoint", "jwks_uri"] {
+        let server = idp(
+            |issuer| {
+                let mut doc = discovery(issuer);
+                doc[name] = json!("https://idp.example.com/elsewhere");
+                doc
+            },
+            1,
+        )
+        .await;
+        let body = tested(&org, &maya, &server.uri()).await;
+        assert_eq!(body["ok"], false, "{name}: {body}");
+        assert_eq!(
+            body["error"],
+            format!("The {name} in the discovery document is not usable.")
+        );
+    }
 }

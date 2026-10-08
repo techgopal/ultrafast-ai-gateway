@@ -24,6 +24,9 @@ pub const MAX_PER_ADDRESS: usize = 20;
 /// visitor's browser start one, so starts must never use up the budget of
 /// password sign-in.
 pub const MAX_STARTS_PER_ADDRESS: usize = 60;
+/// Callbacks of a single sign-on attempt one address (an IPv6 /64) may make
+/// inside the window, counted apart from failures for the same reason.
+pub const MAX_CALLBACKS_PER_ADDRESS: usize = 60;
 /// The most names (an email with an address, or an address) kept at once.
 pub const MAX_ENTRIES: usize = 100_000;
 
@@ -84,6 +87,10 @@ fn start_key(addr: IpAddr) -> String {
     format!("start:{}", client_of(addr))
 }
 
+fn callback_key(addr: IpAddr) -> String {
+    format!("callback:{}", client_of(addr))
+}
+
 /// Drops the failures of one entry that left the window.
 fn expire(times: &mut VecDeque<Instant>, now: Instant) {
     while times
@@ -101,6 +108,16 @@ impl Failures {
             expire(&mut e.times, now);
             e.times.len()
         })
+    }
+
+    /// Takes back the newest attempt of the name; an empty name goes.
+    fn forgive_key(&mut self, key: &str) {
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.times.pop_back();
+            if entry.times.is_empty() {
+                self.entries.remove(key);
+            }
+        }
     }
 
     fn push(&mut self, key: String, now: Instant, capacity: usize) {
@@ -167,17 +184,24 @@ impl LoginLimiter {
         true
     }
 
-    /// Like [`try_begin`](Self::try_begin) for an attempt that has no email
-    /// (a single sign-on callback): only the address bucket is checked and
-    /// counted. Call `forgive` for the address if the attempt succeeds.
-    pub fn try_begin_address(&self, addr: IpAddr, now: Instant) -> bool {
+    /// Counts a callback of a single sign-on attempt from this address in a
+    /// bucket of its own (`MAX_CALLBACKS_PER_ADDRESS`), or refuses it. Any
+    /// web page can make a browser call the callback, so it never touches
+    /// the failures password sign-in is limited by. Call
+    /// `forgive_callback` if the attempt succeeds.
+    pub fn try_begin_callback(&self, addr: IpAddr, now: Instant) -> bool {
         let mut failures = self.lock();
-        let key = address_key(addr);
-        if failures.count(&key, now) >= MAX_PER_ADDRESS {
+        let key = callback_key(addr);
+        if failures.count(&key, now) >= MAX_CALLBACKS_PER_ADDRESS {
             return false;
         }
         failures.push(key, now, self.capacity);
         true
+    }
+
+    /// Takes back the one attempt `try_begin_callback` counted.
+    pub fn forgive_callback(&self, addr: IpAddr) {
+        self.lock().forgive_key(&callback_key(addr));
     }
 
     /// Counts a start of a single sign-on attempt from this address in a
@@ -203,14 +227,7 @@ impl LoginLimiter {
 
     /// Takes back the one attempt that `try_begin` counted for the address.
     pub fn forgive(&self, addr: IpAddr) {
-        let mut failures = self.lock();
-        let key = address_key(addr);
-        if let Some(entry) = failures.entries.get_mut(&key) {
-            entry.times.pop_back();
-            if entry.times.is_empty() {
-                failures.entries.remove(&key);
-            }
-        }
+        self.lock().forgive_key(&address_key(addr));
     }
 
     /// Drops failures that left the window, and names that have none left.
@@ -333,24 +350,29 @@ mod tests {
     }
 
     #[test]
-    fn the_address_bucket_alone_limits_by_address() {
+    fn callbacks_have_a_bucket_of_their_own() {
         let limiter = LoginLimiter::new();
         let t0 = Instant::now();
-        for n in 0..MAX_PER_ADDRESS {
-            assert!(limiter.try_begin_address(addr(1), t0), "attempt {n}");
+        for n in 0..MAX_CALLBACKS_PER_ADDRESS {
+            assert!(limiter.try_begin_callback(addr(1), t0), "attempt {n}");
         }
-        assert!(!limiter.try_begin_address(addr(1), t0));
+        assert!(!limiter.try_begin_callback(addr(1), t0));
         // A refused attempt counts nothing; another address is not affected.
-        assert_eq!(limiter.count(&address_key(addr(1))), MAX_PER_ADDRESS);
-        assert!(limiter.try_begin_address(addr(2), t0));
-        // It shares the bucket with sign-in attempts by email.
-        assert!(!limiter.try_begin(EMAIL, addr(1), t0));
+        assert_eq!(
+            limiter.count(&callback_key(addr(1))),
+            MAX_CALLBACKS_PER_ADDRESS
+        );
+        assert!(limiter.try_begin_callback(addr(2), t0));
+        // Password sign-in from that address is not affected, and the other
+        // way round.
+        assert_eq!(limiter.count(&address_key(addr(1))), 0);
+        assert!(limiter.try_begin(EMAIL, addr(1), t0));
         // A success gives its attempt back, and the window ends.
-        limiter.forgive(addr(1));
-        assert!(limiter.try_begin_address(addr(1), t0));
-        assert!(limiter.try_begin_address(addr(1), t0 + minutes(16)));
-        // No pair name was made.
-        assert_eq!(limiter.entries(), 2);
+        limiter.forgive_callback(addr(1));
+        assert!(limiter.try_begin_callback(addr(1), t0));
+        assert!(limiter.try_begin_callback(addr(1), t0 + minutes(16)));
+        // The password bucket kept its one failure.
+        assert_eq!(limiter.count(&address_key(addr(1))), 1);
     }
 
     #[test]
@@ -364,8 +386,8 @@ mod tests {
         assert!(limiter.try_begin_start(addr(2), t0));
         // Password sign-in and callbacks from that address are not affected.
         assert!(limiter.try_begin(EMAIL, addr(1), t0));
-        assert!(limiter.try_begin_address(addr(1), t0));
-        assert_eq!(limiter.count(&address_key(addr(1))), 2);
+        assert!(limiter.try_begin_callback(addr(1), t0));
+        assert_eq!(limiter.count(&address_key(addr(1))), 1);
         assert!(limiter.try_begin_start(addr(1), t0 + minutes(16)));
     }
 

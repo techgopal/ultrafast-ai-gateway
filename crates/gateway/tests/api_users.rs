@@ -79,7 +79,7 @@ async fn admin_lists_everyone() {
     let text = body.to_string();
     assert!(!text.contains("password_hash"));
     assert!(!text.contains("argon2"));
-    assert_eq!(body["users"][0].as_object().unwrap().len(), 9);
+    assert_eq!(body["users"][0].as_object().unwrap().len(), 10);
 }
 
 #[tokio::test]
@@ -309,7 +309,7 @@ async fn viewing_users_hides_outsiders() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["email"], "lena@example.com");
-    assert_eq!(body.as_object().unwrap().len(), 9);
+    assert_eq!(body.as_object().unwrap().len(), 10);
     assert!(!body.to_string().contains("password_hash"));
 
     // tomas shares Research with arjun, but arjun does not lead it.

@@ -165,7 +165,7 @@ pub async fn oidc_start(
     tag = "auth",
     operation_id = "auth_oidc_callback",
     summary = "Finish signing in with the identity provider",
-    description = "Where the identity provider sends the browser back: a GET that needs no session and no CSRF header, the flow cookie and `state` being what ties it to the start. Limited per client address with the same failure budget as password sign-in; over the limit the browser is sent to `/sign-in?sso_error=rate_limited`.",
+    description = "Where the identity provider sends the browser back: a GET that needs no session and no CSRF header, the flow cookie and `state` being what ties it to the start. Limited to 60 callbacks per client address in 15 minutes, counted apart from password sign-in failures (a callback can never lock anyone out of password sign-in); without a provider nothing is counted and the answer is `config`. Over the limit the browser is sent to `/sign-in?sso_error=rate_limited`.",
     params(
         ("code" = Option<String>, Query, description = "The authorization code the identity provider made."),
         ("state" = Option<String>, Query, description = "The `state` of the attempt."),
@@ -224,14 +224,17 @@ async fn finish_sign_in(
     headers: &HeaderMap,
     raw_query: Option<&str>,
 ) -> Result<Done, &'static str> {
-    // Counted before anything else, so callbacks sent at the same time
-    // cannot each get a try; a success gives its attempt back.
-    if !state.limiter.try_begin_address(addr, Instant::now()) {
-        return Err("rate_limited");
-    }
+    // Without a provider nothing is counted: any web page can make a
+    // browser call this, on any gateway.
     let Some(provider) = state.sign_in.load_full() else {
         return Err("config");
     };
+    // Counted before anything else, so callbacks sent at the same time
+    // cannot each get a try; a success gives its attempt back. A bucket of
+    // its own: it must never use up the failures of password sign-in.
+    if !state.limiter.try_begin_callback(addr, Instant::now()) {
+        return Err("rate_limited");
+    }
     let params: CallbackParams = query_pairs(raw_query).into_iter().collect();
     // A missing cookie is the provider's to judge: the provider's own
     // refusal still counts as such.
@@ -245,10 +248,16 @@ async fn finish_sign_in(
         sign_in_identity(state, &settings, provider.label(), completed.identity).await?;
     if changed {
         // Roles and statuses decide access; /v1 must see the change.
-        let _ = refresh_snapshot(state).await;
+        if let Err(e) = refresh_snapshot(state).await {
+            // /v1 keeps the old roles until the periodic refresh.
+            tracing::warn!(
+                code = e.code,
+                "the snapshot was not refreshed after a single sign-on change"
+            );
+        }
     }
     // This attempt.
-    state.limiter.forgive(addr);
+    state.limiter.forgive_callback(addr);
     Ok(Done {
         session,
         return_to: safe_return_to(&completed.return_to),

@@ -225,7 +225,7 @@ export interface paths {
         };
         /**
          * Finish signing in with the identity provider
-         * @description Where the identity provider sends the browser back: a GET that needs no session and no CSRF header, the flow cookie and `state` being what ties it to the start. Limited per client address with the same failure budget as password sign-in; over the limit the browser is sent to `/sign-in?sso_error=rate_limited`.
+         * @description Where the identity provider sends the browser back: a GET that needs no session and no CSRF header, the flow cookie and `state` being what ties it to the start. Limited to 60 callbacks per client address in 15 minutes, counted apart from password sign-in failures (a callback can never lock anyone out of password sign-in); without a provider nothing is counted and the answer is `config`. Over the limit the browser is sent to `/sign-in?sso_error=rate_limited`.
          */
         get: operations["auth_oidc_callback"];
         put?: never;
@@ -2345,6 +2345,11 @@ export interface components {
             auth_provider: components["schemas"]["AuthProviderView"];
             created_at: string;
             email: string;
+            /**
+             * @description Whether the user has a password. A user made by single sign-on has
+             *     none and can sign in only while single sign-on works. Read only.
+             */
+            has_password: boolean;
             /** Format: int64 */
             id: number;
             last_active_at: string | null;

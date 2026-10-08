@@ -97,7 +97,7 @@ pub fn usable_endpoint(value: &str) -> Option<Url> {
 /// only when the issuer itself is loopback http (tests, local providers).
 /// Private addresses are not blocked: the provider is chosen by an admin,
 /// as the provider URLs are.
-fn usable_endpoint_for(value: &str, issuer: Option<&Url>) -> Option<Url> {
+pub fn usable_endpoint_for(value: &str, issuer: Option<&Url>) -> Option<Url> {
     if value.len() > 2048 {
         return None;
     }
@@ -421,6 +421,17 @@ impl Jwks {
             .filter_map(SigKey::from_json)
             .collect())
     }
+}
+
+/// How many keys of a key set document sign-in can use: the others (other
+/// types, short RSA keys, junk) are dropped there and not counted here.
+pub fn usable_keys(doc: &Value) -> usize {
+    doc.get("keys").and_then(Value::as_array).map_or(0, |keys| {
+        keys.iter()
+            .take(MAX_KEYS)
+            .filter_map(SigKey::from_json)
+            .count()
+    })
 }
 
 fn lookup(keys: &[SigKey], kid: Option<&str>) -> Option<SigKey> {

@@ -43,6 +43,9 @@ pub struct UserView {
     /// How the user signs in: with a `password`, or through the single
     /// sign-on provider (`oidc`) they are linked to. Read only.
     pub auth_provider: AuthProviderView,
+    /// Whether the user has a password. A user made by single sign-on has
+    /// none and can sign in only while single sign-on works. Read only.
+    pub has_password: bool,
     pub created_at: String,
     #[schema(required)]
     pub last_active_at: Option<String>,
@@ -76,6 +79,7 @@ impl UserView {
             role: u.role,
             status: u.status,
             auth_provider: AuthProviderView::of(&u.auth_provider),
+            has_password: u.password_hash.is_some(),
             created_at: u.created_at,
             last_active_at: u.last_active_at,
             teams: teams.into_iter().map(UserTeamView::from).collect(),
@@ -970,6 +974,7 @@ mod tests {
             },
             vec![],
         );
+        assert!(view.has_password);
         let text = serde_json::to_string(&view).unwrap();
         assert!(!text.contains("argon2"));
         assert!(!text.contains("password_hash"));

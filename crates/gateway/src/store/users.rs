@@ -127,7 +127,6 @@ impl Store {
         row.as_ref().map(user_from).transpose()
     }
 
-    /// Ordered by email.
     /// The user linked to this identity at a sign-in provider, whatever
     /// the user's status.
     pub async fn user_by_external(
@@ -148,6 +147,7 @@ impl Store {
         row.as_ref().map(user_from).transpose()
     }
 
+    /// Ordered by email.
     pub async fn list_users(&self) -> Result<Vec<UserRow>> {
         let mut conn = self.pool().acquire().await?;
         list_users_in(&mut conn).await
