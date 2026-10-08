@@ -233,3 +233,56 @@ async fn a_session_made_on_one_process_signs_in_on_the_other() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["user"]["email"], common::email_of("maya"));
 }
+
+/// An error-rate episode belongs to the process that saw the errors: the
+/// other one, which saw no calls, ticks through many quiet windows and
+/// neither resolves it nor fires it again.
+#[tokio::test]
+async fn an_idle_process_leaves_the_alert_episode_of_the_other_alone() {
+    use std::time::Duration;
+    use ultrafast_gateway::alerts::engine::Engine;
+    use ultrafast_gateway::alerts::errors_window::{ErrorWindows, Sample};
+
+    let Some((org, _b)) = two().await else { return };
+    let store = org.api.store.clone();
+    let mut tx = store.begin().await.unwrap();
+    tx.insert_alert_rule(
+        "errors",
+        "error_rate",
+        &json!({ "scope": "route", "percent": 50, "window_minutes": 5, "min_requests": 4 })
+            .to_string(),
+        true,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let windows_of_a = Arc::new(ErrorWindows::new(Duration::from_secs(60)));
+    let mut a = Engine::new(store.clone(), None, windows_of_a.clone(), None);
+    let mut idle = Engine::new(
+        store.clone(),
+        None,
+        Arc::new(ErrorWindows::new(Duration::from_secs(60))),
+        None,
+    );
+    a.load().await.unwrap();
+    let call = Sample {
+        route: Some("chat"),
+        provider: Some("p"),
+        key_id: None,
+        error: true,
+    };
+    for _ in 0..5 {
+        windows_of_a.record_at(10, &call);
+    }
+    a.on_tick(10).await;
+    for now in 11..60 {
+        windows_of_a.record_at(now, &call);
+        a.on_tick(now).await;
+        idle.load().await.unwrap();
+        idle.on_tick(now).await;
+    }
+    let events = store.alert_events(50).await.unwrap();
+    let states: Vec<_> = events.iter().map(|e| e.state.as_str()).collect();
+    assert_eq!(states, ["firing"], "one episode, said once");
+    assert_eq!(store.alert_states().await.unwrap().len(), 1);
+}

@@ -83,6 +83,11 @@ pub struct StateRow {
     pub subject: String,
     /// UTC, `YYYY-MM-DD HH:MM:SS`.
     pub since: String,
+    /// The gateway process that holds the episode (`None` before the owner
+    /// column existed).
+    pub owner: Option<String>,
+    /// When the owner last said it was alive.
+    pub seen_at: Option<String>,
 }
 
 fn rule_from(r: &AnyRow) -> RuleRow {
@@ -375,21 +380,26 @@ impl Tx<'_> {
     /// enabled: a rule the API disabled a moment ago (and cleared) must not
     /// get a state back. Only the first writer wins: with several gateway
     /// processes on one database, the one that finds the state already
-    /// there records nothing, so an episode is announced once. `false`:
-    /// nothing was written.
+    /// there records nothing, so an episode is announced once. `owner` is the
+    /// process that holds the episode from now on (`since` is also its first
+    /// sign of life). `false`: nothing was written.
     pub async fn upsert_alert_state(
         &mut self,
         rule_id: i64,
         subject: &str,
         since: &str,
+        owner: &str,
     ) -> Result<bool> {
         let r = self
-            .q("INSERT INTO alert_state (rule_id, subject, firing, since)
-             SELECT ?, ?, 1, ? WHERE EXISTS (SELECT 1 FROM alert_rules WHERE id = ? AND enabled = 1)
-             ON CONFLICT (rule_id, subject) DO UPDATE SET firing = 1, since = excluded.since
+            .q("INSERT INTO alert_state (rule_id, subject, firing, since, owner, seen_at)
+             SELECT ?, ?, 1, ?, ?, ? WHERE EXISTS (SELECT 1 FROM alert_rules WHERE id = ? AND enabled = 1)
+             ON CONFLICT (rule_id, subject) DO UPDATE
+             SET firing = 1, since = excluded.since, owner = excluded.owner, seen_at = excluded.seen_at
              WHERE alert_state.firing = 0")
             .bind(rule_id)
             .bind(subject)
+            .bind(since)
+            .bind(owner)
             .bind(since)
             .bind(rule_id)
             .execute(self.conn())
@@ -518,9 +528,11 @@ impl Store {
     /// What rules are firing for, by rule then subject.
     pub async fn alert_states(&self) -> Result<Vec<StateRow>> {
         let rows = self
-            .q("SELECT s.rule_id, s.subject, s.since FROM alert_state s
+            .q(
+                "SELECT s.rule_id, s.subject, s.since, s.owner, s.seen_at FROM alert_state s
              JOIN alert_rules r ON r.id = s.rule_id
-             WHERE r.org_id = ? AND s.firing = 1 ORDER BY s.rule_id, s.subject")
+             WHERE r.org_id = ? AND s.firing = 1 ORDER BY s.rule_id, s.subject",
+            )
             .bind(DEFAULT_ORG)
             .fetch_all(self.pool())
             .await?;
@@ -530,8 +542,37 @@ impl Store {
                 rule_id: r.get(0),
                 subject: r.get(1),
                 since: r.get(2),
+                owner: r.get(3),
+                seen_at: r.get(4),
             })
             .collect())
+    }
+
+    /// The owner says it is alive: every episode it holds was seen at `at`.
+    pub async fn touch_alert_states(&self, owner: &str, at: &str) -> Result<u64> {
+        let r = self
+            .q("UPDATE alert_state SET seen_at = ? WHERE owner = ?")
+            .bind(at)
+            .bind(owner)
+            .execute(self.pool())
+            .await?;
+        Ok(r.rows_affected())
+    }
+
+    /// Takes over the episodes whose owner has not been seen since `cutoff`
+    /// (or that have none): they are `owner`'s now, seen at `at`. One
+    /// statement, so of two processes that try at once only one gets each.
+    /// Returns how many were taken.
+    pub async fn adopt_alert_states(&self, owner: &str, cutoff: &str, at: &str) -> Result<u64> {
+        let r = self
+            .q("UPDATE alert_state SET owner = ?, seen_at = ?
+             WHERE owner IS NULL OR seen_at IS NULL OR seen_at < ?")
+            .bind(owner)
+            .bind(at)
+            .bind(cutoff)
+            .execute(self.pool())
+            .await?;
+        Ok(r.rows_affected())
     }
 
     /// The enabled channels a rule sends to.
@@ -868,13 +909,13 @@ mod tests {
             .await
             .unwrap();
         tx.set_alert_rule_channels(rule, &[b, a, a]).await.unwrap();
-        tx.upsert_alert_state(rule, "budget:1:2999-01-01", "2999-01-01 00:00:00")
+        tx.upsert_alert_state(rule, "budget:1:2999-01-01", "2999-01-01 00:00:00", "p")
             .await
             .unwrap();
-        tx.upsert_alert_state(rule, "budget:1:2999-02-01", "2999-02-01 00:00:00")
+        tx.upsert_alert_state(rule, "budget:1:2999-02-01", "2999-02-01 00:00:00", "p")
             .await
             .unwrap();
-        tx.upsert_alert_state(rule, "budget:2:2999-01-01", "2999-01-01 00:00:00")
+        tx.upsert_alert_state(rule, "budget:2:2999-01-01", "2999-01-01 00:00:00", "p")
             .await
             .unwrap();
         tx.delete_alert_states_except(rule, "budget:1:", "budget:1:2999-02-01")

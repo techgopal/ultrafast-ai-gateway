@@ -7,7 +7,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-const PINNED: [(&str, &str); 15] = [
+const PINNED: [(&str, &str); 16] = [
     (
         "0001_init.sql",
         "f5adcd9d9a503c65a85cc59cc69a07379bfde9c8c3ea08933428b9f7f7716896",
@@ -68,7 +68,55 @@ const PINNED: [(&str, &str); 15] = [
         "0015_oidc.sql",
         "5f47b5009ea2ff2b7c202d4ce6e152dc301fc6ac21fef8c19324c6a927b58248",
     ),
+    (
+        "0016_alert_owner.sql",
+        "dc30d31107ac474710f69d43bc27c12b6e66dcfcd61bd7c2a41738d9ad584cae",
+    ),
 ];
+
+/// The PostgreSQL migrations: the baseline folds SQLite 0001-0015 into one,
+/// so the numbers differ from there on. Pinned the same way.
+const PINNED_POSTGRES: [(&str, &str); 2] = [
+    (
+        "0001_baseline.sql",
+        "6459fe201768aee81e11533403a897f94d0070f7bbe8164ee1ed1ad608bfbbcd",
+    ),
+    (
+        "0002_alert_owner.sql",
+        "19c24f1552ed7ca7791f4283b8c5243f1b66bf0a29fb499c59e87740ebfcc12d",
+    ),
+];
+
+fn postgres_dir() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations/postgres")
+}
+
+#[test]
+fn every_postgres_migration_keeps_its_bytes() {
+    for (name, expected) in PINNED_POSTGRES {
+        let bytes = std::fs::read(postgres_dir().join(name))
+            .unwrap_or_else(|e| panic!("migrations/postgres/{name}: {e}"));
+        assert_eq!(
+            hex::encode(Sha256::digest(&bytes)),
+            expected,
+            "{name} changed: shipped migrations never change"
+        );
+    }
+}
+
+#[test]
+fn no_unpinned_postgres_migration_exists() {
+    let mut names: Vec<String> = std::fs::read_dir(postgres_dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    let pinned: Vec<&str> = PINNED_POSTGRES.iter().map(|(n, _)| *n).collect();
+    assert_eq!(
+        names, pinned,
+        "add the SHA-256 of a new migration to PINNED_POSTGRES"
+    );
+}
 
 fn sqlite_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations/sqlite")

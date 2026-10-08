@@ -138,9 +138,9 @@ async fn beta2_database_opens_migrates_and_reads_back() {
 
     let s = Store::open(&path).await.unwrap();
 
-    // 0014 and 0015 were applied after the thirteen, which were not rewritten.
+    // 0014 to 0016 were applied after the thirteen, which were not rewritten.
     let after = raw_migration_rows(&path).await;
-    assert_eq!(after.len(), 15);
+    assert_eq!(after.len(), 16);
     assert_eq!(&after[..13], &before[..]);
 
     // providers

@@ -23,7 +23,7 @@ use super::rules::{self, rate_subject, ErrorRate, Params};
 use super::Deliverer;
 use crate::budgets::{usd, Budget};
 use crate::routing::{HealthEvent, HealthStore, TargetState};
-use crate::store::{now, NewAlertEvent, Store};
+use crate::store::{format_timestamp, now, NewAlertEvent, Store};
 
 pub const INPUT_CAPACITY: usize = 1024;
 pub const HEALTH_CAPACITY: usize = 256;
@@ -163,13 +163,16 @@ struct Episode {
     below_since: Option<u32>,
     /// A circuit episode: since when its breaker has stayed closed.
     closed_since: Option<Instant>,
+    /// The gateway process that holds the episode (see [`Engine`]).
+    owner: Option<String>,
 }
 
 impl Episode {
-    fn new() -> Self {
+    fn new(owner: Option<String>) -> Self {
         Self {
             below_since: None,
             closed_since: None,
+            owner,
         }
     }
 }
@@ -177,20 +180,53 @@ impl Episode {
 /// Which `(rule, subject)` pairs are firing. The state machine: an episode
 /// begins with one `Fire` and ends with one `Resolve`; nothing is said in
 /// between.
+///
+/// An episode that rests on what one process saw (an error rate, a breaker)
+/// belongs to the process that opened it, `me` being this one; the others
+/// leave it alone until its owner has gone silent.
 #[derive(Default)]
 pub struct Episodes {
     map: HashMap<(i64, String), Episode>,
+    me: String,
 }
 
 impl Episodes {
-    /// Replaces what is firing with `rows` (rule, subject), keeping how long
-    /// an episode that goes on has been below its threshold.
+    /// An empty set for the process named `me`.
+    pub fn new(me: String) -> Self {
+        Self {
+            map: HashMap::new(),
+            me,
+        }
+    }
+
+    /// Replaces what is firing with `rows` (rule, subject), all of them this
+    /// process's, keeping how long an episode that goes on has been below its
+    /// threshold.
     pub fn replace<I: IntoIterator<Item = (i64, String)>>(&mut self, rows: I) {
+        let me = self.me.clone();
+        self.replace_owned(rows.into_iter().map(|(r, s)| (r, s, Some(me.clone()))));
+    }
+
+    /// Like [`Episodes::replace`], with the owner of each row as the database
+    /// has it.
+    pub fn replace_owned<I: IntoIterator<Item = (i64, String, Option<String>)>>(
+        &mut self,
+        rows: I,
+    ) {
         let mut old = std::mem::take(&mut self.map);
-        for key in rows {
-            let ep = old.remove(&key).unwrap_or_else(Episode::new);
+        for (rule, subject, owner) in rows {
+            let key = (rule, subject);
+            let mut ep = old.remove(&key).unwrap_or_else(|| Episode::new(None));
+            ep.owner = owner;
             self.map.insert(key, ep);
         }
+    }
+
+    /// Whether the episode is firing and another process holds it.
+    pub fn is_foreign(&self, rule: i64, subject: &str) -> bool {
+        self.map
+            .get(&(rule, subject.to_string()))
+            .is_some_and(|ep| ep.owner.as_deref() != Some(self.me.as_str()))
     }
 
     pub fn is_firing(&self, rule: i64, subject: &str) -> bool {
@@ -233,7 +269,7 @@ impl Episodes {
         let key = (rule, subject.to_string());
         match change {
             Change::Fire => {
-                self.map.insert(key, Episode::new());
+                self.map.insert(key, Episode::new(Some(self.me.clone())));
             }
             Change::Resolve => {
                 self.map.remove(&key);
@@ -263,6 +299,7 @@ impl Episodes {
             .iter()
             .filter(|((r, _), ep)| {
                 *r == rule
+                    && ep.owner.as_deref() == Some(self.me.as_str())
                     && ep
                         .closed_since
                         .is_some_and(|since| at.saturating_duration_since(since) >= quiet)
@@ -301,8 +338,14 @@ pub struct Engine {
     episodes: Episodes,
     /// See [`EngineConfig::circuit_quiet`].
     quiet: Duration,
-    /// The wall clock, for the budget periods (a field so a test sets it).
+    /// The wall clock, for the budget periods and the owners' heartbeats (a
+    /// field so a test sets it).
     wall: fn() -> OffsetDateTime,
+    /// Who this process is among those sharing the database: made at start.
+    instance: String,
+    /// How long an owner may be silent (three ticks) before another process
+    /// takes its episodes over.
+    adopt_after: Duration,
 }
 
 impl Engine {
@@ -312,15 +355,18 @@ impl Engine {
         windows: Arc<ErrorWindows>,
         health: Option<Arc<dyn HealthStore>>,
     ) -> Self {
+        let instance = format!("{:016x}", rand::random::<u64>());
         Self {
             store,
             deliverer,
             windows,
             health,
             rules: Vec::new(),
-            episodes: Episodes::default(),
+            episodes: Episodes::new(instance.clone()),
             quiet: CIRCUIT_QUIET,
             wall: OffsetDateTime::now_utc,
+            instance,
+            adopt_after: Duration::from_secs(30) * 3,
         }
     }
 
@@ -355,8 +401,35 @@ impl Engine {
         );
         self.rules = rules;
         self.episodes
-            .replace(states.into_iter().map(|s| (s.rule_id, s.subject)));
+            .replace_owned(states.into_iter().map(|s| (s.rule_id, s.subject, s.owner)));
         Ok(())
+    }
+
+    /// Says this process is alive (so the episodes it holds are not taken
+    /// over), and takes over the episodes of owners that have been silent for
+    /// [`Engine::adopt_after`], to resolve or go on with them. Once per tick.
+    async fn keep_alive(&mut self) {
+        let wall = (self.wall)();
+        let at = format_timestamp(wall);
+        let cutoff = format_timestamp(wall - self.adopt_after);
+        if let Err(e) = self.store.touch_alert_states(&self.instance, &at).await {
+            tracing::warn!(error = %e, "could not record that this process is alive");
+            return;
+        }
+        match self
+            .store
+            .adopt_alert_states(&self.instance, &cutoff, &at)
+            .await
+        {
+            Ok(0) => {}
+            Ok(_) => match self.store.alert_states().await {
+                Ok(states) => self
+                    .episodes
+                    .replace_owned(states.into_iter().map(|s| (s.rule_id, s.subject, s.owner))),
+                Err(e) => tracing::warn!(error = %e, "could not read the alert states"),
+            },
+            Err(e) => tracing::warn!(error = %e, "could not take over alert episodes"),
+        }
     }
 
     /// Writes the change and its event in one transaction, then queues the
@@ -379,7 +452,10 @@ impl Engine {
         let mut tx = self.store.begin().await?;
         match change {
             Change::Fire => {
-                if !tx.upsert_alert_state(id, subject, &at).await? {
+                if !tx
+                    .upsert_alert_state(id, subject, &at, &self.instance)
+                    .await?
+                {
                     // The rule was disabled or deleted since the engine read
                     // it: nothing to record.
                     return Ok(());
@@ -500,6 +576,10 @@ impl Engine {
             }
             let id = r.id;
             if self.episodes.is_firing(id, &subject) {
+                if self.episodes.is_foreign(id, &subject) {
+                    // Its owner sees this breaker and settles it.
+                    continue;
+                }
                 if opened {
                     self.episodes.mark_open(id, &subject);
                 } else {
@@ -710,6 +790,7 @@ impl Engine {
     }
 
     async fn on_tick_at(&mut self, now: u32, at: Instant) {
+        self.keep_alive().await;
         self.resolve_removed_targets().await;
         self.resync_circuits(at).await;
         self.settle_quiet_circuits(at).await;
@@ -757,6 +838,11 @@ impl Engine {
         }
         for (raw, totals) in seen {
             let subject = rate_subject(p.scope, &raw);
+            if self.episodes.is_foreign(id, &subject) {
+                // Another process opened it and sees its calls; this one's
+                // quiet window says nothing about them.
+                continue;
+            }
             let breach = totals.breaches(p.percent, p.min_requests);
             let Some(change) = self
                 .episodes
@@ -818,6 +904,7 @@ pub fn spawn(
     let task = tokio::spawn(async move {
         let mut engine = Engine::new(store, deliverer, windows.clone(), health);
         engine.quiet = cfg.circuit_quiet;
+        engine.adopt_after = cfg.tick * 3;
         if let Err(e) = engine.load().await {
             tracing::warn!(error = %e, "could not read the alert rules");
         }
@@ -1328,6 +1415,191 @@ mod tests {
         e.on_health_at(&flap("p", "m", true), again + Duration::from_secs(301))
             .await;
         assert_eq!(events(&store).await.len(), 3);
+    }
+
+    /// An engine that is some time ahead of the real clock.
+    fn ahead(mut e: Engine, seconds: i64) -> Engine {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        // One offset per test engine would need a closure; the tests use
+        // two fixed offsets.
+        static A: AtomicI64 = AtomicI64::new(0);
+        A.store(seconds, Ordering::Relaxed);
+        fn clock() -> OffsetDateTime {
+            OffsetDateTime::now_utc() + time::Duration::seconds(A.load(Ordering::Relaxed))
+        }
+        e.wall = clock;
+        e
+    }
+
+    const ERRORS: &str =
+        r#"{ "scope": "route", "percent": 50, "window_minutes": 5, "min_requests": 4 }"#;
+
+    fn failing() -> Sample<'static> {
+        Sample {
+            route: Some("chat"),
+            provider: Some("p"),
+            key_id: None,
+            error: true,
+        }
+    }
+
+    /// A fires an error-rate episode; B, which has seen no calls at all,
+    /// ticks through many quiet windows and leaves it alone: it is A's, and A
+    /// still sees its errors. (Before owners, B resolved it after a window and
+    /// A fired it again.)
+    #[tokio::test]
+    async fn an_idle_process_does_not_resolve_an_episode_another_holds() {
+        let store = Store::open_in_memory().await.unwrap();
+        rule(
+            &store,
+            "errs",
+            "error_rate",
+            serde_json::from_str(ERRORS).unwrap(),
+        )
+        .await;
+        let mut a = engine(&store).await;
+        for _ in 0..5 {
+            a.windows.record_at(10, &failing());
+        }
+        a.on_tick(10).await;
+        assert_eq!(events(&store).await.len(), 1);
+        let mut b = engine(&store).await;
+        for now in 11..60 {
+            a.windows.record_at(now, &failing());
+            a.on_tick(now).await;
+            b.load().await.unwrap();
+            b.on_tick(now).await;
+        }
+        assert_eq!(
+            events(&store).await,
+            [("firing".to_string(), "route:chat".to_string())],
+            "one episode, nobody resolved or fired it again"
+        );
+        assert_eq!(store.alert_states().await.unwrap().len(), 1);
+    }
+
+    /// The same for a breaker: B's own breaker for the target is closed, and
+    /// its quiet period runs out; the episode is A's.
+    #[tokio::test]
+    async fn a_closed_breaker_here_does_not_resolve_a_circuit_episode_another_holds() {
+        let store = Store::open_in_memory().await.unwrap();
+        rule(&store, "any", "circuit_open", json!({})).await;
+        let provider = store
+            .insert_provider("p", "openai", "http://p.example", None)
+            .await
+            .unwrap();
+        let mut tx = store.begin().await.unwrap();
+        tx.insert_model(provider, "m").await.unwrap();
+        tx.commit().await.unwrap();
+        let mut a = engine(&store).await;
+        a.on_health_at(&flap("p", "m", true), Instant::now()).await;
+        let mut b = engine(&store).await;
+        b.quiet = Duration::ZERO;
+        let at = Instant::now();
+        b.on_health_at(&flap("p", "m", false), at).await;
+        b.on_tick_at(1, at + Duration::from_secs(600)).await;
+        assert_eq!(
+            events(&store).await,
+            [("firing".to_string(), "target:p/m".to_string())]
+        );
+        // Its own breaker opening here does not start a second episode either.
+        b.on_health_at(&flap("p", "m", true), at).await;
+        assert_eq!(events(&store).await.len(), 1);
+    }
+
+    /// An owner that stays silent for three ticks loses its episodes to
+    /// whoever ticks next, which then resolves (or goes on with) them.
+    #[tokio::test]
+    async fn a_silent_owners_episode_is_adopted_after_three_ticks() {
+        let store = Store::open_in_memory().await.unwrap();
+        rule(
+            &store,
+            "errs",
+            "error_rate",
+            serde_json::from_str(ERRORS).unwrap(),
+        )
+        .await;
+        let mut a = engine(&store).await;
+        for _ in 0..5 {
+            a.windows.record_at(10, &failing());
+        }
+        a.on_tick(10).await;
+        let owner = store.alert_states().await.unwrap()[0].owner.clone();
+        assert_eq!(owner.as_deref(), Some(a.instance.as_str()));
+        assert!(store.alert_states().await.unwrap()[0].seen_at.is_some());
+
+        // 80 s later (under three 30 s ticks) A has not been heard of, but
+        // is not given up on.
+        let mut b = ahead(engine(&store).await, 80);
+        b.on_tick(11).await;
+        let held = store.alert_states().await.unwrap();
+        assert_eq!(held[0].owner, owner, "not yet adopted");
+        // A's heartbeat keeps it: a tick of A's own moves seen_at on.
+        a.on_tick(11).await;
+
+        // 10 minutes of silence: B takes it over and, seeing no errors,
+        // resolves it after a full quiet window.
+        let mut b = ahead(b, 600);
+        for now in 12..40 {
+            b.on_tick(now).await;
+        }
+        let events = events(&store).await;
+        assert_eq!(
+            events,
+            [
+                ("firing".to_string(), "route:chat".to_string()),
+                ("resolved".to_string(), "route:chat".to_string())
+            ]
+        );
+        assert!(store.alert_states().await.unwrap().is_empty());
+    }
+
+    /// An owner that ticks on time keeps its episode however long it lasts.
+    #[tokio::test]
+    async fn an_owner_that_ticks_keeps_its_episode() {
+        let store = Store::open_in_memory().await.unwrap();
+        rule(
+            &store,
+            "errs",
+            "error_rate",
+            serde_json::from_str(ERRORS).unwrap(),
+        )
+        .await;
+        let mut a = engine(&store).await;
+        for _ in 0..5 {
+            a.windows.record_at(10, &failing());
+        }
+        a.on_tick(10).await;
+        let before = store.alert_states().await.unwrap()[0].seen_at.clone();
+        a.wall = || OffsetDateTime::now_utc() + time::Duration::seconds(45);
+        a.on_tick(11).await;
+        let after = store.alert_states().await.unwrap()[0].seen_at.clone();
+        assert!(after > before, "{before:?} {after:?}");
+    }
+
+    /// Episodes from before owners existed have neither: the first tick of any
+    /// process adopts them.
+    #[tokio::test]
+    async fn an_episode_without_an_owner_is_adopted_at_once() {
+        let store = Store::open_in_memory().await.unwrap();
+        let rule_id = rule(
+            &store,
+            "errs",
+            "error_rate",
+            serde_json::from_str(ERRORS).unwrap(),
+        )
+        .await;
+        store
+            .q("INSERT INTO alert_state (rule_id, subject, firing, since)
+               VALUES (?, 'route:chat', 1, '2999-01-01 00:00:00')")
+            .bind(rule_id)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        let mut b = engine(&store).await;
+        b.on_tick(10).await;
+        let states = store.alert_states().await.unwrap();
+        assert_eq!(states[0].owner.as_deref(), Some(b.instance.as_str()));
     }
 
     async fn gateway_budget(store: &Store) -> i64 {

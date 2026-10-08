@@ -75,6 +75,13 @@ pub fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
         .map(PrimitiveDateTime::assume_utc)
 }
 
+/// `at` as `YYYY-MM-DD HH:MM:SS` (UTC), the form [`now`] writes.
+pub fn format_timestamp(at: OffsetDateTime) -> String {
+    at.to_offset(time::UtcOffset::UTC)
+        .format(TIMESTAMP)
+        .expect("a UTC time formats with a fixed numeric layout")
+}
+
 /// The current UTC time as `YYYY-MM-DD HH:MM:SS`.
 pub fn now() -> String {
     after(0)
@@ -700,7 +707,7 @@ mod tests {
         (columns.into_iter().collect(), indexes.into_iter().collect())
     }
 
-    /// The PostgreSQL baseline is the SQLite migrations 0001 to 0015: the same
+    /// The PostgreSQL baseline plus its later migrations are the SQLite migrations: the same
     /// tables, columns and named indexes (PostgreSQL adds `route_grants.seq`,
     /// what SQLite's rowid is). A later migration must go into both.
     #[tokio::test]
