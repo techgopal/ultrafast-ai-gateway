@@ -14,7 +14,9 @@
 //! A private-key block is swallowed from its BEGIN line to its END line, and
 //! scanning resumes right after the END line. One known difference from the
 //! whole text: an address that starts inside the END line (`-----END PRIVATE
-//! KEY-----@example.com`) can show its domain part in a stream.
+//! KEY-----@example.com`) can show its domain part in a stream, or a separate
+//! `[REDACTED:EMAIL]`, in which case the released text is not a prefix of the
+//! whole-text redaction (no key material is involved).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

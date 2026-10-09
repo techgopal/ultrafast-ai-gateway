@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `uf_guardrail_actions_total` and `uf_guardrail_external_errors_total`; span
   attribute `uf.guardrail.action` (migrations: SQLite 0017, PostgreSQL 0003).
   README section "Guardrails" lists the detectors' known misses and the limits.
+  The rate limits run before the guardrails (a blocked call gives its request
+  and tokens back), large scans are bounded to as many at once as CPUs, and
+  only admins see which guardrail or rule acted in the logs.
 - Multiple Anthropic `system` blocks are now joined with a newline (they were
   joined with nothing), so a guardrail sees, and the provider receives, the
   blocks apart.

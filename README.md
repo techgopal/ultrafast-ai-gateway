@@ -62,7 +62,7 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
 - **Clients.** Rust, Python and TypeScript, sharing one Rust core.
 
 Not yet (phase 2): MCP tools, alerts by email, an
-admin SDK, Postgres, the Responses API,
+admin SDK, the Responses API,
 image or audio output, and `response_format` / structured outputs.
 
 ## Quickstart
@@ -506,7 +506,7 @@ read the text as it is; other keywords treat a JSON escape as a word edge.
 | `US_SSN` | `123-45-6789` (area codes 000, 666 and 9xx excluded) | numbers without dashes |
 | `IPV4` | four numbers up to 255, no leading zeros | |
 | `IPV6` | addresses that parse and have a hex digit or at least three colons (`a::b` is not one) | |
-| `SECRET` | API keys of common providers (`sk-...`, `AKIA...`, `ghp_...`, `xox[abpre]-...`, `AIza...`), and private-key blocks (PEM, PGP) | other credential formats; use a regular expression |
+| `SECRET` | exactly these shapes: `sk-` (which includes `sk-ant-` and `sk-proj-`, 20 to 200 characters after the prefix), `AKIA` + 16, `ghp_` (36 to 100), `github_pat_` (22 to 100), `xox[abpre]-` (10 to 100), `AIza` + 35, `uf-sk-` and `uf-at-` (16 to 200), and private-key blocks (PEM and PGP, from the `BEGIN` line to the `END` line) | every other credential format, Stripe's `sk_live_` among them (use a regular expression); an `sk-` key longer than 203 characters is redacted only as far as the 203rd |
 
 A redaction puts `[REDACTED:EMAIL]` (the type) or `[REDACTED]` (a keyword or
 regular expression) in the text. Rules match the **original** text, never
@@ -517,7 +517,8 @@ leaves the text untouched. A private-key block is redacted whole, from its
 `BEGIN` line to its `END` line; in a stream everything after a `BEGIN` line is
 held back until the `END` line (or the end of the stream), and one placeholder
 is sent. An address glued directly to an `END` line may show its domain in a
-stream.
+stream, or a separate `[REDACTED:EMAIL]`, so the stream is then not exactly the
+whole-text redaction (no key material is involved).
 
 **Which guardrails apply, and in which order.** For every call: the guardrails
 marked *applies to every call* (by name), then those of the route (in the order
@@ -530,6 +531,15 @@ takes them all off; at most 20 each). All **built-in rules run before any
 external guardrail**, whatever the order; the external ones then run in order,
 over the text the rules left. A rule block means no external guardrail is asked.
 
+*What attaching does not do.* A guardrail on a key checks the calls made with
+that key, and one on a route checks the calls that go through that route.
+Neither follows a person or a model: a member can make a new key, which has no
+guardrails, and a key that may also call `openai/gpt-4o` directly skips the
+guardrail on the route `support` that serves it. A policy that must hold for
+everyone is a guardrail marked *applies to every call*. To make a route's
+guardrails certain, give people keys whose models list names only the route.
+Attaching guardrails to teams and users is not available yet.
+
 **What is checked.**
 
 - *Input* (`input`), before the call is routed: every text part of every message
@@ -537,11 +547,18 @@ over the text the rules left. A rule block means no external guardrail is asked.
   each other are joined and checked as one text, and multiple Anthropic
   `system` blocks are now joined with a newline), the `name` of a message,
   the arguments of tool calls in the history, and each input of an embeddings
-  call. Built-in rules run before the rate limits and budgets; external input
-  checks run after them, so a caller who is rate-limited cannot make the gateway
-  call your webhook.
+  call. The rate limits come first, so a caller who is rate-limited is refused
+  before anything of the body is scanned or sent to your webhook (a body is
+  not scanned for nothing). Then the built-in rules run, then the budgets, then
+  the external guardrails. A call a guardrail blocks gives its request and its
+  token estimate back to the limits: a blocked call spends no quota, no tokens
+  and no budget. The token estimate is that of the input as it came, before
+  redaction.
 - *Output* (`output`): the text of the answer and the arguments of its tool
-  calls, whole or streamed.
+  calls, whole or streamed. Tool-call arguments are scanned as text, not as
+  JSON: a keyword or regular expression whose match spans a quote, or a private
+  key `BEGIN` line with no `END` line in streamed arguments, can leave arguments
+  that are no longer valid JSON.
 - *Not checked*: images and audio, tool definitions (names, descriptions,
   schemas) and stop sequences. No machine-learning classifier (toxicity, prompt
   injection) is built in: use an external guardrail.
@@ -557,23 +574,35 @@ over the text the rules left. A rule block means no external guardrail is asked.
 *Streams.* To redact a match that arrives in pieces, the gateway holds back the
 last 256 characters of each text until the next ones show whether they belong
 to a match; a match that straddles the edge makes it hold up to 2 x 256 + 128
-characters. A stream therefore lags by about that much, and ends exactly as the
-whole answer would have been redacted. A regular-expression match **longer than
+characters. A stream therefore lags by about that much, and ends as the
+whole answer would have been redacted (with the one exception above). If the
+provider fails in the middle of an answer, the clean text the scanner was still
+holding is sent before the error (an answer held for an external guardrail is
+dropped instead, see below). A regular-expression match **longer than
 256 characters may be missed or split in a stream** (keywords are limited to 256
 characters for that reason). Checking one text costs time proportional to its
-length: texts over 64 KiB are scanned on a separate thread.
+length: texts over 64 KiB are scanned on a separate thread, and no more scans
+of that kind run at once than the machine has CPUs, so a burst of large bodies
+cannot take every core. A scan that finds no free slot within 10 seconds is
+refused with 503. Text made of near-misses (`1 1 1 `, `10.0.0.`) is the slowest
+to scan: about 0.2 s of CPU per MiB with every PII type on (a development
+machine), against about 0.02 s for prose.
 
 *Cache.* A blocked answer is never cached; a redacted answer is (the cache key
 includes the guardrails that apply, so keys with different guardrails never
-share an answer). A cache hit records no guardrail outcome: the call that
-filled it did. Metrics and logs count calls that went through the guardrails.
+share an answer). A cache hit records the output outcome of the answer it
+gives (what was redacted when the answer was kept), so the logs, the filter
+and the metrics count it. Metrics and logs count calls that went through the
+guardrails.
 
 **In the logs.** Each call a guardrail acted on carries the worst action
 (`blocked` > `redacted` > `flagged`), and for input and output the guardrails it
 was checked with, the one that blocked, counts of replacements by PII type or
 rule id, and the flag rules that matched. The Logs page shows a badge and has a
 Guardrails filter (`GET /api/logs?guardrail=blocked|redacted|flagged`), and the
-call's page lists the details. Metrics:
+call's page lists the details; only admins see which guardrail, rule or type
+did it, everyone else (members and team leads) sees the action of each
+direction. Metrics:
 `uf_guardrail_actions_total{action,direction}` and
 `uf_guardrail_external_errors_total{reason}` (see Operations). The playground is
 a call like any other: a blocked message shows the guardrail's name, and an
@@ -583,7 +612,14 @@ answer a guardrail stopped says so.
 the result with the placeholders marked (`POST /api/guardrails/test`; nothing
 is stored or logged, and it never echoes what matched). For a saved external
 guardrail it can call the webhook for real (`call_external`); the text is then
-sent to its URL.
+sent to its URL, and the call counts against the same 64-call limit as real
+calls (below).
+
+**Not in force.** The guardrail list shows *Not in force* on a rules guardrail
+whose stored rules the gateway is not running (they do not compile; it keeps
+running the rules it last compiled, if it had any) and *Cannot be called* on an
+external guardrail whose URL or secret cannot be read (it fails by its mode on
+every check). `GET /api/guardrails` carries this as `usable`.
 
 ### External guardrails
 
@@ -641,8 +677,8 @@ if (Math.abs(Date.now() / 1000 - Number(t)) > 300) reject();
 ```
 
 *Timeouts and failures.* The call has the guardrail's timeout (1000 to 10000 ms,
-default 3000) and, for an answer, no more than the time the request has left; no
-redirects. A timeout, a connection error, a status other than 2xx, a redirect,
+default 3000) and, for an answer (held, or a whole one), no more than the time the request has
+left; no redirects. A timeout, a connection error, a status other than 2xx, a redirect,
 an answer over 1 MiB or not in the form above, or a `redact` with the wrong
 number of texts is a failure, and the **fail mode** decides: `open` lets the text
 through and flags the call, `closed` blocks it (and flags it). The flag is
@@ -653,7 +689,9 @@ failure is counted in `uf_guardrail_external_errors_total{reason}`; the log
 and metrics hold the guardrail's name and host, never the URL or any text. Two
 external guardrails run one after the other, so a call can wait the sum of
 their timeouts. At most 64 calls to one guardrail's URL are in flight in a
-process; more fail by the fail mode with the reason `busy`.
+process; more fail by the fail mode with the reason `busy`. A call whose texts
+are all empty asks no external guardrail, so even a fail-closed one does not
+block it.
 
 *Streams.* An external guardrail on the output holds the whole answer: nothing
 is sent until the stream ends and the webhook has answered, then the answer
@@ -664,8 +702,8 @@ limit (32 MiB by default) cannot be checked: fail closed ends the stream with a
 `content_filter`, fail open releases what is held and lets the rest through,
 flagged `buffer_full`, and the built-in rules still apply. A provider error
 while an answer is held drops the held text. An answer an external guardrail
-could not check is not cached. A webhook cannot redact an answer so that it
-exceeds 1 MiB.
+could not check is not cached. A webhook cannot redact an answer, or the texts of
+an input, so that they exceed 1 MiB.
 
 *Configuration files.* Export and import carry guardrails and their attachments
 by name, never a URL or secret: an imported external guardrail is created off,
@@ -1101,13 +1139,15 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
   it is: no Unicode normalisation, JSON escapes count as word edges, and the
   PII detectors have known misses (a bare 10-digit phone number, an IBAN not
   checked against a length table, IPv6 without a digit or three colons).
+  Guardrails on a route or a key can be stepped around with a new key or a
+  direct model call (see Which guardrails apply).
   A private-key block in a stream swallows everything up to its `END` line;
   an address glued to an `END` line may show its domain. External output
   checks hold the whole stream (and a stream over 32 MiB is not checked when
   the guardrail fails open); external guardrails are called with a timeout
   and at most 64 at a time per guardrail and process; their URLs are not
-  restricted to public addresses (admins already set provider URLs). A cache
-  hit records no guardrail outcome. Admins only.
+  restricted to public addresses (admins already set provider URLs). Admins
+  only.
 - Single sign-on: one OIDC provider; no SAML, SCIM, group-to-team sync,
   sign-in-only-with-SSO enforcement, provider-initiated sign-in or back-channel
   logout. Signing out of the gateway does not sign out of the identity
