@@ -810,7 +810,7 @@ pub async fn delete(
     require(me, &Action::ManageRoutes)?;
     let id = path_id(&raw_id)?;
 
-    let mut tx = state.store.begin().await?;
+    let mut tx = state.store.begin_immediate().await?;
     let Some(route) = tx.route_by_id(id).await? else {
         drop(tx);
         // An earlier call may have deleted it and failed to refresh.

@@ -1789,6 +1789,7 @@ async fn admin_writes_that_read_then_write_wait_for_a_writer_instead_of_failing(
     let g = make_id(&org, &maya, "g").await;
     let route = seed_route(&org, "chat").await;
     let model = model_of(&org, route).await;
+    let doomed = seed_route(&org, "doomed").await;
     let (_, k) = org
         .call(
             Some(&maya),
@@ -1800,6 +1801,12 @@ async fn admin_writes_that_read_then_write_wait_for_a_writer_instead_of_failing(
     let key = k["key"]["id"].as_i64().unwrap();
 
     let calls = [
+        (
+            "DELETE",
+            format!("/api/routes/{doomed}"),
+            json!({}),
+            StatusCode::NO_CONTENT,
+        ),
         (
             "PATCH",
             format!("/api/keys/{key}"),
