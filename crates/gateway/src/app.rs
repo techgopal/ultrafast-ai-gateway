@@ -45,6 +45,13 @@ pub const DEFAULT_MAX_PROVIDER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const DEFAULT_MAX_IMAGE_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
 /// The largest audio file a transcription or translation takes.
 pub const DEFAULT_MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
+/// How many audio uploads are received at once, gateway-wide. A ninth is
+/// answered 503 before its body is read.
+pub const MAX_CONCURRENT_UPLOADS: usize = 8;
+/// The longest an audio upload may take to arrive.
+pub const DEFAULT_UPLOAD_TOTAL: Duration = Duration::from_secs(60);
+/// The longest an audio upload may send nothing.
+pub const DEFAULT_UPLOAD_IDLE: Duration = Duration::from_secs(15);
 /// The most audio of one speech answer that is passed on. Speech is at most
 /// 4096 characters, a few minutes of audio, tens of megabytes as raw PCM.
 pub const DEFAULT_MAX_SPEECH_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
@@ -91,6 +98,12 @@ pub struct AppState {
     pub max_audio_bytes: usize,
     /// The most audio of a speech answer that is passed on.
     pub max_speech_response_bytes: usize,
+    /// Audio uploads being received at once; each holds up to the audio cap.
+    pub audio_uploads: Arc<Semaphore>,
+    /// The longest an upload may take to arrive, and the longest it may
+    /// stay silent.
+    pub upload_total: Duration,
+    pub upload_idle: Duration,
     /// The timeouts image calls get at least.
     pub slow_calls: SlowCalls,
     /// Failed sign-in attempts, kept in memory.
@@ -199,6 +212,9 @@ impl AppState {
             max_image_response_bytes: DEFAULT_MAX_IMAGE_RESPONSE_BYTES,
             max_audio_bytes: DEFAULT_MAX_AUDIO_BYTES,
             max_speech_response_bytes: DEFAULT_MAX_SPEECH_RESPONSE_BYTES,
+            audio_uploads: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+            upload_total: DEFAULT_UPLOAD_TOTAL,
+            upload_idle: DEFAULT_UPLOAD_IDLE,
             slow_calls: SlowCalls::default(),
             limiter: LoginLimiter::new(),
             cookie_secure: true,

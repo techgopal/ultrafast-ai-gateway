@@ -755,6 +755,15 @@ const FORM_SLACK: usize = 1024 * 1024;
 const MAX_FORM_FIELD: usize = 64 * 1024;
 const MAX_FORM_FIELDS: usize = 32;
 
+/// What an upload asks of the call before its file is read: given the model
+/// the form names and the size the sender declared, it decides access and
+/// takes the rate limits, or answers with the refusal.
+type Early<'a> = &'a mut (dyn FnMut(&str, u64) -> Result<(), Response> + Send);
+
+/// The place an upload holds among the gateway's concurrent uploads, until
+/// the call that carries its file ends.
+type UploadSlot = tokio::sync::OwnedSemaphorePermit;
+
 /// Reads the body of a call and parses it.
 async fn read_call(
     state: &AppState,
@@ -762,11 +771,12 @@ async fn read_call(
     body: Body,
     form_type: Option<&str>,
     shape: Shape,
-) -> Result<(Call, Option<PromptRef>), Response> {
+    early: Early<'_>,
+) -> Result<(Call, Option<PromptRef>, Option<UploadSlot>), Response> {
     if let Some(task) = endpoint.upload_task() {
-        return read_upload(state, task, body, form_type, shape)
+        return read_upload(state, task, body, form_type, shape, early)
             .await
-            .map(|call| (call, None));
+            .map(|(call, slot)| (call, None, Some(slot)));
     }
     let body = match axum::body::to_bytes(body, state.max_body_bytes).await {
         Ok(b) => b,
@@ -787,7 +797,10 @@ async fn read_call(
             });
         }
     };
-    endpoint.parse(&body).map_err(|e| shape.translate_error(&e))
+    endpoint
+        .parse(&body)
+        .map(|(call, prompt)| (call, prompt, None))
+        .map_err(|e| shape.translate_error(&e))
 }
 
 /// Renders the template a chat call names into the call. A template that
@@ -848,7 +861,8 @@ async fn read_upload(
     body: Body,
     form_type: Option<&str>,
     shape: Shape,
-) -> Result<Call, Response> {
+    early: Early<'_>,
+) -> Result<(Call, UploadSlot), Response> {
     let cap = state.max_audio_bytes;
     let too_large = || {
         shape.error(
@@ -862,10 +876,23 @@ async fn read_upload(
     let Some(boundary) = form_type.and_then(|t| multer::parse_boundary(t).ok()) else {
         return Err(bad("The request must be multipart/form-data."));
     };
+    // Only so many uploads are received at once, whatever the keys: each
+    // holds up to the cap in memory. The body of a ninth is not read.
+    let Ok(slot) = state.audio_uploads.clone().try_acquire_owned() else {
+        tracing::warn!("an audio upload was refused: too many are being received");
+        let mut busy = shape.error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "upstream_error",
+            "The gateway is busy receiving other uploads. Try again shortly.",
+        );
+        busy.headers_mut().insert(RETRY_AFTER, 1.into());
+        return Err(busy);
+    };
     let whole = cap.saturating_add(FORM_SLACK);
     // A declared size is believed only to refuse: the limits below hold
     // whatever the sender says.
-    if axum::body::HttpBody::size_hint(&body).lower() > whole as u64 {
+    let declared = axum::body::HttpBody::size_hint(&body).lower();
+    if declared > whole as u64 {
         return Err(too_large());
     }
     let limits = multer::Constraints::new().size_limit(
@@ -875,69 +902,126 @@ async fn read_upload(
             .for_field("file", cap as u64),
     );
     let mut form = multer::Multipart::with_constraints(body.into_data_stream(), boundary, limits);
-    let mut fields: Vec<(String, String)> = Vec::new();
-    let mut file: Option<(Vec<Bytes>, FileInfo)> = None;
     let failed = |e: multer::Error| match e {
+        multer::Error::FieldSizeExceeded {
+            field_name: Some(name),
+            ..
+        } if name != "file" => {
+            // Only the names of the form's fields are echoed.
+            let known = [
+                "model",
+                "language",
+                "prompt",
+                "response_format",
+                "temperature",
+                "timestamp_granularities",
+                "timestamp_granularities[]",
+            ];
+            let which = if known.contains(&name.as_str()) {
+                format!("The field '{name}' is too large.")
+            } else {
+                "A field of the form is too large.".to_string()
+            };
+            shape.error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid_request_error",
+                &which,
+            )
+        }
         multer::Error::StreamSizeExceeded { .. } | multer::Error::FieldSizeExceeded { .. } => {
             too_large()
         }
         _ => bad("The upload could not be read."),
     };
-    loop {
-        let mut field = match form.next_field().await {
-            Ok(Some(field)) => field,
-            Ok(None) => break,
-            Err(e) => return Err(failed(e)),
-        };
-        if fields.len() >= MAX_FORM_FIELDS {
-            return Err(bad("The form has too many fields."));
-        }
-        let name = field.name().unwrap_or_default().to_string();
-        if name == "file" {
-            if file.is_some() {
-                return Err(bad("field 'file' is given twice"));
+    let slow = || {
+        shape.error(
+            StatusCode::REQUEST_TIMEOUT,
+            "invalid_request_error",
+            "The upload was too slow.",
+        )
+    };
+    let idle = state.upload_idle;
+    let read = async {
+        let mut fields: Vec<(String, String)> = Vec::new();
+        let mut file: Option<(Vec<Bytes>, FileInfo)> = None;
+        let mut asked = false;
+        loop {
+            let mut field = match tokio::time::timeout(idle, form.next_field()).await {
+                Err(_) => return Err(slow()),
+                Ok(Ok(Some(field))) => field,
+                Ok(Ok(None)) => break,
+                Ok(Err(e)) => return Err(failed(e)),
+            };
+            if fields.len() >= MAX_FORM_FIELDS {
+                return Err(bad("The form has too many fields."));
             }
-            let name = clean_file_name(field.file_name());
-            let content_type = field
-                .content_type()
-                .map(ToString::to_string)
-                .filter(|t| t.len() <= 100 && t.chars().all(|c| c.is_ascii_graphic() || c == ' '))
-                .unwrap_or_else(|| "application/octet-stream".to_string());
-            let mut chunks = Vec::new();
-            let mut len = 0usize;
-            loop {
-                match field.chunk().await {
-                    Ok(Some(chunk)) => {
-                        len += chunk.len();
-                        if len > cap {
-                            return Err(too_large());
-                        }
-                        chunks.push(chunk);
+            let name = field.name().unwrap_or_default().to_string();
+            if name == "file" {
+                if file.is_some() {
+                    return Err(bad("field 'file' is given twice"));
+                }
+                // The model is known: access and the rate limits are decided
+                // now, before the file is read. A form that sends the model
+                // after the file pays for the read first.
+                if !asked {
+                    asked = true;
+                    if let Some((_, model)) =
+                        fields.iter().find(|(n, v)| n == "model" && !v.is_empty())
+                    {
+                        early(model, declared)?;
                     }
-                    Ok(None) => break,
-                    Err(e) => return Err(failed(e)),
+                }
+                let name = clean_file_name(field.file_name());
+                let content_type = field
+                    .content_type()
+                    .map(ToString::to_string)
+                    .filter(|t| {
+                        t.len() <= 100 && t.chars().all(|c| c.is_ascii_graphic() || c == ' ')
+                    })
+                    .unwrap_or_else(|| "application/octet-stream".to_string());
+                let mut chunks = Vec::new();
+                let mut len = 0usize;
+                loop {
+                    match tokio::time::timeout(idle, field.chunk()).await {
+                        Err(_) => return Err(slow()),
+                        Ok(Ok(Some(chunk))) => {
+                            len += chunk.len();
+                            if len > cap {
+                                return Err(too_large());
+                            }
+                            chunks.push(chunk);
+                        }
+                        Ok(Ok(None)) => break,
+                        Ok(Err(e)) => return Err(failed(e)),
+                    }
+                }
+                file = Some((
+                    chunks,
+                    FileInfo {
+                        name,
+                        content_type,
+                        len,
+                    },
+                ));
+            } else {
+                match tokio::time::timeout(idle, field.text()).await {
+                    Err(_) => return Err(slow()),
+                    Ok(Ok(text)) => fields.push((name, text)),
+                    Ok(Err(e)) => return Err(failed(e)),
                 }
             }
-            file = Some((
-                chunks,
-                FileInfo {
-                    name,
-                    content_type,
-                    len,
-                },
-            ));
-        } else {
-            match field.text().await {
-                Ok(text) => fields.push((name, text)),
-                Err(e) => return Err(failed(e)),
-            }
         }
-    }
+        Ok((fields, file))
+    };
+    let (fields, file) = match tokio::time::timeout(state.upload_total, read).await {
+        Err(_) => return Err(slow()),
+        Ok(read) => read?,
+    };
     let Some((chunks, info)) = file else {
         return Err(bad("file is required"));
     };
     audio::parse_transcription(task, &fields, info)
-        .map(|r| Call::Transcribe(r, Arc::new(chunks)))
+        .map(|r| (Call::Transcribe(r, Arc::new(chunks)), slot))
         .map_err(|e| shape.translate_error(&e))
 }
 
@@ -954,11 +1038,43 @@ async fn dispatch(
     let shape = endpoint.shape();
     let record = scope.as_mut().expect("the scope is taken only by a stream");
 
-    // 2. Read and parse the body.
-    let (mut call, prompt) = match read_call(state, endpoint, body, form_type, shape).await {
-        Ok(read) => read,
-        Err(refusal) => return refusal,
+    // 2. Read and parse the body. An audio upload whose form names the model
+    // before the file has its access decided and its rate limits taken here,
+    // before the file is read (`early`); the permit then stands for 3a.
+    let mut early_permit = false;
+    // A refusal is a whole response, as everywhere else in this function.
+    #[allow(clippy::result_large_err)]
+    let mut early = |model: &str, declared: u64| -> Result<(), Response> {
+        record.requested(model, false);
+        let resolved = match access::resolve(snapshot, key, model) {
+            Ok(r) => r,
+            Err(Denied::Unknown) => return Err(not_found(shape, model)),
+            Err(Denied::Forbidden) => return Err(forbidden(shape, model)),
+        };
+        record.resolved(match &resolved {
+            Resolved::Route(route) => Some(route.name.as_str()),
+            _ => None,
+        });
+        let subjects = snapshot.subjects_of(actor.key_id, key.user_id, key.team_id);
+        let tokens = declared.div_ceil(AUDIO_BYTES_PER_TOKEN as u64);
+        match state.rate.acquire(&subjects, tokens, Instant::now()) {
+            Ok(permit) => record.hold(permit),
+            Err(refusal) => {
+                state.metrics.rate_limited(refusal.limit_name);
+                return Err(shape.rate_limited(&refusal));
+            }
+        }
+        early_permit = true;
+        Ok(())
     };
+    let (mut call, prompt, _upload_slot) =
+        match read_call(state, endpoint, body, form_type, shape, &mut early).await {
+            Ok(read) => read,
+            Err(refusal) => {
+                record.refund_permit();
+                return refusal;
+            }
+        };
     // 2a. A call that names a prompt template becomes the template's
     // messages and settings plus its own. Before access (the template may
     // name the model), the limits and the guardrails: they all see what the
@@ -988,14 +1104,16 @@ async fn dispatch(
     // back its request and its token estimate at every scope. The estimate is
     // of the input as it came, before any redaction.
     let subjects = snapshot.subjects_of(actor.key_id, key.user_id, key.team_id);
-    match state
-        .rate
-        .acquire(&subjects, call.estimated_tokens(), Instant::now())
-    {
-        Ok(permit) => record.hold(permit),
-        Err(refusal) => {
-            state.metrics.rate_limited(refusal.limit_name);
-            return shape.rate_limited(&refusal);
+    if !early_permit {
+        match state
+            .rate
+            .acquire(&subjects, call.estimated_tokens(), Instant::now())
+        {
+            Ok(permit) => record.hold(permit),
+            Err(refusal) => {
+                state.metrics.rate_limited(refusal.limit_name);
+                return shape.rate_limited(&refusal);
+            }
         }
     }
     // 3b. The guardrails of the call (the gateway's defaults, then the
@@ -1355,9 +1473,9 @@ fn input_slots(call: &mut Call) -> Vec<&mut String> {
         }
         Call::Embed(r) => r.input.iter_mut().collect(),
         Call::Image(r) => vec![&mut r.prompt],
-        // The audio is never inspected, and a transcript is checked as an
-        // answer.
-        Call::Transcribe(..) => Vec::new(),
+        // The audio is never inspected; the prompt is user text sent on, and
+        // a transcript is checked as an answer.
+        Call::Transcribe(r, _) => r.prompt.iter_mut().collect(),
         Call::Speech(r) => vec![&mut r.input],
     }
 }

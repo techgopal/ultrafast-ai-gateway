@@ -12,6 +12,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
 use bytes::Bytes;
 use common::{allow_model, harness, harness_with_metrics_token, harness_with_state, Harness};
+use futures::StreamExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 use ultrafast_gateway::store::{Grants, NewGuardrail, RouteSettings, TargetsInput};
@@ -956,4 +957,262 @@ async fn an_openai_compatible_provider_with_a_path_prefix_serves_audio() {
     let (s, _, body) = transcribe(&h, &[("model", "o/whisper")], b"abc").await;
     assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     assert!(h.upstream.received_requests().await.unwrap().is_empty());
+}
+
+/// A body of a form that sends `head` at once, then `file_len` bytes of file
+/// in 64 KiB chunks, counting what was pulled from it.
+fn counted_upload(fields: &[(&str, &str)], file_len: usize) -> (Body, Arc<AtomicUsize>) {
+    let pulled = Arc::new(AtomicUsize::new(0));
+    let counter = pulled.clone();
+    let chunk = Bytes::from(vec![7u8; 64 * 1024]);
+    let mut first = Some(Bytes::from(head(fields, "big.mp3")));
+    let mut remaining = file_len;
+    let mut closing = Some(Bytes::from(tail()));
+    let mut ready = false;
+    let stream = futures::stream::poll_fn(move |cx| {
+        // A network body is not always ready: after each chunk the reader
+        // must come back for the next, as it does for a socket.
+        if !ready {
+            ready = true;
+            cx.waker().wake_by_ref();
+            return std::task::Poll::Pending;
+        }
+        ready = false;
+        let next = if let Some(f) = first.take() {
+            Some(f)
+        } else if remaining > 0 {
+            let n = remaining.min(chunk.len());
+            remaining -= n;
+            Some(chunk.slice(..n))
+        } else {
+            closing.take()
+        };
+        std::task::Poll::Ready(next.map(|b| {
+            counter.fetch_add(b.len(), Ordering::SeqCst);
+            Ok::<_, std::io::Error>(b)
+        }))
+    });
+    (Body::from_stream(stream), pulled)
+}
+
+// Fix round 1, U1: a refusal that depends on the model alone is answered
+// before the file is read when the model comes first.
+#[tokio::test]
+async fn an_unknown_or_forbidden_model_is_refused_before_the_file_is_read() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(tokens_answer())
+        .mount(&h.upstream)
+        .await;
+    let hidden = allow_model(&h.store, "p", "hidden").await;
+    let mut tx = h.store.begin().await.unwrap();
+    tx.replace_grants(hidden, &Grants::default()).await.unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    for (model, expect) in [
+        ("p/nope", StatusCode::NOT_FOUND),
+        ("p/hidden", StatusCode::FORBIDDEN),
+    ] {
+        let (body, pulled) = counted_upload(&[("model", model)], 20 * MIB);
+        let (s, _, text) = send(&h, request(&h, "/v1/audio/transcriptions", body)).await;
+        assert_eq!(s, expect, "{model}: {}", String::from_utf8_lossy(&text));
+        let read = pulled.load(Ordering::SeqCst);
+        assert!(read < MIB, "{model}: the file was read: {read} bytes");
+    }
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
+    // The refusals are recorded as calls of the endpoint.
+    let records = h.sink.wait_for(2).await;
+    assert!(records.iter().all(|r| r.endpoint == "transcriptions"));
+    assert_eq!(records[0].requested, "p/nope");
+}
+
+#[tokio::test]
+async fn a_rate_limited_key_is_refused_before_the_file_is_read_and_the_permit_is_kept_once() {
+    use ultrafast_gateway::limits::{LimitScope, RateLimit};
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(tokens_answer())
+        .mount(&h.upstream)
+        .await;
+    let mut tx = h.store.begin().await.unwrap();
+    tx.upsert_limit(
+        LimitScope::Gateway,
+        None,
+        &RateLimit {
+            requests_per_minute: Some(1),
+            tokens_per_minute: None,
+            concurrent: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    // The first call is counted once, not twice (early and again after the read).
+    assert_eq!(
+        transcribe(&h, &[("model", "p/m")], b"abc").await.0,
+        StatusCode::OK
+    );
+    let (body, pulled) = counted_upload(&[("model", "p/m")], 20 * MIB);
+    let (s, _, text) = send(&h, request(&h, "/v1/audio/transcriptions", body)).await;
+    assert_eq!(
+        s,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        String::from_utf8_lossy(&text)
+    );
+    assert!(pulled.load(Ordering::SeqCst) < MIB);
+    assert_eq!(h.upstream.received_requests().await.unwrap().len(), 1);
+}
+
+// When the model follows the file the whole file is read first (stated in the
+// docs); the refusal still comes, and is bounded by the cap.
+#[tokio::test]
+async fn a_model_after_the_file_is_still_refused_after_the_read() {
+    let h = harness("openai").await;
+    let mut body = head(&[], "a.mp3");
+    body.extend_from_slice(&[1u8; 1000]);
+    body.extend_from_slice(
+        format!("\r\n--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\np/nope\r\n--{BOUNDARY}--\r\n").as_bytes(),
+    );
+    let (s, _, _) = send(
+        &h,
+        request(&h, "/v1/audio/transcriptions", Body::from(body)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+// U2: a client that stops sending, or trickles, is cut off with 408.
+#[tokio::test]
+async fn a_slow_upload_is_cut_off_with_408() {
+    let h = harness_with_state("openai", |s| {
+        s.upload_idle = Duration::from_millis(300);
+        s.upload_total = Duration::from_millis(1000);
+    })
+    .await;
+    // Silence after the head.
+    let stalled = futures::stream::once(async {
+        Ok::<_, std::io::Error>(Bytes::from(head(&[("model", "p/m")], "a.mp3")))
+    })
+    .chain(futures::stream::pending::<Result<Bytes, std::io::Error>>());
+    let (s, _, text) = send(
+        &h,
+        request(&h, "/v1/audio/transcriptions", Body::from_stream(stalled)),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::REQUEST_TIMEOUT,
+        "{}",
+        String::from_utf8_lossy(&text)
+    );
+    // A trickle that never stops is cut by the total deadline.
+    let trickle = futures::stream::unfold(0u8, |i| async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let chunk = if i == 0 {
+            Bytes::from(head(&[("model", "p/m")], "a.mp3"))
+        } else {
+            Bytes::from_static(b"xxxxxxxx")
+        };
+        Some((Ok::<_, std::io::Error>(chunk), 1))
+    });
+    let started = std::time::Instant::now();
+    let (s, _, _) = send(
+        &h,
+        request(&h, "/v1/audio/transcriptions", Body::from_stream(trickle)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::REQUEST_TIMEOUT);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
+    assert!(h.sink.wait_for(2).await.iter().all(|r| r.status == 408));
+}
+
+// Global bound on uploads being received.
+#[tokio::test]
+async fn too_many_uploads_at_once_are_refused_with_503_before_the_body_is_read() {
+    let h = harness_with_state("openai", |s| {
+        s.audio_uploads = Arc::new(tokio::sync::Semaphore::new(1));
+    })
+    .await;
+    Mock::given(method("POST"))
+        .respond_with(tokens_answer())
+        .mount(&h.upstream)
+        .await;
+    let stalled = futures::stream::once(async {
+        Ok::<_, std::io::Error>(Bytes::from(head(&[("model", "p/m")], "a.mp3")))
+    })
+    .chain(futures::stream::pending::<Result<Bytes, std::io::Error>>());
+    let first = {
+        let app = h.app.clone();
+        let req = request(&h, "/v1/audio/transcriptions", Body::from_stream(stalled));
+        tokio::spawn(async move { app.oneshot(req).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (body, pulled) = counted_upload(&[("model", "p/m")], MIB);
+    let (s, headers, text) = send(&h, request(&h, "/v1/audio/transcriptions", body)).await;
+    assert_eq!(
+        s,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        String::from_utf8_lossy(&text)
+    );
+    assert_eq!(pulled.load(Ordering::SeqCst), 0);
+    assert!(headers.contains_key("retry-after"));
+    // Giving the slot back lets the next one in.
+    first.abort();
+    let _ = first.await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        transcribe(&h, &[("model", "p/m")], b"abc").await.0,
+        StatusCode::OK
+    );
+}
+
+// U5.
+#[tokio::test]
+async fn an_oversize_text_field_is_named() {
+    let h = harness("openai").await;
+    let big = "x".repeat(70 * 1024);
+    let (s, _, text) = transcribe(&h, &[("model", "p/m"), ("prompt", &big)], b"abc").await;
+    assert_eq!(s, StatusCode::PAYLOAD_TOO_LARGE);
+    let message = as_json(&text)["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        message.contains("prompt") && !message.contains("audio file"),
+        "{message}"
+    );
+}
+
+// U6.
+#[tokio::test]
+async fn the_prompt_of_a_transcription_is_checked_as_input() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(tokens_answer())
+        .mount(&h.upstream)
+        .await;
+    guardrail(&h, rules()).await;
+    let (s, _, text) = transcribe(
+        &h,
+        &[("model", "p/m"), ("prompt", "the word is swordfish")],
+        b"abc",
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(as_json(&text)["error"]["code"], "guardrail_blocked");
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
+    let (s, _, _) = transcribe(
+        &h,
+        &[("model", "p/m"), ("prompt", "names: ada@example.com")],
+        b"abc",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let sent = &h.upstream.received_requests().await.unwrap()[0].body;
+    assert!(!contains(sent, b"ada@example.com"));
+    assert!(contains(sent, b"name=\"prompt\""));
 }

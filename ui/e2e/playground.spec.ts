@@ -309,7 +309,7 @@ test("an admin transcribes a file and plays a speech: the file reaches the provi
   });
   await page.getByRole("textbox", { name: "Language" }).fill("en");
   await page.getByRole("button", { name: "Transcribe" }).click();
-  await expect(page.getByLabel("Transcript", { exact: true })).toHaveText("Hello from the mock recording.");
+  await expect(page.getByRole("region", { name: "Transcript" })).toContainText("Hello from the mock recording.");
 
   // Speak: the audio the provider made plays from a blob URL (the policy allows blob media).
   await page.getByRole("combobox", { name: "Speech model or route" }).click();

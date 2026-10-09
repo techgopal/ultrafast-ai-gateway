@@ -268,15 +268,19 @@ pub fn build_upload(
     })
 }
 
-/// A subtitle file, line by line, so that the lines of text can be checked
-/// and rewritten and the numbers, timings and headers cannot.
+/// A piece of a subtitle file: lines that are kept as they came (numbers,
+/// timings, headers, blank lines), or the spoken text of one cue, whose
+/// lines are checked together (a phrase may run over a line break) and may
+/// be rewritten.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Line {
-    pub text: String,
-    /// The line break after the text, as it came.
-    pub eol: String,
-    /// Whether it is spoken text (the lines of a cue after its timing).
-    pub spoken: bool,
+pub enum Piece {
+    Kept(String),
+    Cue {
+        /// The spoken lines of the cue, joined with `\n`.
+        text: String,
+        /// The line break after each line, as it came.
+        breaks: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -286,7 +290,7 @@ pub enum Transcript {
     /// `text`: the whole answer is text.
     Text(String),
     /// `srt` or `vtt`.
-    Subtitles(Vec<Line>, TextFormat),
+    Subtitles(Vec<Piece>, TextFormat),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -309,10 +313,12 @@ impl Transcript {
     pub fn slots(&mut self) -> Vec<&mut String> {
         match self {
             Transcript::Text(t) => vec![t],
-            Transcript::Subtitles(lines, _) => lines
+            Transcript::Subtitles(pieces, _) => pieces
                 .iter_mut()
-                .filter(|l| l.spoken)
-                .map(|l| &mut l.text)
+                .filter_map(|p| match p {
+                    Piece::Cue { text, .. } => Some(text),
+                    Piece::Kept(_) => None,
+                })
                 .collect(),
             Transcript::Json(map, _) => {
                 let mut out = Vec::new();
@@ -355,11 +361,23 @@ impl Transcript {
         match self {
             Transcript::Json(map, _) => serde_json::to_vec(map).unwrap_or_default(),
             Transcript::Text(t) => t.clone().into_bytes(),
-            Transcript::Subtitles(lines, _) => {
+            Transcript::Subtitles(pieces, _) => {
                 let mut out = String::new();
-                for l in lines {
-                    out.push_str(&l.text);
-                    out.push_str(&l.eol);
+                for piece in pieces {
+                    match piece {
+                        Piece::Kept(t) => out.push_str(t),
+                        Piece::Cue { text, breaks } => {
+                            // A rewrite may have changed the number of lines;
+                            // an empty line would end the cue, so none is written.
+                            let lines: Vec<&str> =
+                                text.split('\n').filter(|l| !l.trim().is_empty()).collect();
+                            for (i, line) in lines.iter().enumerate() {
+                                out.push_str(line);
+                                let last = breaks.last().map_or("\n", String::as_str);
+                                out.push_str(breaks.get(i).map_or(last, String::as_str));
+                            }
+                        }
+                    }
                 }
                 out.into_bytes()
             }
@@ -367,36 +385,71 @@ impl Transcript {
     }
 }
 
-/// Splits a subtitle file into lines, marking the spoken ones. A cue begins
-/// at a line holding `-->`; its text runs to the next blank line.
-fn subtitle_lines(raw: &str) -> Vec<Line> {
-    let mut lines = Vec::new();
+/// The lines of a text with the break after each: `\r\n`, `\n` or a lone
+/// `\r` (some providers end lines so).
+fn lines_with_breaks(raw: &str) -> Vec<(&str, &str)> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                out.push((&raw[start..i], &raw[i..=i]));
+                i += 1;
+                start = i;
+            }
+            b'\r' => {
+                let end = if bytes.get(i + 1) == Some(&b'\n') {
+                    i + 2
+                } else {
+                    i + 1
+                };
+                out.push((&raw[start..i], &raw[i..end]));
+                i = end;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    if start < raw.len() {
+        out.push((&raw[start..], ""));
+    }
+    out
+}
+
+/// Splits a subtitle file into pieces. A cue begins at a line holding
+/// `-->`; its text runs to the next blank line.
+fn subtitle_pieces(raw: &str) -> Vec<Piece> {
+    let mut pieces = Vec::new();
     let mut in_cue = false;
-    for piece in raw.split_inclusive('\n') {
-        let body = piece.trim_end_matches('\n');
-        let (text, cr) = match body.strip_suffix('\r') {
-            Some(t) => (t, "\r"),
-            None => (body, ""),
-        };
-        let eol = format!("{cr}{}", &piece[body.len()..]);
-        let spoken = if text.trim().is_empty() {
+    let mut cue: Option<(Vec<&str>, Vec<String>)> = None;
+    let flush = |cue: &mut Option<(Vec<&str>, Vec<String>)>, pieces: &mut Vec<Piece>| {
+        if let Some((lines, breaks)) = cue.take() {
+            pieces.push(Piece::Cue {
+                text: lines.join("\n"),
+                breaks,
+            });
+        }
+    };
+    for (text, eol) in lines_with_breaks(raw) {
+        if text.trim().is_empty() {
             in_cue = false;
-            false
+            flush(&mut cue, &mut pieces);
+            pieces.push(Piece::Kept(format!("{text}{eol}")));
         } else if in_cue {
-            true
+            let (lines, breaks) = cue.get_or_insert_with(|| (Vec::new(), Vec::new()));
+            lines.push(text);
+            breaks.push(eol.to_string());
         } else {
             if text.contains("-->") {
                 in_cue = true;
             }
-            false
-        };
-        lines.push(Line {
-            text: text.to_string(),
-            eol,
-            spoken,
-        });
+            pieces.push(Piece::Kept(format!("{text}{eol}")));
+        }
     }
-    lines
+    flush(&mut cue, &mut pieces);
+    pieces
 }
 
 pub fn parse_transcription_response(
@@ -446,7 +499,7 @@ pub fn parse_transcription_response(
                 .map_err(|_| TranslateError::Malformed("response is not text".into()))?;
             let transcript = match format {
                 TextFormat::Text => Transcript::Text(text),
-                f => Transcript::Subtitles(subtitle_lines(&text), f),
+                f => Transcript::Subtitles(subtitle_pieces(&text), f),
             };
             Ok(TranscriptAnswer {
                 transcript,
@@ -794,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn subtitles_expose_only_spoken_lines() {
+    fn subtitles_expose_the_spoken_text_of_each_cue_whole() {
         let srt = "1\r\n00:00:00,000 --> 00:00:01,000\r\nCall 555\r\nsecond line\r\n\r\n2\r\n00:00:01,000 --> 00:00:02,000\r\nbye\r\n";
         let mut a = parse_transcription_response(
             ProviderKind::OpenAi,
@@ -805,12 +858,16 @@ mod tests {
         .unwrap();
         assert_eq!(a.transcript.render(), srt.as_bytes());
         let slots = a.transcript.slots();
-        assert_eq!(slots.len(), 3);
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0], "Call 555\nsecond line");
         for s in slots {
             *s = s.replace("555", "[X]");
         }
         let out = String::from_utf8(a.transcript.render()).unwrap();
-        assert!(out.contains("Call [X]\r\n") && out.contains("00:00:00,000 --> 00:00:01,000\r\n"));
+        assert!(
+            out.contains("Call [X]\r\nsecond line\r\n")
+                && out.contains("00:00:00,000 --> 00:00:01,000\r\n")
+        );
         let vtt = "WEBVTT\n\nNOTE x\n\nid1\n00:00.000 --> 00:01.000\nhello\n";
         let mut a = parse_transcription_response(
             ProviderKind::OpenAi,
@@ -821,6 +878,47 @@ mod tests {
         .unwrap();
         assert_eq!(a.transcript.slots().len(), 1);
         assert_eq!(a.transcript.render(), vtt.as_bytes());
+    }
+
+    #[test]
+    fn a_phrase_over_a_line_break_is_seen_whole_and_a_rewrite_keeps_the_cue_valid() {
+        let srt = "1\n00:00:00,000 --> 00:00:01,000\ncard 4111 1111\n1111 1111 ok\n\n2\n00:00:01,000 --> 00:00:02,000\nnext\n";
+        let mut a = parse_transcription_response(
+            ProviderKind::OpenAi,
+            TextFormat::Srt,
+            200,
+            srt.as_bytes(),
+        )
+        .unwrap();
+        // One match over the break, replaced by one line, and a replacement
+        // that leaves an empty line is not written as a blank line.
+        *a.transcript.slots()[0] = "card [CARD] ok".into();
+        *a.transcript.slots()[1] = "\n".into();
+        let out = String::from_utf8(a.transcript.render()).unwrap();
+        assert_eq!(
+            out,
+            "1\n00:00:00,000 --> 00:00:01,000\ncard [CARD] ok\n\n2\n00:00:01,000 --> 00:00:02,000\n"
+        );
+    }
+
+    #[test]
+    fn a_lone_carriage_return_is_a_line_break() {
+        let srt = "1\r00:00:00,000 --> 00:00:01,000\rmail a@b.co\r\r2\r00:00:01,000 --> 00:00:02,000\rbye\r";
+        let mut a = parse_transcription_response(
+            ProviderKind::OpenAi,
+            TextFormat::Srt,
+            200,
+            srt.as_bytes(),
+        )
+        .unwrap();
+        let slots = a.transcript.slots();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0], "mail a@b.co");
+        *a.transcript.slots()[0] = "mail [EMAIL]".into();
+        assert_eq!(
+            String::from_utf8(a.transcript.render()).unwrap(),
+            "1\r00:00:00,000 --> 00:00:01,000\rmail [EMAIL]\r\r2\r00:00:01,000 --> 00:00:02,000\rbye\r"
+        );
     }
 
     #[test]

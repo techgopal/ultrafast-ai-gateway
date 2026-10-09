@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
+  checkAudioFile,
+  AUDIO_FILE_LIMIT,
   checkImageCount,
   checkSpeechInput,
   checkParams,
@@ -443,4 +445,9 @@ describe("audio helpers", () => {
     expect(tts).toContain(`-d '{"model":"p/m","input":"it'"'"'s","voice":"alloy"}'`);
     expect(tts).toContain("--output speech.mp3");
   });
+});
+
+test("a file over the default audio cap is refused, one at the cap is not", () => {
+  expect(checkAudioFile({ size: AUDIO_FILE_LIMIT })).toBeUndefined();
+  expect(checkAudioFile({ size: AUDIO_FILE_LIMIT + 1 })).toMatch(/25 MiB/);
 });

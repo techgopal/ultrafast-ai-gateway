@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { refOf } from "@/lib/models";
 import {
+  checkAudioFile,
   checkSpeechInput,
   speechCurlOf,
   speechRequestBody,
@@ -89,7 +90,9 @@ function Transcribe({ choices }: { choices: readonly Choice[] }) {
       setFileError(NO_FILE);
       return;
     }
-    setFileError(undefined);
+    const refused = checkAudioFile(file);
+    setFileError(refused);
+    if (refused !== undefined) return;
     const abort = new AbortController();
     controller.current = abort;
     setRunning(true);
@@ -148,8 +151,9 @@ function Transcribe({ choices }: { choices: readonly Choice[] }) {
               accept="audio/*,video/mp4,video/webm,.m4a,.mp3,.mp4,.mpeg,.mpga,.wav,.webm,.ogg,.flac"
               className={control}
               onChange={(event) => {
-                setFile(event.target.files?.[0] ?? null);
-                setFileError(undefined);
+                const chosenFile = event.target.files?.[0] ?? null;
+                setFile(chosenFile);
+                setFileError(chosenFile === null ? undefined : checkAudioFile(chosenFile));
               }}
             />
           )}
@@ -179,19 +183,18 @@ function Transcribe({ choices }: { choices: readonly Choice[] }) {
         </div>
       </form>
       <Failure text={error} />
-      {running ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          Transcribing...
-        </p>
-      ) : null}
+      {/* Always on the page, so that a screen reader announces the text when it appears. */}
+      <p role="status" className="min-h-5 text-sm text-muted-foreground">
+        {running ? "Transcribing..." : ""}
+      </p>
       {transcript === null || running ? null : transcript === "" ? (
         <p className="text-sm text-muted-foreground">{NO_TRANSCRIPT}</p>
       ) : (
-        <div className="flex flex-col gap-1">
-          <p className="text-sm font-medium">Transcript</p>
-          <p aria-label="Transcript" className="whitespace-pre-wrap rounded-md border p-3 text-sm">
-            {transcript}
-          </p>
+        <div role="region" aria-labelledby="transcript-title" className="flex flex-col gap-1">
+          <h3 id="transcript-title" className="text-sm font-medium">
+            Transcript
+          </h3>
+          <p className="whitespace-pre-wrap rounded-md border p-3 text-sm">{transcript}</p>
         </div>
       )}
     </section>
@@ -322,14 +325,14 @@ function Speak({ choices }: { choices: readonly Choice[] }) {
         </div>
       </form>
       <Failure text={error} />
-      {running ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          Making the audio...
-        </p>
-      ) : null}
-      {audio === null || running ? null : <audio controls src={audio} aria-label="Speech" className="w-full">
-          <track kind="captions" />
-        </audio>}
+      <p role="status" className="min-h-5 text-sm text-muted-foreground">
+        {running ? "Making the audio..." : ""}
+      </p>
+      {audio === null || running ? null : (
+        // The audio is made from the text above; there is no recording to caption.
+        // eslint-disable-next-line jsx-a11y/media-has-caption
+        <audio controls src={audio} aria-label="Speech" className="w-full" />
+      )}
     </section>
   );
 }

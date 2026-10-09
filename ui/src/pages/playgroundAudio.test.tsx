@@ -152,7 +152,7 @@ describe("Transcribe", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "Language" }), "en");
     await userEvent.upload(fileField(), recording());
     await userEvent.click(transcribe());
-    expect(await screen.findByLabelText("Transcript")).toHaveTextContent(fixtures.playgroundTranscript);
+    expect(await screen.findByRole("region", { name: "Transcript" })).toHaveTextContent(fixtures.playgroundTranscript);
     expect(sent).toEqual([
       {
         fields: [
@@ -170,7 +170,7 @@ describe("Transcribe", () => {
     await audio();
     await userEvent.upload(fileField(), recording());
     await userEvent.click(transcribe());
-    await screen.findByLabelText("Transcript");
+    await screen.findByRole("region", { name: "Transcript" });
     expect(sent[0]?.fields).toEqual([["model", "local-llm/llama3.1:8b"]]);
   });
 
@@ -180,6 +180,29 @@ describe("Transcribe", () => {
     await userEvent.click(transcribe());
     expect(await screen.findByText("Choose an audio file to transcribe.")).toBeInTheDocument();
     expect(sent).toEqual([]);
+  });
+
+  test("a file over the default cap is refused on the field and not sent", async () => {
+    const sent = transcripts();
+    await audio();
+    const big = new File(["x"], "big.mp3", { type: "audio/mpeg" });
+    Object.defineProperty(big, "size", { value: 26 * 1024 * 1024 });
+    await userEvent.upload(fileField(), big);
+    expect(await screen.findByText(/larger than 25 MiB/)).toBeInTheDocument();
+    await userEvent.click(transcribe());
+    expect(sent).toEqual([]);
+  });
+
+  test("the progress is announced from a status that is always on the page", async () => {
+    transcripts();
+    await audio();
+    const [status] = screen.getAllByRole("status");
+    expect(status).toBeEmptyDOMElement();
+    await userEvent.upload(fileField(), recording());
+    await userEvent.click(transcribe());
+    await screen.findByRole("region", { name: "Transcript" });
+    // The same element, not one that comes and goes.
+    expect(screen.getAllByRole("status")).toContain(status);
   });
 
   test("an answer with no text says so", async () => {
@@ -201,7 +224,7 @@ describe("Transcribe", () => {
     await userEvent.click(transcribe());
     expect(await screen.findByRole("alert")).toHaveTextContent(said);
     expect((fileField() as HTMLInputElement).files?.[0]?.name).toBe("talk.mp3");
-    expect(screen.queryByLabelText("Transcript")).toBeNull();
+    expect(screen.queryByRole("region", { name: "Transcript" })).toBeNull();
     expect(toasts()).toEqual([]);
   });
 
