@@ -1,4 +1,5 @@
 import { ArrowDown, ArrowUp, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useGuardrails } from "@/api/queries";
 import { control, cutLongChoice, selectList } from "@/components/classes";
 import { ErrorState } from "@/components/ErrorState";
@@ -13,12 +14,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { moved } from "@/lib/guardrails";
+import { moved, ordinal } from "@/lib/guardrails";
 
 export const NO_GUARDRAILS = "There are no guardrails yet. Add one on the Guardrails page.";
 export const NONE_CHOSEN = "None chosen.";
 export const ORDER_HINT =
   "They run in this order, after the guardrails that apply to every call. Built-in rules run before external ones.";
+/** What a guardrail on a key does not cover: a person can make another key. */
+export const KEY_HINT = `${ORDER_HINT} These check only the calls made with this key: a new key, or a direct call to a model, is not checked by them.`;
+/** What a guardrail on a route does not cover: a model can be called directly. */
+export const ROUTE_HINT = `${ORDER_HINT} These check only the calls that go through this route: a key that may also call a model directly is not checked by them.`;
+
+/** The control that is to take the focus once the list has changed. */
+type Focus = { guardrail: number; control: "up" | "down" | "remove" } | "add" | "group";
 
 interface PickerProps {
   wiring: FieldWiring;
@@ -35,6 +43,25 @@ interface PickerProps {
  */
 export function GuardrailPicker({ wiring, value, onChange }: PickerProps) {
   const list = useGuardrails();
+  const group = useRef<HTMLDivElement>(null);
+  const focusAfter = useRef<Focus | null>(null);
+  const [said, setSaid] = useState("");
+  // A button that moves or goes is gone or off after the change: the focus
+  // goes to the control that is the person's next step, not to the page.
+  useEffect(() => {
+    const want = focusAfter.current;
+    focusAfter.current = null;
+    const root = group.current;
+    if (want === null || root === null) return;
+    const selector =
+      want === "group"
+        ? null
+        : want === "add"
+          ? '[data-control="add"]'
+          : `[data-guardrail="${String(want.guardrail)}"][data-control="${want.control}"]`;
+    const target = selector === null ? root : root.querySelector<HTMLElement>(selector);
+    (target ?? root).focus();
+  }, [value]);
   if (list.data === undefined) {
     if (list.error !== null) {
       return (
@@ -58,16 +85,43 @@ export function GuardrailPicker({ wiring, value, onChange }: PickerProps) {
   // What is chosen and still exists, in the order it runs.
   const chosen = value.flatMap((id) => all.filter((one) => one.id === id));
   const ids = chosen.map((one) => one.id);
-  const rest = all.filter((one) => !ids.includes(one.id));
+  // What applies to every call is not offered: attaching it changes nothing.
+  const rest = all.filter((one) => !ids.includes(one.id) && !one.is_default);
   const { id } = wiring;
+  const move = (index: number, by: -1 | 1, name: string) => {
+    const to = index + by;
+    // At an end the button that moved it is off: the focus goes to the other.
+    const control = to === 0 ? "down" : to === ids.length - 1 ? "up" : by === -1 ? "up" : "down";
+    const first = ids[index];
+    if (first !== undefined) focusAfter.current = { guardrail: first, control };
+    setSaid(`${name} is now ${ordinal(to + 1)} of ${String(ids.length)}.`);
+    onChange(moved(ids, index, by));
+  };
+  const remove = (index: number, name: string) => {
+    const after = ids.filter((_, at) => at !== index);
+    const next = after[index] ?? after[index - 1];
+    focusAfter.current =
+      next !== undefined
+        ? { guardrail: next, control: "remove" }
+        : all.some((one) => !after.includes(one.id) && !one.is_default)
+          ? "add"
+          : "group";
+    setSaid(`Removed ${name}.`);
+    onChange(after);
+  };
   return (
     <div
+      ref={group}
+      tabIndex={-1}
       role="group"
       id={id}
       aria-labelledby={wiring["aria-labelledby"]}
       aria-describedby={wiring["aria-describedby"]}
-      className="flex flex-col gap-2"
+      className="flex flex-col gap-2 outline-none"
     >
+      <div role="status" aria-live="polite" className="sr-only">
+        {said}
+      </div>
       {chosen.length === 0 ? (
         <p className="text-sm text-muted-foreground">{NONE_CHOSEN}</p>
       ) : (
@@ -78,6 +132,7 @@ export function GuardrailPicker({ wiring, value, onChange }: PickerProps) {
                 <span className="text-muted-foreground tabular-nums">{`${String(index + 1)}.`}</span>
                 <span className="min-w-0 break-all">{one.name}</span>
                 {one.enabled ? null : <Badge variant="outline">Disabled</Badge>}
+                {one.is_default ? <Badge variant="secondary">Every call</Badge> : null}
               </span>
               <Button
                 type="button"
@@ -85,9 +140,11 @@ export function GuardrailPicker({ wiring, value, onChange }: PickerProps) {
                 size="icon"
                 className={control}
                 aria-label={`Move ${one.name} up`}
+                data-guardrail={one.id}
+                data-control="up"
                 disabled={index === 0}
                 onClick={() => {
-                  onChange(moved(ids, index, -1));
+                  move(index, -1, one.name);
                 }}
               >
                 <ArrowUp aria-hidden="true" />
@@ -98,9 +155,11 @@ export function GuardrailPicker({ wiring, value, onChange }: PickerProps) {
                 size="icon"
                 className={control}
                 aria-label={`Move ${one.name} down`}
+                data-guardrail={one.id}
+                data-control="down"
                 disabled={index === chosen.length - 1}
                 onClick={() => {
-                  onChange(moved(ids, index, 1));
+                  move(index, 1, one.name);
                 }}
               >
                 <ArrowDown aria-hidden="true" />
@@ -111,8 +170,10 @@ export function GuardrailPicker({ wiring, value, onChange }: PickerProps) {
                 size="icon"
                 className={control}
                 aria-label={`Remove ${one.name}`}
+                data-guardrail={one.id}
+                data-control="remove"
                 onClick={() => {
-                  onChange(ids.filter((other) => other !== one.id));
+                  remove(index, one.name);
                 }}
               >
                 <X aria-hidden="true" />
@@ -127,11 +188,15 @@ export function GuardrailPicker({ wiring, value, onChange }: PickerProps) {
           value=""
           onValueChange={(next) => {
             const added = Number(next);
-            if (!ids.includes(added)) onChange([...ids, added]);
+            if (ids.includes(added)) return;
+            const name = all.find((one) => one.id === added)?.name ?? "";
+            setSaid(`Added ${name} as ${ordinal(ids.length + 1)} of ${String(ids.length + 1)}.`);
+            onChange([...ids, added]);
           }}
         >
           <SelectTrigger
             aria-label="Add a guardrail"
+            data-control="add"
             className={`${control} w-full sm:w-72 ${cutLongChoice}`}
           >
             <SelectValue placeholder="Add a guardrail" />

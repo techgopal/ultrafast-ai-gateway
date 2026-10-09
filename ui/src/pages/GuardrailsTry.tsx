@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { segmentsOf, verdictOf } from "@/lib/guardrails";
+import { fieldProblem, segmentsOf, verdictOf } from "@/lib/guardrails";
 
 type Guardrail = components["schemas"]["GuardrailView"];
 type RuleSpec = components["schemas"]["RuleSpec"];
@@ -37,13 +37,20 @@ interface TryProps {
   rules: RuleSpec[] | null;
 }
 
-/** The faults of a test the gateway names, in words: the message, and what it says of single fields. */
+/**
+ * The faults of a test the gateway names, in words: what it says of single
+ * fields, each in its own sentence with no field path, or its message when it
+ * names none ("They are marked below" would point at nothing here).
+ */
 function problemText(error: unknown): string | null {
   const message = messageOfError(error);
   if (message === null) return null;
   if (!(error instanceof ApiError)) return message;
-  const fields = Object.entries(error.fields).map(([name, text]) => `${name}: ${text}`);
-  return fields.length === 0 ? message : `${message} ${fields.join(" ")}`;
+  const sentence = (text: string) => (/[.!?]$/.test(text) ? text : `${text}.`);
+  const fields = Object.entries(error.fields).map(([name, text]) =>
+    sentence(fieldProblem(name, text)),
+  );
+  return fields.length === 0 ? message : fields.join(" ");
 }
 
 /**

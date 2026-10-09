@@ -143,10 +143,14 @@ function GuardrailList() {
               <span className="text-xs text-muted-foreground">
                 {`${directionsLabel(guardrail.directions ?? "both")}, fails ${guardrail.fail_mode ?? "open"}`}
               </span>
+              {guardrail.usable ? null : <Badge variant="destructive">Cannot be called</Badge>}
             </span>
           )
         ) : (
-          <span>{`${String(guardrail.rules.length)} ${guardrail.rules.length === 1 ? "rule" : "rules"}`}</span>
+          <span className="flex flex-col items-start gap-1">
+            <span>{`${String(guardrail.rules.length)} ${guardrail.rules.length === 1 ? "rule" : "rules"}`}</span>
+            {guardrail.usable ? null : <Badge variant="destructive">Not in force</Badge>}
+          </span>
         ),
     },
     { id: "applies", header: "Applies to", cell: appliesTo },

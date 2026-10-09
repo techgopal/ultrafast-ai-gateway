@@ -184,6 +184,22 @@ describe("the list", () => {
     expect(within(imported).getByRole("switch", { name: "imported-scanner" })).toBeDisabled();
   });
 
+  test("says so when the gateway cannot use a guardrail as stored", async () => {
+    keeps([
+      { ...guardrails.pii, usable: false },
+      { ...guardrails.external, usable: false },
+      { ...guardrails.words, enabled: false },
+      guardrails.imported,
+    ]);
+    await page();
+    await screen.findByRole("table", { name: "Guardrails" });
+    expect(rowWithCell("mask-emails")).toHaveTextContent("Not in force");
+    expect(rowWithCell("acme-scanner")).toHaveTextContent("Cannot be called");
+    // a disabled one is not judged, and a usable one has no badge
+    expect(rowWithCell("house-rules")).not.toHaveTextContent(/Not in force|Cannot be called/);
+    expect(rowWithCell(guardrails.imported.name)).not.toHaveTextContent(/Not in force|Cannot be called/);
+  });
+
   test("says so when there are none, and offers Add guardrail", async () => {
     keeps([]);
     await page();
@@ -689,7 +705,30 @@ describe("Try it", () => {
     await paste(await nameField(), "n");
     await paste(screen.getByLabelText("Text to check"), "a");
     await userEvent.click(screen.getByRole("button", { name: "Check the text" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("rules[0]: regex parse error: unclosed group");
+    const alert = await screen.findByRole("alert");
+    // in words, not as the gateway names the field
+    expect(alert).toHaveTextContent("Rule 1: regex parse error: unclosed group");
+    expect(alert).not.toHaveTextContent("rules[0]");
+  });
+
+  test("a refusal about the guardrail to call is said without field paths", async () => {
+    keeps();
+    override("post", "/api/guardrails/test", () =>
+      refuse(
+        validationFailed({
+          call_external: "the guardrail has no URL to call",
+          "rules[1].kind": "must be keywords, regex or pii",
+        }),
+      ),
+    );
+    await page("/guardrails/new");
+    await paste(await nameField(), "n");
+    await paste(screen.getByLabelText("Text to check"), "a");
+    await userEvent.click(screen.getByRole("button", { name: "Check the text" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("The guardrail has no URL to call");
+    expect(alert).toHaveTextContent("Rule 2: must be keywords, regex or pii");
+    expect(alert.textContent).not.toMatch(/call_external|rules\[|\.kind/);
   });
 
   test("is off while the text is empty or a rule is incomplete", async () => {

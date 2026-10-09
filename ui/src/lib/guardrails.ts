@@ -387,3 +387,29 @@ export function sideLines(side: Side): string[] {
   }
   return lines;
 }
+
+/**
+ * A refusal of the gateway about one field of a test, in words: a rule by its
+ * place (`rules[1].kind` is "Rule 2"), the other fields by the label the form
+ * gives them. A field this does not know is said by its message alone, so a
+ * field path is never shown.
+ */
+export function fieldProblem(path: string, message: string): string {
+  const rule = /^rules\[(\d+)\]/.exec(path);
+  if (rule?.[1] !== undefined) return `Rule ${String(Number(rule[1]) + 1)}: ${message}`;
+  const labels: Record<string, string> = {
+    guardrail_id: "Guardrail",
+    text: "Text",
+    direction: "Check as",
+  };
+  const label = labels[path];
+  if (label !== undefined) return `${label}: ${message}`;
+  return message.charAt(0).toUpperCase() + message.slice(1);
+}
+
+/** `1st`, `2nd`, `3rd`, `4th`, `11th`, `21st`. */
+export function ordinal(n: number): string {
+  const teen = n % 100 >= 11 && n % 100 <= 13;
+  const suffix = teen ? "th" : (["th", "st", "nd", "rd"][n % 10] ?? "th");
+  return `${String(n)}${suffix}`;
+}
