@@ -25,6 +25,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single sign-on settings reach the other processes within about 30 s. An
   error-rate or circuit alert episode belongs to the process that opened it
   (migrations: SQLite 0016, PostgreSQL 0002).
+- **Guardrails.** Block, redact or flag what goes to models and what comes
+  back. Rules that run in the gateway (keywords, regular expressions, PII types
+  `EMAIL`, `PHONE`, `CREDIT_CARD`, `IBAN`, `US_SSN`, `IPV4`, `IPV6`, `SECRET`)
+  with an action and a direction each, or an external signed webhook (timeout,
+  fail open or closed, `x-uf-signature`). They apply to every call, to a route
+  or to a key, in order; built-in rules run before external ones. Inputs
+  (text parts, system, tool results, tool-call arguments, names, embeddings
+  inputs) and outputs (answers and tool-call arguments), streams included, are
+  checked with a 256-character hold-back; a block is a 400 `guardrail_blocked`
+  on input and a `content_filter` ending on output. The logs carry a badge,
+  details and a filter (`guardrail=`); a console page with a rule editor, *Try
+  it* and attachment on routes and keys; `/api/guardrails/*` (admin only);
+  guardrails in configuration export and import; metrics
+  `uf_guardrail_actions_total` and `uf_guardrail_external_errors_total`; span
+  attribute `uf.guardrail.action` (migrations: SQLite 0017, PostgreSQL 0003).
+  README section "Guardrails" lists the detectors' known misses and the limits.
+- Multiple Anthropic `system` blocks are now joined with a newline (they were
+  joined with nothing), so a guardrail sees, and the provider receives, the
+  blocks apart.
 - **Tracing.** `UF_OTEL_ENDPOINT` (also `UF_OTEL_HEADERS`, `UF_OTEL_SERVICE_NAME`,
   `UF_OTEL_SAMPLE_RATIO`): every `/v1` call is exported as an OpenTelemetry
   trace over OTLP/HTTP (JSON), one server span per call and one span per
