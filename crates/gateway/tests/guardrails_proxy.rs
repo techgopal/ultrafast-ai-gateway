@@ -825,3 +825,91 @@ async fn guardrails_of_a_key_apply_to_its_calls_only() {
     let (s, _) = post_chat(&h.app, Some(&h.key), &chat_body("swordfish")).await;
     assert_eq!(s, StatusCode::OK);
 }
+
+// ---- fix round 1: parts, system blocks, names --------------------------------
+
+#[tokio::test]
+async fn a_match_split_across_text_parts_is_redacted() {
+    let h = harness("openai").await;
+    mount_chat(&h, completion("hello")).await;
+    guardrail(&h, "pii", vec![email_rule("redact", "input")], true).await;
+    let body = json!({ "model": "p/m", "messages": [{ "role": "user", "content": [
+        { "type": "text", "text": "mail ada@exam" },
+        { "type": "text", "text": "ple.com now" } ] }] })
+    .to_string();
+    let (s, answer) = post_chat(&h.app, Some(&h.key), &body).await;
+    assert_eq!(s, StatusCode::OK, "{answer}");
+    let sent = sent_to_provider(&h).await[0].to_string();
+    assert!(
+        !sent.contains("example.com") && !sent.contains("ada@"),
+        "{sent}"
+    );
+    assert!(sent.contains("[REDACTED:EMAIL]"), "{sent}");
+}
+
+#[tokio::test]
+async fn a_keyword_split_across_text_parts_blocks() {
+    let h = harness("openai").await;
+    mount_chat(&h, completion("hello")).await;
+    guardrail(
+        &h,
+        "g",
+        vec![word_rule("w", "swordfish", "block", "input")],
+        true,
+    )
+    .await;
+    let body = json!({ "model": "p/m", "messages": [{ "role": "user", "content": [
+        { "type": "text", "text": "the sword" }, { "type": "text", "text": "fish" } ] }] })
+    .to_string();
+    let (s, _) = post_chat(&h.app, Some(&h.key), &body).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert!(sent_to_provider(&h).await.is_empty());
+}
+
+#[tokio::test]
+async fn images_between_text_parts_keep_their_position() {
+    let h = harness("openai").await;
+    mount_chat(&h, completion("hello")).await;
+    guardrail(&h, "pii", vec![email_rule("redact", "input")], true).await;
+    let img = "https://x.test/a.png";
+    let body = json!({ "model": "p/m", "messages": [{ "role": "user", "content": [
+        { "type": "text", "text": "a ada@exam" }, { "type": "text", "text": "ple.com" },
+        { "type": "image_url", "image_url": { "url": img } },
+        { "type": "text", "text": "tail" } ] }] })
+    .to_string();
+    let (s, answer) = post_chat(&h.app, Some(&h.key), &body).await;
+    assert_eq!(s, StatusCode::OK, "{answer}");
+    let content = sent_to_provider(&h).await[0]["messages"][0]["content"].clone();
+    let parts = content.as_array().unwrap();
+    assert_eq!(parts.len(), 3, "{content}");
+    assert_eq!(parts[0]["text"], "a [REDACTED:EMAIL]");
+    assert_eq!(parts[1]["image_url"]["url"], img);
+    assert_eq!(parts[2]["text"], "tail");
+}
+
+#[tokio::test]
+async fn system_blocks_are_seen_apart_and_names_are_scanned() {
+    let h = harness("openai").await;
+    mount_chat(&h, completion("hello")).await;
+    guardrail(&h, "pii", vec![email_rule("redact", "input")], true).await;
+    let (s, text) = messages(
+        &h,
+        &json!({ "model": "p/m", "max_tokens": 20,
+            "system": [{ "type": "text", "text": "ask a@example.com" },
+                       { "type": "text", "text": "sys2 b@example.com" }],
+            "messages": [{ "role": "user", "content": "hi" }] }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{text}");
+    let sent = sent_to_provider(&h).await[0].to_string();
+    assert!(!sent.contains("example.com"), "{sent}");
+    assert_eq!(sent.matches("[REDACTED:EMAIL]").count(), 2, "{sent}");
+
+    let body = json!({ "model": "p/m", "messages": [
+        { "role": "user", "name": "zed@example.com", "content": "hi" }] })
+    .to_string();
+    let (s, _) = post_chat(&h.app, Some(&h.key), &body).await;
+    assert_eq!(s, StatusCode::OK);
+    let sent = sent_to_provider(&h).await[1].to_string();
+    assert!(!sent.contains("example.com"), "{sent}");
+}

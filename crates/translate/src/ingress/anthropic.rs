@@ -59,6 +59,11 @@ fn text_of(content: WireContent) -> Result<String, TranslateError> {
         WireContent::Blocks(blocks) => {
             let mut out = String::new();
             for b in &blocks {
+                // Blocks are separate texts: a newline keeps the end of one
+                // from running into the start of the next.
+                if !out.is_empty() {
+                    out.push('\n');
+                }
                 if b["type"] != "text" {
                     return Err(TranslateError::InvalidRequest(ONLY_TEXT.into()));
                 }
@@ -581,7 +586,7 @@ mod tests {
         assert_eq!(r.max_tokens, Some(9));
         assert_eq!(r.messages.len(), 3);
         assert_eq!(r.messages[0].role, Role::System);
-        assert_eq!(r.messages[0].joined_text(), "ab");
+        assert_eq!(r.messages[0].joined_text(), "a\nb");
         assert_eq!(r.messages[2].role, Role::Assistant);
         assert_eq!(r.messages[2].joined_text(), "yo");
         assert_eq!(r.stop, Some(vec!["x".into()]));

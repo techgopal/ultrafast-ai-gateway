@@ -812,9 +812,33 @@ fn keep(state: &AppState, plan: &Option<CachePlan>, record: &Scope, answer: Answ
     state.cache.put(plan.key, value, plan.ttl, now);
 }
 
+/// Joins each maximal run of consecutive text parts of a message into one
+/// part (the providers' request builders join them anyway), so a match split
+/// across parts is seen whole. Images keep their place between the runs.
+fn merge_text_parts(request: &mut ChatRequest) {
+    for message in &mut request.messages {
+        if message
+            .content
+            .windows(2)
+            .all(|w| !(matches!(w[0], Part::Text(_)) && matches!(w[1], Part::Text(_))))
+        {
+            continue;
+        }
+        let mut merged: Vec<Part> = Vec::with_capacity(message.content.len());
+        for part in std::mem::take(&mut message.content) {
+            match (merged.last_mut(), part) {
+                (Some(Part::Text(last)), Part::Text(next)) => last.push_str(&next),
+                (_, part) => merged.push(part),
+            }
+        }
+        message.content = merged;
+    }
+}
+
 /// The text slots of a chat request that guardrails read and may rewrite:
-/// every text part (system text and tool results included) and the arguments
-/// of the tool calls in the history.
+/// every text part (system text and tool results included), the `name` of a
+/// message and the arguments of the tool calls in the history. Call
+/// [`merge_text_parts`] first.
 fn chat_slots(request: &mut ChatRequest) -> Vec<&mut String> {
     let mut slots = Vec::new();
     for message in &mut request.messages {
@@ -822,6 +846,9 @@ fn chat_slots(request: &mut ChatRequest) -> Vec<&mut String> {
             if let Part::Text(text) = part {
                 slots.push(text);
             }
+        }
+        if let Some(name) = &mut message.name {
+            slots.push(name);
         }
         for call in &mut message.tool_calls {
             slots.push(&mut call.arguments);
@@ -841,8 +868,14 @@ async fn check_input(
     record: &mut Scope,
     shape: Shape,
 ) -> Result<(), Response> {
+    if !guard.covers(Direction::Input) {
+        return Ok(());
+    }
     let slots = match call {
-        Call::Chat(r) => chat_slots(r),
+        Call::Chat(r) => {
+            merge_text_parts(r);
+            chat_slots(r)
+        }
         Call::Embed(r) => r.input.iter_mut().collect(),
     };
     let outcome = match guard.check(Direction::Input, slots).await {
@@ -879,6 +912,9 @@ async fn check_output(
     record: &mut Scope,
     shape: Shape,
 ) -> Result<Kept, Response> {
+    if !guard.covers(Direction::Output) {
+        return Ok(Kept::Yes);
+    }
     let mut slots = vec![&mut response.content];
     slots.extend(response.tool_calls.iter_mut().map(|c| &mut c.arguments));
     let outcome = match guard.check(Direction::Output, slots).await {
