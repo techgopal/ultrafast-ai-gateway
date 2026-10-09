@@ -61,7 +61,8 @@ pub struct CreateGuardrailRequest {
     /// Applies to every call of the gateway. Off when left out.
     is_default: Option<bool>,
     /// `rules` only: 1 to 50 rules.
-    rules: Option<Vec<RuleSpec>>,
+    #[schema(value_type = Option<Vec<RuleSpec>>)]
+    rules: Option<Vec<serde_json::Value>>,
     /// `external` only, required: where to post the text. Kept encrypted and
     /// never shown again; only its scheme, host and port are.
     #[schema(write_only)]
@@ -83,7 +84,8 @@ pub struct UpdateGuardrailRequest {
     enabled: Option<bool>,
     is_default: Option<bool>,
     /// `rules` only: replaces all the rules.
-    rules: Option<Vec<RuleSpec>>,
+    #[schema(value_type = Option<Vec<RuleSpec>>)]
+    rules: Option<Vec<serde_json::Value>>,
     /// `external` only: a new URL.
     #[schema(write_only)]
     url: Option<String>,
@@ -154,15 +156,17 @@ pub struct GuardrailList {
 #[serde(deny_unknown_fields)]
 pub struct GuardrailTestRequest {
     /// Rules to try, as for a new guardrail. Send these or `guardrail_id`.
-    rules: Option<Vec<RuleSpec>>,
+    #[schema(value_type = Option<Vec<RuleSpec>>)]
+    rules: Option<Vec<serde_json::Value>>,
     /// A stored guardrail, enabled or not.
     guardrail_id: Option<i64>,
     /// `input` or `output`: which rules apply.
     direction: Direction,
     /// Up to 20 000 characters.
     text: String,
-    /// With the id of an external guardrail: really call it. Otherwise an
-    /// external guardrail is never called by a test.
+    /// Reserved for calling an external guardrail from the test. Not
+    /// available yet: sent with the id of an external guardrail it is
+    /// refused (422), and an external guardrail is never called by a test.
     #[serde(default)]
     call_external: bool,
 }
@@ -321,6 +325,53 @@ pub(crate) fn check_fail_mode(mode: &str, fields: &mut BTreeMap<String, String>)
             "must be open or closed".to_string(),
         );
     }
+}
+
+/// Reads the rules of a request. A rule that cannot be read is named in
+/// `fields` (`rules[i]`, or `rules[i].kind` for a matcher that is not
+/// keywords, regex or pii, or `rules[i].types` for a PII type that is not
+/// known); nothing sent is repeated in the message. Returns `Some(empty)`
+/// then, and callers skip their own rule checks (see [`rules_faulty`]).
+pub(crate) fn parse_rules(
+    given: Option<Vec<serde_json::Value>>,
+    fields: &mut BTreeMap<String, String>,
+) -> Option<Vec<RuleSpec>> {
+    let given = given?;
+    let mut rules = Vec::new();
+    for (i, value) in given.into_iter().enumerate() {
+        match serde_json::from_value::<RuleSpec>(value) {
+            Ok(rule) => rules.push(rule),
+            Err(e) => {
+                let text = e.to_string();
+                let (key, message) = if text.contains("`keywords`") {
+                    (
+                        format!("rules[{i}].kind"),
+                        "matcher must be keywords, regex or pii",
+                    )
+                } else if text.contains("`EMAIL`") {
+                    (
+                        format!("rules[{i}].types"),
+                        "unknown PII type; use EMAIL, PHONE, CREDIT_CARD, IBAN, US_SSN, IPV4, IPV6 or SECRET",
+                    )
+                } else {
+                    (
+                        format!("rules[{i}]"),
+                        "the rule is not valid: it needs id, matcher, action and directions, and nothing else",
+                    )
+                };
+                fields.insert(key, message.to_string());
+            }
+        }
+    }
+    if rules_faulty(fields) {
+        return Some(Vec::new());
+    }
+    Some(rules)
+}
+
+/// Whether a rule of the request was already refused.
+pub(crate) fn rules_faulty(fields: &BTreeMap<String, String>) -> bool {
+    fields.keys().any(|k| k.starts_with("rules["))
 }
 
 /// Checks the rules of a guardrail: that there are some, that each compiles
@@ -514,7 +565,7 @@ pub async fn view(
 pub async fn create(
     State(state): State<Arc<AppState>>,
     authed: Authed,
-    ApiJson(req): ApiJson<CreateGuardrailRequest>,
+    ApiJson(mut req): ApiJson<CreateGuardrailRequest>,
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     require(me, &Action::ManageGuardrails)?;
@@ -523,6 +574,7 @@ pub async fn create(
     if let Some(description) = &req.description {
         check_description(description, &mut fields);
     }
+    let rules = parse_rules(req.rules.take(), &mut fields);
     let only = |fields: &mut BTreeMap<String, String>, name: &str, kind: &str| {
         fields.insert(name.to_string(), format!("only for {kind} guardrails"));
     };
@@ -539,7 +591,8 @@ pub async fn create(
                     only(&mut fields, name, "external");
                 }
             }
-            match &req.rules {
+            match &rules {
+                Some(_) if rules_faulty(&fields) => {}
                 Some(rules) => check_rules(rules, &mut fields).await?,
                 None => {
                     fields.insert("rules".to_string(), "add at least one rule".to_string());
@@ -547,7 +600,7 @@ pub async fn create(
             }
         }
         "external" => {
-            if req.rules.is_some() {
+            if rules.is_some() {
                 only(&mut fields, "rules", "rules");
             }
             match &req.url {
@@ -575,11 +628,11 @@ pub async fn create(
         kind,
         enabled,
         is_default,
-        rules,
         url,
         timeout_ms,
         fail_mode,
         directions,
+        rules: _,
     } = req;
     let name = name.trim().to_string();
     let description = description.unwrap_or_default();
@@ -683,7 +736,7 @@ pub async fn update(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
     authed: Authed,
-    ApiJson(req): ApiJson<UpdateGuardrailRequest>,
+    ApiJson(mut req): ApiJson<UpdateGuardrailRequest>,
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     let store = &state.store;
@@ -691,11 +744,13 @@ pub async fn update(
     // id is looked at.
     require(me, &Action::ManageGuardrails)?;
     let was = guardrail_of(store, &raw_id).await?;
+    let mut fields = BTreeMap::new();
+    let rules = parse_rules(req.rules.take(), &mut fields);
     if req.name.is_none()
         && req.description.is_none()
         && req.enabled.is_none()
         && req.is_default.is_none()
-        && req.rules.is_none()
+        && rules.is_none()
         && req.url.is_none()
         && req.timeout_ms.is_none()
         && req.fail_mode.is_none()
@@ -704,7 +759,6 @@ pub async fn update(
         return Err(ApiError::bad_request("Send at least one field to change."));
     }
     let external = was.kind == "external";
-    let mut fields = BTreeMap::new();
     if let Some(name) = &req.name {
         check_name(name, &mut fields);
     }
@@ -713,7 +767,7 @@ pub async fn update(
     }
     let mut host = None;
     if external {
-        if req.rules.is_some() {
+        if rules.is_some() {
             fields.insert("rules".to_string(), "only for rules guardrails".to_string());
         }
         host = req.url.as_deref().and_then(|u| check_url(u, &mut fields));
@@ -742,7 +796,7 @@ pub async fn update(
                 fields.insert(name.to_string(), "only for external guardrails".to_string());
             }
         }
-        if let Some(rules) = &req.rules {
+        if let Some(rules) = rules.as_ref().filter(|_| !rules_faulty(&fields)) {
             check_rules(rules, &mut fields).await?;
         }
     }
@@ -751,7 +805,7 @@ pub async fn update(
     }
 
     let name = req.name.as_deref().map(str::trim);
-    let rules_json = match &req.rules {
+    let rules_json = match &rules {
         Some(rules) => Some(serde_json::to_string(rules).map_err(|e| anyhow!(e))?),
         None => None,
     };
@@ -974,17 +1028,18 @@ pub async fn rotate_secret(
 pub async fn test(
     State(state): State<Arc<AppState>>,
     authed: Authed,
-    ApiJson(req): ApiJson<GuardrailTestRequest>,
+    ApiJson(mut req): ApiJson<GuardrailTestRequest>,
 ) -> Result<Response, ApiError> {
     require(&authed.principal, &Action::ManageGuardrails)?;
     let mut fields = BTreeMap::new();
+    let given_rules = parse_rules(req.rules.take(), &mut fields);
     if req.text.chars().count() > MAX_TEST_CHARS {
         fields.insert(
             "text".to_string(),
             format!("text must be at most {MAX_TEST_CHARS} characters"),
         );
     }
-    let (id, name, rules) = match (req.rules, req.guardrail_id) {
+    let (id, name, rules) = match (given_rules, req.guardrail_id) {
         (Some(_), Some(_)) => {
             fields.insert(
                 "guardrail_id".to_string(),
@@ -1006,7 +1061,9 @@ pub async fn test(
                     "only for the guardrail_id of an external guardrail".to_string(),
                 );
             }
-            check_rules(&rules, &mut fields).await?;
+            if !rules_faulty(&fields) {
+                check_rules(&rules, &mut fields).await?;
+            }
             (0, TEST_NAME.to_string(), rules)
         }
         (None, Some(guardrail_id)) => {

@@ -1440,8 +1440,9 @@ export interface components {
         /** @description What a test sends: rules, or the id of a stored guardrail. */
         GuardrailTestRequest: {
             /**
-             * @description With the id of an external guardrail: really call it. Otherwise an
-             *     external guardrail is never called by a test.
+             * @description Reserved for calling an external guardrail from the test. Not
+             *     available yet: sent with the id of an external guardrail it is
+             *     refused (422), and an external guardrail is never called by a test.
              */
             call_external?: boolean;
             /** @description `input` or `output`: which rules apply. */

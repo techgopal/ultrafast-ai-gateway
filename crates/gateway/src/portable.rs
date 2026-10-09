@@ -834,6 +834,9 @@ struct Planner<'a> {
     models: HashSet<String>,
     /// Names of the guardrails the gateway has or the file creates.
     guardrails: HashSet<String>,
+    /// The faults of the rules of each guardrail of the file, found before
+    /// the transaction (compiling is slow).
+    rule_checks: Vec<BTreeMap<String, String>>,
     /// Whether the import can encrypt (the API can, the command line cannot).
     can_encrypt: bool,
 }
@@ -1147,8 +1150,7 @@ impl Planner<'_> {
                 if entry.external.is_some() {
                     self.error(format!("{at}.external"), "only for external guardrails");
                 }
-                let mut fields = BTreeMap::new();
-                check_rules_sync(&entry.rules, &mut fields);
+                let fields = self.rule_checks.get(i).cloned().unwrap_or_default();
                 self.fields(&at, fields);
             }
             let existing = state.guardrails.iter().find(|g| g.name == entry.name);
@@ -1890,7 +1892,12 @@ fn subject_label(scope: LimitScope, name: Option<&str>) -> String {
 
 /// Checks the whole file against the configuration as it is, and works out
 /// what the import would write.
-fn plan(file: &ConfigFile, state: &ConfigState, can_encrypt: bool) -> Plan {
+fn plan(
+    file: &ConfigFile,
+    state: &ConfigState,
+    can_encrypt: bool,
+    rule_checks: Vec<BTreeMap<String, String>>,
+) -> Plan {
     let mut report = ImportReport::default();
     if file.format != FORMAT {
         report.errors.push(Issue {
@@ -1949,6 +1956,7 @@ fn plan(file: &ConfigFile, state: &ConfigState, can_encrypt: bool) -> Plan {
         teams,
         models,
         guardrails: state.guardrails.iter().map(|g| g.name.clone()).collect(),
+        rule_checks,
         can_encrypt,
     };
     planner.providers();
@@ -2373,6 +2381,22 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
     Ok(())
 }
 
+/// The faults of the rules of every `rules` guardrail of the file, in file
+/// order (empty for the others). Compiling is slow, so the import does this
+/// off the async threads and before it takes the write lock.
+fn rule_checks_of(file: &ConfigFile) -> Vec<BTreeMap<String, String>> {
+    file.guardrails
+        .iter()
+        .map(|g| {
+            let mut fields = BTreeMap::new();
+            if g.kind == "rules" {
+                check_rules_sync(&g.rules, &mut fields);
+            }
+            fields
+        })
+        .collect()
+}
+
 /// Checks the file and, unless `dry_run` or it has errors, writes it, in
 /// one transaction with its audit rows. The report says what was done or,
 /// for a dry run, what would be. The caller refreshes the snapshot.
@@ -2382,9 +2406,13 @@ pub async fn import(
     actor: &Actor<'_>,
     dry_run: bool,
 ) -> Result<ImportReport> {
+    let owned = file.clone();
+    let rule_checks = tokio::task::spawn_blocking(move || rule_checks_of(&owned))
+        .await
+        .map_err(|e| anyhow::anyhow!("the rule check failed: {e}"))?;
     let mut tx = store.begin_immediate().await?;
     let state = tx.config_state().await?;
-    let planned = plan(file, &state, actor.cipher.is_some());
+    let planned = plan(file, &state, actor.cipher.is_some(), rule_checks);
     let report = planned.report.clone();
     if dry_run || !report.is_clean() {
         // Nothing was written: the transaction is dropped, not committed.

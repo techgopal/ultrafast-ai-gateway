@@ -622,7 +622,7 @@ pub async fn create(
     let mut fields = check(&req);
     let team_ids = distinct(&req.team_ids);
 
-    let mut tx = state.store.begin().await?;
+    let mut tx = state.store.begin_immediate().await?;
     check_ids(&mut tx, &req, &team_ids, &mut fields).await?;
     let attach = resolve_guardrails(&mut tx, &req, &mut fields).await?;
     if !fields.is_empty() {
@@ -740,7 +740,7 @@ pub async fn update(
     let mut fields = check(&req);
     let team_ids = distinct(&req.team_ids);
 
-    let mut tx = state.store.begin().await?;
+    let mut tx = state.store.begin_immediate().await?;
     tx.route_by_id(id).await?.ok_or_else(ApiError::not_found)?;
     check_ids(&mut tx, &req, &team_ids, &mut fields).await?;
     let attach = resolve_guardrails(&mut tx, &req, &mut fields).await?;

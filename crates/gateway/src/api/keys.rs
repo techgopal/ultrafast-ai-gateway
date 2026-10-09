@@ -377,7 +377,7 @@ pub async fn create(
         Some(asked) => Some(checked_allowed(store, me, team_key, asked).await),
         None => None,
     };
-    let mut tx = store.begin().await?;
+    let mut tx = store.begin_immediate().await?;
     let mut fields = BTreeMap::new();
     if let Some(reason) = req.tags.as_ref().and_then(tags::refusal) {
         fields.insert("tags".to_string(), reason.to_string());
@@ -563,7 +563,7 @@ pub async fn update(
         return Err(ApiError::invalid_field("tags", reason));
     }
 
-    let mut tx = store.begin().await?;
+    let mut tx = store.begin_immediate().await?;
     let attach = match &req.guardrail_ids {
         Some(asked) => match guardrails::resolve_ids(&mut tx, asked).await? {
             Ok(found) => Some(found),

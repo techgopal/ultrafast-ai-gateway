@@ -233,7 +233,8 @@ impl AppState {
     /// it while a `Tx` is open.
     pub async fn refresh(&self) -> anyhow::Result<()> {
         let _guard = self.refreshing.lock().await;
-        let snapshot = Snapshot::load(&self.store, &self.cipher).await?;
+        let snapshot =
+            Snapshot::load_after(&self.store, &self.cipher, Some(&self.snapshot.load())).await?;
         // What left the catalog is no longer worth a breaker.
         self.health
             .retain(&|provider, model| snapshot.model(provider, model).is_some());

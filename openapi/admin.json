@@ -8976,7 +8976,7 @@
         "properties": {
           "call_external": {
             "type": "boolean",
-            "description": "With the id of an external guardrail: really call it. Otherwise an\nexternal guardrail is never called by a test."
+            "description": "Reserved for calling an external guardrail from the test. Not\navailable yet: sent with the id of an external guardrail it is\nrefused (422), and an external guardrail is never called by a test."
           },
           "direction": {
             "$ref": "#/components/schemas/Direction",

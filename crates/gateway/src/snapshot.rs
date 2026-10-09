@@ -130,6 +130,8 @@ impl fmt::Debug for SnapExternal {
 pub struct SnapGuardrail {
     pub id: i64,
     pub name: String,
+    /// The stored rules text the compiled rules were made from.
+    pub rules_text: String,
     /// The compiled rules of a `rules` guardrail.
     pub rules: Option<Arc<Compiled>>,
     /// The endpoint of an `external` guardrail.
@@ -195,6 +197,8 @@ pub struct Snapshot {
     guardrails: HashMap<i64, Arc<SnapGuardrail>>,
     /// The ids of the enabled guardrails that apply to every call, by name.
     default_guardrails: Vec<i64>,
+    /// How many guardrails this load compiled (the rest were taken over).
+    guardrails_compiled: usize,
     /// See [`Snapshot::cache_fingerprint`].
     cache_fingerprint: [u8; 32],
 }
@@ -230,35 +234,84 @@ fn push_new(ids: &mut Vec<i64>, id: i64) {
     }
 }
 
-/// Compiles every enabled guardrail once. A guardrail whose rules do not
-/// compile or whose URL or secret cannot be read is logged and left out; the
-/// API checks rules before it stores them, so this only happens to a row
-/// written some other way.
-fn load_guardrails(
+/// Builds every enabled guardrail. A guardrail whose rules do not compile or
+/// whose URL or secret cannot be read is logged and left out; the API checks
+/// rules before it stores them, so this only happens to a row written some
+/// other way.
+///
+/// Compiling can take long for a large rule set, so it runs off the async
+/// threads, and a guardrail whose id, name and rules text are what the
+/// `previous` snapshot compiled is taken over as it is: a refresh that
+/// changed no guardrail compiles nothing. Returns how many were compiled.
+async fn load_guardrails(
     rows: &[GuardrailRow],
     cipher: &Cipher,
-) -> (HashMap<i64, Arc<SnapGuardrail>>, Vec<i64>) {
+    previous: Option<&Snapshot>,
+) -> (HashMap<i64, Arc<SnapGuardrail>>, Vec<i64>, usize) {
+    enum Slot {
+        Ready(Arc<SnapGuardrail>),
+        Compile(usize),
+        Left,
+    }
+    let mut slots = Vec::new();
+    let mut pending: Vec<GuardrailRow> = Vec::new();
+    for g in rows.iter().filter(|g| g.enabled) {
+        let slot = if g.kind == "external" {
+            match external_of(g, cipher) {
+                Some(external) => Slot::Ready(Arc::new(SnapGuardrail {
+                    id: g.id,
+                    name: g.name.clone(),
+                    rules_text: String::new(),
+                    rules: None,
+                    external: Some(external),
+                })),
+                None => Slot::Left,
+            }
+        } else {
+            let same = previous
+                .and_then(|p| p.guardrails.get(&g.id))
+                .filter(|old| {
+                    old.rules.is_some() && old.name == g.name && old.rules_text == g.rules
+                });
+            match same {
+                Some(old) => Slot::Ready(old.clone()),
+                None => {
+                    pending.push(g.clone());
+                    Slot::Compile(pending.len() - 1)
+                }
+            }
+        };
+        slots.push((g, slot));
+    }
+    let compiled_count = pending.len();
+    let mut compiled: Vec<Option<SnapGuardrail>> = if pending.is_empty() {
+        Vec::new()
+    } else {
+        tokio::task::spawn_blocking(move || pending.iter().map(rules_guardrail).collect())
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "compiling guardrails failed");
+                Vec::new()
+            })
+    };
     let mut guardrails = HashMap::new();
     // By name (rows come by name): the order the defaults apply in.
     let mut defaults = Vec::new();
-    for g in rows.iter().filter(|g| g.enabled) {
-        let built = if g.kind == "external" {
-            external_of(g, cipher).map(|external| SnapGuardrail {
-                id: g.id,
-                name: g.name.clone(),
-                rules: None,
-                external: Some(external),
-            })
-        } else {
-            rules_guardrail(g)
+    for (g, slot) in slots {
+        let built = match slot {
+            Slot::Ready(built) => built,
+            Slot::Compile(i) => match compiled.get_mut(i).and_then(Option::take) {
+                Some(built) => Arc::new(built),
+                None => continue,
+            },
+            Slot::Left => continue,
         };
-        let Some(built) = built else { continue };
         if g.is_default {
             defaults.push(g.id);
         }
-        guardrails.insert(g.id, Arc::new(built));
+        guardrails.insert(g.id, built);
     }
-    (guardrails, defaults)
+    (guardrails, defaults, compiled_count)
 }
 
 fn rules_guardrail(g: &GuardrailRow) -> Option<SnapGuardrail> {
@@ -273,6 +326,7 @@ fn rules_guardrail(g: &GuardrailRow) -> Option<SnapGuardrail> {
         Ok(compiled) => Some(SnapGuardrail {
             id: g.id,
             name: g.name.clone(),
+            rules_text: g.rules.clone(),
             rules: Some(Arc::new(compiled)),
             external: None,
         }),
@@ -319,6 +373,16 @@ impl Snapshot {
     /// Reads the keys that can work and every usable provider. A provider
     /// that cannot be used is logged and left out; it does not fail the load.
     pub async fn load(store: &Store, cipher: &Cipher) -> Result<Snapshot> {
+        Self::load_after(store, cipher, None).await
+    }
+
+    /// [`Snapshot::load`], taking over the compiled guardrails of `previous`
+    /// that did not change.
+    pub async fn load_after(
+        store: &Store,
+        cipher: &Cipher,
+        previous: Option<&Snapshot>,
+    ) -> Result<Snapshot> {
         // One read transaction: the tables are never read at different moments.
         let rows = store.snapshot_rows().await?;
         // Everything a cached answer depends on besides the call itself.
@@ -625,7 +689,8 @@ impl Snapshot {
                     action: b.action,
                 }));
         }
-        let (guardrails, default_guardrails) = load_guardrails(&rows.guardrails, cipher);
+        let (guardrails, default_guardrails, guardrails_compiled) =
+            load_guardrails(&rows.guardrails, cipher, previous).await;
         Ok(Snapshot {
             keys,
             providers,
@@ -636,6 +701,7 @@ impl Snapshot {
             budgets,
             guardrails,
             default_guardrails,
+            guardrails_compiled,
             cache_fingerprint,
         })
     }
@@ -647,6 +713,12 @@ impl Snapshot {
     /// changes the cache is cleared.
     pub fn cache_fingerprint(&self) -> [u8; 32] {
         self.cache_fingerprint
+    }
+
+    /// How many guardrails this load compiled; the others were taken over
+    /// from the snapshot it replaced.
+    pub fn guardrails_compiled(&self) -> usize {
+        self.guardrails_compiled
     }
 
     /// An enabled guardrail that is ready to run.

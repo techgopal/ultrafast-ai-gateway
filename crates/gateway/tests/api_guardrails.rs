@@ -347,13 +347,13 @@ async fn bad_input_is_refused_with_the_field() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     // A rule field the API does not know.
-    let (status, _) = create(json!({
+    let (status, body) = create(json!({
         "name": "g", "kind": "rules",
         "rules": [{ "id": "r", "matcher": { "pii": ["EMAIL"] }, "action": "block",
                     "directions": "both", "extra": 1 }]
     }))
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_invalid(status, &body, "rules[0]");
     assert!(org.api.store.list_guardrails().await.unwrap().is_empty());
 
     // Updates are checked the same way, and a bad one changes nothing.
@@ -1516,4 +1516,184 @@ async fn the_snapshot_holds_the_enabled_guardrails_in_the_order_calls_use_them()
         !shown.contains("hunter2") && !shown.contains(&x.secret),
         "{shown}"
     );
+}
+
+#[tokio::test]
+async fn a_rule_that_cannot_be_read_is_named_not_a_bare_400() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let bad_kind = json!({ "id": "r", "matcher": { "sounds_like": "x" }, "action": "block", "directions": "both" });
+    let bad_pii = json!({ "id": "r", "matcher": { "pii": ["EMAIL", "SHOE_SIZE"] }, "action": "block", "directions": "both" });
+    let bad_action = json!({ "id": "r", "matcher": { "pii": ["EMAIL"] }, "action": "explode", "directions": "both" });
+    let id = make_id(&org, &maya, "ok").await;
+    for (rule, field) in [
+        (&bad_kind, "rules[1].kind"),
+        (&bad_pii, "rules[1].types"),
+        (&bad_action, "rules[1]"),
+    ] {
+        let rules = json!([pii_email(), rule]);
+        let (status, body) = org
+            .call(
+                Some(&maya),
+                "POST",
+                LIST,
+                Some(json!({ "name": "g", "kind": "rules", "rules": rules })),
+            )
+            .await;
+        assert_invalid(status, &body, field);
+        let message = body["error"]["fields"][field].as_str().unwrap();
+        assert!(
+            !message.contains("SHOE_SIZE") && !message.contains("sounds_like"),
+            "{message}"
+        );
+        assert_eq!(
+            body["error"]["fields"].as_object().unwrap().len(),
+            1,
+            "{body}"
+        );
+        let (status, body) = org
+            .call(
+                Some(&maya),
+                "PATCH",
+                &path(id),
+                Some(json!({ "rules": rules })),
+            )
+            .await;
+        assert_invalid(status, &body, field);
+        let (status, body) = org
+            .call(
+                Some(&maya),
+                "POST",
+                "/api/guardrails/test",
+                Some(json!({ "rules": rules, "direction": "input", "text": "x" })),
+            )
+            .await;
+        assert_invalid(status, &body, field);
+    }
+    assert_eq!(org.api.store.list_guardrails().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_refresh_that_changed_no_guardrail_compiles_nothing() {
+    use ultrafast_gateway::snapshot::Snapshot;
+
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let state = &org.api.state;
+    let a = make_id(&org, &maya, "a").await;
+    make_id(&org, &maya, "b").await;
+    make(
+        &org,
+        &maya,
+        external_body("hook", "https://hooks.example.com/x"),
+    )
+    .await;
+    make(
+        &org,
+        &maya,
+        json!({ "name": "off", "kind": "rules", "rules": [pii_email()], "enabled": false }),
+    )
+    .await;
+
+    // From scratch: the two enabled rules guardrails are compiled.
+    let first = Snapshot::load(&org.api.store, &state.cipher).await.unwrap();
+    assert_eq!(first.guardrails_compiled(), 2);
+    // A refresh with nothing changed takes them over.
+    let same = Snapshot::load_after(&org.api.store, &state.cipher, Some(&first))
+        .await
+        .unwrap();
+    assert_eq!(same.guardrails_compiled(), 0);
+    assert_eq!(same.cache_fingerprint(), first.cache_fingerprint());
+    let kept = same.guardrail(a).unwrap();
+    assert!(std::sync::Arc::ptr_eq(kept, first.guardrail(a).unwrap()));
+    state.refresh().await.unwrap();
+    assert_eq!(state.snapshot.load().guardrails_compiled(), 0);
+
+    // Changed rules, or a rename, compile that one only; other edits none.
+    let patch = |body: Value| {
+        let (org, maya) = (&org, &maya);
+        async move {
+            let (status, v) = org.call(Some(maya), "PATCH", &path(a), Some(body)).await;
+            assert_eq!(status, StatusCode::OK, "{v}");
+        }
+    };
+    patch(json!({ "rules": [{ "id": "w", "matcher": { "keywords": { "words": ["zed"] } }, "action": "flag", "directions": "both" }] })).await;
+    assert_eq!(state.snapshot.load().guardrails_compiled(), 1);
+    patch(json!({ "name": "renamed" })).await;
+    assert_eq!(state.snapshot.load().guardrails_compiled(), 1);
+    patch(json!({ "description": "d" })).await;
+    assert_eq!(state.snapshot.load().guardrails_compiled(), 0);
+    // The taken-over rules still run.
+    let (_, v) = org
+        .call(
+            Some(&maya),
+            "POST",
+            "/api/guardrails/test",
+            Some(json!({ "guardrail_id": a, "direction": "input", "text": "the Zed project" })),
+        )
+        .await;
+    assert_eq!(v["outcome"]["flags"][0]["rule_id"], "w");
+}
+
+/// A writer that commits while an admin write is between its reads and its
+/// write must not fail it (a deferred SQLite transaction would, with 517).
+#[tokio::test]
+async fn admin_writes_that_read_then_write_wait_for_a_writer_instead_of_failing() {
+    let org = common::org_concurrent().await;
+    let maya = org.sign_in("maya").await;
+    let g = make_id(&org, &maya, "g").await;
+    let route = seed_route(&org, "chat").await;
+    let model = model_of(&org, route).await;
+    let (_, k) = org
+        .call(
+            Some(&maya),
+            "POST",
+            "/api/keys",
+            Some(json!({ "name": "k" })),
+        )
+        .await;
+    let key = k["key"]["id"].as_i64().unwrap();
+
+    let calls = [
+        (
+            "PATCH",
+            format!("/api/keys/{key}"),
+            json!({ "guardrail_ids": [g] }),
+            StatusCode::OK,
+        ),
+        (
+            "PUT",
+            format!("/api/routes/{route}"),
+            route_body("chat", model, Some(vec![g])),
+            StatusCode::OK,
+        ),
+        (
+            "POST",
+            "/api/keys".to_string(),
+            json!({ "name": "k2", "guardrail_ids": [g] }),
+            StatusCode::CREATED,
+        ),
+        (
+            "POST",
+            "/api/routes".to_string(),
+            route_body("second", model, Some(vec![g])),
+            StatusCode::CREATED,
+        ),
+    ];
+    for (n, (method, p, body, want)) in calls.into_iter().enumerate() {
+        let mut holder = org.api.store.begin_immediate().await.unwrap();
+        let team = holder.insert_team(&format!("t-{n}")).await.unwrap();
+        let _ = team;
+        let call = {
+            let org = &org;
+            let maya = &maya;
+            async move { org.call(Some(maya), method, &p, Some(body)).await }
+        };
+        let release = async {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            holder.commit().await.unwrap();
+        };
+        let ((status, resp), ()) = tokio::join!(call, release);
+        assert_eq!(status, want, "{resp}");
+    }
 }

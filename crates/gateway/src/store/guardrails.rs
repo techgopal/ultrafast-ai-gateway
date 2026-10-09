@@ -569,4 +569,29 @@ mod tests {
             .unwrap();
         assert!(rows.is_empty());
     }
+
+    /// A guardrail that is deleted leaves nothing for the guardrail that is
+    /// given its id again (SQLite hands ids out again).
+    #[tokio::test]
+    async fn a_guardrail_given_an_old_id_inherits_no_attachments() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let old = tx.insert_guardrail(rules("old")).await.unwrap();
+        let route = tx.insert_route("r", &DEFAULTS, true).await.unwrap();
+        tx.replace_route_guardrails(route, &[old]).await.unwrap();
+        tx.commit().await.unwrap();
+        s.insert_key("k", "h", "d", None).await.unwrap();
+        let key = s.active_key_by_hash("h").await.unwrap().unwrap().id;
+        let mut tx = s.begin().await.unwrap();
+        tx.replace_key_guardrails(key, &[old]).await.unwrap();
+        assert!(tx.delete_guardrail(old).await.unwrap());
+        let new = tx.insert_guardrail(rules("new")).await.unwrap();
+        tx.commit().await.unwrap();
+        if s.dialect() == crate::store::Dialect::Sqlite {
+            assert_eq!(old, new, "the id was given out again");
+        }
+        assert!(s.route_guardrail_refs().await.unwrap().is_empty());
+        assert!(s.key_guardrail_refs().await.unwrap().is_empty());
+        assert!(s.guardrail_key_counts().await.unwrap().is_empty());
+    }
 }
