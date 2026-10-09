@@ -82,6 +82,17 @@ fn look_behind_start(hay: &str, end: usize) -> usize {
         .map_or(0, |(i, _)| i)
 }
 
+/// Byte index where the last `PEM_END_KEEP` bytes of `hay` start (a character
+/// boundary): all a swallowing stream keeps, enough to see an END line that
+/// arrives in pieces.
+fn tail_window(hay: &str) -> usize {
+    let mut from = hay.len().saturating_sub(pii::PEM_END_KEEP);
+    while !hay.is_char_boundary(from) {
+        from += 1;
+    }
+    from
+}
+
 enum Step {
     Text(String),
     Blocked((i64, String)),
@@ -98,16 +109,23 @@ fn advance(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, last: bo
     if pending == 0 || (!last && pending <= HOLD_BACK_CHARS) {
         return Step::Text(String::new());
     }
-    // what the detectors read: the same bytes with JSON escapes blanked
+    // what the detectors read: the same bytes with JSON escapes blanked, and
+    // with the characters of unspaced scripts blanked as well
     let mut scan = buf.lead.clone();
     scan.push_str(&scan::mask_escapes(&buf.hay[buf.base..]));
+    let masked = scan::blank_scripts(&scan);
     let hay = buf.hay.as_str();
+    let hays = scan::Hays {
+        raw: hay,
+        esc: &scan,
+        masked: &masked,
+    };
     let target = if last {
         hay.len()
     } else {
         nth_char_byte(hay, buf.base, pending - HOLD_BACK_CHARS)
     };
-    let hits: Vec<Hit<'_>> = scan::collect_hits(set, Direction::Output, &scan, buf.base);
+    let hits: Vec<Hit<'_>> = scan::collect_hits(set, Direction::Output, &hays, buf.base);
     buf.wait = if hits.len() <= CHEAP_SCAN_HITS {
         0
     } else {
@@ -120,28 +138,45 @@ fn advance(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, last: bo
     if let Some(b) = scan::first_block(hits.iter().filter(|h| h.start < target)) {
         return Step::Blocked(scan::blocked_of(b));
     }
+    // Overlapping redact matches are one unit (their union): a cut never
+    // falls inside one, however long the chain is.
+    let unions = scan::resolve(hits.iter());
     // A private-key block still waiting for its END line is not released:
-    // text before it goes out, the block is replaced and then swallowed.
-    let open = hits
-        .iter()
-        .filter(|h| !last && h.open && h.action == Some(Action::Redact) && h.start < target)
-        .min_by_key(|h| h.start);
+    // text before it goes out, the union it belongs to is replaced by one
+    // placeholder and the rest of the block is swallowed.
+    let open = if last {
+        None
+    } else {
+        unions.iter().find(|a| a.open && a.start < target)
+    };
     let floor = if last || pending <= 2 * HOLD_BACK_CHARS {
         buf.base
     } else {
         nth_char_byte(hay, buf.base, pending - 2 * HOLD_BACK_CHARS)
     };
-    let mut cut = open.map_or(target, |h| h.start.min(target));
-    loop {
+    let mut cut = open.map_or(target, |m| m.start.min(target));
+    let others: Vec<(usize, usize)> = hits
+        .iter()
+        .filter(|h| h.action != Some(Action::Redact))
+        .map(|h| (h.start, h.end))
+        .chain(escapes.iter().copied())
+        .collect();
+    for _ in 0..16 {
         let mut moved = false;
-        let spans = hits
+        let spans = unions
             .iter()
-            .map(|h| (h.start, h.end))
-            .chain(escapes.iter().copied());
+            .map(|a| (a.start, a.end))
+            .chain(others.iter().copied());
         for (start, end) in spans {
-            if start < cut && end > cut && start >= floor {
-                cut = start;
-                moved = true;
+            if start < cut && end > cut {
+                if start >= floor {
+                    cut = start;
+                    moved = true;
+                } else if end < hay.len() {
+                    // longer than the hold-back allows: take all of it now
+                    cut = end;
+                    moved = true;
+                }
             }
         }
         if !moved {
@@ -149,9 +184,9 @@ fn advance(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, last: bo
         }
     }
     let before_cut = || hits.iter().filter(|h| h.start < cut);
-    let applied = scan::resolve(before_cut());
-    let release_end = applied.iter().map(|h| h.end).fold(cut, usize::max);
-    let swallow_now = open.filter(|h| release_end == h.start);
+    let applied: Vec<&scan::Applied<'_>> = unions.iter().filter(|a| a.start < cut).collect();
+    let release_end = applied.iter().map(|a| a.end).fold(cut, usize::max);
+    let swallow_now = open.filter(|m| release_end == m.start);
     if release_end == buf.base && swallow_now.is_none() {
         return Step::Text(String::new());
     }
@@ -161,11 +196,13 @@ fn advance(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, last: bo
     for h in &applied {
         outcome.add_redaction(h.label);
     }
-    let mut text = scan::render(hay, buf.base, release_end, &applied);
-    if let Some(h) = swallow_now {
-        text.push_str(h.placeholder);
-        outcome.add_redaction(h.label);
-        buf.hay.clear();
+    let mut text = scan::render(hay, buf.base, release_end, applied.iter().copied());
+    if let Some(m) = swallow_now {
+        text.push_str(m.placeholder);
+        outcome.add_redaction(m.label);
+        // keep the end of the block seen so far: its END line may be half received
+        let keep = tail_window(&buf.hay);
+        buf.hay.drain(..keep);
         buf.lead.clear();
         buf.base = 0;
         buf.swallow = true;
@@ -187,11 +224,8 @@ fn push_chunk(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, chunk
     buf.hay.push_str(chunk);
     if buf.swallow {
         let Some(end) = pii::PEM_END.find(&buf.hay).map(|m| m.end()) else {
-            let mut from = buf.hay.len().saturating_sub(pii::PEM_END_KEEP);
-            while !buf.hay.is_char_boundary(from) {
-                from += 1;
-            }
-            buf.hay.drain(..from);
+            let keep = tail_window(&buf.hay);
+            buf.hay.drain(..keep);
             return Step::Text(String::new());
         };
         // the block ends here; what follows is ordinary text again

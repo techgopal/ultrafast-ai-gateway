@@ -1372,3 +1372,187 @@ fn stream_cpu_is_bounded_on_adversarial_text() {
         assert!(took < Duration::from_millis(200), "{unit:?} took {took:?}");
     }
 }
+
+// ---------- fix round 2 ----------
+
+#[test]
+fn a_key_swallow_that_starts_mid_end_line_still_ends() {
+    let g = guard(1, &[pii("p", &PiiType::ALL, Action::Redact)]);
+    for body in 150..=360 {
+        let text = format!(
+            "Here is the key:\n-----BEGIN EC PRIVATE KEY-----\n{}\n-----END EC PRIVATE KEY-----\nAnd the rest of my answer goes here.",
+            &"MIIEowIBAAKC".repeat(body / 12 + 1)[..body]
+        );
+        let (want, _) = run(std::slice::from_ref(&g), Direction::Output, &text);
+        assert_eq!(
+            want,
+            "Here is the key:\n[REDACTED:SECRET]\nAnd the rest of my answer goes here."
+        );
+        for size in [1usize, 3] {
+            let chars: Vec<char> = text.chars().collect();
+            let chunks: Vec<String> = chars.chunks(size).map(|c| c.iter().collect()).collect();
+            let refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+            let (out, _, _) = feed(std::slice::from_ref(&g), &refs);
+            assert_eq!(out, want, "body {body} chunk {size}");
+        }
+    }
+}
+
+#[test]
+fn unspaced_script_letters_are_not_word_characters() {
+    for (text, want) in [
+        ("IP地址10.0.0.1。", "IP地址[REDACTED:IPV4]。"),
+        ("电话+14155552671", "电话[REDACTED:PHONE]"),
+        ("电话(415) 555-2671", "电话[REDACTED:PHONE]"),
+        ("密钥sk-abcdefghijklmnopqrstuv", "密钥[REDACTED:SECRET]"),
+        ("身份证123-45-6789号", "身份证[REDACTED:US_SSN]号"),
+        ("のアドレス10.0.0.1です", "のアドレス[REDACTED:IPV4]です"),
+        ("ที่อยู่10.0.0.1", "ที่อยู่[REDACTED:IPV4]"),
+        ("银行DE89370400440532013000号", "银行[REDACTED:IBAN]号"),
+    ] {
+        assert_eq!(redact_all(text), want, "{text}");
+    }
+    let g = guard(1, &[kw("k", &["password"], true, Action::Redact)]);
+    assert_eq!(
+        run(&[g], Direction::Input, "我的password是abc").0,
+        "我的[REDACTED]是abc"
+    );
+    // an address may still be written in that script
+    assert_eq!(redact_all("写信给用户@例子.广告吧"), "[REDACTED:EMAIL]");
+}
+
+#[test]
+fn keywords_and_regexes_see_the_raw_text() {
+    let cases = [
+        (
+            kw("k", &[r"C:\temp"], true, Action::Redact),
+            r"in C:\temp\file",
+            r"in [REDACTED]\file",
+        ),
+        (
+            kw("k", &[r"a\nb"], true, Action::Redact),
+            r"x a\nb y",
+            "x [REDACTED] y",
+        ),
+        (
+            kw("k", &[r#"say \"hi\""#], false, Action::Redact),
+            r#"he did say \"hi\" ok"#,
+            "he did [REDACTED] ok",
+        ),
+        (re("r", r"\\n", Action::Redact), r"a\nb", "a[REDACTED]b"),
+        (
+            re("r", r"C:\\temp", Action::Redact),
+            r"in C:\temp\x",
+            r"in [REDACTED]\x",
+        ),
+        (
+            re("r", r"x\\u0041", Action::Redact),
+            r"x\u0041",
+            "[REDACTED]",
+        ),
+    ];
+    for (rule, text, want) in cases {
+        let g = guard(1, &[rule]);
+        assert_eq!(run(&[g], Direction::Input, text).0, want, "{text}");
+    }
+}
+
+#[test]
+fn unicode_escapes_of_letters_stay_in_an_email_address() {
+    assert_eq!(redact_all(r"jos\u00e9@gmail.com"), "[REDACTED:EMAIL]");
+    assert_eq!(redact_all(r"a\u00e9b@x.com"), "[REDACTED:EMAIL]");
+    assert_eq!(redact_all(r"x\u0020bob@x.com"), r"x\u0020[REDACTED:EMAIL]");
+    // a quote written as an escape is a boundary
+    let key = "sk-abcdefghijklmnopqrstuv";
+    assert_eq!(
+        redact_all(&format!(r"\u201c{key}\u201d")),
+        r"\u201c[REDACTED:SECRET]\u201d"
+    );
+}
+
+#[test]
+fn phone_national_numbers_need_a_trunk_zero_and_a_short_length() {
+    for neg in ["001-002-003-004", "00 11 22 33 44", "010 020 030 040 050"] {
+        let text = format!("see {neg} now");
+        assert_eq!(redact_pii(PiiType::Phone, &text), text, "{neg}");
+    }
+    table(
+        PiiType::Phone,
+        "PHONE",
+        &[
+            "01 23 45 67 89",
+            "06 12 34 56 78",
+            "020 7946 0958",
+            "030 12345678",
+            "(020) 7946 0958",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn overlapping_redactions_merge_into_one_span() {
+    let g = guard(
+        1,
+        &[
+            pii("p", &[PiiType::Email, PiiType::Secret], Action::Redact),
+            kw("k", &["example"], false, Action::Redact),
+        ],
+    );
+    // a secret that runs into an address: nothing of either stays visible
+    let text = "sk-ABCDEFGHIJKLMNOPQRSTUVWXalice@example.com tail";
+    let (out, o) = run(std::slice::from_ref(&g), Direction::Input, text);
+    assert_eq!(out, "[REDACTED:EMAIL] tail");
+    assert_eq!(o.redactions.get("EMAIL"), Some(&1));
+    assert_eq!(o.redactions.len(), 1);
+    // chained: A overlaps B, B overlaps C
+    let g2 = guard(
+        2,
+        &[
+            re("a", "abcd", Action::Redact),
+            re("b", "cdef", Action::Redact),
+            re("c", "efgh", Action::Redact),
+        ],
+    );
+    let (out, o) = run(&[g2], Direction::Input, "xx abcdefgh yy");
+    assert_eq!(out, "xx [REDACTED] yy");
+    assert_eq!(o.redactions.get("a"), Some(&1));
+    // touching matches stay two
+    let g3 = guard(
+        3,
+        &[re("a", "ab", Action::Redact), re("b", "cd", Action::Redact)],
+    );
+    assert_eq!(
+        run(&[g3], Direction::Input, "abcd").0,
+        "[REDACTED][REDACTED]"
+    );
+}
+
+#[test]
+fn property_stream_equals_whole_text_on_more_seeds() {
+    let set = property_set();
+    for seed in 1..=3u64 {
+        let mut rng = Rng(0xC0FF_EE00_1234_5678 ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        for case in 0..250 {
+            let text = random_text(&mut rng);
+            let (want, wo) = run(&set, Direction::Output, &text);
+            let mut s = StreamScanner::new(set.clone());
+            let mut released = String::new();
+            for c in &chunk(&text, &mut rng) {
+                released.push_str(&s.push_text(c).text);
+                assert!(
+                    want.starts_with(&released),
+                    "seed {seed} case {case}: {}",
+                    diff_window(&released, &want)
+                );
+            }
+            released.push_str(&s.finish().text);
+            assert!(
+                released == want,
+                "seed {seed} case {case}: {}",
+                diff_window(&released, &want)
+            );
+            assert_eq!(s.outcome(), &wo, "seed {seed} case {case}");
+        }
+    }
+}

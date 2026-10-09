@@ -443,7 +443,15 @@ fn phone_grouping(cand: &str) -> bool {
     }
     let same = seps.windows(2).all(|w| w[0] == w[1]);
     let nanp = same && (groups == [3, 3, 4] || groups == [1, 3, 3, 4]);
-    let national = cand.starts_with('0') && groups.len() >= 2 && groups.iter().all(|g| *g >= 2);
+    // a trunk 0 and then an area code that does not start with 0; at most 11 digits
+    let national = {
+        let mut digits = cand.bytes().filter(u8::is_ascii_digit);
+        digits.next() == Some(b'0')
+            && matches!(digits.next(), Some(b'1'..=b'9'))
+            && (2..=5).contains(&groups.len())
+            && groups.iter().all(|g| *g >= 2)
+            && groups.iter().sum::<usize>() <= 11
+    };
     nanp || national
 }
 

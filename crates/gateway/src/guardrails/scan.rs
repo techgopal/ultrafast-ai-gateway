@@ -2,7 +2,6 @@
 //! whole-text checks and the stream scanner.
 
 use std::borrow::Cow;
-use std::cmp::Reverse;
 use std::sync::Arc;
 
 use regex::{Error as RegexError, Regex, RegexBuilder};
@@ -14,10 +13,30 @@ use super::{
 
 pub(crate) const PLAIN_PLACEHOLDER: &str = "[REDACTED]";
 
+/// Which view of the text a pattern is matched against.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Src {
+    /// The text as it is: regex rules, and keywords that contain a backslash
+    /// or a character of a script written without spaces.
+    Raw,
+    /// JSON escapes and unspaced-script characters blanked, so they are
+    /// boundaries: other keywords.
+    Masked,
+}
+
 pub(crate) enum Finder {
     /// Keywords or a regex rule: counted under the rule id.
-    Plain(Regex),
+    Plain(Regex, Src),
     Pii(PiiType),
+}
+
+/// The views of one text a scan reads; all have the same byte length.
+pub(crate) struct Hays<'a> {
+    pub raw: &'a str,
+    /// JSON escapes blanked; scripts kept (email addresses may use them).
+    pub esc: &'a str,
+    /// Escapes and unspaced-script characters blanked.
+    pub masked: &'a str,
 }
 
 pub(crate) struct CompiledRule {
@@ -38,10 +57,11 @@ pub(crate) fn compile_rules(rules: &[RuleSpec]) -> Result<Vec<CompiledRule>, Gua
             return Err(GuardrailError::BadRuleId(r.id.clone()));
         }
         let finders = match &r.matcher {
-            Matcher::Keywords { words, whole_word } => {
-                vec![Finder::Plain(keywords::build(&r.id, words, *whole_word)?)]
-            }
-            Matcher::Regex(p) => vec![Finder::Plain(build_regex(&r.id, p)?)],
+            Matcher::Keywords { words, whole_word } => keywords::build(&r.id, words, *whole_word)?
+                .into_iter()
+                .map(|(re, src)| Finder::Plain(re, src))
+                .collect(),
+            Matcher::Regex(p) => vec![Finder::Plain(build_regex(&r.id, p)?, Src::Raw)],
             Matcher::Pii(types) => {
                 if types.is_empty() {
                     return Err(GuardrailError::NoPiiTypes(r.id.clone()));
@@ -133,9 +153,30 @@ pub(crate) fn escape_spans(raw: &str, from: usize, out: &mut Vec<(usize, usize)>
     }
 }
 
-/// `raw` with every JSON escape replaced by spaces of the same length, so
+/// Characters of scripts written without spaces between words (Han, Hiragana,
+/// Katakana, Thai, Lao, Khmer, Myanmar): Unicode word boundaries never fall
+/// between two of them, so they are not treated as word characters (a
+/// keyword containing one is matched as a substring).
+pub(crate) fn is_unspaced_script(c: char) -> bool {
+    matches!(u32::from(c),
+        0x0E00..=0x0EFF // Thai, Lao
+        | 0x1000..=0x109F // Myanmar
+        | 0x1780..=0x17FF // Khmer
+        | 0x3040..=0x30FF // Hiragana, Katakana
+        | 0x31F0..=0x31FF // Katakana extensions
+        | 0x3400..=0x4DBF // Han extension A
+        | 0x4E00..=0x9FFF // Han
+        | 0xF900..=0xFAFF // Han compatibility
+        | 0xFF66..=0xFF9F // half-width Katakana
+        | 0x20000..=0x3FFFF // Han extensions B and later
+    )
+}
+
+/// `raw` with every JSON escape replaced by blanks of the same length, so
 /// detectors see a boundary there (tool-call arguments are JSON text, and the
-/// `n` of `\n` is not a letter of the next word). Positions are unchanged.
+/// `n` of `\n` is not a letter of the next word). A `\uXXXX` escape of a
+/// letter or digit becomes letters (`jos\u00e9@x.com` is one address).
+/// Positions are unchanged.
 pub(crate) fn mask_escapes(raw: &str) -> Cow<'_, str> {
     if !raw.contains('\\') {
         return Cow::Borrowed(raw);
@@ -147,10 +188,36 @@ pub(crate) fn mask_escapes(raw: &str) -> Cow<'_, str> {
     }
     let mut bytes = raw.as_bytes().to_vec();
     for (s, e) in spans {
-        bytes[s..e].fill(b' ');
+        let fill = if e - s == 6 {
+            u32::from_str_radix(&raw[s + 2..e], 16)
+                .ok()
+                .and_then(char::from_u32)
+                .filter(|c| c.is_alphanumeric() && !is_unspaced_script(*c))
+                .map_or(b' ', |_| b'x')
+        } else {
+            b' '
+        };
+        bytes[s..e].fill(fill);
     }
     // only ASCII bytes were replaced by ASCII, so this is valid UTF-8
     Cow::Owned(String::from_utf8(bytes).unwrap_or_else(|_| raw.to_string()))
+}
+
+/// `text` with each character of an unspaced script replaced by as many
+/// blanks as it has bytes (positions unchanged).
+pub(crate) fn blank_scripts(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(is_unspaced_script) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_unspaced_script(c) {
+            out.extend(std::iter::repeat_n(' ', c.len_utf8()));
+        } else {
+            out.push(c);
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// One match of one rule.
@@ -174,7 +241,7 @@ pub(crate) struct Hit<'a> {
 pub(crate) fn collect_hits<'a>(
     set: &'a [Arc<Compiled>],
     dir: Direction,
-    hay: &str,
+    hays: &Hays<'_>,
     from: usize,
 ) -> Vec<Hit<'a>> {
     let mut hits = Vec::new();
@@ -189,11 +256,22 @@ pub(crate) fn collect_hits<'a>(
                 }
                 spans.clear();
                 let (label, placeholder) = match finder {
-                    Finder::Plain(re) => {
+                    Finder::Plain(re, src) => {
+                        let hay = if *src == Src::Raw {
+                            hays.raw
+                        } else {
+                            hays.masked
+                        };
                         find_plain(re, hay, from, &mut spans);
                         (rule.id.as_str(), PLAIN_PLACEHOLDER)
                     }
                     Finder::Pii(ty) => {
+                        // addresses may use any script; the rest reads blanked scripts
+                        let hay = if *ty == PiiType::Email {
+                            hays.esc
+                        } else {
+                            hays.masked
+                        };
                         pii::find_all(*ty, hay, from, &mut spans);
                         (ty.name(), ty.placeholder())
                     }
@@ -229,9 +307,21 @@ where
         .min_by_key(|h| (h.seq, h.start))
 }
 
-/// Redact hits to apply: leftmost first, then longest, then the earlier rule;
-/// nothing overlapping an earlier choice.
-pub(crate) fn resolve<'h, 'a>(hits: impl IntoIterator<Item = &'h Hit<'a>>) -> Vec<&'h Hit<'a>>
+/// One replacement: a run of overlapping redact matches.
+pub(crate) struct Applied<'a> {
+    pub start: usize,
+    pub end: usize,
+    /// Count key and placeholder of the match that starts first (ties: the
+    /// earlier rule).
+    pub label: &'a str,
+    pub placeholder: &'a str,
+    /// The run includes a private-key block that has no END line yet.
+    pub open: bool,
+}
+
+/// Redactions to apply: overlapping redact matches merge into one span (their
+/// union), so no part of a match stays visible and nothing is replaced twice.
+pub(crate) fn resolve<'h, 'a>(hits: impl IntoIterator<Item = &'h Hit<'a>>) -> Vec<Applied<'a>>
 where
     'a: 'h,
 {
@@ -239,20 +329,33 @@ where
         .into_iter()
         .filter(|h| h.action == Some(Action::Redact))
         .collect();
-    redact.sort_by_key(|h| (h.start, Reverse(h.end), h.seq));
-    let mut applied = Vec::new();
-    let mut last_end = 0usize;
+    redact.sort_by_key(|h| (h.start, h.seq));
+    let mut applied: Vec<Applied<'a>> = Vec::new();
     for h in redact {
-        if applied.is_empty() || h.start >= last_end {
-            last_end = h.end;
-            applied.push(h);
+        match applied.last_mut() {
+            Some(last) if h.start < last.end => {
+                last.end = last.end.max(h.end);
+                last.open |= h.open;
+            }
+            _ => applied.push(Applied {
+                start: h.start,
+                end: h.end,
+                label: h.label,
+                placeholder: h.placeholder,
+                open: h.open,
+            }),
         }
     }
     applied
 }
 
-/// `hay[from..to]` with the applied hits (sorted, inside the range) replaced.
-pub(crate) fn render(hay: &str, from: usize, to: usize, applied: &[&Hit<'_>]) -> String {
+/// `hay[from..to]` with the applied spans (sorted, inside the range) replaced.
+pub(crate) fn render<'x, 'a: 'x>(
+    hay: &str,
+    from: usize,
+    to: usize,
+    applied: impl IntoIterator<Item = &'x Applied<'a>>,
+) -> String {
     let mut out = String::with_capacity(to - from);
     let mut at = from;
     for h in applied {
@@ -272,7 +375,16 @@ pub(crate) fn check_texts(set: &[Arc<Compiled>], dir: Direction, texts: &mut [St
     let mut outcome = Outcome::default();
     let all: Vec<Vec<Hit<'_>>> = texts
         .iter()
-        .map(|t| collect_hits(set, dir, &mask_escapes(t), 0))
+        .map(|t| {
+            let esc = mask_escapes(t);
+            let masked = blank_scripts(&esc);
+            let hays = Hays {
+                raw: t,
+                esc: &esc,
+                masked: &masked,
+            };
+            collect_hits(set, dir, &hays, 0)
+        })
         .collect();
     for h in all
         .iter()
