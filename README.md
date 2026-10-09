@@ -86,14 +86,14 @@ variations, and realtime audio.
 printf 'UF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' > admin.env
 chmod 600 admin.env
 docker run -d --name ultrafast -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast \
-  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.2
+  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.3
 ```
 
 **Or a binary** from the [latest release](https://github.com/techgopal/ultrafast-ai-gateway/releases)
 (Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x64). For Linux x86_64:
 
 ```bash
-V=2.0.0-beta.2; T=x86_64-unknown-linux-musl
+V=2.0.0-beta.3; T=x86_64-unknown-linux-musl
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/ultrafast-v$V-$T.tar.gz
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c
@@ -362,7 +362,11 @@ How each provider gets it:
   them; that error comes back as it is. `/v1/messages` takes
   `output_config.format` too (any other `output_config` key is a 400); a
   schema given that way is sent to OpenAI and Azure with `strict: true`, since
-  Anthropic always enforces it.
+  Anthropic always enforces it. OpenAI and Azure accept a strict schema only
+  when every object in it has `additionalProperties: false` and lists all of
+  its properties in `required`; a schema sent on `/v1/messages` that does not is
+  answered with their 400, which comes back as it is. Write the schema that way
+  if it may be served by an OpenAI or Azure model.
 - **Gemini:** `generationConfig.responseMimeType` of `application/json`, and
   for a schema `generationConfig.responseJsonSchema` (full JSON Schema).
   `json_object` sends the mime type only; `name`, `description` and `strict` are
@@ -1424,6 +1428,55 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
 shape, TypeScript `responseFormat` with `jsonSchema` in camelCase). They do not
 yet call `/v1/responses`, images, audio or prompt templates; use any OpenAI
 SDK against the gateway for those.
+
+### Admin SDKs
+
+Two more clients manage the gateway instead of calling models: they wrap the
+admin API (`/api`: providers, models, routes, keys, users, teams, limits,
+budgets, alerts, guardrails, prompts, settings, usage, logs, audit, backup and
+configuration). Both are generated from `openapi/admin.json`, authenticate with an
+access token (Account, Access tokens in the console), and raise a typed error
+with the gateway's `status`, `code` and field messages. They are not published
+to npm or PyPI: build from source. CI regenerates both and fails when the
+committed copy differs.
+
+TypeScript ([`clients/admin-ts`](clients/admin-ts/README.md)):
+
+```sh
+pnpm --dir clients/admin-ts install && pnpm --dir clients/admin-ts build
+# then depend on the folder: "@ultrafast/admin": "file:../ultrafast-ai-gateway/clients/admin-ts"
+```
+
+```ts
+import { createAdminClient } from "@ultrafast/admin";
+
+const api = createAdminClient({ baseUrl: "http://127.0.0.1:3000", token: process.env.UF_ADMIN_TOKEN! });
+const { providers } = await api.call(api.raw.GET("/api/providers"));
+console.log(providers.map((p) => p.name));
+const { channel } = await api.call(
+  api.raw.POST("/api/alerts/channels", { body: { name: "ops", kind: "webhook", url: "https://example.com/hook" } }),
+);
+console.log("created channel", channel.id);
+```
+
+Python 3.11 or newer ([`clients/admin-py`](clients/admin-py/README.md)):
+
+```sh
+pip install ./clients/admin-py
+```
+
+```python
+import os
+from ultrafast_admin import AdminClient
+from ultrafast_admin._generated.api.providers import providers_list
+from ultrafast_admin._generated.api.alerts import alerts_channels_create
+from ultrafast_admin._generated.models import CreateChannelRequest
+
+with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
+    print([p.name for p in api.call(providers_list.sync_detailed(client=api.client)).providers])
+    body = CreateChannelRequest(name="ops", kind="webhook", url="https://example.com/hook")
+    print("created channel", api.call(alerts_channels_create.sync_detailed(client=api.client, body=body)).channel.id)
+```
 
 ## Known limits
 

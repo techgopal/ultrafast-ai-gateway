@@ -65,6 +65,13 @@ and briefs add to these; they do not repeat them.
   background writer.
 - Every admin route is declared once with utoipa; `openapi/admin.json` is
   generated from it and every operation has a unique `operationId`.
+- After any admin API change (a route, a request or response type, a doc
+  comment that reaches the spec): regenerate `openapi/admin.json`
+  (`cargo run -p ultrafast-gateway -- openapi > openapi/admin.json`), the console's
+  schema (`pnpm --dir ui gen:api`) and both admin SDKs (`pnpm --dir clients/admin-ts gen`,
+  `clients/admin-py/gen.sh`), and commit them with the change. CI fails when any
+  of them is out of date. A spec shape a generator cannot read is fixed in the
+  utoipa annotations, never by a script in an SDK.
 - Access to models and routes is decided only by the shared predicates in
   `crates/gateway/src/access.rs` (`model_callable`, `route_usable`); /v1 and the
   admin API's lists use the same functions. Every admin write that can change

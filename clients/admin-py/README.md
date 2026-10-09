@@ -6,7 +6,7 @@ settings, usage, logs, audit, backup and configuration. Synchronous and
 asynchronous calls, generated from `openapi/admin.json`.
 
 ```sh
-pip install ultrafast-admin   # Python 3.11 or newer
+pip install ./clients/admin-py   # Python 3.11 or newer; not published to PyPI, build from source
 ```
 
 Create an access token in the console (Account, Access tokens), then:
