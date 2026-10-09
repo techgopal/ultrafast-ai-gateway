@@ -8,6 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Structured outputs.** `response_format` (`text`, `json_object`, `json_schema`)
+  on `/v1/chat/completions`, `text.format` on `/v1/responses`, and
+  `output_config.format` on `/v1/messages`. OpenAI and Azure get it as it
+  came; Anthropic gets `output_config.format` (generally available, no beta
+  header; `json_object` is the schema `{"type":"object"}`, which may be
+  answered with `{}`); Gemini gets `responseMimeType` and
+  `responseJsonSchema`. `strict`, `name` and `description` are not sent to
+  Anthropic and Gemini. The clients take it (`responseFormat` with
+  `jsonSchema` in TypeScript); the playground has a *Response format* control.
+- **Responses API.** `POST /v1/responses` over any provider, stateless, with
+  streaming (no `[DONE]`), function tools, images, `text.format`,
+  `reasoning.effort` and `prompt`. `store`, `previous_response_id`,
+  conversations, background mode, built-in tools and an array
+  `function_call_output` are a 400; `reasoning` items and
+  `include: ["reasoning.encrypted_content"]` are accepted and ignored.
+  `reasoning_effort` is also accepted on chat completions (OpenAI and Azure;
+  a 400 elsewhere).
+- **Images.** `POST /v1/images/generations` for OpenAI, Azure and compatible
+  providers. A call that was sent is never repeated (504 on a timeout, no
+  fallback); timeouts of at least 180 s and 300 s; answers up to 128 MiB.
+  Playground *Images* mode.
+- **Audio.** `POST /v1/audio/transcriptions`, `/v1/audio/translations` and
+  `/v1/audio/speech` for OpenAI, Azure and compatible providers. Uploads are
+  capped by `UF_MAX_AUDIO_BYTES` (25 MiB by default), must arrive within 60 s
+  (15 s idle), and at most 8 are received at once; send `model` before `file`
+  to be refused early. Guardrails check speech input, the transcription
+  `prompt` and the transcript (subtitles by cue line). Playground *Audio* mode.
+- **Prompt templates.** Named, versioned messages with `{{variables}}`: a
+  `prompt` object (`id`, `version`, `variables`) on `/v1/chat/completions` and
+  `/v1/responses`; versions never change; the latest is kept in memory. A
+  Prompts page (versions, a line diff between versions, variables found as you
+  type, *Open in Playground*), a template picker in the playground,
+  `/api/prompts/*`, templates in configuration export and import, and the
+  `name@version` of a call in the logs (migrations: SQLite 0018, PostgreSQL
+  0004).
+- The logs filter by endpoint (`GET /api/logs?endpoint=`) and show each call's
+  endpoint and prompt. Calls are logged, counted and traced under `responses`,
+  `images`, `transcriptions`, `translations` and `speech` too, and an external
+  guardrail is told these endpoint names.
 - **PostgreSQL (optional).** `UF_DATABASE_URL` (a `postgres://` URL, TLS by
   `sslmode`; `UF_DATABASE_MAX_CONNECTIONS`, default 10) runs the gateway on
   PostgreSQL instead of SQLite, so several processes can share one database.
@@ -80,6 +119,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `uf_oidc_signins_total{result}`. Users show how they sign in (Password, SSO only
   or Password and SSO; `has_password` in the user view), and the Account page
   tells a user without a password so. Migration 0015.
+
+### Changed
+- OpenAI (base URL host `api.openai.com`) and Azure targets are sent
+  `max_completion_tokens` in place of `max_tokens`, which the o-series and
+  GPT-5 models require; chat completions accept `max_completion_tokens`. Other
+  OpenAI-compatible hosts keep `max_tokens`.
 
 ## [2.0.0-beta.2] - 2026-10-05
 

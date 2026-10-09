@@ -26,8 +26,15 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
 ## Features
 
 - **Endpoints.** `/v1/chat/completions`, `/v1/messages` (Anthropic format),
-  `/v1/embeddings`, `/v1/models`; streaming on both chat formats, with tool
-  calling and image input (vision) on both, over any provider kind.
+  `/v1/responses` (OpenAI Responses API, stateless), `/v1/embeddings`,
+  `/v1/images/generations`, `/v1/audio/transcriptions`,
+  `/v1/audio/translations`, `/v1/audio/speech`, `/v1/models`; streaming on the
+  chat formats and the Responses API, with tool calling and image input
+  (vision), structured outputs (`response_format`) and reasoning effort, over
+  any provider kind that has the feature. See Endpoints.
+- **Prompt templates.** Named, versioned messages with `{{variables}}`; a call
+  names a template and gives its values. Managed in the console and with
+  `/api/prompts/*`. See Prompt templates.
 - **Providers.** OpenAI, Anthropic, Gemini, Azure OpenAI, and any
   OpenAI-compatible API through the `openai` kind: Groq
   (`https://api.groq.com/openai/v1`), Mistral (`https://api.mistral.ai/v1`),
@@ -45,8 +52,9 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
   answer is stored) with retention, tags, usage and spend reports, prices per
   model, rate limits (requests, tokens, concurrency) and budgets (block or
   alert) for the gateway, teams, users and keys.
-- **Console.** Overview, logs, playground, providers, models, routing, keys,
-  users, teams, limits, guardrails, alerts, settings; light and dark themes, phone layout. Compiled
+- **Console.** Overview, logs, playground (chat, images, audio), providers,
+  models, routing, prompts, keys, users, teams, limits, guardrails, alerts,
+  settings; light and dark themes, phone layout. Compiled
   into the binary; no Node at runtime.
 - **Metrics.** Prometheus at `/metrics` (opt in, token protected).
 - **Tracing.** Every `/v1` call as an OpenTelemetry trace over OTLP/HTTP (JSON),
@@ -61,9 +69,9 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
   setup, an OpenAPI description of the admin API.
 - **Clients.** Rust, Python and TypeScript, sharing one Rust core.
 
-Not yet (phase 2): MCP tools, alerts by email, an
-admin SDK, the Responses API,
-image or audio output, and `response_format` / structured outputs.
+Not yet (phase 2): MCP tools, alerts by email and an
+admin SDK. Not planned for now: a stateful Responses API, image edits and
+variations, and realtime audio.
 
 ## Quickstart
 
@@ -264,8 +272,7 @@ Subcommands: `serve`, `provider add`, `model add`, `key create`,
   (everyone, or a team or user they belong to), and, if the key has an
   allowlist, on that list. Routes follow the same idea. A call that fails these
   rules is refused.
-- **Tags.** Send `x-uf-tags: {"job":"nightly","env":"dev"}` on chat, messages
-  or embeddings calls (at most 20 tags; names `A-Z a-z 0-9 _ . -`; names and
+- **Tags.** Send `x-uf-tags: {"job":"nightly","env":"dev"}` on any `/v1` call (at most 20 tags; names `A-Z a-z 0-9 _ . -`; names and
   values 1 to 64 characters; header at most 1 KiB; never forwarded to the
   provider). Keys can carry tags too, set by an admin; on the same name the
   key's tag wins. Logs filter with `GET /api/logs?tag=env:prod`, usage groups
@@ -284,6 +291,285 @@ Subcommands: `serve`, `provider add`, `model add`, `key create`,
   (also `ultrafast openapi`). Sign in with a session, or send an access token
   (`uf-at-...`, from Account) as a bearer token.
 
+## Endpoints
+
+Every `/v1` endpoint takes a virtual key as a bearer token, a model written
+`provider/model` or a route name, and answers with the errors of its own
+format (OpenAI's, or Anthropic's on `/v1/messages`). Calls are logged under the
+endpoint they came in on: `chat`, `messages`, `responses`, `embeddings`,
+`images`, `transcriptions`, `translations` or `speech` (`playground` for the
+console's own calls), and the same names are the `endpoint` label of
+`uf_requests_total`, the span names (`uf.<endpoint>`) and the `endpoint` an
+external guardrail is told.
+
+### What each provider serves
+
+| | OpenAI kind (any base URL) | Azure OpenAI | Anthropic | Gemini |
+| --- | --- | --- | --- | --- |
+| `/v1/chat/completions`, `/v1/messages`, `/v1/responses` | yes | yes | yes | yes |
+| `/v1/embeddings` | yes | yes | no, 400 | yes |
+| `/v1/images/generations` | yes | yes | no, 400 | no, 400 |
+| `/v1/audio/*` | yes | yes | no, 400 | no, 400 |
+| `response_format` | as is | as is | `output_config.format` | `responseMimeType` and `responseJsonSchema` |
+| `reasoning_effort` | yes | yes | no, 400 | no, 400 |
+| `max_completion_tokens` | sent as such to `api.openai.com` | sent as such | `max_tokens` | `maxOutputTokens` |
+| `function.strict` | yes | yes | ignored | ignored |
+
+Groq, Mistral, OpenRouter, Ollama and other OpenAI-compatible APIs are the
+`openai` kind: the gateway sends them the OpenAI form, and whether a given host
+has the images, audio or reasoning API is up to it (its error comes back to
+the caller). A model that cannot serve images or audio answers 400 "This model
+does not support image generation." (or "audio."), without a provider being
+called; on a route, targets that cannot serve a call are skipped and the first
+that can serves it. For features of chat calls the rule is different: a feature
+the first target lacks (`reasoning_effort` on Anthropic or Gemini, `tool_choice`
+with no tools, ...) is a 400, and the call does not move on to a fallback that
+has it.
+
+### Structured outputs
+
+`response_format` on `/v1/chat/completions` is `{"type":"text"}`,
+`{"type":"json_object"}` or a JSON schema, as in the OpenAI API:
+
+```bash
+curl http://127.0.0.1:3000/v1/chat/completions \
+  -H "Authorization: Bearer $UF_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"A city and its country."}],
+       "response_format":{"type":"json_schema","json_schema":{"name":"place","strict":true,
+         "schema":{"type":"object","properties":{"city":{"type":"string"},"country":{"type":"string"}},
+                   "required":["city","country"],"additionalProperties":false}}}}'
+```
+
+How each provider gets it:
+
+- **OpenAI and Azure:** `response_format` as it came (name, description,
+  strict, schema).
+- **Anthropic:** `output_config.format` of `{"type":"json_schema","schema":...}`
+  (generally available, no beta header; the gateway does not emulate it with a
+  forced tool). `json_object` becomes the schema `{"type":"object"}`, so the
+  model must answer an object but may answer `{}`; `text` sends nothing. The
+  `name`, `description` and `strict` of the schema are not sent: Anthropic has
+  no such settings and enforces the schema anyway. Anthropic limits what a
+  schema may hold (no recursion, no numeric or string constraints,
+  `additionalProperties` only `false`) and answers 400 for one that breaks
+  them; that error comes back as it is. `/v1/messages` takes
+  `output_config.format` too (any other `output_config` key is a 400).
+- **Gemini:** `generationConfig.responseMimeType` of `application/json`, and
+  for a schema `generationConfig.responseJsonSchema` (full JSON Schema).
+  `json_object` sends the mime type only; `name`, `description` and `strict` are
+  not sent.
+
+On `/v1/responses` the same is `text.format` (flat: `{"type":"json_schema",
+"name":...,"schema":...}`). The clients take `response_format` (TypeScript:
+`responseFormat: {type: "json_schema", jsonSchema: {name, schema, strict?,
+description?}}`, with `jsonSchema` in camelCase). The format is part of the
+response cache key.
+
+### Responses API
+
+`POST /v1/responses` is the OpenAI Responses API over any provider, converted
+to and from the chat form. It is **stateless**: nothing is stored, so there is
+no `GET /v1/responses/{id}`, and the response id (`resp_...`) names nothing you
+can fetch.
+
+```bash
+curl http://127.0.0.1:3000/v1/responses \
+  -H "Authorization: Bearer $UF_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"anthropic/claude-sonnet-5","instructions":"Be brief.","input":"Say hi."}'
+```
+
+Supported: `input` as a string or as items (`message` with the roles `user`,
+`system`, `developer` and `assistant`, whose content is `input_text`, `input_image`
+(an `http(s)` or `data:` URL in `image_url`) or, for the assistant,
+`output_text`; `function_call`; `function_call_output` with a **string**
+`output`), `instructions`, function `tools`, `tool_choice` (`auto`, `none`,
+`required`, a function), `parallel_tool_calls`, `max_output_tokens`,
+`temperature`, `top_p`, `text.format`, `stream`, and `prompt` (a prompt
+template, see below). Consecutive `function_call` items form one assistant
+turn. Accepted and ignored: `metadata`, `user`, `service_tier`,
+`stream_options`, `safety_identifier`, `prompt_cache_key`,
+`prompt_cache_retention`.
+
+Reasoning: `reasoning.effort` is sent as `reasoning_effort` to OpenAI and Azure
+and is a 400 on other providers; `reasoning.summary` is accepted and ignored
+(no summaries are produced); `reasoning` **items** in `input` and
+`include: ["reasoning.encrypted_content"]` are accepted and ignored, because
+they are opaque state of the provider (this lets clients that replay them work);
+any other `include` value is a 400. `truncation: "disabled"` is accepted and
+`"auto"` is a 400: the gateway never drops input.
+
+Refused with 400: `store: true`, `previous_response_id`, `conversation`,
+`background: true`, tools that are not functions (web search, file search,
+computer use, ...), `input_file` and `file_id`, an **array** `output` in
+`function_call_output` (send a string), refusal parts, `max_tool_calls`,
+`text.verbosity` and any other field ("field 'x' is not supported yet").
+
+A stream is the Responses event stream (`event:` and `data:` lines with
+`sequence_number`, from `response.created` to `response.completed`, or
+`response.incomplete` for a length or content-filter ending). **There is no
+`data: [DONE]`** on this API. Guardrails, rate limits, budgets, the cache and
+tags apply as for chat; the official OpenAI SDKs parse the stream.
+
+### Images
+
+`POST /v1/images/generations` (OpenAI, Azure and compatible providers):
+
+```bash
+curl http://127.0.0.1:3000/v1/images/generations \
+  -H "Authorization: Bearer $UF_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"openai/gpt-image-1","prompt":"A lighthouse at dusk","size":"1024x1024","n":1}' \
+  | jq -r '.data[0].b64_json' | base64 -d > lighthouse.png
+```
+
+Fields: `model`, `prompt` (up to 32 000 characters), `n` (1 to 10), `size`,
+`quality`, `background` (`transparent`, `opaque`, `auto`), `output_format`
+(`png`, `jpeg`, `webp`), `output_compression` (0 to 100), `moderation`
+(`low`, `auto`), `response_format` (`url`, `b64_json`), `style` (`vivid`,
+`natural`) and `user`. `stream` and `partial_images` are a 400. The GPT image
+models (names that start with `gpt-image`) take neither `response_format` nor
+`style`: the gateway answers 400 for them and passes both for `dall-e-*`. The
+answer has `created`, `data` (each item `b64_json` or `url`, with
+`revised_prompt`), the answer's `background`, `output_format`, `quality` and
+`size`, and `usage` when the provider reports it (a call without usage is logged
+unpriced). Images are never cached, and the gateway never fetches a returned
+`url`.
+
+An image costs money when the request is sent, so a call that was sent is
+**never repeated**: if the provider does not answer within the time (a first-byte
+timeout of at least 180 s and a total of at least 300 s, or your route's
+settings if longer), the connection breaks, or the answer cannot be read, the
+caller gets 504 "The provider did not answer in time. The request may still be
+processed and billed; it was not repeated." and no fallback is tried. A
+connection that failed before the request was sent is retried as usual. A
+provider's image answer may be up to **128 MiB** (chat answers are capped at
+32 MiB); it is held in memory whole and converted, which takes a few hundred
+MiB for one such answer, so use a concurrency limit on routes that generate
+many large images.
+
+### Audio
+
+Three endpoints, for OpenAI, Azure and compatible providers:
+
+```bash
+# Speech to text, in the language spoken
+curl http://127.0.0.1:3000/v1/audio/transcriptions \
+  -H "Authorization: Bearer $UF_KEY" \
+  -F model=openai/whisper-1 -F response_format=verbose_json -F file=@meeting.mp3
+
+# Speech to English text
+curl http://127.0.0.1:3000/v1/audio/translations \
+  -H "Authorization: Bearer $UF_KEY" -F model=openai/whisper-1 -F file=@entrevista.mp3
+
+# Text to speech
+curl http://127.0.0.1:3000/v1/audio/speech \
+  -H "Authorization: Bearer $UF_KEY" -H "Content-Type: application/json" \
+  -d '{"model":"openai/tts-1","input":"Hello there.","voice":"alloy"}' --output hello.mp3
+```
+
+Fields: *transcriptions* `file`, `model`, `language`, `prompt`,
+`response_format` (`json`, `text`, `verbose_json`, `srt`, `vtt`), `temperature`
+(0 to 1) and `timestamp_granularities` (with `verbose_json`); *translations* the
+same without `language` and `timestamp_granularities`; *speech* `model`,
+`input` (up to 4096 characters), `voice` (a name, or `{"id": ...}`),
+`response_format`, `speed` (0.25 to 4) and `instructions`. Refused with 400:
+`stream`, `include`, `chunking_strategy`, `known_speaker_*`, `languages`,
+`keywords` and the `diarized_json` format, and `stream_format: "sse"` on speech.
+Models differ and the gateway checks what it knows: the `gpt-4o` transcription
+models take `json` and `text` and no timestamps, and `tts-1*` takes no
+`instructions`.
+
+Uploads: the form is read while it arrives. **Send `model` before `file`**:
+the gateway then decides access and takes the rate-limit permit before it reads
+the file, so an unknown or forbidden model or a rate-limited key is refused
+after under 1 MiB; with `file` first the whole file (up to the cap) is read
+before the refusal. The file is at most `UF_MAX_AUDIO_BYTES` (25 MiB by default;
+a larger one is a 413 naming the field), other text fields at most 64 KiB, and
+the whole upload must arrive within 60 s with no pause longer than 15 s (a 408
+otherwise). At most **8 uploads are received at once** across the gateway; a
+ninth is a 503 "The gateway is busy receiving other uploads" with
+`Retry-After: 1`, and its body is not read. A file is held in memory while its
+call runs, so plan for up to 8 times the cap. Audio calls are slow, billed once
+and not cached: the timeouts and the no-repeat rule are those of images. A
+speech answer is streamed back with the provider's content type, up to 64 MiB.
+
+Guardrails check the speech `input`, the `prompt` field of a transcription or
+translation, and the transcript (see Guardrails, *What is checked*); the audio
+itself is not inspected.
+
+### Reasoning effort and token limits
+
+`reasoning_effort` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+`max`) on `/v1/chat/completions`, and `reasoning.effort` on `/v1/responses`, is
+sent to OpenAI and Azure; any other provider answers 400.
+
+`max_completion_tokens` is accepted on `/v1/chat/completions` as the same limit
+as `max_tokens` (it wins when both are given). The gateway sends OpenAI
+(base URL host `api.openai.com`) and Azure targets `max_completion_tokens`, which
+the o-series and GPT-5 models require (they reject `max_tokens`); other
+OpenAI-compatible hosts keep getting `max_tokens`, which is what they know.
+
+### Prompt templates
+
+A template is a name and numbered **versions**; a version is 1 to 64 messages
+(roles `system`, `developer`, `user`, `assistant`) with `{{variables}}`, an
+optional model and optional `temperature`, `max_tokens`, `top_p` and
+`response_format`. A call names the template and gives a value for each
+variable; the gateway puts the template in front of the call before anything
+else looks at it, so rate limits, guardrails (the rendered text), the cache and
+budgets see the real request.
+
+```bash
+curl http://127.0.0.1:3000/v1/chat/completions \
+  -H "Authorization: Bearer $UF_KEY" -H "Content-Type: application/json" \
+  -d '{"prompt":{"id":"summarize","version":3,"variables":{"audience":"kids","text":"..."}},
+       "messages":[{"role":"user","content":"Go."}]}'
+```
+
+The same `prompt` object works on `/v1/responses` (a version may be a number or
+a string of digits; `variables` map names to strings). It is not accepted on
+`/v1/messages`. With `prompt`, `model` and `messages` (`input`) may be left
+out.
+
+- **Syntax.** A variable is `{{name}}` with a name of letters, digits and `_`
+  that does not start with a digit, at most 64 characters, case sensitive.
+  Anything else with braces (`{{ name }}`, `{{1x}}`, `{{}}`, `{name}`) is plain
+  text. A call must give a value for **every** variable of the version and for
+  no other (400 otherwise). A value is a string of at most 32 KiB, put in as it
+  is: nothing is escaped, and a value that contains `{{other}}` stays that text.
+- **Versions never change.** Adding a version makes the next number; a version
+  cannot be edited, and its row cannot be updated (a trigger refuses it). A call
+  without `version` gets the latest.
+- **Precedence.** The template's messages come first, then the call's own. The
+  call's `model` is used, else the template's, else the call is a 400. The
+  call's `temperature`, `max_tokens`, `top_p` and `response_format` win over the
+  template's.
+- **Latest in memory.** The gateway keeps the latest version of every
+  template in its snapshot, so a call by name never waits for the database. An
+  explicit older version is read from the database the first time and then
+  kept (the last 256 used); if that read fails the call is a 503. A change
+  reaches other processes on PostgreSQL within about 30 s, as other settings do.
+- **Limits.** 1000 templates, 200 versions each, 64 messages per version, a
+  message of at most 64 KiB and a version of at most 256 KiB, 64 variables, the
+  rendered messages at most 1 MiB together. Names are 1 to 100 characters and
+  cannot contain `@`. An unknown template or version is a 404
+  `not_found_error`; any other fault of the `prompt` is a 400.
+- **Logs.** The call is logged with `name@version` (the Logs page has a Prompt
+  column); the text of a template is never in the logs, and no metric has a
+  prompt label.
+- **Who.** Anyone signed in reads templates and anyone who can call may use any
+  template by name: a template is a convenience, not a secret. Admins make and
+  change all of them, a team lead the ones they made.
+- **Admin API.** `GET`/`POST /api/prompts`, `GET`/`DELETE /api/prompts/{id}`,
+  `POST /api/prompts/{id}/versions`, `GET /api/prompts/{id}/versions/{version}`
+  and `POST /api/prompts/{id}/render` (what a version renders to). The two
+  `POST`s that write a version take a body of up to 1 MiB (the rest of `/api`
+  64 KiB). Deleting a template deletes its versions; the logs keep the
+  `name@version` they recorded.
+- **Export and import.** `config export` writes the templates with all their
+  versions (as `prompts`); an import adds the templates and versions a gateway
+  lacks and never rewrites one it has: a version that differs from the stored
+  one is an error. An imported template belongs to the importing admin.
+
 ## Console
 
 Served at `/`. What each role sees is decided by the API.
@@ -294,6 +580,7 @@ Served at `/`. What each role sees is decided by the API.
 | Playground | yes | yes | yes |
 | Providers | manage | view | view |
 | Models, Routing | manage | see what they may use | see what they may use |
+| Prompts | make, add versions, delete any | read; make, and manage the ones they made | read |
 | Virtual keys | any user's | own and their teams' members' | own |
 | Users | invite, role, status, delete | their teams' members | themselves |
 | Teams | create, delete, leads | rename, add members | see own teams |
@@ -302,9 +589,17 @@ Served at `/`. What each role sees is decided by the API.
 | Settings (retention, sign-in, backup, config, audit log) | yes | no | no |
 | Account (name, password, access tokens) | yes | yes | yes |
 
-The playground sends images (5 MB each, 9 MiB per request including the
-history), tools as JSON with a tool choice, and shows the model's tool calls and
-the results you send back.
+The playground has three modes. **Chat** sends images (5 MB each, 9 MiB per
+request including the history), tools as JSON with a tool choice, a response
+format (text, JSON or a JSON schema), and a prompt template: pick one, a
+version, and a value for each variable (a template that names a model can be
+called with "Template's model", and with no message of your own). The Prompts
+page has an *Open in Playground* link for each template and version
+(`/playground?prompt=<name>&version=<n>`). **Images** generates images and
+**Audio** transcribes, translates and speaks. The audio file check in the
+playground uses the default 25 MiB cap; if you raise `UF_MAX_AUDIO_BYTES`, use
+`curl` for larger files. The Logs page filters by endpoint and shows the
+endpoint and the prompt (`name@version`) of each call.
 
 MCP tools appears in the navigation as coming. Leads and members do not see the
 Guardrails page, but the guardrails of a key show on the key, and a call a
@@ -547,8 +842,11 @@ Attaching guardrails to teams and users is not available yet.
   (system and tool results included; the text parts of one message that follow
   each other are joined and checked as one text, and multiple Anthropic
   `system` blocks are now joined with a newline), the `name` of a message,
-  the arguments of tool calls in the history, and each input of an embeddings
-  call. The rate limits come first, so a caller who is rate-limited is refused
+  the arguments of tool calls in the history, each input of an embeddings
+  call, the `input` and `instructions` and function results of a Responses
+  call, the `prompt` of an image generation, the `input` of a speech call and
+  the `prompt` field of a transcription or translation (the text of a prompt
+  template is checked after it is rendered). The rate limits come first, so a caller who is rate-limited is refused
   before anything of the body is scanned or sent to your webhook (a body is
   not scanned for nothing). Then the built-in rules run, then the budgets, then
   the external guardrails. A call a guardrail blocks gives its request and its
@@ -560,8 +858,16 @@ Attaching guardrails to teams and users is not available yet.
   JSON: a keyword or regular expression whose match spans a quote, or a private
   key `BEGIN` line with no `END` line in streamed arguments, can leave arguments
   that are no longer valid JSON.
-- *Not checked*: images and audio, tool definitions (names, descriptions,
-  schemas) and stop sequences. No machine-learning classifier (toxicity, prompt
+- *Output of audio calls*: the transcript of a transcription or translation,
+  as the words that were spoken: the `text` of `json`, the `text`, the
+  segments' text and the words of `verbose_json`, a `text` answer whole, and
+  only the cue lines of `srt` and `vtt` (never the numbers or the times; the
+  lines of one cue are checked as one text). A blocked transcript is a 400
+  `guardrail_blocked`; a redacted one is rewritten. Images that are generated
+  are not inspected.
+- *Not checked*: the pictures and sounds themselves (images sent in, images
+  generated, uploaded audio, spoken speech), tool definitions (names,
+  descriptions, schemas) and stop sequences. No machine-learning classifier (toxicity, prompt
   injection) is built in: use an external guardrail.
 
 **What happens.**
@@ -638,7 +944,8 @@ The request is a POST of JSON, signed like an alert delivery:
   "key_id": 7, "team_id": 2, "user_id": 3 }
 ```
 
-`endpoint` is `chat`, `messages`, `embeddings`, `playground` or `test`;
+`endpoint` is `chat`, `messages`, `responses`, `embeddings`, `images`,
+`transcriptions`, `translations`, `speech`, `playground` or `test`;
 `direction` is `input` or `output`. `texts` are the slots described above (an
 answer is `[answer text, arguments of each tool call]`; texts that are all
 empty are not sent). No images, keys or credentials are sent. Answer 2xx with
@@ -875,7 +1182,7 @@ Series: `uf_requests_total{endpoint,status_class}`, `uf_tokens_total{direction}`
 key, user, team or prompt. `GET /health` answers `{"status":"ok"}`.
 
 **Tracing.** Set `UF_OTEL_ENDPOINT` and every `/v1` call (chat, messages,
-embeddings) and every playground call becomes a trace, exported in the
+responses, embeddings, images, audio) and every playground call becomes a trace, exported in the
 background over OTLP/HTTP with JSON bodies:
 
 ```bash
@@ -893,8 +1200,9 @@ UF_OTEL_SAMPLE_RATIO=0.25 ultrafast serve
   flag of 0 means the call is not exported. Without one, the gateway starts a
   trace and `UF_OTEL_SAMPLE_RATIO` decides. A call that carries a sampled
   `traceparent` is exported at any ratio.
-- *Spans.* One server span per call, named `uf.chat`, `uf.messages`,
-  `uf.embeddings` or `uf.playground`, with `uf.endpoint`, `uf.requested` (the
+- *Spans.* One server span per call, named `uf.<endpoint>` (`uf.chat`,
+  `uf.messages`, `uf.responses`, `uf.embeddings`, `uf.images`,
+  `uf.transcriptions`, `uf.translations`, `uf.speech` or `uf.playground`), with `uf.endpoint`, `uf.requested` (the
   model or route the caller asked for, cut at 256 bytes), `http.response.status_code`, `uf.stream`, `uf.cached`,
   `uf.estimated`, `uf.key_id` / `uf.user_id` / `uf.team_id` when known,
   `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` when counted,
@@ -1089,7 +1397,11 @@ They also take tools and images: Rust through `ChatRequest` (tools, tool choice,
 image and tool-result messages), Python with flat tool dicts
 (`{"name", "description", "parameters"}`) and a `ToolCall` you can pass straight
 back in the next assistant message, TypeScript with `tools`, `toolChoice` and
-`toolCalls` / `toolCallId`; see each README. Streams yield tool-call events.
+`toolCalls` / `toolCallId`; see each README. Streams yield tool-call events. All three take `response_format` (Rust
+`ChatRequest::response_format`, Python `response_format=` with the OpenAI
+shape, TypeScript `responseFormat` with `jsonSchema` in camelCase). They do not
+yet call `/v1/responses`, images, audio or prompt templates; use any OpenAI
+SDK against the gateway for those.
 
 ## Known limits
 
@@ -1132,7 +1444,8 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
   resolves only after its breaker has stayed closed for 5 minutes. Alert
   history (events) is deleted with the request logs, after the log retention
   period.
-- Guardrails: images and audio are not inspected, and tool definitions and
+- Guardrails: images and audio themselves are not inspected (the text of an
+  image prompt, of speech input and of a transcript is), and tool definitions and
   stop sequences are not scanned. There are no built-in classifiers (toxicity,
   prompt injection): use an external guardrail. Regular-expression matches
   longer than 256 characters may be missed in streams, and a stream lags by
@@ -1161,8 +1474,29 @@ back in the next assistant message, TypeScript with `tools`, `toolChoice` and
 - A backup restore is manual, and a configuration import never deletes. There
   is no online migration between SQLite and Postgres (see Using PostgreSQL).
 - On Postgres the console and `ultrafast backup` do not back up: use `pg_dump`.
-- No Responses API, image or audio output, or `response_format` / structured
-  outputs yet (phase 2).
+- The Responses API is stateless: no `store`, `previous_response_id`,
+  conversations, background mode, built-in tools or retrieval of a response.
+- Images and audio are served by OpenAI, Azure and OpenAI-compatible providers
+  only; there are no image edits or variations, no streamed image or
+  transcription events, and no realtime audio. An image answer is buffered whole
+  (up to 128 MiB, a few hundred MiB of memory while it is converted), and an
+  audio upload is held in memory while the call runs (up to
+  `UF_MAX_AUDIO_BYTES` each, 8 at once). A generated image or a transcription
+  that was sent and did not answer in time is never repeated, so it fails with
+  a 504 rather than being tried on a fallback.
+- Structured outputs: `strict`, `name` and `description` of a JSON schema reach
+  OpenAI and Azure only (Anthropic and Gemini enforce the schema without them),
+  and `json_object` on Anthropic is the schema `{"type":"object"}`, which the
+  model may satisfy with `{}`. A schema a provider does not accept is that
+  provider's 400.
+- A feature a provider lacks (`reasoning_effort`, `tool_choice` on a model that
+  has no tools, ...) is a 400 when the first target a route tries lacks it: the
+  gateway does not move on to a fallback that has it.
+- Prompt templates: a version never changes, and there is no API to delete one
+  version (the database does not block a raw delete of a row, and the
+  numbering is checked in code); a template is deleted with all its versions.
+  Reading an older version the first time takes a database read (then it is
+  kept, 256 at a time). Any caller may use any template by name.
 - Gemini thought signatures are not carried: no other format has them. Every
   earlier tool call sent to Gemini carries Google's documented placeholder
   signature (`skip_thought_signature_validator`), which Gemini 3 models need

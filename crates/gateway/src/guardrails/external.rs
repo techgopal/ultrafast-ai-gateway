@@ -79,7 +79,8 @@ impl HookGates {
 /// What the hook is told about the call besides the texts.
 #[derive(Clone, Debug)]
 pub struct CallMeta {
-    /// `chat`, `messages`, `embeddings`, `playground` or `test`.
+    /// `chat`, `messages`, `responses`, `embeddings`, `images`, `transcriptions`,
+    /// `translations`, `speech`, `playground` or `test`.
     pub endpoint: &'static str,
     /// The model or route name the caller asked for.
     pub model: String,
