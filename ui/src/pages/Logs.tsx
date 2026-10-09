@@ -16,7 +16,7 @@ import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LOGGED_ACTIONS, loggedLabel } from "@/lib/guardrails";
-import { formatDuration, formatMoney, formatTokens, sinceFor } from "@/lib/usage";
+import { endpointLabel, ENDPOINTS, formatDuration, formatMoney, formatTokens, sinceFor } from "@/lib/usage";
 import {
   ANY,
   chosen,
@@ -66,6 +66,8 @@ function queryOf(filters: Filters, now: number, offered: ReturnType<typeof useOf
   if (user !== ANY) query.user_id = Number(user);
   if (team !== ANY) query.team_id = Number(team);
   if (filters.model !== "") query.model = filters.model;
+  const endpoint = ENDPOINTS.find(([value]) => value === filters.endpoint)?.[0];
+  if (endpoint !== undefined) query.endpoint = endpoint;
   if (filters.errorsOnly) query.errors = true;
   const guardrail = LOGGED_ACTIONS.find(([value]) => value === filters.guardrail)?.[0];
   if (guardrail !== undefined) query.guardrail = guardrail;
@@ -129,6 +131,8 @@ const columns: Column<Log>[] = [
     cell: (log) => <span className="tabular-nums">{formatDuration(log.duration_ms)}</span>,
   },
   { id: "tags", header: "Tags", cell: (log) => <TagChips tags={log.tags} /> },
+  { id: "endpoint", header: "Endpoint", cell: (log) => <span>{endpointLabel(log.endpoint)}</span> },
+  { id: "prompt", header: "Prompt", cell: (log) => <span className="break-all">{log.prompt ?? NONE}</span> },
 ];
 
 function LogsOf({ others }: { others: boolean }) {

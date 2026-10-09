@@ -1379,20 +1379,25 @@ describe("every mutation calls its operation", () => {
       ["useDeleteGuardrail", "DELETE /api/guardrails/1", q.useDeleteGuardrail, { id: 1 }],
       ["useRotateGuardrailSecret", "POST /api/guardrails/1/rotate-secret", q.useRotateGuardrailSecret, { id: 1 }],
       ["useTestGuardrail", "POST /api/guardrails/test", q.useTestGuardrail, { direction: "output", text: "a", guardrail_id: 1 }],
+      ["useCreatePrompt", "POST /api/prompts", q.useCreatePrompt, { name: "p", messages: [{ role: "user", content: "a" }] }],
+      ["useCreatePromptVersion", "POST /api/prompts/1/versions", q.useCreatePromptVersion, { id: 1, body: { messages: [{ role: "user", content: "a" }] } }],
+      ["useDeletePrompt", "DELETE /api/prompts/1", q.useDeletePrompt, { id: 1 }],
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 51 of them, 23 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(51);
+  test("there are 54 of them, 26 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(54);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(77);
+    expect(hooks).toHaveLength(83);
     // The alerts: three queries (channels, rules, events by page), and their eight mutations.
     for (const name of ["useAlertChannels", "useAlertRules", "useAlertEventsPages"]) {
       expect(hooks).toContain(name);
     }
     // The guardrails: one query (the list), and their five mutations.
     expect(hooks).toContain("useGuardrails");
+    // The prompt templates: three queries (the list, one template, one version), and their three mutations.
+    for (const name of ["usePrompts", "usePrompt", "usePromptVersion"]) expect(hooks).toContain(name);
     // What only tests used is not kept: a key read by its id, the audit log
     // read as one page, and `me`, which the session reads itself.
     for (const gone of ["useKey", "keyOptions", "useAuditLog", "auditLogOptions", "useMe"]) {

@@ -6,6 +6,7 @@ import { FilterSelect, type Choice } from "@/components/FilterSelect";
 import { Input } from "@/components/ui/input";
 import { LOGGED_ACTIONS } from "@/lib/guardrails";
 import { parseTagFilter } from "@/lib/tags";
+import { ENDPOINTS } from "@/lib/usage";
 
 /** The value of a select that leaves nothing out. No id is written so. */
 export const ANY = "*";
@@ -30,6 +31,11 @@ const GUARDRAILS: readonly Choice[] = [
   ...LOGGED_ACTIONS.map(([value, label]) => ({ value, label })),
 ];
 
+const ENDPOINT_CHOICES: readonly Choice[] = [
+  { value: ANY, label: "All endpoints" },
+  ...ENDPOINTS.map(([value, label]) => ({ value, label })),
+];
+
 /** What the viewer chose. A choice is an id as text, or `ANY`. */
 export interface Filters {
   range: Range;
@@ -40,6 +46,8 @@ export interface Filters {
   user: string;
   team: string;
   model: string;
+  /** An endpoint name, or `ANY`. */
+  endpoint: string;
   errorsOnly: boolean;
   /** What the guardrails did at worst, or `ANY`. */
   guardrail: string;
@@ -55,6 +63,7 @@ export const NO_FILTERS: Filters = {
   user: ANY,
   team: ANY,
   model: "",
+  endpoint: ANY,
   errorsOnly: false,
   guardrail: ANY,
   tag: "",
@@ -253,6 +262,14 @@ export function LogsFilters({ filters, offered, others, onChange }: LogsFiltersP
         value={filters.tag}
         onApply={(tag) => {
           onChange({ tag });
+        }}
+      />
+      <FilterSelect
+        label="Endpoint"
+        value={chosen(filters.endpoint, ENDPOINT_CHOICES)}
+        choices={ENDPOINT_CHOICES}
+        onChange={(endpoint) => {
+          onChange({ endpoint });
         }}
       />
       <FilterSelect

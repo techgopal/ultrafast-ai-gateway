@@ -691,3 +691,71 @@ async fn a_guardrail_filter_of_another_word_is_refused() {
         "must be blocked, redacted or flagged"
     );
 }
+
+#[tokio::test]
+async fn the_endpoint_filter_matches_the_endpoint_and_combines() {
+    let org = org().await;
+    let mut rows = Vec::new();
+    for (day, endpoint, status) in [
+        (1, "chat", 200),
+        (2, "responses", 200),
+        (3, "images", 200),
+        (4, "transcriptions", 200),
+        (5, "speech", 200),
+        (6, "images", 500),
+        (7, "playground", 200),
+    ] {
+        let mut row = log(
+            &format!("2026-01-0{day} 10:00:00"),
+            Some(org.lena),
+            None,
+            "m",
+        );
+        row.endpoint = endpoint.into();
+        row.status = status;
+        rows.push(row);
+    }
+    org.api.store.insert_logs(&rows).await.unwrap();
+    let sorted = |mut v: Vec<i64>| {
+        v.sort_unstable();
+        v
+    };
+    for (query, expected) in [
+        ("?endpoint=chat", vec![1]),
+        ("?endpoint=responses", vec![2]),
+        ("?endpoint=images", vec![3, 6]),
+        ("?endpoint=images&errors=true", vec![6]),
+        ("?endpoint=speech&before=5", vec![]),
+        ("?endpoint=translations", vec![]),
+        ("?endpoint=", vec![1, 2, 3, 4, 5, 6, 7]),
+    ] {
+        assert_eq!(sorted(ids(&org, "maya", query).await), expected, "{query}");
+    }
+    // A member sees only their own rows, whatever the filter.
+    assert_eq!(
+        ids(&org, "priya", "?endpoint=images").await,
+        Vec::<i64>::new()
+    );
+}
+
+#[tokio::test]
+async fn an_endpoint_filter_that_is_no_endpoint_name_is_refused() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    for query in [
+        "?endpoint=Chat",
+        "?endpoint=a%20b",
+        "?endpoint=%27%3B--",
+        "?endpoint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ] {
+        let (status, body) = org
+            .call(Some(&maya), "GET", &format!("/api/logs{query}"), None)
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}: {body}");
+        assert_eq!(
+            body["error"]["fields"]["endpoint"],
+            "must be an endpoint name: 1 to 32 characters of a-z and _",
+            "{query}"
+        );
+    }
+}

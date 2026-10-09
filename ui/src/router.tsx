@@ -29,6 +29,8 @@ import { PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
 import { Overview } from "@/pages/Overview";
 import { Playground } from "@/pages/Playground";
+import { Prompts } from "@/pages/Prompts";
+import { PromptsEdit } from "@/pages/PromptsEdit";
 import { Models } from "@/pages/Models";
 import { Routes } from "@/pages/Routes";
 import { RoutesEdit } from "@/pages/RoutesEdit";
@@ -253,7 +255,22 @@ const playgroundRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/playground",
   staticData: { title: "Playground" },
-  component: Playground,
+  // "Open in Playground" on a prompt template names it and a version. Only a text and
+  // a number are taken; whether they name a template is decided by the page.
+  validateSearch: (search): { prompt?: string; version?: number } => ({
+    ...(typeof search.prompt === "string" && search.prompt !== ""
+      ? { prompt: search.prompt }
+      : typeof search.prompt === "number"
+        ? { prompt: String(search.prompt) }
+        : {}),
+    ...(typeof search.version === "number" && Number.isSafeInteger(search.version) && search.version > 0
+      ? { version: search.version }
+      : {}),
+  }),
+  component: function PlaygroundRoute() {
+    const { prompt, version } = playgroundRoute.useSearch();
+    return <Playground {...(prompt === undefined ? {} : { prompt: { name: prompt, version: version ?? null } })} />;
+  },
 });
 
 const limitsRoute = createRoute({
@@ -287,6 +304,33 @@ const guardrailRoute = createRoute({
     const { id } = guardrailRoute.useParams();
     // Another guardrail is another page: its form and its state do not carry over.
     return <GuardrailsEdit key={id} id={id} />;
+  },
+});
+
+const promptsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/prompts",
+  staticData: { title: "Prompts" },
+  component: Prompts,
+});
+
+const promptNewRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/prompts/new",
+  staticData: { title: "New template" },
+  component: function PromptNewRoute() {
+    return <PromptsEdit id={null} />;
+  },
+});
+
+const promptRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/prompts/$id",
+  staticData: { title: "Prompt template" },
+  component: function PromptRoute() {
+    const { id } = promptRoute.useParams();
+    // Another template is another page: its form and its state do not carry over.
+    return <PromptsEdit key={id} id={id} />;
   },
 });
 
@@ -447,6 +491,9 @@ const routeTree = rootRoute.addChildren([
     guardrailsRoute,
     guardrailNewRoute,
     guardrailRoute,
+    promptsRoute,
+    promptNewRoute,
+    promptRoute,
     settingsRoute,
     accountRoute,
   ]),

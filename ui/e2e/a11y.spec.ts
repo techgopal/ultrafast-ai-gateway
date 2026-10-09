@@ -173,6 +173,25 @@ for (const scheme of ["light", "dark"] as const) {
     await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
 
+    // A prompt template: the list, the template with its editor, and the form of a new one.
+    await api.send("POST", "/api/prompts", {
+      name: "a prompt",
+      messages: [{ role: "user", content: "Say hello to {{name}}." }],
+    });
+    await goTo(page, "Prompts");
+    await expect(page.getByRole("main")).toContainText("a prompt");
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+    await page.getByRole("link", { name: "Open", exact: true }).first().click();
+    await expect(page.getByRole("button", { name: "Save as version 2" })).toBeVisible();
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+    await goTo(page, "Prompts");
+    await page.getByRole("link", { name: "New template" }).click();
+    await expect(heading(page, "New template")).toBeVisible();
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+
     // Alerts: a channel and a rule, so that the three views show their tables.
     const channel = (await api.send("POST", "/api/alerts/channels", {
       name: "a channel",

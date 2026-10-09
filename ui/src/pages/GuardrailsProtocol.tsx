@@ -1,8 +1,12 @@
 import { control } from "@/components/classes";
 import { VerifySignatures } from "@/components/VerifySignatures";
+import { ENDPOINTS } from "@/lib/usage";
 
 const block =
   "rounded-md bg-muted p-3 font-mono text-xs wrap-anywhere whitespace-pre-wrap text-foreground";
+
+/** What `endpoint` can be: every endpoint a call is logged under, and the test of a guardrail. */
+export const ENDPOINT_NAMES: readonly string[] = [...ENDPOINTS.map(([value]) => value), "test"];
 
 const REQUEST = `{
   "version": 1,
@@ -38,9 +42,14 @@ export function Protocol() {
           </pre>
           <p>
             <code className="font-mono">endpoint</code> is{" "}
-            <code className="font-mono">chat</code>, <code className="font-mono">messages</code>,{" "}
-            <code className="font-mono">embeddings</code>, <code className="font-mono">playground</code>{" "}
-            or <code className="font-mono">test</code>. Answer with status 200 to 299 and JSON of
+            {ENDPOINT_NAMES.map((name, at) => (
+              <span key={name}>
+                {at === ENDPOINT_NAMES.length - 1 ? "or " : ""}
+                <code className="font-mono">{name}</code>
+                {at < ENDPOINT_NAMES.length - 1 ? ", " : ""}
+              </span>
+            ))}
+            . Answer with status 200 to 299 and JSON of
             at most 1 MiB, one of:
           </p>
           <pre className={block}>

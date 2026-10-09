@@ -43,8 +43,16 @@ export interface Params {
   stop: string;
 }
 
+/** A prompt template, as a call names it: its name, a version when one is chosen, and the value of each variable. */
+export interface PromptBody {
+  id: string;
+  version?: number;
+  variables: Record<string, string>;
+}
+
 /** The parameters that were given, as the request names them. */
 export interface ParamValues {
+  prompt?: PromptBody;
   max_tokens?: number;
   temperature?: number;
   top_p?: number;
@@ -119,7 +127,9 @@ export type WireMessage =
   | { role: "tool"; content: string; tool_call_id: string };
 
 export interface ChatRequestBody {
-  model: string;
+  /** Left out when the template of `prompt` names the model. */
+  model?: string;
+  prompt?: PromptBody;
   stream: true;
   messages: WireMessage[];
   max_tokens?: number;
@@ -219,7 +229,7 @@ export function requestBody(
 ): ChatRequestBody {
   const prompt = system.trim();
   return {
-    model,
+    ...(model === "" ? {} : { model }),
     stream: true,
     ...values,
     messages: [

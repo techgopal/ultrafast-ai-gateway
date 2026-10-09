@@ -31,6 +31,9 @@ export type AlertChannel = Schemas["ChannelView"];
 export type AlertRule = Schemas["RuleView"];
 export type AlertEvent = Schemas["EventView"];
 export type Guardrail = Schemas["GuardrailView"];
+export type PromptSummary = Schemas["PromptSummary"];
+export type PromptView = Schemas["PromptView"];
+export type PromptVersion = Schemas["VersionView"];
 
 /**
  * The time of the fixtures: what they call past (the expired key and token,
@@ -626,7 +629,7 @@ function log(
     team_id: who.team?.id ?? null,
     team_name: who.team?.name ?? null,
     requested: "gpt-4o",
-    endpoint: "/v1/chat/completions",
+    endpoint: "chat",
     stream: false,
     status: 200,
     provider: "openai",
@@ -687,6 +690,12 @@ export const logs = {
 } satisfies Record<string, Log>;
 
 export const logList: Log[] = Object.values(logs);
+
+/** A call that named a prompt template. Not in `logList`: the counts of the list do not move. */
+export const promptedLog: Log = log(12, "2026-09-30 11:58:00", platformCall, {
+  endpoint: "responses",
+  prompt: "summarize@3",
+});
 
 /** A call whose answer had an address redacted. Not in `logList`: the counts of the list do not move. */
 export const redactedLog: Log = log(7, "2026-09-30 11:59:00", platformCall, {
@@ -1322,3 +1331,117 @@ export const alertEvents = {
 } satisfies Record<string, AlertEvent>;
 
 export const alertEventList: AlertEvent[] = Object.values(alertEvents);
+
+// prompt templates as `/api/prompts` shows them
+
+export const prompts = {
+  /** Made by the admin, three versions, the latest names a model. */
+  summarize: {
+    id: 1,
+    name: "summarize",
+    description: "Summarizes a text for a reader.",
+    created_by: 1,
+    created_at: "2026-09-20 09:00:00",
+    latest_version: 3,
+    version_count: 3,
+    updated_at: "2026-09-22 09:00:00",
+    model: "openai/gpt-4o",
+    variables: ["audience", "text"],
+    unreadable: false,
+  },
+  /** Made by the lead of Platform, one version, no model. */
+  greet: {
+    id: 2,
+    name: "greet",
+    description: "",
+    created_by: 2,
+    created_at: "2026-09-21 09:00:00",
+    latest_version: 1,
+    version_count: 1,
+    updated_at: "2026-09-21 09:00:00",
+    model: null,
+    variables: ["name"],
+    unreadable: false,
+  },
+} satisfies Record<string, PromptSummary>;
+
+export const promptList: PromptSummary[] = Object.values(prompts);
+
+export const promptVersions = {
+  summarize: [
+    {
+      version: 1,
+      messages: [{ role: "user", content: "Summarize {{text}}" }],
+      variables: ["text"],
+      model: null,
+      params: {},
+      created_by: 1,
+      created_at: "2026-09-20 09:00:00",
+    },
+    {
+      version: 2,
+      messages: [
+        { role: "system", content: "You write short summaries." },
+        { role: "user", content: "Summarize {{text}}\nKeep it short." },
+      ],
+      variables: ["text"],
+      model: null,
+      params: { temperature: 0.2 },
+      created_by: 1,
+      created_at: "2026-09-21 09:00:00",
+    },
+    {
+      version: 3,
+      messages: [
+        { role: "system", content: "You write short summaries for {{audience}}." },
+        { role: "user", content: "Summarize {{text}}\nKeep it short." },
+      ],
+      variables: ["audience", "text"],
+      model: "openai/gpt-4o",
+      params: { temperature: 0.2, max_tokens: 200 },
+      created_by: 1,
+      created_at: "2026-09-22 09:00:00",
+    },
+  ],
+  greet: [
+    {
+      version: 1,
+      messages: [{ role: "user", content: "Say hello to {{name}}." }],
+      variables: ["name"],
+      model: null,
+      params: {},
+      created_by: 2,
+      created_at: "2026-09-21 09:00:00",
+    },
+  ],
+} satisfies Record<string, PromptVersion[]>;
+
+export const promptViews = {
+  summarize: {
+    ...prompts.summarize,
+    versions: promptVersions.summarize.map(({ version, created_by, created_at }) => ({
+      version,
+      created_by,
+      created_at,
+    })),
+  },
+  greet: {
+    ...prompts.greet,
+    versions: promptVersions.greet.map(({ version, created_by, created_at }) => ({
+      version,
+      created_by,
+      created_at,
+    })),
+  },
+} satisfies Record<string, PromptView>;
+
+/** What adding a version answers: the version that was made. */
+export const newPromptVersion: PromptVersion = {
+  version: 4,
+  messages: [{ role: "user", content: "Summarize {{text}} for {{audience}}." }],
+  variables: ["audience", "text"],
+  model: null,
+  params: {},
+  created_by: 1,
+  created_at: "2026-09-30 11:00:00",
+};

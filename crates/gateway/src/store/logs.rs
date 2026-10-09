@@ -113,6 +113,8 @@ pub struct LogFilter {
     /// Matches the model that answered or the name that was asked for.
     pub model: Option<String>,
     pub status: Option<i64>,
+    /// Only calls on this endpoint (`chat`, `images`, ...), as logged.
+    pub endpoint: Option<String>,
     /// Only calls answered with status 400 or more.
     pub errors: bool,
     /// Only calls that carry every one of these tags (name, value). The
@@ -351,6 +353,10 @@ impl Store {
         if let Some(v) = &filter.model {
             clauses.push("(l.model = ? OR l.requested = ?)".into());
             text_values.push(v);
+            text_values.push(v);
+        }
+        if let Some(v) = &filter.endpoint {
+            clauses.push("l.endpoint = ?".into());
             text_values.push(v);
         }
         // The path is bound, never written into the statement.

@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { idOf } from "@/lib/id";
 import { sideLines } from "@/lib/guardrails";
-import { formatDuration, outcomeLabel } from "@/lib/usage";
+import { endpointLabel, formatDuration, outcomeLabel } from "@/lib/usage";
 import { costOf, GuardrailBadge, modelOf, tokensOf } from "@/pages/Logs";
 
 /** An attempt, with its place in the order: two attempts can be alike. */
@@ -97,7 +97,8 @@ function Details({ id }: { id: number }) {
     ],
     ["Asked for", log.requested],
     ["Answered by", log.provider !== null && log.model !== null ? modelOf(log) : NONE],
-    ["Endpoint", log.endpoint],
+    ["Endpoint", endpointLabel(log.endpoint)],
+    ["Prompt", log.prompt ?? NONE],
     ["Streamed", log.stream ? "Yes" : "No"],
     ["Key", log.key_name ?? (log.key_id === null ? NONE : "(deleted)")],
     ["User", log.user_email ?? NONE],

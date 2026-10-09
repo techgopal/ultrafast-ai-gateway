@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
+  endpointLabel,
+  ENDPOINTS,
   errorRate,
   formatDuration,
   formatMoney,
@@ -78,5 +80,24 @@ describe("ranges", () => {
     expect(sinceFor("24h", at)).toBe("2026-09-29T12:00:00Z");
     expect(sinceFor("7d", at)).toBe("2026-09-23T12:00:00Z");
     expect(sinceFor("30d", at)).toBe("2026-08-31T12:00:00Z");
+  });
+});
+
+describe("endpoints", () => {
+  test("every endpoint the gateway logs has words, and a name it does not know is shown as it is", () => {
+    expect(ENDPOINTS.map(([value]) => value)).toEqual([
+      "chat",
+      "messages",
+      "responses",
+      "embeddings",
+      "images",
+      "transcriptions",
+      "translations",
+      "speech",
+      "playground",
+    ]);
+    expect(endpointLabel("chat")).toBe("Chat completions");
+    expect(endpointLabel("speech")).toBe("Speech");
+    expect(endpointLabel("somethingnew")).toBe("somethingnew");
   });
 });

@@ -35,6 +35,7 @@ import {
 import { bodyOf, useRun, type Call } from "@/pages/PlaygroundRun";
 import { AudioMode } from "@/pages/PlaygroundAudio";
 import { ImagesMode } from "@/pages/PlaygroundImages";
+import { PromptPickerFields, usePromptPicker } from "@/pages/PlaygroundPrompt";
 import { pendingCalls, RESULT_MISSING, Thread, UsageLine } from "@/pages/PlaygroundThread";
 
 type Model = components["schemas"]["ModelView"];
@@ -51,6 +52,9 @@ export const NOTHING_TO_CALL = {
 } as const;
 
 export const CURL_SAMPLE = "Hello";
+
+/** The choice of the model that stands for "the model the template names": no model is sent. */
+const TEMPLATE_MODEL = "*template*";
 
 export const IMAGE_TOO_BIG = "Images over 5 MB are not sent.";
 export const IMAGE_KIND = "Only PNG, JPEG, GIF and WebP images are sent.";
@@ -107,8 +111,22 @@ function pricesOf(target: string, answered: string | null, models: readonly Mode
   return named.length === 1 ? (named[0] ?? null) : null;
 }
 
-function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: readonly string[] }) {
+interface InitialPrompt {
+  name: string;
+  version: number | null;
+}
+
+function PlaygroundOf({
+  models,
+  routes,
+  initialPrompt,
+}: {
+  models: readonly Model[];
+  routes: readonly string[];
+  initialPrompt: InitialPrompt | undefined;
+}) {
   const run = useRun();
+  const picker = usePromptPicker(initialPrompt);
   const toast = useToast();
   const [chosen, setChosen] = useState("");
   const [system, setSystem] = useState("");
@@ -141,20 +159,25 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
   const effectiveChoice = offered.some((choice) => choice.value === toolChoice) ? toolChoice : "auto";
   const waiting = pendingCalls(run.messages);
 
+  const templateModel = picker.body !== null ? picker.templateModel : null;
   const choices = useMemo<Choice[]>(
     () => [
+      // The model the chosen template names: no model is sent, and the template's is used.
+      ...(templateModel === null ? [] : [{ value: TEMPLATE_MODEL, label: `Template's model (${templateModel})` }]),
       ...models
         .filter((model) => model.enabled)
         .map((model) => ({ value: refOf(model), label: refOf(model) }))
         .sort((a, b) => a.label.localeCompare(b.label)),
       ...[...routes].sort().map((name) => ({ value: name, label: `${name} (route)` })),
     ],
-    [models, routes],
+    [models, routes, templateModel],
   );
   // A choice that is no longer offered is never sent.
   const target = choices.some((choice) => choice.value === chosen)
     ? chosen
     : (choices[0]?.value ?? "");
+  const withTemplate = picker.body !== null;
+  const modelSent = target === TEMPLATE_MODEL ? "" : target;
 
   function setParam(name: keyof Params, value: string) {
     setParams((before) => ({ ...before, [name]: value }));
@@ -173,7 +196,17 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
     }
     const format = formatValues();
     if (Object.keys(checked.errors).length > 0 || toolsChecked.error !== undefined || format === null) return null;
-    return { model: target, system, add, values: { ...checked.values, ...toolValues(toolsChecked), ...format } };
+    return {
+      model: modelSent,
+      system,
+      add,
+      values: {
+        ...checked.values,
+        ...toolValues(toolsChecked),
+        ...format,
+        ...(picker.body === null ? {} : { prompt: picker.body }),
+      },
+    };
   }
 
   /** The response format to send, or `null` when the typed schema is not valid (the field says why). */
@@ -200,14 +233,16 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
   const typed = text.trim();
 
   async function send() {
-    if (target === "" || run.running || waiting.length > 0) return;
-    if (typed === "" && images.length === 0) return;
+    if (!picker.ready || run.running || waiting.length > 0) return;
+    // A template can be called with no message of your own.
+    if (typed === "" && images.length === 0 && !withTemplate) return;
     const kept = images;
     if (kept.length > 0 && tooLarge(kept)) {
       setImageErrors([{ name: "", text: sizeText() }]);
       return;
     }
-    const call = callOf([{ role: "user", content: typed, ...(kept.length > 0 ? { images: kept } : {}) }]);
+    const empty = typed === "" && kept.length === 0;
+    const call = callOf(empty ? [] : [{ role: "user", content: typed, ...(kept.length > 0 ? { images: kept } : {}) }]);
     if (call === null) return;
     setText("");
     setImages([]);
@@ -242,7 +277,7 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
   }
 
   async function sendResults() {
-    if (target === "" || run.running || waiting.length === 0) return;
+    if (run.running || waiting.length === 0) return;
     const add = resultMessages();
     if (add.some((message) => message.content === "")) {
       setResultsError(RESULT_MISSING);
@@ -326,12 +361,25 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
       setFocusTools((before) => before + 1);
     }
     const format = formatValues();
-    if (Object.keys(checked.errors).length > 0 || toolsChecked.error !== undefined || format === null || target === "") return;
+    if (Object.keys(checked.errors).length > 0 || toolsChecked.error !== undefined || format === null || !picker.ready) return;
+    const nothingTyped = typed === "" && images.length === 0;
     const add: readonly Message[] =
       waiting.length > 0
         ? resultMessages()
-        : [{ role: "user", content: typed === "" && images.length === 0 ? CURL_SAMPLE : typed, ...(images.length > 0 ? { images } : {}) }];
-    const call: Call = { model: target, system, add, values: { ...checked.values, ...toolValues(toolsChecked), ...format } };
+        : nothingTyped && withTemplate
+          ? []
+          : [{ role: "user", content: nothingTyped ? CURL_SAMPLE : typed, ...(images.length > 0 ? { images } : {}) }];
+    const call: Call = {
+      model: modelSent,
+      system,
+      add,
+      values: {
+        ...checked.values,
+        ...toolValues(toolsChecked),
+        ...format,
+        ...(picker.body === null ? {} : { prompt: picker.body }),
+      },
+    };
     await copyText(curlOf(window.location.origin, bodyOf(call, run.messages)));
   }
 
@@ -438,7 +486,7 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
                 Stop
               </Button>
             ) : (
-              <Button key="send" type="submit" className={control} disabled={target === "" || (typed === "" && images.length === 0) || waiting.length > 0}
+              <Button key="send" type="submit" className={control} disabled={!picker.ready || (typed === "" && images.length === 0 && !withTemplate) || waiting.length > 0}
               >
                 Send
               </Button>
@@ -488,6 +536,7 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
           <FilterSelect label="Model or route" value={target} choices={choices} onChange={setChosen} />
           <p className="text-sm text-muted-foreground">Calls count toward your limits and budgets.</p>
         </div>
+        <PromptPickerFields picker={picker} />
         <Field label="System prompt" name="system">
           {({ id, name, ...described }) => (
             <Textarea
@@ -619,7 +668,7 @@ function Loading() {
   );
 }
 
-function PlaygroundLoaded() {
+function PlaygroundLoaded({ prompt }: { prompt: InitialPrompt | undefined }) {
   const [mode, setMode] = useState<"chat" | "images" | "audio">("chat");
   const models = useModels();
   const routes = useRoutes();
@@ -668,7 +717,7 @@ function PlaygroundLoaded() {
           </div>
           {/* Both stay mounted: switching modes keeps the conversation and the prompt. */}
           <div hidden={mode !== "chat"}>
-            <PlaygroundOf models={models.data.models} routes={names} />
+            <PlaygroundOf models={models.data.models} routes={names} initialPrompt={prompt} />
           </div>
           <div hidden={mode !== "images"}>
             <ImagesMode models={models.data.models} routes={names} />
@@ -685,9 +734,9 @@ function PlaygroundLoaded() {
 }
 
 /** Chat with a model or a route through the gateway, as the signed-in user. */
-export function Playground() {
+export function Playground({ prompt }: { prompt?: InitialPrompt }) {
   const session = useSession();
   if (session.status !== "signedIn") return null;
   if (!can(session.me, { type: "usePlayground" })) return <NotAvailableContent />;
-  return <PlaygroundLoaded />;
+  return <PlaygroundLoaded prompt={prompt} />;
 }

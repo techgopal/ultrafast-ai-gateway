@@ -120,6 +120,11 @@ describe("guards", () => {
     // Logs and usage of others: filters by key, user and team, and the top keys.
     ["see the logs and usage of others", { type: "viewOthersUsage" }, [true, true, false, false]],
     ["use the playground", { type: "usePlayground" }, [true, true, true, true]],
+    // Prompt templates: an admin, and the lead of a team for the ones they made.
+    ["make a prompt template", { type: "createPrompt" }, [true, true, false, false]],
+    ["manage the template the lead made", { type: "managePrompt", createdBy: leadId }, [true, true, false, false]],
+    ["manage the template the member made", { type: "managePrompt", createdBy: memberId }, [true, false, false, false]],
+    ["manage a template whose maker is gone", { type: "managePrompt", createdBy: null }, [true, false, false, false]],
   ];
 
   test.each(table)("%s", (_, action, expected) => {
@@ -160,6 +165,8 @@ describe("guards", () => {
       viewUserAndTeamCounts: true,
       viewOthersUsage: true,
       usePlayground: true,
+      createPrompt: true,
+      managePrompt: true,
     };
     expect([...seen].sort()).toEqual(Object.keys(all).sort());
   });

@@ -83,6 +83,10 @@ export type ConsoleAction =
    * offer them no filter by key, user or team, and the overview no top keys.
    */
   | { type: "viewOthersUsage" }
+  /** Makes a prompt template: an admin, and the lead of any team. Everybody signed in reads and uses them. */
+  | { type: "createPrompt" }
+  /** Adds a version to a template or deletes it: an admin, and its maker while they lead a team. */
+  | { type: "managePrompt"; createdBy: number | null }
   /** Makes chat calls in the playground, as a key of their own would: everybody signed in. */
   | { type: "usePlayground" };
 
@@ -146,6 +150,10 @@ export function can(me: Me, action: ConsoleAction): boolean {
       return ledTeamIds(me).length > 0;
     case "usePlayground":
       return true;
+    case "createPrompt":
+      return ledTeamIds(me).length > 0;
+    case "managePrompt":
+      return action.createdBy === me.user.id && ledTeamIds(me).length > 0;
     case "viewTeam":
       return isIn(me, action.teamId);
     case "createKeyForSelf":

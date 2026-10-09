@@ -410,6 +410,31 @@ export const handlers = [
         }),
   ),
 
+  // prompt templates
+  handler("get", "/api/prompts", () =>
+    ok("get", "/api/prompts", 200, { prompts: fixtures.promptList }),
+  ),
+  handler("post", "/api/prompts", () =>
+    ok("post", "/api/prompts", 201, fixtures.promptViews.greet),
+  ),
+  handler("get", "/api/prompts/{id}", (call) => {
+    const one = Object.values(fixtures.promptViews).find((view) => view.id === Number(call.params.id));
+    return one === undefined ? notFound() : ok("get", "/api/prompts/{id}", 200, one);
+  }),
+  handler("delete", "/api/prompts/{id}", (call) =>
+    byId(fixtures.promptList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("post", "/api/prompts/{id}/versions", (call) =>
+    byId(fixtures.promptList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/prompts/{id}/versions", 201, fixtures.newPromptVersion),
+  ),
+  handler("get", "/api/prompts/{id}/versions/{version}", (call) => {
+    const name = call.params.id === "1" ? "summarize" : call.params.id === "2" ? "greet" : null;
+    const version = name === null ? undefined : fixtures.promptVersions[name].find((one) => one.version === Number(call.params.version));
+    return version === undefined ? notFound() : ok("get", "/api/prompts/{id}/versions/{version}", 200, version);
+  }),
+
   // audit
   handler("get", "/api/audit", () =>
     ok("get", "/api/audit", 200, { entries: fixtures.auditEntries }),

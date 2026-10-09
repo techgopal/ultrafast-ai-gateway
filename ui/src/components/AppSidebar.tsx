@@ -28,6 +28,7 @@ type Path =
   | "/providers"
   | "/models"
   | "/routes"
+  | "/prompts"
   | "/keys"
   | "/users"
   | "/teams"
@@ -69,6 +70,7 @@ const sections: NavSection[] = [
       { label: "Providers", to: "/providers" },
       { label: "Models", to: "/models" },
       { label: "Routing", to: "/routes" },
+      { label: "Prompts", to: "/prompts" },
       { label: "Virtual keys", to: "/keys" },
     ],
   },

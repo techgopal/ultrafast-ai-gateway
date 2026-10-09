@@ -41,6 +41,7 @@ const statuses: Record<ErrorName, number> = {
   alert_channel_exists: 409,
   alert_rule_exists: 409,
   guardrail_exists: 409,
+  prompt_exists: 409,
   sync_unsupported: 422,
   sync_failed: 502,
 };
@@ -266,6 +267,11 @@ test("the messages of guardrails are in the gateway source", () => {
   ]) {
     expect(source).toContain(`"${message}`);
   }
+});
+
+test("the message of a taken prompt name is in the gateway source", () => {
+  const path = fileURLToPath(new URL("../../../crates/gateway/src/api/prompts.rs", import.meta.url));
+  expect(readFileSync(path, "utf8")).toContain(`"${errors.prompt_exists.body.error.message}"`);
 });
 
 test("the message of a wrong setup code is in the gateway source", () => {

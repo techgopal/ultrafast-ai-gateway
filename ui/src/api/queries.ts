@@ -124,6 +124,13 @@ export const queryKeys = {
     all: () => ["guardrails"] as const,
     list: () => ["guardrails", "list"] as const,
   },
+  prompts: {
+    all: () => ["prompts"] as const,
+    list: () => ["prompts", "list"] as const,
+    detail: detailOf("prompts"),
+    /** One version of a template: below its detail, so what drops or marks the template stale does the same to it. */
+    version: (id: number, version: number) => ["prompts", DETAIL, id, "version", version] as const,
+  },
   settings: () => ["settings"] as const,
   /** Admin only: the single sign-on settings. */
   oidc: () => ["settings", "oidc"] as const,
@@ -141,6 +148,8 @@ export interface LogsFilter {
   user_id?: number;
   team_id?: number;
   model?: string;
+  /** `chat`, `images`, ... as a call names its endpoint. */
+  endpoint?: string;
   errors?: boolean;
   /** The worst thing the guardrails did to the call. */
   guardrail?: "blocked" | "redacted" | "flagged";
@@ -365,6 +374,27 @@ export const guardrailsOptions = () =>
     queryFn: ({ signal }) => api.get("/api/guardrails", { signal }),
   });
 
+export const promptsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.prompts.list(),
+    queryFn: ({ signal }) => api.get("/api/prompts", { signal }),
+  });
+
+export const promptOptions = (id: number) =>
+  queryOptions({
+    queryKey: queryKeys.prompts.detail(id),
+    queryFn: ({ signal }) => api.get("/api/prompts/{id}", { params: { id }, signal }),
+  });
+
+export const promptVersionOptions = (id: number, version: number) =>
+  queryOptions({
+    queryKey: queryKeys.prompts.version(id, version),
+    queryFn: ({ signal }) =>
+      api.get("/api/prompts/{id}/versions/{version}", { params: { id, version }, signal }),
+    // A version never changes: what was read stays true until the template is gone.
+    staleTime: Infinity,
+  });
+
 export const settingsOptions = () =>
   queryOptions({
     queryKey: queryKeys.settings(),
@@ -427,6 +457,13 @@ export const useAlertChannels = (enabled = true) =>
 export const useAlertRules = (enabled = true) => useQuery({ ...alertRulesOptions(), enabled });
 /** Admin only. Every guardrail, with the routes and the number of keys it is attached to. */
 export const useGuardrails = (enabled = true) => useQuery({ ...guardrailsOptions(), enabled });
+/** Every prompt template, by name, with its latest version's model and variables. Anyone signed in may read them. */
+export const usePrompts = (enabled = true) => useQuery({ ...promptsOptions(), enabled });
+/** One template with the numbers of its versions. */
+export const usePrompt = (id: number, enabled = true) => useQuery({ ...promptOptions(id), enabled });
+/** The text of one version, read only when `enabled`. */
+export const usePromptVersion = (id: number, version: number, enabled = true) =>
+  useQuery({ ...promptVersionOptions(id, version), enabled });
 
 /** How many entries a page of the audit log has. A page with fewer is the last. */
 export const AUDIT_PAGE_SIZE = 50;
@@ -1049,6 +1086,33 @@ const aGuardrailChanged = [
 ];
 const guardrailIsGone = (error: unknown) =>
   isNotFound(error) ? [queryKeys.guardrails.all(), queryKeys.routes.all(), queryKeys.keys.all()] : [];
+
+// prompt templates
+
+const aPromptChanged = [queryKeys.prompts.all(), audit];
+const promptIsGone = (error: unknown) => (isNotFound(error) ? [queryKeys.prompts.all()] : []);
+
+export const useCreatePrompt = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/prompts", "post">) => api.post("/api/prompts", { body }),
+    () => ({ stale: aPromptChanged }),
+  );
+
+/** Adds the next version: a version stands alone and never changes afterwards. */
+export const useCreatePromptVersion = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/prompts/{id}/versions", "post"> }) =>
+      api.post("/api/prompts/{id}/versions", { params: { id }, body }),
+    () => ({ stale: aPromptChanged }),
+    promptIsGone,
+  );
+
+export const useDeletePrompt = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/prompts/{id}", { params: { id } }),
+    ({ id }) => ({ stale: aPromptChanged, gone: [queryKeys.prompts.detail(id)] }),
+    promptIsGone,
+  );
 
 /** The answer holds the signing secret of an external guardrail, which is shown once. */
 export const useCreateGuardrail = () =>

@@ -199,6 +199,10 @@ describe("the list", () => {
     const how = screen.getByText("How external guardrails work").closest("details");
     expect(how).not.toBeNull();
     expect(how).toHaveTextContent('"version": 1');
+    // Every endpoint a call is logged under, and the test of a guardrail.
+    expect(how).toHaveTextContent(
+      "endpoint is chat, messages, responses, embeddings, images, transcriptions, translations, speech, playground, or test.",
+    );
     expect(how).toHaveTextContent('{"action": "redact", "texts"');
     const verify = screen.getByText("How to verify signatures").closest("details");
     expect(verify).toHaveTextContent("Every request carries the header");

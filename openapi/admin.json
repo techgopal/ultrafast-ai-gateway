@@ -3690,6 +3690,15 @@
             }
           },
           {
+            "name": "endpoint",
+            "in": "query",
+            "description": "Only calls on this endpoint, as the row names it: `chat`, `messages`, `responses`, `embeddings`, `images`, `transcriptions`, `translations`, `speech` or `playground`. Combines with the other filters.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "errors",
             "in": "query",
             "description": "`true`: only calls answered with a status of 400 or more. Combines with the other filters.",
@@ -11701,8 +11710,8 @@
                 }
               },
               "version": {
-                "type": "object",
-                "description": "A positive integer, or a string of digits."
+                "type": "integer",
+                "description": "A positive integer. A string of digits is read as the same number."
               }
             }
           },

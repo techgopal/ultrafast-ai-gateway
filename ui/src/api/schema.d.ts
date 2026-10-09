@@ -2258,8 +2258,8 @@ export interface components {
                 variables?: {
                     [key: string]: string;
                 };
-                /** @description A positive integer, or a string of digits. */
-                version?: Record<string, never>;
+                /** @description A positive integer. A string of digits is read as the same number. */
+                version?: number;
             };
             /** @description As in `/v1/chat/completions`: `{"type":"text"}`, `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"name","schema","strict"?,"description"?}}`. */
             response_format?: {
@@ -5877,6 +5877,8 @@ export interface operations {
                 model?: string;
                 /** @description Only calls answered with this HTTP status, 100 to 599. */
                 status?: number;
+                /** @description Only calls on this endpoint, as the row names it: `chat`, `messages`, `responses`, `embeddings`, `images`, `transcriptions`, `translations`, `speech` or `playground`. Combines with the other filters. */
+                endpoint?: string;
                 /** @description `true`: only calls answered with a status of 400 or more. Combines with the other filters. */
                 errors?: boolean;
                 /** @description Only calls whose worst guardrail action was this: `blocked`, `redacted` or `flagged` (a block is worse than a redaction, a redaction worse than a flag). Combines with the other filters. */

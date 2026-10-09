@@ -36,6 +36,8 @@ export interface MockProvider {
   calls: MockCall[];
   /** The roles of the messages each completion carried, in order. */
   roles: string[][];
+  /** The text of each message of each completion, in order (a message with parts is its text parts joined). */
+  texts: string[][];
   /** Image generations asked for, in order. */
   imageCalls: { authorized: boolean; body: unknown }[];
   /** Audio calls asked for, in order: the form of a transcription (its text fields and file) or the JSON of a speech. */
@@ -119,6 +121,7 @@ export async function startMockProvider(
   const toolArguments = JSON.stringify({ city: "Oslo" });
   const calls: MockCall[] = [];
   const roles: string[][] = [];
+  const texts: string[][] = [];
   const imageCalls: { authorized: boolean; body: unknown }[] = [];
   const audioCalls: MockProvider["audioCalls"] = [];
   const state = {
@@ -212,7 +215,7 @@ export async function startMockProvider(
         body.stream === true;
       const messages =
         typeof body === "object" && body !== null && "messages" in body && Array.isArray(body.messages)
-          ? (body.messages as { role?: unknown }[])
+          ? (body.messages as { role?: unknown; content?: unknown }[])
           : [];
       const hasTools =
         typeof body === "object" && body !== null && "tools" in body && Array.isArray(body.tools) && body.tools.length > 0;
@@ -220,6 +223,17 @@ export async function startMockProvider(
       const callsTool = hasTools && !hasToolResult;
       calls.push({ authorized, model });
       roles.push(messages.map((message) => String(message.role)));
+      texts.push(
+        messages.map((message) =>
+          typeof message.content === "string"
+            ? message.content
+            : Array.isArray(message.content)
+              ? message.content
+                  .map((part: { text?: unknown }) => (typeof part.text === "string" ? part.text : ""))
+                  .join("")
+              : "",
+        ),
+      );
       if (!authorized) {
         send(401, {
           error: {
@@ -353,6 +367,7 @@ export async function startMockProvider(
     models,
     calls,
     roles,
+    texts,
     imageCalls,
     audioCalls,
     get listCalls() {

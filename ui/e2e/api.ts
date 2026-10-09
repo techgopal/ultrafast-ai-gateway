@@ -265,6 +265,8 @@ export interface LogRow {
   requested: string;
   /** What the guardrails did at worst, or `null` when they found nothing. */
   guardrails: { action: string } | null;
+  /** The prompt template the call used, as `name@version`, or `null`. */
+  prompt: string | null;
 }
 
 export interface ModelRow {

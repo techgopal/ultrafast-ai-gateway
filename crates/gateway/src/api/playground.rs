@@ -71,7 +71,9 @@ fn prompt_schema() -> utoipa::openapi::schema::ObjectBuilder {
         .property("id", ObjectBuilder::new().schema_type(Type::String))
         .property(
             "version",
-            ObjectBuilder::new().description(Some("A positive integer, or a string of digits.")),
+            ObjectBuilder::new()
+                .schema_type(Type::Integer)
+                .description(Some("A positive integer. A string of digits is read as the same number.")),
         )
         .property(
             "variables",

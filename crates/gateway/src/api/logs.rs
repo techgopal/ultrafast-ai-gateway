@@ -36,6 +36,7 @@ pub struct LogsQuery {
     team_id: Option<String>,
     model: Option<String>,
     status: Option<String>,
+    endpoint: Option<String>,
     errors: Option<String>,
     guardrail: Option<String>,
 }
@@ -338,6 +339,7 @@ pub(super) fn store_scope(scope: Scope) -> LogScope {
         ("team_id" = Option<i64>, Query, description = "Only calls of this team."),
         ("model" = Option<String>, Query, description = "Only calls answered by, or asking for, this model name."),
         ("status" = Option<i64>, Query, description = "Only calls answered with this HTTP status, 100 to 599."),
+        ("endpoint" = Option<String>, Query, description = "Only calls on this endpoint, as the row names it: `chat`, `messages`, `responses`, `embeddings`, `images`, `transcriptions`, `translations`, `speech` or `playground`. Combines with the other filters."),
         ("errors" = Option<bool>, Query, description = "`true`: only calls answered with a status of 400 or more. Combines with the other filters."),
         ("guardrail" = Option<String>, Query, description = "Only calls whose worst guardrail action was this: `blocked`, `redacted` or `flagged` (a block is worse than a redaction, a redaction worse than a flag). Combines with the other filters."),
         ("tag" = Option<Vec<String>>, Query, description = "Only calls with this tag, written `name:value` (the name ends at the first colon). Repeat it to require several tags: all must match."),
@@ -426,6 +428,21 @@ pub async fn list(
             parsed
         }
     };
+    let endpoint = match q.endpoint.as_deref() {
+        None | Some("") => None,
+        Some(raw)
+            if raw.len() <= 32 && raw.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') =>
+        {
+            Some(raw.to_string())
+        }
+        Some(_) => {
+            fields.insert(
+                "endpoint".into(),
+                "must be an endpoint name: 1 to 32 characters of a-z and _".into(),
+            );
+            None
+        }
+    };
     // `tag` may be repeated, which a struct cannot take.
     let mut tag_filters = Vec::new();
     for (_, raw) in pairs.iter().filter(|(name, _)| name == "tag") {
@@ -455,6 +472,7 @@ pub async fn list(
         team_id,
         model: q.model.filter(|m| !m.is_empty()),
         status,
+        endpoint,
     };
     let rows = state
         .store
