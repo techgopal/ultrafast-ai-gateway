@@ -170,6 +170,10 @@ pub struct ChatRequest {
     /// How the answer text must be shaped (structured outputs).
     #[serde(default)]
     pub response_format: Option<ResponseFormat>,
+    /// OpenAI's `reasoning_effort` (`none` .. `max`). Only OpenAI and Azure
+    /// can express it; the other providers refuse a call that sets it.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 /// OpenAI's `response_format`.

@@ -183,6 +183,11 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
     super::check_tool_choice(req)?;
     // A tool message's `name` (OpenAI's older form) is not needed: the id
     // names the call.
+    if req.reasoning_effort.is_some() {
+        return Err(TranslateError::Unsupported(
+            "reasoning effort is not supported by this provider".into(),
+        ));
+    }
     if req
         .messages
         .iter()
@@ -463,6 +468,7 @@ mod tests {
             tool_choice: None,
             parallel_tool_calls: None,
             response_format: None,
+            reasoning_effort: None,
         }
     }
 
@@ -488,6 +494,17 @@ mod tests {
         assert_eq!(v["messages"].as_array().unwrap().len(), 2);
         assert_eq!(v["messages"][0]["role"], "assistant");
         assert_eq!(v["messages"][1]["role"], "user");
+    }
+
+    #[test]
+    fn reasoning_effort_is_refused() {
+        let mut req = request(vec![Message::text(Role::User, "hi")]);
+        assert!(build_request(&target(), &req).is_ok());
+        req.reasoning_effort = Some("low".into());
+        assert!(matches!(
+            build_request(&target(), &req),
+            Err(TranslateError::Unsupported(m)) if m.contains("reasoning")
+        ));
     }
 
     #[test]

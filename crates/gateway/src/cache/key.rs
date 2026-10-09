@@ -199,6 +199,7 @@ impl CacheKey {
             tool_choice: choice,
             parallel_tool_calls,
             response_format,
+            reasoning_effort,
         } = request;
         let mut e = Encoder::new("chat");
         e.parts(parts);
@@ -251,6 +252,7 @@ impl CacheKey {
                 .map(|b| &b[..]),
         );
         e.response_format(response_format.as_ref());
+        e.optional(42, reasoning_effort.as_deref().map(str::as_bytes));
         e.finish()
     }
 
@@ -309,6 +311,7 @@ mod tests {
             tool_choice: None,
             parallel_tool_calls: None,
             response_format: None,
+            reasoning_effort: None,
         }
     }
 
@@ -426,6 +429,18 @@ mod tests {
             assert!(!seen.contains(&key), "{f:?} does not change the key");
             seen.push(key);
             assert_eq!(key, key_of(&r), "{f:?} is stable");
+        }
+    }
+
+    #[test]
+    fn the_reasoning_effort_changes_the_key() {
+        let mut seen = Vec::new();
+        for effort in [None, Some("low"), Some("high"), Some("")] {
+            let mut r = base();
+            r.reasoning_effort = effort.map(str::to_string);
+            let key = key_of(&r);
+            assert!(!seen.contains(&key), "{effort:?} does not change the key");
+            seen.push(key);
         }
     }
 

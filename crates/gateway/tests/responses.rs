@@ -402,6 +402,55 @@ async fn refusals_are_openai_errors_and_no_provider_is_called() {
     assert!(h.upstream.received_requests().await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn reasoning_effort_reaches_an_openai_provider_and_reasoning_items_are_dropped() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(json!({ "reasoning_effort": "low" })))
+        .respond_with(openai_ok("hello"))
+        .expect(2)
+        .mount(&h.upstream)
+        .await;
+    let body = json!({"model":"p/m","reasoning":{"effort":"low","summary":"auto"},
+        "include":["reasoning.encrypted_content"],"truncation":"disabled","store":false,
+        "input":[{"role":"user","content":"x"},
+                 {"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"abc"}]});
+    let (status, _, text) = responses(&h, &body).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    // The same on /v1/chat/completions.
+    let chat = json!({"model":"p/m","reasoning_effort":"low",
+        "messages":[{"role":"user","content":"x"}]});
+    let (status, text) = common::post_chat(&h.app, Some(&h.key), &chat.to_string()).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    // The provider was given no reasoning item.
+    let sent: Value =
+        serde_json::from_slice(&h.upstream.received_requests().await.unwrap()[0].body).unwrap();
+    assert_eq!(sent["messages"].as_array().unwrap().len(), 1, "{sent}");
+}
+
+#[tokio::test]
+async fn reasoning_effort_is_a_400_for_a_provider_that_cannot_take_it() {
+    for kind in ["anthropic", "gemini"] {
+        let h = harness(kind).await;
+        let body = json!({"model":"p/m","input":"x","reasoning":{"effort":"high"}});
+        let (status, _, text) = responses(&h, &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{kind}: {text}");
+        assert!(
+            json_of(&text)["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("reasoning"),
+            "{text}"
+        );
+        assert!(h.upstream.received_requests().await.unwrap().is_empty());
+        // Without an effort the same call is served as before; a summary alone is fine.
+        let ok_body = json!({"model":"p/m","input":"x","reasoning":{"summary":"auto"}});
+        let (status, _, _) = responses(&h, &ok_body).await;
+        assert_ne!(status, StatusCode::BAD_REQUEST);
+    }
+}
+
 async fn guardrail(h: &Harness, name: &str, rules: Value) {
     let rules = rules.to_string();
     let mut tx = h.store.begin().await.unwrap();

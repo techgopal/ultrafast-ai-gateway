@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
 
-use super::openai::{parse_response_format, parse_tool_choice, parse_tools, reject_unknown};
+use super::openai::{
+    parse_reasoning_effort, parse_response_format, parse_tool_choice, parse_tools, reject_unknown,
+};
 use crate::error::TranslateError;
 use crate::types::{
     image_source, ChatRequest, ChatResponse, FinishReason, Message, Part, ResponseFormat, Role,
@@ -236,6 +238,11 @@ fn parse_input(items: &[Value]) -> Result<Vec<Message>, TranslateError> {
                 m.tool_call_id = Some(call_id);
                 out.push(m);
             }
+            // Opaque state of the provider's own reasoning (summary, encrypted
+            // content): it means nothing once translated, so it is dropped.
+            // The one place the gateway accepts input and ignores it, so that
+            // clients which send back what they were given still work.
+            "reasoning" => {}
             other => {
                 return Err(unsupported(format!(
                     "input item type '{other}' is not supported yet"
@@ -347,13 +354,71 @@ fn parse_prompt(v: &Value) -> Result<PromptRef, TranslateError> {
     })
 }
 
+/// `reasoning`: `effort` goes on to the provider (OpenAI and Azure; the
+/// others refuse it); `summary` and `generate_summary` are checked and
+/// ignored, since no summaries are produced.
+fn parse_reasoning(v: &Value) -> Result<Option<String>, TranslateError> {
+    let o = v
+        .as_object()
+        .ok_or_else(|| invalid("reasoning must be an object"))?;
+    for (k, val) in o {
+        match k.as_str() {
+            "effort" => {}
+            "summary" | "generate_summary" => match val {
+                Value::Null => {}
+                Value::String(s) if ["auto", "concise", "detailed"].contains(&s.as_str()) => {}
+                _ => {
+                    return Err(invalid(format!(
+                        "reasoning {k} must be auto, concise or detailed"
+                    )))
+                }
+            },
+            other if val.is_null() => {
+                let _ = other;
+            }
+            other => return Err(unsupported_field(&format!("reasoning.{other}"))),
+        }
+    }
+    parse_reasoning_effort(o.get("effort").unwrap_or(&Value::Null))
+}
+
+/// `include`: the encrypted reasoning content is accepted and ignored (none
+/// is produced); every other value asks for output the gateway cannot give.
+fn check_include(v: Option<&Value>) -> Result<(), TranslateError> {
+    match v {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::Array(items)) => {
+            for i in items {
+                match i.as_str() {
+                    Some("reasoning.encrypted_content") => {}
+                    Some(other) => {
+                        return Err(unsupported(format!(
+                            "include value '{other}' is not supported yet"
+                        )))
+                    }
+                    None => return Err(invalid("include must be an array of strings")),
+                }
+            }
+            Ok(())
+        }
+        Some(_) => Err(invalid("include must be an array of strings")),
+    }
+}
+
 pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
     let v: Value = serde_json::from_slice(body).map_err(|e| invalid(e.to_string()))?;
     let o = v
         .as_object()
         .ok_or_else(|| invalid("the request body must be a JSON object"))?;
     // What the gateway does not do is named, not dropped.
-    if o.get("store") == Some(&Value::Bool(true)) {
+    let flag = |name: &str| -> Result<bool, TranslateError> {
+        match o.get(name) {
+            None | Some(Value::Null) => Ok(false),
+            Some(Value::Bool(b)) => Ok(*b),
+            _ => Err(invalid(format!("{name} must be a boolean"))),
+        }
+    };
+    if flag("store")? {
         return Err(invalid(
             "store is not supported; the gateway keeps no responses",
         ));
@@ -365,7 +430,7 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
             )));
         }
     }
-    if o.get("background") == Some(&Value::Bool(true)) {
+    if flag("background")? {
         return Err(invalid(
             "background is not supported; the gateway keeps no responses",
         ));
@@ -387,6 +452,9 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
         "background",
         "previous_response_id",
         "conversation",
+        "reasoning",
+        "include",
+        "truncation",
     ];
     for (k, val) in o {
         if !val.is_null() && !KNOWN.contains(&k.as_str()) && !IGNORED_FIELDS.contains(&k.as_str()) {
@@ -415,17 +483,14 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
             if items.is_empty() && prompt.is_none() {
                 return Err(invalid("input must not be empty"));
             }
-            messages.extend(parse_input(items)?);
+            let parsed = parse_input(items)?;
+            if parsed.is_empty() && prompt.is_none() {
+                return Err(invalid("input has nothing but reasoning items"));
+            }
+            messages.extend(parsed);
         }
         Some(_) => return Err(invalid("input must be a string or an array of items")),
     }
-    let flag = |name: &str| -> Result<bool, TranslateError> {
-        match o.get(name) {
-            None | Some(Value::Null) => Ok(false),
-            Some(Value::Bool(b)) => Ok(*b),
-            _ => Err(invalid(format!("{name} must be a boolean"))),
-        }
-    };
     let stream = flag("stream")?;
     let parallel_tool_calls = match o.get("parallel_tool_calls") {
         None | Some(Value::Null) => None,
@@ -440,6 +505,19 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
                 .ok_or_else(|| invalid("max_output_tokens must be a positive integer"))?,
         ),
     };
+    let reasoning_effort = match o.get("reasoning") {
+        None | Some(Value::Null) => None,
+        Some(r) => parse_reasoning(r)?,
+    };
+    check_include(o.get("include"))?;
+    match o.get("truncation") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(t)) if t == "disabled" => {}
+        Some(Value::String(t)) if t == "auto" => return Err(unsupported(
+            "truncation 'auto' is not supported; the gateway never drops input (use 'disabled')",
+        )),
+        Some(_) => return Err(invalid("truncation must be 'auto' or 'disabled'")),
+    }
     let tools = match o.get("tools") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(t)) => parse_tools_field(t)?,
@@ -466,6 +544,7 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
             tool_choice,
             parallel_tool_calls,
             response_format,
+            reasoning_effort,
         },
         prompt,
     })
@@ -1020,9 +1099,23 @@ mod tests {
             ),
             (json!({"conversation":"conv_1"}), "conversation"),
             (json!({"background":true}), "background"),
-            (json!({"reasoning":{"effort":"low"}}), "reasoning"),
-            (json!({"include":["x"]}), "include"),
+            (json!({"reasoning":{"effort":"loud"}}), "reasoning"),
+            (json!({"reasoning":{"effort":3}}), "reasoning"),
+            (json!({"reasoning":{"summary":"verbose"}}), "summary"),
+            (json!({"reasoning":{"mode":"pro"}}), "mode"),
+            (json!({"reasoning":"low"}), "reasoning"),
+            (json!({"include":["file_search_call.results"]}), "include"),
+            (
+                json!({"include":["reasoning.encrypted_content","message.output_text.logprobs"]}),
+                "include",
+            ),
+            (json!({"include":"reasoning.encrypted_content"}), "include"),
             (json!({"truncation":"auto"}), "truncation"),
+            (json!({"truncation":"sometimes"}), "truncation"),
+            (json!({"store":"true"}), "store"),
+            (json!({"store":1}), "store"),
+            (json!({"background":"true"}), "background"),
+            (json!({"background":0}), "background"),
             (json!({"max_tool_calls":1}), "max_tool_calls"),
             (json!({"text":{"verbosity":"low"}}), "verbosity"),
             (json!({"tools":[{"type":"web_search"}]}), "web_search"),
@@ -1106,6 +1199,51 @@ mod tests {
         // No model, or no input.
         assert!(refused(json!({"input":"x"})).contains("model"));
         assert!(refused(json!({"model":"m"})).contains("input"));
+    }
+
+    #[test]
+    fn reasoning_effort_summary_include_and_truncation_are_accepted() {
+        for e in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            let r = ok(json!({"model":"m","input":"x","reasoning":{"effort":e}}));
+            assert_eq!(r.reasoning_effort.as_deref(), Some(e));
+        }
+        let r = ok(
+            json!({"model":"m","input":"x","reasoning":{"effort":null,"summary":"auto","generate_summary":"concise"}}),
+        );
+        assert_eq!(r.reasoning_effort, None);
+        assert_eq!(
+            ok(json!({"model":"m","input":"x","reasoning":null})).reasoning_effort,
+            None
+        );
+        // The summary is accepted and ignored: nothing of it reaches the request.
+        let r = ok(json!({"model":"m","input":"x","reasoning":{"summary":"detailed"}}));
+        assert_eq!(r.reasoning_effort, None);
+        ok(json!({"model":"m","input":"x","include":["reasoning.encrypted_content"]}));
+        ok(json!({"model":"m","input":"x","include":[]}));
+        ok(json!({"model":"m","input":"x","include":null,"truncation":null}));
+        ok(json!({"model":"m","input":"x","truncation":"disabled"}));
+        ok(json!({"model":"m","input":"x","store":false,"background":false}));
+    }
+
+    #[test]
+    fn reasoning_items_are_accepted_and_dropped() {
+        let r = ok(json!({"model":"m","input":[
+            {"role":"user","content":"weather?"},
+            {"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"thinking"}],"encrypted_content":"abc","status":"completed"},
+            {"type":"function_call","call_id":"c1","name":"w","arguments":"{}"},
+            {"type":"reasoning","id":"rs_2","summary":[]},
+            {"type":"function_call","call_id":"c2","name":"x","arguments":"{}"},
+            {"type":"function_call_output","call_id":"c1","output":"a"},
+            {"type":"function_call_output","call_id":"c2","output":"b"}
+        ]}));
+        // The two calls stay one assistant turn; no message stands for the reasoning.
+        assert_eq!(r.messages.len(), 4);
+        assert_eq!(r.messages[1].tool_calls.len(), 2);
+        // Only reasoning in the input is still an empty conversation.
+        assert!(
+            refused(json!({"model":"m","input":[{"type":"reasoning","summary":[]}]}))
+                .contains("input")
+        );
     }
 
     fn answer(content: &str, calls: Vec<ToolCall>, finish: Option<FinishReason>) -> ChatResponse {
@@ -1374,6 +1512,17 @@ mod tests {
         // The closing events repeat the whole text and arguments.
         assert_eq!(all[11].1["text"], "Hello");
         assert_eq!(all[11].1["item_id"], msg_id.as_str());
+        assert_eq!(all[11].1["content_index"], 0);
+        assert_eq!(all[11].1["output_index"], 0);
+        assert_eq!(all[11].1["logprobs"], json!([]));
+        assert_eq!(all[12].1["content_index"], 0);
+        assert_eq!(all[12].1["item_id"], msg_id.as_str());
+        assert_eq!(all[12].1["output_index"], 0);
+        // The same index on the delta events and on content_part.added.
+        assert_eq!(all[3].1["output_index"], 0);
+        assert_eq!(all[5].1["content_index"], 0);
+        assert_eq!(all[5].1["item_id"], msg_id.as_str());
+        assert_eq!(all[5].1["output_index"], 0);
         assert_eq!(
             all[12].1["part"],
             json!({"type":"output_text","text":"Hello","annotations":[]})

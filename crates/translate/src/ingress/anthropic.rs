@@ -334,6 +334,7 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
         tool_choice,
         parallel_tool_calls,
         response_format: parse_output_config(wire.output_config.as_ref())?,
+        reasoning_effort: None,
     })
 }
 

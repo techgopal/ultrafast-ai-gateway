@@ -287,6 +287,7 @@ pub fn build_request(target_json: &str, request_json: &str) -> Result<String, Fa
             None | Some(Value::Null) => None,
             Some(v) => Some(parse_response_format(&v).map_err(|e| classified(e, None))?),
         },
+        reasoning_effort: None,
     };
     let http = provider::build_request(&target, &req).map_err(|e| classified(e, None))?;
     http_json(http, tag_header, r.stream)

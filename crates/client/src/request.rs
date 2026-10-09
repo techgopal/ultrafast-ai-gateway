@@ -33,6 +33,7 @@ impl ChatRequest {
                 tool_choice: None,
                 parallel_tool_calls: None,
                 response_format: None,
+                reasoning_effort: None,
             },
             tags: BTreeMap::new(),
         }

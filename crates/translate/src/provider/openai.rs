@@ -194,6 +194,9 @@ pub(crate) fn body(req: &ChatRequest, model: Option<&str>) -> Result<Vec<u8>, Tr
     if let Some(f) = &req.response_format {
         body["response_format"] = response_format_value(f);
     }
+    if let Some(e) = &req.reasoning_effort {
+        body["reasoning_effort"] = json!(e);
+    }
     if req.stream {
         body["stream"] = json!(true);
         body["stream_options"] = json!({ "include_usage": true });
@@ -440,6 +443,7 @@ mod tests {
             tool_choice: None,
             parallel_tool_calls: None,
             response_format: None,
+            reasoning_effort: None,
         }
     }
 
@@ -1168,6 +1172,18 @@ mod tests {
         assert_eq!(v["messages"][2]["content"], "sunny");
         assert_eq!(v["tool_choice"], "required");
         assert_eq!(v["tools"][0]["function"]["name"], "get_weather");
+    }
+
+    #[test]
+    fn sends_reasoning_effort_as_is() {
+        let mut req = request(false);
+        let v: serde_json::Value =
+            serde_json::from_slice(&build_request(&target(), &req).unwrap().body).unwrap();
+        assert!(v.get("reasoning_effort").is_none());
+        req.reasoning_effort = Some("low".into());
+        let v: serde_json::Value =
+            serde_json::from_slice(&build_request(&target(), &req).unwrap().body).unwrap();
+        assert_eq!(v["reasoning_effort"], "low");
     }
 
     #[test]

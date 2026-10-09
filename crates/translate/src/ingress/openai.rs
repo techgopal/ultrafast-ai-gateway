@@ -33,6 +33,8 @@ struct WireRequest {
     parallel_tool_calls: Option<bool>,
     #[serde(default)]
     response_format: Option<Value>,
+    #[serde(default)]
+    reasoning_effort: Option<Value>,
     /// Every field that is not named above.
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -335,6 +337,22 @@ fn convert_messages(wire: Vec<WireMessage>) -> Result<Vec<Message>, TranslateErr
     Ok(messages)
 }
 
+/// The values OpenAI's `reasoning_effort` takes.
+pub const REASONING_EFFORTS: &[&str] =
+    &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// A `reasoning_effort` (chat) or `reasoning.effort` (Responses) value.
+pub fn parse_reasoning_effort(v: &Value) -> Result<Option<String>, TranslateError> {
+    match v {
+        Value::Null => Ok(None),
+        Value::String(s) if REASONING_EFFORTS.contains(&s.as_str()) => Ok(Some(s.clone())),
+        _ => Err(TranslateError::InvalidRequest(format!(
+            "reasoning_effort must be one of {}",
+            REASONING_EFFORTS.join(", ")
+        ))),
+    }
+}
+
 /// An OpenAI-shaped `response_format`: `{type:"text"}`, `{type:"json_object"}`
 /// or `{type:"json_schema", json_schema:{name, schema, strict?, description?}}`.
 pub fn parse_response_format(v: &Value) -> Result<ResponseFormat, TranslateError> {
@@ -446,6 +464,10 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
             None | Some(Value::Null) => None,
             Some(v) => Some(parse_response_format(&v)?),
         },
+        reasoning_effort: match &wire.reasoning_effort {
+            None => None,
+            Some(v) => parse_reasoning_effort(v)?,
+        },
     })
 }
 
@@ -556,6 +578,31 @@ mod tests {
     use super::*;
     use crate::error::TranslateError;
     use crate::types::*;
+
+    #[test]
+    fn reasoning_effort_is_parsed_and_checked() {
+        let body = |v: &str| {
+            format!(
+                r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],"reasoning_effort":{v}}}"#
+            )
+        };
+        for e in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            let r = parse_request(body(&format!("\"{e}\"")).as_bytes()).unwrap();
+            assert_eq!(r.reasoning_effort.as_deref(), Some(e));
+        }
+        assert_eq!(
+            parse_request(body("null").as_bytes())
+                .unwrap()
+                .reasoning_effort,
+            None
+        );
+        for bad in ["\"loud\"", "3", "true"] {
+            assert!(
+                matches!(parse_request(body(bad).as_bytes()), Err(TranslateError::InvalidRequest(m)) if m.contains("reasoning_effort")),
+                "{bad}"
+            );
+        }
+    }
 
     #[test]
     fn parses_minimal_request() {
@@ -958,7 +1005,6 @@ mod tests {
             ("audio", r#"{"voice":"alloy","format":"wav"}"#),
             ("modalities", r#"["text","audio"]"#),
             ("prediction", r#"{"type":"content","content":"x"}"#),
-            ("reasoning_effort", r#""low""#),
         ];
         for (field, value) in cases {
             let body = format!(

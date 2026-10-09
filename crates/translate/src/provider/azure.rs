@@ -62,6 +62,7 @@ mod tests {
             tool_choice: None,
             parallel_tool_calls: None,
             response_format: None,
+            reasoning_effort: None,
         }
     }
 
@@ -82,6 +83,15 @@ mod tests {
         assert_eq!(v["max_tokens"], 5);
         assert_eq!(v["stop"][0], "x");
         assert!(v.get("stream").is_none());
+    }
+
+    #[test]
+    fn sends_reasoning_effort() {
+        let mut req = request(false);
+        req.reasoning_effort = Some("high".into());
+        let r = build_request(&target(None), &req).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(v["reasoning_effort"], "high");
     }
 
     #[test]

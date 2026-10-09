@@ -185,6 +185,11 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
             "parallel_tool_calls=false is not supported by this provider".into(),
         ));
     }
+    if req.reasoning_effort.is_some() {
+        return Err(TranslateError::Unsupported(
+            "reasoning effort is not supported by this provider".into(),
+        ));
+    }
     if req
         .messages
         .iter()
@@ -500,6 +505,7 @@ mod tests {
             tool_choice: None,
             parallel_tool_calls: None,
             response_format: None,
+            reasoning_effort: None,
         }
     }
 
@@ -1329,6 +1335,17 @@ mod tests {
             serde_json::json!({"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false})
         );
         assert!(g.get("responseSchema").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_is_refused() {
+        let mut req = request(false);
+        assert!(build_request(&target(), &req).is_ok());
+        req.reasoning_effort = Some("low".into());
+        assert!(matches!(
+            build_request(&target(), &req),
+            Err(TranslateError::Unsupported(m)) if m.contains("reasoning")
+        ));
     }
 
     #[test]
