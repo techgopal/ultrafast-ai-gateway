@@ -37,7 +37,7 @@ use crate::catalog::validate_model_name;
 use crate::config::{same_host, validate_base_url, validate_provider_name};
 use crate::guardrails::{Directions, RuleSpec};
 use crate::limits::{LimitScope, RateLimit};
-use crate::prompts::{self, Params, TemplateMessage, MAX_VERSIONS};
+use crate::prompts::{self, Params, TemplateMessage, MAX_TEMPLATES, MAX_VERSIONS};
 use crate::secrets::Cipher;
 use crate::store::{
     AuditEntry, ConfigState, Grants, GuardrailPatch, NewGuardrail, NewVersion, RouteSettings,
@@ -1317,6 +1317,7 @@ impl Planner<'_> {
         let file = self.file;
         let state = self.state;
         let mut seen = HashSet::new();
+        let mut created_prompts = 0usize;
         for (i, entry) in file.prompts.iter().enumerate() {
             let at = format!("prompts[{i}]");
             let before = self.report.errors.len();
@@ -1324,6 +1325,11 @@ impl Planner<'_> {
                 self.error(format!("{at}.name"), message);
             } else if entry.name.trim() != entry.name {
                 self.error(format!("{at}.name"), "must not start or end with a space");
+            } else if entry.name.contains('@') {
+                self.error(
+                    format!("{at}.name"),
+                    "name must not contain @ (the log writes name@version)",
+                );
             }
             if !seen.insert(entry.name.clone()) {
                 self.error(at.clone(), "this name appears more than once");
@@ -1379,6 +1385,14 @@ impl Planner<'_> {
                     );
                     continue;
                 }
+                if state.prompt_templates.len() + created_prompts >= MAX_TEMPLATES {
+                    self.error(
+                        at.clone(),
+                        format!("there would be more than {MAX_TEMPLATES} templates"),
+                    );
+                    continue;
+                }
+                created_prompts += 1;
                 self.push(
                     Op::UpsertPrompt {
                         id: None,

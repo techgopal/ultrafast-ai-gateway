@@ -1,6 +1,9 @@
 //! Prompt templates and their versions. A version is written once and never
 //! changes (the database refuses an update of its text); a new text is a new
-//! version, numbered from 1 in the order they are written.
+//! version, numbered from 1 in the order they are written. The trigger
+//! guards UPDATE only: a raw `DELETE` of a single version is not blocked
+//! (the API never deletes one; only a whole template goes, with its
+//! versions), so "no gaps" is kept by the code, not enforced by the database.
 
 use anyhow::Result;
 use sqlx::any::AnyRow;
@@ -100,7 +103,40 @@ pub(super) async fn list_versions_in(conn: &mut AnyConnection) -> Result<Vec<Ver
     Ok(rows.iter().map(version_from).collect())
 }
 
+/// The newest version of every template, by template.
+pub(super) async fn list_latest_versions_in(conn: &mut AnyConnection) -> Result<Vec<VersionRow>> {
+    let sql = format!(
+        "{VERSION} WHERE t.org_id = ? AND v.version =
+           (SELECT MAX(version) FROM prompt_versions WHERE template_id = v.template_id)
+         ORDER BY v.template_id"
+    );
+    let rows = conn
+        .q_dyn(sql)
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows.iter().map(version_from).collect())
+}
+
+/// A version without its text: what a list of versions shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionStub {
+    pub version: i64,
+    pub created_by: Option<i64>,
+    pub created_at: String,
+}
+
 impl Tx<'_> {
+    /// How many templates there are.
+    pub async fn count_prompt_templates(&mut self) -> Result<i64> {
+        let n: i64 = self
+            .scalar("SELECT COUNT(*) FROM prompt_templates WHERE org_id = ?")
+            .bind(DEFAULT_ORG)
+            .fetch_one(self.conn())
+            .await?;
+        Ok(n)
+    }
+
     /// A taken name is `StoreError::Duplicate`.
     pub async fn insert_prompt_template(
         &mut self,
@@ -210,6 +246,54 @@ impl Tx<'_> {
 }
 
 impl Store {
+    /// The newest version of every template (the only text a list reads).
+    pub async fn list_latest_prompt_versions(&self) -> Result<Vec<VersionRow>> {
+        let mut conn = self.pool().acquire().await?;
+        list_latest_versions_in(&mut conn).await
+    }
+
+    /// `(template id, number of versions)` of every template.
+    pub async fn prompt_version_counts(&self) -> Result<Vec<(i64, i64)>> {
+        let rows = self
+            .q("SELECT template_id, COUNT(*) FROM prompt_versions GROUP BY template_id")
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// The newest version of a template.
+    pub async fn prompt_latest_version(&self, template_id: i64) -> Result<Option<VersionRow>> {
+        let sql = format!(
+            "{VERSION} WHERE v.template_id = ? AND t.org_id = ?
+             ORDER BY v.version DESC LIMIT 1"
+        );
+        let row = self
+            .q_dyn(sql)
+            .bind(template_id)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.as_ref().map(version_from))
+    }
+
+    /// The versions of a template without their text, oldest first.
+    pub async fn prompt_version_stubs(&self, template_id: i64) -> Result<Vec<VersionStub>> {
+        let rows = self
+            .q("SELECT version, created_by, created_at FROM prompt_versions
+                WHERE template_id = ? ORDER BY version")
+            .bind(template_id)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| VersionStub {
+                version: r.get(0),
+                created_by: r.get(1),
+                created_at: r.get(2),
+            })
+            .collect())
+    }
+
     /// Every template, by name.
     pub async fn list_prompt_templates(&self) -> Result<Vec<TemplateRow>> {
         let mut conn = self.pool().acquire().await?;

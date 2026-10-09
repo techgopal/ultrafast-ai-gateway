@@ -5027,7 +5027,7 @@
             }
           },
           "413": {
-            "description": "The request body is too large.",
+            "description": "The request body is larger than 1 MiB.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5037,7 +5037,7 @@
             }
           },
           "422": {
-            "description": "Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, ...).",
+            "description": "Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, `name` for an `@` in the name or when there are already 1000 templates, ...).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5404,18 +5404,8 @@
               }
             }
           },
-          "409": {
-            "description": "`prompt_version_limit`: the template has 500 versions.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorBody"
-                }
-              }
-            }
-          },
           "413": {
-            "description": "The request body is too large.",
+            "description": "The request body is larger than 1 MiB.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5425,7 +5415,7 @@
             }
           },
           "422": {
-            "description": "Some fields are not valid; `fields` names each of them.",
+            "description": "Some fields are not valid, or the template has 200 versions; `fields` names each of them.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11673,10 +11663,6 @@
       "PlaygroundChatRequest": {
         "type": "object",
         "description": "A chat request, as `/v1/chat/completions` takes it. The body is read by\nthe same parser as that call's, so any field it accepts is accepted here.",
-        "required": [
-          "model",
-          "messages"
-        ],
         "properties": {
           "max_tokens": {
             "type": "integer",
@@ -11687,11 +11673,12 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PlaygroundMessage"
-            }
+            },
+            "description": "Required unless `prompt` is set; with a template these come after its\nmessages."
           },
           "model": {
             "type": "string",
-            "description": "A model as `provider/name`, or a route name."
+            "description": "A model as `provider/name`, or a route name. Required unless `prompt`\nis set and its template names a model."
           },
           "parallel_tool_calls": {
             "type": "boolean",
@@ -12098,7 +12085,8 @@
           "version_count",
           "updated_at",
           "model",
-          "variables"
+          "variables",
+          "unreadable"
         ],
         "properties": {
           "created_at": {
@@ -12133,6 +12121,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "unreadable": {
+            "type": "boolean",
+            "description": "The latest version cannot be read, so `model` and `variables` are\nempty and a call by this name is refused. An admin can add a version."
           },
           "updated_at": {
             "type": "string",
@@ -12184,7 +12176,7 @@
       },
       "PromptView": {
         "type": "object",
-        "description": "A template with all its versions, oldest first.",
+        "description": "A template with the numbers of its versions, oldest first. The model and\nvariables are those of the latest version; the text of any version is\nread from the version endpoint.",
         "required": [
           "id",
           "name",
@@ -12196,6 +12188,7 @@
           "updated_at",
           "model",
           "variables",
+          "unreadable",
           "versions"
         ],
         "properties": {
@@ -12229,6 +12222,9 @@
           "name": {
             "type": "string"
           },
+          "unreadable": {
+            "type": "boolean"
+          },
           "updated_at": {
             "type": "string"
           },
@@ -12245,7 +12241,7 @@
           "versions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VersionView"
+              "$ref": "#/components/schemas/VersionStubView"
             }
           }
         }
@@ -13867,6 +13863,31 @@
               "$ref": "#/components/schemas/UserTeamView"
             },
             "description": "The user's teams, ordered by name."
+          }
+        }
+      },
+      "VersionStubView": {
+        "type": "object",
+        "description": "A version in a list: its number and when and by whom it was written. Its\ntext is `GET /api/prompts/{id}/versions/{version}`.",
+        "required": [
+          "version",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

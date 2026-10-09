@@ -16,9 +16,14 @@ use crate::proxy;
 /// the same parser as that call's, so any field it accepts is accepted here.
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct PlaygroundChatRequest {
-    /// A model as `provider/name`, or a route name.
-    pub model: String,
-    pub messages: Vec<PlaygroundMessage>,
+    /// A model as `provider/name`, or a route name. Required unless `prompt`
+    /// is set and its template names a model.
+    #[schema(required = false, nullable = false)]
+    pub model: Option<String>,
+    /// Required unless `prompt` is set; with a template these come after its
+    /// messages.
+    #[schema(required = false, nullable = false)]
+    pub messages: Option<Vec<PlaygroundMessage>>,
     #[schema(nullable = false)]
     pub max_tokens: Option<u32>,
     #[schema(nullable = false)]

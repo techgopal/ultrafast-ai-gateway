@@ -42,7 +42,12 @@ pub const MAX_TOTAL_BYTES: usize = 256 * 1024;
 /// Most variables in a version.
 pub const MAX_VARIABLES: usize = 64;
 /// Most versions of a template.
-pub const MAX_VERSIONS: usize = 500;
+pub const MAX_VERSIONS: usize = 200;
+/// Most templates.
+pub const MAX_TEMPLATES: usize = 1000;
+/// How many older versions are kept in memory, to be read from the
+/// database only once.
+pub const OLD_VERSIONS_KEPT: usize = 256;
 /// The longest a model name of a template is, in characters.
 pub const MAX_MODEL_CHARS: usize = 200;
 /// The roles a template message may have.
@@ -293,41 +298,112 @@ impl Version {
     }
 }
 
-/// A template with its versions, oldest first.
+/// A template as the snapshot holds it: the newest version only. Older
+/// versions are immutable and read from the database when a call names one
+/// (see [`OldVersions`]), so the snapshot, and what a refresh reads, stays
+/// the size of one version per template.
 #[derive(Debug)]
 pub struct Template {
     pub id: i64,
     pub name: String,
     pub created_at: String,
-    pub versions: Vec<Arc<Version>>,
+    pub latest: Arc<Version>,
 }
 
 impl Template {
-    pub fn new(row: &TemplateRow, versions: Vec<Arc<Version>>) -> Self {
+    pub fn new(row: &TemplateRow, latest: Arc<Version>) -> Self {
         Self {
             id: row.id,
             name: row.name.clone(),
             created_at: row.created_at.clone(),
-            versions,
+            latest,
         }
     }
 
-    /// The latest version, or the one asked for (digits).
-    pub fn pick(&self, version: Option<&str>) -> Result<&Arc<Version>, UseError> {
-        match version {
-            None => self.versions.last().ok_or(UseError::NoVersion),
-            Some(text) => {
-                let number: i64 = text
-                    .parse()
-                    .ok()
-                    .filter(|n| *n > 0)
-                    .ok_or(UseError::BadVersion)?;
-                self.versions
-                    .iter()
-                    .find(|v| v.number == number)
-                    .ok_or(UseError::VersionNotFound(number))
-            }
+    /// The number of the version a call gets: the latest, or the one asked
+    /// for (digits), which must exist so far.
+    pub fn wanted(&self, version: Option<&str>) -> Result<i64, UseError> {
+        let Some(text) = version else {
+            return Ok(self.latest.number);
+        };
+        let number: i64 = text
+            .parse()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or(UseError::BadVersion)?;
+        if number > self.latest.number {
+            return Err(UseError::VersionNotFound(number));
         }
+        Ok(number)
+    }
+}
+
+/// Older versions read from the database, the last [`OLD_VERSIONS_KEPT`]
+/// used. A version never changes, so an entry is right for as long as its
+/// template exists: a refresh drops the entries of a template that is gone
+/// or was made again (another creation time).
+#[derive(Default)]
+pub struct OldVersions {
+    inner: std::sync::Mutex<OldInner>,
+}
+
+#[derive(Default)]
+struct OldInner {
+    tick: u64,
+    /// (template id, created_at, version) -> (last used, version)
+    entries: BTreeMap<(i64, String, i64), (u64, Arc<Version>)>,
+}
+
+impl OldVersions {
+    fn lock(&self) -> std::sync::MutexGuard<'_, OldInner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub fn get(&self, template: &Template, number: i64) -> Option<Arc<Version>> {
+        let mut inner = self.lock();
+        inner.tick += 1;
+        let tick = inner.tick;
+        let entry = inner
+            .entries
+            .get_mut(&(template.id, template.created_at.clone(), number))?;
+        entry.0 = tick;
+        Some(entry.1.clone())
+    }
+
+    pub fn put(&self, template: &Template, version: Arc<Version>) {
+        let mut inner = self.lock();
+        inner.tick += 1;
+        let tick = inner.tick;
+        let key = (template.id, template.created_at.clone(), version.number);
+        inner.entries.insert(key, (tick, version));
+        while inner.entries.len() > OLD_VERSIONS_KEPT {
+            let oldest = inner
+                .entries
+                .iter()
+                .min_by_key(|(_, (used, _))| *used)
+                .map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => inner.entries.remove(&k),
+                None => break,
+            };
+        }
+    }
+
+    /// Keeps the entries of templates that `is_current` still knows.
+    pub fn retain(&self, is_current: impl Fn(i64, &str) -> bool) {
+        self.lock()
+            .entries
+            .retain(|(id, created, _), _| is_current(*id, created));
+    }
+
+    pub fn len(&self) -> usize {
+        self.lock().entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -338,7 +414,8 @@ pub enum UseError {
     NotFound(String),
     VersionNotFound(i64),
     BadVersion,
-    NoVersion,
+    /// The database could not be read for an older version.
+    Unavailable,
     Render(RenderError),
     /// The call and the template both name no model.
     NoModel,
@@ -362,7 +439,7 @@ impl fmt::Display for UseError {
                 f,
                 "prompt 'version' must be a positive integer, as a number or a string of digits"
             ),
-            Self::NoVersion => write!(f, "the prompt template has no version"),
+            Self::Unavailable => write!(f, "the prompt version could not be read; try again"),
             Self::Render(e) => e.fmt(f),
             Self::NoModel => write!(
                 f,
@@ -561,31 +638,64 @@ mod tests {
         assert_eq!(apply(&v, &reference, &mut r3), Err(UseError::NoModel));
     }
 
-    #[test]
-    fn versions_are_picked_by_digits() {
-        let t = Template {
+    fn template(latest: i64) -> Template {
+        Template {
             id: 1,
             name: "t".into(),
-            created_at: String::new(),
-            versions: (1..=3)
-                .map(|n| {
-                    Arc::new(Version {
-                        number: n,
-                        ..version(&["x"])
-                    })
-                })
-                .collect(),
-        };
-        assert_eq!(t.pick(None).unwrap().number, 3);
-        assert_eq!(t.pick(Some("2")).unwrap().number, 2);
-        assert_eq!(t.pick(Some("002")).unwrap().number, 2);
-        assert_eq!(t.pick(Some("4")).unwrap_err(), UseError::VersionNotFound(4));
+            created_at: "2999-01-01 00:00:00".into(),
+            latest: Arc::new(Version {
+                number: latest,
+                ..version(&["x"])
+            }),
+        }
+    }
+
+    #[test]
+    fn versions_are_picked_by_digits() {
+        let t = template(3);
+        assert_eq!(t.wanted(None).unwrap(), 3);
+        assert_eq!(t.wanted(Some("2")).unwrap(), 2);
+        assert_eq!(t.wanted(Some("002")).unwrap(), 2);
+        assert_eq!(
+            t.wanted(Some("4")).unwrap_err(),
+            UseError::VersionNotFound(4)
+        );
         for bad in ["0", "", "x", "-1", "1.0", "99999999999999999999"] {
             assert_eq!(
-                t.pick(Some(bad)).unwrap_err(),
+                t.wanted(Some(bad)).unwrap_err(),
                 UseError::BadVersion,
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn old_versions_are_kept_up_to_a_limit_and_dropped_with_their_template() {
+        let cache = OldVersions::default();
+        let t = template(1000);
+        for n in 1..=(OLD_VERSIONS_KEPT as i64 + 10) {
+            cache.put(
+                &t,
+                Arc::new(Version {
+                    number: n,
+                    ..version(&["x"])
+                }),
+            );
+            // Keep version 1 in use: it must outlive the ones used once.
+            cache.get(&t, 1);
+        }
+        assert_eq!(cache.len(), OLD_VERSIONS_KEPT);
+        assert!(cache.get(&t, 1).is_some(), "the one in use stays");
+        assert!(cache.get(&t, 2).is_none(), "the longest unused goes");
+        let other = Template {
+            created_at: "2999-01-02 00:00:00".into(),
+            ..template(5)
+        };
+        assert!(
+            cache.get(&other, 1).is_none(),
+            "another creation is another template"
+        );
+        cache.retain(|id, created| id == 1 && created == "2999-01-02 00:00:00");
+        assert!(cache.is_empty());
     }
 }

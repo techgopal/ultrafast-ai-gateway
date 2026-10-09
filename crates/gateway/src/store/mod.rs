@@ -46,7 +46,7 @@ pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use portable::ConfigState;
-pub use prompts::{NewVersion, TemplateRow, VersionRow};
+pub use prompts::{NewVersion, TemplateRow, VersionRow, VersionStub};
 pub use providers::ProviderRow;
 pub use routes::{is_missing_reference, RouteRow, RouteSettings, TargetRow, TargetsInput};
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
@@ -198,7 +198,8 @@ pub struct SnapshotRows {
     pub key_guardrails: Vec<(i64, i64, String)>,
     /// Every prompt template, by name.
     pub prompt_templates: Vec<TemplateRow>,
-    /// Every version of every template, by template, then version.
+    /// The newest version of every template, by template. Older versions are
+    /// read when a call asks for one.
     pub prompt_versions: Vec<VersionRow>,
 }
 
@@ -405,7 +406,7 @@ impl Store {
         let route_guardrails = guardrails::route_guardrail_refs_in(conn).await?;
         let key_guardrails = guardrails::key_guardrail_refs_in(conn).await?;
         let prompt_templates = prompts::list_templates_in(conn).await?;
-        let prompt_versions = prompts::list_versions_in(conn).await?;
+        let prompt_versions = prompts::list_latest_versions_in(conn).await?;
         tx.commit().await?;
         Ok(SnapshotRows {
             keys,

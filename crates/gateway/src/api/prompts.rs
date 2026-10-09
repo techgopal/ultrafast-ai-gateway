@@ -21,7 +21,7 @@ use crate::app::AppState;
 use crate::identity::policy::Action;
 use crate::prompts::{
     self, Params, TemplateMessage, Version, MAX_CONTENT_BYTES, MAX_MESSAGES, MAX_MODEL_CHARS,
-    MAX_TOTAL_BYTES, MAX_VARIABLES, MAX_VERSIONS, ROLES,
+    MAX_TEMPLATES, MAX_TOTAL_BYTES, MAX_VARIABLES, MAX_VERSIONS, ROLES,
 };
 use crate::store::{AuditEntry, NewVersion, StoreError, TemplateRow, VersionRow};
 use ultrafast_translate::ingress::openai::parse_response_format;
@@ -106,9 +106,24 @@ pub struct PromptSummary {
     #[schema(required)]
     pub model: Option<String>,
     pub variables: Vec<String>,
+    /// The latest version cannot be read, so `model` and `variables` are
+    /// empty and a call by this name is refused. An admin can add a version.
+    pub unreadable: bool,
 }
 
-/// A template with all its versions, oldest first.
+/// A version in a list: its number and when and by whom it was written. Its
+/// text is `GET /api/prompts/{id}/versions/{version}`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct VersionStubView {
+    pub version: i64,
+    #[schema(required)]
+    pub created_by: Option<i64>,
+    pub created_at: String,
+}
+
+/// A template with the numbers of its versions, oldest first. The model and
+/// variables are those of the latest version; the text of any version is
+/// read from the version endpoint.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PromptView {
     pub id: i64,
@@ -123,7 +138,8 @@ pub struct PromptView {
     #[schema(required)]
     pub model: Option<String>,
     pub variables: Vec<String>,
-    pub versions: Vec<VersionView>,
+    pub unreadable: bool,
+    pub versions: Vec<VersionStubView>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -164,28 +180,27 @@ fn version_view(row: &VersionRow) -> Result<VersionView, ApiError> {
     })
 }
 
-fn summary_of(t: &TemplateRow, versions: &[VersionRow]) -> Result<PromptSummary, ApiError> {
-    let latest = versions.last().ok_or_else(|| {
-        tracing::error!(template_id = t.id, "a prompt template has no version");
-        ApiError::internal()
-    })?;
-    let latest_view = version_view(latest)?;
-    Ok(PromptSummary {
+fn summary_of(t: &TemplateRow, latest: Option<&VersionRow>, count: i64) -> PromptSummary {
+    let read = latest.and_then(|row| version_view(row).ok());
+    PromptSummary {
         id: t.id,
         name: t.name.clone(),
         description: t.description.clone(),
         created_by: t.created_by,
         created_at: t.created_at.clone(),
-        latest_version: latest.version,
-        version_count: versions.len() as i64,
-        updated_at: latest.created_at.clone(),
-        model: latest_view.model,
-        variables: latest_view.variables,
-    })
+        latest_version: latest.map_or(0, |v| v.version),
+        version_count: count,
+        updated_at: latest.map_or_else(|| t.created_at.clone(), |v| v.created_at.clone()),
+        unreadable: read.is_none(),
+        model: read.as_ref().and_then(|v| v.model.clone()),
+        variables: read.map(|v| v.variables).unwrap_or_default(),
+    }
 }
 
-fn view_of(t: &TemplateRow, versions: &[VersionRow]) -> Result<PromptView, ApiError> {
-    let s = summary_of(t, versions)?;
+async fn view_of(state: &AppState, t: &TemplateRow) -> Result<PromptView, ApiError> {
+    let latest = state.store.prompt_latest_version(t.id).await?;
+    let stubs = state.store.prompt_version_stubs(t.id).await?;
+    let s = summary_of(t, latest.as_ref(), stubs.len() as i64);
     Ok(PromptView {
         id: s.id,
         name: s.name,
@@ -197,10 +212,15 @@ fn view_of(t: &TemplateRow, versions: &[VersionRow]) -> Result<PromptView, ApiEr
         updated_at: s.updated_at,
         model: s.model,
         variables: s.variables,
-        versions: versions
-            .iter()
-            .map(version_view)
-            .collect::<Result<_, _>>()?,
+        unreadable: s.unreadable,
+        versions: stubs
+            .into_iter()
+            .map(|v| VersionStubView {
+                version: v.version,
+                created_by: v.created_by,
+                created_at: v.created_at,
+            })
+            .collect(),
     })
 }
 
@@ -344,18 +364,25 @@ fn check_params(p: &Params, fields: &mut BTreeMap<String, String>) {
     }
 }
 
-async fn template_of(
-    state: &AppState,
-    raw_id: &str,
-) -> Result<(TemplateRow, Vec<VersionRow>), ApiError> {
+async fn template_of(state: &AppState, raw_id: &str) -> Result<TemplateRow, ApiError> {
     let id = path_id(raw_id)?;
-    let template = state
+    state
         .store
         .prompt_template(id)
         .await?
-        .ok_or_else(ApiError::not_found)?;
-    let versions = state.store.prompt_versions(id).await?;
-    Ok((template, versions))
+        .ok_or_else(ApiError::not_found)
+}
+
+/// The name of a template: as any name, and without `@`, which separates
+/// the name from the version in the request log (`name@3`).
+pub(crate) fn check_template_name(name: &str, fields: &mut BTreeMap<String, String>) {
+    check_name(name, fields);
+    if name.contains('@') && !fields.contains_key("name") {
+        fields.insert(
+            "name".into(),
+            "name must not contain @ (the log writes name@version)".into(),
+        );
+    }
 }
 
 fn taken() -> ApiError {
@@ -383,16 +410,19 @@ pub async fn list(
 ) -> Result<Response, ApiError> {
     require(&authed.principal, &Action::ListPrompts)?;
     let templates = state.store.list_prompt_templates().await?;
-    let versions = state.store.list_prompt_versions().await?;
-    let mut by_template: BTreeMap<i64, Vec<VersionRow>> = BTreeMap::new();
-    for v in versions {
-        by_template.entry(v.template_id).or_default().push(v);
-    }
-    let mut prompts = Vec::with_capacity(templates.len());
-    for t in &templates {
-        let vs = by_template.remove(&t.id).unwrap_or_default();
-        prompts.push(summary_of(t, &vs)?);
-    }
+    let latest = state.store.list_latest_prompt_versions().await?;
+    let counts = state.store.prompt_version_counts().await?;
+    let prompts: Vec<PromptSummary> = templates
+        .iter()
+        .map(|t| {
+            let newest = latest.iter().find(|v| v.template_id == t.id);
+            let count = counts
+                .iter()
+                .find(|(id, _)| *id == t.id)
+                .map_or(0, |(_, n)| *n);
+            summary_of(t, newest, count)
+        })
+        .collect();
     Ok(Json(PromptList { prompts }).into_response())
 }
 
@@ -416,8 +446,8 @@ pub async fn view(
     authed: Authed,
 ) -> Result<Response, ApiError> {
     require(&authed.principal, &Action::ListPrompts)?;
-    let (template, versions) = template_of(&state, &raw_id).await?;
-    Ok(Json(view_of(&template, &versions)?).into_response())
+    let template = template_of(&state, &raw_id).await?;
+    Ok(Json(view_of(&state, &template).await?).into_response())
 }
 
 #[utoipa::path(
@@ -465,8 +495,8 @@ pub async fn version(
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
         (status = 403, description = "Only admins and team leads make templates, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
         (status = 409, description = "`prompt_exists`: the name is taken.", body = super::openapi::ApiErrorBody),
-        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
-        (status = 422, description = "Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, ...).", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is larger than 1 MiB.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, `name` for an `@` in the name or when there are already 1000 templates, ...).", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
     security(("session" = []), ("token" = [])),
@@ -479,7 +509,7 @@ pub async fn create(
     let me = &authed.principal;
     require(me, &Action::CreatePrompt)?;
     let mut fields = BTreeMap::new();
-    check_name(&req.name, &mut fields);
+    check_template_name(&req.name, &mut fields);
     if let Some(description) = &req.description {
         check_description(description, &mut fields);
     }
@@ -489,7 +519,13 @@ pub async fn create(
     };
     let name = req.name.trim().to_string();
     let description = req.description.unwrap_or_default();
-    let mut tx = state.store.begin().await?;
+    let mut tx = state.store.begin_immediate().await?;
+    if tx.count_prompt_templates().await? >= MAX_TEMPLATES as i64 {
+        return Err(ApiError::invalid_field(
+            "name",
+            &format!("there are already {MAX_TEMPLATES} templates, the most there can be; delete one first"),
+        ));
+    }
     let id = match tx
         .insert_prompt_template(&name, &description, Some(me.user_id))
         .await
@@ -515,8 +551,8 @@ pub async fn create(
     .await?;
     tx.commit().await?;
     refresh_snapshot(&state).await?;
-    let (template, versions) = template_of(&state, &id.to_string()).await?;
-    Ok((StatusCode::CREATED, Json(view_of(&template, &versions)?)).into_response())
+    let template = template_of(&state, &id.to_string()).await?;
+    Ok((StatusCode::CREATED, Json(view_of(&state, &template).await?)).into_response())
 }
 
 #[utoipa::path(
@@ -532,9 +568,8 @@ pub async fn create(
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
         (status = 403, description = "Admins change any template, a team lead the ones they made; or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
         (status = 404, description = "It does not exist.", body = super::openapi::ApiErrorBody),
-        (status = 409, description = "`prompt_version_limit`: the template has 500 versions.", body = super::openapi::ApiErrorBody),
-        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
-        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+                (status = 413, description = "The request body is larger than 1 MiB.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid, or the template has 200 versions; `fields` names each of them.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
     security(("session" = []), ("token" = [])),
@@ -566,9 +601,9 @@ pub async fn add_version(
         return Err(ApiError::validation(fields));
     };
     if tx.latest_prompt_version(id).await? >= MAX_VERSIONS as i64 {
-        return Err(ApiError::conflict(
-            "prompt_version_limit",
-            format!("A template has at most {MAX_VERSIONS} versions."),
+        return Err(ApiError::invalid_field(
+            "messages",
+            &format!("a template has at most {MAX_VERSIONS} versions; delete the template or start another"),
         ));
     }
     let number = tx
@@ -667,13 +702,18 @@ pub async fn render(
     ApiJson(req): ApiJson<RenderRequest>,
 ) -> Result<Response, ApiError> {
     require(&authed.principal, &Action::ListPrompts)?;
-    let (template, versions) = template_of(&state, &raw_id).await?;
+    let template = template_of(&state, &raw_id).await?;
     let row = match req.version {
-        None => versions.last(),
-        Some(n) => versions.iter().find(|v| v.version == i64::from(n)),
+        None => state.store.prompt_latest_version(template.id).await?,
+        Some(n) => {
+            state
+                .store
+                .prompt_version(template.id, i64::from(n))
+                .await?
+        }
     }
     .ok_or_else(ApiError::not_found)?;
-    let version = Version::of_row(row).ok_or_else(|| {
+    let version = Version::of_row(&row).ok_or_else(|| {
         tracing::error!(template = %template.name, "a stored prompt version cannot be read");
         ApiError::internal()
     })?;

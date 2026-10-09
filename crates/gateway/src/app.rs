@@ -142,6 +142,8 @@ pub struct AppState {
     pub budgets: Arc<dyn Budgets>,
     /// The in-flight limit of each external guardrail.
     pub hook_gates: Arc<crate::guardrails::external::HookGates>,
+    /// Older versions of prompt templates that calls asked for.
+    pub old_prompts: Arc<crate::prompts::OldVersions>,
     /// How often a stream held for an external guardrail sends an SSE
     /// comment so a proxy in front does not cut it for being idle.
     pub stream_keepalive: Duration,
@@ -192,6 +194,7 @@ impl AppState {
             cache: Arc::new(MemoryCache::new()),
             flights: Flights::new(),
             hook_gates: Arc::default(),
+            old_prompts: Arc::default(),
             stream_keepalive: DEFAULT_STREAM_KEEPALIVE,
             budgets: Arc::new(MemoryBudgets::new()),
             health: Arc::new(InMemoryHealth::new()),
@@ -316,6 +319,13 @@ impl AppState {
         let budget_ids: Vec<i64> = snapshot.all_budgets().iter().map(|b| b.id).collect();
         self.budgets.retain(&budget_ids);
         let fingerprint = snapshot.cache_fingerprint();
+        // An older version of a template that is gone, or made again, is not
+        // kept.
+        self.old_prompts.retain(|id, created| {
+            snapshot
+                .prompt_by_id(id)
+                .is_some_and(|t| t.created_at == created)
+        });
         self.snapshot.store(Arc::new(snapshot));
         // Answers kept under the old configuration are not given under a new
         // one: a team, user or key id may be another one now, a route or a

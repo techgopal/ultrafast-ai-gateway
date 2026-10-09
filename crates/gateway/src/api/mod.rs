@@ -54,6 +54,9 @@ pub const SESSION_COOKIE: &str = "uf_session";
 pub const CSRF_HEADER: &str = "x-csrf-token";
 /// The largest request body `/api` reads.
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
+
+/// The body limit of the two routes that write a prompt template.
+pub const PROMPT_BODY_BYTES: usize = 1024 * 1024;
 /// A user or token that was active this recently is not written again.
 const TOUCH_INTERVAL_SECONDS: i64 = 60;
 /// Longest accepted name of a user, a key or an access token, in characters.
@@ -131,9 +134,16 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(guardrails::rotate_secret))
         .routes(routes!(guardrails::test))
-        .routes(routes!(prompts::list, prompts::create))
+        // A template or a version holds up to 256 KiB of text, which JSON can
+        // spell in six times the bytes: these two take 1 MiB, the rest of
+        // `/api` 64 KiB.
+        .merge(
+            OpenApiRouter::new()
+                .routes(routes!(prompts::list, prompts::create))
+                .routes(routes!(prompts::add_version))
+                .layer(DefaultBodyLimit::max(PROMPT_BODY_BYTES)),
+        )
         .routes(routes!(prompts::view, prompts::delete))
-        .routes(routes!(prompts::add_version))
         .routes(routes!(prompts::version))
         .routes(routes!(prompts::render))
 }

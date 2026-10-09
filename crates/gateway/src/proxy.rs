@@ -52,7 +52,7 @@ use crate::guardrails::external::CallMeta;
 use crate::guardrails::log::{GuardrailRef, SideLog};
 use crate::guardrails::run::{Active, Hooks, ScanFailed};
 use crate::guardrails::{Direction, Outcome, Release, StreamScanner};
-use crate::prompts::{self, UseError};
+use crate::prompts::{self, UseError, Version};
 use crate::routing::{
     self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
 };
@@ -807,7 +807,10 @@ async fn read_call(
 /// does not exist, a version that does not, and values that do not fit are
 /// refused (see [`refuse_prompt`]) before any limit counts the call and
 /// before any provider is reached. Anyone who can call may use any template.
-fn use_prompt(
+/// The newest version is in the snapshot; an older one is read from the
+/// database once and kept (a version never changes).
+async fn use_prompt(
+    state: &AppState,
     snapshot: &Snapshot,
     reference: &PromptRef,
     call: &mut Call,
@@ -819,14 +822,34 @@ fn use_prompt(
     let template = snapshot
         .prompt(&reference.id)
         .ok_or_else(|| UseError::NotFound(reference.id.clone()))?;
-    let version = template.pick(reference.version.as_deref())?;
-    record.prompt(&template.name, version.number);
-    prompts::apply(version, reference, request)
+    let number = template.wanted(reference.version.as_deref())?;
+    let version = if number == template.latest.number {
+        template.latest.clone()
+    } else if let Some(kept) = state.old_prompts.get(template, number) {
+        kept
+    } else {
+        let row = state
+            .store
+            .prompt_version(template.id, number)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "an older prompt version could not be read");
+                UseError::Unavailable
+            })?
+            .ok_or(UseError::VersionNotFound(number))?;
+        let read = Arc::new(Version::of_row(&row).ok_or(UseError::Unavailable)?);
+        state.old_prompts.put(template, read.clone());
+        read
+    };
+    record.prompt(&template.name, number);
+    prompts::apply(&version, reference, request)
 }
 
 fn refuse_prompt(shape: Shape, e: &UseError) -> Response {
     let (status, kind) = if e.is_not_found() {
         (StatusCode::NOT_FOUND, "not_found_error")
+    } else if *e == UseError::Unavailable {
+        (StatusCode::SERVICE_UNAVAILABLE, "upstream_error")
     } else {
         (StatusCode::BAD_REQUEST, "invalid_request_error")
     };
@@ -1080,7 +1103,7 @@ async fn dispatch(
     // name the model), the limits and the guardrails: they all see what the
     // provider is going to be sent.
     if let Some(reference) = prompt {
-        if let Err(e) = use_prompt(snapshot, &reference, &mut call, record) {
+        if let Err(e) = use_prompt(state, snapshot, &reference, &mut call, record).await {
             return refuse_prompt(shape, &e);
         }
     }

@@ -292,7 +292,8 @@ async fn the_variables_of_a_version_are_those_its_messages_use() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{v}");
     assert_eq!(v["latest_version"], 1);
-    assert_eq!(v["versions"][0]["variables"], json!(["question", "role"]));
+    assert_eq!(v["variables"], json!(["question", "role"]));
+    assert_eq!(v["versions"].as_array().unwrap().len(), 1);
     // A second version may use others.
     let (status, v) = w
         .api(
@@ -321,11 +322,20 @@ async fn a_template_is_checked_when_it_is_written() {
             "name",
             json!({ "name": many('n', 101), "messages": user("x") }),
         ),
+        ("name", json!({ "name": "a@1", "messages": user("x") })),
         (
             "description",
             json!({ "name": "a", "description": many('d', 501), "messages": user("x") }),
         ),
         ("messages", json!({ "name": "a", "messages": [] })),
+        (
+            "messages[0].content",
+            json!({ "name": "a", "messages": [{"role":"user","content": many('x', 64 * 1024 + 1)}] }),
+        ),
+        (
+            "messages",
+            json!({ "name": "a", "messages": (0..5).map(|_| json!({"role":"user","content": many('x', 60 * 1024)})).collect::<Vec<_>>() }),
+        ),
         (
             "messages",
             json!({ "name": "a", "messages": (0..65).map(|_| json!({"role":"user","content":"x"})).collect::<Vec<_>>() }),
@@ -376,14 +386,13 @@ async fn a_template_is_checked_when_it_is_written() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{field}: {v}");
         assert!(v["error"]["fields"][field].is_string(), "{field}: {v}");
     }
-    // The API takes bodies up to 64 KiB; the limits on one message (64 KiB)
-    // and on all of them (256 KiB) are reached by a file (see the import test).
+    // Past 1 MiB of body the request is refused before it is read.
     let (status, v) = w
         .api(
             &maya,
             "POST",
             LIST,
-            Some(body("big", &many('x', 64 * 1024))),
+            Some(body("big", &many('x', 1024 * 1024 + 1))),
         )
         .await;
     assert_eq!(
@@ -486,7 +495,10 @@ async fn a_version_cannot_be_changed_and_a_new_text_is_a_new_version() {
     let (_, view) = w.api(&maya, "GET", &one(id), None).await;
     assert_eq!(view["latest_version"], 3);
     assert_eq!(view["versions"].as_array().unwrap().len(), 3);
-    assert_eq!(view["versions"][0]["messages"], messages("v1 {{a}}"));
+    // The view lists the versions without their text.
+    assert_eq!(view["versions"][0]["version"], 1);
+    assert!(view["versions"][0].get("messages").is_none());
+    assert_eq!(view["variables"], json!(["b"]));
     // A missing version, and a path that is not one.
     for p in ["0", "4", "x", "-1", "01x"] {
         let (status, _) = w.api(&maya, "GET", &format!("{versions}/{p}"), None).await;
@@ -1133,14 +1145,14 @@ async fn deleting_a_template_leaves_its_logs_as_they_were() {
 }
 
 #[tokio::test]
-async fn the_snapshot_and_the_cache_fingerprint_follow_the_templates() {
+async fn templates_are_not_in_the_cache_fingerprint_and_the_snapshot_holds_the_latest() {
     let w = world().await;
     let maya = w.org.sign_in("maya").await;
     let prints = || w.org.api.state.snapshot.load().cache_fingerprint();
     let empty = prints();
+    // The cache key holds the rendered request, so a template edit need not
+    // flush the whole response cache.
     let id = w.make(&maya, body("greet", "one")).await;
-    let one_version = prints();
-    assert_ne!(one_version, empty, "a template changes the fingerprint");
     w.api(
         &maya,
         "POST",
@@ -1148,15 +1160,306 @@ async fn the_snapshot_and_the_cache_fingerprint_follow_the_templates() {
         Some(json!({ "messages": messages("two") })),
     )
     .await;
-    let two_versions = prints();
-    assert_ne!(two_versions, one_version, "a version changes it");
+    assert_eq!(prints(), empty);
+    let snapshot = w.org.api.state.snapshot.load();
+    let template = snapshot.prompt("greet").unwrap();
+    assert_eq!(template.latest.number, 2);
+    assert_eq!(template.latest.messages[0].content, "two");
     w.api(&maya, "DELETE", &one(id), None).await;
-    assert_eq!(prints(), empty, "and so does a delete");
-    // Made again with other text under the same name (SQLite gives the id
-    // out again): not the fingerprint of before.
-    w.make(&maya, body("greet", "other")).await;
-    assert_ne!(prints(), one_version);
-    assert_ne!(prints(), empty);
+    assert!(w.org.api.state.snapshot.load().prompt("greet").is_none());
+}
+
+/// Writes versions straight into the store: `n` of them, each a message of
+/// about `bytes` bytes.
+async fn stuff(w: &World, name: &str, n: usize, bytes: usize) -> i64 {
+    let store = &w.org.api.store;
+    let mut tx = store.begin_immediate().await.unwrap();
+    let id = tx.insert_prompt_template(name, "", None).await.unwrap();
+    for i in 0..n {
+        let messages = json!([{ "role": "user", "content": format!("v{i} {}", many('x', bytes)) }])
+            .to_string();
+        tx.insert_prompt_version(
+            id,
+            ultrafast_gateway::store::NewVersion {
+                messages: &messages,
+                variables: "[]",
+                model: Some("p/m"),
+                params: "{}",
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+    id
+}
+
+#[tokio::test]
+async fn many_large_versions_cost_the_snapshot_and_the_lists_only_the_latest() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    // 60 versions of 200 KiB: 12 MB of text in one template.
+    let id = stuff(&w, "huge", 60, 200 * 1024).await;
+    let rows = w.org.api.store.snapshot_rows().await.unwrap();
+    assert_eq!(rows.prompt_versions.len(), 1, "one version per template");
+    assert_eq!(rows.prompt_versions[0].version, 60);
+    assert!(rows.prompt_versions[0].messages.len() < 210 * 1024);
+    let started = std::time::Instant::now();
+    w.org.api.state.refresh().await.unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    // The list and the view carry numbers and the latest's model and variables,
+    // not 12 MB of text.
+    let (status, list) = w.api(&maya, "GET", LIST, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(list.to_string().len() < 4096, "{}", list.to_string().len());
+    assert_eq!(list["prompts"][0]["version_count"], 60);
+    let (_, view) = w.api(&maya, "GET", &one(id), None).await;
+    assert!(
+        view.to_string().len() < 16 * 1024,
+        "{}",
+        view.to_string().len()
+    );
+    assert_eq!(view["versions"].as_array().unwrap().len(), 60);
+    // One version is read on its own.
+    let (_, v) = w
+        .api(&maya, "GET", &format!("{}/versions/7", one(id)), None)
+        .await;
+    assert!(v["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("v6 "));
+}
+
+#[tokio::test]
+async fn an_older_version_is_read_from_the_database_once_and_forgotten_with_its_template() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    let id = w
+        .make(
+            &maya,
+            json!({ "name": "old", "model": "p/m", "messages": messages("first") }),
+        )
+        .await;
+    for text in ["second", "third"] {
+        w.api(
+            &maya,
+            "POST",
+            &format!("{}/versions", one(id)),
+            Some(json!({ "model": "p/m", "messages": messages(text) })),
+        )
+        .await;
+    }
+    assert!(w.org.api.state.old_prompts.is_empty());
+    for _ in 0..2 {
+        let (status, v) = w
+            .chat(json!({ "prompt": { "id": "old", "version": 1 } }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+    }
+    assert_eq!(
+        w.sent().await.last().unwrap()["messages"][0]["content"],
+        "first"
+    );
+    assert_eq!(
+        w.org.api.state.old_prompts.len(),
+        1,
+        "kept after the first read"
+    );
+    // The latest is the snapshot's, not an entry.
+    assert_eq!(
+        w.chat(json!({ "prompt": { "id": "old" } })).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(w.org.api.state.old_prompts.len(), 1);
+    assert_eq!(
+        w.chat(json!({ "prompt": { "id": "old", "version": 4 } }))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    w.api(&maya, "DELETE", &one(id), None).await;
+    assert!(
+        w.org.api.state.old_prompts.is_empty(),
+        "dropped with its template"
+    );
+    assert_eq!(
+        w.chat(json!({ "prompt": { "id": "old", "version": 1 } }))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn there_are_at_most_1000_templates_and_200_versions_each() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    let id = stuff(&w, "full", 199, 1).await;
+    let (status, v) = w
+        .api(
+            &maya,
+            "POST",
+            &format!("{}/versions", one(id)),
+            Some(json!({ "messages": messages("200th") })),
+        )
+        .await;
+    assert_eq!(
+        (status, v["version"].clone()),
+        (StatusCode::CREATED, json!(200))
+    );
+    let (status, v) = w
+        .api(
+            &maya,
+            "POST",
+            &format!("{}/versions", one(id)),
+            Some(json!({ "messages": messages("201st") })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(
+        v["error"]["fields"]["messages"]
+            .as_str()
+            .unwrap()
+            .contains("200 versions"),
+        "{v}"
+    );
+    {
+        let store = &w.org.api.store;
+        let mut tx = store.begin_immediate().await.unwrap();
+        for i in 1..1000 {
+            let t = tx
+                .insert_prompt_template(&format!("t{i}"), "", None)
+                .await
+                .unwrap();
+            tx.insert_prompt_version(
+                t,
+                ultrafast_gateway::store::NewVersion {
+                    messages: "[{\"role\":\"user\",\"content\":\"x\"}]",
+                    variables: "[]",
+                    model: None,
+                    params: "{}",
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+    let (status, v) = w
+        .api(&maya, "POST", LIST, Some(body("one-too-many", "x")))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(
+        v["error"]["fields"]["name"]
+            .as_str()
+            .unwrap()
+            .contains("1000 templates"),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn a_version_of_200_kib_is_written_through_the_api_and_a_body_over_1_mib_is_not() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    let big = json!({ "name": "big", "messages": (0..4).map(|i| json!({ "role": "user", "content": format!("{i}{}", many('y', 50 * 1024)) })).collect::<Vec<_>>() });
+    let id = w.make(&maya, big).await;
+    let (status, v) = w
+        .api(&maya, "POST", &format!("{}/versions", one(id)), Some(json!({ "messages": (0..4).map(|_| json!({ "role": "user", "content": many('z', 50 * 1024) })).collect::<Vec<_>>() })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{}", v.to_string().len());
+    // Escapes make the JSON six times the text: still within 1 MiB.
+    let escaped = many('\u{1}', 40 * 1024);
+    let (status, _) = w
+        .api(
+            &maya,
+            "POST",
+            &format!("{}/versions", one(id)),
+            Some(json!({ "messages": [{ "role": "user", "content": escaped }] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, v) = w
+        .api(
+            &maya,
+            "POST",
+            &format!("{}/versions", one(id)),
+            Some(json!({ "messages": messages(&many('q', 1024 * 1024 + 1)) })),
+        )
+        .await;
+    assert_eq!(
+        (status, error_code(&v)),
+        (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
+    );
+    // Elsewhere the limit is 64 KiB still.
+    let (status, _) = w
+        .api(
+            &maya,
+            "POST",
+            "/api/guardrails/test",
+            Some(json!({ "direction": "input", "text": many('t', 70 * 1024), "rules": [] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn a_template_that_cannot_be_read_is_flagged_in_the_list_not_fatal() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    w.make(&maya, body("fine", "x")).await;
+    {
+        let store = &w.org.api.store;
+        let mut tx = store.begin_immediate().await.unwrap();
+        let t = tx.insert_prompt_template("broken", "", None).await.unwrap();
+        tx.insert_prompt_version(
+            t,
+            ultrafast_gateway::store::NewVersion {
+                messages: "not json",
+                variables: "[]",
+                model: None,
+                params: "{}",
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+    w.org.api.state.refresh().await.unwrap();
+    let (status, list) = w.api(&maya, "GET", LIST, None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let flags: Vec<(&str, bool)> = list["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["name"].as_str().unwrap(),
+                p["unreadable"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(flags, [("broken", true), ("fine", false)]);
+    // A call by that name is refused, the others work.
+    assert_eq!(
+        w.chat(json!({ "prompt": { "id": "broken" }, "model": "p/m" }))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        w.chat(json!({ "prompt": { "id": "fine" }, "model": "p/m" }))
+            .await
+            .0,
+        StatusCode::OK
+    );
 }
 
 // ------------------------------------------------------- export and import
@@ -1304,13 +1607,14 @@ async fn templates_travel_in_the_configuration_file_with_all_their_versions() {
         ),
         ("name", json!(""), "name"),
         ("name", json!("a\nb"), "name"),
+        ("name", json!("a@1"), "@"),
     ] {
         let mut bad = file.clone();
         bad["prompts"][0]["name"] = json!("other-name");
         bad["prompts"][0][path] = value;
         let (_, report) = import(false, bad).await;
         let errors = report["errors"].to_string();
-        assert!(errors.contains(part), "{path}: {errors}");
+        assert!(errors.contains(part), "{path} {part}: {errors} {report}");
     }
     let mut dup = file.clone();
     dup["prompts"]

@@ -2240,9 +2240,16 @@ export interface components {
         PlaygroundChatRequest: {
             /** Format: int32 */
             max_tokens?: number;
-            messages: components["schemas"]["PlaygroundMessage"][];
-            /** @description A model as `provider/name`, or a route name. */
-            model: string;
+            /**
+             * @description Required unless `prompt` is set; with a template these come after its
+             *     messages.
+             */
+            messages?: components["schemas"]["PlaygroundMessage"][];
+            /**
+             * @description A model as `provider/name`, or a route name. Required unless `prompt`
+             *     is set and its template names a model.
+             */
+            model?: string;
             /** @description As in `/v1/chat/completions`; ignored without `tools`. */
             parallel_tool_calls?: boolean;
             /** @description `id` is the template's name; `version` a positive integer, as a number or a string of digits (left out: the latest); `variables` maps each variable name to its text. */
@@ -2447,6 +2454,11 @@ export interface components {
             /** @description The model and variables of the latest version. */
             model: string | null;
             name: string;
+            /**
+             * @description The latest version cannot be read, so `model` and `variables` are
+             *     empty and a call by this name is refused. An admin can add a version.
+             */
+            unreadable: boolean;
             /** @description When the latest version was written. */
             updated_at: string;
             variables: string[];
@@ -2465,7 +2477,11 @@ export interface components {
              */
             version: number;
         };
-        /** @description A template with all its versions, oldest first. */
+        /**
+         * @description A template with the numbers of its versions, oldest first. The model and
+         *     variables are those of the latest version; the text of any version is
+         *     read from the version endpoint.
+         */
         PromptView: {
             created_at: string;
             /** Format: int64 */
@@ -2477,11 +2493,12 @@ export interface components {
             latest_version: number;
             model: string | null;
             name: string;
+            unreadable: boolean;
             updated_at: string;
             variables: string[];
             /** Format: int64 */
             version_count: number;
-            versions: components["schemas"]["VersionView"][];
+            versions: components["schemas"]["VersionStubView"][];
         };
         ProviderEntry: {
             /** @description Azure OpenAI only. */
@@ -3125,6 +3142,17 @@ export interface components {
             status: components["schemas"]["UserStatus"];
             /** @description The user's teams, ordered by name. */
             teams: components["schemas"]["UserTeamView"][];
+        };
+        /**
+         * @description A version in a list: its number and when and by whom it was written. Its
+         *     text is `GET /api/prompts/{id}/versions/{version}`.
+         */
+        VersionStubView: {
+            created_at: string;
+            /** Format: int64 */
+            created_by: number | null;
+            /** Format: int64 */
+            version: number;
         };
         /** @description One version of a template. */
         VersionView: {
@@ -6850,7 +6878,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description The request body is too large. */
+            /** @description The request body is larger than 1 MiB. */
             413: {
                 headers: {
                     [name: string]: unknown;
@@ -6859,7 +6887,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, ...). */
+            /** @description Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, `name` for an `@` in the name or when there are already 1000 templates, ...). */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -7119,16 +7147,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description `prompt_version_limit`: the template has 500 versions. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorBody"];
-                };
-            };
-            /** @description The request body is too large. */
+            /** @description The request body is larger than 1 MiB. */
             413: {
                 headers: {
                     [name: string]: unknown;
@@ -7137,7 +7156,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description Some fields are not valid; `fields` names each of them. */
+            /** @description Some fields are not valid, or the template has 200 versions; `fields` names each of them. */
             422: {
                 headers: {
                     [name: string]: unknown;

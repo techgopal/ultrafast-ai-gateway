@@ -326,33 +326,27 @@ async fn load_guardrails(
     Ok((guardrails, defaults, compiled_count))
 }
 
-/// The templates by name. A template with a version that cannot be read, or
-/// none, is left out whole (and logged): serving an older version in place
-/// of the latest would be worse than refusing the name.
+/// The templates by name, each with its newest version. A template whose
+/// newest version cannot be read is left out (and logged): serving an older
+/// version in place of the latest would be worse than refusing the name.
+/// Templates are not in the cache fingerprint: the cache key holds the
+/// rendered request, which already tells one rendering from another.
 fn load_prompts(
     templates: &[crate::store::TemplateRow],
-    versions: &[crate::store::VersionRow],
+    latest: &[crate::store::VersionRow],
 ) -> HashMap<String, Arc<Template>> {
-    let mut by_template: HashMap<i64, Vec<Option<Arc<Version>>>> = HashMap::new();
-    for v in versions {
-        by_template
-            .entry(v.template_id)
-            .or_default()
-            .push(Version::of_row(v).map(Arc::new));
+    let mut by_template: HashMap<i64, &crate::store::VersionRow> = HashMap::new();
+    for v in latest {
+        by_template.insert(v.template_id, v);
     }
     let mut out = HashMap::new();
     for t in templates {
-        let read: Option<Vec<Arc<Version>>> = by_template
-            .remove(&t.id)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        match read {
-            Some(read) if !read.is_empty() => {
-                out.insert(t.name.clone(), Arc::new(Template::new(t, read)));
+        match by_template.get(&t.id).and_then(|row| Version::of_row(row)) {
+            Some(v) => {
+                out.insert(t.name.clone(), Arc::new(Template::new(t, Arc::new(v))));
             }
-            _ => {
-                tracing::error!(prompt = %t.name, "prompt template left out: a version cannot be read, or it has none");
+            None => {
+                tracing::error!(prompt = %t.name, "prompt template left out: its newest version cannot be read, or it has none");
             }
         }
     }
@@ -501,31 +495,6 @@ impl Snapshot {
         for (key, guardrail, _) in &rows.key_guardrails {
             fp.num(*key);
             fp.num(*guardrail);
-        }
-        // Templates change what a call says: any edit clears the cache. A
-        // template is told apart by its id and when it was made (an id is
-        // given out again), each version by a hash of everything in it.
-        fp.section("prompts", rows.prompt_templates.len());
-        for t in &rows.prompt_templates {
-            fp.num(t.id);
-            fp.text(&t.name);
-            fp.text(&t.created_at);
-        }
-        fp.section("prompt_versions", rows.prompt_versions.len());
-        for v in &rows.prompt_versions {
-            fp.num(v.template_id);
-            fp.num(v.version);
-            let mut hash = Sha256::new();
-            for part in [
-                &v.messages,
-                &v.variables,
-                v.model.as_deref().unwrap_or(""),
-                &v.params,
-            ] {
-                hash.update((part.len() as u64).to_le_bytes());
-                hash.update(part.as_bytes());
-            }
-            fp.part(&hash.finalize());
         }
         let mut key_guardrails: HashMap<i64, Vec<i64>> = HashMap::new();
         for (key, guardrail, _) in &rows.key_guardrails {
@@ -790,6 +759,11 @@ impl Snapshot {
     /// The prompt template with this name (exact), with its versions.
     pub fn prompt(&self, name: &str) -> Option<&Arc<Template>> {
         self.prompts.get(name)
+    }
+
+    /// The template with this id.
+    pub fn prompt_by_id(&self, id: i64) -> Option<&Arc<Template>> {
+        self.prompts.values().find(|t| t.id == id)
     }
 
     /// An enabled guardrail that is ready to run.
