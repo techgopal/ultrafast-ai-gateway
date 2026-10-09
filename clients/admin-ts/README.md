@@ -113,6 +113,13 @@ const sqlite = await api.downloadBackup();  // Uint8Array: a SQLite file
 // or by hand: api.raw.GET("/api/backup", { parseAs: "arrayBuffer" })
 ```
 
+A call times out after `timeoutMs` (30 s) from the request until its body is read,
+and throws `AdminApiError` with code `timeout`. A large backup can need longer:
+`api.downloadBackup({ timeoutMs: 600_000 })`; `exportConfig` takes the same
+option. A signal you give to `raw` aborts the call, and what you aborted with is
+rethrown as given. (Used on `raw` alone, a body that stalls after its headers
+rejects with the platform's `TimeoutError`; `call` and the helpers map it.)
+
 ## Regenerating
 
 `src/schema.d.ts` is generated and committed (openapi-typescript 7.13.0, the
@@ -126,6 +133,8 @@ pnpm --dir clients/admin-ts check:gen    # fails when it differs from openapi/ad
 ## Tests
 
 `pnpm test` starts the real gateway on a free port with a temporary data
-directory: `UF_E2E_BINARY` if set, else it runs `cargo build -p ultrafast-gateway`
-and uses `target/debug/ultrafast`. It signs in once to mint a token, then uses
+directory under `~/.cache`: `UF_E2E_BINARY` if set, else it runs
+`cargo build -p ultrafast-gateway` and starts `debug/ultrafast` in the target
+directory `cargo metadata` reports, so `CARGO_TARGET_DIR` is honoured. Tests
+that need no gateway never build. It signs in once to mint a token, then uses
 only the token.

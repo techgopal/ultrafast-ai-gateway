@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { inspect } from "node:util";
 import { AdminApiError, createAdminClient } from "../src/index.js";
 
@@ -70,5 +72,74 @@ describe("createAdminClient (no gateway)", () => {
     for (const text of [String(error), error.message, JSON.stringify(error), inspect(error), inspect(api, { depth: 6 }), JSON.stringify(api)]) {
       expect(text).not.toContain(TOKEN);
     }
+  });
+});
+
+describe("timeouts cover the body, aborts stay the caller's", () => {
+  let server: Server;
+  let origin = "";
+
+  beforeAll(async () => {
+    server = createServer((request, response) => {
+      if (request.url === "/api/providers") {
+        // Headers and the start of a body, then nothing.
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write('{"providers":[');
+      } else if (request.url === "/api/backup") {
+        response.writeHead(200, { "content-type": "application/vnd.sqlite3" });
+        response.write("SQLite format 3\0");
+        if (request.headers["x-slow"] === undefined) {
+          setTimeout(() => response.end("rest"), 600);
+        }
+      } else {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write('{"format":');
+      }
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+  });
+  afterAll(async () => {
+    server.closeAllConnections();
+    await new Promise((done) => server.close(done));
+  });
+
+  it("call: a body that stalls after the headers is an AdminApiError timeout", async () => {
+    const api = createAdminClient({ baseUrl: origin, token: TOKEN, timeoutMs: 300 });
+    const error = await api.call(api.raw.GET("/api/providers")).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AdminApiError);
+    expect((error as AdminApiError).code).toBe("timeout");
+    expect((error as AdminApiError).status).toBe(0);
+  });
+
+  it("exportConfig: a stalled body is a timeout, and its own timeoutMs applies", async () => {
+    const api = createAdminClient({ baseUrl: origin, token: TOKEN });
+    const started = Date.now();
+    const error = await api.exportConfig({ timeoutMs: 300 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AdminApiError);
+    expect((error as AdminApiError).code).toBe("timeout");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("downloadBackup: a longer timeoutMs than the client's lets a slow body finish", async () => {
+    const api = createAdminClient({ baseUrl: origin, token: TOKEN, timeoutMs: 200 });
+    const early = await api.downloadBackup().catch((e: unknown) => e);
+    expect(early).toBeInstanceOf(AdminApiError);
+    const bytes = await api.downloadBackup({ timeoutMs: 5_000 });
+    expect(new TextDecoder().decode(bytes)).toContain("SQLite format 3");
+  });
+
+  it("a caller's abort is rethrown as it was given", async () => {
+    const api = createAdminClient({ baseUrl: origin, token: TOKEN });
+    const reason = new Error("mine");
+    const controller = new AbortController();
+    const pending = api.call(api.raw.GET("/api/providers", { signal: controller.signal }));
+    setTimeout(() => {
+      controller.abort(reason);
+    }, 100);
+    await expect(pending).rejects.toBe(reason);
+    const early = new AbortController();
+    early.abort(reason);
+    await expect(api.call(api.raw.GET("/api/providers", { signal: early.signal }))).rejects.toBe(reason);
   });
 });

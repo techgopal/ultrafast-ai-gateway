@@ -4,15 +4,17 @@
 // reaches it. It is stopped by its process id, and its directory removed, when
 // the test ends and when the test process exits.
 //
-// The binary is `UF_E2E_BINARY` when set, else `target/debug/ultrafast` of this
-// repository, built with `cargo build -p ultrafast-gateway` (see
-// `global-setup.ts`).
-import { spawn, type ChildProcess } from "node:child_process";
+// The binary is `UF_E2E_BINARY` when set. Otherwise `startGateway` builds the
+// debug binary with `cargo build -p ultrafast-gateway` (once per test file; a
+// no-op when it is up to date) and starts `<target_directory>/debug/ultrafast`,
+// where `target_directory` is what `cargo metadata` says, so `CARGO_TARGET_DIR`
+// is honoured. Tests that need no gateway never build.
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, realpathSync, rmSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,21 +58,45 @@ function isDeployed(path: string): boolean {
   );
 }
 
-export function binaryPath(): string {
-  const given = process.env[BINARY_VARIABLE];
-  const path =
-    given === undefined || given === ""
-      ? join(REPOSITORY, "target", "debug", "ultrafast")
-      : resolve(given);
-  if (isDeployed(path)) {
-    throw new Error(`${BINARY_VARIABLE} names a binary of the deployed gateway; it is not started.`);
-  }
-  try {
-    accessSync(path, constants.X_OK);
-  } catch {
-    throw new Error(`No gateway binary at ${path}. Build it: cargo build -p ultrafast-gateway`);
-  }
-  return path;
+/** Where scratch data lives: under ~/.cache, not the small /tmp. */
+const SCRATCH = join(homedir(), ".cache", "uf-admin-sdk-tests");
+
+function run(command: string, args: string[], cwd: string): Promise<string> {
+  return new Promise((done, fail) => {
+    execFile(command, args, { cwd, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) fail(new Error(`${command} ${args.join(" ")} failed:\n${stderr}`));
+      else done(stdout);
+    });
+  });
+}
+
+let built: Promise<string> | null = null;
+
+/** The binary to start: `UF_E2E_BINARY`, or the debug build, made now. */
+export function binaryPath(): Promise<string> {
+  built ??= (async () => {
+    const given = process.env[BINARY_VARIABLE];
+    let path: string;
+    if (given === undefined || given === "") {
+      await run("cargo", ["build", "-p", "ultrafast-gateway"], REPOSITORY);
+      const metadata = JSON.parse(
+        await run("cargo", ["metadata", "--no-deps", "--format-version", "1"], REPOSITORY),
+      ) as { target_directory: string };
+      path = join(metadata.target_directory, "debug", "ultrafast");
+    } else {
+      path = resolve(given);
+    }
+    if (isDeployed(path)) {
+      throw new Error(`${BINARY_VARIABLE} names a binary of the deployed gateway; it is not started.`);
+    }
+    try {
+      accessSync(path, constants.X_OK);
+    } catch {
+      throw new Error(`No gateway binary at ${path}. Build it: cargo build -p ultrafast-gateway`);
+    }
+    return path;
+  })();
+  return built;
 }
 
 export async function freePort(): Promise<number> {
@@ -92,12 +118,21 @@ export async function freePort(): Promise<number> {
 }
 
 const running = new Map<ChildProcess, string>();
-process.once("exit", () => {
+function killAll(): void {
   for (const [child, dataDir] of running) {
     child.kill("SIGKILL");
     rmSync(dataDir, { recursive: true, force: true });
   }
-});
+  running.clear();
+}
+process.once("exit", killAll);
+// A stopped test run takes its gateways with it, then goes on as it would have.
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    killAll();
+    process.kill(process.pid, signal);
+  });
+}
 
 function hasExited(child: ChildProcess): boolean {
   return child.pid === undefined || child.exitCode !== null || child.signalCode !== null;
@@ -133,13 +168,14 @@ async function healthy(origin: string): Promise<boolean> {
 
 /** Starts a gateway with a first admin. Retries when another process took the port. */
 export async function startGateway(): Promise<Gateway> {
-  const binary = binaryPath();
+  const binary = await binaryPath();
   const admin: Account = {
     email: "admin@example.com",
     password: `pw-${randomBytes(12).toString("hex")}`,
   };
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const dataDir = await mkdtemp(join(tmpdir(), "uf-e2e-"));
+    await mkdir(SCRATCH, { recursive: true });
+    const dataDir = await mkdtemp(join(SCRATCH, "uf-e2e-"));
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
     const child = spawn(binary, ["serve"], {

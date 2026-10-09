@@ -20,10 +20,11 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.3"
   },
   "scripts": {
     "gen": "openapi-typescript ../../openapi/admin.json -o src/schema.d.ts",
@@ -43,7 +44,7 @@
     "openapi-typescript": "7.13.0",
     "typescript": "~5.7.2",
     "typescript-eslint": "8.71.0",
-    "vitest": "^4.1.11"
+    "vitest": "4.1.11"
   },
   "packageManager": "pnpm@11.20.0"
 }

@@ -50,9 +50,9 @@ export interface AdminClient {
    */
   call<D>(request: Promise<Settled<D>>): Promise<Data<D>>;
   /** The database as the bytes of a SQLite file (`GET /api/backup`). */
-  downloadBackup(): Promise<Uint8Array>;
+  downloadBackup(options?: DownloadOptions): Promise<Uint8Array>;
   /** The configuration file (`GET /api/config/export`), parsed. */
-  exportConfig(): Promise<components["schemas"]["ConfigFile"]>;
+  exportConfig(options?: DownloadOptions): Promise<components["schemas"]["ConfigFile"]>;
 }
 
 /** Makes sure the token cannot appear in an error, should an answer ever echo it. */
@@ -80,51 +80,90 @@ function errorOf(status: number, body: unknown, token: string): AdminApiError {
   return new AdminApiError(status, `http_${String(status)}`, redact(text, token));
 }
 
+/** Options of the two downloads, which can take longer than a call. */
+export interface DownloadOptions {
+  /** For this download only, in milliseconds; the client's `timeoutMs` when left out. */
+  timeoutMs?: number;
+}
+
 export function createAdminClient(options: AdminClientOptions): AdminClient {
   const { token } = options;
-  const timeoutMs = options.timeoutMs ?? 30_000;
+  const defaultTimeoutMs = options.timeoutMs ?? 30_000;
   const base = options.fetch ?? ((input, init) => fetch(input, init));
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
+  // Reasons of aborts that the caller's own signals gave: they are rethrown as given.
+  const callerReasons = new WeakSet<object>();
 
-  const guarded: typeof fetch = async (input, init) => {
-    const signals = [AbortSignal.timeout(timeoutMs)];
-    if (init?.signal) signals.push(init.signal);
-    if (input instanceof Request) signals.push(input.signal);
-    try {
-      return await base(input, { ...init, signal: AbortSignal.any(signals) });
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "TimeoutError") {
-        throw new AdminApiError(0, "timeout", `No answer within ${String(timeoutMs)} ms.`);
+  const guard = (timeoutMs: number): typeof fetch => async (input, init) => {
+    const callers = [init?.signal, input instanceof Request ? input.signal : undefined].filter(
+      (signal): signal is AbortSignal => signal !== undefined && signal !== null,
+    );
+    for (const signal of callers) {
+      if (signal.aborted) {
+        if (typeof signal.reason === "object" && signal.reason !== null) callerReasons.add(signal.reason);
+        throw signal.reason;
       }
-      if (error instanceof AdminApiError) throw error;
-      // A caller's own abort stays an abort.
-      if (error instanceof DOMException && error.name === "AbortError") throw error;
-      const reason = error instanceof Error ? error.message : "the request failed";
-      throw new AdminApiError(0, "network_error", redact(reason, token));
+      signal.addEventListener(
+        "abort",
+        () => {
+          if (typeof signal.reason === "object" && signal.reason !== null) callerReasons.add(signal.reason);
+        },
+        { once: true },
+      );
+    }
+    try {
+      return await base(input, { ...init, signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...callers]) });
+    } catch (error) {
+      throw mapped(error, timeoutMs);
     }
   };
 
-  const raw = createClient<paths>({
-    baseUrl,
-    fetch: guarded,
-    headers: { authorization: `Bearer ${token}` },
-  });
+  /** What a failure becomes: the caller's own abort stays as it was, the rest is an `AdminApiError`. */
+  function mapped(error: unknown, timeoutMs: number): unknown {
+    if (error instanceof AdminApiError) return error;
+    if (typeof error === "object" && error !== null && callerReasons.has(error)) return error;
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      return new AdminApiError(0, "timeout", `No answer within ${String(timeoutMs)} ms.`);
+    }
+    if (error instanceof DOMException && error.name === "AbortError") return error;
+    const reason = error instanceof Error ? error.message : "the request failed";
+    return new AdminApiError(0, "network_error", redact(reason, token));
+  }
 
-  async function call<D>(request: Promise<Settled<D>>): Promise<Data<D>> {
-    const { data, error, response } = await request;
+  const build = (timeoutMs: number) =>
+    createClient<paths>({
+      baseUrl,
+      fetch: guard(timeoutMs),
+      headers: { authorization: `Bearer ${token}` },
+    });
+  const raw = build(defaultTimeoutMs);
+
+  async function settle<D>(request: Promise<Settled<D>>, timeoutMs: number): Promise<Data<D>> {
+    let settled: Settled<D>;
+    try {
+      // The timeout also covers reading the body, which fails here.
+      settled = await request;
+    } catch (error) {
+      throw mapped(error, timeoutMs);
+    }
+    const { data, error, response } = settled;
     if (!response.ok) throw errorOf(response.status, error, token);
     return data as Data<D>;
   }
 
   return {
     raw,
-    call,
-    async downloadBackup() {
-      const bytes = await call(raw.GET("/api/backup", { parseAs: "arrayBuffer" }));
+    call: (request) => settle(request, defaultTimeoutMs),
+    async downloadBackup(download) {
+      const ms = download?.timeoutMs ?? defaultTimeoutMs;
+      const client = download?.timeoutMs === undefined ? raw : build(ms);
+      const bytes = await settle(client.GET("/api/backup", { parseAs: "arrayBuffer" }), ms);
       return new Uint8Array(bytes as unknown as ArrayBuffer);
     },
-    async exportConfig() {
-      const text = await call(raw.GET("/api/config/export", { parseAs: "text" }));
+    async exportConfig(download) {
+      const ms = download?.timeoutMs ?? defaultTimeoutMs;
+      const client = download?.timeoutMs === undefined ? raw : build(ms);
+      const text = await settle(client.GET("/api/config/export", { parseAs: "text" }), ms);
       return JSON.parse(text as unknown as string) as components["schemas"]["ConfigFile"];
     },
   };
