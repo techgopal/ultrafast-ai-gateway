@@ -114,6 +114,16 @@ enum Command {
         /// says not sampled never.
         #[arg(long, env = "UF_OTEL_SAMPLE_RATIO", default_value_t = 1.0)]
         otel_sample_ratio: f64,
+        /// The largest audio file `/v1/audio/transcriptions` and
+        /// `/v1/audio/translations` take, in bytes. A larger upload is
+        /// refused with 413 while it is read, never held.
+        #[arg(
+            long,
+            env = "UF_MAX_AUDIO_BYTES",
+            default_value_t = ultrafast_gateway::app::DEFAULT_MAX_AUDIO_BYTES as u64,
+            value_parser = clap::value_parser!(u64).range(1..=1_073_741_824)
+        )]
+        max_audio_bytes: u64,
     },
     /// Manage providers.
     Provider {
@@ -526,6 +536,7 @@ async fn main() -> Result<()> {
             otel_headers,
             otel_service_name,
             otel_sample_ratio,
+            max_audio_bytes,
         } => {
             let addr = serve_address(&host, port)?;
             // So a wrong image (one that ignores UF_DATABASE_URL) is visible.
@@ -562,6 +573,7 @@ async fn main() -> Result<()> {
                 .map(|t| t.trim().to_string())
                 .filter(|t| !t.is_empty());
             state.cookie_secure = !insecure_cookies;
+            state.max_audio_bytes = usize::try_from(max_audio_bytes).unwrap_or(usize::MAX);
             state.trusted_proxies = parse_trusted_proxies(&trusted_proxies)?;
             state.public_url = public_url
                 .filter(|u| !u.trim().is_empty())
@@ -763,6 +775,7 @@ mod tests {
             otel_headers: None,
             otel_service_name: "ultrafast".into(),
             otel_sample_ratio: 1.0,
+            max_audio_bytes: 1,
         };
         for (url, insecure, ok) in [
             (None, false, true),
@@ -799,5 +812,24 @@ mod tests {
                 "{kind} {version:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_audio_cap_is_a_flag_with_bounds() {
+        let parse = |args: &[&str]| {
+            let mut all = vec!["ultrafast", "serve"];
+            all.extend_from_slice(args);
+            Cli::try_parse_from(all)
+        };
+        let cap = |args: &[&str]| match parse(args).unwrap().command {
+            Command::Serve {
+                max_audio_bytes, ..
+            } => max_audio_bytes,
+            _ => unreachable!(),
+        };
+        assert_eq!(cap(&[]), 25 * 1024 * 1024);
+        assert_eq!(cap(&["--max-audio-bytes", "1048576"]), 1_048_576);
+        assert!(parse(&["--max-audio-bytes", "0"]).is_err());
+        assert!(parse(&["--max-audio-bytes", "1073741825"]).is_err());
     }
 }

@@ -43,6 +43,11 @@ pub const DEFAULT_MAX_PROVIDER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 /// The largest image answer that is read: a few GPT image outputs of base64
 /// are many megabytes, and the provider has billed them by then.
 pub const DEFAULT_MAX_IMAGE_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
+/// The largest audio file a transcription or translation takes.
+pub const DEFAULT_MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
+/// The most audio of one speech answer that is passed on. Speech is at most
+/// 4096 characters, a few minutes of audio, tens of megabytes as raw PCM.
+pub const DEFAULT_MAX_SPEECH_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// The least time a slow, billed-once call (image generation, and the audio
 /// calls to come) is given, whatever the route allows: the first byte of the
@@ -82,6 +87,10 @@ pub struct AppState {
     pub max_provider_response_bytes: usize,
     /// The largest image answer that is read.
     pub max_image_response_bytes: usize,
+    /// The largest audio file an upload may hold.
+    pub max_audio_bytes: usize,
+    /// The most audio of a speech answer that is passed on.
+    pub max_speech_response_bytes: usize,
     /// The timeouts image calls get at least.
     pub slow_calls: SlowCalls,
     /// Failed sign-in attempts, kept in memory.
@@ -188,6 +197,8 @@ impl AppState {
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_provider_response_bytes: DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
             max_image_response_bytes: DEFAULT_MAX_IMAGE_RESPONSE_BYTES,
+            max_audio_bytes: DEFAULT_MAX_AUDIO_BYTES,
+            max_speech_response_bytes: DEFAULT_MAX_SPEECH_RESPONSE_BYTES,
             slow_calls: SlowCalls::default(),
             limiter: LoginLimiter::new(),
             cookie_secure: true,
@@ -365,6 +376,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/responses", post(proxy::responses))
         .route("/v1/embeddings", post(proxy::embeddings))
         .route("/v1/images/generations", post(proxy::images))
+        .route("/v1/audio/transcriptions", post(proxy::transcriptions))
+        .route("/v1/audio/translations", post(proxy::translations))
+        .route("/v1/audio/speech", post(proxy::speech))
         .route("/v1/models", get(proxy::list_models))
         // Every other path under `/v1` is answered here, so the console's
         // pages never stand in for a model API that does not exist.

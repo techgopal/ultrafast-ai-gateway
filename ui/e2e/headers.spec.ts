@@ -5,7 +5,7 @@ import { expect, heading, test } from "./fixtures";
 // every page (the amendment to Task 2 of the console plan).
 const POLICY = new RegExp(
   "^default-src 'none'; script-src 'self'; style-src 'self' 'nonce-([A-Za-z0-9+/]{22,})'; " +
-    "style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+    "style-src-attr 'unsafe-inline'; img-src 'self' data:; media-src blob:; font-src 'self'; connect-src 'self'; " +
     "form-action 'self'; base-uri 'none'; frame-ancestors 'none'; manifest-src 'self'$",
 );
 

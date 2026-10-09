@@ -1084,6 +1084,9 @@ export const playgroundImages = {
   usage: freeForm({ input_tokens: 12, output_tokens: 800, total_tokens: 812 }),
 } satisfies components["schemas"]["PlaygroundImageAnswer"];
 
+/** What the playground's transcription answers by default. */
+export const playgroundTranscript = "Hello from the recording.";
+
 // alerts: channels, rules and events as `/api/alerts` shows them
 
 /**

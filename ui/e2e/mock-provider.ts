@@ -38,6 +38,17 @@ export interface MockProvider {
   roles: string[][];
   /** Image generations asked for, in order. */
   imageCalls: { authorized: boolean; body: unknown }[];
+  /** Audio calls asked for, in order: the form of a transcription (its text fields and file) or the JSON of a speech. */
+  audioCalls: {
+    path: string;
+    authorized: boolean;
+    contentType: string;
+    /** The bytes of the file part of a transcription. */
+    fileBytes: number;
+    /** The names of the form's text fields, or the JSON keys of a speech. */
+    fields: string[];
+    body: unknown;
+  }[];
   /** How many times the model list was asked for. */
   listCalls: number;
   /** The token usage every completion reports; a test may change it at any time. */
@@ -46,14 +57,54 @@ export interface MockProvider {
   close: () => Promise<void>;
 }
 
-async function bodyOf(request: IncomingMessage): Promise<unknown> {
+async function rawOf(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks);
+}
+
+function jsonOf(raw: Buffer): unknown {
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    return JSON.parse(raw.toString("utf8")) as unknown;
   } catch {
     return null;
   }
+}
+
+/** The field names of a multipart form, and the size of its `file` part. */
+function formOf(raw: Buffer, contentType: string): { fields: string[]; fileBytes: number } {
+  const boundary = /boundary=(?:"([^"]+)"|([^;]+))/.exec(contentType);
+  const marker = boundary?.[1] ?? boundary?.[2];
+  const out = { fields: [] as string[], fileBytes: 0 };
+  if (marker === undefined) return out;
+  const text = raw.toString("latin1");
+  for (const part of text.split(`--${marker}`)) {
+    const name = /name="([^"]+)"/.exec(part)?.[1];
+    if (name === undefined) continue;
+    const bodyAt = part.indexOf("\r\n\r\n");
+    if (name === "file") out.fileBytes = Math.max(0, part.length - bodyAt - 4 - 2);
+    else out.fields.push(name);
+  }
+  return out;
+}
+
+/** A tenth of a second of silence as a WAV file: what the mock answers to a speech call. */
+export function silentWav(): Buffer {
+  const samples = 800;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + samples, 4);
+  header.write("WAVEfmt ", 8);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(8000, 24);
+  header.writeUInt32LE(8000, 28);
+  header.writeUInt16LE(1, 32);
+  header.writeUInt16LE(8, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(samples, 40);
+  return Buffer.concat([header, Buffer.alloc(samples, 128)]);
 }
 
 /** A 1 x 1 PNG, base64: what the mock answers to an image generation. */
@@ -69,6 +120,7 @@ export async function startMockProvider(
   const calls: MockCall[] = [];
   const roles: string[][] = [];
   const imageCalls: { authorized: boolean; body: unknown }[] = [];
+  const audioCalls: MockProvider["audioCalls"] = [];
   const state = {
     answer: first,
     listCalls: 0,
@@ -78,7 +130,8 @@ export async function startMockProvider(
 
   const server = createServer((request, response) => {
     void (async () => {
-      const body = await bodyOf(request);
+      const raw = await rawOf(request);
+      const body = jsonOf(raw);
       const send = (status: number, value: unknown) => {
         response.writeHead(status, { "content-type": "application/json" });
         response.end(JSON.stringify(value));
@@ -114,6 +167,32 @@ export async function startMockProvider(
           data: Array.from({ length: wanted }, () => ({ b64_json: TINY_PNG })),
           usage: { input_tokens: state.usage.prompt, output_tokens: state.usage.completion, total_tokens: state.usage.prompt + state.usage.completion },
         });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        (request.url === "/v1/audio/transcriptions" || request.url === "/v1/audio/speech")
+      ) {
+        const contentType = request.headers["content-type"] ?? "";
+        const form = request.url === "/v1/audio/speech" ? null : formOf(raw, contentType);
+        audioCalls.push({
+          path: request.url,
+          authorized,
+          contentType,
+          fileBytes: form?.fileBytes ?? 0,
+          fields: form?.fields ?? (typeof body === "object" && body !== null ? Object.keys(body) : []),
+          body,
+        });
+        if (!authorized) {
+          send(401, { error: { message: "Incorrect API key.", type: "invalid_request_error" } });
+          return;
+        }
+        if (form === null) {
+          response.writeHead(200, { "content-type": "audio/wav" });
+          response.end(silentWav());
+        } else {
+          send(200, { text: "Hello from the mock recording." });
+        }
         return;
       }
       if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
@@ -275,6 +354,7 @@ export async function startMockProvider(
     calls,
     roles,
     imageCalls,
+    audioCalls,
     get listCalls() {
       return state.listCalls;
     },

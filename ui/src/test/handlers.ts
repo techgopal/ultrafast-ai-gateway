@@ -53,6 +53,11 @@ export function eventStream(chunks: readonly string[]): Response {
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+/** An answer of audio: three bytes of what a speech model makes. */
+export function audioAnswer(): Response {
+  return new HttpResponse(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/mpeg" } });
+}
+
 export function noContent(): Response {
   return new HttpResponse(null, { status: 204 });
 }
@@ -299,6 +304,11 @@ export const handlers = [
   handler("post", "/api/playground/images", () =>
     ok("post", "/api/playground/images", 200, fixtures.playgroundImages),
   ),
+
+  handler("post", "/api/playground/transcriptions", () =>
+    HttpResponse.json({ text: fixtures.playgroundTranscript }),
+  ),
+  handler("post", "/api/playground/speech", () => audioAnswer()),
 
   // configuration and backup
   handler("get", "/api/config/export", () =>

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   checkImageCount,
+  checkSpeechInput,
   checkParams,
   checkResponseFormat,
   checkTools,
@@ -8,6 +9,13 @@ import {
   costMicros,
   curlOf,
   IMAGE_COUNT_INVALID,
+  MAX_SPEECH_CHARS,
+  SPEECH_TOO_LONG,
+  speechCurlOf,
+  speechRequestBody,
+  transcriptionCurlOf,
+  transcriptionForm,
+  transcriptOf,
   imageCurlOf,
   imageRequestBody,
   imageUrlsOf,
@@ -387,5 +395,52 @@ describe("images mode", () => {
     const command = imageCurlOf("https://gw.example", { model: "m", prompt: "it's" });
     expect(command).toContain("curl https://gw.example/v1/images/generations");
     expect(command).toContain(`-d '{"model":"m","prompt":"it'"'"'s"}'`);
+  });
+});
+
+describe("audio helpers", () => {
+  test("a text of 4096 characters is the longest speech takes, counted in characters", () => {
+    expect(checkSpeechInput("a".repeat(MAX_SPEECH_CHARS))).toBeUndefined();
+    expect(checkSpeechInput("a".repeat(MAX_SPEECH_CHARS + 1))).toBe(SPEECH_TOO_LONG);
+    // An emoji is one character for the gateway, though two UTF-16 units.
+    expect(checkSpeechInput("😀".repeat(MAX_SPEECH_CHARS))).toBeUndefined();
+  });
+
+  test("the speech request names the model, the text and the voice only", () => {
+    expect(speechRequestBody("openai/tts-1", "hi", "nova")).toEqual({
+      model: "openai/tts-1",
+      input: "hi",
+      voice: "nova",
+    });
+  });
+
+  test("a transcript is the text of the answer, or none", () => {
+    expect(transcriptOf({ text: "hello" })).toBe("hello");
+    expect(transcriptOf({ text: 3 })).toBeNull();
+    expect(transcriptOf({})).toBeNull();
+  });
+
+  test("the transcription form carries the model, a language when given, and the file last", () => {
+    const file = new File(["abc"], "a.wav", { type: "audio/wav" });
+    expect([...transcriptionForm("p/m", " en ", file).keys()]).toEqual(["model", "language", "file"]);
+    expect([...transcriptionForm("p/m", "  ", file).keys()]).toEqual(["model", "file"]);
+    const sent = transcriptionForm("p/m", "", file).get("file");
+    expect(sent instanceof File && sent.name).toBe("a.wav");
+  });
+
+  test("the curl commands hold a placeholder for the key and never a secret", () => {
+    const stt = transcriptionCurlOf("https://gw.example", "p/it's", "");
+    expect(stt).toBe(
+      [
+        "curl https://gw.example/v1/audio/transcriptions",
+        "  -H 'Authorization: Bearer <your key>'",
+        "  -F file=@audio.mp3",
+        `  -F model='p/it'"'"'s'`,
+      ].join(" \\\n"),
+    );
+    const tts = speechCurlOf("https://gw.example", { model: "p/m", input: "it's", voice: "alloy" });
+    expect(tts).toContain("curl https://gw.example/v1/audio/speech");
+    expect(tts).toContain(`-d '{"model":"p/m","input":"it'"'"'s","voice":"alloy"}'`);
+    expect(tts).toContain("--output speech.mp3");
   });
 });

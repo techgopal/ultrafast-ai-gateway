@@ -263,3 +263,115 @@ pub async fn images(
     require(&authed.principal, &Action::UsePlayground)?;
     Ok(proxy::playground_images(state, authed.principal.user_id, body).await)
 }
+
+/// The form of a transcription, as `/v1/audio/transcriptions` takes it
+/// (`multipart/form-data`). The form is read by the same reader as that
+/// call's: the file may not be larger than the gateway's audio cap
+/// (`UF_MAX_AUDIO_BYTES`, 25 MiB by default).
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PlaygroundTranscriptionForm {
+    /// The audio file.
+    #[schema(value_type = String, format = Binary)]
+    pub file: Vec<u8>,
+    /// A model as `provider/name`, or a route name.
+    pub model: String,
+    /// The language spoken, as an ISO-639-1 code.
+    #[schema(nullable = false)]
+    pub language: Option<String>,
+    /// Text to guide the style of the transcript.
+    #[schema(nullable = false)]
+    pub prompt: Option<String>,
+    /// `json`, `text`, `verbose_json`, `srt` or `vtt`.
+    #[schema(nullable = false)]
+    pub response_format: Option<String>,
+    /// From 0 to 1.
+    #[schema(nullable = false)]
+    pub temperature: Option<f64>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/playground/transcriptions",
+    tag = "playground",
+    operation_id = "playground_transcriptions",
+    request_body(content = PlaygroundTranscriptionForm, content_type = "multipart/form-data"),
+    responses(
+        (status = 200, description = "The transcript, in the format asked for (JSON, or text).", body = String, content_type = "application/json"),
+        (status = 400, description = "The form is not a transcription request, or the model cannot transcribe. The body is in the OpenAI error shape, as on `/v1`.", body = PlaygroundErrorBody),
+        (status = 401, description = "No valid session.", body = PlaygroundErrorBody),
+        (status = 403, description = "The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.", body = PlaygroundErrorBody),
+        (status = 404, description = "No such model or route, in the OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 413, description = "The file is larger than the audio cap.", body = PlaygroundErrorBody),
+        (status = 429, description = "A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 502, description = "The provider failed; OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 503, description = "No provider could serve the call; OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 504, description = "The provider did not answer in time; the call was not repeated. OpenAI error shape.", body = PlaygroundErrorBody),
+    ),
+    security(("session" = [])),
+)]
+pub async fn transcriptions(
+    State(state): State<Arc<AppState>>,
+    authed: Authed,
+    headers: axum::http::HeaderMap,
+    body: Body,
+) -> Result<Response, ApiError> {
+    if !matches!(authed.via, AuthVia::Session { .. }) {
+        return Err(ApiError::forbidden());
+    }
+    require(&authed.principal, &Action::UsePlayground)?;
+    let form_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
+    Ok(proxy::playground_transcriptions(state, authed.principal.user_id, body, form_type).await)
+}
+
+/// A speech request, as `/v1/audio/speech` takes it.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PlaygroundSpeechRequest {
+    /// A model as `provider/name`, or a route name.
+    pub model: String,
+    /// The text to speak, at most 4096 characters.
+    pub input: String,
+    /// A voice name such as `alloy`.
+    pub voice: String,
+    /// `mp3`, `opus`, `aac`, `flac`, `wav` or `pcm`.
+    #[schema(nullable = false)]
+    pub response_format: Option<String>,
+    /// From 0.25 to 4.0.
+    #[schema(nullable = false)]
+    pub speed: Option<f64>,
+    /// How the text should be spoken (not for `tts-1` models).
+    #[schema(nullable = false)]
+    pub instructions: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/playground/speech",
+    tag = "playground",
+    operation_id = "playground_speech",
+    request_body = PlaygroundSpeechRequest,
+    responses(
+        (status = 200, description = "The audio, streamed as the provider makes it, with the provider's content type.", content_type = "audio/mpeg", body = Vec<u8>),
+        (status = 400, description = "The request is not a speech request, or the model cannot speak. The body is in the OpenAI error shape, as on `/v1`.", body = PlaygroundErrorBody),
+        (status = 401, description = "No valid session.", body = PlaygroundErrorBody),
+        (status = 403, description = "The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.", body = PlaygroundErrorBody),
+        (status = 404, description = "No such model or route, in the OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 429, description = "A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 502, description = "The provider failed; OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 503, description = "No provider could serve the call; OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 504, description = "The provider did not answer in time; the call was not repeated. OpenAI error shape.", body = PlaygroundErrorBody),
+    ),
+    security(("session" = [])),
+)]
+pub async fn speech(
+    State(state): State<Arc<AppState>>,
+    authed: Authed,
+    body: Body,
+) -> Result<Response, ApiError> {
+    if !matches!(authed.via, AuthVia::Session { .. }) {
+        return Err(ApiError::forbidden());
+    }
+    require(&authed.principal, &Action::UsePlayground)?;
+    Ok(proxy::playground_speech(state, authed.principal.user_id, body).await)
+}

@@ -1,5 +1,6 @@
 //! Provider format translation. This crate performs no I/O.
 
+pub mod audio;
 pub mod classify;
 pub mod embeddings;
 pub mod error;

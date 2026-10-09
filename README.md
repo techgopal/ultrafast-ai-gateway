@@ -241,6 +241,7 @@ secrets: a flag shows in the process list.
 | `UF_OTEL_HEADERS` | `--otel-headers` | unset | Headers sent with every export, `name=value` pairs separated by commas (for example `authorization=Bearer ...`). Prefer the variable: it can hold a credential. |
 | `UF_OTEL_SERVICE_NAME` | `--otel-service-name` | `ultrafast` | The `service.name` resource attribute. |
 | `UF_OTEL_SAMPLE_RATIO` | `--otel-sample-ratio` | `1.0` | Share of calls traced, 0.0 to 1.0, when the caller sent no `traceparent`. |
+| `UF_MAX_AUDIO_BYTES` | `--max-audio-bytes` | `26214400` (25 MiB) | `serve`: the largest audio file `/v1/audio/transcriptions` and `/v1/audio/translations` take, 1 to 1 GiB. A larger upload is refused with 413 while it is read. |
 | `UF_PROVIDER_API_KEY` | `--api-key` | unset | `provider add` only: the provider's API key. |
 | `RUST_LOG` | none | `info` | Log filter. A gateway that starts with no user logs its one-time setup code at `info` under the target `ultrafast::setup`: when you lower the level, keep it, as in `RUST_LOG=warn,ultrafast::setup=info`. |
 

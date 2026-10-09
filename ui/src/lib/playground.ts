@@ -474,3 +474,65 @@ export function imageCurlOf(origin: string, body: object): string {
     `  -d ${shellQuote(JSON.stringify(body))}`,
   ].join(" \\\n");
 }
+
+// Audio mode: a file to transcribe, or a text to speak.
+
+/** The longest text one speech call takes, in characters. */
+export const MAX_SPEECH_CHARS = 4096;
+export const SPEECH_TOO_LONG = `The text must be at most ${String(MAX_SPEECH_CHARS)} characters.`;
+
+/** The built-in voices of the speech models. */
+export const VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"] as const;
+export type Voice = (typeof VOICES)[number];
+
+export interface SpeechRequestBody {
+  model: string;
+  input: string;
+  voice: string;
+}
+
+export function checkSpeechInput(text: string): string | undefined {
+  return Array.from(text).length > MAX_SPEECH_CHARS ? SPEECH_TOO_LONG : undefined;
+}
+
+export function speechRequestBody(model: string, input: string, voice: Voice): SpeechRequestBody {
+  return { model, input, voice };
+}
+
+/** The transcript of a JSON answer, or `null` when it holds none. */
+export function transcriptOf(answer: { text?: unknown }): string | null {
+  return typeof answer.text === "string" ? answer.text : null;
+}
+
+/** The form a transcription is sent as: the file last, as the OpenAI clients send it. */
+export function transcriptionForm(model: string, language: string, file: File): FormData {
+  const form = new FormData();
+  form.append("model", model);
+  const code = language.trim();
+  if (code !== "") form.append("language", code);
+  form.append("file", file, file.name);
+  return form;
+}
+
+/** The transcription as a `curl` command for `/v1/audio/transcriptions`, with placeholders for the key and the file. */
+export function transcriptionCurlOf(origin: string, model: string, language: string): string {
+  const code = language.trim();
+  return [
+    `curl ${origin}/v1/audio/transcriptions`,
+    "  -H 'Authorization: Bearer <your key>'",
+    "  -F file=@audio.mp3",
+    `  -F model=${shellQuote(model)}`,
+    ...(code === "" ? [] : [`  -F language=${shellQuote(code)}`]),
+  ].join(" \\\n");
+}
+
+/** The speech as a `curl` command for `/v1/audio/speech`, with a placeholder where the key goes. */
+export function speechCurlOf(origin: string, body: object): string {
+  return [
+    `curl ${origin}/v1/audio/speech`,
+    "  -H 'Authorization: Bearer <your key>'",
+    "  -H 'Content-Type: application/json'",
+    `  -d ${shellQuote(JSON.stringify(body))}`,
+    "  --output speech.mp3",
+  ].join(" \\\n");
+}

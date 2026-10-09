@@ -213,6 +213,7 @@ export const pipelineErrors = {
     { code: "budget_exceeded", retryAfter: 7200 },
   ),
   unavailable: pipelineError(503, "upstream_error", "No provider could serve this request."),
+  tooLarge: pipelineError(413, "invalid_request_error", "The audio file is too large."),
   guardrail: pipelineError(400, "invalid_request_error", "Blocked by guardrail 'house-rules'.", {
     code: "guardrail_blocked",
   }),

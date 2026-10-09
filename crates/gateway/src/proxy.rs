@@ -26,6 +26,9 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
+use ultrafast_translate::audio::{
+    self, FileInfo, SpeechRequest, Task, TranscribeRequest, Transcript, TranscriptAnswer,
+};
 use ultrafast_translate::embeddings::{
     self, EmbeddingsRequest, EmbeddingsResponse, NOT_SUPPORTED as EMBEDDINGS_NOT_SUPPORTED,
 };
@@ -118,12 +121,22 @@ enum Endpoint {
     Embeddings,
     /// Image generation.
     Images,
+    /// Speech to text, in the language spoken.
+    Transcriptions,
+    /// Speech to English text.
+    Translations,
+    /// Text to speech.
+    Speech,
     /// A chat call the console makes for a signed-in user: the answer of
     /// `/v1/chat/completions`, recorded as its own endpoint.
     Playground,
     /// An image generation the console makes for a signed-in user. Recorded
     /// as `playground` too.
     PlaygroundImages,
+    /// A transcription the console makes for a signed-in user.
+    PlaygroundTranscriptions,
+    /// A speech the console makes for a signed-in user.
+    PlaygroundSpeech,
 }
 
 impl Endpoint {
@@ -135,7 +148,13 @@ impl Endpoint {
             Endpoint::Responses => "responses",
             Endpoint::Embeddings => "embeddings",
             Endpoint::Images => "images",
-            Endpoint::Playground | Endpoint::PlaygroundImages => "playground",
+            Endpoint::Transcriptions => "transcriptions",
+            Endpoint::Translations => "translations",
+            Endpoint::Speech => "speech",
+            Endpoint::Playground
+            | Endpoint::PlaygroundImages
+            | Endpoint::PlaygroundTranscriptions
+            | Endpoint::PlaygroundSpeech => "playground",
         }
     }
 
@@ -146,8 +165,13 @@ impl Endpoint {
             | Endpoint::Responses
             | Endpoint::Embeddings
             | Endpoint::Images
+            | Endpoint::Transcriptions
+            | Endpoint::Translations
+            | Endpoint::Speech
             | Endpoint::Playground
-            | Endpoint::PlaygroundImages => Shape::OpenAi,
+            | Endpoint::PlaygroundImages
+            | Endpoint::PlaygroundTranscriptions
+            | Endpoint::PlaygroundSpeech => Shape::OpenAi,
         }
     }
 
@@ -171,16 +195,48 @@ impl Endpoint {
             Endpoint::Images | Endpoint::PlaygroundImages => {
                 images::parse_request(body).map(Call::Image)
             }
+            Endpoint::Speech | Endpoint::PlaygroundSpeech => {
+                audio::parse_speech(body).map(Call::Speech)
+            }
+            // A form, read by `read_upload`.
+            Endpoint::Transcriptions
+            | Endpoint::Translations
+            | Endpoint::PlaygroundTranscriptions => Err(TranslateError::InvalidRequest(
+                "the request must be multipart/form-data".into(),
+            )),
+        }
+    }
+
+    /// The task of an endpoint whose body is an audio upload.
+    fn upload_task(self) -> Option<Task> {
+        match self {
+            Endpoint::Transcriptions | Endpoint::PlaygroundTranscriptions => {
+                Some(Task::Transcription)
+            }
+            Endpoint::Translations => Some(Task::Translation),
+            _ => None,
         }
     }
 }
+
+/// The audio of an upload as it was read: the chunks as they arrived, so
+/// that holding it takes no more memory than the file and a repeat of the
+/// call shares it.
+type Chunks = Arc<Vec<Bytes>>;
 
 /// What the caller asked for, in the common form.
 enum Call {
     Chat(ChatRequest),
     Embed(EmbeddingsRequest),
     Image(ImageRequest),
+    Transcribe(TranscribeRequest, Chunks),
+    Speech(SpeechRequest),
 }
+
+/// What one token of input is worth in bytes of audio, for the estimate of a
+/// transcription (a minute of compressed speech is about 500 KB and 600
+/// tokens).
+const AUDIO_BYTES_PER_TOKEN: usize = 800;
 
 impl Call {
     fn model(&self) -> &str {
@@ -188,6 +244,8 @@ impl Call {
             Call::Chat(r) => &r.model,
             Call::Embed(r) => &r.model,
             Call::Image(r) => &r.model,
+            Call::Transcribe(r, _) => &r.model,
+            Call::Speech(r) => &r.model,
         }
     }
 
@@ -204,7 +262,7 @@ impl Call {
                 u64::from(r.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS_ESTIMATE))
                     + self.input_estimate()
             }
-            Call::Embed(_) => self.input_estimate(),
+            Call::Embed(_) | Call::Transcribe(..) | Call::Speech(_) => self.input_estimate(),
             // The prompt, and the tokens of the images it may ask for.
             Call::Image(r) => {
                 self.input_estimate() + u64::from(r.n.unwrap_or(1)) * IMAGE_OUTPUT_TOKEN_ESTIMATE
@@ -240,6 +298,8 @@ impl Call {
             }
             Call::Embed(r) => tokens(r.input.iter().map(|s| s.chars().count()).sum()),
             Call::Image(r) => tokens(r.prompt.chars().count()),
+            Call::Transcribe(r, _) => r.file.len.div_ceil(AUDIO_BYTES_PER_TOKEN) as u64,
+            Call::Speech(r) => tokens(r.input.chars().count()),
         }
     }
 
@@ -248,7 +308,10 @@ impl Call {
     /// no answer came in time it is not tried again, on this target or on a
     /// fallback.
     fn billed_once(&self) -> bool {
-        matches!(self, Call::Image(_))
+        matches!(
+            self,
+            Call::Image(_) | Call::Transcribe(..) | Call::Speech(_)
+        )
     }
 
     /// Whether the call is slow enough to need longer timeouts.
@@ -260,7 +323,10 @@ impl Call {
     fn response_cap(&self, state: &AppState) -> usize {
         match self {
             Call::Image(_) => state.max_image_response_bytes,
-            Call::Chat(_) | Call::Embed(_) => state.max_provider_response_bytes,
+            Call::Speech(_) => state.max_speech_response_bytes,
+            Call::Chat(_) | Call::Embed(_) | Call::Transcribe(..) => {
+                state.max_provider_response_bytes
+            }
         }
     }
 
@@ -270,6 +336,7 @@ impl Call {
             Call::Chat(_) => true,
             Call::Embed(_) => kind.supports_embeddings(),
             Call::Image(_) => kind.supports_images(),
+            Call::Transcribe(..) | Call::Speech(_) => kind.supports_audio(),
         }
     }
 
@@ -278,6 +345,7 @@ impl Call {
         match self {
             Call::Chat(_) | Call::Embed(_) => EMBEDDINGS_NOT_SUPPORTED,
             Call::Image(_) => images::NOT_SUPPORTED,
+            Call::Transcribe(..) | Call::Speech(_) => audio::NOT_SUPPORTED,
         }
     }
 }
@@ -300,6 +368,18 @@ pub async fn embeddings(state: State<Arc<AppState>>, request: Request) -> Respon
 
 pub async fn images(state: State<Arc<AppState>>, request: Request) -> Response {
     handle(state.0, request, Endpoint::Images).await
+}
+
+pub async fn transcriptions(state: State<Arc<AppState>>, request: Request) -> Response {
+    handle(state.0, request, Endpoint::Transcriptions).await
+}
+
+pub async fn translations(state: State<Arc<AppState>>, request: Request) -> Response {
+    handle(state.0, request, Endpoint::Translations).await
+}
+
+pub async fn speech(state: State<Arc<AppState>>, request: Request) -> Response {
+    handle(state.0, request, Endpoint::Speech).await
 }
 
 /// Who a call is made for: a virtual key, or a signed-in user who has none
@@ -341,6 +421,43 @@ impl<'a> Actor<'a> {
     }
 }
 
+/// A transcription of the console playground for a signed-in user: the same
+/// pipeline as `/v1/audio/transcriptions`, recorded without a key.
+pub(crate) async fn playground_transcriptions(
+    state: Arc<AppState>,
+    user_id: i64,
+    body: Body,
+    form_type: Option<&str>,
+) -> Response {
+    let snapshot = state.snapshot.load_full();
+    run(
+        &state,
+        &snapshot,
+        &Actor::of_user(user_id),
+        None,
+        form_type,
+        body,
+        Endpoint::PlaygroundTranscriptions,
+    )
+    .await
+}
+
+/// A speech of the console playground for a signed-in user: the same
+/// pipeline as `/v1/audio/speech`, recorded without a key.
+pub(crate) async fn playground_speech(state: Arc<AppState>, user_id: i64, body: Body) -> Response {
+    let snapshot = state.snapshot.load_full();
+    run(
+        &state,
+        &snapshot,
+        &Actor::of_user(user_id),
+        None,
+        None,
+        body,
+        Endpoint::PlaygroundSpeech,
+    )
+    .await
+}
+
 /// An image generation of the console playground for a signed-in user: the
 /// same pipeline as `/v1/images/generations`, recorded without a key.
 pub(crate) async fn playground_images(state: Arc<AppState>, user_id: i64, body: Body) -> Response {
@@ -349,6 +466,7 @@ pub(crate) async fn playground_images(state: Arc<AppState>, user_id: i64, body: 
         &state,
         &snapshot,
         &Actor::of_user(user_id),
+        None,
         None,
         body,
         Endpoint::PlaygroundImages,
@@ -364,6 +482,7 @@ pub(crate) async fn playground(state: Arc<AppState>, user_id: i64, body: Body) -
         &state,
         &snapshot,
         &Actor::of_user(user_id),
+        None,
         None,
         body,
         Endpoint::Playground,
@@ -385,6 +504,10 @@ async fn handle(state: Arc<AppState>, request: Request, endpoint: Endpoint) -> R
         &snapshot,
         &Actor::of_key(&key),
         Some(&parts.headers),
+        parts
+            .headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
         body,
         endpoint,
     )
@@ -396,6 +519,7 @@ async fn run(
     snapshot: &Snapshot,
     actor: &Actor<'_>,
     headers: Option<&HeaderMap>,
+    form_type: Option<&str>,
     body: Body,
     endpoint: Endpoint,
 ) -> Response {
@@ -435,7 +559,10 @@ async fn run(
         }
     }
     let mut scope = Some(begun);
-    let response = dispatch(state, snapshot, actor, body, endpoint, &mut scope).await;
+    let response = dispatch(
+        state, snapshot, actor, form_type, body, endpoint, &mut scope,
+    )
+    .await;
     // A stream took the scope with it and records itself.
     if let Some(scope) = scope {
         scope.finish(response.status().as_u16());
@@ -511,9 +638,9 @@ fn cache_plan(
     let Resolved::Route(route) = resolved else {
         return None;
     };
-    // An image is never kept: every call is a new picture, and the answer is
-    // large.
-    if !route.cache.enabled || call.stream() || matches!(call, Call::Image(_)) {
+    // An image, a transcript or a speech is never kept: every call is a new
+    // one, and the answers are large.
+    if !route.cache.enabled || call.stream() || !matches!(call, Call::Chat(_) | Call::Embed(_)) {
         return None;
     }
     if let Call::Chat(r) = call {
@@ -553,7 +680,7 @@ fn cache_plan(
     let cache_key = match call {
         Call::Chat(r) => CacheKey::chat(&parts, r),
         Call::Embed(r) => CacheKey::embeddings(&parts, r),
-        Call::Image(_) => return None,
+        Call::Image(_) | Call::Transcribe(..) | Call::Speech(_) => return None,
     };
     let seconds = u64::try_from(route.cache.ttl_s).unwrap_or(0).max(1);
     Some(CachePlan {
@@ -620,24 +747,29 @@ fn wrong_kind(snapshot: &Snapshot, key: &SnapKey, call: &Call, candidates: &[Can
         && !matches!(call, Call::Chat(_))
 }
 
-async fn dispatch(
-    state: &AppState,
-    snapshot: &Snapshot,
-    actor: &Actor<'_>,
-    body: Body,
-    endpoint: Endpoint,
-    scope: &mut Option<Scope>,
-) -> Response {
-    let key: &SnapKey = &actor.access;
-    let shape = endpoint.shape();
-    let record = scope.as_mut().expect("the scope is taken only by a stream");
+/// The most the non-file fields of an upload may take together, beyond the
+/// file: field headers, boundaries and the text fields.
+const FORM_SLACK: usize = 1024 * 1024;
+/// The largest text field of an upload.
+const MAX_FORM_FIELD: usize = 64 * 1024;
+const MAX_FORM_FIELDS: usize = 32;
 
-    // 2. Read and parse the body.
+/// Reads the body of a call and parses it.
+async fn read_call(
+    state: &AppState,
+    endpoint: Endpoint,
+    body: Body,
+    form_type: Option<&str>,
+    shape: Shape,
+) -> Result<Call, Response> {
+    if let Some(task) = endpoint.upload_task() {
+        return read_upload(state, task, body, form_type, shape).await;
+    }
     let body = match axum::body::to_bytes(body, state.max_body_bytes).await {
         Ok(b) => b,
         Err(e) => {
             let too_large = e.into_inner().is::<LengthLimitError>();
-            return if too_large {
+            return Err(if too_large {
                 shape.error(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     "invalid_request_error",
@@ -649,12 +781,150 @@ async fn dispatch(
                     "invalid_request_error",
                     "Request body could not be read.",
                 )
-            };
+            });
         }
     };
-    let mut call = match endpoint.parse(&body) {
-        Ok(c) => c,
-        Err(e) => return shape.translate_error(&e),
+    endpoint.parse(&body).map_err(|e| shape.translate_error(&e))
+}
+
+/// A file name that is safe to pass on in a header.
+fn clean_file_name(raw: Option<&str>) -> String {
+    let name: String = raw
+        .unwrap_or_default()
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '"' | '\\' | ';'))
+        .take(255)
+        .collect();
+    if name.trim().is_empty() {
+        "audio".to_string()
+    } else {
+        name
+    }
+}
+
+/// Reads a multipart upload while it arrives: nothing past the cap is ever
+/// read or held. The file is kept as the chunks it came in, to be sent on
+/// to the provider; an upload over `max_audio_bytes` (declared or found) is
+/// refused with 413 before any provider is called.
+async fn read_upload(
+    state: &AppState,
+    task: Task,
+    body: Body,
+    form_type: Option<&str>,
+    shape: Shape,
+) -> Result<Call, Response> {
+    let cap = state.max_audio_bytes;
+    let too_large = || {
+        shape.error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "invalid_request_error",
+            "The audio file is too large.",
+        )
+    };
+    let bad =
+        |message: &str| shape.error(StatusCode::BAD_REQUEST, "invalid_request_error", message);
+    let Some(boundary) = form_type.and_then(|t| multer::parse_boundary(t).ok()) else {
+        return Err(bad("The request must be multipart/form-data."));
+    };
+    let whole = cap.saturating_add(FORM_SLACK);
+    // A declared size is believed only to refuse: the limits below hold
+    // whatever the sender says.
+    if axum::body::HttpBody::size_hint(&body).lower() > whole as u64 {
+        return Err(too_large());
+    }
+    let limits = multer::Constraints::new().size_limit(
+        multer::SizeLimit::new()
+            .whole_stream(whole as u64)
+            .per_field(MAX_FORM_FIELD as u64)
+            .for_field("file", cap as u64),
+    );
+    let mut form = multer::Multipart::with_constraints(body.into_data_stream(), boundary, limits);
+    let mut fields: Vec<(String, String)> = Vec::new();
+    let mut file: Option<(Vec<Bytes>, FileInfo)> = None;
+    let failed = |e: multer::Error| match e {
+        multer::Error::StreamSizeExceeded { .. } | multer::Error::FieldSizeExceeded { .. } => {
+            too_large()
+        }
+        _ => bad("The upload could not be read."),
+    };
+    loop {
+        let mut field = match form.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(e) => return Err(failed(e)),
+        };
+        if fields.len() >= MAX_FORM_FIELDS {
+            return Err(bad("The form has too many fields."));
+        }
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "file" {
+            if file.is_some() {
+                return Err(bad("field 'file' is given twice"));
+            }
+            let name = clean_file_name(field.file_name());
+            let content_type = field
+                .content_type()
+                .map(ToString::to_string)
+                .filter(|t| t.len() <= 100 && t.chars().all(|c| c.is_ascii_graphic() || c == ' '))
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let mut chunks = Vec::new();
+            let mut len = 0usize;
+            loop {
+                match field.chunk().await {
+                    Ok(Some(chunk)) => {
+                        len += chunk.len();
+                        if len > cap {
+                            return Err(too_large());
+                        }
+                        chunks.push(chunk);
+                    }
+                    Ok(None) => break,
+                    Err(e) => return Err(failed(e)),
+                }
+            }
+            file = Some((
+                chunks,
+                FileInfo {
+                    name,
+                    content_type,
+                    len,
+                },
+            ));
+        } else {
+            match field.text().await {
+                Ok(text) => fields.push((name, text)),
+                Err(e) => return Err(failed(e)),
+            }
+        }
+    }
+    let Some((chunks, info)) = file else {
+        return Err(bad("file is required"));
+    };
+    audio::parse_transcription(task, &fields, info)
+        .map(|r| Call::Transcribe(r, Arc::new(chunks)))
+        .map_err(|e| shape.translate_error(&e))
+}
+
+async fn dispatch(
+    state: &AppState,
+    snapshot: &Snapshot,
+    actor: &Actor<'_>,
+    form_type: Option<&str>,
+    body: Body,
+    endpoint: Endpoint,
+    scope: &mut Option<Scope>,
+) -> Response {
+    let key: &SnapKey = &actor.access;
+    let shape = endpoint.shape();
+    let record = scope.as_mut().expect("the scope is taken only by a stream");
+
+    // 2. Read and parse the body.
+    let mut call = match read_call(state, endpoint, body, form_type, shape).await {
+        Ok(call) => call,
+        Err(refusal) => return refusal,
     };
     record.requested(call.model(), call.stream());
 
@@ -902,6 +1172,36 @@ async fn dispatch(
             }));
             Json(images::render_response(&response)).into_response()
         }
+        Ok(Served::Transcript(mut answer)) => {
+            let record = scope.as_mut().expect("a whole answer keeps the scope");
+            record.usage(answer.usage.map(|(input_tokens, output_tokens)| Usage {
+                input_tokens,
+                output_tokens,
+            }));
+            if let Err(refusal) = check_transcript(
+                &guard,
+                &mut answer.transcript,
+                record,
+                shape,
+                request_deadline,
+            )
+            .await
+            {
+                return refusal;
+            }
+            let mut response = Response::new(Body::from(answer.transcript.render()));
+            response.headers_mut().insert(
+                CONTENT_TYPE,
+                axum::http::HeaderValue::from_static(answer.transcript.content_type()),
+            );
+            response
+        }
+        Ok(Served::Speech(speech)) => {
+            // The audio is never inspected; the scope goes with the body and
+            // records the call when the body ends.
+            let scope = scope.take().expect("a speech keeps the scope");
+            speech_response(*speech, scope)
+        }
         Ok(Served::Stream(committed)) => {
             if let Some(scope) = scope.as_mut() {
                 scope.begin_stream(call.input_estimate());
@@ -1013,6 +1313,10 @@ fn input_slots(call: &mut Call) -> Vec<&mut String> {
         }
         Call::Embed(r) => r.input.iter_mut().collect(),
         Call::Image(r) => vec![&mut r.prompt],
+        // The audio is never inspected, and a transcript is checked as an
+        // answer.
+        Call::Transcribe(..) => Vec::new(),
+        Call::Speech(r) => vec![&mut r.input],
     }
 }
 
@@ -1114,6 +1418,100 @@ async fn check_output(
     response.tool_calls.clear();
     response.finish_reason = Some(FinishReason::ContentFilter);
     Ok(Kept::No)
+}
+
+/// Checks the text of a transcript against `guard`, as an answer: redacted
+/// in place (subtitles only in their spoken lines, a verbose transcript in
+/// its segments), or refused when a guardrail blocks it. Timed words are
+/// dropped when a rewrite changed the text they were cut from.
+async fn check_transcript(
+    guard: &Active,
+    transcript: &mut Transcript,
+    record: &mut Scope,
+    shape: Shape,
+    deadline: tokio::time::Instant,
+) -> Result<(), Response> {
+    if !guard.covers(Direction::Output) {
+        return Ok(());
+    }
+    let before: Vec<String> = transcript.slots().into_iter().map(|s| s.clone()).collect();
+    let outcome = match guard
+        .check(Direction::Output, transcript.slots(), Some(deadline))
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(failed) => return Err(scan_failed(shape, failed)),
+    };
+    record.guardrails_found(Direction::Output, SideLog::of(guard.refs(), &outcome));
+    if let Some((_, name)) = outcome.blocked_by {
+        return Err(shape.guardrail_blocked(&name));
+    }
+    let after: Vec<String> = transcript.slots().into_iter().map(|s| s.clone()).collect();
+    if before != after {
+        transcript.drop_words();
+    }
+    Ok(())
+}
+
+/// Passes the audio of a speech call on as it comes, up to the cap and the
+/// deadline, and records the call when the body ends. A provider that fails
+/// after the first byte ends the body with an error rather than a clean end.
+fn speech_response(speech: SpeechStream, scope: Scope) -> Response {
+    let SpeechStream {
+        content_type,
+        mut chunks,
+        started,
+        deadline,
+        idle,
+        cap,
+    } = speech;
+    let body = async_stream::stream! {
+        // Dropped with the body when the caller goes away: recorded then.
+        let mut scope = Some(scope);
+        let mut sent = 0usize;
+        loop {
+            let by = deadline.min(tokio::time::Instant::now() + idle);
+            let (outcome, message) = match timeout_at(by, chunks.next()).await {
+                Ok(None) => (AttemptOutcome::Ok, None),
+                Ok(Some(Ok(chunk))) => {
+                    sent = sent.saturating_add(chunk.len());
+                    if sent > cap {
+                        tracing::warn!("a speech answer was larger than the cap");
+                        (AttemptOutcome::Fatal, Some("The provider response was too large."))
+                    } else {
+                        yield Ok::<Bytes, std::io::Error>(chunk);
+                        continue;
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    tracing::warn!(error = %e.without_url(), "a speech answer was lost");
+                    (AttemptOutcome::Retryable, Some("The provider stream was lost."))
+                }
+                Err(_) => {
+                    tracing::warn!("a speech answer ran out of time");
+                    (AttemptOutcome::Retryable, Some(TIMED_OUT))
+                }
+            };
+            if let Some(mut scope) = scope.take() {
+                scope.set_last_outcome(outcome);
+                scope.end_last_attempt(started);
+                scope.finish(200);
+            }
+            if let Some(message) = message {
+                yield Err(std::io::Error::other(message));
+            }
+            break;
+        }
+    };
+    let mut response = Response::new(Body::from_stream(body));
+    if let Ok(v) = axum::http::HeaderValue::from_str(&content_type) {
+        response.headers_mut().insert(CONTENT_TYPE, v);
+    }
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
 }
 
 /// The longest wait a caller is told to keep.
@@ -1223,7 +1621,24 @@ enum Served {
     Whole(ChatResponse),
     Embeddings(EmbeddingsResponse),
     Image(ImageResponse),
+    Transcript(TranscriptAnswer),
+    Speech(Box<SpeechStream>),
     Stream(Box<Committed>),
+}
+
+/// The audio of a speech call: the provider's answer, to be passed on as it
+/// comes.
+struct SpeechStream {
+    content_type: String,
+    chunks: BoxStream<'static, Result<Bytes, reqwest::Error>>,
+    /// When the try began.
+    started: Instant,
+    /// The end of the request.
+    deadline: tokio::time::Instant,
+    /// The longest wait for the next chunk.
+    idle: Duration,
+    /// The most audio that is passed on.
+    cap: usize,
 }
 
 /// A stream whose first event has arrived: the target is the caller's now.
@@ -1335,9 +1750,12 @@ async fn try_target(
         api_version: provider.api_version.clone(),
     };
     let built = match call {
-        Call::Chat(req) => build_request(&wire, req),
-        Call::Embed(req) => embeddings::build_request(&wire, req),
-        Call::Image(req) => images::build_request(&wire, req),
+        Call::Chat(req) => build_request(&wire, req).map(Outgoing::Json),
+        Call::Embed(req) => embeddings::build_request(&wire, req).map(Outgoing::Json),
+        Call::Image(req) => images::build_request(&wire, req).map(Outgoing::Json),
+        Call::Speech(req) => audio::build_speech(&wire, req).map(Outgoing::Json),
+        Call::Transcribe(req, chunks) => audio::build_upload(&wire, req)
+            .map(|upload| Outgoing::Upload(upload, req.file.clone(), chunks.clone())),
     };
     let out = built.map_err(|e| Failure::Fatal {
         error: CallError::Translate(e),
@@ -1371,6 +1789,34 @@ async fn try_target(
         tracing::warn!(provider = %provider.name, status, "provider answered with a redirect");
         return Err(Failure::Fatal {
             error: CallError::Redirect(provider.name.clone()),
+            status: Some(status),
+        });
+    }
+    if matches!(call, Call::Speech(_)) && status < 400 {
+        // The audio is passed on as it comes; the answer is the caller's from
+        // here, and what goes wrong later ends the body.
+        let content_type = upstream
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|t| t.starts_with("audio/") || *t == "application/octet-stream")
+            .filter(|t| t.len() <= 100 && t.chars().all(|c| c.is_ascii_graphic() || c == ' '))
+            .map(ToString::to_string);
+        let format = match call {
+            Call::Speech(r) => r.response_format.as_deref(),
+            _ => None,
+        };
+        return Ok(Success {
+            value: Served::Speech(Box::new(SpeechStream {
+                content_type: content_type
+                    .unwrap_or_else(|| audio::speech_content_type(format).to_string()),
+                chunks: upstream.bytes_stream().boxed(),
+                started,
+                deadline: limits.deadline,
+                idle: limits.first_token,
+                cap: max_response,
+            })),
             status: Some(status),
         });
     }
@@ -1413,6 +1859,12 @@ async fn try_target(
         Call::Embed(_) => embeddings::parse_response(provider.kind, status, &bytes, &target.model)
             .map(Served::Embeddings),
         Call::Image(_) => images::parse_response(provider.kind, status, &bytes).map(Served::Image),
+        Call::Transcribe(req, _) => {
+            audio::parse_transcription_response(provider.kind, req.response_format, status, &bytes)
+                .map(Served::Transcript)
+        }
+        // Only a failed speech call is read; a good one is passed on above.
+        Call::Speech(_) => Err(audio::parse_speech_error(provider.kind, status, &bytes)),
     };
     match parsed {
         Ok(value) => Ok(Success {
@@ -1537,15 +1989,48 @@ async fn read_capped(
     Ok(out)
 }
 
-async fn send(
-    http: &reqwest::Client,
-    out: HttpRequest,
-) -> Result<reqwest::Response, reqwest::Error> {
-    let mut rb = http.post(&out.url);
-    for (k, v) in &out.headers {
-        rb = rb.header(k, v);
+/// What is sent to a provider.
+enum Outgoing {
+    Json(HttpRequest),
+    /// A multipart upload: the fields, and the file as the chunks it was
+    /// read in.
+    Upload(audio::UploadRequest, FileInfo, Chunks),
+}
+
+async fn send(http: &reqwest::Client, out: Outgoing) -> Result<reqwest::Response, reqwest::Error> {
+    match out {
+        Outgoing::Json(out) => {
+            let mut rb = http.post(&out.url);
+            for (k, v) in &out.headers {
+                rb = rb.header(k, v);
+            }
+            rb.body(out.body).send().await
+        }
+        Outgoing::Upload(upload, file, chunks) => {
+            let mut rb = http.post(&upload.url);
+            for (k, v) in &upload.headers {
+                rb = rb.header(k, v);
+            }
+            let mut form = reqwest::multipart::Form::new();
+            for (k, v) in upload.fields {
+                form = form.text(k, v);
+            }
+            let part = |content_type: &str| {
+                let pieces: Vec<Result<Bytes, std::io::Error>> =
+                    chunks.iter().cloned().map(Ok).collect();
+                reqwest::multipart::Part::stream_with_length(
+                    reqwest::Body::wrap_stream(futures::stream::iter(pieces)),
+                    file.len as u64,
+                )
+                .file_name(file.name.clone())
+                .mime_str(content_type)
+            };
+            let part = part(&file.content_type)
+                .or_else(|_| part("application/octet-stream"))
+                .expect("a fixed media type parses");
+            rb.multipart(form.part("file", part)).send().await
+        }
     }
-    rb.body(out.body).send().await
 }
 
 fn stream_id(prefix: &str) -> String {
@@ -1566,20 +2051,22 @@ fn echo_of(call: &Call) -> responses::Echo {
     match call {
         Call::Chat(r) => responses::Echo::of(r),
         // Only a chat call is answered on `/v1/responses`.
-        Call::Embed(_) | Call::Image(_) => responses::Echo::of(&ChatRequest {
-            model: String::new(),
-            messages: Vec::new(),
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            stop: None,
-            stream: false,
-            tools: Vec::new(),
-            tool_choice: None,
-            parallel_tool_calls: None,
-            response_format: None,
-            reasoning_effort: None,
-        }),
+        Call::Embed(_) | Call::Image(_) | Call::Transcribe(..) | Call::Speech(_) => {
+            responses::Echo::of(&ChatRequest {
+                model: String::new(),
+                messages: Vec::new(),
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                stop: None,
+                stream: false,
+                tools: Vec::new(),
+                tool_choice: None,
+                parallel_tool_calls: None,
+                response_format: None,
+                reasoning_effort: None,
+            })
+        }
     }
 }
 

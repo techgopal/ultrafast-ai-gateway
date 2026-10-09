@@ -15,7 +15,7 @@ use ultrafast_gateway::web::CONSOLE_BUILT;
 
 const POLICY_BEFORE_NONCE: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-";
 const POLICY_AFTER_NONCE: &str = "'; style-src-attr 'unsafe-inline'; img-src 'self' data:; \
-    font-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; \
+    media-src blob:; font-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; \
     frame-ancestors 'none'; manifest-src 'self'";
 const NOT_BUILT: &str = "console was not built";
 

@@ -597,6 +597,12 @@ fn table() -> Vec<Row> {
         row(86, "POST", "/api/playground/images", "an unknown model", |_, _| "/api/playground/images".into(),
             || Some(json!({ "model": "nothing", "prompt": "a fox" })),
             [404, 404, 404, 401]),
+        row(87, "POST", "/api/playground/transcriptions", "a body that is not a form", |_, _| "/api/playground/transcriptions".into(),
+            || Some(json!({ "model": "nothing" })),
+            [400, 400, 400, 401]),
+        row(88, "POST", "/api/playground/speech", "an unknown model", |_, _| "/api/playground/speech".into(),
+            || Some(json!({ "model": "nothing", "input": "hi", "voice": "alloy" })),
+            [404, 404, 404, 401]),
     ]
 }
 
@@ -628,7 +634,9 @@ fn expected(row: &Row, caller: Caller) -> (u16, Option<&'static str>) {
         // A token carries the role of its owner. It cannot be signed out.
         Caller::MemberToken if row.number == 30 => return (400, Some("bad_request")),
         // The playground is for a browser session: a token is refused first.
-        Caller::MemberToken if matches!(row.number, 59 | 86) => return (403, Some("forbidden")),
+        Caller::MemberToken if matches!(row.number, 59 | 86 | 87 | 88) => {
+            return (403, Some("forbidden"))
+        }
         // Access tokens are made from a browser session only.
         Caller::MemberToken if row.number == 28 => return (403, Some("forbidden")),
         Caller::MemberToken => row.expect[2],
@@ -639,7 +647,7 @@ fn expected(row: &Row, caller: Caller) -> (u16, Option<&'static str>) {
         401 => Some("unauthenticated"),
         403 => Some("forbidden"),
         // The playground answers as `/v1` does: no `/api` error code.
-        404 if matches!(row.number, 59 | 86) => None,
+        404 if matches!(row.number, 59 | 86 | 87 | 88) => None,
         404 => Some("not_found"),
         _ => None,
     };
@@ -669,7 +677,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=86).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=88).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -801,7 +809,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 86);
+    assert_eq!(operations, 88);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

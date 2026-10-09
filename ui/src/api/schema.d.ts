@@ -662,6 +662,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/playground/speech": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["playground_speech"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/playground/transcriptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["playground_transcriptions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers": {
         parameters: {
             query?: never;
@@ -2147,6 +2179,50 @@ export interface components {
             tool_calls?: {
                 [key: string]: unknown;
             }[];
+        };
+        /** @description A speech request, as `/v1/audio/speech` takes it. */
+        PlaygroundSpeechRequest: {
+            /** @description The text to speak, at most 4096 characters. */
+            input: string;
+            /** @description How the text should be spoken (not for `tts-1` models). */
+            instructions?: string;
+            /** @description A model as `provider/name`, or a route name. */
+            model: string;
+            /** @description `mp3`, `opus`, `aac`, `flac`, `wav` or `pcm`. */
+            response_format?: string;
+            /**
+             * Format: double
+             * @description From 0.25 to 4.0.
+             */
+            speed?: number;
+            /** @description A voice name such as `alloy`. */
+            voice: string;
+        };
+        /**
+         * @description The form of a transcription, as `/v1/audio/transcriptions` takes it
+         *     (`multipart/form-data`). The form is read by the same reader as that
+         *     call's: the file may not be larger than the gateway's audio cap
+         *     (`UF_MAX_AUDIO_BYTES`, 25 MiB by default).
+         */
+        PlaygroundTranscriptionForm: {
+            /**
+             * Format: binary
+             * @description The audio file.
+             */
+            file: string;
+            /** @description The language spoken, as an ISO-639-1 code. */
+            language?: string;
+            /** @description A model as `provider/name`, or a route name. */
+            model: string;
+            /** @description Text to guide the style of the transcript. */
+            prompt?: string;
+            /** @description `json`, `text`, `verbose_json`, `srt` or `vtt`. */
+            response_format?: string;
+            /**
+             * Format: double
+             * @description From 0 to 1.
+             */
+            temperature?: number;
         };
         PrimaryEntry: {
             /** @description `provider/model`. */
@@ -6181,6 +6257,213 @@ export interface operations {
             };
             /** @description No provider could serve the call; OpenAI error shape. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+        };
+    };
+    playground_speech: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaygroundSpeechRequest"];
+            };
+        };
+        responses: {
+            /** @description The audio, streamed as the provider makes it, with the provider's content type. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "audio/mpeg": number[];
+                };
+            };
+            /** @description The request is not a speech request, or the model cannot speak. The body is in the OpenAI error shape, as on `/v1`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No such model or route, in the OpenAI error shape. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The provider failed; OpenAI error shape. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No provider could serve the call; OpenAI error shape. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The provider did not answer in time; the call was not repeated. OpenAI error shape. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+        };
+    };
+    playground_transcriptions: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["PlaygroundTranscriptionForm"];
+            };
+        };
+        responses: {
+            /** @description The transcript, in the format asked for (JSON, or text). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+            /** @description The form is not a transcription request, or the model cannot transcribe. The body is in the OpenAI error shape, as on `/v1`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No such model or route, in the OpenAI error shape. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The file is larger than the audio cap. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The provider failed; OpenAI error shape. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No provider could serve the call; OpenAI error shape. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The provider did not answer in time; the call was not repeated. OpenAI error shape. */
+            504: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -836,3 +836,102 @@ async fn an_image_call_is_answered_or_refused_as_the_users_key_would_be() {
     let (status, _, _) = w.play_images(&lena, chat("p/open")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn audio_calls_are_answered_or_refused_as_the_users_key_would_be() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    let w = world().await;
+    Mock::given(method("POST"))
+        .and(path("/audio/transcriptions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "hello" })))
+        .mount(&w.upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/audio/speech"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"AUDIO".to_vec(), "audio/mpeg"))
+        .mount(&w.upstream)
+        .await;
+    let lena = w.org.sign_in("lena").await;
+
+    let form = |model: &str, file: &str| {
+        format!(
+            "--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n\
+             --b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.mp3\"\r\n\
+             Content-Type: audio/mpeg\r\n\r\n{file}\r\n--b--\r\n"
+        )
+    };
+    let send = |who: &Signed, token: bool, body: String| {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/playground/transcriptions")
+            .header("cookie", &who.cookie)
+            .header("content-type", "multipart/form-data; boundary=b");
+        if token {
+            req = req.header("x-csrf-token", &who.csrf);
+        }
+        let app = w.org.api.app.clone();
+        async move {
+            let resp = app
+                .oneshot(req.body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, bytes.to_vec())
+        }
+    };
+    let (status, body) = send(&lena, true, form("p/open", "abc")).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["text"],
+        "hello"
+    );
+    let records = w.sink.wait_for(1).await;
+    assert_eq!(records[0].endpoint, "playground");
+    assert_eq!(records[0].key_id, None);
+    assert_eq!(records[0].user_id, Some(w.org.lena));
+    // Grants decide, as for a key; a form without the CSRF token is refused.
+    assert_eq!(
+        send(&lena, true, form("p/research-only", "abc")).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(&lena, true, form("p/nope", "abc")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(&lena, false, form("p/open", "abc")).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    let speech = |model: &str| json!({ "model": model, "input": "hi", "voice": "alloy" });
+    let (status, headers, body) = raw(
+        &w.org,
+        &lena,
+        "POST",
+        "/api/playground/speech",
+        Some(speech("p/open")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"AUDIO");
+    assert!(headers
+        .iter()
+        .any(|(k, v)| k == "content-type" && v == "audio/mpeg"));
+    assert_eq!(
+        raw(
+            &w.org,
+            &lena,
+            "POST",
+            "/api/playground/speech",
+            Some(speech("p/research-only"))
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+}

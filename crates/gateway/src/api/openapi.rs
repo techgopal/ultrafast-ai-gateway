@@ -305,9 +305,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 86. Its fallbacks are not
+    /// Every route of `api::router`, which has 88. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 86] = [
+    const ROUTES: [(&str, &str); 88] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -373,6 +373,8 @@ mod tests {
         ("GET", "/api/usage"),
         ("POST", "/api/playground/chat"),
         ("POST", "/api/playground/images"),
+        ("POST", "/api/playground/transcriptions"),
+        ("POST", "/api/playground/speech"),
         ("GET", "/api/config/export"),
         ("POST", "/api/config/import"),
         ("GET", "/api/backup"),
@@ -504,7 +506,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 86);
+        assert_eq!(routes.len(), 88);
         assert_eq!(documented, routes);
     }
 
@@ -526,7 +528,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 86);
+        assert_eq!(ids.len(), 88);
     }
 
     #[test]

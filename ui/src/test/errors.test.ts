@@ -242,8 +242,10 @@ test("the refusals of the pipeline are in the gateway source, in the OpenAI shap
     [429, "rate_limit_error"],
     [429, "rate_limit_error"],
     [503, "upstream_error"],
+    [413, "invalid_request_error"],
     [400, "invalid_request_error"],
   ]);
+  expect(source).toContain("The audio file is too large.");
   for (const e of Object.values(pipelineErrors)) {
     expect(Object.keys(e.body.error)).toEqual(["message", "type", "param", "code"]);
   }

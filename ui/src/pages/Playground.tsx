@@ -33,6 +33,7 @@ import {
   type ToolChoice,
 } from "@/lib/playground";
 import { bodyOf, useRun, type Call } from "@/pages/PlaygroundRun";
+import { AudioMode } from "@/pages/PlaygroundAudio";
 import { ImagesMode } from "@/pages/PlaygroundImages";
 import { pendingCalls, RESULT_MISSING, Thread, UsageLine } from "@/pages/PlaygroundThread";
 
@@ -619,7 +620,7 @@ function Loading() {
 }
 
 function PlaygroundLoaded() {
-  const [mode, setMode] = useState<"chat" | "images">("chat");
+  const [mode, setMode] = useState<"chat" | "images" | "audio">("chat");
   const models = useModels();
   const routes = useRoutes();
   const failure = models.error ?? routes.error;
@@ -650,7 +651,7 @@ function PlaygroundLoaded() {
       {callable ? (
         <>
           <div role="group" aria-label="Mode" className="flex gap-2">
-            {(["chat", "images"] as const).map((name) => (
+            {(["chat", "images", "audio"] as const).map((name) => (
               <Button
                 key={name}
                 type="button"
@@ -661,7 +662,7 @@ function PlaygroundLoaded() {
                   setMode(name);
                 }}
               >
-                {name === "chat" ? "Chat" : "Images"}
+                {name === "chat" ? "Chat" : name === "images" ? "Images" : "Audio"}
               </Button>
             ))}
           </div>
@@ -671,6 +672,9 @@ function PlaygroundLoaded() {
           </div>
           <div hidden={mode !== "images"}>
             <ImagesMode models={models.data.models} routes={names} />
+          </div>
+          <div hidden={mode !== "audio"}>
+            <AudioMode models={models.data.models} routes={names} />
           </div>
         </>
       ) : (

@@ -33,12 +33,15 @@ use crate::telemetry::{AttemptOutcome, RequestRecord, CALLER_GONE};
 /// The content type of the text format.
 pub const CONTENT_TYPE_TEXT: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-const ENDPOINTS: [&str; 6] = [
+const ENDPOINTS: [&str; 9] = [
     "chat",
     "messages",
     "responses",
     "embeddings",
     "images",
+    "transcriptions",
+    "translations",
+    "speech",
     "playground",
 ];
 /// `499` is a caller that went away: no answer was sent, so it is no 4xx.
