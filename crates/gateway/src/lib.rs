@@ -17,6 +17,7 @@ pub mod logs;
 pub mod metrics;
 pub mod otel;
 pub mod portable;
+pub mod prompts;
 pub mod proxy;
 pub mod routing;
 pub mod secrets;

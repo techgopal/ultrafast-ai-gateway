@@ -7,7 +7,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-const PINNED: [(&str, &str); 17] = [
+const PINNED: [(&str, &str); 18] = [
     (
         "0001_init.sql",
         "f5adcd9d9a503c65a85cc59cc69a07379bfde9c8c3ea08933428b9f7f7716896",
@@ -76,11 +76,15 @@ const PINNED: [(&str, &str); 17] = [
         "0017_guardrails.sql",
         "f4ace6ea1cd0ed80a0007493e2c8414d34477bcb1c773b59965f7513e1b28eaf",
     ),
+    (
+        "0018_prompts.sql",
+        "193a6273650f15bc9b9f8fa1fc85b1a813b1581c9b150272fe01f24ba31729ef",
+    ),
 ];
 
 /// The PostgreSQL migrations: the baseline folds SQLite 0001-0015 into one,
 /// so the numbers differ from there on. Pinned the same way.
-const PINNED_POSTGRES: [(&str, &str); 3] = [
+const PINNED_POSTGRES: [(&str, &str); 4] = [
     (
         "0001_baseline.sql",
         "6459fe201768aee81e11533403a897f94d0070f7bbe8164ee1ed1ad608bfbbcd",
@@ -92,6 +96,10 @@ const PINNED_POSTGRES: [(&str, &str); 3] = [
     (
         "0003_guardrails.sql",
         "ebb1652c70748767c097c6f5cb3577492290c0bb3762b2c2378f14447e43ef80",
+    ),
+    (
+        "0004_prompts.sql",
+        "1eceb2c1fb5655c8db979ae37748ca270b99e33e7b57007d4e721dbde97b564d",
     ),
 ];
 

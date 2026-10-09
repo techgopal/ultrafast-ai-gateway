@@ -4902,6 +4902,639 @@
         ]
       }
     },
+    "/api/prompts": {
+      "get": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_list",
+        "responses": {
+          "200": {
+            "description": "Every prompt template, by name. Any signed-in user may read them: anyone who can call may use any template.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_create",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePromptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new template, with its version 1.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only admins and team leads make templates, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`prompt_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, ...).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/prompts/{id}": {
+      "get": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the template.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The template with all its versions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the template.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The template and its versions are deleted. The request logs keep the `name@version` they recorded."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admins delete any template, a team lead the ones they made; or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/prompts/{id}/render": {
+      "post": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_render",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the template.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The messages with the values put in, exactly as a call that names the template gets them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderedPrompt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A variable is missing or unknown, a value is longer than 32 KiB, or the rendered text is larger than 1 MiB; the message names the variable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The template or the version does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/prompts/{id}/versions": {
+      "post": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_add_version",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the template.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVersionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new version, numbered after the latest. The versions before it are as they were.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admins change any template, a team lead the ones they made; or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`prompt_version_limit`: the template has 500 versions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/prompts/{id}/versions/{version}": {
+      "get": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_version",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the template.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "The version, from 1.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The version, as it was written. A version never changes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The template or the version does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/providers": {
       "get": {
         "tags": [
@@ -8662,6 +9295,13 @@
               "$ref": "#/components/schemas/ModelEntry"
             }
           },
+          "prompts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PromptEntry"
+            },
+            "description": "Prompt templates with all their versions. Left out of the file when\nthere are none."
+          },
           "providers": {
             "type": "array",
             "items": {
@@ -8889,6 +9529,52 @@
         },
         "additionalProperties": false
       },
+      "CreatePromptRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "messages"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Up to 500 characters. Left out: none."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateMessage"
+            },
+            "description": "Version 1: 1 to 64 messages. A variable is `{{name}}` with a name of\nletters, digits and `_` that does not start with a digit, up to 64\ncharacters; other braces are text. At most 64 variables."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Used when a call names no model: `provider/model` or a route."
+          },
+          "name": {
+            "type": "string",
+            "description": "Unique, 1 to 100 characters. This is the `id` a call names. Case\nsensitive."
+          },
+          "params": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Params",
+                "description": "Settings used where a call sets none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateProviderRequest": {
         "type": "object",
         "required": [
@@ -8975,6 +9661,38 @@
           },
           "name": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateVersionRequest": {
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateMessage"
+            },
+            "description": "As for a new template. A version stands alone: it keeps nothing of\nthe one before."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "params": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Params"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -9683,7 +10401,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`provider`, `team`, `model`, `guardrail`, `route`, `limit`, `budget`,\n`alert_channel`, `alert_rule` or `settings`."
+            "description": "`provider`, `team`, `model`, `guardrail`, `prompt`, `route`, `limit`,\n`budget`, `alert_channel`, `alert_rule` or `settings`."
           },
           "name": {
             "type": "string"
@@ -9996,6 +10714,7 @@
           "duration_ms",
           "tags",
           "guardrails",
+          "prompt",
           "attempts"
         ],
         "properties": {
@@ -10080,6 +10799,13 @@
           },
           "priced": {
             "type": "boolean"
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The prompt template the call used, as `name@version`, or `null`.\nIt is text: it stays when the template is deleted."
           },
           "provider": {
             "type": [
@@ -10178,7 +10904,8 @@
           "estimated",
           "duration_ms",
           "tags",
-          "guardrails"
+          "guardrails",
+          "prompt"
         ],
         "properties": {
           "at": {
@@ -10256,6 +10983,13 @@
           },
           "priced": {
             "type": "boolean"
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The prompt template the call used, as `name@version`, or `null`.\nIt is text: it stays when the template is deleted."
           },
           "provider": {
             "type": [
@@ -10847,6 +11581,45 @@
           }
         }
       },
+      "Params": {
+        "type": "object",
+        "description": "The settings a version carries for the call. All optional; what the call\nitself sets wins.",
+        "properties": {
+          "max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "At least 1.",
+            "minimum": 0
+          },
+          "response_format": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "As in `/v1/chat/completions`: `{\"type\":\"text\"}`, `{\"type\":\"json_object\"}`\nor `{\"type\":\"json_schema\",\"json_schema\":{...}}`."
+          },
+          "temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "0 to 2."
+          },
+          "top_p": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "0 to 1."
+          }
+        },
+        "additionalProperties": false
+      },
       "PiiType": {
         "type": "string",
         "enum": [
@@ -10923,6 +11696,28 @@
           "parallel_tool_calls": {
             "type": "boolean",
             "description": "As in `/v1/chat/completions`; ignored without `tools`."
+          },
+          "prompt": {
+            "type": "object",
+            "description": "`id` is the template's name; `version` a positive integer, as a number or a string of digits (left out: the latest); `variables` maps each variable name to its text.",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "variables": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "version": {
+                "type": "object",
+                "description": "A positive integer, or a string of digits."
+              }
+            }
           },
           "response_format": {
             "type": "object",
@@ -11252,6 +12047,209 @@
           }
         }
       },
+      "PromptEntry": {
+        "type": "object",
+        "description": "A prompt template with all its versions. An import adds the versions a\ngateway lacks and never rewrites one it has: a version that differs is\nan error. Who made a template is not in a file; an import makes the\ntemplates it creates the importing admin's.",
+        "required": [
+          "name",
+          "versions"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PromptVersionEntry"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "PromptList": {
+        "type": "object",
+        "required": [
+          "prompts"
+        ],
+        "properties": {
+          "prompts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PromptSummary"
+            },
+            "description": "By name."
+          }
+        }
+      },
+      "PromptSummary": {
+        "type": "object",
+        "description": "A template in a list.",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "created_by",
+          "created_at",
+          "latest_version",
+          "version_count",
+          "updated_at",
+          "model",
+          "variables"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The user who made it; `null` when they are gone. Admins manage\nevery template, a lead the ones they made."
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "latest_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The version a call without `version` gets."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model and variables of the latest version."
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "When the latest version was written."
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "version_count": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PromptVersionEntry": {
+        "type": "object",
+        "description": "One version of a prompt template in a file.",
+        "required": [
+          "version",
+          "messages"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateMessage"
+            }
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Used when a call names no model."
+          },
+          "params": {
+            "$ref": "#/components/schemas/Params"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "From 1, in order, without gaps."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PromptView": {
+        "type": "object",
+        "description": "A template with all its versions, oldest first.",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "created_by",
+          "created_at",
+          "latest_version",
+          "version_count",
+          "updated_at",
+          "model",
+          "variables",
+          "versions"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "latest_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "version_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VersionView"
+            }
+          }
+        }
+      },
       "ProviderEntry": {
         "type": "object",
         "required": [
@@ -11344,6 +12342,64 @@
           "invite_link": {
             "type": "string",
             "description": "The link that lets the user set a password. It is shown once, in\nthis answer, and cannot be read again."
+          }
+        }
+      },
+      "RenderRequest": {
+        "type": "object",
+        "properties": {
+          "variables": {
+            "type": "object",
+            "description": "A value for every variable of the version, and for no other: a text\nof at most 32 KiB each. Put in as it is, once.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Left out: the latest version.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "RenderedPrompt": {
+        "type": "object",
+        "description": "What a version renders to.",
+        "required": [
+          "version",
+          "messages",
+          "model",
+          "params"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateMessage"
+            },
+            "description": "The messages with the values put in, as a call would get them."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model the template names, used when a call names none."
+          },
+          "params": {
+            "$ref": "#/components/schemas/Params"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -12229,6 +13285,25 @@
           }
         }
       },
+      "TemplateMessage": {
+        "type": "object",
+        "description": "A message of a version, as stored.",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Text, with `{{name}}` where a value goes."
+          },
+          "role": {
+            "type": "string",
+            "description": "`system`, `developer`, `user` or `assistant`."
+          }
+        },
+        "additionalProperties": false
+      },
       "TestResult": {
         "type": "object",
         "description": "What a test delivery came to.",
@@ -12794,6 +13869,59 @@
             "description": "The user's teams, ordered by name."
           }
         }
+      },
+      "VersionView": {
+        "type": "object",
+        "description": "One version of a template.",
+        "required": [
+          "version",
+          "messages",
+          "variables",
+          "model",
+          "params",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`null` when the user is gone."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateMessage"
+            }
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "params": {
+            "$ref": "#/components/schemas/Params"
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names the messages use, sorted."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "From 1."
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -12890,6 +14018,10 @@
     {
       "name": "guardrails",
       "description": "Guardrails: rules and external hooks that block, redact or flag the text of calls."
+    },
+    {
+      "name": "prompts",
+      "description": "Prompt templates: versioned messages with {{variables}}, used by name on /v1/chat/completions and /v1/responses."
     }
   ]
 }

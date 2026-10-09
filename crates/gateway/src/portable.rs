@@ -26,6 +26,7 @@ use crate::api::guardrails::{
     DEFAULT_TIMEOUT_MS, KINDS as GUARDRAIL_KINDS, MAX_ATTACHED,
 };
 use crate::api::limits::{checked as checked_limit, MAX_COUNT, MAX_TOKENS};
+use crate::api::prompts::check_version;
 use crate::api::providers::{check_api_version, checked as checked_provider};
 use crate::api::routes::check_settings;
 use crate::api::teams::valid_team_name;
@@ -36,10 +37,11 @@ use crate::catalog::validate_model_name;
 use crate::config::{same_host, validate_base_url, validate_provider_name};
 use crate::guardrails::{Directions, RuleSpec};
 use crate::limits::{LimitScope, RateLimit};
+use crate::prompts::{self, Params, TemplateMessage, MAX_VERSIONS};
 use crate::secrets::Cipher;
 use crate::store::{
-    AuditEntry, ConfigState, Grants, GuardrailPatch, NewGuardrail, RouteSettings, Store,
-    TargetsInput, Tx, SESSION_HOURS_RANGE,
+    AuditEntry, ConfigState, Grants, GuardrailPatch, NewGuardrail, NewVersion, RouteSettings,
+    Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
 };
 
 /// The `format` of the file.
@@ -280,6 +282,33 @@ pub struct GuardrailEntry {
     pub external: Option<ExternalEntry>,
 }
 
+/// One version of a prompt template in a file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromptVersionEntry {
+    /// From 1, in order, without gaps.
+    pub version: i64,
+    pub messages: Vec<TemplateMessage>,
+    /// Used when a call names no model.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub params: Params,
+}
+
+/// A prompt template with all its versions. An import adds the versions a
+/// gateway lacks and never rewrites one it has: a version that differs is
+/// an error. Who made a template is not in a file; an import makes the
+/// templates it creates the importing admin's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromptEntry {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub versions: Vec<PromptVersionEntry>,
+}
+
 /// The configuration file. `format` and `version` come first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -310,13 +339,17 @@ pub struct ConfigFile {
     /// Left out of the file when there are none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guardrails: Vec<GuardrailEntry>,
+    /// Prompt templates with all their versions. Left out of the file when
+    /// there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<PromptEntry>,
 }
 
 /// Something the import did, or would do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct Item {
-    /// `provider`, `team`, `model`, `guardrail`, `route`, `limit`, `budget`,
-    /// `alert_channel`, `alert_rule` or `settings`.
+    /// `provider`, `team`, `model`, `guardrail`, `prompt`, `route`, `limit`,
+    /// `budget`, `alert_channel`, `alert_rule` or `settings`.
     pub kind: String,
     pub name: String,
     /// For an update: the fields that change. Empty for a creation.
@@ -569,6 +602,37 @@ fn guardrails_of(state: &ConfigState) -> Vec<GuardrailEntry> {
     entries
 }
 
+/// The prompt templates of the file, by name, each with all its versions.
+/// A template or version that cannot be read is left out of the file.
+fn prompts_of(state: &ConfigState) -> Vec<PromptEntry> {
+    let mut entries: Vec<PromptEntry> = state
+        .prompt_templates
+        .iter()
+        .filter_map(|t| {
+            let versions: Option<Vec<PromptVersionEntry>> = state
+                .prompt_versions
+                .iter()
+                .filter(|v| v.template_id == t.id)
+                .map(|v| {
+                    Some(PromptVersionEntry {
+                        version: v.version,
+                        messages: serde_json::from_str(&v.messages).ok()?,
+                        model: v.model.clone(),
+                        params: serde_json::from_str(&v.params).ok()?,
+                    })
+                })
+                .collect();
+            Some(PromptEntry {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                versions: versions?,
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+}
+
 /// The file for the configuration as it is stored.
 pub fn file_of(state: &ConfigState) -> ConfigFile {
     let team_names: HashMap<i64, &str> =
@@ -705,6 +769,7 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
         alert_channels,
         alert_rules,
         guardrails: guardrails_of(state),
+        prompts: prompts_of(state),
         providers,
         models,
         teams,
@@ -768,6 +833,14 @@ enum Op {
     UpdateGuardrail {
         id: i64,
         entry: GuardrailEntry,
+    },
+    /// A prompt template: made with all its versions (`id` none), or given
+    /// the versions after the first `have`.
+    UpsertPrompt {
+        id: Option<i64>,
+        entry: PromptEntry,
+        have: usize,
+        description: bool,
     },
     UpsertRoute {
         id: Option<i64>,
@@ -1233,6 +1306,132 @@ impl Planner<'_> {
                     entry: wanted,
                 },
                 "guardrail",
+                entry.name.clone(),
+                changes,
+                false,
+            );
+        }
+    }
+
+    fn prompts(&mut self) {
+        let file = self.file;
+        let state = self.state;
+        let mut seen = HashSet::new();
+        for (i, entry) in file.prompts.iter().enumerate() {
+            let at = format!("prompts[{i}]");
+            let before = self.report.errors.len();
+            if let Err(message) = trimmed_name(&entry.name) {
+                self.error(format!("{at}.name"), message);
+            } else if entry.name.trim() != entry.name {
+                self.error(format!("{at}.name"), "must not start or end with a space");
+            }
+            if !seen.insert(entry.name.clone()) {
+                self.error(at.clone(), "this name appears more than once");
+            }
+            let mut fields = BTreeMap::new();
+            check_description(&entry.description, &mut fields);
+            self.fields(&at, fields);
+            if entry.versions.is_empty() {
+                self.error(format!("{at}.versions"), "add at least one version");
+            } else if entry.versions.len() > MAX_VERSIONS {
+                self.error(
+                    format!("{at}.versions"),
+                    format!("a template has at most {MAX_VERSIONS} versions"),
+                );
+            }
+            for (j, v) in entry.versions.iter().enumerate().take(MAX_VERSIONS) {
+                let vat = format!("{at}.versions[{j}]");
+                if v.version != j as i64 + 1 {
+                    self.error(
+                        format!("{vat}.version"),
+                        format!(
+                            "expected version {}: versions are numbered from 1, in order, without gaps",
+                            j + 1
+                        ),
+                    );
+                }
+                let messages = v
+                    .messages
+                    .iter()
+                    .filter_map(|m| serde_json::to_value(m).ok())
+                    .collect();
+                let params = serde_json::to_value(&v.params).ok();
+                let mut fields = BTreeMap::new();
+                check_version(messages, v.model.clone(), params, &mut fields);
+                self.fields(&vat, fields);
+            }
+            if self.report.errors.len() > before {
+                continue;
+            }
+            let existing = state.prompt_templates.iter().find(|t| t.name == entry.name);
+            let current = self
+                .current
+                .prompts
+                .iter()
+                .find(|p| p.name == entry.name)
+                .cloned();
+            let (Some(existing), Some(current)) = (existing, current.as_ref()) else {
+                if existing.is_some() {
+                    // Stored, but not readable as a file entry.
+                    self.error(
+                        at.clone(),
+                        format!("prompt template '{}' cannot be read", entry.name),
+                    );
+                    continue;
+                }
+                self.push(
+                    Op::UpsertPrompt {
+                        id: None,
+                        entry: entry.clone(),
+                        have: 0,
+                        description: false,
+                    },
+                    "prompt",
+                    entry.name.clone(),
+                    Vec::new(),
+                    true,
+                );
+                continue;
+            };
+            let have = current.versions.len();
+            for (j, stored) in current.versions.iter().enumerate() {
+                if entry.versions.get(j).is_some_and(|v| v != stored) {
+                    self.error(
+                        format!("{at}.versions[{j}]"),
+                        format!(
+                            "version {} of '{}' exists and differs; versions never change (add a new version instead)",
+                            j + 1,
+                            entry.name
+                        ),
+                    );
+                }
+            }
+            if self.report.errors.len() > before {
+                continue;
+            }
+            let description = current.description != entry.description;
+            let added = entry.versions.len().saturating_sub(have);
+            if !description && added == 0 {
+                self.report.unchanged += 1;
+                continue;
+            }
+            let mut changes = Vec::new();
+            if description {
+                changes.push("description".to_string());
+            }
+            match added {
+                0 => {}
+                1 => changes.push(format!("version {}", have + 1)),
+                n => changes.push(format!("versions {}-{}", have + 1, have + n)),
+            }
+            self.push(
+                Op::UpsertPrompt {
+                    id: Some(existing.id),
+                    entry: entry.clone(),
+                    have,
+                    description,
+                },
+                "prompt",
                 entry.name.clone(),
                 changes,
                 false,
@@ -1963,6 +2162,7 @@ fn plan(
     planner.teams();
     planner.models();
     planner.guardrails();
+    planner.prompts();
     planner.routes();
     planner.limits();
     planner.budgets();
@@ -2199,6 +2399,47 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                     },
                 )
                 .await?;
+            }
+            Op::UpsertPrompt {
+                id,
+                entry,
+                have,
+                description,
+            } => {
+                let id = match id {
+                    Some(id) => {
+                        if description {
+                            tx.set_prompt_description(id, &entry.description).await?;
+                        }
+                        id
+                    }
+                    None => {
+                        tx.insert_prompt_template(&entry.name, &entry.description, actor.user_id)
+                            .await?
+                    }
+                };
+                for (j, v) in entry.versions.iter().enumerate().skip(have) {
+                    let messages = serde_json::to_string(&v.messages)?;
+                    let variables = serde_json::to_string(&prompts::variables_in(
+                        v.messages.iter().map(|m| m.content.as_str()),
+                    ))?;
+                    let params = serde_json::to_string(&v.params)?;
+                    let number = tx
+                        .insert_prompt_version(
+                            id,
+                            NewVersion {
+                                messages: &messages,
+                                variables: &variables,
+                                model: v.model.as_deref(),
+                                params: &params,
+                            },
+                            actor.user_id,
+                        )
+                        .await?;
+                    if number != j as i64 + 1 {
+                        anyhow::bail!("a prompt version of the plan is out of order");
+                    }
+                }
             }
             Op::UpsertRoute { id, entry } => {
                 let settings = RouteSettings {

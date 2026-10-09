@@ -100,6 +100,10 @@ pub struct LogView {
     /// was found.
     #[schema(required)]
     pub guardrails: Option<GuardrailLog>,
+    /// The prompt template the call used, as `name@version`, or `null`.
+    /// It is text: it stays when the template is deleted.
+    #[schema(required)]
+    pub prompt: Option<String>,
 }
 
 /// One target tried for a call.
@@ -176,6 +180,10 @@ pub struct LogDetailView {
     /// was found.
     #[schema(required)]
     pub guardrails: Option<GuardrailLog>,
+    /// The prompt template the call used, as `name@version`, or `null`.
+    /// It is text: it stays when the template is deleted.
+    #[schema(required)]
+    pub prompt: Option<String>,
     pub attempts: Vec<LogAttempt>,
 }
 
@@ -205,6 +213,7 @@ impl LogDetailView {
             duration_ms: l.duration_ms,
             tags: l.tags,
             guardrails: l.guardrails,
+            prompt: l.prompt,
             attempts,
         }
     }
@@ -248,6 +257,7 @@ impl From<&LogDetail> for LogView {
             duration_ms: r.duration_ms,
             tags: tags::parse_stored(r.tags.as_deref()),
             guardrails: r.guardrails.as_deref().and_then(GuardrailLog::from_stored),
+            prompt: r.prompt,
         }
     }
 }

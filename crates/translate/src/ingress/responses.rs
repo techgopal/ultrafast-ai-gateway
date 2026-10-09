@@ -9,7 +9,6 @@
 //! streaming events with their `sequence_number`.
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
 
 use serde_json::{json, Map, Value};
 
@@ -22,14 +21,8 @@ use crate::types::{
     StreamEvent, ToolCall, ToolChoice, Usage,
 };
 
-/// A reference to a stored prompt template (`prompt` in the request). Parsed
-/// here; the gateway applies it (prompt templates), see `Endpoint::parse`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PromptRef {
-    pub id: String,
-    pub version: Option<String>,
-    pub variables: BTreeMap<String, String>,
-}
+use super::prompt::parse_prompt;
+pub use super::prompt::PromptRef;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parsed {
@@ -318,42 +311,6 @@ fn parse_text(v: &Value) -> Result<Option<ResponseFormat>, TranslateError> {
     parse_response_format(&wrapped).map(Some)
 }
 
-fn parse_prompt(v: &Value) -> Result<PromptRef, TranslateError> {
-    let o = v
-        .as_object()
-        .ok_or_else(|| invalid("prompt must be an object"))?;
-    reject_unknown(o, &["id", "version", "variables"])?;
-    let id = v["id"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| invalid("prompt 'id' must be a string"))?
-        .to_string();
-    let version = match &v["version"] {
-        Value::Null => None,
-        Value::String(s) => Some(s.clone()),
-        Value::Number(n) if n.is_u64() => Some(n.to_string()),
-        _ => return Err(invalid("prompt 'version' must be a string")),
-    };
-    let mut variables = BTreeMap::new();
-    match &v["variables"] {
-        Value::Null => {}
-        Value::Object(m) => {
-            for (k, val) in m {
-                let s = val
-                    .as_str()
-                    .ok_or_else(|| invalid("prompt 'variables' must map names to strings"))?;
-                variables.insert(k.clone(), s.to_string());
-            }
-        }
-        _ => return Err(invalid("prompt 'variables' must be an object")),
-    }
-    Ok(PromptRef {
-        id,
-        version,
-        variables,
-    })
-}
-
 /// `reasoning`: `effort` goes on to the provider (OpenAI and Azure; the
 /// others refuse it); `summary` and `generate_summary` are checked and
 /// ignored, since no summaries are produced.
@@ -461,13 +418,15 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
             return Err(unsupported_field(k));
         }
     }
-    let model = match &o.get("model") {
-        Some(Value::String(m)) if !m.is_empty() => m.clone(),
-        _ => return Err(invalid("model is required")),
-    };
     let prompt = match o.get("prompt") {
         None | Some(Value::Null) => None,
         Some(p) => Some(parse_prompt(p)?),
+    };
+    // With a prompt the model may come from the template.
+    let model = match (&o.get("model"), &prompt) {
+        (Some(Value::String(m)), _) if !m.is_empty() => m.clone(),
+        (None | Some(Value::Null), Some(_)) => String::new(),
+        _ => return Err(invalid("model is required")),
     };
     let mut messages = Vec::new();
     match o.get("instructions") {
@@ -1084,6 +1043,33 @@ mod tests {
             refused(json!({"model":"m","input":"x","prompt":{"id":"a","variables":{"n":3}}}))
                 .contains("variables")
         );
+    }
+
+    #[test]
+    fn a_prompt_lets_the_model_and_input_be_left_out_and_takes_a_version_as_text_or_number() {
+        let p = parse(json!({"prompt":{"id":"greet","version":3}})).unwrap();
+        assert_eq!(p.request.model, "");
+        assert!(p.request.messages.is_empty());
+        assert_eq!(p.prompt.unwrap().version.as_deref(), Some("3"));
+        assert_eq!(
+            refused(json!({"input":"x"})),
+            "model is required",
+            "no prompt, no model"
+        );
+        for bad in [
+            json!("x"),
+            json!("1.5"),
+            json!(-2),
+            json!(1.5),
+            json!(true),
+            json!(""),
+        ] {
+            assert!(
+                refused(json!({"model":"m","input":"x","prompt":{"id":"a","version":bad}}))
+                    .contains("version"),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

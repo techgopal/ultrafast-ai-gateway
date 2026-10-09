@@ -371,10 +371,8 @@ async fn refusals_are_openai_errors_and_no_provider_is_called() {
         (json!({"conversation":"c"}), "conversation"),
         (json!({"background":true}), "background"),
         (json!({"tools":[{"type":"web_search"}]}), "web_search"),
-        (
-            json!({"prompt":{"id":"greet"}}),
-            "prompt templates are not available yet",
-        ),
+        // A prompt is applied now (see tests/prompts.rs); a malformed one is refused.
+        (json!({"prompt":{"id":"greet","version":"x"}}), "version"),
         (
             json!({"input":[{"type":"reasoning","summary":[]}]}),
             "reasoning",

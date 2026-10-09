@@ -50,6 +50,7 @@ fn record(requested: &str) -> RequestRecord {
         provider_kinds: Vec::new(),
         started_unix_ms: 0,
         guardrails: None,
+        prompt: None,
     }
 }
 
@@ -494,6 +495,7 @@ fn log_at(at: &str, requested: &str) -> NewLog {
         duration_ms: 1,
         attempts: "[]".into(),
         guardrails: None,
+        prompt: None,
     }
 }
 

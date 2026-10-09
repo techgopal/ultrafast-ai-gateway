@@ -20,6 +20,7 @@ use crate::guardrails::RuleSpec;
 use crate::guardrails::{Compiled, Directions};
 use crate::identity::{Role, UserStatus};
 use crate::limits::{LimitScope, Subject, Subjects};
+use crate::prompts::{Template, Version};
 use crate::routing::{BreakerSettings, TargetRef};
 use crate::secrets::Cipher;
 use crate::store::{GuardrailRow, Store};
@@ -204,6 +205,8 @@ pub struct Snapshot {
     default_guardrails: Vec<i64>,
     /// How many guardrails this load compiled (the rest were taken over).
     guardrails_compiled: usize,
+    /// The prompt templates with all their versions, by name.
+    prompts: HashMap<String, Arc<Template>>,
     /// See [`Snapshot::cache_fingerprint`].
     cache_fingerprint: [u8; 32],
 }
@@ -321,6 +324,39 @@ async fn load_guardrails(
         guardrails.insert(g.id, built);
     }
     Ok((guardrails, defaults, compiled_count))
+}
+
+/// The templates by name. A template with a version that cannot be read, or
+/// none, is left out whole (and logged): serving an older version in place
+/// of the latest would be worse than refusing the name.
+fn load_prompts(
+    templates: &[crate::store::TemplateRow],
+    versions: &[crate::store::VersionRow],
+) -> HashMap<String, Arc<Template>> {
+    let mut by_template: HashMap<i64, Vec<Option<Arc<Version>>>> = HashMap::new();
+    for v in versions {
+        by_template
+            .entry(v.template_id)
+            .or_default()
+            .push(Version::of_row(v).map(Arc::new));
+    }
+    let mut out = HashMap::new();
+    for t in templates {
+        let read: Option<Vec<Arc<Version>>> = by_template
+            .remove(&t.id)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        match read {
+            Some(read) if !read.is_empty() => {
+                out.insert(t.name.clone(), Arc::new(Template::new(t, read)));
+            }
+            _ => {
+                tracing::error!(prompt = %t.name, "prompt template left out: a version cannot be read, or it has none");
+            }
+        }
+    }
+    out
 }
 
 fn rules_guardrail(g: &GuardrailRow) -> Option<SnapGuardrail> {
@@ -465,6 +501,31 @@ impl Snapshot {
         for (key, guardrail, _) in &rows.key_guardrails {
             fp.num(*key);
             fp.num(*guardrail);
+        }
+        // Templates change what a call says: any edit clears the cache. A
+        // template is told apart by its id and when it was made (an id is
+        // given out again), each version by a hash of everything in it.
+        fp.section("prompts", rows.prompt_templates.len());
+        for t in &rows.prompt_templates {
+            fp.num(t.id);
+            fp.text(&t.name);
+            fp.text(&t.created_at);
+        }
+        fp.section("prompt_versions", rows.prompt_versions.len());
+        for v in &rows.prompt_versions {
+            fp.num(v.template_id);
+            fp.num(v.version);
+            let mut hash = Sha256::new();
+            for part in [
+                &v.messages,
+                &v.variables,
+                v.model.as_deref().unwrap_or(""),
+                &v.params,
+            ] {
+                hash.update((part.len() as u64).to_le_bytes());
+                hash.update(part.as_bytes());
+            }
+            fp.part(&hash.finalize());
         }
         let mut key_guardrails: HashMap<i64, Vec<i64>> = HashMap::new();
         for (key, guardrail, _) in &rows.key_guardrails {
@@ -694,6 +755,7 @@ impl Snapshot {
         }
         let (guardrails, default_guardrails, guardrails_compiled) =
             load_guardrails(&rows.guardrails, cipher, previous).await?;
+        let prompts = load_prompts(&rows.prompt_templates, &rows.prompt_versions);
         Ok(Snapshot {
             keys,
             providers,
@@ -705,6 +767,7 @@ impl Snapshot {
             guardrails,
             default_guardrails,
             guardrails_compiled,
+            prompts,
             cache_fingerprint,
         })
     }
@@ -722,6 +785,11 @@ impl Snapshot {
     /// from the snapshot it replaced.
     pub fn guardrails_compiled(&self) -> usize {
         self.guardrails_compiled
+    }
+
+    /// The prompt template with this name (exact), with its versions.
+    pub fn prompt(&self, name: &str) -> Option<&Arc<Template>> {
+        self.prompts.get(name)
     }
 
     /// An enabled guardrail that is ready to run.

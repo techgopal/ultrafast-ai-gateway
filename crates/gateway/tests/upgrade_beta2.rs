@@ -138,9 +138,9 @@ async fn beta2_database_opens_migrates_and_reads_back() {
 
     let s = Store::open(&path).await.unwrap();
 
-    // 0014 to 0017 were applied after the thirteen, which were not rewritten.
+    // 0014 to 0018 were applied after the thirteen, which were not rewritten.
     let after = raw_migration_rows(&path).await;
-    assert_eq!(after.len(), 17);
+    assert_eq!(after.len(), 18);
     assert_eq!(&after[..13], &before[..]);
 
     // providers
@@ -352,6 +352,8 @@ async fn beta2_database_opens_migrates_and_reads_back() {
     assert!(!s.oidc_settings().await.unwrap().enabled);
     // and what 0017 added
     assert!(s.list_guardrails().await.unwrap().is_empty());
+    // and what 0018 added
+    assert!(s.list_prompt_templates().await.unwrap().is_empty());
 
     // the snapshot reads everything at once
     let rows = s.snapshot_rows().await.unwrap();

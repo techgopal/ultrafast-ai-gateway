@@ -15,6 +15,7 @@ pub mod logs;
 pub mod models;
 pub mod openapi;
 pub mod playground;
+pub mod prompts;
 pub mod providers;
 pub mod routes;
 pub mod settings;
@@ -130,6 +131,11 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(guardrails::rotate_secret))
         .routes(routes!(guardrails::test))
+        .routes(routes!(prompts::list, prompts::create))
+        .routes(routes!(prompts::view, prompts::delete))
+        .routes(routes!(prompts::add_version))
+        .routes(routes!(prompts::version))
+        .routes(routes!(prompts::render))
 }
 
 pub fn router() -> Router<Arc<AppState>> {

@@ -90,6 +90,18 @@ pub enum Action {
     // guardrails: defining them and attaching them to routes and keys.
     // Admins only; a lead sees the ones on their keys through the key.
     ManageGuardrails,
+    // prompt templates
+    /// Reading templates and rendering them: everyone signed in, since
+    /// anyone who can call may use any template by name.
+    ListPrompts,
+    /// Making a template. Admins, and team leads.
+    CreatePrompt,
+    /// Adding a version to a template or deleting it. `created_by` is the
+    /// user who made the template: admins manage all, a lead the ones they
+    /// made, nobody else any.
+    ManagePrompt {
+        created_by: Option<i64>,
+    },
     // settings: viewing and changing both
     ManageSettings,
     // playground
@@ -163,6 +175,7 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ListLimits
         | Action::ListBudgets
         | Action::ListUsage
+        | Action::ListPrompts
         | Action::UsePlayground => Allow,
 
         Action::InviteUser { role: _ }
@@ -207,6 +220,21 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
                 Forbidden
             } else {
                 Hidden
+            }
+        }
+
+        Action::CreatePrompt => {
+            if p.led_teams().is_empty() {
+                Forbidden
+            } else {
+                Allow
+            }
+        }
+        Action::ManagePrompt { created_by } => {
+            if created_by.is_some_and(|c| c == p.user_id) && !p.led_teams().is_empty() {
+                Allow
+            } else {
+                Forbidden
             }
         }
 
@@ -1169,6 +1197,50 @@ mod tests {
                 Forbidden,
             ),
         ];
+        let manage = |created_by| Action::ManagePrompt { created_by };
+        cases.extend([
+            ("list_prompts: lead", lead, Action::ListPrompts, Allow),
+            ("list_prompts: member", member, Action::ListPrompts, Allow),
+            ("list_prompts: loner", loner, Action::ListPrompts, Allow),
+            ("create_prompt: lead", lead, Action::CreatePrompt, Allow),
+            (
+                "create_prompt: member",
+                member,
+                Action::CreatePrompt,
+                Forbidden,
+            ),
+            (
+                "create_prompt: loner",
+                loner,
+                Action::CreatePrompt,
+                Forbidden,
+            ),
+            ("manage_prompt: lead, own", lead, manage(Some(2)), Allow),
+            (
+                "manage_prompt: lead, another's",
+                lead,
+                manage(Some(1)),
+                Forbidden,
+            ),
+            (
+                "manage_prompt: lead, nobody's",
+                lead,
+                manage(None),
+                Forbidden,
+            ),
+            (
+                "manage_prompt: member, own",
+                member,
+                manage(Some(3)),
+                Forbidden,
+            ),
+            (
+                "manage_prompt: loner, own",
+                loner,
+                manage(Some(4)),
+                Forbidden,
+            ),
+        ]);
         let view_log = |user_id, team_id, user_in_led_team| Action::ViewLog {
             user_id,
             team_id,

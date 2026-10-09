@@ -89,6 +89,9 @@ pub struct RequestRecord {
     /// What the guardrail checks found, when they found anything. Counts and
     /// names only, never the text that matched.
     pub guardrails: Option<GuardrailLog>,
+    /// The prompt template the call used, as `name@version`: set once the
+    /// template and its version were found.
+    pub prompt: Option<String>,
 }
 
 /// The longest `requested` a record keeps, in bytes. The name is whatever the
@@ -197,6 +200,7 @@ impl Scope {
                 provider_kinds: Vec::new(),
                 started_unix_ms: unix_ms_now(),
                 guardrails: None,
+                prompt: None,
             }),
         }
     }
@@ -239,6 +243,11 @@ impl Scope {
     pub fn guardrails_found(&mut self, dir: Direction, side: Option<SideLog>) {
         let r = self.record_mut();
         r.guardrails = GuardrailLog::with(r.guardrails.take(), dir, side);
+    }
+
+    /// The call used this version of a prompt template.
+    pub fn prompt(&mut self, name: &str, version: i64) {
+        self.record_mut().prompt = Some(format!("{name}@{version}"));
     }
 
     /// What the guardrails found in the output of the call so far.
@@ -634,6 +643,16 @@ mod tests {
         assert_eq!(alert_sample(&r, Some("r")).unwrap().key_id, Some(7));
         assert_eq!(alert_sample(&r, Some("r")).unwrap().route, Some("r"));
         assert_eq!(alert_sample(&r, None).unwrap().route, None);
+    }
+
+    #[test]
+    fn a_record_names_the_prompt_version_it_used() {
+        let sink = Arc::new(Mem::default());
+        let mut s = scope(&sink);
+        assert_eq!(s.record.as_ref().unwrap().prompt, None);
+        s.prompt("greet", 3);
+        s.finish(200);
+        assert_eq!(sink.0.lock().unwrap()[0].prompt.as_deref(), Some("greet@3"));
     }
 
     #[test]

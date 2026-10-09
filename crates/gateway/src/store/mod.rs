@@ -12,6 +12,7 @@ mod limits;
 mod logs;
 mod models;
 mod portable;
+mod prompts;
 mod providers;
 mod routes;
 #[cfg(feature = "test-support")]
@@ -45,6 +46,7 @@ pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use portable::ConfigState;
+pub use prompts::{NewVersion, TemplateRow, VersionRow};
 pub use providers::ProviderRow;
 pub use routes::{is_missing_reference, RouteRow, RouteSettings, TargetRow, TargetsInput};
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
@@ -194,6 +196,10 @@ pub struct SnapshotRows {
     pub route_guardrails: Vec<(i64, i64, String)>,
     /// `(key id, guardrail id, guardrail name)`, in each key's order.
     pub key_guardrails: Vec<(i64, i64, String)>,
+    /// Every prompt template, by name.
+    pub prompt_templates: Vec<TemplateRow>,
+    /// Every version of every template, by template, then version.
+    pub prompt_versions: Vec<VersionRow>,
 }
 
 #[derive(Clone)]
@@ -398,6 +404,8 @@ impl Store {
         let guardrails = guardrails::list_guardrails_in(conn).await?;
         let route_guardrails = guardrails::route_guardrail_refs_in(conn).await?;
         let key_guardrails = guardrails::key_guardrail_refs_in(conn).await?;
+        let prompt_templates = prompts::list_templates_in(conn).await?;
+        let prompt_versions = prompts::list_versions_in(conn).await?;
         tx.commit().await?;
         Ok(SnapshotRows {
             keys,
@@ -415,6 +423,8 @@ impl Store {
             guardrails,
             route_guardrails,
             key_guardrails,
+            prompt_templates,
+            prompt_versions,
         })
     }
 

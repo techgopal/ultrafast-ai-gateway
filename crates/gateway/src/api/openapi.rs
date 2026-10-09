@@ -226,6 +226,7 @@ pub struct RoutingHealth {
         (name = "backup", description = "A copy of the database."),
         (name = "alerts", description = "Alert channels, rules and the events they raised."),
         (name = "guardrails", description = "Guardrails: rules and external hooks that block, redact or flag the text of calls."),
+        (name = "prompts", description = "Prompt templates: versioned messages with {{variables}}, used by name on /v1/chat/completions and /v1/responses."),
     )
 )]
 struct AdminApi;
@@ -307,7 +308,7 @@ mod tests {
 
     /// Every route of `api::router`, which has 88. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 88] = [
+    const ROUTES: [(&str, &str); 95] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -396,6 +397,13 @@ mod tests {
         ("DELETE", "/api/guardrails/{id}"),
         ("POST", "/api/guardrails/{id}/rotate-secret"),
         ("POST", "/api/guardrails/test"),
+        ("GET", "/api/prompts"),
+        ("POST", "/api/prompts"),
+        ("GET", "/api/prompts/{id}"),
+        ("DELETE", "/api/prompts/{id}"),
+        ("POST", "/api/prompts/{id}/versions"),
+        ("GET", "/api/prompts/{id}/versions/{version}"),
+        ("POST", "/api/prompts/{id}/render"),
     ];
 
     const SECRET_REQUEST_FIELDS: [&str; 5] = [
@@ -506,7 +514,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 88);
+        assert_eq!(routes.len(), 95);
         assert_eq!(documented, routes);
     }
 
@@ -528,7 +536,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 88);
+        assert_eq!(ids.len(), 95);
     }
 
     #[test]

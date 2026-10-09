@@ -192,6 +192,7 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
             .guardrails
             .as_ref()
             .map(crate::guardrails::log::GuardrailLog::to_stored),
+        prompt: record.prompt.clone(),
     }
 }
 
@@ -271,9 +272,11 @@ mod tests {
             provider_kinds: Vec::new(),
             started_unix_ms: 0,
             guardrails: None,
+            prompt: Some("greet@2".into()),
         };
         let prices: PriceLookup = Arc::new(|_, _| price(Some(2_000_000), Some(4_000_000)));
         let row = row_of(&record, &prices);
+        assert_eq!(row.prompt.as_deref(), Some("greet@2"));
         assert!(row.estimated);
         assert!(row.priced);
         assert_eq!(row.cost_micros, 4_000);

@@ -148,6 +148,7 @@ fn log(user: i64, team: Option<i64>, cost: i64) -> NewLog {
         duration_ms: 1,
         attempts: "[]".into(),
         guardrails: None,
+        prompt: None,
     }
 }
 

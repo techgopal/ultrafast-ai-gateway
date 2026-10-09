@@ -34,6 +34,7 @@ use ultrafast_translate::embeddings::{
 };
 use ultrafast_translate::error::TranslateError;
 use ultrafast_translate::images::{self, ImageRequest, ImageResponse};
+use ultrafast_translate::ingress::prompt::PromptRef;
 use ultrafast_translate::ingress::{anthropic, openai, responses};
 use ultrafast_translate::provider::{
     build_request, parse_response, HttpRequest, StreamDecoder, Target,
@@ -51,6 +52,7 @@ use crate::guardrails::external::CallMeta;
 use crate::guardrails::log::{GuardrailRef, SideLog};
 use crate::guardrails::run::{Active, Hooks, ScanFailed};
 use crate::guardrails::{Direction, Outcome, Release, StreamScanner};
+use crate::prompts::{self, UseError};
 use crate::routing::{
     self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
 };
@@ -175,28 +177,27 @@ impl Endpoint {
         }
     }
 
-    fn parse(self, body: &[u8]) -> Result<Call, TranslateError> {
+    /// The call and the prompt template it names, if it names one (only
+    /// chat calls may: `/v1/chat/completions`, `/v1/responses` and the
+    /// playground). The template is applied by [`use_prompt`].
+    fn parse(self, body: &[u8]) -> Result<(Call, Option<PromptRef>), TranslateError> {
+        let plain = |call: Call| (call, None);
         match self {
-            Endpoint::Chat | Endpoint::Playground => openai::parse_request(body).map(Call::Chat),
-            Endpoint::Messages => anthropic::parse_request(body).map(Call::Chat),
+            Endpoint::Chat | Endpoint::Playground => {
+                let (request, prompt) = openai::parse_prompted(body)?;
+                Ok((Call::Chat(request), prompt))
+            }
+            Endpoint::Messages => anthropic::parse_request(body).map(|r| plain(Call::Chat(r))),
             Endpoint::Responses => {
                 let parsed = responses::parse_request(body)?;
-                // Seam for prompt templates: the reference is parsed, and
-                // applying it (template messages, model and params) belongs
-                // here once templates exist.
-                if parsed.prompt.is_some() {
-                    return Err(TranslateError::InvalidRequest(
-                        "prompt templates are not available yet".into(),
-                    ));
-                }
-                Ok(Call::Chat(parsed.request))
+                Ok((Call::Chat(parsed.request), parsed.prompt))
             }
-            Endpoint::Embeddings => embeddings::parse_request(body).map(Call::Embed),
+            Endpoint::Embeddings => embeddings::parse_request(body).map(|r| plain(Call::Embed(r))),
             Endpoint::Images | Endpoint::PlaygroundImages => {
-                images::parse_request(body).map(Call::Image)
+                images::parse_request(body).map(|r| plain(Call::Image(r)))
             }
             Endpoint::Speech | Endpoint::PlaygroundSpeech => {
-                audio::parse_speech(body).map(Call::Speech)
+                audio::parse_speech(body).map(|r| plain(Call::Speech(r)))
             }
             // A form, read by `read_upload`.
             Endpoint::Transcriptions
@@ -761,9 +762,11 @@ async fn read_call(
     body: Body,
     form_type: Option<&str>,
     shape: Shape,
-) -> Result<Call, Response> {
+) -> Result<(Call, Option<PromptRef>), Response> {
     if let Some(task) = endpoint.upload_task() {
-        return read_upload(state, task, body, form_type, shape).await;
+        return read_upload(state, task, body, form_type, shape)
+            .await
+            .map(|call| (call, None));
     }
     let body = match axum::body::to_bytes(body, state.max_body_bytes).await {
         Ok(b) => b,
@@ -785,6 +788,36 @@ async fn read_call(
         }
     };
     endpoint.parse(&body).map_err(|e| shape.translate_error(&e))
+}
+
+/// Renders the template a chat call names into the call. A template that
+/// does not exist, a version that does not, and values that do not fit are
+/// refused (see [`refuse_prompt`]) before any limit counts the call and
+/// before any provider is reached. Anyone who can call may use any template.
+fn use_prompt(
+    snapshot: &Snapshot,
+    reference: &PromptRef,
+    call: &mut Call,
+    record: &mut Scope,
+) -> Result<(), UseError> {
+    let Call::Chat(request) = call else {
+        return Ok(());
+    };
+    let template = snapshot
+        .prompt(&reference.id)
+        .ok_or_else(|| UseError::NotFound(reference.id.clone()))?;
+    let version = template.pick(reference.version.as_deref())?;
+    record.prompt(&template.name, version.number);
+    prompts::apply(version, reference, request)
+}
+
+fn refuse_prompt(shape: Shape, e: &UseError) -> Response {
+    let (status, kind) = if e.is_not_found() {
+        (StatusCode::NOT_FOUND, "not_found_error")
+    } else {
+        (StatusCode::BAD_REQUEST, "invalid_request_error")
+    };
+    shape.error(status, kind, &e.to_string())
 }
 
 /// A file name that is safe to pass on in a header.
@@ -922,10 +955,19 @@ async fn dispatch(
     let record = scope.as_mut().expect("the scope is taken only by a stream");
 
     // 2. Read and parse the body.
-    let mut call = match read_call(state, endpoint, body, form_type, shape).await {
-        Ok(call) => call,
+    let (mut call, prompt) = match read_call(state, endpoint, body, form_type, shape).await {
+        Ok(read) => read,
         Err(refusal) => return refusal,
     };
+    // 2a. A call that names a prompt template becomes the template's
+    // messages and settings plus its own. Before access (the template may
+    // name the model), the limits and the guardrails: they all see what the
+    // provider is going to be sent.
+    if let Some(reference) = prompt {
+        if let Err(e) = use_prompt(snapshot, &reference, &mut call, record) {
+            return refuse_prompt(shape, &e);
+        }
+    }
     record.requested(call.model(), call.stream());
 
     // 3. Resolve the name to something this key may call.

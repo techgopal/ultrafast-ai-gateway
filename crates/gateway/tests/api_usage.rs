@@ -41,6 +41,7 @@ fn log(
         duration_ms: 12,
         attempts: "[]".into(),
         guardrails: None,
+        prompt: None,
     }
 }
 

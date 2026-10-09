@@ -34,6 +34,7 @@ fn log(at: &str, user: Option<i64>, team: Option<i64>, requested: &str) -> NewLo
         }])
         .to_string(),
         guardrails: None,
+        prompt: None,
     }
 }
 
@@ -128,7 +129,7 @@ async fn the_row_has_names_and_every_field() {
             "requested": "r1", "endpoint": "chat", "stream": false, "status": 200,
             "provider": "main", "model": "gpt-4o",
             "input_tokens": 10, "output_tokens": 5,
-            "cost_micros": 70, "priced": true, "cached": false, "estimated": false, "duration_ms": 12, "tags": {}, "guardrails": null,
+            "cost_micros": 70, "priced": true, "cached": false, "estimated": false, "duration_ms": 12, "tags": {}, "guardrails": null, "prompt": null,
         })
     );
     // A key that is gone and a row without user or team: ids stay, names are null.

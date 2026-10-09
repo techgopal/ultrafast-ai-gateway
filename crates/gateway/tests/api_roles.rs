@@ -66,6 +66,8 @@ struct World {
     guardrail: i64,
     /// An external guardrail.
     external_guardrail: i64,
+    /// A template an admin made.
+    prompt: i64,
     /// Keeps `syncable` answering.
     _upstream: MockServer,
     /// Owned by lena, in Platform.
@@ -218,6 +220,23 @@ async fn world() -> World {
         })
         .await
         .unwrap();
+    // An admin's template, which a lead may read and use but not change.
+    let prompt = tx
+        .insert_prompt_template("table", "", Some(org.maya))
+        .await
+        .unwrap();
+    tx.insert_prompt_version(
+        prompt,
+        ultrafast_gateway::store::NewVersion {
+            messages: r#"[{"role":"user","content":"hi {{x}}"}]"#,
+            variables: r#"["x"]"#,
+            model: None,
+            params: "{}",
+        },
+        Some(org.maya),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     org.api.state.refresh().await.unwrap();
 
@@ -242,6 +261,7 @@ async fn world() -> World {
         duration_ms: 1,
         attempts: "[]".into(),
         guardrails: None,
+        prompt: None,
     };
     org.api
         .store
@@ -287,6 +307,7 @@ async fn world() -> World {
         rule,
         guardrail,
         external_guardrail,
+        prompt,
         _upstream: upstream,
         lena_key,
         tomas_key,
@@ -603,6 +624,26 @@ fn table() -> Vec<Row> {
         row(88, "POST", "/api/playground/speech", "an unknown model", |_, _| "/api/playground/speech".into(),
             || Some(json!({ "model": "nothing", "input": "hi", "voice": "alloy" })),
             [404, 404, 404, 401]),
+        row(89, "GET", "/api/prompts", "", |_, _| "/api/prompts".into(), no_body,
+            [200, 200, 200, 401]),
+        row(90, "POST", "/api/prompts", "a template", |_, _| "/api/prompts".into(),
+            || Some(json!({ "name": "made", "messages": [{ "role": "user", "content": "hi {{x}}" }] })),
+            [201, 201, 403, 401]),
+        row(91, "GET", "/api/prompts/{id}", "an admin's", |w, _| format!("/api/prompts/{}", w.prompt), no_body,
+            [200, 200, 200, 401]),
+        row(92, "DELETE", "/api/prompts/{id}", "an admin's", |w, _| format!("/api/prompts/{}", w.prompt), no_body,
+            [204, 403, 403, 401]),
+        row(93, "POST", "/api/prompts/{id}/versions", "to an admin's",
+            |w, _| format!("/api/prompts/{}/versions", w.prompt),
+            || Some(json!({ "messages": [{ "role": "user", "content": "again {{y}}" }] })),
+            [201, 403, 403, 401]),
+        row(94, "GET", "/api/prompts/{id}/versions/{version}", "version 1",
+            |w, _| format!("/api/prompts/{}/versions/1", w.prompt), no_body,
+            [200, 200, 200, 401]),
+        row(95, "POST", "/api/prompts/{id}/render", "an admin's, version 1",
+            |w, _| format!("/api/prompts/{}/render", w.prompt),
+            || Some(json!({ "version": 1, "variables": { "x": "1" } })),
+            [200, 200, 200, 401]),
     ]
 }
 
@@ -677,7 +718,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=88).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=95).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -790,7 +831,10 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
     let spec = serde_json::to_value(spec()).unwrap();
     let mut operations = 0;
     for (template, item) in spec["paths"].as_object().expect("paths") {
-        let path = template.replace("{id}", "1").replace("{user_id}", "1");
+        let path = template
+            .replace("{id}", "1")
+            .replace("{user_id}", "1")
+            .replace("{version}", "1");
         assert!(!path.contains('{'), "{template}");
         for method in item.as_object().expect("a path item").keys() {
             let method = method.to_uppercase();
@@ -809,7 +853,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 88);
+    assert_eq!(operations, 95);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

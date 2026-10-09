@@ -640,6 +640,7 @@ function log(
     duration_ms: 850,
     tags: {},
     guardrails: null,
+    prompt: null,
     ...call,
   };
 }

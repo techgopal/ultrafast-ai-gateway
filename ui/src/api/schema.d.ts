@@ -694,6 +694,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/prompts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["prompts_list"];
+        put?: never;
+        post: operations["prompts_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prompts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["prompts_view"];
+        put?: never;
+        post?: never;
+        delete: operations["prompts_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prompts/{id}/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["prompts_render"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prompts/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["prompts_add_version"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/prompts/{id}/versions/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["prompts_version"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers": {
         parameters: {
             query?: never;
@@ -1201,6 +1281,11 @@ export interface components {
             guardrails?: components["schemas"]["GuardrailEntry"][];
             limits?: components["schemas"]["LimitEntry"][];
             models?: components["schemas"]["ModelEntry"][];
+            /**
+             * @description Prompt templates with all their versions. Left out of the file when
+             *     there are none.
+             */
+            prompts?: components["schemas"]["PromptEntry"][];
             providers?: components["schemas"]["ProviderEntry"][];
             routes?: components["schemas"]["RouteEntry"][];
             settings?: components["schemas"]["SettingsEntry"];
@@ -1292,6 +1377,24 @@ export interface components {
             /** Format: int64 */
             provider_id: number;
         };
+        CreatePromptRequest: {
+            /** @description Up to 500 characters. Left out: none. */
+            description?: string | null;
+            /**
+             * @description Version 1: 1 to 64 messages. A variable is `{{name}}` with a name of
+             *     letters, digits and `_` that does not start with a digit, up to 64
+             *     characters; other braces are text. At most 64 variables.
+             */
+            messages: components["schemas"]["TemplateMessage"][];
+            /** @description Used when a call names no model: `provider/model` or a route. */
+            model?: string | null;
+            /**
+             * @description Unique, 1 to 100 characters. This is the `id` a call names. Case
+             *     sensitive.
+             */
+            name: string;
+            params?: components["schemas"]["Params"] | null;
+        };
         CreateProviderRequest: {
             api_key?: string | null;
             /** @description Azure OpenAI only; `2024-10-21` when left out. */
@@ -1321,6 +1424,15 @@ export interface components {
         CreateTokenRequest: {
             expires_at?: string | null;
             name: string;
+        };
+        CreateVersionRequest: {
+            /**
+             * @description As for a new template. A version stands alone: it keeps nothing of
+             *     the one before.
+             */
+            messages: components["schemas"]["TemplateMessage"][];
+            model?: string | null;
+            params?: components["schemas"]["Params"] | null;
         };
         CreatedChannel: {
             channel: components["schemas"]["ChannelView"];
@@ -1613,8 +1725,8 @@ export interface components {
             /** @description For an update: the fields that change. Empty for a creation. */
             changes: string[];
             /**
-             * @description `provider`, `team`, `model`, `guardrail`, `route`, `limit`, `budget`,
-             *     `alert_channel`, `alert_rule` or `settings`.
+             * @description `provider`, `team`, `model`, `guardrail`, `prompt`, `route`, `limit`,
+             *     `budget`, `alert_channel`, `alert_rule` or `settings`.
              */
             kind: string;
             name: string;
@@ -1760,6 +1872,11 @@ export interface components {
             /** Format: int64 */
             output_tokens: number | null;
             priced: boolean;
+            /**
+             * @description The prompt template the call used, as `name@version`, or `null`.
+             *     It is text: it stays when the template is deleted.
+             */
+            prompt: string | null;
             /** @description The provider that answered; null when nothing answered (the model is then null too). */
             provider: string | null;
             /** @description The model or route name the caller asked for. */
@@ -1825,6 +1942,11 @@ export interface components {
             /** Format: int64 */
             output_tokens: number | null;
             priced: boolean;
+            /**
+             * @description The prompt template the call used, as `name@version`, or `null`.
+             *     It is text: it stays when the template is deleted.
+             */
+            prompt: string | null;
             /** @description The provider that answered; null when nothing answered (the model is then null too). */
             provider: string | null;
             /** @description The model or route name the caller asked for. */
@@ -2073,6 +2195,32 @@ export interface components {
                 [key: string]: number;
             };
         };
+        /**
+         * @description The settings a version carries for the call. All optional; what the call
+         *     itself sets wins.
+         */
+        Params: {
+            /**
+             * Format: int32
+             * @description At least 1.
+             */
+            max_tokens?: number | null;
+            /**
+             * @description As in `/v1/chat/completions`: `{"type":"text"}`, `{"type":"json_object"}`
+             *     or `{"type":"json_schema","json_schema":{...}}`.
+             */
+            response_format?: Record<string, never> | null;
+            /**
+             * Format: double
+             * @description 0 to 2.
+             */
+            temperature?: number | null;
+            /**
+             * Format: double
+             * @description 0 to 1.
+             */
+            top_p?: number | null;
+        };
         /** @enum {string} */
         PiiType: "EMAIL" | "PHONE" | "CREDIT_CARD" | "IBAN" | "US_SSN" | "IPV4" | "IPV6" | "SECRET";
         /** @description The answer of `/v1/chat/completions`, in the OpenAI shape. */
@@ -2097,6 +2245,15 @@ export interface components {
             model: string;
             /** @description As in `/v1/chat/completions`; ignored without `tools`. */
             parallel_tool_calls?: boolean;
+            /** @description `id` is the template's name; `version` a positive integer, as a number or a string of digits (left out: the latest); `variables` maps each variable name to its text. */
+            prompt?: {
+                id: string;
+                variables?: {
+                    [key: string]: string;
+                };
+                /** @description A positive integer, or a string of digits. */
+                version?: Record<string, never>;
+            };
             /** @description As in `/v1/chat/completions`: `{"type":"text"}`, `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"name","schema","strict"?,"description"?}}`. */
             response_format?: {
                 [key: string]: unknown;
@@ -2255,6 +2412,77 @@ export interface components {
              */
             weight: number;
         };
+        /**
+         * @description A prompt template with all its versions. An import adds the versions a
+         *     gateway lacks and never rewrites one it has: a version that differs is
+         *     an error. Who made a template is not in a file; an import makes the
+         *     templates it creates the importing admin's.
+         */
+        PromptEntry: {
+            description?: string;
+            name: string;
+            versions: components["schemas"]["PromptVersionEntry"][];
+        };
+        PromptList: {
+            /** @description By name. */
+            prompts: components["schemas"]["PromptSummary"][];
+        };
+        /** @description A template in a list. */
+        PromptSummary: {
+            created_at: string;
+            /**
+             * Format: int64
+             * @description The user who made it; `null` when they are gone. Admins manage
+             *     every template, a lead the ones they made.
+             */
+            created_by: number | null;
+            description: string;
+            /** Format: int64 */
+            id: number;
+            /**
+             * Format: int64
+             * @description The version a call without `version` gets.
+             */
+            latest_version: number;
+            /** @description The model and variables of the latest version. */
+            model: string | null;
+            name: string;
+            /** @description When the latest version was written. */
+            updated_at: string;
+            variables: string[];
+            /** Format: int64 */
+            version_count: number;
+        };
+        /** @description One version of a prompt template in a file. */
+        PromptVersionEntry: {
+            messages: components["schemas"]["TemplateMessage"][];
+            /** @description Used when a call names no model. */
+            model?: string | null;
+            params?: components["schemas"]["Params"];
+            /**
+             * Format: int64
+             * @description From 1, in order, without gaps.
+             */
+            version: number;
+        };
+        /** @description A template with all its versions, oldest first. */
+        PromptView: {
+            created_at: string;
+            /** Format: int64 */
+            created_by: number | null;
+            description: string;
+            /** Format: int64 */
+            id: number;
+            /** Format: int64 */
+            latest_version: number;
+            model: string | null;
+            name: string;
+            updated_at: string;
+            variables: string[];
+            /** Format: int64 */
+            version_count: number;
+            versions: components["schemas"]["VersionView"][];
+        };
         ProviderEntry: {
             /** @description Azure OpenAI only. */
             api_version: string | null;
@@ -2287,6 +2515,30 @@ export interface components {
              *     this answer, and cannot be read again.
              */
             invite_link: string;
+        };
+        RenderRequest: {
+            /**
+             * @description A value for every variable of the version, and for no other: a text
+             *     of at most 32 KiB each. Put in as it is, once.
+             */
+            variables?: {
+                [key: string]: string;
+            };
+            /**
+             * Format: int32
+             * @description Left out: the latest version.
+             */
+            version?: number | null;
+        };
+        /** @description What a version renders to. */
+        RenderedPrompt: {
+            /** @description The messages with the values put in, as a call would get them. */
+            messages: components["schemas"]["TemplateMessage"][];
+            /** @description The model the template names, used when a call names none. */
+            model: string | null;
+            params: components["schemas"]["Params"];
+            /** Format: int64 */
+            version: number;
         };
         /**
          * @description A user's role in the organization.
@@ -2659,6 +2911,13 @@ export interface components {
             member_count: number;
             name: string;
         };
+        /** @description A message of a version, as stored. */
+        TemplateMessage: {
+            /** @description Text, with `{{name}}` where a value goes. */
+            content: string;
+            /** @description `system`, `developer`, `user` or `assistant`. */
+            role: string;
+        };
         /** @description What a test delivery came to. */
         TestResult: {
             /** @description Why it failed. Never holds the URL. */
@@ -2866,6 +3125,25 @@ export interface components {
             status: components["schemas"]["UserStatus"];
             /** @description The user's teams, ordered by name. */
             teams: components["schemas"]["UserTeamView"][];
+        };
+        /** @description One version of a template. */
+        VersionView: {
+            created_at: string;
+            /**
+             * Format: int64
+             * @description `null` when the user is gone.
+             */
+            created_by: number | null;
+            messages: components["schemas"]["TemplateMessage"][];
+            model: string | null;
+            params: components["schemas"]["Params"];
+            /** @description The names the messages use, sorted. */
+            variables: string[];
+            /**
+             * Format: int64
+             * @description From 1.
+             */
+            version: number;
         };
     };
     responses: never;
@@ -6469,6 +6747,464 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+        };
+    };
+    prompts_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every prompt template, by name. Any signed-in user may read them: anyone who can call may use any template. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptList"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    prompts_create: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePromptRequest"];
+            };
+        };
+        responses: {
+            /** @description The new template, with its version 1. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Only admins and team leads make templates, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `prompt_exists`: the name is taken. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, ...). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    prompts_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id of the template. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The template with all its versions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PromptView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    prompts_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the template. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The template and its versions are deleted. The request logs keep the `name@version` they recorded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Admins delete any template, a team lead the ones they made; or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    prompts_render: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the template. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenderRequest"];
+            };
+        };
+        responses: {
+            /** @description The messages with the values put in, exactly as a call that names the template gets them. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderedPrompt"];
+                };
+            };
+            /** @description A variable is missing or unknown, a value is longer than 32 KiB, or the rendered text is larger than 1 MiB; the message names the variable. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The template or the version does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    prompts_add_version: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the template. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description The new version, numbered after the latest. The versions before it are as they were. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Admins change any template, a team lead the ones they made; or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `prompt_version_limit`: the template has 500 versions. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    prompts_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id of the template. */
+                id: number;
+                /** @description The version, from 1. */
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The version, as it was written. A version never changes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The template or the version does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
         };

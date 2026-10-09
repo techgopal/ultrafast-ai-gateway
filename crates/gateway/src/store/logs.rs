@@ -39,6 +39,9 @@ pub struct NewLog {
     /// What the guardrails found (a JSON object: guardrail ids and names,
     /// actions, counts; never matched text); `None` when they found nothing.
     pub guardrails: Option<String>,
+    /// The prompt template the call used, as `name@version`; text, so it
+    /// outlives the template.
+    pub prompt: Option<String>,
 }
 
 /// A stored row.
@@ -69,6 +72,8 @@ pub struct LogRow {
     pub tags: Option<String>,
     /// See [`NewLog::guardrails`].
     pub guardrails: Option<String>,
+    /// See [`NewLog::prompt`].
+    pub prompt: Option<String>,
 }
 
 /// A stored row with the names of its key, user and team, which are `None`
@@ -215,10 +220,11 @@ fn log_from(r: &AnyRow) -> LogRow {
         attempts: r.get("attempts"),
         tags: r.get("tags"),
         guardrails: r.get("guardrails"),
+        prompt: r.get("prompt"),
     }
 }
 
-/// Rows per `INSERT`: 21 binds each, so a chunk stays far under the 32766
+/// Rows per `INSERT`: 22 binds each, so a chunk stays far under the 32766
 /// (SQLite) and 65535 (PostgreSQL) parameter limits.
 const LOG_INSERT_CHUNK: usize = 1000;
 
@@ -237,13 +243,13 @@ fn log_insert_sql(dialect: Dialect, rows: usize) -> String {
                 "INSERT INTO request_logs
                  (org_id, at, key_id, user_id, team_id, requested, endpoint, stream, status,
                   provider, model, input_tokens, output_tokens, cost_micros, priced, cached,
-                  estimated, duration_ms, attempts, tags, guardrails) VALUES ",
+                  estimated, duration_ms, attempts, tags, guardrails, prompt) VALUES ",
             );
             for i in 0..rows {
                 if i > 0 {
                     sql.push_str(", ");
                 }
-                sql.push_str("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                sql.push_str("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             }
             dialect.sql(&sql).into_owned()
         })
@@ -284,7 +290,8 @@ impl Store {
                     .bind(r.duration_ms)
                     .bind(&r.attempts)
                     .bind(&r.tags)
-                    .bind(&r.guardrails);
+                    .bind(&r.guardrails)
+                    .bind(&r.prompt);
             }
             query.execute(&mut *tx).await?;
         }
@@ -546,6 +553,7 @@ mod tests {
             attempts: "[]".into(),
             tags: None,
             guardrails: None,
+            prompt: None,
         }
     }
 
@@ -583,7 +591,7 @@ mod tests {
     #[test]
     fn the_insert_statement_is_built_once_per_size() {
         let a = log_insert_sql(Dialect::Postgres, 2);
-        assert!(a.contains("$42") && !a.contains("$43"));
+        assert!(a.contains("$44") && !a.contains("$45"));
         assert_eq!(a, log_insert_sql(Dialect::Postgres, 2));
         assert!(!log_insert_sql(Dialect::Sqlite, 2).contains('$'));
     }

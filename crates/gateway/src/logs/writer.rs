@@ -214,6 +214,7 @@ mod tests {
             provider_kinds: Vec::new(),
             started_unix_ms: 0,
             guardrails: None,
+            prompt: None,
         }
     }
 

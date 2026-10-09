@@ -3,6 +3,7 @@
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+use super::prompt::{parse_prompt, PromptRef};
 use crate::error::TranslateError;
 use crate::types::{
     image_source, ChatRequest, ChatResponse, Message, Part, ResponseFormat, Role, StreamEvent,
@@ -11,8 +12,10 @@ use crate::types::{
 
 #[derive(Deserialize)]
 struct WireRequest {
-    model: String,
-    messages: Vec<WireMessage>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    messages: Option<Vec<WireMessage>>,
     #[serde(default)]
     max_tokens: Option<u32>,
     #[serde(default)]
@@ -432,7 +435,20 @@ pub fn parse_response_format(v: &Value) -> Result<ResponseFormat, TranslateError
     }
 }
 
+/// A request with no stored prompt in it.
 pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
+    match parse_prompted(body)? {
+        (request, None) => Ok(request),
+        (_, Some(_)) => Err(unsupported_field("prompt")),
+    }
+}
+
+/// A request that may name a stored prompt template (`prompt`, an extension
+/// of this endpoint). With one, `model` and `messages` may be left out: the
+/// request then has an empty model and no messages until the template is
+/// applied (the template's messages come first). Without one both are
+/// required, as in [`parse_request`].
+pub fn parse_prompted(body: &[u8]) -> Result<(ChatRequest, Option<PromptRef>), TranslateError> {
     let mut wire: WireRequest =
         serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
     // `n` is only accepted as the integer 1, which is also the default.
@@ -441,10 +457,23 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
             return Err(unsupported_field("n"));
         }
     }
+    let prompt = match wire.extra.remove("prompt") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(parse_prompt(&v)?),
+    };
     reject_unknown(&wire.extra, IGNORED_REQUEST_FIELDS)?;
-    let messages = convert_messages(wire.messages)?;
-    Ok(ChatRequest {
-        model: wire.model,
+    let model = match wire.model {
+        Some(m) => m,
+        None if prompt.is_some() => String::new(),
+        None => return Err(TranslateError::InvalidRequest("model is required".into())),
+    };
+    let messages = match (wire.messages, &prompt) {
+        (None, Some(_)) => Vec::new(),
+        (Some(m), Some(_)) if m.is_empty() => Vec::new(),
+        (m, _) => convert_messages(m.unwrap_or_default())?,
+    };
+    let request = ChatRequest {
+        model,
         messages,
         max_tokens: wire.max_completion_tokens.or(wire.max_tokens),
         temperature: wire.temperature,
@@ -468,7 +497,8 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
             None => None,
             Some(v) => parse_reasoning_effort(v)?,
         },
-    })
+    };
+    Ok((request, prompt))
 }
 
 /// The total is 64-bit: both counts may be saturated at `u32::MAX`.
@@ -578,6 +608,81 @@ mod tests {
     use super::*;
     use crate::error::TranslateError;
     use crate::types::*;
+
+    #[test]
+    fn a_prompt_reference_is_read_and_the_model_and_messages_may_then_be_left_out() {
+        let with = |extra: &str| format!(r#"{{"prompt":{extra}}}"#);
+        let (r, p) = parse_prompted(
+            with(r#"{"id":"greet","version":2,"variables":{"n":"Ada"}}"#).as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(r.model, "");
+        assert!(r.messages.is_empty());
+        let p = p.unwrap();
+        assert_eq!((p.id.as_str(), p.version.as_deref()), ("greet", Some("2")));
+        assert_eq!(p.variables["n"], "Ada");
+        // The version is a string of digits or an integer.
+        let (_, p) = parse_prompted(with(r#"{"id":"g","version":"12"}"#).as_bytes()).unwrap();
+        assert_eq!(p.unwrap().version.as_deref(), Some("12"));
+        let (_, p) = parse_prompted(with(r#"{"id":"g"}"#).as_bytes()).unwrap();
+        assert_eq!(p.unwrap().version, None);
+        for bad in [
+            r#"{"id":"g","version":"x"}"#,
+            r#"{"id":"g","version":1.5}"#,
+            r#"{"id":"g","version":-1}"#,
+            r#"{"id":"g","version":true}"#,
+            r#"{"id":"g","version":""}"#,
+            r#"{"id":"g","variables":{"n":3}}"#,
+            r#"{"id":"g","variables":[]}"#,
+            r#"{"version":1}"#,
+            r#"{"id":"g","other":1}"#,
+            r#""g""#,
+        ] {
+            assert!(
+                matches!(
+                    parse_prompted(with(bad).as_bytes()),
+                    Err(TranslateError::InvalidRequest(_) | TranslateError::Unsupported(_))
+                ),
+                "{bad}"
+            );
+        }
+        // Given, the request's own model and messages come through.
+        let (r, _) = parse_prompted(
+            br#"{"model":"p/m","prompt":{"id":"g"},"messages":[{"role":"user","content":"x"}],"temperature":0.5}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (r.model.as_str(), r.messages.len(), r.temperature),
+            ("p/m", 1, Some(0.5))
+        );
+        // Without a prompt nothing is left out.
+        for body in [
+            r#"{"messages":[{"role":"user","content":"x"}]}"#,
+            r#"{"model":"m"}"#,
+            r#"{"model":"m","messages":[]}"#,
+        ] {
+            assert!(
+                matches!(
+                    parse_prompted(body.as_bytes()),
+                    Err(TranslateError::InvalidRequest(_))
+                ),
+                "{body}"
+            );
+        }
+        // The plain parser still refuses the field.
+        assert!(matches!(
+            parse_request(
+                br#"{"model":"m","messages":[{"role":"user","content":"x"}],"prompt":{"id":"g"}}"#
+            ),
+            Err(TranslateError::Unsupported(_))
+        ));
+        // A null prompt is no prompt.
+        let (_, p) = parse_prompted(
+            br#"{"model":"m","messages":[{"role":"user","content":"x"}],"prompt":null}"#,
+        )
+        .unwrap();
+        assert!(p.is_none());
+    }
 
     #[test]
     fn reasoning_effort_is_parsed_and_checked() {

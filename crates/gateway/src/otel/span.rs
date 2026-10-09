@@ -246,6 +246,7 @@ mod tests {
             provider_kinds: vec![("a".into(), "openai"), ("b".into(), "anthropic")],
             started_unix_ms: 32_472_144_000_000,
             guardrails: None,
+            prompt: None,
         }
     }
 

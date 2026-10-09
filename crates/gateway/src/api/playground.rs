@@ -45,6 +45,38 @@ pub struct PlaygroundChatRequest {
     /// or `{"type":"json_schema","json_schema":{"name","schema","strict"?,"description"?}}`.
     #[schema(schema_with = response_format_schema, nullable = false, required = false)]
     pub response_format: Option<serde_json::Value>,
+    /// A stored prompt template to render in front of `messages`:
+    /// `{"id": "<name>", "version": <n>?, "variables": {...}}`, as in
+    /// `/v1/chat/completions`. With it `model` and `messages` may be left out
+    /// (the template's model is used), and `temperature`, `top_p`,
+    /// `max_tokens` and `response_format` left out take the template's.
+    #[schema(schema_with = prompt_schema, nullable = false, required = false)]
+    pub prompt: Option<serde_json::Value>,
+}
+
+/// The `prompt` object: a template name, an optional version (a number or a
+/// string of digits) and the values of its variables.
+fn prompt_schema() -> utoipa::openapi::schema::ObjectBuilder {
+    use utoipa::openapi::schema::{AdditionalProperties, ObjectBuilder, Type};
+    ObjectBuilder::new()
+        .schema_type(Type::Object)
+        .description(Some(
+            "`id` is the template's name; `version` a positive integer, as a number or a string of digits (left out: the latest); `variables` maps each variable name to its text.",
+        ))
+        .property("id", ObjectBuilder::new().schema_type(Type::String))
+        .property(
+            "version",
+            ObjectBuilder::new().description(Some("A positive integer, or a string of digits.")),
+        )
+        .property(
+            "variables",
+            ObjectBuilder::new()
+                .schema_type(Type::Object)
+                .additional_properties(Some(AdditionalProperties::RefOr(
+                    ObjectBuilder::new().schema_type(Type::String).into(),
+                ))),
+        )
+        .required("id")
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
