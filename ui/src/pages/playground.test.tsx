@@ -1078,3 +1078,76 @@ describe("fix round 1", () => {
     expect(screen.getByLabelText("Tool result for weather (2)")).toBeInTheDocument();
   });
 });
+
+describe("the response format", () => {
+  const SCHEMA = '{"type":"object","properties":{"a":{"type":"string"}}}';
+
+  test("text, the default, sends no response_format", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    expect(await optionsOf(screen.getByRole("combobox", { name: "Response format" }))).toEqual([
+      "Text",
+      "JSON",
+      "JSON schema",
+    ]);
+    expect(screen.queryByRole("textbox", { name: "JSON schema" })).not.toBeInTheDocument();
+    await say("hi");
+    await screen.findByText("Hello");
+    expect(sent[0]).not.toHaveProperty("response_format");
+  });
+
+  test("JSON sends json_object", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await choose(screen.getByRole("combobox", { name: "Response format" }), "JSON");
+    await say("hi");
+    await screen.findByText("Hello");
+    expect(sent[0]).toMatchObject({ response_format: { type: "json_object" } });
+  });
+
+  test("JSON schema shows a schema field and sends it", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await choose(screen.getByRole("combobox", { name: "Response format" }), "JSON schema");
+    await userEvent.click(screen.getByRole("textbox", { name: "JSON schema" }));
+    await userEvent.paste(SCHEMA);
+    await say("hi");
+    await screen.findByText("Hello");
+    expect(sent[0]).toMatchObject({
+      response_format: { type: "json_schema", json_schema: { name: "response", schema: JSON.parse(SCHEMA) as unknown } },
+    });
+  });
+
+  test("a schema that is not a JSON object blocks Send and keeps the message", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await choose(screen.getByRole("combobox", { name: "Response format" }), "JSON schema");
+    await userEvent.click(screen.getByRole("textbox", { name: "JSON schema" }));
+    await userEvent.paste("nope");
+    await say("hi");
+    const field = screen.getByRole("textbox", { name: "JSON schema" });
+    expect(field).toHaveAccessibleDescription(/The schema must be a JSON object/);
+    expect(message()).toHaveValue("hi");
+    expect(sent).toHaveLength(0);
+  });
+
+  test("Copy as curl has the response format", async () => {
+    const sent = chats();
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await choose(screen.getByRole("combobox", { name: "Response format" }), "JSON");
+    expect(sent).toHaveLength(0);
+    const written: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: (t: string) => { written.push(t); return Promise.resolve(); } },
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Copy as curl" }));
+    await waitFor(() => { expect(written).toHaveLength(1); });
+    expect(written[0]).toContain('"response_format":{"type":"json_object"}');
+  });
+});

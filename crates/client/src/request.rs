@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use ultrafast_translate::embeddings::EmbeddingsRequest as Wire;
 use ultrafast_translate::types::{
-    self, image_source, Message, Part, Role, Tool, ToolCall, ToolChoice,
+    self, image_source, Message, Part, ResponseFormat, Role, Tool, ToolCall, ToolChoice,
 };
 
 use crate::error::{Error, ErrorKind};
@@ -32,6 +32,7 @@ impl ChatRequest {
                 tools: Vec::new(),
                 tool_choice: None,
                 parallel_tool_calls: None,
+                response_format: None,
             },
             tags: BTreeMap::new(),
         }
@@ -93,6 +94,13 @@ impl ChatRequest {
 
     pub fn parallel_tool_calls(mut self, v: bool) -> Self {
         self.inner.parallel_tool_calls = Some(v);
+        self
+    }
+
+    /// Structured output: plain text, any JSON object, or JSON that matches a
+    /// schema.
+    pub fn response_format(mut self, format: ResponseFormat) -> Self {
+        self.inner.response_format = Some(format);
         self
     }
 
@@ -285,5 +293,11 @@ mod tests {
         assert_eq!(t.role, Role::Tool);
         assert_eq!(t.tool_call_id.as_deref(), Some("call_1"));
         assert_eq!(t.joined_text(), "sunny");
+    }
+
+    #[test]
+    fn response_format_is_set() {
+        let r = ChatRequest::new("m").response_format(ResponseFormat::JsonObject);
+        assert_eq!(r.inner.response_format, Some(ResponseFormat::JsonObject));
     }
 }

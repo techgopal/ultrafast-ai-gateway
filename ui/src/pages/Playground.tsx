@@ -21,6 +21,7 @@ import {
   BODY_BUDGET,
   bodyBytes,
   checkParams,
+  checkResponseFormat,
   checkTools,
   costMicros,
   curlOf,
@@ -28,6 +29,7 @@ import {
   type Message,
   type Params,
   type Prices,
+  type ResponseFormatKind,
   type ToolChoice,
 } from "@/lib/playground";
 import { bodyOf, useRun, type Call } from "@/pages/PlaygroundRun";
@@ -86,6 +88,12 @@ function toolChoices(names: readonly string[], defined: boolean): Choice[] {
   ];
 }
 
+const FORMATS: Choice[] = [
+  { value: "text", label: "Text" },
+  { value: "json_object", label: "JSON" },
+  { value: "json_schema", label: "JSON schema" },
+];
+
 const empty: Params = { maxTokens: "", temperature: "", topP: "", stop: "" };
 
 /** The price of the model that answered: the one called, or for a route the only model of that name. */
@@ -117,6 +125,11 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
   const [toolsText, setToolsText] = useState("");
   const [toolsError, setToolsError] = useState<string | undefined>(undefined);
   const [toolChoice, setToolChoice] = useState("auto");
+  const [formatKind, setFormatKind] = useState<ResponseFormatKind>("text");
+  const [schemaText, setSchemaText] = useState("");
+  const [schemaError, setSchemaError] = useState<string | undefined>(undefined);
+  const schemaField = useRef<HTMLTextAreaElement>(null);
+  const [focusSchema, setFocusSchema] = useState(0);
   const [results, setResults] = useState<Readonly<Record<string, string>>>({});
   const [resultsError, setResultsError] = useState<string | null>(null);
 
@@ -156,8 +169,20 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
       setToolsOpen(true);
       setFocusTools((before) => before + 1);
     }
-    if (Object.keys(checked.errors).length > 0 || toolsChecked.error !== undefined) return null;
-    return { model: target, system, add, values: { ...checked.values, ...toolValues(toolsChecked) } };
+    const format = formatValues();
+    if (Object.keys(checked.errors).length > 0 || toolsChecked.error !== undefined || format === null) return null;
+    return { model: target, system, add, values: { ...checked.values, ...toolValues(toolsChecked), ...format } };
+  }
+
+  /** The response format to send, or `null` when the typed schema is not valid (the field says why). */
+  function formatValues(): { response_format?: NonNullable<ReturnType<typeof checkResponseFormat>["format"]> } | null {
+    const checked = checkResponseFormat(formatKind, schemaText);
+    setSchemaError(checked.error);
+    if (checked.error !== undefined) {
+      setFocusSchema((before) => before + 1);
+      return null;
+    }
+    return checked.format === undefined ? {} : { response_format: checked.format };
   }
 
   function toolValues(checked: ReturnType<typeof checkTools>): { tools?: NonNullable<typeof checked.tools>; tool_choice?: ToolChoice } {
@@ -240,6 +265,10 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
   }, [run.running, run.messages]);
 
   useEffect(() => {
+    if (focusSchema > 0) schemaField.current?.focus();
+  }, [focusSchema]);
+
+  useEffect(() => {
     if (focusTools > 0) toolsField.current?.focus();
   }, [focusTools]);
 
@@ -294,12 +323,13 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
       setToolsOpen(true);
       setFocusTools((before) => before + 1);
     }
-    if (Object.keys(checked.errors).length > 0 || toolsChecked.error !== undefined || target === "") return;
+    const format = formatValues();
+    if (Object.keys(checked.errors).length > 0 || toolsChecked.error !== undefined || format === null || target === "") return;
     const add: readonly Message[] =
       waiting.length > 0
         ? resultMessages()
         : [{ role: "user", content: typed === "" && images.length === 0 ? CURL_SAMPLE : typed, ...(images.length > 0 ? { images } : {}) }];
-    const call: Call = { model: target, system, add, values: { ...checked.values, ...toolValues(toolsChecked) } };
+    const call: Call = { model: target, system, add, values: { ...checked.values, ...toolValues(toolsChecked), ...format } };
     await copyText(curlOf(window.location.origin, bodyOf(call, run.messages)));
   }
 
@@ -494,6 +524,39 @@ function PlaygroundOf({ models, routes }: { models: readonly Model[]; routes: re
             )}
           </Field>
         ))}
+        <div className="flex flex-col gap-2">
+          <p className="text-sm font-medium">Response format</p>
+          <FilterSelect
+            label="Response format"
+            value={formatKind}
+            choices={FORMATS}
+            onChange={(value) => {
+              setFormatKind(value as ResponseFormatKind);
+              setSchemaError(undefined);
+            }}
+          />
+          <p className="text-sm text-muted-foreground">
+            JSON asks for a JSON object; JSON schema asks for JSON that matches the schema.
+          </p>
+        </div>
+        {formatKind === "json_schema" ? (
+          <Field label="JSON schema" name="schema" hint="A JSON Schema object." error={schemaError}>
+            {({ id, name, ...described }) => (
+              <Textarea
+                {...described}
+                id={id}
+                name={name}
+                ref={schemaField}
+                className="font-mono text-xs"
+                spellCheck={false}
+                value={schemaText}
+                onChange={(event) => {
+                  setSchemaText(event.target.value);
+                }}
+              />
+            )}
+          </Field>
+        ) : null}
         <div className="flex flex-col gap-2">
           <Button
             type="button"

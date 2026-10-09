@@ -41,6 +41,10 @@ pub struct PlaygroundChatRequest {
     /// As in `/v1/chat/completions`; ignored without `tools`.
     #[schema(nullable = false)]
     pub parallel_tool_calls: Option<bool>,
+    /// As in `/v1/chat/completions`: `{"type":"text"}`, `{"type":"json_object"}`
+    /// or `{"type":"json_schema","json_schema":{"name","schema","strict"?,"description"?}}`.
+    #[schema(schema_with = response_format_schema, nullable = false, required = false)]
+    pub response_format: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -76,6 +80,15 @@ fn free_objects(description: &str) -> utoipa::openapi::RefOr<utoipa::openapi::sc
 
 fn tools_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
     free_objects("Functions the model may call, as in `/v1/chat/completions`.")
+}
+
+fn response_format_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+    free_object()
+        .description(Some(
+            "As in `/v1/chat/completions`: `{\"type\":\"text\"}`, `{\"type\":\"json_object\"}` \
+             or `{\"type\":\"json_schema\",\"json_schema\":{\"name\",\"schema\",\"strict\"?,\"description\"?}}`.",
+        ))
+        .into()
 }
 
 fn tool_calls_schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {

@@ -26,6 +26,13 @@ export type ToolDef = {
   function: { name: string } & Record<string, unknown>;
 };
 
+/** What the answer must look like, as the request names it. */
+export type ResponseFormatBody =
+  | { type: "json_object" }
+  | { type: "json_schema"; json_schema: { name: string; schema: Record<string, unknown> } };
+
+export type ResponseFormatKind = "text" | "json_object" | "json_schema";
+
 export type ToolChoice = "none" | "required" | { type: "function"; function: { name: string } };
 
 /** The parameters as they are typed. */
@@ -44,6 +51,7 @@ export interface ParamValues {
   stop?: string[];
   tools?: ToolDef[];
   tool_choice?: ToolChoice;
+  response_format?: ResponseFormatBody;
 }
 
 export interface Checked {
@@ -120,6 +128,7 @@ export interface ChatRequestBody {
   stop?: string[];
   tools?: ToolDef[];
   tool_choice?: ToolChoice;
+  response_format?: ResponseFormatBody;
 }
 
 function wireOf(message: Message): WireMessage {
@@ -176,6 +185,29 @@ export function checkTools(text: string): CheckedTools {
     names.push(name);
   }
   return { tools: parsed as ToolDef[], names, error: undefined };
+}
+
+export const SCHEMA_INVALID = 'The schema must be a JSON object, such as {"type":"object"}.';
+
+export interface CheckedFormat {
+  /** What to send; nothing for plain text. */
+  format: ResponseFormatBody | undefined;
+  error: string | undefined;
+}
+
+/** Reads the chosen response format. Text is the default and is not sent. */
+export function checkResponseFormat(kind: ResponseFormatKind, schemaText: string): CheckedFormat {
+  if (kind === "text") return { format: undefined, error: undefined };
+  if (kind === "json_object") return { format: { type: "json_object" }, error: undefined };
+  const refused: CheckedFormat = { format: undefined, error: SCHEMA_INVALID };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(schemaText);
+  } catch {
+    return refused;
+  }
+  if (!isRecord(parsed)) return refused;
+  return { format: { type: "json_schema", json_schema: { name: "response", schema: parsed } }, error: undefined };
 }
 
 /** The request of the playground: always a stream. */

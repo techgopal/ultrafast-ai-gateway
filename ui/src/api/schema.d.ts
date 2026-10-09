@@ -2049,6 +2049,10 @@ export interface components {
             model: string;
             /** @description As in `/v1/chat/completions`; ignored without `tools`. */
             parallel_tool_calls?: boolean;
+            /** @description As in `/v1/chat/completions`: `{"type":"text"}`, `{"type":"json_object"}` or `{"type":"json_schema","json_schema":{"name","schema","strict"?,"description"?}}`. */
+            response_format?: {
+                [key: string]: unknown;
+            };
             stop?: string[];
             /** @description Answer as server-sent events. */
             stream?: boolean;

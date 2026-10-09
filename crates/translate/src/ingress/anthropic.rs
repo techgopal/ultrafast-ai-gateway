@@ -8,7 +8,7 @@ use serde_json::{json, Map, Value};
 use crate::error::TranslateError;
 use crate::types::{
     base64_source, image_source, ChatRequest, ChatResponse, FinishReason, ImageSource, Message,
-    Part, Role, StreamEvent, Tool, ToolCall, ToolChoice, Usage,
+    Part, ResponseFormat, Role, StreamEvent, Tool, ToolCall, ToolChoice, Usage,
 };
 
 const ONLY_TEXT: &str = "Only text content is supported.";
@@ -32,6 +32,8 @@ struct WireRequest {
     tools: Option<Vec<Value>>,
     #[serde(default)]
     tool_choice: Option<Value>,
+    #[serde(default)]
+    output_config: Option<Value>,
     /// Accepted and not used.
     #[serde(default)]
     #[allow(dead_code)]
@@ -251,6 +253,37 @@ fn parse_message(
     Ok(())
 }
 
+/// Anthropic's `output_config.format` (`{type:"json_schema", schema}`) as a
+/// response format. Other `output_config` settings are not supported.
+fn parse_output_config(oc: Option<&Value>) -> Result<Option<ResponseFormat>, TranslateError> {
+    let Some(oc) = oc.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let fields = oc
+        .as_object()
+        .ok_or_else(|| invalid("output_config must be an object"))?;
+    if let Some(other) = fields.keys().find(|k| *k != "format") {
+        return Err(invalid(format!(
+            "output_config field '{other}' is not supported"
+        )));
+    }
+    let Some(format) = fields.get("format").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    if format["type"] != "json_schema" {
+        return Err(invalid("output_config format 'type' must be json_schema"));
+    }
+    match &format["schema"] {
+        s @ Value::Object(_) => Ok(Some(ResponseFormat::JsonSchema {
+            name: "response".into(),
+            schema: s.clone(),
+            strict: None,
+            description: None,
+        })),
+        _ => Err(invalid("output_config format 'schema' must be an object")),
+    }
+}
+
 pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
     let wire: WireRequest =
         serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
@@ -300,6 +333,7 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
         tools,
         tool_choice,
         parallel_tool_calls,
+        response_format: parse_output_config(wire.output_config.as_ref())?,
     })
 }
 
@@ -1222,5 +1256,54 @@ mod tests {
         );
         assert_eq!(evs[1].1["index"], 0);
         assert_eq!(evs[1].1["content_block"]["type"], "tool_use");
+    }
+
+    #[test]
+    fn output_config_format_is_a_json_schema_response_format() {
+        let body = |oc: &str| {
+            format!(
+                r#"{{"model":"m","max_tokens":5,"messages":[{{"role":"user","content":"x"}}],"output_config":{oc}}}"#
+            )
+        };
+        let r = parse_request(
+            body(r#"{"format":{"type":"json_schema","schema":{"type":"object"}}}"#).as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            r.response_format,
+            Some(ResponseFormat::JsonSchema {
+                name: "response".into(),
+                schema: json!({"type":"object"}),
+                strict: None,
+                description: None,
+            })
+        );
+        assert_eq!(
+            parse_request(body("null").as_bytes())
+                .unwrap()
+                .response_format,
+            None
+        );
+        assert_eq!(
+            parse_request(body("{}").as_bytes())
+                .unwrap()
+                .response_format,
+            None
+        );
+        for bad in [
+            r#"{"format":{"type":"text"}}"#,
+            r#"{"format":{"type":"json_schema"}}"#,
+            r#"{"format":{"type":"json_schema","schema":[]}}"#,
+            r#"{"effort":"high"}"#,
+            r#"[]"#,
+        ] {
+            assert!(
+                matches!(
+                    parse_request(body(bad).as_bytes()),
+                    Err(TranslateError::InvalidRequest(_))
+                ),
+                "{bad}"
+            );
+        }
     }
 }

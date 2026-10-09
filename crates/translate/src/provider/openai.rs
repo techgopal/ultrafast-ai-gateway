@@ -5,8 +5,8 @@ use super::{saturate, with_calls, HttpRequest, StreamState, Target};
 use crate::error::TranslateError;
 use crate::sse::SseEvent;
 use crate::types::{
-    ChatRequest, ChatResponse, FinishReason, ImageSource, Message, Part, Role, StreamEvent, Tool,
-    ToolCall, ToolChoice, Usage,
+    ChatRequest, ChatResponse, FinishReason, ImageSource, Message, Part, ResponseFormat, Role,
+    StreamEvent, Tool, ToolCall, ToolChoice, Usage,
 };
 
 fn role_str(r: Role) -> &'static str {
@@ -126,6 +126,28 @@ fn tool_choice_value(c: &ToolChoice) -> Value {
     }
 }
 
+fn response_format_value(f: &ResponseFormat) -> Value {
+    match f {
+        ResponseFormat::Text => json!({ "type": "text" }),
+        ResponseFormat::JsonObject => json!({ "type": "json_object" }),
+        ResponseFormat::JsonSchema {
+            name,
+            schema,
+            strict,
+            description,
+        } => {
+            let mut spec = json!({ "name": name, "schema": schema });
+            if let Some(d) = description {
+                spec["description"] = json!(d);
+            }
+            if let Some(s) = strict {
+                spec["strict"] = json!(s);
+            }
+            json!({ "type": "json_schema", "json_schema": spec })
+        }
+    }
+}
+
 pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, TranslateError> {
     let mut headers = vec![("content-type".to_string(), "application/json".to_string())];
     if let Some(k) = &target.api_key {
@@ -168,6 +190,9 @@ pub(crate) fn body(req: &ChatRequest, model: Option<&str>) -> Result<Vec<u8>, Tr
         if let Some(p) = req.parallel_tool_calls {
             body["parallel_tool_calls"] = json!(p);
         }
+    }
+    if let Some(f) = &req.response_format {
+        body["response_format"] = response_format_value(f);
     }
     if req.stream {
         body["stream"] = json!(true);
@@ -414,6 +439,7 @@ mod tests {
             tools: Vec::new(),
             tool_choice: None,
             parallel_tool_calls: None,
+            response_format: None,
         }
     }
 
@@ -1142,5 +1168,39 @@ mod tests {
         assert_eq!(v["messages"][2]["content"], "sunny");
         assert_eq!(v["tool_choice"], "required");
         assert_eq!(v["tools"][0]["function"]["name"], "get_weather");
+    }
+
+    #[test]
+    fn sends_response_format_as_is() {
+        use crate::types::ResponseFormat;
+        let mut req = request(false);
+        let v: serde_json::Value =
+            serde_json::from_slice(&build_request(&target(), &req).unwrap().body).unwrap();
+        assert!(v.get("response_format").is_none());
+        req.response_format = Some(ResponseFormat::Text);
+        let v: serde_json::Value =
+            serde_json::from_slice(&build_request(&target(), &req).unwrap().body).unwrap();
+        assert_eq!(v["response_format"], serde_json::json!({"type":"text"}));
+        req.response_format = Some(ResponseFormat::JsonObject);
+        let v: serde_json::Value =
+            serde_json::from_slice(&build_request(&target(), &req).unwrap().body).unwrap();
+        assert_eq!(
+            v["response_format"],
+            serde_json::json!({"type":"json_object"})
+        );
+        req.response_format = Some(ResponseFormat::JsonSchema {
+            name: "person".into(),
+            schema: serde_json::json!({"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}),
+            strict: Some(true),
+            description: Some("a person".into()),
+        });
+        let v: serde_json::Value =
+            serde_json::from_slice(&build_request(&target(), &req).unwrap().body).unwrap();
+        assert_eq!(
+            v["response_format"],
+            serde_json::json!({"type":"json_schema","json_schema":{
+                "name":"person","description":"a person","strict":true,
+                "schema":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}})
+        );
     }
 }

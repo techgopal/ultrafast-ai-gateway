@@ -61,6 +61,7 @@ mod tests {
             tools: Vec::new(),
             tool_choice: None,
             parallel_tool_calls: None,
+            response_format: None,
         }
     }
 
@@ -191,5 +192,18 @@ mod tests {
         assert_eq!(v["tools"][0]["function"]["strict"], true);
         assert_eq!(v["tool_choice"], "required");
         assert!(v.get("model").is_none());
+    }
+
+    #[test]
+    fn sends_response_format_as_is() {
+        use crate::types::ResponseFormat;
+        let mut req = request(false);
+        req.response_format = Some(ResponseFormat::JsonObject);
+        let r = build_request(&target(None), &req).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(
+            v["response_format"],
+            serde_json::json!({"type":"json_object"})
+        );
     }
 }

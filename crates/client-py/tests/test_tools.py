@@ -244,3 +244,51 @@ def test_strict_is_carried_in_both_tool_shapes(serve):
         tools = json.loads(s.only()["body"])["tools"]
         assert tools[0]["function"]["strict"] is True
         assert "strict" not in tools[1]["function"]
+
+
+SCHEMA_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "pet",
+        "schema": {"type": "object", "properties": {"n": {"type": "string"}}},
+        "strict": True,
+    },
+}
+MSG = [{"role": "user", "content": "x"}]
+
+
+def test_response_format_reaches_a_gateway_as_given(serve):
+    s = serve(Script.json(200, OPENAI_CHAT))
+    ultrafast.Client(ultrafast.gateway(s.url, KEY)).chat("m", MSG, response_format=SCHEMA_FORMAT)
+    assert json.loads(s.only()["body"])["response_format"] == SCHEMA_FORMAT
+
+
+def test_response_format_json_object_and_absent(serve):
+    s = serve(Script.json(200, OPENAI_CHAT))
+    c = ultrafast.Client(ultrafast.gateway(s.url, KEY))
+    c.chat("m", MSG, response_format={"type": "json_object"})
+    c.chat("m", MSG)
+    bodies = [json.loads(r["body"]) for r in s.requests]
+    assert bodies[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in bodies[1]
+
+
+def test_response_format_uses_output_config_for_anthropic(serve):
+    s = serve(Script.json(200, ANTHROPIC_CHAT))
+    ultrafast.Client(ultrafast.anthropic(KEY, s.url)).chat(
+        "claude-sonnet-5", MSG, response_format=SCHEMA_FORMAT
+    )
+    body = json.loads(s.only()["body"])
+    assert body["output_config"] == {
+        "format": {"type": "json_schema", "schema": SCHEMA_FORMAT["json_schema"]["schema"]}
+    }
+
+
+def test_a_bad_response_format_is_refused_before_sending(serve):
+    s = serve(Script.json(200, OPENAI_CHAT))
+    c = ultrafast.Client(ultrafast.gateway(s.url, KEY))
+    with pytest.raises(TypeError):
+        c.chat("m", MSG, response_format="json")
+    with pytest.raises(ultrafast.InvalidRequestError):
+        c.chat("m", MSG, response_format={"type": "xml"})
+    assert s.requests == []

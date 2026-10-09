@@ -99,6 +99,19 @@ function checkToolChoice(choice: unknown): ToolChoice | undefined {
   throw bad('toolChoice is "auto", "none", "required" or {name}');
 }
 
+/** The OpenAI wire form of a response format; the gateway's parser checks the rest. */
+function checkResponseFormat(f: unknown): Record<string, unknown> | undefined {
+  if (f === undefined) return undefined;
+  if (isObject(f) && (f["type"] === "text" || f["type"] === "json_object")) return { type: f["type"] };
+  if (isObject(f) && f["type"] === "json_schema" && isObject(f["jsonSchema"])) {
+    const j = f["jsonSchema"];
+    if (isString(j["name"]) && isObject(j["schema"])) {
+      return { type: "json_schema", json_schema: { name: j["name"], schema: j["schema"], strict: j["strict"], description: j["description"] } };
+    }
+  }
+  throw bad('responseFormat is {type:"text"}, {type:"json_object"} or {type:"json_schema", jsonSchema:{name, schema, strict?, description?}}');
+}
+
 interface Built {
   http: Request;
   kind: string;
@@ -228,6 +241,7 @@ export class Client {
       tools: checkTools(r.tools),
       tool_choice: checkToolChoice(r.toolChoice),
       parallel_tool_calls: r.parallelToolCalls,
+      response_format: checkResponseFormat(r.responseFormat),
       max_tokens: r.maxTokens,
       temperature: r.temperature,
       top_p: r.topP,

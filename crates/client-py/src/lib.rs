@@ -23,7 +23,7 @@ use ultrafast_client::{
     Target as RustTarget,
 };
 use ultrafast_translate::error::TranslateError;
-use ultrafast_translate::ingress::openai::{parse_messages, parse_tools};
+use ultrafast_translate::ingress::openai::{parse_messages, parse_response_format, parse_tools};
 
 /// How long a blocking call waits before it lets Python handle a signal.
 const SIGNAL_SLICE: Duration = Duration::from_millis(100);
@@ -172,6 +172,7 @@ struct ToolArgs {
     tools: Option<String>,
     tool_choice: Option<String>,
     parallel_tool_calls: Option<bool>,
+    response_format: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -199,6 +200,12 @@ fn chat_request(
             _ => ToolChoice::Tool(c),
         });
         req.inner.parallel_tool_calls = tools.parallel_tool_calls;
+        if let Some(f) = &tools.response_format {
+            let v: serde_json::Value = serde_json::from_str(f).map_err(|e| {
+                Error::new(ErrorKind::InvalidRequest, format!("response_format: {e}"))
+            })?;
+            req.inner.response_format = Some(parse_response_format(&v).map_err(invalid)?);
+        }
         if let Some(v) = max_tokens {
             req = req.max_tokens(v);
         }
@@ -395,6 +402,7 @@ impl Client {
         tools: Option<String>,
         tool_choice: Option<String>,
         parallel_tool_calls: Option<bool>,
+        response_format: Option<String>,
     ) -> PyResult<ChatOut> {
         let req = chat_request(
             py,
@@ -409,6 +417,7 @@ impl Client {
                 tools,
                 tool_choice,
                 parallel_tool_calls,
+                response_format,
             },
         )?;
         let client = self.inner.clone();
@@ -431,6 +440,7 @@ impl Client {
         tools: Option<String>,
         tool_choice: Option<String>,
         parallel_tool_calls: Option<bool>,
+        response_format: Option<String>,
     ) -> PyResult<SyncStream> {
         let req = chat_request(
             py,
@@ -445,6 +455,7 @@ impl Client {
                 tools,
                 tool_choice,
                 parallel_tool_calls,
+                response_format,
             },
         )?;
         let client = self.inner.clone();
@@ -524,6 +535,7 @@ impl AsyncClient {
         tools: Option<String>,
         tool_choice: Option<String>,
         parallel_tool_calls: Option<bool>,
+        response_format: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let req = chat_request(
             py,
@@ -538,6 +550,7 @@ impl AsyncClient {
                 tools,
                 tool_choice,
                 parallel_tool_calls,
+                response_format,
             },
         )?;
         let client = self.inner.clone();
@@ -560,6 +573,7 @@ impl AsyncClient {
         tools: Option<String>,
         tool_choice: Option<String>,
         parallel_tool_calls: Option<bool>,
+        response_format: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let req = chat_request(
             py,
@@ -574,6 +588,7 @@ impl AsyncClient {
                 tools,
                 tool_choice,
                 parallel_tool_calls,
+                response_format,
             },
         )?;
         let client = self.inner.clone();

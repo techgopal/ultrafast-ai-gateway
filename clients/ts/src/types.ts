@@ -31,6 +31,12 @@ export interface Message {
   toolCallId?: string;
 }
 
+/** Structured output: plain text, any JSON object, or JSON that matches a JSON Schema. */
+export type ResponseFormat =
+  | { type: "text" }
+  | { type: "json_object" }
+  | { type: "json_schema"; jsonSchema: { name: string; schema: Record<string, unknown>; strict?: boolean; description?: string } };
+
 export interface ChatRequest {
   model: string;
   messages: Message[];
@@ -41,6 +47,7 @@ export interface ChatRequest {
   tools?: Tool[];
   toolChoice?: ToolChoice;
   parallelToolCalls?: boolean;
+  responseFormat?: ResponseFormat;
   /** Sent to a gateway only, as `x-uf-tags` (at most 1 KiB of JSON). */
   tags?: Record<string, string>;
 }

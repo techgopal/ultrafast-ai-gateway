@@ -696,6 +696,31 @@ async fn playground_accepts_tools_and_images() {
 }
 
 #[tokio::test]
+async fn playground_passes_response_format_to_the_provider() {
+    let w = world().await;
+    let lena = w.org.sign_in("lena").await;
+    let format = json!({ "type": "json_schema", "json_schema": {
+        "name": "pet", "strict": true,
+        "schema": { "type": "object", "properties": { "n": { "type": "string" } } } } });
+    let body = json!({
+        "model": "p/open",
+        "messages": [{ "role": "user", "content": "a pet" }],
+        "response_format": format
+    });
+    let (status, _, out) = w.play(&lena, body).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&out));
+    let sent = w.upstream.received_requests().await.unwrap();
+    let sent: Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(sent["response_format"], format);
+    // A malformed one is refused before any upstream call.
+    let bad = json!({ "model": "p/open", "messages": [{ "role": "user", "content": "x" }],
+        "response_format": { "type": "xml" } });
+    let (status, _, _) = w.play(&lena, bad).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(w.upstream.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn the_playground_is_checked_by_the_same_guardrails_as_a_key() {
     let w = world().await;
     let rules = json!([

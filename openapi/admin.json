@@ -10541,6 +10541,11 @@
             "type": "boolean",
             "description": "As in `/v1/chat/completions`; ignored without `tools`."
           },
+          "response_format": {
+            "type": "object",
+            "description": "As in `/v1/chat/completions`: `{\"type\":\"text\"}`, `{\"type\":\"json_object\"}` or `{\"type\":\"json_schema\",\"json_schema\":{\"name\",\"schema\",\"strict\"?,\"description\"?}}`.",
+            "additionalProperties": true
+          },
           "stop": {
             "type": "array",
             "items": {

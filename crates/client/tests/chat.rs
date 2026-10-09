@@ -168,6 +168,7 @@ async fn a_translate_request_converts() {
         tools: Vec::new(),
         tool_choice: None,
         parallel_tool_calls: None,
+        response_format: None,
     };
     check(&c.chat(t).await.unwrap());
 }
@@ -289,4 +290,28 @@ async fn a_direct_provider_target_gets_tools_and_images_too() {
     assert_eq!(r.tool_calls[0].name, "weather");
     let body = body_of(&s.only());
     assert_eq!(body["messages"][0]["content"][1]["type"], "image_url");
+}
+
+#[tokio::test]
+async fn response_format_reaches_a_gateway_and_each_provider_in_its_form() {
+    use ultrafast_client::ResponseFormat;
+    let schema = serde_json::json!({"type":"object","properties":{"a":{"type":"string"}}});
+    let format = ResponseFormat::JsonSchema {
+        name: "n".into(),
+        schema: schema.clone(),
+        strict: Some(true),
+        description: None,
+    };
+    let s = serve(Script::json(200, OPENAI_CHAT)).await;
+    let c = Client::new(Target::gateway(&s.url, "k"));
+    check(
+        &c.chat(req("m").response_format(format.clone()))
+            .await
+            .unwrap(),
+    );
+    let body = body_of(&s.only());
+    assert_eq!(
+        body["response_format"],
+        serde_json::json!({"type":"json_schema","json_schema":{"name":"n","schema":schema,"strict":true}})
+    );
 }

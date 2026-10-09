@@ -5,8 +5,8 @@ use serde_json::{json, Map, Value};
 
 use crate::error::TranslateError;
 use crate::types::{
-    image_source, ChatRequest, ChatResponse, Message, Part, Role, StreamEvent, Tool, ToolCall,
-    ToolChoice, Usage,
+    image_source, ChatRequest, ChatResponse, Message, Part, ResponseFormat, Role, StreamEvent,
+    Tool, ToolCall, ToolChoice, Usage,
 };
 
 #[derive(Deserialize)]
@@ -31,6 +31,8 @@ struct WireRequest {
     tool_choice: Option<Value>,
     #[serde(default)]
     parallel_tool_calls: Option<bool>,
+    #[serde(default)]
+    response_format: Option<Value>,
     /// Every field that is not named above.
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -330,6 +332,85 @@ fn convert_messages(wire: Vec<WireMessage>) -> Result<Vec<Message>, TranslateErr
     Ok(messages)
 }
 
+/// An OpenAI-shaped `response_format`: `{type:"text"}`, `{type:"json_object"}`
+/// or `{type:"json_schema", json_schema:{name, schema, strict?, description?}}`.
+pub fn parse_response_format(v: &Value) -> Result<ResponseFormat, TranslateError> {
+    let invalid = |m: &str| TranslateError::InvalidRequest(m.to_string());
+    let fields = v
+        .as_object()
+        .ok_or_else(|| invalid("response_format must be an object"))?;
+    match v["type"].as_str() {
+        Some(kind @ ("text" | "json_object")) => {
+            if fields.keys().any(|k| k != "type") {
+                return Err(invalid(&format!(
+                    "response_format of type '{kind}' takes no other field"
+                )));
+            }
+            Ok(if kind == "text" {
+                ResponseFormat::Text
+            } else {
+                ResponseFormat::JsonObject
+            })
+        }
+        Some("json_schema") => {
+            if fields.keys().any(|k| k != "type" && k != "json_schema") {
+                return Err(invalid("response_format has an unknown field"));
+            }
+            let spec = v["json_schema"]
+                .as_object()
+                .ok_or_else(|| invalid("response_format 'json_schema' must be an object"))?;
+            if spec
+                .keys()
+                .any(|k| !["name", "schema", "strict", "description"].contains(&k.as_str()))
+            {
+                return Err(invalid(
+                    "response_format 'json_schema' has an unknown field",
+                ));
+            }
+            let name = spec
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|n| !n.is_empty())
+                .ok_or_else(|| invalid("response_format json_schema 'name' must be a string"))?;
+            let schema = match spec.get("schema") {
+                Some(s @ Value::Object(_)) => s.clone(),
+                _ => {
+                    return Err(invalid(
+                        "response_format json_schema 'schema' must be an object",
+                    ))
+                }
+            };
+            let strict = match spec.get("strict") {
+                None | Some(Value::Null) => None,
+                Some(Value::Bool(b)) => Some(*b),
+                _ => {
+                    return Err(invalid(
+                        "response_format json_schema 'strict' must be a boolean",
+                    ))
+                }
+            };
+            let description = match spec.get("description") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(d)) => Some(d.clone()),
+                _ => {
+                    return Err(invalid(
+                        "response_format json_schema 'description' must be a string",
+                    ))
+                }
+            };
+            Ok(ResponseFormat::JsonSchema {
+                name: name.to_string(),
+                schema,
+                strict,
+                description,
+            })
+        }
+        _ => Err(invalid(
+            "response_format 'type' must be text, json_object or json_schema",
+        )),
+    }
+}
+
 pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
     let mut wire: WireRequest =
         serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
@@ -358,6 +439,10 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
             Some(v) => Some(parse_tool_choice(v)?),
         },
         parallel_tool_calls: wire.parallel_tool_calls,
+        response_format: match wire.response_format {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(parse_response_format(&v)?),
+        },
     })
 }
 
@@ -861,7 +946,6 @@ mod tests {
         let cases = [
             ("functions", r#"[{"name":"f"}]"#),
             ("function_call", r#""auto""#),
-            ("response_format", r#"{"type":"json_object"}"#),
             ("logit_bias", r#"{"50256":-100}"#),
             ("logprobs", "true"),
             ("top_logprobs", "2"),
@@ -1076,5 +1160,67 @@ mod tests {
         let part = r#"{"type":"text","text":"x","cache_control":null}"#;
         let req = parse_request(with_part(part).as_bytes()).unwrap();
         assert_eq!(req.messages[0].joined_text(), "x");
+    }
+    fn format_of(rf: &str) -> Result<Option<ResponseFormat>, TranslateError> {
+        let body = format!(
+            r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],"response_format":{rf}}}"#
+        );
+        parse_request(body.as_bytes()).map(|r| r.response_format)
+    }
+
+    #[test]
+    fn parses_response_format() {
+        assert_eq!(format_of("null").unwrap(), None);
+        assert_eq!(
+            format_of(r#"{"type":"text"}"#).unwrap(),
+            Some(ResponseFormat::Text)
+        );
+        assert_eq!(
+            format_of(r#"{"type":"json_object"}"#).unwrap(),
+            Some(ResponseFormat::JsonObject)
+        );
+        assert_eq!(
+            format_of(
+                r#"{"type":"json_schema","json_schema":{"name":"n","schema":{"type":"object"},"strict":true,"description":"d"}}"#
+            )
+            .unwrap(),
+            Some(ResponseFormat::JsonSchema {
+                name: "n".into(),
+                schema: json!({"type":"object"}),
+                strict: Some(true),
+                description: Some("d".into()),
+            })
+        );
+        assert_eq!(
+            format_of(r#"{"type":"json_schema","json_schema":{"name":"n","schema":{}}}"#).unwrap(),
+            Some(ResponseFormat::JsonSchema {
+                name: "n".into(),
+                schema: json!({}),
+                strict: None,
+                description: None,
+            })
+        );
+    }
+
+    #[test]
+    fn refuses_bad_response_format() {
+        for rf in [
+            r#""json""#,
+            r#"{}"#,
+            r#"{"type":"xml"}"#,
+            r#"{"type":"json_schema"}"#,
+            r#"{"type":"json_schema","json_schema":{"schema":{}}}"#,
+            r#"{"type":"json_schema","json_schema":{"name":"","schema":{}}}"#,
+            r#"{"type":"json_schema","json_schema":{"name":"n"}}"#,
+            r#"{"type":"json_schema","json_schema":{"name":"n","schema":[]}}"#,
+            r#"{"type":"json_schema","json_schema":{"name":"n","schema":{},"strict":"yes"}}"#,
+            r#"{"type":"json_schema","json_schema":{"name":"n","schema":{},"x":1}}"#,
+            r#"{"type":"json_object","json_schema":{"name":"n","schema":{}}}"#,
+        ] {
+            assert!(
+                matches!(format_of(rf), Err(TranslateError::InvalidRequest(_))),
+                "{rf}"
+            );
+        }
     }
 }

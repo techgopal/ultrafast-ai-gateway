@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   checkParams,
+  checkResponseFormat,
   checkTools,
   chunkOf,
   costMicros,
@@ -327,4 +328,32 @@ describe("the request with tools and images", () => {
   test("without an image there is no note", () => {
     expect(curlOf("https://gw", { messages: [{ role: "user", content: "x" }] })).not.toContain("omitted");
   });
+});
+
+describe("checkResponseFormat", () => {
+  test("text sends nothing, JSON sends json_object", () => {
+    expect(checkResponseFormat("text", "ignored")).toEqual({ format: undefined, error: undefined });
+    expect(checkResponseFormat("json_object", "ignored")).toEqual({
+      format: { type: "json_object" },
+      error: undefined,
+    });
+  });
+
+  test("a JSON schema is read from its text", () => {
+    const schema = { type: "object", properties: { a: { type: "string" } } };
+    expect(checkResponseFormat("json_schema", JSON.stringify(schema))).toEqual({
+      format: { type: "json_schema", json_schema: { name: "response", schema } },
+      error: undefined,
+    });
+  });
+
+  test.each([["empty", "  "], ["not json", "{"], ["an array", "[]"], ["a string", '"x"'], ["null", "null"]])(
+    "a schema that is %s is refused",
+    (_why, text) => {
+      expect(checkResponseFormat("json_schema", text)).toEqual({
+        format: undefined,
+        error: "The schema must be a JSON object, such as {\"type\":\"object\"}.",
+      });
+    },
+  );
 });

@@ -511,3 +511,29 @@ fn a_tool_call_answer_and_stream_come_out_as_json() {
     );
     assert_eq!(events.last().unwrap()["type"], "done");
 }
+
+#[test]
+fn response_format_builds_for_a_gateway_and_for_a_direct_provider() {
+    let mut req = tool_req();
+    req["tools"] = json!([]);
+    req["tool_choice"] = Value::Null;
+    req["parallel_tool_calls"] = Value::Null;
+    req["response_format"] = json!({"type": "json_schema", "json_schema": {
+        "name": "n", "schema": {"type": "object"}, "strict": true}});
+    let out =
+        j(&api::build_request(&target("gateway", "http://gw:3900"), &req.to_string()).unwrap());
+    let body = j(out["body"].as_str().unwrap());
+    assert_eq!(body["response_format"], req["response_format"]);
+    let out = j(&api::build_request(
+        &target("anthropic", "https://api.anthropic.com"),
+        &req.to_string(),
+    )
+    .unwrap());
+    let body = j(out["body"].as_str().unwrap());
+    assert_eq!(
+        body["output_config"],
+        json!({"format": {"type": "json_schema", "schema": {"type": "object"}}})
+    );
+    req["response_format"] = json!({"type": "xml"});
+    assert!(api::build_request(&target("gateway", "http://gw:3900"), &req.to_string()).is_err());
+}
