@@ -40,6 +40,38 @@ pub const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 pub const DEFAULT_STREAM_KEEPALIVE: Duration = Duration::from_secs(10);
 pub const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 pub const DEFAULT_MAX_PROVIDER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+/// The largest image answer that is read: a few GPT image outputs of base64
+/// are many megabytes, and the provider has billed them by then.
+pub const DEFAULT_MAX_IMAGE_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
+
+/// The least time a slow, billed-once call (image generation, and the audio
+/// calls to come) is given, whatever the route allows: the first byte of the
+/// answer, and the whole request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlowCalls {
+    pub first_byte: Duration,
+    pub total: Duration,
+}
+
+impl Default for SlowCalls {
+    fn default() -> Self {
+        SlowCalls {
+            first_byte: Duration::from_secs(180),
+            total: Duration::from_secs(300),
+        }
+    }
+}
+
+impl SlowCalls {
+    /// `settings`, with timeouts that are at least these.
+    pub fn raise(&self, settings: crate::routing::Settings) -> crate::routing::Settings {
+        crate::routing::Settings {
+            first_token_timeout: settings.first_token_timeout.max(self.first_byte),
+            total_timeout: settings.total_timeout.max(self.total),
+            ..settings
+        }
+    }
+}
 
 pub struct AppState {
     pub store: Store,
@@ -48,6 +80,10 @@ pub struct AppState {
     pub max_body_bytes: usize,
     /// The largest non-streaming provider response that is read.
     pub max_provider_response_bytes: usize,
+    /// The largest image answer that is read.
+    pub max_image_response_bytes: usize,
+    /// The timeouts image calls get at least.
+    pub slow_calls: SlowCalls,
     /// Failed sign-in attempts, kept in memory.
     pub limiter: LoginLimiter,
     /// Whether the session cookie is marked `Secure`.
@@ -151,6 +187,8 @@ impl AppState {
             http: http_client(),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_provider_response_bytes: DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+            max_image_response_bytes: DEFAULT_MAX_IMAGE_RESPONSE_BYTES,
+            slow_calls: SlowCalls::default(),
             limiter: LoginLimiter::new(),
             cookie_secure: true,
             hashing: Arc::new(Semaphore::new(MAX_CONCURRENT_HASHES)),

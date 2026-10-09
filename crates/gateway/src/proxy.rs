@@ -243,6 +243,27 @@ impl Call {
         }
     }
 
+    /// Whether the call is paid for as the provider works, so that a repeat
+    /// is a second charge for the same wish: after the request was sent and
+    /// no answer came in time it is not tried again, on this target or on a
+    /// fallback.
+    fn billed_once(&self) -> bool {
+        matches!(self, Call::Image(_))
+    }
+
+    /// Whether the call is slow enough to need longer timeouts.
+    fn is_slow(&self) -> bool {
+        self.billed_once()
+    }
+
+    /// The largest answer of the provider that is read for this call.
+    fn response_cap(&self, state: &AppState) -> usize {
+        match self {
+            Call::Image(_) => state.max_image_response_bytes,
+            Call::Chat(_) | Call::Embed(_) => state.max_provider_response_bytes,
+        }
+    }
+
     /// Whether a provider of this kind can serve it.
     fn served_by(&self, kind: ultrafast_translate::provider::ProviderKind) -> bool {
         match self {
@@ -320,8 +341,8 @@ impl<'a> Actor<'a> {
     }
 }
 
-/// A chat call of the console playground for a signed-in user: the same
-/// pipeline as `/v1/chat/completions`, recorded without a key.
+/// An image generation of the console playground for a signed-in user: the
+/// same pipeline as `/v1/images/generations`, recorded without a key.
 pub(crate) async fn playground_images(state: Arc<AppState>, user_id: i64, body: Body) -> Response {
     let snapshot = state.snapshot.load_full();
     run(
@@ -335,6 +356,8 @@ pub(crate) async fn playground_images(state: Arc<AppState>, user_id: i64, body: 
     .await
 }
 
+/// A chat call of the console playground for a signed-in user: the same
+/// pipeline as `/v1/chat/completions`, recorded without a key.
 pub(crate) async fn playground(state: Arc<AppState>, user_id: i64, body: Body) -> Response {
     let snapshot = state.snapshot.load_full();
     run(
@@ -726,6 +749,9 @@ async fn dispatch(
     // across awaits.
     let mut rng = StdRng::from_rng(&mut rand::rng());
     let (candidates, mut settings) = plan_of(snapshot, key, &call, &resolved, &mut rng);
+    if call.is_slow() {
+        settings = state.slow_calls.raise(settings);
+    }
     record.targets(
         candidates
             .iter()
@@ -826,7 +852,7 @@ async fn dispatch(
                 provider,
                 target,
                 limits,
-                state.max_provider_response_bytes,
+                call.response_cap(state),
             )
         },
     )
@@ -1153,6 +1179,9 @@ enum CallError {
     UnknownModel,
     /// Retryable: the caller sees only that no provider could serve it.
     Lost,
+    /// A call that is paid for once was sent and not answered in time: it
+    /// may still be billed, and it is not repeated.
+    Unfinished,
 }
 
 impl CallError {
@@ -1173,6 +1202,12 @@ impl CallError {
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",
                 "The provider does not know this model.",
+            ),
+            CallError::Unfinished => shape.error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "upstream_error",
+                "The provider did not answer in time. The request may still be \
+                 processed and billed; it was not repeated.",
             ),
             CallError::Lost => shape.error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1290,6 +1325,7 @@ async fn try_target(
         return Err(retryable(CallError::Lost, None));
     };
     let started = Instant::now();
+    let once = call.billed_once();
     let first_by = tokio::time::Instant::now() + limits.first_token;
     let wire = Target {
         kind: provider.kind,
@@ -1313,10 +1349,18 @@ async fn try_target(
             // `without_url` keeps credentials in query strings out of logs.
             let e = e.without_url();
             tracing::warn!(provider = %provider.name, error = %e, "provider unreachable");
+            // A connection that was never made sent nothing; any other
+            // break may have come after the provider took the request.
+            if once && !e.is_connect() {
+                return Err(unfinished(None));
+            }
             return Err(retryable(CallError::Lost, None));
         }
         Err(_) => {
             tracing::warn!(provider = %provider.name, "provider gave no answer in time");
+            if once {
+                return Err(unfinished(None));
+            }
             return Err(retryable(CallError::Lost, None));
         }
     };
@@ -1358,6 +1402,9 @@ async fn try_target(
             });
         }
         Ok(Err(ReadError::Failed)) | Err(_) => {
+            if once {
+                return Err(unfinished(Some(status)));
+            }
             return Err(retryable(CallError::Lost, Some(status)));
         }
     };
@@ -1372,7 +1419,20 @@ async fn try_target(
             value,
             status: Some(status),
         }),
+        // A 200 that cannot be read was generated and billed: not repeated.
+        Err(e @ TranslateError::Malformed(_)) if once && status < 400 => Err(Failure::Fatal {
+            error: CallError::Translate(e),
+            status: Some(status),
+        }),
         Err(e) => Err(failure_of(e, Some(status), retry_after)),
+    }
+}
+
+/// The failure of a call that is paid for once and was sent: no retry.
+fn unfinished(status: Option<u16>) -> Failure<CallError> {
+    Failure::Fatal {
+        error: CallError::Unfinished,
+        status,
     }
 }
 

@@ -424,7 +424,6 @@ export function retryText(seconds: number | null): string {
 /** The most images one playground call asks for. */
 export const MAX_IMAGES = 4;
 export const IMAGE_COUNT_INVALID = `The number of images must be a whole number from 1 to ${String(MAX_IMAGES)}.`;
-export const PROMPT_REQUIRED = "Write what the image should show.";
 
 /** The sizes offered; `default` sends none, and the provider decides. */
 export const IMAGE_SIZES = ["default", "1024x1024", "1536x1024", "1024x1536"] as const;

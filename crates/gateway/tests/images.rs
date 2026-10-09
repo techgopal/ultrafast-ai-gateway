@@ -411,3 +411,286 @@ async fn the_call_is_counted_as_images() {
         "{text}"
     );
 }
+
+fn route_settings(first_token_ms: i64) -> RouteSettings {
+    RouteSettings {
+        retries: 2,
+        first_token_timeout_ms: first_token_ms,
+        total_timeout_ms: 300_000,
+        breaker_failures: 50,
+        breaker_window_s: 60,
+        breaker_open_s: 30,
+    }
+}
+
+/// A route "r" whose primary and fallback are two models of provider "p".
+async fn route_of_two(h: &Harness, first_token_ms: i64) {
+    let a = allow_model(&h.store, "p", "img-a").await;
+    let b = allow_model(&h.store, "p", "img-b").await;
+    let mut tx = h.store.begin().await.unwrap();
+    let id = tx
+        .insert_route("r", &route_settings(first_token_ms), true)
+        .await
+        .unwrap();
+    tx.replace_targets(
+        id,
+        &TargetsInput {
+            primaries: vec![(a, 1)],
+            fallbacks: vec![b],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+}
+
+// A repeated image call is a second billed generation: after a timeout there
+// is no retry and no fallback.
+#[tokio::test]
+async fn an_image_call_that_times_out_is_not_repeated_or_sent_to_a_fallback() {
+    let h = common::harness_with_state("openai", |s| {
+        s.slow_calls = ultrafast_gateway::app::SlowCalls {
+            first_byte: std::time::Duration::ZERO,
+            total: std::time::Duration::ZERO,
+        };
+    })
+    .await;
+    route_of_two(&h, 300).await;
+    Mock::given(method("POST"))
+        .respond_with(with_usage().set_delay(std::time::Duration::from_secs(2)))
+        .mount(&h.upstream)
+        .await;
+    let (s, v) = generate(&h, r#"{"model":"r","prompt":"x"}"#).await;
+    assert_eq!(s, StatusCode::GATEWAY_TIMEOUT, "{v}");
+    assert_eq!(v["error"]["type"], "upstream_error");
+    assert!(v["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not repeated"));
+    assert_eq!(h.upstream.received_requests().await.unwrap().len(), 1);
+    let r = &h.sink.wait_for(1).await[0];
+    // One try, which ended the call; the fallback is recorded as not tried.
+    let seen: Vec<_> = r
+        .attempts
+        .iter()
+        .map(|a| (a.model.as_str(), a.outcome))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("img-a", AttemptOutcome::Fatal),
+            ("img-b", AttemptOutcome::Skipped)
+        ]
+    );
+}
+
+// The same route, for chat, still retries and falls back.
+#[tokio::test]
+async fn a_chat_call_that_times_out_is_still_retried() {
+    let h = harness("openai").await;
+    route_of_two(&h, 300).await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(2)))
+        .mount(&h.upstream)
+        .await;
+    let bearer = format!("Bearer {}", h.key);
+    let (s, _, _) = post_to(
+        &h.app,
+        "/v1/chat/completions",
+        &[("authorization", &bearer)],
+        r#"{"model":"r","messages":[{"role":"user","content":"hi"}]}"#,
+    )
+    .await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(h.upstream.received_requests().await.unwrap().len() > 1);
+}
+
+#[tokio::test]
+async fn an_image_answer_that_is_not_json_is_not_repeated() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+        .mount(&h.upstream)
+        .await;
+    let (s, _) = generate(&h, BODY).await;
+    assert_eq!(s, StatusCode::BAD_GATEWAY);
+    assert_eq!(h.upstream.received_requests().await.unwrap().len(), 1);
+}
+
+#[test]
+fn image_calls_get_longer_timeouts_than_a_route_gives() {
+    use std::time::Duration;
+    use ultrafast_gateway::app::SlowCalls;
+    let floors = SlowCalls::default();
+    assert_eq!(floors.first_byte, Duration::from_secs(180));
+    assert_eq!(floors.total, Duration::from_secs(300));
+    let low = ultrafast_gateway::routing::Settings {
+        first_token_timeout: Duration::from_secs(30),
+        total_timeout: Duration::from_secs(60),
+        ..ultrafast_gateway::routing::Settings::DIRECT
+    };
+    let raised = floors.raise(low);
+    assert_eq!(raised.first_token_timeout, Duration::from_secs(180));
+    assert_eq!(raised.total_timeout, Duration::from_secs(300));
+    // A route that allows more keeps it.
+    let high = ultrafast_gateway::routing::Settings {
+        first_token_timeout: Duration::from_secs(240),
+        total_timeout: Duration::from_secs(600),
+        ..low
+    };
+    let kept = floors.raise(high);
+    assert_eq!(kept.first_token_timeout, Duration::from_secs(240));
+    assert_eq!(kept.total_timeout, Duration::from_secs(600));
+}
+
+/// An answer of exactly `len` bytes.
+fn answer_of_len(len: usize) -> Vec<u8> {
+    let head = br#"{"created":1,"data":[{"b64_json":""#;
+    let tail = br#""}]}"#;
+    let mut body = head.to_vec();
+    body.resize(len - tail.len(), b'A');
+    body.extend_from_slice(tail);
+    assert_eq!(body.len(), len);
+    body
+}
+
+#[tokio::test]
+async fn image_answers_have_their_own_larger_size_cap() {
+    assert_eq!(
+        ultrafast_gateway::app::DEFAULT_MAX_IMAGE_RESPONSE_BYTES,
+        128 * 1024 * 1024
+    );
+    assert_eq!(
+        ultrafast_gateway::app::DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+        32 * 1024 * 1024
+    );
+    // Chat cap 1 KiB, image cap 4 KiB.
+    let h = common::harness_with_state("openai", |s| {
+        s.max_provider_response_bytes = 1024;
+        s.max_image_response_bytes = 4096;
+    })
+    .await;
+    for (len, expect) in [
+        (4096, StatusCode::OK),
+        (4097, StatusCode::BAD_GATEWAY),
+        (2000, StatusCode::OK),
+    ] {
+        h.upstream.reset().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(answer_of_len(len), "application/json"),
+            )
+            .mount(&h.upstream)
+            .await;
+        let (s, v) = generate(&h, BODY).await;
+        assert_eq!(s, expect, "{len}: {v}");
+    }
+}
+
+#[tokio::test]
+async fn a_route_with_an_unsupported_primary_serves_from_the_openai_fallback() {
+    let h = harness("anthropic").await;
+    let other = MockServer::start().await;
+    h.store
+        .insert_provider("o", "openai", &other.uri(), None)
+        .await
+        .unwrap();
+    let ant = allow_model(&h.store, "p", "claude-x").await;
+    let img = allow_model(&h.store, "o", "img").await;
+    let mut tx = h.store.begin().await.unwrap();
+    let id = tx.insert_route("r", &SETTINGS, true).await.unwrap();
+    tx.replace_targets(
+        id,
+        &TargetsInput {
+            primaries: vec![(ant, 1)],
+            fallbacks: vec![img],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    Mock::given(method("POST"))
+        .and(path("/images/generations"))
+        .respond_with(with_usage())
+        .expect(1)
+        .mount(&other)
+        .await;
+    let (s, v) = generate(&h, r#"{"model":"r","prompt":"x"}"#).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
+    let seen: Vec<_> = h.sink.records()[0]
+        .attempts
+        .iter()
+        .map(|a| (a.provider.clone(), a.outcome))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("p".to_string(), AttemptOutcome::Skipped),
+            ("o".to_string(), AttemptOutcome::Ok)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_spent_budget_refuses_an_image_call() {
+    use ultrafast_gateway::budgets::{account, BudgetAction, Period};
+    use ultrafast_gateway::limits::LimitScope;
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(with_usage())
+        .mount(&h.upstream)
+        .await;
+    let mut tx = h.store.begin().await.unwrap();
+    tx.upsert_budget(
+        LimitScope::Gateway,
+        None,
+        10,
+        Period::Weekly,
+        BudgetAction::Block,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    let (s, _) = generate(&h, BODY).await;
+    assert_eq!(s, StatusCode::OK);
+    // What the log writer does when it prices the call.
+    let record = h.sink.wait_for(1).await.remove(0);
+    account(&h.state, &record, 10, time::OffsetDateTime::now_utc());
+    let (s, v) = generate(&h, BODY).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
+    assert_eq!(v["error"]["code"], "budget_exceeded");
+    assert_eq!(h.upstream.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_rate_limit_refuses_an_image_call_before_the_provider() {
+    use ultrafast_gateway::limits::LimitScope;
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(with_usage())
+        .mount(&h.upstream)
+        .await;
+    let mut tx = h.store.begin().await.unwrap();
+    tx.upsert_limit(
+        LimitScope::Gateway,
+        None,
+        &ultrafast_gateway::limits::RateLimit {
+            requests_per_minute: Some(1),
+            tokens_per_minute: None,
+            concurrent: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    assert_eq!(generate(&h, BODY).await.0, StatusCode::OK);
+    let (s, v) = generate(&h, BODY).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
+    assert_eq!(v["error"]["type"], "rate_limit_error");
+    assert_eq!(h.upstream.received_requests().await.unwrap().len(), 1);
+}

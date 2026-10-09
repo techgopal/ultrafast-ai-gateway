@@ -72,6 +72,11 @@ describe("Images mode", () => {
     expectLabelsNameControls(document.body);
   });
 
+  test("the size says it depends on the model", async () => {
+    await images();
+    expect(screen.getByText(/The sizes a model takes differ/)).toBeInTheDocument();
+  });
+
   test("it offers the models and routes of the chat", async () => {
     await images();
     expect((await optionsOf(picker())).slice(0, 2)).toEqual(["local-llm/llama3.1:8b", "openai/gpt-4o"]);

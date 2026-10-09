@@ -28,6 +28,9 @@ import { UsageLine } from "@/pages/PlaygroundThread";
 
 type Model = components["schemas"]["ModelView"];
 
+export const SIZE_HINT =
+  "The sizes a model takes differ. 1536 x 1024 and 1024 x 1536 are for GPT image models; other models may refuse them.";
+
 const SIZES: Choice[] = [
   { value: "1024x1024", label: "1024 x 1024" },
   { value: "1536x1024", label: "1536 x 1024 (landscape)" },
@@ -222,6 +225,7 @@ export function ImagesMode({ models, routes }: { models: readonly Model[]; route
               setSize(value as ImageSize);
             }}
           />
+          <p className="text-sm text-muted-foreground">{SIZE_HINT}</p>
         </div>
         <Field label="Number of images" name="n" hint="From 1 to 4." error={countError}>
           {({ id, name, ...described }) => (
