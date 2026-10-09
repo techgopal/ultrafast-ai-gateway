@@ -27,10 +27,8 @@ mkdir -p "$scratch"
 work="$(mktemp -d "$scratch/gen.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
-python3 "$here/prepare_spec.py" "$spec" "$work/admin.json"
-
 RUFF_NO_CACHE=true PATH="$venv/bin:$PATH" "$venv/bin/openapi-python-client" generate \
-  --path "$work/admin.json" \
+  --path "$spec" \
   --config "$here/generator.yml" \
   --meta none \
   --output-path "$work/out" \

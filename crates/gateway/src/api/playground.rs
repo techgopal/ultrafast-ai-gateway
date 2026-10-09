@@ -420,7 +420,7 @@ pub struct PlaygroundSpeechRequest {
     operation_id = "playground_speech",
     request_body = PlaygroundSpeechRequest,
     responses(
-        (status = 200, description = "The audio, streamed as the provider makes it, with the provider's content type.", content_type = "audio/mpeg", body = Vec<u8>),
+        (status = 200, description = "The audio, streamed as the provider makes it, with the provider's content type (`audio/mpeg` for `mp3`; also declared as `application/octet-stream` so that generated clients return the bytes).", content((inline(super::openapi::BinaryBody) = "audio/mpeg"), (inline(super::openapi::BinaryBody) = "application/octet-stream"))),
         (status = 400, description = "The request is not a speech request, or the model cannot speak. The body is in the OpenAI error shape, as on `/v1`.", body = PlaygroundErrorBody),
         (status = 401, description = "No valid session.", body = PlaygroundErrorBody),
         (status = 403, description = "The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.", body = PlaygroundErrorBody),

@@ -42,7 +42,7 @@ impl Drop for TempFile {
     tag = "backup",
     operation_id = "backup_download",
     responses(
-        (status = 200, description = "The database as a SQLite file.", content_type = "application/vnd.sqlite3", body = Vec<u8>),
+        (status = 200, description = "The database as a SQLite file (`application/vnd.sqlite3`; also declared as `application/octet-stream` so that generated clients return the bytes).", content((inline(super::openapi::BinaryBody) = "application/vnd.sqlite3"), (inline(super::openapi::BinaryBody) = "application/octet-stream"))),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
         (status = 403, description = "The caller is not allowed to do this.", body = super::openapi::ApiErrorBody),
         (status = 409, description = "The database is PostgreSQL, which is backed up with pg_dump (code backup_unsupported).", body = super::openapi::ApiErrorBody),

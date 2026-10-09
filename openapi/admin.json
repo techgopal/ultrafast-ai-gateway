@@ -1757,16 +1757,18 @@
         "operationId": "backup_download",
         "responses": {
           "200": {
-            "description": "The database as a SQLite file.",
+            "description": "The database as a SQLite file (`application/vnd.sqlite3`; also declared as `application/octet-stream` so that generated clients return the bytes).",
             "content": {
               "application/vnd.sqlite3": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "integer",
-                    "format": "int32",
-                    "minimum": 0
-                  }
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
@@ -4721,16 +4723,18 @@
         },
         "responses": {
           "200": {
-            "description": "The audio, streamed as the provider makes it, with the provider's content type.",
+            "description": "The audio, streamed as the provider makes it, with the provider's content type (`audio/mpeg` for `mp3`; also declared as `application/octet-stream` so that generated clients return the bytes).",
             "content": {
               "audio/mpeg": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "integer",
-                    "format": "int32",
-                    "minimum": 0
-                  }
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
@@ -9689,7 +9693,11 @@
           },
           "params": {
             "type": "object",
-            "description": "By kind. `budget`: `{\"budget_id\": id or null, \"percent\": 1-100}`.\n`error_rate`: `{\"scope\": \"gateway\"|\"route\"|\"provider\"|\"key\",\n\"subject\": name or null, \"percent\": 1-100, \"window_minutes\": 5-60\n(5), \"min_requests\": 1-100000 (20)}`. `circuit_open`:\n`{\"provider\": name or null, \"model\": name or null}`. Unknown fields\nare refused."
+            "description": "By kind. `budget`: `{\"budget_id\": id or null, \"percent\": 1-100}`.\n`error_rate`: `{\"scope\": \"gateway\"|\"route\"|\"provider\"|\"key\",\n\"subject\": name or null, \"percent\": 1-100, \"window_minutes\": 5-60\n(5), \"min_requests\": 1-100000 (20)}`. `circuit_open`:\n`{\"provider\": name or null, \"model\": name or null}`. Unknown fields\nare refused.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false
@@ -10578,6 +10586,27 @@
           }
         }
       },
+      "KeywordsMatcher": {
+        "type": "object",
+        "description": "The words of a keyword rule (a named type so that generated clients get a\nname for it).",
+        "required": [
+          "words"
+        ],
+        "properties": {
+          "whole_word": {
+            "type": "boolean",
+            "description": "Match whole words only (the default); `false` matches substrings."
+          },
+          "words": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to 1 000, each 1 to 256 characters. Case-insensitive."
+          }
+        },
+        "additionalProperties": false
+      },
       "LimitEntry": {
         "type": "object",
         "required": [
@@ -11175,23 +11204,7 @@
             ],
             "properties": {
               "keywords": {
-                "type": "object",
-                "required": [
-                  "words"
-                ],
-                "properties": {
-                  "whole_word": {
-                    "type": "boolean",
-                    "description": "Match whole words only (the default); `false` matches substrings."
-                  },
-                  "words": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "description": "Up to 1 000, each 1 to 256 characters. Case-insensitive."
-                  }
-                }
+                "$ref": "#/components/schemas/KeywordsMatcher"
               }
             }
           },
@@ -12904,7 +12917,11 @@
           },
           "params": {
             "type": "object",
-            "description": "The parameters with every default written out."
+            "description": "The parameters with every default written out.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },
@@ -13722,7 +13739,11 @@
               "object",
               "null"
             ],
-            "description": "Replaces the parameters. What the rule is firing for is forgotten."
+            "description": "Replaces the parameters. What the rule is firing for is forgotten.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false

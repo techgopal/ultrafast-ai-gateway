@@ -1,4 +1,5 @@
 from http import HTTPStatus
+from io import BytesIO
 from typing import Any
 
 import httpx
@@ -7,7 +8,7 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.playground_error_body import PlaygroundErrorBody
 from ...models.playground_speech_request import PlaygroundSpeechRequest
-from ...types import UNSET, Response, Unset
+from ...types import UNSET, File, Response, Unset
 
 
 def _get_kwargs(
@@ -34,7 +35,12 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> PlaygroundErrorBody | None:
+) -> File | PlaygroundErrorBody | None:
+    if response.status_code == 200:
+        response_200 = File(payload=BytesIO(response.content))
+
+        return response_200
+
     if response.status_code == 400:
         response_400 = PlaygroundErrorBody.from_dict(response.json())
 
@@ -83,7 +89,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[PlaygroundErrorBody]:
+) -> Response[File | PlaygroundErrorBody]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -97,7 +103,7 @@ def sync_detailed(
     client: AuthenticatedClient,
     body: PlaygroundSpeechRequest,
     x_csrf_token: str | Unset = UNSET,
-) -> Response[PlaygroundErrorBody]:
+) -> Response[File | PlaygroundErrorBody]:
     """
     Args:
         x_csrf_token (str | Unset):
@@ -108,7 +114,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[PlaygroundErrorBody]
+        Response[File | PlaygroundErrorBody]
     """
 
     kwargs = _get_kwargs(
@@ -128,7 +134,7 @@ def sync(
     client: AuthenticatedClient,
     body: PlaygroundSpeechRequest,
     x_csrf_token: str | Unset = UNSET,
-) -> PlaygroundErrorBody | None:
+) -> File | PlaygroundErrorBody | None:
     """
     Args:
         x_csrf_token (str | Unset):
@@ -139,7 +145,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        PlaygroundErrorBody
+        File | PlaygroundErrorBody
     """
 
     return sync_detailed(
@@ -154,7 +160,7 @@ async def asyncio_detailed(
     client: AuthenticatedClient,
     body: PlaygroundSpeechRequest,
     x_csrf_token: str | Unset = UNSET,
-) -> Response[PlaygroundErrorBody]:
+) -> Response[File | PlaygroundErrorBody]:
     """
     Args:
         x_csrf_token (str | Unset):
@@ -165,7 +171,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[PlaygroundErrorBody]
+        Response[File | PlaygroundErrorBody]
     """
 
     kwargs = _get_kwargs(
@@ -183,7 +189,7 @@ async def asyncio(
     client: AuthenticatedClient,
     body: PlaygroundSpeechRequest,
     x_csrf_token: str | Unset = UNSET,
-) -> PlaygroundErrorBody | None:
+) -> File | PlaygroundErrorBody | None:
     """
     Args:
         x_csrf_token (str | Unset):
@@ -194,7 +200,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        PlaygroundErrorBody
+        File | PlaygroundErrorBody
     """
 
     return (

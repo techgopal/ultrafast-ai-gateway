@@ -132,9 +132,8 @@ def test_alerts_channel_then_rule_then_removed(api: AdminClient) -> None:
             client=api.client, body=CreateChannelRequest(name="ops", kind="webhook", url="http://127.0.0.1:9/hook")
         )
     )
-    # The document types `params` as an object with no properties; the generated
-    # model keeps what it is given as additional properties, and the gateway reads
-    # it by `kind`. (Named in the schema fix of Task 3.)
+    # `params` is an open object: the generated model keeps what it is given as
+    # additional properties, and the gateway reads it by `kind`.
     params = CreateRuleRequestParams.from_dict({"scope": "gateway", "percent": 50})
     rule = api.call(
         alerts_rules_create.sync_detailed(

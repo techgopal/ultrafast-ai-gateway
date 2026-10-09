@@ -114,9 +114,7 @@ describe("round trips through the token, one per tag", () => {
         body: {
           name: "errors",
           kind: "error_rate",
-          // The document types `params` as an object with no properties, which the
-          // generator reads as Record<string, never>; the gateway reads it by `kind`.
-          params: { scope: "gateway", percent: 50 } as unknown as Record<string, never>,
+          params: { scope: "gateway", percent: 50 },
           channel_ids: [channel.channel.id],
         },
       }),

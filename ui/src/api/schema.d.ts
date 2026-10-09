@@ -1435,7 +1435,9 @@ export interface components {
              *     `{"provider": name or null, "model": name or null}`. Unknown fields
              *     are refused.
              */
-            params: Record<string, never>;
+            params: {
+                [key: string]: unknown;
+            };
         };
         CreateTokenRequest: {
             expires_at?: string | null;
@@ -1791,6 +1793,16 @@ export interface components {
              */
             team_only: boolean;
         };
+        /**
+         * @description The words of a keyword rule (a named type so that generated clients get a
+         *     name for it).
+         */
+        KeywordsMatcher: {
+            /** @description Match whole words only (the default); `false` matches substrings. */
+            whole_word?: boolean;
+            /** @description Up to 1 000, each 1 to 256 characters. Case-insensitive. */
+            words: string[];
+        };
         LimitEntry: {
             /** Format: int64 */
             concurrent: number | null;
@@ -2028,12 +2040,7 @@ export interface components {
          *     "whole_word": true}}`, `{"regex": "..."}` or `{"pii": ["EMAIL", ...]}`.
          */
         Matcher: {
-            keywords: {
-                /** @description Match whole words only (the default); `false` matches substrings. */
-                whole_word?: boolean;
-                /** @description Up to 1 000, each 1 to 256 characters. Case-insensitive. */
-                words: string[];
-            };
+            keywords: components["schemas"]["KeywordsMatcher"];
         } | {
             regex: string;
         } | {
@@ -2772,7 +2779,9 @@ export interface components {
             kind: string;
             name: string;
             /** @description The parameters with every default written out. */
-            params: Record<string, never>;
+            params: {
+                [key: string]: unknown;
+            };
         };
         SetBudgetRequest: {
             /** @description `block` or `alert`. */
@@ -3060,7 +3069,9 @@ export interface components {
             kind?: string | null;
             name?: string | null;
             /** @description Replaces the parameters. What the rule is firing for is forgotten. */
-            params?: Record<string, never> | null;
+            params?: {
+                [key: string]: unknown;
+            } | null;
         };
         UpdateSettingsRequest: {
             /**
@@ -4513,13 +4524,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The database as a SQLite file. */
+            /** @description The database as a SQLite file (`application/vnd.sqlite3`; also declared as `application/octet-stream` so that generated clients return the bytes). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/vnd.sqlite3": number[];
+                    "application/vnd.sqlite3": string;
+                    "application/octet-stream": string;
                 };
             };
             /** @description No valid session or access token. */
@@ -6653,13 +6665,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The audio, streamed as the provider makes it, with the provider's content type. */
+            /** @description The audio, streamed as the provider makes it, with the provider's content type (`audio/mpeg` for `mp3`; also declared as `application/octet-stream` so that generated clients return the bytes). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "audio/mpeg": number[];
+                    "audio/mpeg": string;
+                    "application/octet-stream": string;
                 };
             };
             /** @description The request is not a speech request, or the model cannot speak. The body is in the OpenAI error shape, as on `/v1`. */

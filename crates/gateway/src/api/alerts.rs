@@ -571,7 +571,7 @@ pub struct CreateRuleRequest {
     /// (5), "min_requests": 1-100000 (20)}`. `circuit_open`:
     /// `{"provider": name or null, "model": name or null}`. Unknown fields
     /// are refused.
-    #[schema(value_type = Object)]
+    #[schema(value_type = std::collections::BTreeMap<String, Value>)]
     params: Value,
     /// The channels that are told, by id.
     channel_ids: Vec<i64>,
@@ -586,7 +586,7 @@ pub struct UpdateRuleRequest {
     /// Only the kind the rule has; it cannot change.
     kind: Option<String>,
     /// Replaces the parameters. What the rule is firing for is forgotten.
-    #[schema(value_type = Option<Object>)]
+    #[schema(value_type = Option<std::collections::BTreeMap<String, Value>>)]
     params: Option<Value>,
     channel_ids: Option<Vec<i64>>,
     enabled: Option<bool>,
@@ -609,7 +609,7 @@ pub struct RuleView {
     pub name: String,
     pub kind: String,
     /// The parameters with every default written out.
-    #[schema(value_type = Object)]
+    #[schema(value_type = std::collections::BTreeMap<String, Value>)]
     pub params: Value,
     pub enabled: bool,
     pub created_at: String,

@@ -64,7 +64,7 @@ pub(crate) fn compile_rules(rules: &[RuleSpec]) -> Result<Vec<CompiledRule>, Gua
             return Err(GuardrailError::BadRuleId(r.id.clone()));
         }
         let finders = match &r.matcher {
-            Matcher::Keywords { words, whole_word } => keywords::build(&r.id, words, *whole_word)?
+            Matcher::Keywords(k) => keywords::build(&r.id, &k.words, k.whole_word)?
                 .into_iter()
                 .map(|(re, src)| Finder::Plain(re, src))
                 .collect(),

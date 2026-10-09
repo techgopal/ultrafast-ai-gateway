@@ -24,6 +24,13 @@ use super::{CSRF_HEADER, SESSION_COOKIE};
 use crate::routing::TargetHealth;
 use crate::store::{AuditRow, MemberDetail, TeamSummary};
 
+// A body that is bytes, not JSON: `type: string, format: binary`, so that
+// generated clients return the bytes (a `Vec<u8>` would be an array of
+// integers).
+#[derive(ToSchema)]
+#[schema(value_type = String, format = Binary)]
+pub struct BinaryBody(#[allow(dead_code)] Vec<u8>);
+
 /// Every error of `/api` has this shape.
 #[derive(ToSchema)]
 pub struct ApiErrorBody {
@@ -302,7 +309,7 @@ pub fn spec() -> utoipa::openapi::OpenApi {
 mod tests {
     use std::collections::BTreeSet;
 
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     use super::*;
 
@@ -483,6 +490,49 @@ mod tests {
             .into_iter()
             .flat_map(|types| types.values())
             .map(|media| &media["schema"])
+    }
+
+    #[test]
+    fn generator_friendly_shapes() {
+        let spec = spec_json();
+        let schemas = &spec["components"]["schemas"];
+        // The keywords variant of a guardrail matcher has a name.
+        assert_eq!(
+            schemas["Matcher"]["oneOf"][0]["properties"]["keywords"]["$ref"],
+            "#/components/schemas/KeywordsMatcher"
+        );
+        // An alert rule's params are an open object.
+        for (schema, optional) in [
+            ("CreateRuleRequest", false),
+            ("UpdateRuleRequest", true),
+            ("RuleView", false),
+        ] {
+            let params = &schemas[schema]["properties"]["params"];
+            assert_eq!(
+                params["type"],
+                if optional {
+                    json!(["object", "null"])
+                } else {
+                    json!("object")
+                },
+                "{schema}"
+            );
+            assert!(
+                params["additionalProperties"].as_object().is_some()
+                    || params["additionalProperties"] == json!(true),
+                "{schema}.params is not open"
+            );
+        }
+        // Downloads are bytes, also under application/octet-stream (the one
+        // binary type the Python generator reads).
+        for (path, method) in [("/api/backup", "get"), ("/api/playground/speech", "post")] {
+            let content = &spec["paths"][path][method]["responses"]["200"]["content"];
+            for (media, body) in content.as_object().unwrap() {
+                assert_eq!(body["schema"]["type"], "string", "{path} {media}");
+                assert_eq!(body["schema"]["format"], "binary", "{path} {media}");
+            }
+            assert!(content["application/octet-stream"].is_object(), "{path}");
+        }
     }
 
     #[test]

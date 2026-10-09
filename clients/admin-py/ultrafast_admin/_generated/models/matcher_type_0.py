@@ -18,7 +18,8 @@ T = TypeVar("T", bound="MatcherType0")
 class MatcherType0:
     """
     Attributes:
-        keywords (KeywordsMatcher):
+        keywords (KeywordsMatcher): The words of a keyword rule (a named type so that generated clients get a
+            name for it).
     """
 
     keywords: KeywordsMatcher

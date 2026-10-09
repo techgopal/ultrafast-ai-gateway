@@ -67,14 +67,13 @@ const { channel } = await api.call(
 );
 await api.call(
   api.raw.POST("/api/alerts/rules", {
-    body: { name: "budget-80", kind: "budget", params: { budget_id: null, percent: 80 } as never, channel_ids: [channel.id] },
+    body: { name: "budget-80", kind: "budget", params: { budget_id: null, percent: 80 }, channel_ids: [channel.id] },
   }),
 );
 ```
 
-`params` of an alert rule is typed as an object with no properties in the
-document; cast it (`as never`) and see the description of `CreateRuleRequest` for
-the shape by `kind`.
+`params` of an alert rule is an open object; see the description of
+`CreateRuleRequest` for its shape by `kind`.
 
 ## Errors
 

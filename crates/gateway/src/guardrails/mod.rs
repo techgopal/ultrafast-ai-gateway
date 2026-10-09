@@ -122,18 +122,24 @@ fn whole_word_default() -> bool {
     true
 }
 
+/// The words of a keyword rule (a named type so that generated clients get a
+/// name for it).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KeywordsMatcher {
+    /// Up to 1 000, each 1 to 256 characters. Case-insensitive.
+    pub words: Vec<String>,
+    /// Match whole words only (the default); `false` matches substrings.
+    #[serde(default = "whole_word_default")]
+    pub whole_word: bool,
+}
+
 /// What a rule looks for. Written as `{"keywords": {"words": [...],
 /// "whole_word": true}}`, `{"regex": "..."}` or `{"pii": ["EMAIL", ...]}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Matcher {
-    Keywords {
-        /// Up to 1 000, each 1 to 256 characters. Case-insensitive.
-        words: Vec<String>,
-        /// Match whole words only (the default); `false` matches substrings.
-        #[serde(default = "whole_word_default")]
-        whole_word: bool,
-    },
+    Keywords(KeywordsMatcher),
     Regex(String),
     Pii(Vec<PiiType>),
 }

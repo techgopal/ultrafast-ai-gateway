@@ -1,4 +1,5 @@
 from http import HTTPStatus
+from io import BytesIO
 from typing import Any
 
 import httpx
@@ -6,7 +7,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.api_error_body import ApiErrorBody
-from ...types import Response
+from ...types import File, Response
 
 
 def _get_kwargs() -> dict[str, Any]:
@@ -21,7 +22,12 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorBody | None:
+) -> ApiErrorBody | File | None:
+    if response.status_code == 200:
+        response_200 = File(payload=BytesIO(response.content))
+
+        return response_200
+
     if response.status_code == 401:
         response_401 = ApiErrorBody.from_dict(response.json())
 
@@ -50,7 +56,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorBody]:
+) -> Response[ApiErrorBody | File]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +68,7 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[ApiErrorBody]:
+) -> Response[ApiErrorBody | File]:
     """Downloads a consistent copy of the database: a SQLite file with every
     table, taken of one moment while the gateway goes on. It holds
     everything the database holds (users with their password hashes,
@@ -77,7 +83,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody]
+        Response[ApiErrorBody | File]
     """
 
     kwargs = _get_kwargs()
@@ -92,7 +98,7 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> ApiErrorBody | None:
+) -> ApiErrorBody | File | None:
     """Downloads a consistent copy of the database: a SQLite file with every
     table, taken of one moment while the gateway goes on. It holds
     everything the database holds (users with their password hashes,
@@ -107,7 +113,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody
+        ApiErrorBody | File
     """
 
     return sync_detailed(
@@ -118,7 +124,7 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[ApiErrorBody]:
+) -> Response[ApiErrorBody | File]:
     """Downloads a consistent copy of the database: a SQLite file with every
     table, taken of one moment while the gateway goes on. It holds
     everything the database holds (users with their password hashes,
@@ -133,7 +139,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorBody]
+        Response[ApiErrorBody | File]
     """
 
     kwargs = _get_kwargs()
@@ -146,7 +152,7 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> ApiErrorBody | None:
+) -> ApiErrorBody | File | None:
     """Downloads a consistent copy of the database: a SQLite file with every
     table, taken of one moment while the gateway goes on. It holds
     everything the database holds (users with their password hashes,
@@ -161,7 +167,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorBody
+        ApiErrorBody | File
     """
 
     return (

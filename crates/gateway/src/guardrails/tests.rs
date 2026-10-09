@@ -19,10 +19,10 @@ fn pii(id: &str, types: &[PiiType], action: Action) -> RuleSpec {
 fn kw(id: &str, words: &[&str], whole_word: bool, action: Action) -> RuleSpec {
     rule(
         id,
-        Matcher::Keywords {
+        Matcher::Keywords(KeywordsMatcher {
             words: words.iter().map(|w| w.to_string()).collect(),
             whole_word,
-        },
+        }),
         action,
         Directions::Both,
     )
@@ -297,10 +297,10 @@ fn pii_types_serialize_as_uppercase_names() {
     let k: Matcher = serde_json::from_str(r#"{"keywords":{"words":["a"]}}"#).unwrap();
     assert_eq!(
         k,
-        Matcher::Keywords {
+        Matcher::Keywords(KeywordsMatcher {
             words: vec!["a".into()],
             whole_word: true
-        }
+        })
     );
 }
 
@@ -350,44 +350,44 @@ fn keywords_are_literal_and_longest_first() {
 #[test]
 fn keyword_limits() {
     let many: Vec<String> = (0..1001).map(|i| format!("word{i}")).collect();
-    let m = Matcher::Keywords {
+    let m = Matcher::Keywords(KeywordsMatcher {
         words: many,
         whole_word: true,
-    };
+    });
     assert!(matches!(
         Compiled::compile(1, "g", &[rule("k", m, Action::Flag, Directions::Both)]),
         Err(GuardrailError::TooManyKeywords(_))
     ));
     let exactly: Vec<String> = (0..1000).map(|i| format!("wörd{i}")).collect();
-    let m = Matcher::Keywords {
+    let m = Matcher::Keywords(KeywordsMatcher {
         words: exactly,
         whole_word: true,
-    };
+    });
     let g = Compiled::compile(1, "g", &[rule("k", m, Action::Redact, Directions::Both)])
         .expect("1000 compile");
     let (t, _) = run(&[Arc::new(g)], Direction::Input, "x wörd999 y wörd1000");
     assert_eq!(t, "x [REDACTED] y wörd1000");
     for bad in [vec![], vec!["".to_string()], vec!["  ".to_string()]] {
-        let m = Matcher::Keywords {
+        let m = Matcher::Keywords(KeywordsMatcher {
             words: bad,
             whole_word: true,
-        };
+        });
         assert!(
             Compiled::compile(1, "g", &[rule("k", m, Action::Flag, Directions::Both)]).is_err()
         );
     }
-    let long = Matcher::Keywords {
+    let long = Matcher::Keywords(KeywordsMatcher {
         words: vec!["a".repeat(257)],
         whole_word: true,
-    };
+    });
     assert!(matches!(
         Compiled::compile(1, "g", &[rule("k", long, Action::Flag, Directions::Both)]),
         Err(GuardrailError::KeywordTooLong(_))
     ));
-    let ok = Matcher::Keywords {
+    let ok = Matcher::Keywords(KeywordsMatcher {
         words: vec!["a".repeat(256)],
         whole_word: true,
-    };
+    });
     assert!(Compiled::compile(1, "g", &[rule("k", ok, Action::Flag, Directions::Both)]).is_ok());
 }
 
