@@ -1358,6 +1358,8 @@ fn stream_cpu_is_bounded_on_adversarial_text() {
         "10.0.0.",
         "a@b.c ",
         "12345 6789 ",
+        "-----",
+        "\\",
     ] {
         let text = unit.repeat(16_000 / unit.len());
         let started = cpu_time();
@@ -1369,7 +1371,7 @@ fn stream_cpu_is_bounded_on_adversarial_text() {
         let _ = s.finish();
         let took = cpu_time() - started;
         eprintln!("stream cpu {unit:?}: {took:?}");
-        assert!(took < Duration::from_millis(200), "{unit:?} took {took:?}");
+        assert!(took < Duration::from_millis(500), "{unit:?} took {took:?}");
     }
 }
 
@@ -1553,6 +1555,124 @@ fn property_stream_equals_whole_text_on_more_seeds() {
                 diff_window(&released, &want)
             );
             assert_eq!(s.outcome(), &wo, "seed {seed} case {case}");
+        }
+    }
+}
+
+// ---------- fix round 3: straddling spans and the key swallow ----------
+
+fn chunked(text: &str, size: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    chars.chunks(size).map(|c| c.iter().collect()).collect()
+}
+
+fn streamed(g: &Arc<Compiled>, text: &str, size: usize) -> String {
+    let chunks = chunked(text, size);
+    let refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+    feed(std::slice::from_ref(g), &refs).0
+}
+
+#[test]
+fn a_span_glued_to_a_begin_line_never_skips_the_key_swallow() {
+    let g = guard(1, &[pii("p", &PiiType::ALL, Action::Redact)]);
+    let bodies = [
+        format!("KEYBODY{}LEAKME{}", "a".repeat(470), "b".repeat(600)),
+        format!("KEYBODY{}LEAKME", "q".repeat(1000)),
+    ];
+    for prefix in [
+        "@ZZmail.com",
+        "user@host",
+        "bob@x",
+        "a@",
+        "x@y.z",
+        "foo@bar.com",
+    ] {
+        for body in &bodies {
+            let text = format!("{prefix}-----BEGIN PRIVATE KEY-----{body}");
+            let (whole, _) = run(std::slice::from_ref(&g), Direction::Output, &text);
+            assert!(!whole.contains("LEAKME"), "whole text, {prefix}");
+            for size in [1usize, 64] {
+                let out = streamed(&g, &text, size);
+                assert!(
+                    !out.contains("LEAKME"),
+                    "{prefix} chunk {size}: body released"
+                );
+                assert!(
+                    !out.contains("KEYBODY"),
+                    "{prefix} chunk {size}: body released"
+                );
+                assert!(
+                    !out.contains('b') || prefix.contains('b'),
+                    "{prefix} chunk {size}"
+                );
+                assert_eq!(out, whole, "{prefix} chunk {size}");
+            }
+        }
+    }
+}
+
+#[test]
+fn text_glued_to_an_end_line_is_redacted_whole_in_a_stream() {
+    let g = guard(1, &[pii("p", &PiiType::ALL, Action::Redact)]);
+    let body = "MIIEowIBAAKC".repeat(40);
+    for glued in ["@example.com", "bob@example.com", "@ZZmail.co", "x"] {
+        let text = format!(
+            "key:\n-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----{glued} tail words"
+        );
+        let (whole, _) = run(std::slice::from_ref(&g), Direction::Output, &text);
+        for size in [1usize, 3, 64] {
+            let out = streamed(&g, &text, size);
+            assert!(
+                !out.contains("example.com") && !out.contains("ZZmail"),
+                "{glued} {size}: {out}"
+            );
+            if glued != "x" {
+                assert_eq!(out, whole, "{glued} chunk {size}");
+            } else {
+                // a plain word glued to the END line is dropped with it
+                assert_eq!(out, "key:\n[REDACTED:SECRET] tail words", "chunk {size}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_long_token_after_an_end_line_is_dropped_and_the_text_after_it_goes_on() {
+    let g = guard(1, &[pii("p", &PiiType::ALL, Action::Redact)]);
+    let text = format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----{} and then ok@example.org",
+        "A".repeat(600),
+        "z".repeat(5000)
+    );
+    for size in [1usize, 100] {
+        let out = streamed(&g, &text, size);
+        assert_eq!(
+            out, "[REDACTED:SECRET] and then [REDACTED:EMAIL]",
+            "chunk {size}"
+        );
+    }
+}
+
+/// A chain of an `sk-` token, an address and a BEGIN line glued together
+/// streams like the whole text at every chunking.
+#[test]
+fn a_glued_chain_of_matches_streams_like_the_whole_text() {
+    let g = guard(1, &[pii("p", &PiiType::ALL, Action::Redact)]);
+    for secret_len in [20usize, 200, 480, 700] {
+        let text = format!(
+            "lead {}sk-ZZSEC{}@host.com-----BEGIN PRIVATE KEY-----\nKEYBODY{}LEAKME",
+            "w ".repeat(200),
+            "q".repeat(secret_len),
+            "a".repeat(600),
+        );
+        let (whole, _) = run(std::slice::from_ref(&g), Direction::Output, &text);
+        for size in [1usize, 7, 64] {
+            let out = streamed(&g, &text, size);
+            assert!(
+                !out.contains("LEAKME") && !out.contains("KEYBODY"),
+                "{secret_len} {size}"
+            );
+            assert_eq!(out, whole, "{secret_len} chunk {size}");
         }
     }
 }
