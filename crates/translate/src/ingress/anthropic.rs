@@ -277,7 +277,10 @@ fn parse_output_config(oc: Option<&Value>) -> Result<Option<ResponseFormat>, Tra
         s @ Value::Object(_) => Ok(Some(ResponseFormat::JsonSchema {
             name: "response".into(),
             schema: s.clone(),
-            strict: None,
+            // Anthropic always enforces the schema; OpenAI and Azure treat a
+            // schema without `strict` as best effort, so a caller of this
+            // format keeps its enforcement on any provider.
+            strict: Some(true),
             description: None,
         })),
         _ => Err(invalid("output_config format 'schema' must be an object")),
@@ -1259,6 +1262,34 @@ mod tests {
         assert_eq!(evs[1].1["content_block"]["type"], "tool_use");
     }
 
+    // Anthropic always enforces the schema, so the caller keeps that on an
+    // OpenAI-shaped target too.
+    #[test]
+    fn an_output_schema_stays_strict_on_an_openai_target() {
+        use crate::provider::{build_request, ProviderKind, Target};
+        let r = parse_request(
+            br#"{"model":"m","max_tokens":5,"messages":[{"role":"user","content":"x"}],
+                "output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}}"#,
+        )
+        .unwrap();
+        for kind in [ProviderKind::OpenAi, ProviderKind::Azure] {
+            let target = Target {
+                kind,
+                base_url: "https://api.example.com/v1".into(),
+                api_key: Some("k".into()),
+                model: "gpt-4o".into(),
+                api_version: None,
+            };
+            let sent: Value =
+                serde_json::from_slice(&build_request(&target, &r).unwrap().body).unwrap();
+            assert_eq!(
+                sent["response_format"]["json_schema"]["strict"],
+                json!(true),
+                "{kind:?}"
+            );
+        }
+    }
+
     #[test]
     fn output_config_format_is_a_json_schema_response_format() {
         let body = |oc: &str| {
@@ -1275,7 +1306,7 @@ mod tests {
             Some(ResponseFormat::JsonSchema {
                 name: "response".into(),
                 schema: json!({"type":"object"}),
-                strict: None,
+                strict: Some(true),
                 description: None,
             })
         );
