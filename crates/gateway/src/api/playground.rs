@@ -200,6 +200,35 @@ pub struct PlaygroundErrorDetail {
     pub kind: Option<String>,
 }
 
+/// What the console's playground needs to know before it sends a call.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PlaygroundConfig {
+    /// The largest audio file a transcription takes, in bytes
+    /// (`--max-audio-bytes`). A larger upload is refused with 413.
+    pub max_audio_bytes: u64,
+}
+
+#[utoipa::path(
+    get,
+    path = "/playground/config",
+    tag = "playground",
+    operation_id = "playground_config",
+    responses(
+        (status = 200, description = "The limits of the playground. Any signed-in user may read them.", body = PlaygroundConfig),
+        (status = 401, description = "No valid session or access token.", body = PlaygroundErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+pub async fn config(
+    State(state): State<Arc<AppState>>,
+    authed: Authed,
+) -> Result<axum::Json<PlaygroundConfig>, ApiError> {
+    require(&authed.principal, &Action::UsePlayground)?;
+    Ok(axum::Json(PlaygroundConfig {
+        max_audio_bytes: state.max_audio_bytes as u64,
+    }))
+}
+
 #[utoipa::path(
     post,
     path = "/playground/chat",

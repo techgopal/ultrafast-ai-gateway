@@ -646,6 +646,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/playground/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["playground_config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/playground/images": {
         parameters: {
             query?: never;
@@ -2280,6 +2296,15 @@ export interface components {
             }[];
             /** Format: double */
             top_p?: number;
+        };
+        /** @description What the console's playground needs to know before it sends a call. */
+        PlaygroundConfig: {
+            /**
+             * Format: int64
+             * @description The largest audio file a transcription takes, in bytes
+             *     (`--max-audio-bytes`). A larger upload is refused with 413.
+             */
+            max_audio_bytes: number;
         };
         /**
          * @description An error of this call: the CSRF and sign-in errors have the `/api` shape
@@ -4750,6 +4775,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
+            /** @description A prompt template has a version that cannot be read, so the file would leave it out; the message names it. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
             /** @description Something went wrong. */
             500: {
                 headers: {
@@ -6484,6 +6518,35 @@ export interface operations {
             };
         };
     };
+    playground_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The limits of the playground. Any signed-in user may read them. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundConfig"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+        };
+    };
     playground_images: {
         parameters: {
             query?: never;
@@ -6889,7 +6952,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, `name` for an `@` in the name or when there are already 1000 templates, ...). */
+            /** @description Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, `name` for an `@` in the name, when there are already 1000 templates or when a team lead has already made 100, ...). */
             422: {
                 headers: {
                     [name: string]: unknown;

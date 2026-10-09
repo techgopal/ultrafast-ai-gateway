@@ -2100,6 +2100,16 @@
               }
             }
           },
+          "409": {
+            "description": "A prompt template has a version that cannot be read, so the file would leave it out; the message names it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Something went wrong.",
             "content": {
@@ -4528,6 +4538,44 @@
         ]
       }
     },
+    "/api/playground/config": {
+      "get": {
+        "tags": [
+          "playground"
+        ],
+        "operationId": "playground_config",
+        "responses": {
+          "200": {
+            "description": "The limits of the playground. Any signed-in user may read them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundConfig"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/playground/images": {
       "post": {
         "tags": [
@@ -5046,7 +5094,7 @@
             }
           },
           "422": {
-            "description": "Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, `name` for an `@` in the name or when there are already 1000 templates, ...).",
+            "description": "Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, `name` for an `@` in the name, when there are already 1000 templates or when a team lead has already made 100, ...).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11762,6 +11810,21 @@
           "top_p": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "PlaygroundConfig": {
+        "type": "object",
+        "description": "What the console's playground needs to know before it sends a call.",
+        "required": [
+          "max_audio_bytes"
+        ],
+        "properties": {
+          "max_audio_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The largest audio file a transcription takes, in bytes\n(`--max-audio-bytes`). A larger upload is refused with 413.",
+            "minimum": 0
           }
         }
       },

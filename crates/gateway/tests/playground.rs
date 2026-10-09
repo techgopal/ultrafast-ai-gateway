@@ -935,3 +935,20 @@ async fn audio_calls_are_answered_or_refused_as_the_users_key_would_be() {
         StatusCode::FORBIDDEN
     );
 }
+
+// The console checks an audio file against the gateway's own cap before it
+// sends it: any signed-in user may read it.
+#[tokio::test]
+async fn the_playground_config_tells_every_user_the_audio_cap() {
+    let org = common::org_tweaked(None, |s| s.max_audio_bytes = 1234).await;
+    for name in USERS {
+        let who = org.sign_in(name).await;
+        let (status, v) = org
+            .call(Some(&who), "GET", "/api/playground/config", None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{name}: {v}");
+        assert_eq!(v, json!({ "max_audio_bytes": 1234 }), "{name}");
+    }
+    let (status, _) = org.call(None, "GET", "/api/playground/config", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

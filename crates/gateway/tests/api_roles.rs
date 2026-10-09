@@ -644,6 +644,8 @@ fn table() -> Vec<Row> {
             |w, _| format!("/api/prompts/{}/render", w.prompt),
             || Some(json!({ "version": 1, "variables": { "x": "1" } })),
             [200, 200, 200, 401]),
+        row(96, "GET", "/api/playground/config", "", |_, _| "/api/playground/config".into(), no_body,
+            [200, 200, 200, 401]),
     ]
 }
 
@@ -718,7 +720,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=95).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=96).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -853,7 +855,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 95);
+    assert_eq!(operations, 96);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

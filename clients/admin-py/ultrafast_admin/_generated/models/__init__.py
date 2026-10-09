@@ -112,6 +112,7 @@ from .playground_chat_request_tool_choice_type_1 import (
     PlaygroundChatRequestToolChoiceType1,
 )
 from .playground_chat_request_tools_item import PlaygroundChatRequestToolsItem
+from .playground_config import PlaygroundConfig
 from .playground_error_body import PlaygroundErrorBody
 from .playground_error_detail import PlaygroundErrorDetail
 from .playground_image_answer import PlaygroundImageAnswer
@@ -299,6 +300,7 @@ __all__ = (
     "PlaygroundChatRequestToolChoiceType0",
     "PlaygroundChatRequestToolChoiceType1",
     "PlaygroundChatRequestToolsItem",
+    "PlaygroundConfig",
     "PlaygroundErrorBody",
     "PlaygroundErrorDetail",
     "PlaygroundImageAnswer",
