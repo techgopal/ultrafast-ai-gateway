@@ -241,6 +241,11 @@ impl Scope {
         r.guardrails = GuardrailLog::with(r.guardrails.take(), dir, side);
     }
 
+    /// What the guardrails found in the output of the call so far.
+    pub fn output_guardrails(&self) -> Option<SideLog> {
+        self.record.as_ref()?.guardrails.as_ref()?.output.clone()
+    }
+
     /// A guardrail ended the answer while it streamed.
     pub fn cut_short(&mut self) {
         self.cut_short = true;

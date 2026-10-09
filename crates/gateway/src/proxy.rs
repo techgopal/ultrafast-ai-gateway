@@ -4,6 +4,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -686,6 +687,7 @@ async fn dispatch(
             let response = render_cached(endpoint, &hit)?;
             state.metrics.cache_hit();
             record.cache_hit(&hit.provider, &hit.model, hit.usage());
+            record.guardrails_found(Direction::Output, hit.guardrails.clone());
             Some(response)
         };
         if let Some(response) = answered(state, record) {
@@ -824,6 +826,7 @@ fn keep(state: &AppState, plan: &Option<CachePlan>, record: &Scope, answer: Answ
         answer,
         provider,
         model,
+        guardrails: record.output_guardrails(),
     };
     state.cache.put(plan.key, value, plan.ttl, now);
 }
@@ -1478,8 +1481,15 @@ struct Hold {
     text: String,
     /// The arguments of each tool call, in the order the calls first appeared.
     tools: Vec<(u32, String)>,
+    /// Where each call index is in `tools`.
+    tool_at: HashMap<u32, usize>,
+    /// The answer text has a slot.
+    has_text: bool,
     /// Bytes of text and arguments held.
     bytes: usize,
+    /// What the slots themselves cost (each one, and the ids and names of
+    /// the calls), counted against the cap with `bytes`.
+    overhead: usize,
     /// The most that is held: the provider response cap.
     cap: usize,
     outcome: Outcome,
@@ -1489,6 +1499,10 @@ struct Hold {
     /// How often an SSE comment is sent while the answer is held.
     keepalive: Duration,
 }
+
+/// What one held slot costs against the cap, besides its bytes (an event or a
+/// tool call's buffer, with its place in the lists).
+const SLOT_COST: usize = 64;
 
 /// Where a held thing goes back when the answer is sent.
 enum Slot {
@@ -1504,7 +1518,10 @@ impl Hold {
             slots: Vec::new(),
             text: String::new(),
             tools: Vec::new(),
+            tool_at: HashMap::new(),
+            has_text: false,
             bytes: 0,
+            overhead: 0,
             cap,
             outcome: Outcome::default(),
             passing: false,
@@ -1515,23 +1532,33 @@ impl Hold {
     fn push(&mut self, ev: StreamEvent) {
         match ev {
             StreamEvent::Delta { text } => {
-                if !self.slots.iter().any(|s| matches!(s, Slot::Text)) {
+                if !self.has_text {
+                    self.has_text = true;
                     self.slots.push(Slot::Text);
+                    self.overhead += SLOT_COST;
                 }
                 self.bytes += text.len();
                 self.text.push_str(&text);
             }
             StreamEvent::ToolCallDelta { index, arguments } => {
                 self.bytes += arguments.len();
-                match self.tools.iter_mut().find(|(i, _)| *i == index) {
-                    Some((_, all)) => all.push_str(&arguments),
+                match self.tool_at.get(&index) {
+                    Some(&at) => self.tools[at].1.push_str(&arguments),
                     None => {
+                        self.tool_at.insert(index, self.tools.len());
                         self.slots.push(Slot::Tool(index));
                         self.tools.push((index, arguments));
+                        self.overhead += SLOT_COST;
                     }
                 }
             }
-            other => self.slots.push(Slot::Event(other)),
+            other => {
+                if let StreamEvent::ToolCallStart { id, name, .. } = &other {
+                    self.overhead += id.len() + name.len();
+                }
+                self.overhead += SLOT_COST;
+                self.slots.push(Slot::Event(other));
+            }
         }
     }
 
@@ -1540,7 +1567,10 @@ impl Hold {
         self.slots = Vec::new();
         self.text = String::new();
         self.tools = Vec::new();
+        self.tool_at = HashMap::new();
+        self.has_text = false;
         self.bytes = 0;
+        self.overhead = 0;
     }
 
     /// The held answer as events, in the order things came in. `texts` holds
@@ -1612,7 +1642,7 @@ impl Hold {
                 };
             }
             self.push(ev);
-            if self.bytes > self.cap {
+            if self.bytes + self.overhead > self.cap {
                 let failed = self.active.fail_output_buffer();
                 let blocked = failed.blocked_by.is_some();
                 self.outcome.merge(&failed);
@@ -1725,6 +1755,31 @@ impl StreamGuard {
         }
     }
 
+    /// The clean text the scanner still holds when the provider fails: it is
+    /// released as a normal end would release it (and scanned once more). An
+    /// answer held for an external guardrail is dropped instead, because the
+    /// guardrail has not seen it.
+    fn tail_on_error(&mut self) -> Vec<StreamEvent> {
+        if self.hold.is_some() {
+            return Vec::new();
+        }
+        let Some(scanner) = self.scanner.as_mut() else {
+            return Vec::new();
+        };
+        let tail = scanner.finish();
+        if tail.blocked.is_some() {
+            return Vec::new();
+        }
+        let mut events = Vec::new();
+        if !tail.text.is_empty() {
+            events.push(StreamEvent::Delta { text: tail.text });
+        }
+        for (index, arguments) in tail.tools {
+            events.push(StreamEvent::ToolCallDelta { index, arguments });
+        }
+        events
+    }
+
     /// Text and tool-call arguments go through the scanner and come out
     /// redacted, a little later (the scanner holds back the end of what it
     /// has seen until it can tell it is clean). The last event releases what
@@ -1792,6 +1847,25 @@ struct StreamRecord {
 }
 
 impl StreamRecord {
+    /// What the scanner holds of the answer when the provider fails, as events
+    /// to send before the error (counted as streamed).
+    fn error_tail(&mut self) -> Vec<StreamEvent> {
+        let Some(guard) = self.guard.as_mut() else {
+            return Vec::new();
+        };
+        let events = guard.tail_on_error();
+        for ev in &events {
+            match ev {
+                StreamEvent::Delta { text } => self.streamed(text.chars().count()),
+                StreamEvent::ToolCallDelta { arguments, .. } => {
+                    self.streamed(arguments.chars().count());
+                }
+                _ => {}
+            }
+        }
+        events
+    }
+
     /// Puts what the stream scanner found so far in the record.
     fn guard_found(&mut self) {
         if let (Some(guard), Some(scope)) = (self.guard.as_ref(), self.scope.as_mut()) {
@@ -1913,6 +1987,9 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
                     let chunk = match waited {
                         Err(_) => {
                             tracing::warn!(provider = %provider, "request ran out of time during the stream");
+                            for ev in record.error_tail() {
+                                yield Ok::<String, Infallible>(format.event(&ev));
+                            }
                             record.end_out_of_time();
                             yield Ok::<String, Infallible>(format.error(TIMED_OUT));
                             return;
@@ -1920,6 +1997,9 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
                         Ok(None) => {
                             let tail = decoder.finish();
                             if tail.is_empty() {
+                                for ev in record.error_tail() {
+                                    yield Ok::<String, Infallible>(format.event(&ev));
+                                }
                                 record.end(AttemptOutcome::Retryable, None);
                                 tracing::warn!(provider = %provider, "provider stream ended before completion");
                                 yield Ok(format.error("The provider stream ended before completion."));
@@ -1932,6 +2012,9 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
                         Ok(Some(Err(e))) => {
                             let e = e.without_url();
                             tracing::warn!(provider = %provider, error = %e, "provider stream was lost");
+                            for ev in record.error_tail() {
+                                yield Ok::<String, Infallible>(format.event(&ev));
+                            }
                             record.end(AttemptOutcome::Retryable, None);
                             yield Ok(format.error(
                                 "The connection to the provider was lost.",
@@ -2000,6 +2083,9 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
             }
             // An error that ended the stream, after the events before it.
             if let Some(e) = error {
+                for ev in record.error_tail() {
+                    yield Ok::<String, Infallible>(format.event(&ev));
+                }
                 record.end(outcome_of_error(&e), None);
                 yield Ok(stream_failure(&format, &provider, &e));
                 return;
@@ -2036,6 +2122,54 @@ mod tests {
         let texts = hold.take_texts();
         let events = hold.events(texts);
         assert_eq!(events.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_hold_with_many_tool_calls_is_bounded_in_time_and_memory() {
+        // 200 000 tool calls, none with any arguments: nothing counted as
+        // bytes before, so nothing capped them and every one searched the list
+        let started = std::time::Instant::now();
+        let mut hold = Hold::new(Active::default(), 1 << 20, Duration::from_secs(10));
+        let mut pushed = 0u32;
+        for i in 0..200_000u32 {
+            hold.push(StreamEvent::ToolCallStart {
+                index: i,
+                id: format!("call_{i}"),
+                name: "look".into(),
+            });
+            hold.push(StreamEvent::ToolCallDelta {
+                index: i,
+                arguments: String::new(),
+            });
+            pushed += 1;
+            if hold.bytes + hold.overhead > hold.cap {
+                break;
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        // the cap is reached long before 200 000 calls, and what is held is
+        // about the cap, not a multiple of it
+        assert!(pushed < 40_000, "{pushed} calls held before the cap");
+        assert!(hold.slots.len() < 120_000, "{}", hold.slots.len());
+        // many deltas for one call still cost their bytes only
+        let mut hold = Hold::new(Active::default(), 1 << 20, Duration::from_secs(10));
+        hold.push(StreamEvent::ToolCallDelta {
+            index: 7,
+            arguments: "x".into(),
+        });
+        let before = hold.overhead;
+        for _ in 0..1000 {
+            hold.push(StreamEvent::ToolCallDelta {
+                index: 7,
+                arguments: "x".into(),
+            });
+        }
+        assert_eq!(hold.overhead, before);
+        assert_eq!(hold.bytes, 1001);
     }
 
     fn with(value: &str) -> HeaderMap {

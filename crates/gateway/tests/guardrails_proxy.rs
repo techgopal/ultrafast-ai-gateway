@@ -481,6 +481,33 @@ async fn the_cache_holds_the_redacted_answer() {
 }
 
 #[tokio::test]
+async fn a_cache_hit_records_the_redactions_of_the_answer_it_gives() {
+    let h = harness("openai").await;
+    mount_chat(&h, completion(&format!("write to {EMAIL} now"))).await;
+    guardrail(&h, "pii", vec![email_rule("redact", "output")], true).await;
+    route_to_m(&h, true).await;
+    let body =
+        json!({ "model": "r", "messages": [{ "role": "user", "content": "hi" }] }).to_string();
+    for _ in 0..2 {
+        let (s, _) = post_chat(&h.app, Some(&h.key), &body).await;
+        assert_eq!(s, StatusCode::OK);
+    }
+    let records = h.sink.wait_for(2).await;
+    assert!(!records[0].cached && records[1].cached);
+    for r in &records {
+        let g = r.guardrails.clone().expect("a record of the redaction");
+        assert_eq!(g.action, LoggedAction::Redacted);
+        let out = g.output.as_ref().unwrap();
+        assert_eq!(
+            out.redactions.get("EMAIL"),
+            Some(&1),
+            "cached: {}",
+            r.cached
+        );
+    }
+}
+
+#[tokio::test]
 async fn keys_with_different_guardrails_do_not_share_cached_answers() {
     let h = harness("openai").await;
     mount_chat(&h, completion(&format!("write to {EMAIL} now"))).await;
@@ -540,6 +567,27 @@ async fn a_stream_is_redacted_across_deltas() {
     assert_eq!(openai_text(&text), "write to [REDACTED:EMAIL] now bye");
     assert_eq!(finish_reason(&text).as_deref(), Some("stop"));
     assert!(text.ends_with("data: [DONE]\n\n"));
+}
+
+#[tokio::test]
+async fn text_the_scanner_still_holds_is_sent_before_a_provider_error() {
+    let h = harness("openai").await;
+    // No finish event: the stream just ends, which is an error to the caller.
+    let upstream = format!("{}{}", delta("write to ad"), delta("a@example.com now"));
+    mount_chat(&h, sse(&upstream)).await;
+    guardrail(&h, "pii", vec![email_rule("redact", "output")], true).await;
+    let body = json!({ "model": "p/m", "stream": true,
+        "messages": [{ "role": "user", "content": "hi" }] })
+    .to_string();
+    let (s, text) = post_chat(&h.app, Some(&h.key), &body).await;
+    assert_eq!(s, StatusCode::OK);
+    // the clean text that was waiting arrives, redacted, and then the error
+    assert_eq!(openai_text(&text), "write to [REDACTED:EMAIL] now");
+    assert!(
+        text.contains("The provider stream ended before completion."),
+        "{text}"
+    );
+    assert!(!text.contains("example.com"), "{text}");
 }
 
 fn long_clean() -> String {
