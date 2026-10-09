@@ -23,6 +23,7 @@ use futures::StreamExt;
 use http_body_util::LengthLimitError;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use ultrafast_translate::embeddings::{
     self, EmbeddingsRequest, EmbeddingsResponse, NOT_SUPPORTED as EMBEDDINGS_NOT_SUPPORTED,
@@ -32,13 +33,18 @@ use ultrafast_translate::ingress::{anthropic, openai};
 use ultrafast_translate::provider::{
     build_request, parse_response, HttpRequest, StreamDecoder, Target,
 };
-use ultrafast_translate::types::{ChatRequest, ChatResponse, Part, StreamEvent, Usage};
+use ultrafast_translate::types::{
+    ChatRequest, ChatResponse, FinishReason, Part, StreamEvent, Usage,
+};
 
 use crate::access::{self, Denied, Resolved};
 use crate::app::AppState;
 use crate::auth::authenticate;
 use crate::cache::{Answer, CacheKey, CacheScope, Cached, KeyParts, ScopeId};
 use crate::errors::{caller_message, Shape};
+use crate::guardrails::log::{GuardrailRef, SideLog};
+use crate::guardrails::run::Active;
+use crate::guardrails::{Direction, Release, StreamScanner};
 use crate::routing::{
     self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
 };
@@ -404,6 +410,7 @@ fn cache_plan(
     call: &Call,
     resolved: &Resolved<'_>,
     candidates: &[Candidate],
+    guardrails: &Active,
 ) -> Option<CachePlan> {
     let key: &SnapKey = &actor.access;
     let Resolved::Route(route) = resolved else {
@@ -444,7 +451,7 @@ fn cache_plan(
         route: &route.name,
         targets: &targets,
         scope: ScopeId::of(cache_scope, key.team_id, key.user_id, key.id),
-        config: snapshot.cache_fingerprint(),
+        config: cache_config(snapshot, guardrails),
     };
     let cache_key = match call {
         Call::Chat(r) => CacheKey::chat(&parts, r),
@@ -455,6 +462,23 @@ fn cache_plan(
         key: cache_key,
         ttl: Duration::from_secs(seconds),
     })
+}
+
+/// The configuration a cached answer is found under: the snapshot's, and the
+/// guardrails the call ran with. Two callers of one cache scope whose keys
+/// carry different guardrails get different answers (one redacted, one not),
+/// so they must not share an entry.
+fn cache_config(snapshot: &Snapshot, guardrails: &Active) -> [u8; 32] {
+    let fingerprint = snapshot.cache_fingerprint();
+    if guardrails.refs().is_empty() {
+        return fingerprint;
+    }
+    let mut hash = Sha256::new();
+    hash.update(fingerprint);
+    for id in guardrails.ids() {
+        hash.update(id.to_le_bytes());
+    }
+    hash.finalize().into()
 }
 
 /// The kept answer in the shape the caller asked in, or `None` when it is
@@ -521,7 +545,7 @@ async fn dispatch(
             };
         }
     };
-    let call = match endpoint.parse(&body) {
+    let mut call = match endpoint.parse(&body) {
         Ok(c) => c,
         Err(e) => return shape.translate_error(&e),
     };
@@ -537,6 +561,21 @@ async fn dispatch(
         Resolved::Route(route) => Some(route.name.as_str()),
         _ => None,
     });
+    // 3a. The guardrails of the call (the gateway's defaults, then the
+    // route's, then the key's), over its input. After access, before any
+    // limit, budget or cache: a blocked call is refused here and counts
+    // nowhere, and everything after this sees the redacted input.
+    let effective = snapshot.effective_guardrails(
+        match &resolved {
+            Resolved::Route(route) => Some(route),
+            Resolved::Model(_) => None,
+        },
+        Some(key),
+    );
+    let guard = Active::of(&effective);
+    if let Err(refusal) = check_input(&guard, &mut call, record, shape).await {
+        return refusal;
+    }
     // 3b. The rate limits of the key, its owner, their teams and the gateway.
     // The permit goes with the scope, which a stream carries to its end. A
     // call that a limit refuses counts nowhere; one that is refused after
@@ -603,7 +642,7 @@ async fn dispatch(
     // through the provider call and `keep`, released on every exit, an error
     // and a dropped future included. A caller that waited and still misses
     // calls on its own, without the flight.
-    let cache = cache_plan(snapshot, actor, &call, &resolved, &candidates);
+    let cache = cache_plan(snapshot, actor, &call, &resolved, &candidates, &guard);
     let mut flight = None;
     if let Some(plan) = &cache {
         let answered = |state: &AppState, record: &mut Scope| {
@@ -673,10 +712,18 @@ async fn dispatch(
     )
     .await;
     match served {
-        Ok(Served::Whole(response)) => {
+        Ok(Served::Whole(mut response)) => {
             let record = scope.as_mut().expect("a whole answer keeps the scope");
             record.usage(response.usage);
-            keep(state, &cache, record, Answer::Chat(response.clone()));
+            // Before the cache keeps it: the cache never holds an answer the
+            // guardrails have not seen.
+            match check_output(&guard, &mut response, record, shape).await {
+                Ok(true) => {}
+                // A blocked answer is not kept: every call is checked afresh
+                // and recorded as blocked.
+                Ok(false) => keep(state, &cache, record, Answer::Chat(response.clone())),
+                Err(refusal) => return refusal,
+            }
             match endpoint {
                 Endpoint::Messages => Json(anthropic::render_response(&response)).into_response(),
                 _ => Json(openai::render_response(&response, now_secs())).into_response(),
@@ -696,6 +743,10 @@ async fn dispatch(
                 scope.begin_stream(call.input_estimate());
             }
             let guard = StreamRecord {
+                guard: guard.stream_scanner().map(|scanner| StreamGuard {
+                    scanner,
+                    checked: guard.refs().to_vec(),
+                }),
                 scope: scope.take(),
                 started: committed.started,
                 health: state.health.clone(),
@@ -727,6 +778,89 @@ fn keep(state: &AppState, plan: &Option<CachePlan>, record: &Scope, answer: Answ
         model,
     };
     state.cache.put(plan.key, value, plan.ttl, now);
+}
+
+/// The text slots of a chat request that guardrails read and may rewrite:
+/// every text part (system text and tool results included) and the arguments
+/// of the tool calls in the history.
+fn chat_slots(request: &mut ChatRequest) -> Vec<&mut String> {
+    let mut slots = Vec::new();
+    for message in &mut request.messages {
+        for part in &mut message.content {
+            if let Part::Text(text) = part {
+                slots.push(text);
+            }
+        }
+        for call in &mut message.tool_calls {
+            slots.push(&mut call.arguments);
+        }
+    }
+    slots
+}
+
+const SCAN_FAILED: &str = "The guardrails could not check this request.";
+
+/// Checks the input of a call against `guard` and redacts it in place. A
+/// block is the refusal to give the caller. What was found goes to the record
+/// either way.
+async fn check_input(
+    guard: &Active,
+    call: &mut Call,
+    record: &mut Scope,
+    shape: Shape,
+) -> Result<(), Response> {
+    let slots = match call {
+        Call::Chat(r) => chat_slots(r),
+        Call::Embed(r) => r.input.iter_mut().collect(),
+    };
+    let outcome = match guard.check(Direction::Input, slots).await {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            tracing::error!("a guardrail scan did not finish");
+            return Err(shape.error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                SCAN_FAILED,
+            ));
+        }
+    };
+    record.guardrails_found(Direction::Input, SideLog::of(guard.refs(), &outcome));
+    match outcome.blocked_by {
+        Some((_, name)) => Err(shape.guardrail_blocked(&name)),
+        None => Ok(()),
+    }
+}
+
+/// Checks a whole answer against `guard`: text and tool-call arguments are
+/// redacted in place; a block empties the answer and ends it with
+/// `content_filter`. `Ok(true)` when it was blocked.
+async fn check_output(
+    guard: &Active,
+    response: &mut ChatResponse,
+    record: &mut Scope,
+    shape: Shape,
+) -> Result<bool, Response> {
+    let mut slots = vec![&mut response.content];
+    slots.extend(response.tool_calls.iter_mut().map(|c| &mut c.arguments));
+    let outcome = match guard.check(Direction::Output, slots).await {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            tracing::error!("a guardrail scan did not finish");
+            return Err(shape.error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                SCAN_FAILED,
+            ));
+        }
+    };
+    record.guardrails_found(Direction::Output, SideLog::of(guard.refs(), &outcome));
+    if outcome.blocked_by.is_none() {
+        return Ok(false);
+    }
+    response.content.clear();
+    response.tool_calls.clear();
+    response.finish_reason = Some(FinishReason::ContentFilter);
+    Ok(true)
 }
 
 /// The longest wait a caller is told to keep.
@@ -1196,9 +1330,100 @@ fn stream_failure(format: &StreamFormat, provider: &str, e: &TranslateError) -> 
     format.error(&message)
 }
 
+/// The guardrails of a stream: a scanner with hold-back, and the guardrails
+/// it runs, for the record.
+struct StreamGuard {
+    scanner: StreamScanner,
+    checked: Vec<GuardrailRef>,
+}
+
+/// What the scanner makes of one event of the stream.
+struct Guarded {
+    /// What to send in its place, in order.
+    events: Vec<StreamEvent>,
+    /// A guardrail ended the answer: `events` ends with the closing event.
+    cut: bool,
+}
+
+impl StreamGuard {
+    /// The closing event of an answer a guardrail ended.
+    fn cut(usage: Option<Usage>) -> Guarded {
+        Guarded {
+            events: vec![StreamEvent::Done {
+                finish_reason: Some(FinishReason::ContentFilter),
+                usage,
+            }],
+            cut: true,
+        }
+    }
+
+    fn released(release: Release, event: impl FnOnce(String) -> StreamEvent) -> Guarded {
+        if release.blocked.is_some() {
+            return Self::cut(None);
+        }
+        Guarded {
+            events: if release.text.is_empty() {
+                Vec::new()
+            } else {
+                vec![event(release.text)]
+            },
+            cut: false,
+        }
+    }
+
+    /// Text and tool-call arguments go through the scanner and come out
+    /// redacted, a little later (the scanner holds back the end of what it
+    /// has seen until it can tell it is clean). The last event releases what
+    /// is held. A block ends the stream with `content_filter`; what was sent
+    /// before stays sent, because it was clean.
+    fn apply(&mut self, event: StreamEvent) -> Guarded {
+        match event {
+            StreamEvent::Delta { text } => {
+                let release = self.scanner.push_text(&text);
+                Self::released(release, |text| StreamEvent::Delta { text })
+            }
+            StreamEvent::ToolCallDelta { index, arguments } => {
+                let release = self.scanner.push_tool_args(index, &arguments);
+                Self::released(release, |arguments| StreamEvent::ToolCallDelta {
+                    index,
+                    arguments,
+                })
+            }
+            StreamEvent::Done {
+                finish_reason,
+                usage,
+            } => {
+                let tail = self.scanner.finish();
+                if tail.blocked.is_some() {
+                    // The provider's usage is the truth for the whole answer.
+                    return Self::cut(usage);
+                }
+                let mut events = Vec::new();
+                if !tail.text.is_empty() {
+                    events.push(StreamEvent::Delta { text: tail.text });
+                }
+                for (index, arguments) in tail.tools {
+                    events.push(StreamEvent::ToolCallDelta { index, arguments });
+                }
+                events.push(StreamEvent::Done {
+                    finish_reason,
+                    usage,
+                });
+                Guarded { events, cut: false }
+            }
+            other => Guarded {
+                events: vec![other],
+                cut: false,
+            },
+        }
+    }
+}
+
 /// Holds a stream's record until the stream ends. Dropping it, which is what
 /// happens when the caller goes away, emits the record as a gone caller.
 struct StreamRecord {
+    /// Scans the answer as it streams, when a rule applies to outputs.
+    guard: Option<StreamGuard>,
     scope: Option<Scope>,
     started: Instant,
     health: Arc<dyn HealthStore>,
@@ -1207,6 +1432,23 @@ struct StreamRecord {
 }
 
 impl StreamRecord {
+    /// Puts what the stream scanner found so far in the record.
+    fn guard_found(&mut self) {
+        if let (Some(guard), Some(scope)) = (self.guard.as_ref(), self.scope.as_mut()) {
+            scope.guardrails_found(
+                Direction::Output,
+                SideLog::of(&guard.checked, guard.scanner.outcome()),
+            );
+        }
+    }
+
+    /// A guardrail ends the answer: the provider is dropped mid-answer.
+    fn cut_short(&mut self) {
+        if let Some(scope) = self.scope.as_mut() {
+            scope.cut_short();
+        }
+    }
+
     /// Records the end of the stream: what the attempt came to, and the
     /// usage if it was reported. The caller was answered 200. The success of
     /// the first event is already with the breaker; a failure after it is
@@ -1229,6 +1471,7 @@ impl StreamRecord {
     }
 
     fn finish(mut self, outcome: AttemptOutcome, usage: Option<Usage>, report: bool) {
+        self.guard_found();
         if let Some(mut scope) = self.scope.take() {
             if report && outcome != AttemptOutcome::Ok {
                 self.health.report(
@@ -1250,6 +1493,7 @@ impl StreamRecord {
 
 impl Drop for StreamRecord {
     fn drop(&mut self) {
+        self.guard_found();
         // The caller went away before the end: the attempt did not finish.
         if let Some(scope) = self.scope.as_mut() {
             scope.set_last_outcome(AttemptOutcome::Retryable);
@@ -1326,19 +1570,28 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
                     }
                     _ => {}
                 }
-                let usage = match &ev {
-                    StreamEvent::Done { usage, .. } => Some(*usage),
-                    _ => None,
+                let guarded = match record.guard.as_mut() {
+                    Some(guard) => guard.apply(ev),
+                    None => Guarded { events: vec![ev], cut: false },
                 };
-                let rendered = format.event(&ev);
-                if let Some(usage) = usage {
-                    // Recorded before the last event is handed over, so a
-                    // caller that leaves right after it is not a lost call.
-                    record.end(AttemptOutcome::Ok, usage);
-                    yield Ok(rendered);
-                    return;
+                if guarded.cut {
+                    record.cut_short();
                 }
-                yield Ok(rendered);
+                for ev in guarded.events {
+                    let usage = match &ev {
+                        StreamEvent::Done { usage, .. } => Some(*usage),
+                        _ => None,
+                    };
+                    let rendered = format.event(&ev);
+                    if let Some(usage) = usage {
+                        // Recorded before the last event is handed over, so a
+                        // caller that leaves right after it is not a lost call.
+                        record.end(AttemptOutcome::Ok, usage);
+                        yield Ok(rendered);
+                        return;
+                    }
+                    yield Ok(rendered);
+                }
             }
             // An error that ended the stream, after the events before it.
             if let Some(e) = error {

@@ -36,6 +36,9 @@ pub struct NewLog {
     pub attempts: String,
     /// A JSON object of strings; `None` for no tags.
     pub tags: Option<String>,
+    /// What the guardrails found (a JSON object: guardrail ids and names,
+    /// actions, counts; never matched text); `None` when they found nothing.
+    pub guardrails: Option<String>,
 }
 
 /// A stored row.
@@ -64,6 +67,8 @@ pub struct LogRow {
     pub attempts: String,
     /// A JSON object of strings; `None` for no tags.
     pub tags: Option<String>,
+    /// See [`NewLog::guardrails`].
+    pub guardrails: Option<String>,
 }
 
 /// A stored row with the names of its key, user and team, which are `None`
@@ -108,6 +113,9 @@ pub struct LogFilter {
     /// Only calls that carry every one of these tags (name, value). The
     /// names are checked by the caller.
     pub tags: Vec<(String, String)>,
+    /// Only calls whose worst guardrail action was this one (a block is worse
+    /// than a redaction, a redaction worse than a flag), in either direction.
+    pub guardrail: Option<crate::guardrails::log::LoggedAction>,
 }
 
 /// What `usage` groups by.
@@ -206,10 +214,11 @@ fn log_from(r: &AnyRow) -> LogRow {
         duration_ms: r.get("duration_ms"),
         attempts: r.get("attempts"),
         tags: r.get("tags"),
+        guardrails: r.get("guardrails"),
     }
 }
 
-/// Rows per `INSERT`: 20 binds each, so a chunk stays far under the 32766
+/// Rows per `INSERT`: 21 binds each, so a chunk stays far under the 32766
 /// (SQLite) and 65535 (PostgreSQL) parameter limits.
 const LOG_INSERT_CHUNK: usize = 1000;
 
@@ -228,13 +237,13 @@ fn log_insert_sql(dialect: Dialect, rows: usize) -> String {
                 "INSERT INTO request_logs
                  (org_id, at, key_id, user_id, team_id, requested, endpoint, stream, status,
                   provider, model, input_tokens, output_tokens, cost_micros, priced, cached,
-                  estimated, duration_ms, attempts, tags) VALUES ",
+                  estimated, duration_ms, attempts, tags, guardrails) VALUES ",
             );
             for i in 0..rows {
                 if i > 0 {
                     sql.push_str(", ");
                 }
-                sql.push_str("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                sql.push_str("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             }
             dialect.sql(&sql).into_owned()
         })
@@ -274,7 +283,8 @@ impl Store {
                     .bind(flag(r.estimated))
                     .bind(r.duration_ms)
                     .bind(&r.attempts)
-                    .bind(&r.tags);
+                    .bind(&r.tags)
+                    .bind(&r.guardrails);
             }
             query.execute(&mut *tx).await?;
         }
@@ -346,6 +356,14 @@ impl Store {
             clauses.push(format!("{} = ?", self.dialect().json_text("l.tags")));
             text_values.push(path);
             text_values.push(value);
+        }
+        // The worst action is the `action` member of the stored object, one
+        // of three words this code wrote. The path is bound, as for tags.
+        let action_path = self.dialect().tag_key("action");
+        if let Some(action) = filter.guardrail {
+            clauses.push(format!("{} = ?", self.dialect().json_text("l.guardrails")));
+            text_values.push(&action_path);
+            text_values.push(action.as_str());
         }
         let sql = format!(
             "{DETAIL_SELECT} WHERE {} ORDER BY l.id DESC LIMIT ?",
@@ -527,6 +545,7 @@ mod tests {
             duration_ms: 1,
             attempts: "[]".into(),
             tags: None,
+            guardrails: None,
         }
     }
 
@@ -564,7 +583,7 @@ mod tests {
     #[test]
     fn the_insert_statement_is_built_once_per_size() {
         let a = log_insert_sql(Dialect::Postgres, 2);
-        assert!(a.contains("$40") && !a.contains("$41"));
+        assert!(a.contains("$42") && !a.contains("$43"));
         assert_eq!(a, log_insert_sql(Dialect::Postgres, 2));
         assert!(!log_insert_sql(Dialect::Sqlite, 2).contains('$'));
     }

@@ -11,6 +11,8 @@ use ultrafast_translate::types::Usage;
 
 use crate::alerts::errors_window::Sample;
 use crate::alerts::EngineHandle;
+use crate::guardrails::log::{GuardrailLog, SideLog};
+use crate::guardrails::Direction;
 use crate::limits::Permit;
 use crate::metrics::Metrics;
 use crate::otel::{Exporter, TraceParent};
@@ -84,6 +86,9 @@ pub struct RequestRecord {
     /// Wall-clock start of the call, milliseconds since the epoch: the
     /// precise form of `started_at`, for the trace export only.
     pub started_unix_ms: u64,
+    /// What the guardrail checks found, when they found anything. Counts and
+    /// names only, never the text that matched.
+    pub guardrails: Option<GuardrailLog>,
 }
 
 /// The longest `requested` a record keeps, in bytes. The name is whatever the
@@ -147,6 +152,9 @@ pub struct Scope {
     resolved: bool,
     /// The configured route it resolved to, if it is a route.
     resolved_route: Option<String>,
+    /// The answer was cut off by a guardrail while it streamed: the provider
+    /// kept generating, so the call is charged an estimate if it has no usage.
+    cut_short: bool,
 }
 
 impl Scope {
@@ -169,6 +177,7 @@ impl Scope {
             alerts: None,
             resolved: false,
             resolved_route: None,
+            cut_short: false,
             record: Some(RequestRecord {
                 key_id,
                 user_id,
@@ -187,6 +196,7 @@ impl Scope {
                 trace_parent: None,
                 provider_kinds: Vec::new(),
                 started_unix_ms: unix_ms_now(),
+                guardrails: None,
             }),
         }
     }
@@ -222,6 +232,18 @@ impl Scope {
     /// The `traceparent` the caller sent: the call's trace continues it.
     pub fn parented(&mut self, parent: TraceParent) {
         self.record_mut().trace_parent = Some(parent);
+    }
+
+    /// What the guardrails found in one direction of the call (nothing found
+    /// leaves the record as it is).
+    pub fn guardrails_found(&mut self, dir: Direction, side: Option<SideLog>) {
+        let r = self.record_mut();
+        r.guardrails = GuardrailLog::with(r.guardrails.take(), dir, side);
+    }
+
+    /// A guardrail ended the answer while it streamed.
+    pub fn cut_short(&mut self) {
+        self.cut_short = true;
     }
 
     /// The kind of each provider the call may try, by provider name.
@@ -414,11 +436,14 @@ impl Scope {
             // it is charged an estimate, marked as one.
             if let (None, Some(input)) = (record.usage, self.stream_input) {
                 let ended_early = status == CALLER_GONE
+                    || self.cut_short
                     || record
                         .attempts
                         .last()
                         .is_some_and(|a| a.outcome != AttemptOutcome::Ok);
-                if ended_early && (status == CALLER_GONE || self.streamed_chars > 0) {
+                if ended_early
+                    && (status == CALLER_GONE || self.cut_short || self.streamed_chars > 0)
+                {
                     let to_u32 = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
                     let usage = Usage {
                         input_tokens: to_u32(input),

@@ -146,6 +146,7 @@ fn log(at: &str, tags: Option<&str>, status: i64, cost: i64) -> NewLog {
         estimated: false,
         duration_ms: 1,
         attempts: "[]".into(),
+        guardrails: None,
     }
 }
 

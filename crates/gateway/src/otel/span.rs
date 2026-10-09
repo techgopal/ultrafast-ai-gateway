@@ -97,6 +97,10 @@ pub fn spans_of(
     for (name, value) in &record.tags {
         attributes.push(string(&format!("uf.tags.{name}"), value));
     }
+    // The worst thing the guardrails did to the call; absent when nothing.
+    if let Some(g) = &record.guardrails {
+        attributes.push(string("uf.guardrail.action", g.action.as_str()));
+    }
 
     let kind_of = |provider: &str| {
         record
@@ -241,6 +245,7 @@ mod tests {
             trace_parent: None,
             provider_kinds: vec![("a".into(), "openai"), ("b".into(), "anthropic")],
             started_unix_ms: 32_472_144_000_000,
+            guardrails: None,
         }
     }
 
@@ -474,5 +479,23 @@ mod tests {
         assert!(TraceParent::parse("").is_none());
         assert!(TraceParent::parse(&format!("{ok}-extra")).is_none());
         assert!(TraceParent::parse(&ok[..54]).is_none());
+    }
+
+    #[test]
+    fn the_server_span_names_the_worst_guardrail_action_only_when_there_was_one() {
+        use crate::guardrails::log::{GuardrailLog, LoggedAction};
+        let mut record = base();
+        let spans = spans_of(&record, &mut counter(), [1; 16]);
+        assert!(attr(&spans[0], "uf.guardrail.action").is_none());
+        record.guardrails = Some(GuardrailLog {
+            action: LoggedAction::Redacted,
+            input: None,
+            output: None,
+        });
+        let spans = spans_of(&record, &mut counter(), [1; 16]);
+        assert_eq!(
+            attr(&spans[0], "uf.guardrail.action").unwrap()["stringValue"],
+            "redacted"
+        );
     }
 }

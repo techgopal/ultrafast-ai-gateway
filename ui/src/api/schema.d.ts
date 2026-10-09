@@ -1382,6 +1382,12 @@ export interface components {
              */
             subject: string;
         };
+        /** @description A flag rule that matched. */
+        FlagLog: {
+            /** Format: int64 */
+            guardrail_id: number;
+            rule_id: string;
+        };
         /** @description A rule that flagged the text. */
         FlagView: {
             /**
@@ -1430,6 +1436,13 @@ export interface components {
         };
         GuardrailList: {
             guardrails: components["schemas"]["GuardrailView"][];
+        };
+        /** @description The guardrail record of a call: `None` for a direction that found nothing. */
+        GuardrailLog: {
+            /** @description The worst action of either direction. */
+            action: components["schemas"]["LoggedAction"];
+            input?: components["schemas"]["SideLog"] | null;
+            output?: components["schemas"]["SideLog"] | null;
         };
         /** @description A guardrail by id and name. */
         GuardrailRef: {
@@ -1675,6 +1688,7 @@ export interface components {
              *     characters / 4, and `priced` stays true when the model has a price.
              */
             estimated: boolean;
+            guardrails: components["schemas"]["GuardrailLog"] | null;
             /** Format: int64 */
             id: number;
             /** Format: int64 */
@@ -1739,6 +1753,7 @@ export interface components {
              *     characters / 4, and `priced` stays true when the model has a price.
              */
             estimated: boolean;
+            guardrails: components["schemas"]["GuardrailLog"] | null;
             /** Format: int64 */
             id: number;
             /** Format: int64 */
@@ -1775,6 +1790,12 @@ export interface components {
             /** Format: int64 */
             user_id: number | null;
         };
+        /**
+         * @description What the checks of a call did, worst first: a block, else a redaction,
+         *     else a flag. The order is the order of severity.
+         * @enum {string}
+         */
+        LoggedAction: "flagged" | "redacted" | "blocked";
         /** @description The limits of failed sign-ins, as they are built in. */
         LoginLimits: {
             /**
@@ -2411,6 +2432,20 @@ export interface components {
         SetupStatus: {
             /** @description True while no user exists. */
             needs_setup: boolean;
+        };
+        /** @description The checks of one direction (the input of a call, or its output). */
+        SideLog: {
+            /** @description The worst thing that happened in this direction. */
+            action: components["schemas"]["LoggedAction"];
+            blocked_by?: components["schemas"]["GuardrailRef"] | null;
+            /** @description The guardrails this direction was checked with. */
+            checked_with: components["schemas"]["GuardrailRef"][];
+            /** @description Flag rules that matched. */
+            flags?: components["schemas"]["FlagLog"][];
+            /** @description Replacements made, by PII type or rule id. */
+            redactions?: {
+                [key: string]: number;
+            };
         };
         SignInMethodOidc: {
             /** @description The name for the sign-in button. */
@@ -5397,6 +5432,8 @@ export interface operations {
                 status?: number;
                 /** @description `true`: only calls answered with a status of 400 or more. Combines with the other filters. */
                 errors?: boolean;
+                /** @description Only calls whose worst guardrail action was this: `blocked`, `redacted` or `flagged` (a block is worse than a redaction, a redaction worse than a flag). Combines with the other filters. */
+                guardrail?: string;
                 /** @description Only calls with this tag, written `name:value` (the name ends at the first colon). Repeat it to require several tags: all must match. */
                 tag?: string[];
             };

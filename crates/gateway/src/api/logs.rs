@@ -15,6 +15,7 @@ use time::{Date, OffsetDateTime, Time};
 
 use super::{path_id, require, ApiError, Authed};
 use crate::app::AppState;
+use crate::guardrails::log::{GuardrailLog, LoggedAction};
 use crate::identity::policy::{list_scope, Action, Scope};
 use crate::store::{LogDetail, LogFilter, LogScope};
 use crate::tags::{self, Tags};
@@ -35,6 +36,7 @@ pub struct LogsQuery {
     model: Option<String>,
     status: Option<String>,
     errors: Option<String>,
+    guardrail: Option<String>,
 }
 
 /// One logged call, as `/api` shows it.
@@ -88,6 +90,12 @@ pub struct LogView {
     /// key's. Empty when none.
     #[schema(value_type = std::collections::BTreeMap<String, String>)]
     pub tags: Tags,
+    /// What the guardrails found, when they found anything: the worst
+    /// action, and per direction the guardrails checked with (ids and names),
+    /// the one that blocked, the replacements made by PII type or rule id, and
+    /// the flag rules that matched. Never the text that matched. `null` when nothing was found.
+    #[schema(required)]
+    pub guardrails: Option<GuardrailLog>,
 }
 
 /// One target tried for a call.
@@ -155,6 +163,12 @@ pub struct LogDetailView {
     /// key's. Empty when none.
     #[schema(value_type = std::collections::BTreeMap<String, String>)]
     pub tags: Tags,
+    /// What the guardrails found, when they found anything: the worst
+    /// action, and per direction the guardrails checked with (ids and names),
+    /// the one that blocked, the replacements made by PII type or rule id, and
+    /// the flag rules that matched. Never the text that matched. `null` when nothing was found.
+    #[schema(required)]
+    pub guardrails: Option<GuardrailLog>,
     pub attempts: Vec<LogAttempt>,
 }
 
@@ -183,6 +197,7 @@ impl LogDetailView {
             estimated: l.estimated,
             duration_ms: l.duration_ms,
             tags: l.tags,
+            guardrails: l.guardrails,
             attempts,
         }
     }
@@ -214,6 +229,7 @@ impl From<&LogDetail> for LogView {
             estimated: r.estimated,
             duration_ms: r.duration_ms,
             tags: tags::parse_stored(r.tags.as_deref()),
+            guardrails: r.guardrails.as_deref().and_then(GuardrailLog::from_stored),
         }
     }
 }
@@ -295,6 +311,7 @@ pub(super) fn store_scope(scope: Scope) -> LogScope {
         ("model" = Option<String>, Query, description = "Only calls answered by, or asking for, this model name."),
         ("status" = Option<i64>, Query, description = "Only calls answered with this HTTP status, 100 to 599."),
         ("errors" = Option<bool>, Query, description = "`true`: only calls answered with a status of 400 or more. Combines with the other filters."),
+        ("guardrail" = Option<String>, Query, description = "Only calls whose worst guardrail action was this: `blocked`, `redacted` or `flagged` (a block is worse than a redaction, a redaction worse than a flag). Combines with the other filters."),
         ("tag" = Option<Vec<String>>, Query, description = "Only calls with this tag, written `name:value` (the name ends at the first colon). Repeat it to require several tags: all must match."),
     ),
     responses(
@@ -368,6 +385,19 @@ pub async fn list(
             false
         }
     };
+    let guardrail = match q.guardrail.as_deref() {
+        None => None,
+        Some(raw) => {
+            let parsed = LoggedAction::parse(raw);
+            if parsed.is_none() {
+                fields.insert(
+                    "guardrail".into(),
+                    "must be blocked, redacted or flagged".into(),
+                );
+            }
+            parsed
+        }
+    };
     // `tag` may be repeated, which a struct cannot take.
     let mut tag_filters = Vec::new();
     for (_, raw) in pairs.iter().filter(|(name, _)| name == "tag") {
@@ -386,6 +416,7 @@ pub async fn list(
     }
 
     let filter = LogFilter {
+        guardrail,
         tags: tag_filters,
         errors,
         before,

@@ -694,3 +694,62 @@ async fn playground_accepts_tools_and_images() {
     assert_eq!(refused["error"]["code"], "csrf_failed");
     assert_eq!(w.upstream.received_requests().await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn the_playground_is_checked_by_the_same_guardrails_as_a_key() {
+    let w = world().await;
+    let rules = json!([
+        { "id": "email", "matcher": { "pii": ["EMAIL"] }, "action": "redact", "directions": "input" },
+        { "id": "w", "matcher": { "keywords": { "words": ["swordfish"] } },
+          "action": "block", "directions": "input" }
+    ])
+    .to_string();
+    let mut tx = w.org.api.store.begin().await.unwrap();
+    tx.insert_guardrail(ultrafast_gateway::store::NewGuardrail {
+        name: "house-rules",
+        description: "",
+        kind: "rules",
+        rules: &rules,
+        url: None,
+        secret_enc: None,
+        timeout_ms: 3000,
+        fail_mode: "open",
+        directions: "both",
+        enabled: true,
+        is_default: true,
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.org.api.state.refresh().await.unwrap();
+
+    let lena = w.org.sign_in("lena").await;
+    let key = w.key_of(lena.user_id).await;
+    let mail = json!({ "model": "p/open",
+        "messages": [{ "role": "user", "content": "write ada@example.com" }] });
+    let blocked = json!({ "model": "p/open",
+        "messages": [{ "role": "user", "content": "swordfish" }] });
+
+    let (via_play, _, _) = w.play(&lena, mail.clone()).await;
+    let (via_key, _, _) = w.with_key(&key, &mail).await;
+    assert_eq!((via_play, via_key), (StatusCode::OK, StatusCode::OK));
+    let sent = w.upstream.received_requests().await.unwrap();
+    assert_eq!(sent.len(), 2);
+    for request in &sent {
+        let body = String::from_utf8_lossy(&request.body);
+        assert!(body.contains("write [REDACTED:EMAIL]"), "{body}");
+        assert!(!body.contains("example.com"), "{body}");
+    }
+
+    let (play_status, _, play_body) = w.play(&lena, blocked.clone()).await;
+    let (key_status, _, key_body) = w.with_key(&key, &blocked).await;
+    assert_eq!(
+        (play_status, key_status),
+        (StatusCode::BAD_REQUEST, StatusCode::BAD_REQUEST)
+    );
+    let code = |b: &[u8]| serde_json::from_slice::<Value>(b).unwrap()["error"]["code"].clone();
+    assert_eq!(code(&play_body), "guardrail_blocked");
+    assert_eq!(code(&key_body), "guardrail_blocked");
+    // No provider call for either refusal.
+    assert_eq!(w.upstream.received_requests().await.unwrap().len(), 2);
+}

@@ -34,7 +34,9 @@
 //! output itself.
 
 mod keywords;
+pub mod log;
 mod pii;
+pub mod run;
 mod scan;
 mod stream;
 
@@ -212,6 +214,11 @@ impl Compiled {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Whether some rule applies to `dir`.
+    pub fn applies(&self, dir: Direction) -> bool {
+        self.rules.iter().any(|r| r.directions.covers(dir))
     }
 }
 

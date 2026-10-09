@@ -227,6 +227,7 @@ async fn world() -> World {
             estimated: false,
             duration_ms: 1,
             attempts: "[]".into(),
+            guardrails: None,
         }])
         .await
         .unwrap();

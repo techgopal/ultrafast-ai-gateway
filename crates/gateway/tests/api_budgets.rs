@@ -254,6 +254,7 @@ async fn spent_is_shown_only_where_the_caller_may_see_it() {
         trace_parent: None,
         provider_kinds: Vec::new(),
         started_unix_ms: 0,
+        guardrails: None,
     };
     ultrafast_gateway::budgets::account(
         &w.org.api.state,
@@ -432,6 +433,7 @@ fn log(at: &str, key_id: i64, user_id: i64, team_id: i64, cost: i64) -> NewLog {
         estimated: false,
         duration_ms: 1,
         attempts: "[]".into(),
+        guardrails: None,
     }
 }
 

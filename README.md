@@ -612,7 +612,8 @@ scrape_configs:
 Series: `uf_requests_total{endpoint,status_class}`, `uf_tokens_total{direction}`,
 `uf_cost_micros_total`, `uf_upstream_duration_seconds{provider}`,
 `uf_cache_hits_total`, `uf_cache_misses_total`, `uf_cache_flight_waits_total`, `uf_rate_limited_total{limit}`,
-`uf_budget_blocked_total`, `uf_circuit_open{provider,model}`,
+`uf_budget_blocked_total`, `uf_guardrail_actions_total{action,direction}`
+(`block`, `redact`, `flag`; `input`, `output`; one count per call), `uf_circuit_open{provider,model}`,
 `uf_log_records_dropped_total`, `uf_log_write_failures_total`,
 `uf_otel_spans_exported_total`, `uf_otel_spans_dropped_total`,
 `uf_otel_export_failures_total`, `uf_alert_deliveries_total{result}`
@@ -642,7 +643,9 @@ UF_OTEL_SAMPLE_RATIO=0.25 ultrafast serve
   `uf.embeddings` or `uf.playground`, with `uf.endpoint`, `uf.requested` (the
   model or route the caller asked for, cut at 256 bytes), `http.response.status_code`, `uf.stream`, `uf.cached`,
   `uf.estimated`, `uf.key_id` / `uf.user_id` / `uf.team_id` when known,
-  `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` when counted, and
+  `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` when counted,
+  `uf.guardrail.action` (`blocked`, `redacted` or `flagged`, the worst the
+  guardrails did to the call; absent when they found nothing), and
   the call's tags as `uf.tags.<name>`. Status is an error for 5xx. Under it, one
   client span per attempt that reached a provider, named
   `uf.attempt <provider>`, with `uf.provider`, `gen_ai.request.model`,

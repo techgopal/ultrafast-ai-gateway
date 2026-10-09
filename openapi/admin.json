@@ -3699,6 +3699,15 @@
             }
           },
           {
+            "name": "guardrail",
+            "in": "query",
+            "description": "Only calls whose worst guardrail action was this: `blocked`, `redacted` or `flagged` (a block is worse than a redaction, a redaction worse than a flag). Combines with the other filters.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "tag",
             "in": "query",
             "description": "Only calls with this tag, written `name:value` (the name ends at the first colon). Repeat it to require several tags: all must match.",
@@ -8814,6 +8823,23 @@
           }
         }
       },
+      "FlagLog": {
+        "type": "object",
+        "description": "A flag rule that matched.",
+        "required": [
+          "guardrail_id",
+          "rule_id"
+        ],
+        "properties": {
+          "guardrail_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rule_id": {
+            "type": "string"
+          }
+        }
+      },
       "FlagView": {
         "type": "object",
         "description": "A rule that flagged the text.",
@@ -8946,6 +8972,39 @@
             "items": {
               "$ref": "#/components/schemas/GuardrailView"
             }
+          }
+        }
+      },
+      "GuardrailLog": {
+        "type": "object",
+        "description": "The guardrail record of a call: `None` for a direction that found nothing.",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/LoggedAction",
+            "description": "The worst action of either direction."
+          },
+          "input": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SideLog"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SideLog"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -9548,6 +9607,7 @@
           "estimated",
           "duration_ms",
           "tags",
+          "guardrails",
           "attempts"
         ],
         "properties": {
@@ -9580,6 +9640,17 @@
           "estimated": {
             "type": "boolean",
             "description": "The tokens and cost are an estimate: a stream that ended without the\nprovider's report (the caller went away, or an error came after\ncontent was sent) is charged the input of the call and the streamed\ncharacters / 4, and `priced` stays true when the model has a price."
+          },
+          "guardrails": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GuardrailLog",
+                "description": "What the guardrails found, when they found anything: the worst\naction, and per direction the guardrails checked with (ids and names),\nthe one that blocked, the replacements made by PII type or rule id, and\nthe flag rules that matched. Never the text that matched. `null` when nothing was found."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "type": "integer",
@@ -9718,7 +9789,8 @@
           "cached",
           "estimated",
           "duration_ms",
-          "tags"
+          "tags",
+          "guardrails"
         ],
         "properties": {
           "at": {
@@ -9744,6 +9816,17 @@
           "estimated": {
             "type": "boolean",
             "description": "The tokens and cost are an estimate: a stream that ended without the\nprovider's report (the caller went away, or an error came after\ncontent was sent) is charged the input of the call and the streamed\ncharacters / 4, and `priced` stays true when the model has a price."
+          },
+          "guardrails": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GuardrailLog",
+                "description": "What the guardrails found, when they found anything: the worst\naction, and per direction the guardrails checked with (ids and names),\nthe one that blocked, the replacements made by PII type or rule id, and\nthe flag rules that matched. Never the text that matched. `null` when nothing was found."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "type": "integer",
@@ -9842,6 +9925,15 @@
             "format": "int64"
           }
         }
+      },
+      "LoggedAction": {
+        "type": "string",
+        "description": "What the checks of a call did, worst first: a block, else a redaction,\nelse a flag. The order is the order of severity.",
+        "enum": [
+          "flagged",
+          "redacted",
+          "blocked"
+        ]
       },
       "LoginLimits": {
         "type": "object",
@@ -11346,6 +11438,57 @@
           "needs_setup": {
             "type": "boolean",
             "description": "True while no user exists."
+          }
+        }
+      },
+      "SideLog": {
+        "type": "object",
+        "description": "The checks of one direction (the input of a call, or its output).",
+        "required": [
+          "action",
+          "checked_with"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/LoggedAction",
+            "description": "The worst thing that happened in this direction."
+          },
+          "blocked_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GuardrailRef",
+                "description": "The guardrail that blocked, when one did."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checked_with": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailRef"
+            },
+            "description": "The guardrails this direction was checked with."
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlagLog"
+            },
+            "description": "Flag rules that matched."
+          },
+          "redactions": {
+            "type": "object",
+            "description": "Replacements made, by PII type or rule id.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },

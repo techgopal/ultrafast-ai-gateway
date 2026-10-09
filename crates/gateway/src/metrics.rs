@@ -82,6 +82,8 @@ pub struct Metrics {
     cache_flight_waits: AtomicU64,
     rate_limited: [AtomicU64; LIMITS.len()],
     budget_blocked: AtomicU64,
+    /// By action (blocked, redacted, flagged), then direction (input, output).
+    guardrail_actions: [[AtomicU64; 2]; 3],
     otel_exported: AtomicU64,
     otel_dropped: AtomicU64,
     otel_failures: AtomicU64,
@@ -118,6 +120,21 @@ impl Metrics {
     pub fn record(&self, record: &RequestRecord) {
         if let Some(e) = ENDPOINTS.iter().position(|e| *e == record.endpoint) {
             self.requests[e][class_index(record.status)].fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(g) = &record.guardrails {
+            for (d, side) in [(0, &g.input), (1, &g.output)] {
+                let Some(side) = side else { continue };
+                let found = [
+                    side.blocked_by.is_some(),
+                    !side.redactions.is_empty(),
+                    !side.flags.is_empty(),
+                ];
+                for (a, found) in found.into_iter().enumerate() {
+                    if found {
+                        self.guardrail_actions[a][d].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
         }
         // A cache hit used no provider tokens.
         if let (Some(u), false) = (record.usage, record.cached) {
@@ -369,6 +386,22 @@ impl Metrics {
             "Calls refused because a budget was spent.",
         );
         let _ = writeln!(out, "uf_budget_blocked_total {}", n(&self.budget_blocked));
+
+        header(
+            &mut out,
+            "uf_guardrail_actions_total",
+            "counter",
+            "Calls a guardrail blocked, redacted or flagged, by direction. A call counts once per action and direction.",
+        );
+        for (a, action) in ["block", "redact", "flag"].into_iter().enumerate() {
+            for (d, direction) in ["input", "output"].into_iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    "uf_guardrail_actions_total{{action=\"{action}\",direction=\"{direction}\"}} {}",
+                    n(&self.guardrail_actions[a][d])
+                );
+            }
+        }
 
         header(
             &mut out,

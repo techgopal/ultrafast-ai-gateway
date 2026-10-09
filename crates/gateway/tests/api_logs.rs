@@ -33,6 +33,7 @@ fn log(at: &str, user: Option<i64>, team: Option<i64>, requested: &str) -> NewLo
             "status": 200, "duration_ms": 11
         }])
         .to_string(),
+        guardrails: None,
     }
 }
 
@@ -127,7 +128,7 @@ async fn the_row_has_names_and_every_field() {
             "requested": "r1", "endpoint": "chat", "stream": false, "status": 200,
             "provider": "main", "model": "gpt-4o",
             "input_tokens": 10, "output_tokens": 5,
-            "cost_micros": 70, "priced": true, "cached": false, "estimated": false, "duration_ms": 12, "tags": {},
+            "cost_micros": 70, "priced": true, "cached": false, "estimated": false, "duration_ms": 12, "tags": {}, "guardrails": null,
         })
     );
     // A key that is gone and a row without user or team: ids stay, names are null.
@@ -532,4 +533,115 @@ async fn a_tag_with_sql_looking_characters_is_only_a_name() {
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+// ---- guardrail outcome ------------------------------------------------------
+
+fn guarded(at: &str, user: i64, stored: Option<Value>) -> NewLog {
+    let mut row = log(at, Some(user), None, "g");
+    row.guardrails = stored.map(|g| g.to_string());
+    row
+}
+
+fn side(action: &str) -> Value {
+    json!({ "action": action, "checked_with": [{ "id": 3, "name": "pii" }] })
+}
+
+/// ids 1..=5: none, flagged (input), redacted (output), blocked (input),
+/// redacted input and blocked output (worst: blocked).
+async fn guarded_world() -> Org {
+    let org = org().await;
+    org.api
+        .store
+        .insert_logs(&[
+            guarded("2026-01-01 10:00:00", org.lena, None),
+            guarded(
+                "2026-01-02 10:00:00",
+                org.lena,
+                Some(json!({ "action": "flagged", "input": side("flagged") })),
+            ),
+            guarded(
+                "2026-01-03 10:00:00",
+                org.lena,
+                Some(json!({ "action": "redacted", "output": {
+                    "action": "redacted", "checked_with": [{ "id": 3, "name": "pii" }],
+                    "redactions": { "EMAIL": 2 } } })),
+            ),
+            guarded(
+                "2026-01-04 10:00:00",
+                org.lena,
+                Some(json!({ "action": "blocked", "input": {
+                    "action": "blocked", "checked_with": [{ "id": 3, "name": "pii" }],
+                    "blocked_by": { "id": 3, "name": "pii" } } })),
+            ),
+            guarded(
+                "2026-01-05 10:00:00",
+                org.lena,
+                Some(json!({ "action": "blocked",
+                    "input": side("redacted"), "output": side("blocked") })),
+            ),
+        ])
+        .await
+        .unwrap();
+    org
+}
+
+#[tokio::test]
+async fn the_guardrail_outcome_is_in_the_list_and_the_detail() {
+    let org = guarded_world().await;
+    let maya = org.sign_in("maya").await;
+    let (_, list) = org.call(Some(&maya), "GET", "/api/logs", None).await;
+    let by_id = |id: i64| {
+        list["logs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert!(by_id(1)["guardrails"].is_null());
+    assert_eq!(by_id(3)["guardrails"]["action"], "redacted");
+    assert_eq!(
+        by_id(3)["guardrails"]["output"]["redactions"],
+        json!({"EMAIL": 2})
+    );
+    assert_eq!(
+        by_id(4)["guardrails"]["input"]["blocked_by"],
+        json!({"id": 3, "name": "pii"})
+    );
+    let (_, one) = org.call(Some(&maya), "GET", "/api/logs/5", None).await;
+    assert_eq!(one["guardrails"]["action"], "blocked");
+    assert_eq!(one["guardrails"]["input"]["checked_with"][0]["name"], "pii");
+}
+
+#[tokio::test]
+async fn the_guardrail_filter_matches_the_worst_action_and_combines() {
+    let org = guarded_world().await;
+    let sorted = |mut v: Vec<i64>| {
+        v.sort_unstable();
+        v
+    };
+    for (query, expected) in [
+        ("?guardrail=blocked", vec![4, 5]),
+        ("?guardrail=redacted", vec![3]),
+        ("?guardrail=flagged", vec![2]),
+        ("?guardrail=blocked&before=5", vec![4]),
+    ] {
+        assert_eq!(sorted(ids(&org, "maya", query).await), expected, "{query}");
+    }
+}
+
+#[tokio::test]
+async fn a_guardrail_filter_of_another_word_is_refused() {
+    let org = guarded_world().await;
+    let maya = org.sign_in("maya").await;
+    let (status, body) = org
+        .call(Some(&maya), "GET", "/api/logs?guardrail=nope", None)
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["error"]["fields"]["guardrail"],
+        "must be blocked, redacted or flagged"
+    );
 }

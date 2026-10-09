@@ -635,6 +635,7 @@ function log(
     estimated: false,
     duration_ms: 850,
     tags: {},
+    guardrails: null,
     ...call,
   };
 }

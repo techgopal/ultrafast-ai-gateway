@@ -188,6 +188,10 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
         duration_ms: i64::try_from(record.duration_ms).unwrap_or(i64::MAX),
         attempts: serde_json::Value::Array(attempts).to_string(),
         tags: crate::tags::to_stored(&record.tags),
+        guardrails: record
+            .guardrails
+            .as_ref()
+            .map(crate::guardrails::log::GuardrailLog::to_stored),
     }
 }
 
@@ -266,6 +270,7 @@ mod tests {
             trace_parent: None,
             provider_kinds: Vec::new(),
             started_unix_ms: 0,
+            guardrails: None,
         };
         let prices: PriceLookup = Arc::new(|_, _| price(Some(2_000_000), Some(4_000_000)));
         let row = row_of(&record, &prices);
