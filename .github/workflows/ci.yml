@@ -47,6 +47,10 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Tests
         run: cargo test --all --no-fail-fast -- --include-ignored
+      # The guardrail CPU tests measure how scanning scales and only make
+      # sense in an optimised build (they are compiled out of debug builds).
+      - name: Guardrail CPU tests (release)
+        run: cargo test --release --locked -p ultrafast-gateway --lib guardrails
       - name: OpenAPI spec is current
         run: |
           if ! cargo run -q -p ultrafast-gateway -- openapi | diff - openapi/admin.json; then
