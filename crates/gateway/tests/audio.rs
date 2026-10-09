@@ -1216,3 +1216,77 @@ async fn the_prompt_of_a_transcription_is_checked_as_input() {
     assert!(!contains(sent, b"ada@example.com"));
     assert!(contains(sent, b"name=\"prompt\""));
 }
+
+// The bound on uploads is on receiving them: the place is given back when
+// the body has arrived, not held while the provider answers.
+#[tokio::test]
+async fn an_upload_place_is_given_back_once_the_body_has_arrived() {
+    let h = harness_with_state("openai", |s| {
+        s.audio_uploads = Arc::new(tokio::sync::Semaphore::new(1));
+    })
+    .await;
+    Mock::given(method("POST"))
+        .respond_with(tokens_answer().set_delay(Duration::from_millis(1500)))
+        .mount(&h.upstream)
+        .await;
+    let first = {
+        let app = h.app.clone();
+        let req = request(
+            &h,
+            "/v1/audio/transcriptions",
+            Body::from(form(&[("model", "p/m")], b"abc")),
+        );
+        tokio::spawn(async move { app.oneshot(req).await })
+    };
+    // The provider has the first call and is slow to answer.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(h.upstream.received_requests().await.unwrap().len(), 1);
+    assert_eq!(h.state.audio_uploads.available_permits(), 1);
+    let (s, _, text) = transcribe(&h, &[("model", "p/m")], b"abc").await;
+    assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&text));
+    assert_eq!(first.await.unwrap().unwrap().status(), StatusCode::OK);
+}
+
+// A body with no declared size that names the model first is charged an
+// estimate of what it turned out to be, so a token limit counts it.
+#[tokio::test]
+async fn a_chunked_upload_that_names_the_model_first_is_charged_tokens() {
+    use ultrafast_gateway::limits::{LimitScope, RateLimit};
+    let h = harness("openai").await;
+    // No usage in the answer: the estimate stays what the call was charged.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "hi" })))
+        .mount(&h.upstream)
+        .await;
+    let mut tx = h.store.begin().await.unwrap();
+    tx.upsert_limit(
+        LimitScope::Gateway,
+        None,
+        &RateLimit {
+            requests_per_minute: None,
+            tokens_per_minute: Some(2000),
+            concurrent: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    // 1 MiB is about 1300 tokens at the gateway's estimate.
+    let (body, _) = counted_upload(&[("model", "p/m")], MIB);
+    let (s, _, text) = send(&h, request(&h, "/v1/audio/transcriptions", body)).await;
+    assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&text));
+    let (body, _) = counted_upload(&[("model", "p/m")], MIB);
+    let (s, _, text) = send(&h, request(&h, "/v1/audio/transcriptions", body)).await;
+    assert_eq!(
+        s,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        String::from_utf8_lossy(&text)
+    );
+    assert_eq!(h.upstream.received_requests().await.unwrap().len(), 1);
+    // The refused one gave its tokens back: a small one still fits.
+    let (body, _) = counted_upload(&[("model", "p/m")], 1000);
+    let (s, _, text) = send(&h, request(&h, "/v1/audio/transcriptions", body)).await;
+    assert_eq!(s, StatusCode::OK, "{}", String::from_utf8_lossy(&text));
+}

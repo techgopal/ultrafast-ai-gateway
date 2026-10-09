@@ -694,3 +694,63 @@ async fn a_rate_limit_refuses_an_image_call_before_the_provider() {
     assert_eq!(v["error"]["type"], "rate_limit_error");
     assert_eq!(h.upstream.received_requests().await.unwrap().len(), 1);
 }
+
+/// One request per minute, gateway-wide.
+async fn one_request_a_minute(h: &Harness) {
+    use ultrafast_gateway::limits::LimitScope;
+    let mut tx = h.store.begin().await.unwrap();
+    tx.upsert_limit(
+        LimitScope::Gateway,
+        None,
+        &ultrafast_gateway::limits::RateLimit {
+            requests_per_minute: Some(1),
+            tokens_per_minute: None,
+            concurrent: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+}
+
+// A call refused with no provider reached counts against no limit: the next
+// good call still gets in.
+#[tokio::test]
+async fn a_model_of_the_wrong_kind_gives_its_rate_limit_permit_back() {
+    let h = harness("anthropic").await;
+    h.store
+        .insert_provider("q", "openai", &h.upstream.uri(), None)
+        .await
+        .unwrap();
+    allow_model(&h.store, "q", "m").await;
+    one_request_a_minute(&h).await;
+    Mock::given(method("POST"))
+        .respond_with(with_usage())
+        .mount(&h.upstream)
+        .await;
+    let (s, v) = generate(&h, BODY).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = generate(&h, &BODY.replace("p/m", "q/m")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn a_request_refused_while_it_is_built_gives_its_rate_limit_permit_back() {
+    let h = harness("openai").await;
+    allow_model(&h.store, "p", "gpt-image-1").await;
+    one_request_a_minute(&h).await;
+    Mock::given(method("POST"))
+        .respond_with(with_usage())
+        .mount(&h.upstream)
+        .await;
+    let (s, v) = generate(
+        &h,
+        r#"{"model":"p/gpt-image-1","prompt":"x","response_format":"b64_json"}"#,
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
+    let (s, v) = generate(&h, BODY).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}

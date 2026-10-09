@@ -353,6 +353,14 @@ impl Scope {
         }
     }
 
+    /// Gives back the request, the token estimate and the concurrency slot
+    /// the call holds, so that it can take them again.
+    pub fn release_permit(&mut self) {
+        if let Some(mut permit) = self.permit.take() {
+            permit.refund();
+        }
+    }
+
     /// A stream is handed to the caller. If it ends without the provider's
     /// usage after content, or the caller leaves, the call is charged an
     /// estimate: `input_tokens` in, and the streamed characters / 4 out.

@@ -45,9 +45,12 @@ pub const DEFAULT_MAX_PROVIDER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 pub const DEFAULT_MAX_IMAGE_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
 /// The largest audio file a transcription or translation takes.
 pub const DEFAULT_MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
-/// How many audio uploads are received at once, gateway-wide. A ninth is
-/// answered 503 before its body is read.
-pub const MAX_CONCURRENT_UPLOADS: usize = 8;
+/// How many audio uploads are received at once, gateway-wide, by default.
+/// One past the bound is answered 503 before its body is read. A place is
+/// held only while the body arrives, not while the provider answers.
+pub const DEFAULT_MAX_CONCURRENT_UPLOADS: usize = 8;
+/// The longest `/v1` waits for the database to give an older prompt version.
+pub const DEFAULT_PROMPT_READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// The longest an audio upload may take to arrive.
 pub const DEFAULT_UPLOAD_TOTAL: Duration = Duration::from_secs(60);
 /// The longest an audio upload may send nothing.
@@ -100,6 +103,9 @@ pub struct AppState {
     pub max_speech_response_bytes: usize,
     /// Audio uploads being received at once; each holds up to the audio cap.
     pub audio_uploads: Arc<Semaphore>,
+    /// The longest a call waits for an older prompt version (read from the
+    /// database); past it the call is answered 503.
+    pub prompt_read_timeout: Duration,
     /// The longest an upload may take to arrive, and the longest it may
     /// stay silent.
     pub upload_total: Duration,
@@ -215,7 +221,8 @@ impl AppState {
             max_image_response_bytes: DEFAULT_MAX_IMAGE_RESPONSE_BYTES,
             max_audio_bytes: DEFAULT_MAX_AUDIO_BYTES,
             max_speech_response_bytes: DEFAULT_MAX_SPEECH_RESPONSE_BYTES,
-            audio_uploads: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+            audio_uploads: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_UPLOADS)),
+            prompt_read_timeout: DEFAULT_PROMPT_READ_TIMEOUT,
             upload_total: DEFAULT_UPLOAD_TOTAL,
             upload_idle: DEFAULT_UPLOAD_IDLE,
             slow_calls: SlowCalls::default(),

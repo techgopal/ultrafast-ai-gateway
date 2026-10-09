@@ -124,6 +124,18 @@ enum Command {
             value_parser = clap::value_parser!(u64).range(1..=1_073_741_824)
         )]
         max_audio_bytes: u64,
+        /// How many audio uploads are received at once, per process. Each
+        /// holds up to `--max-audio-bytes` in memory while it arrives; one
+        /// past the bound is refused with 503 before its body is read. A
+        /// place is given back once the body has arrived, not held while the
+        /// provider answers.
+        #[arg(
+            long,
+            env = "UF_MAX_CONCURRENT_UPLOADS",
+            default_value_t = ultrafast_gateway::app::DEFAULT_MAX_CONCURRENT_UPLOADS as u64,
+            value_parser = clap::value_parser!(u64).range(1..=1024)
+        )]
+        max_concurrent_uploads: u64,
     },
     /// Manage providers.
     Provider {
@@ -537,6 +549,7 @@ async fn main() -> Result<()> {
             otel_service_name,
             otel_sample_ratio,
             max_audio_bytes,
+            max_concurrent_uploads,
         } => {
             let addr = serve_address(&host, port)?;
             // So a wrong image (one that ignores UF_DATABASE_URL) is visible.
@@ -574,6 +587,9 @@ async fn main() -> Result<()> {
                 .filter(|t| !t.is_empty());
             state.cookie_secure = !insecure_cookies;
             state.max_audio_bytes = usize::try_from(max_audio_bytes).unwrap_or(usize::MAX);
+            state.audio_uploads = Arc::new(tokio::sync::Semaphore::new(
+                usize::try_from(max_concurrent_uploads).unwrap_or(1024),
+            ));
             state.trusted_proxies = parse_trusted_proxies(&trusted_proxies)?;
             state.public_url = public_url
                 .filter(|u| !u.trim().is_empty())
@@ -776,6 +792,7 @@ mod tests {
             otel_service_name: "ultrafast".into(),
             otel_sample_ratio: 1.0,
             max_audio_bytes: 1,
+            max_concurrent_uploads: 1,
         };
         for (url, insecure, ok) in [
             (None, false, true),
@@ -831,5 +848,26 @@ mod tests {
         assert_eq!(cap(&["--max-audio-bytes", "1048576"]), 1_048_576);
         assert!(parse(&["--max-audio-bytes", "0"]).is_err());
         assert!(parse(&["--max-audio-bytes", "1073741825"]).is_err());
+    }
+
+    #[test]
+    fn the_upload_bound_is_a_flag_with_bounds() {
+        let parse = |args: &[&str]| {
+            let mut all = vec!["ultrafast", "serve"];
+            all.extend_from_slice(args);
+            Cli::try_parse_from(all)
+        };
+        let bound = |args: &[&str]| match parse(args).unwrap().command {
+            Command::Serve {
+                max_concurrent_uploads,
+                ..
+            } => max_concurrent_uploads,
+            _ => unreachable!(),
+        };
+        assert_eq!(bound(&[]), 8);
+        assert_eq!(bound(&["--max-concurrent-uploads", "64"]), 64);
+        assert_eq!(bound(&["--max-concurrent-uploads", "1024"]), 1024);
+        assert!(parse(&["--max-concurrent-uploads", "0"]).is_err());
+        assert!(parse(&["--max-concurrent-uploads", "1025"]).is_err());
     }
 }

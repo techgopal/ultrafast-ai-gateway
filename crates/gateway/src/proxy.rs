@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -760,10 +761,6 @@ const MAX_FORM_FIELDS: usize = 32;
 /// takes the rate limits, or answers with the refusal.
 type Early<'a> = &'a mut (dyn FnMut(&str, u64) -> Result<(), Response> + Send);
 
-/// The place an upload holds among the gateway's concurrent uploads, until
-/// the call that carries its file ends.
-type UploadSlot = tokio::sync::OwnedSemaphorePermit;
-
 /// Reads the body of a call and parses it.
 async fn read_call(
     state: &AppState,
@@ -772,11 +769,11 @@ async fn read_call(
     form_type: Option<&str>,
     shape: Shape,
     early: Early<'_>,
-) -> Result<(Call, Option<PromptRef>, Option<UploadSlot>), Response> {
+) -> Result<(Call, Option<PromptRef>), Response> {
     if let Some(task) = endpoint.upload_task() {
         return read_upload(state, task, body, form_type, shape, early)
             .await
-            .map(|(call, slot)| (call, None, Some(slot)));
+            .map(|call| (call, None));
     }
     let body = match axum::body::to_bytes(body, state.max_body_bytes).await {
         Ok(b) => b,
@@ -797,10 +794,7 @@ async fn read_call(
             });
         }
     };
-    endpoint
-        .parse(&body)
-        .map(|(call, prompt)| (call, prompt, None))
-        .map_err(|e| shape.translate_error(&e))
+    endpoint.parse(&body).map_err(|e| shape.translate_error(&e))
 }
 
 /// Renders the template a chat call names into the call. A template that
@@ -828,15 +822,22 @@ async fn use_prompt(
     } else if let Some(kept) = state.old_prompts.get(template, number) {
         kept
     } else {
-        let row = state
-            .store
-            .prompt_version(template.id, number)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "an older prompt version could not be read");
-                UseError::Unavailable
-            })?
-            .ok_or(UseError::VersionNotFound(number))?;
+        // `/v1` does not wait on the database for long: a busy pool answers
+        // 503 rather than holding the call for the pool's own timeout.
+        let row = tokio::time::timeout(
+            state.prompt_read_timeout,
+            state.store.prompt_version(template.id, number),
+        )
+        .await
+        .map_err(|_| {
+            tracing::error!("an older prompt version was not read in time");
+            UseError::Unavailable
+        })?
+        .map_err(|e| {
+            tracing::error!(error = %e, "an older prompt version could not be read");
+            UseError::Unavailable
+        })?
+        .ok_or(UseError::VersionNotFound(number))?;
         let read = Arc::new(Version::of_row(&row).ok_or(UseError::Unavailable)?);
         state.old_prompts.put(template, read.clone());
         read
@@ -885,7 +886,7 @@ async fn read_upload(
     form_type: Option<&str>,
     shape: Shape,
     early: Early<'_>,
-) -> Result<(Call, UploadSlot), Response> {
+) -> Result<Call, Response> {
     let cap = state.max_audio_bytes;
     let too_large = || {
         shape.error(
@@ -900,13 +901,15 @@ async fn read_upload(
         return Err(bad("The request must be multipart/form-data."));
     };
     // Only so many uploads are received at once, whatever the keys: each
-    // holds up to the cap in memory. The body of a ninth is not read.
-    let Ok(slot) = state.audio_uploads.clone().try_acquire_owned() else {
+    // holds up to the cap in memory. The body of one past the bound is not
+    // read. The place is held while the body arrives and given back when it
+    // has (this function ends), not while the provider answers.
+    let Ok(_slot) = state.audio_uploads.clone().try_acquire_owned() else {
         tracing::warn!("an audio upload was refused: too many are being received");
         let mut busy = shape.error(
             StatusCode::SERVICE_UNAVAILABLE,
             "upstream_error",
-            "The gateway is busy receiving other uploads. Try again shortly.",
+            "Too many audio uploads are in progress. Try again shortly.",
         );
         busy.headers_mut().insert(RETRY_AFTER, 1.into());
         return Err(busy);
@@ -1044,7 +1047,7 @@ async fn read_upload(
         return Err(bad("file is required"));
     };
     audio::parse_transcription(task, &fields, info)
-        .map(|r| (Call::Transcribe(r, Arc::new(chunks)), slot))
+        .map(|r| Call::Transcribe(r, Arc::new(chunks)))
         .map_err(|e| shape.translate_error(&e))
 }
 
@@ -1065,6 +1068,9 @@ async fn dispatch(
     // before the file has its access decided and its rate limits taken here,
     // before the file is read (`early`); the permit then stands for 3a.
     let mut early_permit = false;
+    // What the early permit was charged for: a body with no declared size
+    // costs nothing there, and is charged again once it has been read.
+    let mut early_declared = 0u64;
     // A refusal is a whole response, as everywhere else in this function.
     #[allow(clippy::result_large_err)]
     let mut early = |model: &str, declared: u64| -> Result<(), Response> {
@@ -1088,9 +1094,10 @@ async fn dispatch(
             }
         }
         early_permit = true;
+        early_declared = declared;
         Ok(())
     };
-    let (mut call, prompt, _upload_slot) =
+    let (mut call, prompt) =
         match read_call(state, endpoint, body, form_type, shape, &mut early).await {
             Ok(read) => read,
             Err(refusal) => {
@@ -1098,6 +1105,23 @@ async fn dispatch(
                 return refusal;
             }
         };
+    // A file of unknown size was let in on no tokens: the permit is given
+    // back and the call charged what the file came to (a limit may refuse it
+    // now, as it would a call that named its model last).
+    if early_permit && early_declared == 0 {
+        record.release_permit();
+        let subjects = snapshot.subjects_of(actor.key_id, key.user_id, key.team_id);
+        match state
+            .rate
+            .acquire(&subjects, call.estimated_tokens(), Instant::now())
+        {
+            Ok(permit) => record.hold(permit),
+            Err(refusal) => {
+                state.metrics.rate_limited(refusal.limit_name);
+                return shape.rate_limited(&refusal);
+            }
+        }
+    }
     // 2a. A call that names a prompt template becomes the template's
     // messages and settings plus its own. Before access (the template may
     // name the model), the limits and the guardrails: they all see what the
@@ -1290,6 +1314,9 @@ async fn dispatch(
 
     // 4. Try the targets in order. The request ends `total_timeout` from now.
     let request_deadline = tokio::time::Instant::now() + settings.total_timeout;
+    // Whether any try got as far as sending: a refusal before that reached
+    // no provider and counts against no limit.
+    let sent = AtomicBool::new(false);
     let served = routing::run(
         &*state.health,
         record,
@@ -1306,6 +1333,7 @@ async fn dispatch(
                 target,
                 limits,
                 call.response_cap(state),
+                &sent,
             )
         },
     )
@@ -1411,14 +1439,27 @@ async fn dispatch(
                 target: committed.target.clone(),
                 breaker: settings.breaker,
             };
-            stream_to_caller(*committed, guard, endpoint, echo_of(&call))
+            stream_to_caller(*committed, guard, endpoint, stream_echo(endpoint, &call))
         }
-        Err(Stop::Fatal(e)) => e.into_response(shape),
-        Err(Stop::Exhausted(_)) if wrong_kind(snapshot, key, &call, &candidates) => shape.error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request_error",
-            call.not_supported(),
-        ),
+        Err(Stop::Fatal(e)) => {
+            // Refused while the request was built: no provider was reached.
+            if !sent.load(AtomicOrdering::Relaxed) {
+                if let Some(record) = scope.as_mut() {
+                    record.refund_permit();
+                }
+            }
+            e.into_response(shape)
+        }
+        Err(Stop::Exhausted(_)) if wrong_kind(snapshot, key, &call, &candidates) => {
+            if let Some(record) = scope.as_mut() {
+                record.refund_permit();
+            }
+            shape.error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                call.not_supported(),
+            )
+        }
         Err(Stop::Exhausted(ex)) => exhausted_response(shape, ex),
     }
 }
@@ -1918,6 +1959,33 @@ async fn try_target(
     target: TargetRef,
     limits: Limits,
     max_response: usize,
+    sent: &AtomicBool,
+) -> Result<Success<Served>, Failure<CallError>> {
+    let attempt = try_target_once(http, call, provider, target, limits, max_response, sent);
+    if !call.billed_once() {
+        return attempt.await;
+    }
+    // A call that is paid for once and runs out of the request's time was
+    // sent (or may have been): it is not repeated, and the caller is told so,
+    // not that no provider could serve it. The same instant ends the routing
+    // loop's own wait, but this one is polled first.
+    match timeout_at(limits.deadline, attempt).await {
+        Ok(done) => done,
+        Err(_) => {
+            tracing::warn!("a billed-once call ran out of time after it was sent");
+            Err(unfinished(None))
+        }
+    }
+}
+
+async fn try_target_once(
+    http: &reqwest::Client,
+    call: &Call,
+    provider: Option<&SnapProvider>,
+    target: TargetRef,
+    limits: Limits,
+    max_response: usize,
+    sent: &AtomicBool,
 ) -> Result<Success<Served>, Failure<CallError>> {
     let Some(provider) = provider else {
         return Err(retryable(CallError::Lost, None));
@@ -1944,6 +2012,8 @@ async fn try_target(
         error: CallError::Translate(e),
         status: None,
     })?;
+    // From here a request may reach the provider.
+    sent.store(true, AtomicOrdering::Relaxed);
     let upstream = match timeout_at(first_by, send(http, out)).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
@@ -2234,23 +2304,35 @@ fn echo_of(call: &Call) -> responses::Echo {
     match call {
         Call::Chat(r) => responses::Echo::of(r),
         // Only a chat call is answered on `/v1/responses`.
-        Call::Embed(_) | Call::Image(_) | Call::Transcribe(..) | Call::Speech(_) => {
-            responses::Echo::of(&ChatRequest {
-                model: String::new(),
-                messages: Vec::new(),
-                max_tokens: None,
-                temperature: None,
-                top_p: None,
-                stop: None,
-                stream: false,
-                tools: Vec::new(),
-                tool_choice: None,
-                parallel_tool_calls: None,
-                response_format: None,
-                reasoning_effort: None,
-            })
-        }
+        Call::Embed(_) | Call::Image(_) | Call::Transcribe(..) | Call::Speech(_) => no_echo(),
     }
+}
+
+fn no_echo() -> responses::Echo {
+    responses::Echo::of(&empty_request())
+}
+
+fn empty_request() -> ChatRequest {
+    ChatRequest {
+        model: String::new(),
+        messages: Vec::new(),
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        stop: None,
+        stream: false,
+        tools: Vec::new(),
+        tool_choice: None,
+        parallel_tool_calls: None,
+        response_format: None,
+        reasoning_effort: None,
+    }
+}
+
+/// The settings a streamed answer repeats: only `/v1/responses` repeats
+/// any, so no other stream copies the request's tool definitions.
+fn stream_echo(endpoint: Endpoint, call: &Call) -> Option<responses::Echo> {
+    matches!(endpoint, Endpoint::Responses).then(|| echo_of(call))
 }
 
 /// Renders a stream in the caller's format.
@@ -2265,7 +2347,7 @@ enum StreamFormat {
 }
 
 impl StreamFormat {
-    fn new(endpoint: Endpoint, model: &str, echo: responses::Echo) -> Self {
+    fn new(endpoint: Endpoint, model: &str, echo: Option<responses::Echo>) -> Self {
         match endpoint {
             Endpoint::Messages => {
                 StreamFormat::Anthropic(anthropic::StreamRenderer::new(&stream_id("msg"), model))
@@ -2274,7 +2356,7 @@ impl StreamFormat {
                 &response_id(),
                 model,
                 now_secs(),
-                echo,
+                echo.unwrap_or_else(no_echo),
             )),
             _ => StreamFormat::OpenAi {
                 id: stream_id("chatcmpl"),
@@ -2819,7 +2901,7 @@ fn stream_to_caller(
     committed: Committed,
     record: StreamRecord,
     endpoint: Endpoint,
-    echo: responses::Echo,
+    echo: Option<responses::Echo>,
 ) -> Response {
     let body = async_stream::stream! {
         let mut record = record;
@@ -2980,6 +3062,15 @@ fn stream_to_caller(
 mod tests {
     use super::*;
     use axum::http::HeaderMap;
+
+    #[test]
+    fn only_a_responses_stream_builds_the_echo_of_the_request() {
+        let call = Call::Chat(empty_request());
+        for endpoint in [Endpoint::Chat, Endpoint::Messages, Endpoint::Playground] {
+            assert!(stream_echo(endpoint, &call).is_none());
+        }
+        assert!(stream_echo(Endpoint::Responses, &call).is_some());
+    }
 
     #[test]
     fn a_held_answer_is_appended_to_one_buffer_not_kept_event_by_event() {
