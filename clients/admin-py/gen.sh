@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regenerates ultrafast_admin/_generated/ from ../../openapi/admin.json.
-# The generator and the formatter it runs are pinned; the venv lives under
+# The generator, the formatter it runs and its dependencies (constraints.txt) are pinned; the venv lives under
 # ~/.cache, never in the repository. Running it twice changes nothing.
 set -euo pipefail
 
@@ -11,12 +11,20 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 venv="${UF_ADMIN_GEN_VENV:-$HOME/.cache/uf-admin-py/gen-venv}"
 spec="$here/../../openapi/admin.json"
 
-if ! "$venv/bin/openapi-python-client" --version 2>/dev/null | grep -q "$GENERATOR_VERSION"; then
+# Both tools must be the pinned versions, and every dependency of the generator
+# is pinned by constraints.txt, so the output does not depend on the day it runs.
+if ! "$venv/bin/openapi-python-client" --version 2>/dev/null | grep -q "$GENERATOR_VERSION" \
+  || ! "$venv/bin/ruff" --version 2>/dev/null | grep -q "$RUFF_VERSION"; then
+  rm -rf "$venv"
   python3 -m venv "$venv"
-  "$venv/bin/pip" install --quiet "openapi-python-client==$GENERATOR_VERSION" "ruff==$RUFF_VERSION"
+  "$venv/bin/pip" install --quiet -c "$here/constraints.txt" \
+    "openapi-python-client==$GENERATOR_VERSION" "ruff==$RUFF_VERSION"
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/uf-admin-gen.XXXXXX")"
+# Scratch space under ~/.cache, not the small /tmp.
+scratch="$HOME/.cache/uf-admin-py"
+mkdir -p "$scratch"
+work="$(mktemp -d "$scratch/gen.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 python3 "$here/prepare_spec.py" "$spec" "$work/admin.json"

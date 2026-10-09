@@ -16,7 +16,8 @@ adds the client, the error type, and the two downloads::
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from typing import Any, NoReturn, Self
 
 import httpx
@@ -78,36 +79,84 @@ def _error_of(status: int, content: bytes, token: str) -> AdminApiError:
     return AdminApiError(status, f"http_{status}", _redact(text if text else f"HTTP {status}", token))
 
 
-def _unreachable(error: httpx.TransportError, token: str, request: httpx.Request | None) -> AdminApiError:
+def _unreachable(error: httpx.TransportError, token: str) -> AdminApiError:
     if isinstance(error, httpx.TimeoutException):
         return AdminApiError(0, "timeout", "No answer within the timeout.")
     return AdminApiError(0, "network_error", _redact(str(error) or "the request failed", token))
 
 
-class _Guard(httpx.BaseTransport):
-    """Turns a failure to reach the gateway, and any 4xx/5xx answer, into an ``AdminApiError``.
+def _budget(request: httpx.Request) -> float | None:
+    """The total time a request may take: the largest phase of its httpx timeout (None: no limit)."""
+    phases = request.extensions.get("timeout")
+    values = [v for v in phases.values() if v is not None] if isinstance(phases, dict) else []
+    return max(values) if values else None
 
-    Done below the generated code so that every function (``sync``,
-    ``sync_detailed``, ``asyncio``, ...) fails the same way, whatever the body of
-    the answer is: the generated parsers would otherwise raise a JSON error for a
-    proxy's HTML page.
+
+class _Deadline:
+    """A total time limit over the phases of one request, on top of httpx's per-phase timeouts.
+
+    httpx times each connect, write and read on its own, so a server that sends a
+    byte now and then never trips it. The limit is checked as the body arrives, and
+    the read timeout of the chunk to come is cut to what is left.
+    """
+
+    def __init__(self, request: httpx.Request) -> None:
+        self._request = request
+        self._budget = _budget(request)
+        self._started = time.monotonic()
+
+    def check(self) -> None:
+        """Raises the timeout error when the time is used up; else shortens the next read."""
+        if self._budget is None:
+            return
+        left = self._budget - (time.monotonic() - self._started)
+        if left <= 0:
+            raise AdminApiError(0, "timeout", "No answer within the timeout.")
+        phases = self._request.extensions.get("timeout")
+        if isinstance(phases, dict) and phases.get("read") is not None:
+            phases["read"] = min(phases["read"], left)
+
+
+def _settled(response: httpx.Response, request: httpx.Request, body: bytes, token: str) -> httpx.Response:
+    if response.status_code >= 400:
+        raise _error_of(response.status_code, body, token)
+    return httpx.Response(
+        response.status_code,
+        headers=response.headers,
+        content=body,
+        request=request,
+        extensions=response.extensions,
+    )
+
+
+class _Guard(httpx.BaseTransport):
+    """Makes every failure of a call an ``AdminApiError``, below the generated code.
+
+    That covers a failure to reach the gateway, one while its body arrives, a total
+    deadline, and any 4xx/5xx answer whatever its body is (the generated parsers
+    would raise a JSON error for a proxy's HTML page). The body is read here, so
+    every generated function (``sync``, ``sync_detailed``, ``asyncio``, ...) fails
+    the same way.
     """
 
     def __init__(self, inner: httpx.BaseTransport, token: str) -> None:
         self._inner, self._token = inner, token
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
+        deadline = _Deadline(request)
         try:
             response = self._inner.handle_request(request)
-        except httpx.TransportError as error:
-            raise _unreachable(error, self._token, request) from None
-        if response.status_code >= 400:
             try:
-                response.read()
+                body = bytearray()
+                deadline.check()
+                for chunk in response.stream:  # type: ignore[union-attr]
+                    body += chunk
+                    deadline.check()
             finally:
                 response.close()
-            raise _error_of(response.status_code, response.content, self._token)
-        return response
+        except httpx.TransportError as error:
+            raise _unreachable(error, self._token) from None
+        return _settled(response, request, bytes(body), self._token)
 
     def close(self) -> None:
         self._inner.close()
@@ -118,37 +167,128 @@ class _AsyncGuard(httpx.AsyncBaseTransport):
         self._inner, self._token = inner, token
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        deadline = _Deadline(request)
         try:
             response = await self._inner.handle_async_request(request)
-        except httpx.TransportError as error:
-            raise _unreachable(error, self._token, request) from None
-        if response.status_code >= 400:
             try:
-                await response.aread()
+                body = bytearray()
+                deadline.check()
+                async for chunk in response.stream:  # type: ignore[union-attr]
+                    body += chunk
+                    deadline.check()
             finally:
                 await response.aclose()
-            raise _error_of(response.status_code, response.content, self._token)
-        return response
+        except httpx.TransportError as error:
+            raise _unreachable(error, self._token) from None
+        return _settled(response, request, bytes(body), self._token)
 
     async def aclose(self) -> None:
         await self._inner.aclose()
 
 
+class _HttpClient(httpx.Client):
+    """Maps what is raised above the transport: use after ``close()``."""
+
+    def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        try:
+            return super().send(request, **kwargs)
+        except RuntimeError:
+            if self.is_closed:
+                raise AdminApiError(0, "network_error", "The client is closed.") from None
+            raise
+
+
+class _AsyncHttpClient(httpx.AsyncClient):
+    async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        try:
+            return await super().send(request, **kwargs)
+        except RuntimeError:
+            if self.is_closed:
+                raise AdminApiError(0, "network_error", "The client is closed.") from None
+            raise
+
+
+_Transports = Callable[[], tuple[httpx.BaseTransport, httpx.AsyncBaseTransport]]
+
+
 class _Client(AuthenticatedClient):
-    """The generated client, whose representation never shows the token."""
+    """The generated client, with guarded httpx clients and a representation that never shows the token.
+
+    ``with_headers``, ``with_cookies`` and ``with_timeout`` return a copy that is
+    guarded the same way, with the bearer header and the same transport kind (the
+    generated versions would build a plain httpx client). The original is not changed.
+    """
+
+    _transports: _Transports
+    _timeout_seconds: httpx.Timeout
 
     def __repr__(self) -> str:
         return f"AuthenticatedClient(base_url={self._base_url!r})"
 
     __str__ = __repr__
 
+    def with_headers(self, headers: dict[str, str]) -> Self:
+        return _make_client(
+            self._base_url,
+            self.token,
+            self._transports,
+            self._timeout_seconds,
+            {**self._headers, **headers},
+            self._cookies,
+        )  # type: ignore[return-value]
+
+    def with_cookies(self, cookies: dict[str, str]) -> Self:
+        return _make_client(
+            self._base_url,
+            self.token,
+            self._transports,
+            self._timeout_seconds,
+            self._headers,
+            {**self._cookies, **cookies},
+        )  # type: ignore[return-value]
+
+    def with_timeout(self, timeout: httpx.Timeout) -> Self:
+        return _make_client(self._base_url, self.token, self._transports, timeout, self._headers, self._cookies)  # type: ignore[return-value]
+
+
+def _make_client(
+    base: str,
+    token: str,
+    transports: _Transports,
+    timeout: httpx.Timeout,
+    headers: Mapping[str, str],
+    cookies: Mapping[str, str],
+) -> _Client:
+    client = _Client(base_url=base, token=token, timeout=timeout, headers=dict(headers), cookies=dict(cookies))
+    client._transports = transports
+    client._timeout_seconds = timeout
+    sync_inner, async_inner = transports()
+    sent = {"Authorization": f"Bearer {token}", **headers}
+    client.set_httpx_client(
+        _HttpClient(
+            base_url=base, headers=sent, cookies=dict(cookies), timeout=timeout, transport=_Guard(sync_inner, token)
+        )
+    )
+    client.set_async_httpx_client(
+        _AsyncHttpClient(
+            base_url=base,
+            headers=sent,
+            cookies=dict(cookies),
+            timeout=timeout,
+            transport=_AsyncGuard(async_inner, token),
+        )
+    )
+    return client
+
 
 class AdminClient:
     """The admin API of one gateway, with an access token (Account, Access tokens).
 
     ``client`` is the generated ``AuthenticatedClient`` to pass to every call.
-    ``timeout`` is per request, in seconds. ``transport`` replaces the network
-    (for tests): an ``httpx.BaseTransport`` that may also be async.
+    ``timeout`` is per request, in seconds, and is a total: connecting, sending and
+    receiving the whole answer must fit in it. A call that runs out raises
+    ``AdminApiError`` with status 0 and code ``timeout``. ``transport`` replaces the
+    network (for tests): an ``httpx.BaseTransport`` that may also be async.
     """
 
     def __init__(
@@ -159,19 +299,15 @@ class AdminClient:
         *,
         transport: httpx.BaseTransport | httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        base = base_url.rstrip("/")
-        limit = httpx.Timeout(timeout)
-        headers = {"Authorization": f"Bearer {token}"}
-        sync_inner = transport if isinstance(transport, httpx.BaseTransport) else httpx.HTTPTransport()
-        async_inner = transport if isinstance(transport, httpx.AsyncBaseTransport) else httpx.AsyncHTTPTransport()
-        client = _Client(base_url=base, token=token, timeout=limit)
-        client.set_httpx_client(
-            httpx.Client(base_url=base, headers=headers, timeout=limit, transport=_Guard(sync_inner, token))
+        def transports() -> tuple[httpx.BaseTransport, httpx.AsyncBaseTransport]:
+            return (
+                transport if isinstance(transport, httpx.BaseTransport) else httpx.HTTPTransport(),
+                transport if isinstance(transport, httpx.AsyncBaseTransport) else httpx.AsyncHTTPTransport(),
+            )
+
+        self.client: AuthenticatedClient = _make_client(
+            base_url.rstrip("/"), token, transports, httpx.Timeout(timeout), {}, {}
         )
-        client.set_async_httpx_client(
-            httpx.AsyncClient(base_url=base, headers=headers, timeout=limit, transport=_AsyncGuard(async_inner, token))
-        )
-        self.client: AuthenticatedClient = client
         self._token = token
 
     def __repr__(self) -> str:
@@ -208,25 +344,27 @@ class AdminClient:
             raise _error_of(int(response.status_code), response.content, self._token)
         return response.parsed
 
-    def _checked(self, response: httpx.Response) -> httpx.Response:
-        if not response.is_success:
-            raise _error_of(response.status_code, response.content, self._token)
-        return response
+    def download_backup(self, timeout: float | None = None) -> bytes:
+        """The database as the bytes of a SQLite file (``GET /api/backup``).
 
-    def download_backup(self) -> bytes:
-        """The database as the bytes of a SQLite file (``GET /api/backup``)."""
-        return self._checked(self.client.get_httpx_client().get("/api/backup")).content
+        ``timeout`` (seconds) replaces the client's for this download.
+        """
+        return self.client.get_httpx_client().get("/api/backup", timeout=_per_call(timeout)).content
 
-    async def adownload_backup(self) -> bytes:
-        return self._checked(await self.client.get_async_httpx_client().get("/api/backup")).content
+    async def adownload_backup(self, timeout: float | None = None) -> bytes:
+        return (await self.client.get_async_httpx_client().get("/api/backup", timeout=_per_call(timeout))).content
 
-    def export_config(self) -> dict[str, Any]:
+    def export_config(self, timeout: float | None = None) -> dict[str, Any]:
         """The configuration file (``GET /api/config/export``), parsed."""
-        data: dict[str, Any] = self._checked(self.client.get_httpx_client().get("/api/config/export")).json()
+        response = self.client.get_httpx_client().get("/api/config/export", timeout=_per_call(timeout))
+        data: dict[str, Any] = response.json()
         return data
 
-    async def aexport_config(self) -> dict[str, Any]:
-        data: dict[str, Any] = self._checked(
-            await self.client.get_async_httpx_client().get("/api/config/export")
-        ).json()
+    async def aexport_config(self, timeout: float | None = None) -> dict[str, Any]:
+        response = await self.client.get_async_httpx_client().get("/api/config/export", timeout=_per_call(timeout))
+        data: dict[str, Any] = response.json()
         return data
+
+
+def _per_call(timeout: float | None) -> Any:
+    return httpx.USE_CLIENT_DEFAULT if timeout is None else httpx.Timeout(timeout)

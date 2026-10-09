@@ -53,10 +53,23 @@ a call that fails raises `AdminApiError(status, code, message, fields)`:
 | other | `http_<status>` | an answer that is not the gateway's error shape |
 | 0 | `timeout`, `network_error` | no answer |
 
-The token is sent only as a bearer header and never appears in an error, a
-`repr` or a message. Downloads: `api.download_backup()` returns the bytes of a
-SQLite file, `api.export_config()` the configuration file as a `dict` (async:
-`adownload_backup`, `aexport_config`).
+The token is sent only as a bearer header and is never printed: it does not
+appear in an error, a `repr`, a `str` or a message, and an `AdminClient` cannot
+be pickled. It is readable by code you run (`api.client.token`, the httpx
+client's headers), as with any HTTP client.
+
+`timeout` (seconds, default 30) is a total for one call: connecting, sending and
+receiving the whole answer. A call that runs out, or whose answer stalls or
+drips, raises `AdminApiError` with status 0 and code `timeout`. Use after
+`close()` raises `AdminApiError` (status 0, `network_error`).
+`api.client.with_timeout(httpx.Timeout(5))`, `.with_headers(...)` and
+`.with_cookies(...)` return copies that keep the bearer header and the same
+error handling.
+
+Downloads: `api.download_backup()` returns the bytes of a SQLite file,
+`api.export_config()` the configuration file as a `dict` (async:
+`adownload_backup`, `aexport_config`); each takes `timeout=` seconds for that
+call.
 
 ## Regenerating
 
@@ -68,4 +81,5 @@ and nothing changes. Do not edit generated files.
 
 `pip install -e '.[test]' && pytest` starts the real gateway (a debug build,
 `cargo build -p ultrafast-gateway`, or the binary named by `UF_E2E_BINARY`) on a
-free port with a temporary data directory.
+free port with a temporary data directory under `~/.cache`. `CARGO_TARGET_DIR` is
+honoured (the binary is found with `cargo metadata`).

@@ -12,9 +12,11 @@ repository, built with `cargo build -p ultrafast-gateway` (see `conftest.py`).
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -58,13 +60,36 @@ def _is_deployed(path: Path) -> bool:
     return any(c == d or d in c.parents for c in candidates for d in deployed)
 
 
+# Scratch data lives under ~/.cache, not the small /tmp.
+SCRATCH = Path.home() / ".cache" / "uf-admin-sdk-tests"
+
+_binary: Path | None = None
+
+
+def _run(*command: str) -> str:
+    done = subprocess.run(command, cwd=REPOSITORY, capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        raise RuntimeError(f"{' '.join(command)} failed:\n{done.stderr}")
+    return done.stdout
+
+
 def binary_path() -> Path:
+    """`UF_E2E_BINARY`, or the debug build, made now (once)."""
+    global _binary
+    if _binary is not None:
+        return _binary
     given = os.environ.get(BINARY_VARIABLE, "")
-    path = Path(given).resolve() if given else REPOSITORY / "target" / "debug" / "ultrafast"
+    if given:
+        path = Path(given).resolve()
+    else:
+        _run("cargo", "build", "-p", "ultrafast-gateway")
+        metadata = json.loads(_run("cargo", "metadata", "--no-deps", "--format-version", "1"))
+        path = Path(metadata["target_directory"]) / "debug" / "ultrafast"
     if _is_deployed(path):
         raise RuntimeError(f"{BINARY_VARIABLE} names a binary of the deployed gateway; it is not started.")
     if not os.access(path, os.X_OK):
         raise RuntimeError(f"No gateway binary at {path}. Build it: cargo build -p ultrafast-gateway")
+    _binary = path
     return path
 
 
@@ -84,6 +109,17 @@ _running: dict[int, tuple[subprocess.Popen[bytes], str]] = {}
 def _cleanup() -> None:
     for process, data_dir in list(_running.values()):
         _stop(process, data_dir)
+
+
+def _on_signal(number: int, _frame: object) -> None:
+    """Stops the gateways this process started, then lets the signal do what it would have."""
+    _cleanup()
+    signal.signal(number, signal.SIG_DFL)
+    os.kill(os.getpid(), number)
+
+
+for _number in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(_number, _on_signal)
 
 
 def _stop(process: subprocess.Popen[bytes], data_dir: str) -> None:
@@ -111,7 +147,8 @@ def start_gateway() -> Gateway:
     binary = binary_path()
     admin = Account("admin@example.com", f"pw-{secrets.token_hex(12)}")
     for _ in range(3):
-        data_dir = tempfile.mkdtemp(prefix="uf-e2e-")
+        SCRATCH.mkdir(parents=True, exist_ok=True)
+        data_dir = tempfile.mkdtemp(prefix="uf-e2e-", dir=SCRATCH)
         port = free_port()
         origin = f"http://127.0.0.1:{port}"
         env = {
