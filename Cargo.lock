@@ -2876,6 +2876,7 @@ dependencies = [
  "jsonwebtoken",
  "mime_guess",
  "rand",
+ "regex",
  "reqwest",
  "rust-embed",
  "serde",

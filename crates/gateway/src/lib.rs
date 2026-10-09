@@ -10,6 +10,7 @@ pub mod cache;
 pub mod catalog;
 pub mod config;
 pub mod errors;
+pub mod guardrails;
 pub mod identity;
 pub mod limits;
 pub mod logs;

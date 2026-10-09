@@ -25,6 +25,7 @@ hmac = "0.13"
 ipnet = "2"
 http-body-util = "0.1"
 mime_guess = "2"
+regex = "1"
 rand = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path", "debug-embed"] }
