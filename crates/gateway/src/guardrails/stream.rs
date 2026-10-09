@@ -10,6 +10,11 @@
 //! twice the hold-back (plus up to 128 characters while the text keeps
 //! producing candidates, see `Buf::wait`). Matches longer than the hold-back (only possible for
 //! regex rules) may be missed or split.
+//!
+//! A private-key block is swallowed from its BEGIN line to its END line, and
+//! scanning resumes right after the END line. One known difference from the
+//! whole text: an address that starts inside the END line (`-----END PRIVATE
+//! KEY-----@example.com`) can show its domain part in a stream.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -63,10 +68,6 @@ struct Buf {
     wait: usize,
     /// Inside a private-key block: everything is dropped until its END line.
     swallow: bool,
-    /// The END line has passed: what is glued to it (no whitespace between)
-    /// is dropped too, up to the next whitespace, because the whole text
-    /// matches an address that starts in the END line as one unit.
-    after_end: bool,
 }
 
 /// Byte index of the `n`th character of `hay[from..]` (its end for `n` past it).
@@ -227,29 +228,20 @@ fn advance(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, last: bo
 fn push_chunk(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, chunk: &str) -> Step {
     buf.hay.push_str(chunk);
     if buf.swallow {
-        if !buf.after_end {
-            let Some(end) = pii::PEM_END.find(&buf.hay).map(|m| m.end()) else {
-                let keep = tail_window(&buf.hay);
-                buf.hay.drain(..keep);
-                return Step::Text(String::new());
-            };
-            // the block ends here; keep what boundary checks look behind at
-            let keep_from = look_behind_start(&buf.hay, end);
-            buf.hay.drain(..keep_from);
-            buf.base = end - keep_from;
-            buf.after_end = true;
-        }
-        // what is glued to the END line goes with it, up to whitespace
-        let glued = &buf.hay[buf.base..];
-        let Some(space) = glued.find(char::is_whitespace) else {
-            buf.hay.truncate(buf.base);
+        let Some(end) = pii::PEM_END.find(&buf.hay).map(|m| m.end()) else {
+            let keep = tail_window(&buf.hay);
+            buf.hay.drain(..keep);
             return Step::Text(String::new());
         };
-        buf.hay.drain(buf.base..buf.base + space);
-        // what follows is ordinary text again
+        // The block ends here; what follows is ordinary text again, scanned
+        // from the first character after the END line. (Text glued to the END
+        // line is not dropped with the block: doing so could run into the
+        // BEGIN line of a next key and release its body.)
+        let keep_from = look_behind_start(&buf.hay, end);
+        buf.hay.drain(..keep_from);
+        buf.base = end - keep_from;
         buf.lead = buf.hay[..buf.base].to_string();
         buf.swallow = false;
-        buf.after_end = false;
         buf.since = RESCAN_AFTER_CHARS;
     } else {
         buf.since += chunk.chars().count();
