@@ -1370,16 +1370,20 @@ async fn an_older_version_that_the_database_is_slow_to_give_is_a_503() {
         Some(json!({ "model": "p/m", "messages": messages("second") })),
     )
     .await;
-    // Every connection of the pool is taken.
-    let held = w.org.api.store.begin().await.unwrap();
-    let started = std::time::Instant::now();
-    let (status, v) = w
-        .chat(json!({ "prompt": { "id": "slow", "version": 1 } }))
-        .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{v}");
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    assert!(w.sent().await.is_empty());
-    drop(held);
+    // Every connection of the pool is taken: the one connection of the
+    // in-memory SQLite store. (A PostgreSQL pool has many; the timeout is
+    // the same code, so the rest of the test is all it adds there.)
+    if !common::skipped_on_postgres(&w.org.api.store, "one connection cannot take the pool") {
+        let held = w.org.api.store.begin().await.unwrap();
+        let started = std::time::Instant::now();
+        let (status, v) = w
+            .chat(json!({ "prompt": { "id": "slow", "version": 1 } }))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(w.sent().await.is_empty());
+        drop(held);
+    }
     // The latest is the snapshot's: it never waited on the database.
     let (status, v) = w.chat(json!({ "prompt": { "id": "slow" } })).await;
     assert_eq!(status, StatusCode::OK, "{v}");
