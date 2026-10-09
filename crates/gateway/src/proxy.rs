@@ -3048,6 +3048,108 @@ mod tests {
         assert_eq!(hold.bytes, 1001);
     }
 
+    /// An active set with one external guardrail that is never called (the
+    /// hold fails it when its cap is passed), failing closed or open.
+    fn external_active(fail_open: bool) -> Active {
+        let g = Arc::new(crate::snapshot::SnapGuardrail {
+            id: 9,
+            name: "hook".into(),
+            rules_text: String::new(),
+            rules: None,
+            external: Some(crate::snapshot::SnapExternal {
+                url: "http://127.0.0.1:1/".into(),
+                secret: String::new(),
+                host: "http://127.0.0.1:1".into(),
+                timeout: Duration::from_secs(1),
+                fail_open,
+                directions: crate::guardrails::Directions::Both,
+                usable: true,
+            }),
+        });
+        let hooks = Hooks {
+            http: reqwest::Client::new(),
+            gates: Arc::new(crate::guardrails::external::HookGates::default()),
+            meta: Arc::new(crate::guardrails::external::CallMeta {
+                endpoint: "chat",
+                model: "m".into(),
+                route: None,
+                key_id: None,
+                team_id: None,
+                user_id: None,
+            }),
+        };
+        Active::of(&[g], Some(hooks))
+    }
+
+    fn held(events: Vec<StreamEvent>) -> Guarded {
+        Guarded { events, cut: false }
+    }
+
+    fn soon() -> tokio::time::Instant {
+        tokio::time::Instant::now() + Duration::from_secs(5)
+    }
+
+    #[tokio::test]
+    async fn the_hold_cap_counts_slot_overhead_and_cuts_at_the_first_byte_over() {
+        // one text slot of 50 bytes costs 50 + SLOT_COST
+        let text = || {
+            held(vec![StreamEvent::Delta {
+                text: "x".repeat(50),
+            }])
+        };
+        let exactly = 50 + SLOT_COST;
+        // at the cap: still held, nothing sent, nothing decided
+        let mut hold = Hold::new(external_active(false), exactly, Duration::from_secs(10));
+        let out = hold.step(text(), soon()).await;
+        assert!(!out.cut && out.events.is_empty() && !hold.passing);
+        assert!(hold.outcome.blocked_by.is_none());
+        // one byte over: the closed guardrail cuts the answer, and nothing
+        // held is sent
+        let mut hold = Hold::new(external_active(false), exactly - 1, Duration::from_secs(10));
+        let out = hold.step(text(), soon()).await;
+        assert!(out.cut, "the answer was not cut");
+        assert!(
+            !out.events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Delta { .. })),
+            "held text was sent"
+        );
+        assert_eq!(hold.outcome.blocked_by.as_ref().map(|b| b.0), Some(9));
+        assert!(hold.slots.is_empty() && hold.bytes == 0 && hold.overhead == 0);
+        // an open guardrail lets what is held go, flags it, and passes the rest
+        let mut hold = Hold::new(external_active(true), exactly - 1, Duration::from_secs(10));
+        let out = hold.step(text(), soon()).await;
+        assert!(!out.cut && hold.passing && out.events.len() == 1);
+        assert_eq!(hold.outcome.external_errors.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn many_empty_tool_calls_reach_the_hold_cap_and_are_cut() {
+        // no argument bytes at all: only the overhead can pass the cap
+        let events: Vec<StreamEvent> = (0..100_000u32)
+            .flat_map(|i| {
+                [
+                    StreamEvent::ToolCallStart {
+                        index: i,
+                        id: format!("call_{i}"),
+                        name: "look".into(),
+                    },
+                    StreamEvent::ToolCallDelta {
+                        index: i,
+                        arguments: String::new(),
+                    },
+                ]
+            })
+            .collect();
+        let mut hold = Hold::new(external_active(false), 1 << 20, Duration::from_secs(10));
+        let started = std::time::Instant::now();
+        let out = hold.step(held(events), soon()).await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(out.cut, "the hold went on past its cap");
+        assert!(hold.outcome.blocked_by.is_some());
+        assert_eq!(hold.bytes, 0);
+    }
+
     fn with(value: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert(RETRY_AFTER, value.parse().unwrap());

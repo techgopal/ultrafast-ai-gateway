@@ -6,7 +6,7 @@ import { Field } from "@/components/Field";
 import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
-import { GuardrailPicker, ORDER_HINT } from "@/components/GuardrailPicker";
+import { GuardrailPicker, KEY_HINT } from "@/components/GuardrailPicker";
 
 type Key = components["schemas"]["KeyView"];
 
@@ -57,7 +57,7 @@ function GuardrailsForm({ keyOf, update, onDone, onCancel }: GuardrailsFormProps
             group
             label="Guardrails"
             name={field.name}
-            hint={ORDER_HINT}
+            hint={KEY_HINT}
             error={failure.fieldError(field.name)}
           >
             {(wiring) => (

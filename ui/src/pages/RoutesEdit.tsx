@@ -23,7 +23,7 @@ import {
   useSubmit,
 } from "@/components/form";
 import { FormError } from "@/components/FormError";
-import { GuardrailPicker, ORDER_HINT } from "@/components/GuardrailPicker";
+import { GuardrailPicker, ROUTE_HINT } from "@/components/GuardrailPicker";
 import { NotAvailableContent } from "@/components/NotAvailableContent";
 import { NotFoundContent } from "@/components/NotFoundContent";
 import { PageHeader } from "@/components/PageHeader";
@@ -357,7 +357,7 @@ function Editor({ route }: EditorProps) {
             group
             label="Guardrails"
             name={field.name}
-            hint={ORDER_HINT}
+            hint={ROUTE_HINT}
             error={failure.fieldError(field.name)}
           >
             {(wiring) => (

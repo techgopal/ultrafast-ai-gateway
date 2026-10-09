@@ -1,0 +1,50 @@
+{
+  "name": "@ultrafast/admin",
+  "version": "2.0.0-beta.2",
+  "description": "TypeScript SDK for the Ultrafast gateway admin API (/api): a typed openapi-fetch client generated from openapi/admin.json, with an access-token wrapper and a typed error.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/techgopal/ultrafast-ai-gateway.git",
+    "directory": "clients/admin-ts"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.3"
+  },
+  "scripts": {
+    "gen": "openapi-typescript ../../openapi/admin.json -o src/schema.d.ts",
+    "check:gen": "openapi-typescript ../../openapi/admin.json -o src/schema.d.ts --check",
+    "lint": "eslint src test --max-warnings 0",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp src/schema.d.ts dist/schema.d.ts",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "openapi-fetch": "0.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "eslint": "9.39.5",
+    "openapi-typescript": "7.13.0",
+    "typescript": "~5.7.2",
+    "typescript-eslint": "8.71.0",
+    "vitest": "4.1.11"
+  },
+  "packageManager": "pnpm@11.20.0"
+}

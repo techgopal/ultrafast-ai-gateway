@@ -402,7 +402,10 @@ async fn built_assets_are_sent_gzipped_to_who_accepts_it() {
             packed.header("content-length"),
             packed.body.len().to_string()
         );
-        assert!(packed.body.len() < plain.body.len() / 2, "{path}");
+        // A chunk of under 4 KiB (the build preloads a few) does not shrink by half.
+        if plain.body.len() > 4096 {
+            assert!(packed.body.len() < plain.body.len() / 2, "{path}");
+        }
         assert_ne!(packed.header("etag"), plain.header("etag"));
         assert_eq!(
             packed.header("cache-control"),

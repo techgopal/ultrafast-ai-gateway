@@ -11,6 +11,7 @@ import {
   expectOneH1,
   forgetToasts,
   installSelect,
+  optionsOf,
   rowWithCell,
   settle,
   toasts,
@@ -82,14 +83,14 @@ describe("the keys page", () => {
     await table("Virtual keys");
     await userEvent.click(within(rowWithCell(withGuardrails.name)).getByRole("button", { name: "Edit guardrails" }));
     const dialog = await screen.findByRole("dialog", { name: "Edit guardrails" });
-    expect(await chosenIn(dialog)).toEqual(["1.house-rules", "2.mask-emails"]);
+    expect(await chosenIn(dialog)).toEqual(["1.house-rules", "2.mask-emailsEvery call"]);
     // Order: the first goes down, one is added at the end, one is taken off.
     await userEvent.click(within(dialog).getByRole("button", { name: "Move house-rules down" }));
-    expect(await chosenIn(dialog)).toEqual(["1.mask-emails", "2.house-rules"]);
+    expect(await chosenIn(dialog)).toEqual(["1.mask-emailsEvery call", "2.house-rules"]);
     expect(within(dialog).getByRole("button", { name: "Move mask-emails up" })).toBeDisabled();
     expect(within(dialog).getByRole("button", { name: "Move house-rules down" })).toBeDisabled();
     await choose(within(dialog).getByRole("combobox", { name: "Add a guardrail" }), "acme-scanner");
-    expect(await chosenIn(dialog)).toEqual(["1.mask-emails", "2.house-rules", "3.acme-scanner"]);
+    expect(await chosenIn(dialog)).toEqual(["1.mask-emailsEvery call", "2.house-rules", "3.acme-scanner"]);
     await userEvent.click(within(dialog).getByRole("button", { name: "Remove house-rules" }));
     await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => {
@@ -160,11 +161,11 @@ describe("the keys page", () => {
     await userEvent.click(within(dialog).getByLabelText("Name"));
     await userEvent.paste("ci");
     await choose(await within(dialog).findByRole("combobox", { name: "Add a guardrail" }), "house-rules");
-    await choose(within(dialog).getByRole("combobox", { name: "Add a guardrail" }), "mask-emails");
-    expect(await chosenIn(dialog)).toEqual(["1.house-rules", "2.mask-emails"]);
+    await choose(within(dialog).getByRole("combobox", { name: "Add a guardrail" }), "acme-scanner");
+    expect(await chosenIn(dialog)).toEqual(["1.house-rules", "2.acme-scanner"]);
     await userEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
     await screen.findByRole("dialog", { name: "Your new key" });
-    expect(created).toEqual([{ name: "ci", guardrail_ids: [2, 1] }]);
+    expect(created).toEqual([{ name: "ci", guardrail_ids: [2, 3] }]);
   });
 
   test("the form of a new key sends no guardrails when none are chosen, and offers none to a member", async () => {
@@ -204,6 +205,98 @@ describe("the keys page", () => {
   });
 });
 
+describe("the picker", () => {
+  const three: fixtures.Key = {
+    ...fixtures.keys.active,
+    guardrails: [refs.words, refs.pii, refs.external],
+  };
+
+  async function editKey(key: fixtures.Key): Promise<HTMLElement> {
+    override("get", "/api/keys", () => ok("get", "/api/keys", 200, { keys: [key] }));
+    await renderWithApp(null, { route: "/keys" });
+    await table("Virtual keys");
+    await userEvent.click(within(rowWithCell(key.name)).getByRole("button", { name: "Edit guardrails" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit guardrails" });
+    await chosenIn(dialog);
+    return dialog;
+  }
+
+  test("says on a key and on a route what a guardrail there does not cover", async () => {
+    const dialog = await editKey(three);
+    expect(dialog).toHaveTextContent(
+      "These check only the calls made with this key: a new key, or a direct call to a model, is not checked by them.",
+    );
+  });
+
+  test("says it on the form of a route too", async () => {
+    const route: fixtures.Route = { ...fixtures.routes.support, guardrails: [refs.pii] };
+    override("get", "/api/routes", () => ok("get", "/api/routes", 200, { routes: [route] }));
+    override("get", "/api/routes/{id}", () => ok("get", "/api/routes/{id}", 200, route));
+    await renderWithApp(null, { route: "/routes/1" });
+    const form = await screen.findByRole("form", { name: "Route" });
+    expect(form).toHaveTextContent(
+      "These check only the calls that go through this route: a key that may also call a model directly is not checked by them.",
+    );
+  });
+
+  test("does not offer a guardrail that applies to every call", async () => {
+    const dialog = await editKey({ ...fixtures.keys.active, guardrails: [refs.words] });
+    expect(await optionsOf(within(dialog).getByRole("combobox", { name: "Add a guardrail" }))).toEqual([
+      "acme-scanner",
+      "imported-scanner (disabled)",
+    ]);
+  });
+
+  test("marks a chosen guardrail that applies to every call", async () => {
+    const marked = await editKey(three);
+    expect(await chosenIn(marked)).toEqual([
+      "1.house-rules",
+      "2.mask-emailsEvery call",
+      "3.acme-scanner",
+    ]);
+  });
+
+  test("keeps the focus where the person is after a move", async () => {
+    const dialog = await editKey(three);
+    // into the middle, the same button
+    await userEvent.click(within(dialog).getByRole("button", { name: "Move house-rules down" }));
+    expect(within(dialog).getByRole("button", { name: "Move house-rules down" })).toHaveFocus();
+    // to the end, where down is off: the button that goes back
+    await userEvent.click(within(dialog).getByRole("button", { name: "Move house-rules down" }));
+    expect(within(dialog).getByRole("button", { name: "Move house-rules up" })).toHaveFocus();
+    // to the start, where up is off: the button that goes on
+    expect(await chosenIn(dialog)).toEqual(["1.mask-emailsEvery call", "2.acme-scanner", "3.house-rules"]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Move acme-scanner up" }));
+    expect(within(dialog).getByRole("button", { name: "Move acme-scanner down" })).toHaveFocus();
+  });
+
+  test("keeps the focus in the list after a removal", async () => {
+    const dialog = await editKey(three);
+    // the next row takes it
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove house-rules" }));
+    expect(within(dialog).getByRole("button", { name: "Remove mask-emails" })).toHaveFocus();
+    // the last row: the one before it
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove acme-scanner" }));
+    expect(within(dialog).getByRole("button", { name: "Remove mask-emails" })).toHaveFocus();
+    // the only row: the select that adds
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove mask-emails" }));
+    expect(within(dialog).getByRole("combobox", { name: "Add a guardrail" })).toHaveFocus();
+  });
+
+  test("says what happened to the order, politely", async () => {
+    const dialog = await editKey(three);
+    const live = within(dialog).getByRole("status");
+    expect(live.textContent).toBe("");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Move house-rules down" }));
+    expect(live).toHaveTextContent("house-rules is now 2nd of 3.");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove acme-scanner" }));
+    expect(live).toHaveTextContent("Removed acme-scanner.");
+    await choose(within(dialog).getByRole("combobox", { name: "Add a guardrail" }), "acme-scanner");
+    expect(live).toHaveTextContent("Added acme-scanner as 3rd of 3.");
+    expect(live).toHaveAttribute("aria-live", "polite");
+  });
+});
+
 describe("the route form", () => {
   const route: fixtures.Route = { ...fixtures.routes.support, guardrails: [refs.pii, refs.words] };
 
@@ -235,7 +328,7 @@ describe("the route form", () => {
     const { updated } = keepsRoutes();
     await renderWithApp(null, { route: "/routes/1" });
     const form = await screen.findByRole("form", { name: "Route" });
-    expect(await chosenIn(form)).toEqual(["1.mask-emails", "2.house-rules"]);
+    expect(await chosenIn(form)).toEqual(["1.mask-emailsEvery call", "2.house-rules"]);
     await userEvent.click(screen.getByRole("button", { name: "Save route" }));
     await waitFor(() => {
       expect(updated).toHaveLength(1);

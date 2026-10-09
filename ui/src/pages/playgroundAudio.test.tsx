@@ -126,7 +126,7 @@ describe("Audio mode", () => {
     expect(screen.queryByRole("button", { name: "Transcribe" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Audio" }));
     expect(screen.getByRole("button", { name: "Audio" })).toHaveAttribute("aria-pressed", "true");
-    expect(transcribe()).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Transcribe" })).toBeInTheDocument();
     expect(speak()).toBeInTheDocument();
   });
 

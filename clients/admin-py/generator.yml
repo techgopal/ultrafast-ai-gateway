@@ -1,0 +1,4 @@
+# Settings for openapi-python-client (see gen.sh).
+project_name_override: ultrafast-admin
+package_name_override: _generated
+use_path_prefixes_for_title_model_names: false

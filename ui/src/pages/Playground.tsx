@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useModels, useRoutes } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can } from "@/auth/guards";
@@ -33,12 +33,13 @@ import {
   type ToolChoice,
 } from "@/lib/playground";
 import { bodyOf, useRun, type Call } from "@/pages/PlaygroundRun";
-import { AudioMode } from "@/pages/PlaygroundAudio";
-import { ImagesMode } from "@/pages/PlaygroundImages";
 import { PromptPickerFields, usePromptPicker } from "@/pages/PlaygroundPrompt";
 import { pendingCalls, RESULT_MISSING, Thread, UsageLine } from "@/pages/PlaygroundThread";
 
 type Model = components["schemas"]["ModelView"];
+
+const ImagesMode = lazy(() => import("@/pages/PlaygroundImages").then((m) => ({ default: m.ImagesMode })));
+const AudioMode = lazy(() => import("@/pages/PlaygroundAudio").then((m) => ({ default: m.AudioMode })));
 
 export const DONE = {
   copied: "Copied.",
@@ -670,6 +671,7 @@ function Loading() {
 
 function PlaygroundLoaded({ prompt }: { prompt: InitialPrompt | undefined }) {
   const [mode, setMode] = useState<"chat" | "images" | "audio">("chat");
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set(["chat"]));
   const models = useModels();
   const routes = useRoutes();
   const failure = models.error ?? routes.error;
@@ -709,6 +711,7 @@ function PlaygroundLoaded({ prompt }: { prompt: InitialPrompt | undefined }) {
                 aria-pressed={mode === name}
                 onClick={() => {
                   setMode(name);
+                  setOpened((was) => new Set(was).add(name));
                 }}
               >
                 {name === "chat" ? "Chat" : name === "images" ? "Images" : "Audio"}
@@ -719,12 +722,21 @@ function PlaygroundLoaded({ prompt }: { prompt: InitialPrompt | undefined }) {
           <div hidden={mode !== "chat"}>
             <PlaygroundOf models={models.data.models} routes={names} initialPrompt={prompt} />
           </div>
-          <div hidden={mode !== "images"}>
-            <ImagesMode models={models.data.models} routes={names} />
-          </div>
-          <div hidden={mode !== "audio"}>
-            <AudioMode models={models.data.models} routes={names} />
-          </div>
+          {/* Images and audio load when first chosen, then stay mounted. */}
+          {opened.has("images") ? (
+            <div hidden={mode !== "images"}>
+              <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+                <ImagesMode models={models.data.models} routes={names} />
+              </Suspense>
+            </div>
+          ) : null}
+          {opened.has("audio") ? (
+            <div hidden={mode !== "audio"}>
+              <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+                <AudioMode models={models.data.models} routes={names} />
+              </Suspense>
+            </div>
+          ) : null}
         </>
       ) : (
         <EmptyState {...NOTHING_TO_CALL} />

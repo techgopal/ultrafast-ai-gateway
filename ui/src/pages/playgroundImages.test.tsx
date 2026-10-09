@@ -60,7 +60,7 @@ describe("Images mode", () => {
     expect(screen.queryByRole("textbox", { name: "Prompt" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Images" }));
     expect(screen.getByRole("button", { name: "Images" })).toHaveAttribute("aria-pressed", "true");
-    expect(prompt()).toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: "Prompt" })).toBeInTheDocument();
     // The chat is not on screen, and its form is not offered.
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
   });

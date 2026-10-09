@@ -289,8 +289,9 @@ describe("a new template", () => {
   test("is made from a name, messages and settings, and opens when made", async () => {
     const state = keeps();
     const app = await page("/prompts/new");
+    const nameField = await screen.findByLabelText("Name");
     expectOneH1("New template");
-    await paste(await screen.findByLabelText("Name"), "  translate ");
+    await paste(nameField, "  translate ");
     await paste(screen.getByLabelText("Description"), "Translates a text.");
     await choose(screen.getByRole("combobox", { name: "Role of message 1" }), "system");
     await paste(screen.getByLabelText("Message 1"), "Translate to {{language}}.");

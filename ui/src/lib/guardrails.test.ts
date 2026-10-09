@@ -5,10 +5,12 @@ import {
   attachmentOf,
   check,
   emptyForm,
+  fieldProblem,
   formOf,
   hasProblems,
   loggedLabel,
   moved,
+  ordinal,
   piiLabel,
   PII_TYPES,
   requestOf,
@@ -280,5 +282,45 @@ describe("what the log says of a direction", () => {
   test("a direction with nothing but a check says only that", () => {
     expect(sideLines({ action: "flagged", checked_with: [] })).toEqual([]);
     expect(loggedLabel("redacted")).toBe("Redacted");
+  });
+});
+
+describe("a refusal in words", () => {
+  test("names a rule by its place and the other fields by what they are", () => {
+    expect(fieldProblem("rules[0]", "regex parse error")).toBe("Rule 1: regex parse error");
+    expect(fieldProblem("rules[2].types", "must name a type")).toBe("Rule 3: must name a type");
+    expect(fieldProblem("call_external", "the guardrail has no URL to call")).toBe(
+      "The guardrail has no URL to call",
+    );
+    expect(fieldProblem("guardrail_id", "does not exist")).toBe("Guardrail: does not exist");
+    expect(fieldProblem("text", "must be 20000 characters or fewer")).toBe(
+      "Text: must be 20000 characters or fewer",
+    );
+    expect(fieldProblem("direction", "must be input or output")).toBe(
+      "Check as: must be input or output",
+    );
+  });
+
+  test("a field it does not know is said by its message alone", () => {
+    expect(fieldProblem("surprise.deep[3]", "is not right")).toBe("Is not right");
+  });
+});
+
+describe("an ordinal", () => {
+  test("reads like English, teens included", () => {
+    expect([1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101, 111].map(ordinal)).toEqual([
+      "1st",
+      "2nd",
+      "3rd",
+      "4th",
+      "11th",
+      "12th",
+      "13th",
+      "21st",
+      "22nd",
+      "23rd",
+      "101st",
+      "111th",
+    ]);
   });
 });

@@ -9,7 +9,7 @@ import { Field } from "@/components/Field";
 import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
-import { GuardrailPicker, ORDER_HINT } from "@/components/GuardrailPicker";
+import { GuardrailPicker, KEY_HINT } from "@/components/GuardrailPicker";
 import { TagsEditor } from "@/components/TagsEditor";
 import { Input } from "@/components/ui/input";
 import {
@@ -311,7 +311,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
               group
               label="Guardrails"
               name={field.name}
-              hint={ORDER_HINT}
+              hint={KEY_HINT}
               error={failure.fieldError(field.name)}
             >
               {(wiring) => (
