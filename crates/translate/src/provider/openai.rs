@@ -157,13 +157,34 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
         method: "POST",
         url: format!("{}/chat/completions", target.base_url.trim_end_matches('/')),
         headers,
-        body: body(req, Some(&target.model))?,
+        body: body(
+            req,
+            Some(&target.model),
+            uses_completion_tokens(&target.base_url),
+        )?,
     })
 }
 
+/// Whether the target is OpenAI itself: its reasoning models (o-series, GPT-5)
+/// refuse `max_tokens` and take `max_completion_tokens`, which every OpenAI
+/// chat model takes. Other OpenAI-compatible servers keep `max_tokens`, the
+/// name they all know.
+fn uses_completion_tokens(base_url: &str) -> bool {
+    let rest = base_url.split_once("://").map_or(base_url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    let host = host.split(':').next().unwrap_or_default();
+    host.eq_ignore_ascii_case("api.openai.com")
+}
+
 /// The JSON body of a chat completion. Azure names the model in the URL and
-/// leaves it out here.
-pub(crate) fn body(req: &ChatRequest, model: Option<&str>) -> Result<Vec<u8>, TranslateError> {
+/// leaves it out here. `completion_tokens` names the output limit
+/// `max_completion_tokens` (OpenAI and Azure) rather than `max_tokens`.
+pub(crate) fn body(
+    req: &ChatRequest,
+    model: Option<&str>,
+    completion_tokens: bool,
+) -> Result<Vec<u8>, TranslateError> {
     super::check_tool_choice(req)?;
     let messages: Vec<Value> = req.messages.iter().map(message_value).collect();
     let mut body = json!({ "messages": messages });
@@ -171,7 +192,11 @@ pub(crate) fn body(req: &ChatRequest, model: Option<&str>) -> Result<Vec<u8>, Tr
         body["model"] = json!(model);
     }
     if let Some(v) = req.max_tokens {
-        body["max_tokens"] = json!(v);
+        body[if completion_tokens {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        }] = json!(v);
     }
     if let Some(v) = req.temperature {
         body["temperature"] = json!(v);
@@ -461,6 +486,36 @@ mod tests {
         assert_eq!(v["messages"][0]["content"], "hi");
         assert!(v.get("stream").is_none());
         assert!(v.get("temperature").is_none());
+    }
+
+    #[test]
+    fn only_openai_itself_gets_max_completion_tokens() {
+        let body_of = |base: &str| {
+            let mut t = target();
+            t.base_url = base.into();
+            let r = build_request(&t, &request(false)).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&r.body).unwrap()
+        };
+        for base in [
+            "https://api.openai.com/v1",
+            "https://API.OPENAI.COM/v1/",
+            "http://api.openai.com:443/v1",
+        ] {
+            let v = body_of(base);
+            assert_eq!(v["max_completion_tokens"], 5, "{base}");
+            assert!(v.get("max_tokens").is_none(), "{base}");
+        }
+        for base in [
+            "https://api.example.com/v1",
+            "http://127.0.0.1:11434/v1",
+            "https://api.openai.com.evil.example/v1",
+            "https://x.example/api.openai.com/v1",
+            "https://api.openai.com@x.example/v1",
+        ] {
+            let v = body_of(base);
+            assert_eq!(v["max_tokens"], 5, "{base}");
+            assert!(v.get("max_completion_tokens").is_none(), "{base}");
+        }
     }
 
     #[test]

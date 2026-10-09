@@ -23,7 +23,7 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
             api_version
         ),
         headers,
-        body: openai::body(req, None)?,
+        body: openai::body(req, None, true)?,
     })
 }
 
@@ -80,7 +80,9 @@ mod tests {
         assert!(v.get("model").is_none(), "{v}");
         assert_eq!(v["messages"][0]["role"], "system");
         assert_eq!(v["messages"][1]["name"], "ann");
-        assert_eq!(v["max_tokens"], 5);
+        // Azure's reasoning deployments refuse `max_tokens`.
+        assert_eq!(v["max_completion_tokens"], 5);
+        assert!(v.get("max_tokens").is_none());
         assert_eq!(v["stop"][0], "x");
         assert!(v.get("stream").is_none());
     }
