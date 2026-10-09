@@ -818,11 +818,12 @@ async fn hung_server() -> MockServer {
 
 #[tokio::test]
 async fn many_events_to_a_dead_host_do_not_starve_a_healthy_channel() {
-    // A try to the dead host takes 2 s; with the old per-job slots, 64 jobs
-    // held every slot for that long (65 s with the default retries).
+    // A try to the dead host takes 10 s; with the old per-job slots, 64 jobs
+    // held every slot for that long. The healthy delivery has 5 s, which
+    // load on the machine does not eat, while starving would take 10 s or more.
     let env = env(DeliveryConfig {
         retry_delays: vec![Duration::from_millis(500), Duration::from_millis(500)],
-        timeout: Duration::from_secs(2),
+        timeout: Duration::from_secs(10),
         shutdown_cap: Duration::from_millis(300),
         queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
         max_pending: ultrafast_gateway::alerts::MAX_PENDING,
@@ -841,7 +842,7 @@ async fn many_events_to_a_dead_host_do_not_starve_a_healthy_channel() {
     env.deliverer().offer(healthy_event, vec![ok_id]);
     let d = env.deliveries(healthy_event).await;
     assert!(
-        started.elapsed() < Duration::from_millis(800),
+        started.elapsed() < Duration::from_secs(5),
         "the healthy channel waited {:?}",
         started.elapsed()
     );
