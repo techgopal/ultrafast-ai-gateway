@@ -16,11 +16,13 @@ use crate::budgets::Budget;
 use sha2::{Digest, Sha256};
 
 use crate::cache::RouteCache;
+use crate::guardrails::RuleSpec;
+use crate::guardrails::{Compiled, Directions};
 use crate::identity::{Role, UserStatus};
 use crate::limits::{LimitScope, Subject, Subjects};
 use crate::routing::{BreakerSettings, TargetRef};
 use crate::secrets::Cipher;
-use crate::store::Store;
+use crate::store::{GuardrailRow, Store};
 
 #[derive(Debug, Clone)]
 pub struct SnapKey {
@@ -37,6 +39,9 @@ pub struct SnapKey {
     /// A non-admin made it for another user: it acts for its team only
     /// (see [`crate::access`]). Fixed when the key is made.
     pub team_only: bool,
+    /// The guardrails attached to the key, in order (ids; one that is
+    /// disabled or gone is not in [`Snapshot::guardrail`]).
+    pub guardrails: Vec<i64>,
 }
 
 /// A catalog model of a provider that is in the snapshot.
@@ -72,6 +77,9 @@ pub struct SnapRoute {
     pub breaker: BreakerSettings,
     /// Whether and how the route keeps answers.
     pub cache: RouteCache,
+    /// The guardrails attached to the route, in order (ids; one that is
+    /// disabled or gone is not in [`Snapshot::guardrail`]).
+    pub guardrails: Vec<i64>,
 }
 
 impl SnapRoute {
@@ -86,6 +94,46 @@ impl SnapRoute {
     pub fn has_targets(&self) -> bool {
         !self.primaries.is_empty() || !self.fallbacks.is_empty()
     }
+}
+
+/// How to call an external guardrail. It holds the URL and the signing
+/// secret in the clear, so it is never serialized and its `Debug` shows
+/// neither.
+#[derive(Clone)]
+pub struct SnapExternal {
+    pub url: String,
+    pub secret: String,
+    /// Scheme, host and port of the URL: what may be logged.
+    pub host: String,
+    pub timeout: Duration,
+    /// On a failure let the text through (and flag it) rather than block.
+    pub fail_open: bool,
+    /// What it is asked about.
+    pub directions: Directions,
+}
+
+impl fmt::Debug for SnapExternal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnapExternal")
+            .field("host", &self.host)
+            .field("timeout", &self.timeout)
+            .field("fail_open", &self.fail_open)
+            .field("directions", &self.directions)
+            .field("url", &"<redacted>")
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+/// An enabled guardrail, ready to run.
+#[derive(Debug)]
+pub struct SnapGuardrail {
+    pub id: i64,
+    pub name: String,
+    /// The compiled rules of a `rules` guardrail.
+    pub rules: Option<Arc<Compiled>>,
+    /// The endpoint of an `external` guardrail.
+    pub external: Option<SnapExternal>,
 }
 
 /// An active user, as far as access goes.
@@ -143,6 +191,10 @@ pub struct Snapshot {
     limits: HashMap<(LimitScope, i64), Arc<Subject>>,
     /// The budgets, by what they are set on (id 0 for the gateway).
     budgets: HashMap<(LimitScope, i64), Vec<Arc<Budget>>>,
+    /// The enabled guardrails, by id.
+    guardrails: HashMap<i64, Arc<SnapGuardrail>>,
+    /// The ids of the enabled guardrails that apply to every call, by name.
+    default_guardrails: Vec<i64>,
     /// See [`Snapshot::cache_fingerprint`].
     cache_fingerprint: [u8; 32],
 }
@@ -176,6 +228,91 @@ fn push_new(ids: &mut Vec<i64>, id: i64) {
     if !ids.contains(&id) {
         ids.push(id);
     }
+}
+
+/// Compiles every enabled guardrail once. A guardrail whose rules do not
+/// compile or whose URL or secret cannot be read is logged and left out; the
+/// API checks rules before it stores them, so this only happens to a row
+/// written some other way.
+fn load_guardrails(
+    rows: &[GuardrailRow],
+    cipher: &Cipher,
+) -> (HashMap<i64, Arc<SnapGuardrail>>, Vec<i64>) {
+    let mut guardrails = HashMap::new();
+    // By name (rows come by name): the order the defaults apply in.
+    let mut defaults = Vec::new();
+    for g in rows.iter().filter(|g| g.enabled) {
+        let built = if g.kind == "external" {
+            external_of(g, cipher).map(|external| SnapGuardrail {
+                id: g.id,
+                name: g.name.clone(),
+                rules: None,
+                external: Some(external),
+            })
+        } else {
+            rules_guardrail(g)
+        };
+        let Some(built) = built else { continue };
+        if g.is_default {
+            defaults.push(g.id);
+        }
+        guardrails.insert(g.id, Arc::new(built));
+    }
+    (guardrails, defaults)
+}
+
+fn rules_guardrail(g: &GuardrailRow) -> Option<SnapGuardrail> {
+    let specs: Vec<RuleSpec> = match serde_json::from_str(&g.rules) {
+        Ok(specs) => specs,
+        Err(_) => {
+            tracing::error!(guardrail = %g.name, "guardrail left out: its rules cannot be read");
+            return None;
+        }
+    };
+    match Compiled::compile(g.id, &g.name, &specs) {
+        Ok(compiled) => Some(SnapGuardrail {
+            id: g.id,
+            name: g.name.clone(),
+            rules: Some(Arc::new(compiled)),
+            external: None,
+        }),
+        Err(e) => {
+            tracing::error!(guardrail = %g.name, error = %e, "guardrail left out: its rules do not compile");
+            None
+        }
+    }
+}
+
+fn external_of(g: &GuardrailRow, cipher: &Cipher) -> Option<SnapExternal> {
+    let read = |bytes: Option<&[u8]>| {
+        cipher
+            .decrypt(bytes?)
+            .ok()
+            .and_then(|plain| String::from_utf8(plain).ok())
+    };
+    let (Some(url), Some(secret)) = (read(g.url_enc.as_deref()), read(g.secret_enc.as_deref()))
+    else {
+        tracing::error!(guardrail = %g.name, "guardrail left out: its URL or secret cannot be read");
+        return None;
+    };
+    // An import leaves an external guardrail off with no URL; enabled
+    // without one it cannot be called.
+    if url.is_empty() {
+        tracing::error!(guardrail = %g.name, "guardrail left out: it is enabled but has no URL");
+        return None;
+    }
+    let Some(directions) = Directions::parse(&g.directions) else {
+        tracing::error!(guardrail = %g.name, "guardrail left out: unknown directions");
+        return None;
+    };
+    Some(SnapExternal {
+        url,
+        secret,
+        host: g.url_host.clone().unwrap_or_default(),
+        timeout: Duration::from_millis(u64::try_from(g.timeout_ms).unwrap_or(0)),
+        fail_open: g.fail_mode != "closed",
+        directions,
+    })
 }
 
 impl Snapshot {
@@ -234,11 +371,48 @@ impl Snapshot {
             fp.num(i64::from(t.primary));
             fp.num(t.weight);
         }
+        // Guardrails change what an answer says, so any edit clears the
+        // cache: each one with everything that decides what it does (the
+        // stored URL by a hash of its encrypted form; the secret changes
+        // nothing a cached answer holds), and where each is attached.
+        fp.section("guardrails", rows.guardrails.len());
+        for g in &rows.guardrails {
+            fp.num(g.id);
+            fp.text(&g.name);
+            fp.text(&g.kind);
+            fp.num(i64::from(g.enabled));
+            fp.num(i64::from(g.is_default));
+            fp.text(&g.rules);
+            fp.text(g.url_host.as_deref().unwrap_or(""));
+            fp.part(&Sha256::digest(g.url_enc.as_deref().unwrap_or_default()));
+            fp.num(g.timeout_ms);
+            fp.text(&g.fail_mode);
+            fp.text(&g.directions);
+        }
+        fp.section("route_guardrails", rows.route_guardrails.len());
+        for (route, guardrail, _) in &rows.route_guardrails {
+            fp.num(*route);
+            fp.num(*guardrail);
+        }
+        fp.section("key_guardrails", rows.key_guardrails.len());
+        for (key, guardrail, _) in &rows.key_guardrails {
+            fp.num(*key);
+            fp.num(*guardrail);
+        }
+        let mut key_guardrails: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (key, guardrail, _) in &rows.key_guardrails {
+            key_guardrails.entry(*key).or_default().push(*guardrail);
+        }
+        let mut route_guardrails: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (route, guardrail, _) in &rows.route_guardrails {
+            route_guardrails.entry(*route).or_default().push(*guardrail);
+        }
         let keys = rows
             .keys
             .into_iter()
             .map(|k| {
                 let key = SnapKey {
+                    guardrails: key_guardrails.remove(&k.id).unwrap_or_default(),
                     team_only: k.team_only,
                     id: k.id,
                     name: k.name,
@@ -359,6 +533,7 @@ impl Snapshot {
                     first_token_timeout: Duration::from_millis(secs(st.first_token_timeout_ms)),
                     total_timeout: Duration::from_millis(secs(st.total_timeout_ms)),
                     cache: r.cache,
+                    guardrails: route_guardrails.remove(&r.id).unwrap_or_default(),
                     breaker: BreakerSettings {
                         failures: u32::try_from(st.breaker_failures).unwrap_or(0).max(1),
                         window: Duration::from_secs(secs(st.breaker_window_s)),
@@ -450,6 +625,7 @@ impl Snapshot {
                     action: b.action,
                 }));
         }
+        let (guardrails, default_guardrails) = load_guardrails(&rows.guardrails, cipher);
         Ok(Snapshot {
             keys,
             providers,
@@ -458,6 +634,8 @@ impl Snapshot {
             users,
             limits,
             budgets,
+            guardrails,
+            default_guardrails,
             cache_fingerprint,
         })
     }
@@ -469,6 +647,38 @@ impl Snapshot {
     /// changes the cache is cleared.
     pub fn cache_fingerprint(&self) -> [u8; 32] {
         self.cache_fingerprint
+    }
+
+    /// An enabled guardrail that is ready to run.
+    pub fn guardrail(&self, id: i64) -> Option<&Arc<SnapGuardrail>> {
+        self.guardrails.get(&id)
+    }
+
+    /// The enabled guardrails that apply to every call, by name.
+    pub fn default_guardrails(&self) -> &[i64] {
+        &self.default_guardrails
+    }
+
+    /// The guardrails a call is checked with: the gateway-wide defaults,
+    /// then the route's, then the key's, each in its configured order, each
+    /// guardrail once (where it first appears). A disabled or gone guardrail
+    /// is not in it.
+    pub fn effective_guardrails(
+        &self,
+        route: Option<&SnapRoute>,
+        key: Option<&SnapKey>,
+    ) -> Vec<Arc<SnapGuardrail>> {
+        let attached = route
+            .map(|r| r.guardrails.as_slice())
+            .into_iter()
+            .chain(key.map(|k| k.guardrails.as_slice()));
+        let mut seen = HashSet::new();
+        std::iter::once(self.default_guardrails.as_slice())
+            .chain(attached)
+            .flatten()
+            .filter(|id| seen.insert(**id))
+            .filter_map(|id| self.guardrails.get(id).cloned())
+            .collect()
     }
 
     /// The key for this hash, unless it has expired as of `now` (UTC,

@@ -87,6 +87,9 @@ pub enum Action {
     ViewRoutingHealth,
     // alerts: channels, rules and events. Admins only.
     ManageAlerts,
+    // guardrails: defining them and attaching them to routes and keys.
+    // Admins only; a lead sees the ones on their keys through the key.
+    ManageGuardrails,
     // settings: viewing and changing both
     ManageSettings,
     // playground
@@ -170,6 +173,7 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ViewAudit
         | Action::ViewRoutingHealth
         | Action::ManageAlerts
+        | Action::ManageGuardrails
         | Action::ManageSettings
         | Action::ManageLimits
         | Action::ManageBudgets => Forbidden,
@@ -1146,6 +1150,24 @@ mod tests {
                 Action::ManageAlerts,
                 Forbidden,
             ),
+            (
+                "manage_guardrails: lead",
+                lead,
+                Action::ManageGuardrails,
+                Forbidden,
+            ),
+            (
+                "manage_guardrails: member",
+                member,
+                Action::ManageGuardrails,
+                Forbidden,
+            ),
+            (
+                "manage_guardrails: loner",
+                loner,
+                Action::ManageGuardrails,
+                Forbidden,
+            ),
         ];
         let view_log = |user_id, team_id, user_in_led_team| Action::ViewLog {
             user_id,
@@ -1349,6 +1371,7 @@ mod tests {
                 Action::ViewAudit,
                 Action::ViewRoutingHealth,
                 Action::ManageAlerts,
+                Action::ManageGuardrails,
                 Action::InviteUser { role: Role::Member },
                 Action::InviteUser { role: Role::Admin },
                 Action::CreateTeam,

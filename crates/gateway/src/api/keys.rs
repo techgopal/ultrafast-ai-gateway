@@ -11,6 +11,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::guardrails::{self, GuardrailRef};
 use super::{name_and_expiry, path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::access::Viewer;
 use crate::app::AppState;
@@ -35,16 +36,23 @@ pub struct CreateKeyRequest {
     /// of 1 to 64 characters.
     #[schema(value_type = Option<std::collections::BTreeMap<String, String>>)]
     tags: Option<Tags>,
+    /// The guardrails applied to every call of the key, in this order, after
+    /// the gateway-wide ones and the route's. Admins only: sending the field
+    /// at all, even `[]`, is refused for anyone else. At most 20.
+    guardrail_ids: Option<Vec<i64>>,
 }
 
-/// The new tags of a key.
+/// What to change on a key. Admins only; send at least one field.
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateKeyRequest {
     /// Replaces all the tags of the key; `{}` removes them. The same limits
-    /// as when the key is created.
-    #[schema(value_type = std::collections::BTreeMap<String, String>)]
-    tags: Tags,
+    /// as when the key is created. Left out, the tags stay.
+    #[schema(value_type = Option<std::collections::BTreeMap<String, String>>)]
+    tags: Option<Tags>,
+    /// Replaces the guardrails of the key; `[]` takes them all off. Left
+    /// out, they stay.
+    guardrail_ids: Option<Vec<i64>>,
 }
 
 /// Most names an allowlist may hold, and the longest of them.
@@ -175,6 +183,9 @@ pub struct KeyView {
     /// A non-admin made it for another user: it calls only what everyone
     /// or its team may use, and is revoked when its owner is deleted.
     pub team_only: bool,
+    /// The guardrails applied to every call of the key, in order. Anyone who
+    /// may see the key sees them; only an admin changes them.
+    pub guardrails: Vec<GuardrailRef>,
     /// `revoked`, `expired`, `suspended` or `active`, the first that
     /// applies. `suspended`: the owner of the key is not active, so the key
     /// does not work until they are. Only an `active` key works.
@@ -184,7 +195,7 @@ pub struct KeyView {
 
 impl KeyView {
     /// `now` is the current time as the store writes it.
-    fn new(k: KeyRow, now: &str) -> Self {
+    fn new(k: KeyRow, now: &str, guardrails: Vec<GuardrailRef>) -> Self {
         let status = key_status(
             k.revoked_at.as_deref(),
             k.expires_at.as_deref(),
@@ -205,6 +216,7 @@ impl KeyView {
             allowed: k.allowed,
             tags: k.tags,
             team_only: k.team_only,
+            guardrails,
             status,
         }
     }
@@ -228,6 +240,49 @@ fn key_status(
     } else {
         "active"
     }
+}
+
+/// The guardrails of every key that has some, in each key's order.
+async fn guardrails_of_keys(
+    store: &Store,
+) -> Result<std::collections::HashMap<i64, Vec<GuardrailRef>>, ApiError> {
+    let mut out: std::collections::HashMap<i64, Vec<GuardrailRef>> = Default::default();
+    for (key, id, name) in store.key_guardrail_refs().await? {
+        out.entry(key).or_default().push(GuardrailRef { id, name });
+    }
+    Ok(out)
+}
+
+/// One key as a caller sees it.
+async fn view_of(store: &Store, row: KeyRow) -> Result<KeyView, ApiError> {
+    let guardrails = guardrails_of_keys(store)
+        .await?
+        .remove(&row.id)
+        .unwrap_or_default();
+    Ok(KeyView::new(row, &now(), guardrails))
+}
+
+async fn attach_guardrails(
+    tx: &mut crate::store::Tx<'_>,
+    me: &Principal,
+    key_id: i64,
+    key_name: &str,
+    attach: &[GuardrailRef],
+) -> Result<(), ApiError> {
+    let ids: Vec<i64> = attach.iter().map(|g| g.id).collect();
+    tx.replace_key_guardrails(key_id, &ids)
+        .await
+        .map_err(guardrails::gone)?;
+    tx.audit(AuditEntry {
+        actor_user_id: Some(me.user_id),
+        actor_email: &me.email,
+        action: "guardrail.attach",
+        target_type: "key",
+        target_id: Some(key_id),
+        summary: &guardrails::attach_summary(&format!("key {key_name}"), attach),
+    })
+    .await?;
+    Ok(())
 }
 
 /// The key of a path, or the answer for a key that does not exist.
@@ -264,7 +319,14 @@ pub async fn list(
         Scope::Own { user_id } => store.list_keys_in_teams(&[], user_id).await?,
     };
     let now = now();
-    let keys: Vec<KeyView> = keys.into_iter().map(|k| KeyView::new(k, &now)).collect();
+    let mut attached = guardrails_of_keys(store).await?;
+    let keys: Vec<KeyView> = keys
+        .into_iter()
+        .map(|k| {
+            let guardrails = attached.remove(&k.id).unwrap_or_default();
+            KeyView::new(k, &now, guardrails)
+        })
+        .collect();
     Ok(Json(json!({ "keys": keys })).into_response())
 }
 
@@ -296,6 +358,10 @@ pub async fn create(
     // Decided on what was asked for, before anything is looked up, so a
     // refusal does not tell whether the team or the user exists.
     require(me, &Action::CreateKey { owner_id, team_id })?;
+    // Attaching guardrails is the admin's, whoever the key is for.
+    if req.guardrail_ids.is_some() {
+        require(me, &Action::ManageGuardrails)?;
+    }
     let (name, expires_at) = name_and_expiry(&req.name, req.expires_at.as_deref())?;
 
     let store = &state.store;
@@ -353,6 +419,16 @@ pub async fn create(
         }
         None => None,
     };
+    let attach = match &req.guardrail_ids {
+        Some(asked) => match guardrails::resolve_ids(&mut tx, asked).await? {
+            Ok(found) => Some(found),
+            Err(message) => {
+                fields.insert("guardrail_ids".to_string(), message);
+                None
+            }
+        },
+        None => None,
+    };
     let Some(owner) = owner.filter(|_| fields.is_empty()) else {
         return Err(ApiError::validation(fields));
     };
@@ -392,6 +468,9 @@ pub async fn create(
         summary: &summary,
     })
     .await?;
+    if let Some(attach) = attach.filter(|a| !a.is_empty()) {
+        attach_guardrails(&mut tx, me, id, name, &attach).await?;
+    }
     tx.commit().await?;
     refresh_snapshot(&state).await?;
 
@@ -400,7 +479,7 @@ pub async fn create(
         .await?
         .ok_or_else(|| anyhow!("the key is missing after it was created"))?;
     // The only time the key itself is sent.
-    let body = json!({ "key": KeyView::new(row, &now()), "secret": key.full });
+    let body = json!({ "key": view_of(store, row).await?, "secret": key.full });
     Ok((StatusCode::CREATED, Json(body)).into_response())
 }
 
@@ -433,7 +512,7 @@ pub async fn view(
             team_id: key.team_id,
         },
     )?;
-    Ok(Json(KeyView::new(key, &now())).into_response())
+    Ok(Json(view_of(&state.store, key).await?).into_response())
 }
 
 #[utoipa::path(
@@ -446,7 +525,7 @@ pub async fn view(
     ),
     request_body = UpdateKeyRequest,
     responses(
-        (status = 200, description = "The key with its new tags.", body = KeyView),
+        (status = 200, description = "The key after the change.", body = KeyView),
         (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
         (status = 403, description = "The caller is not an admin, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
@@ -457,7 +536,8 @@ pub async fn view(
     ),
     security(("session" = []), ("token" = [])),
 )]
-/// Replaces the tags of a key. Admins only: the key's tags win over a call's.
+/// Replaces the tags or the guardrails of a key. Admins only: the key's tags
+/// win over a call's, and guardrails are the admin's.
 pub async fn update(
     State(state): State<Arc<AppState>>,
     Path(raw_id): Path<String>,
@@ -474,28 +554,48 @@ pub async fn update(
             team_id: key.team_id,
         },
     )?;
-    if let Some(reason) = tags::refusal(&req.tags) {
+    if req.tags.is_none() && req.guardrail_ids.is_none() {
+        return Err(ApiError::bad_request(
+            "Send at least one of tags and guardrail_ids.",
+        ));
+    }
+    if let Some(reason) = req.tags.as_ref().and_then(tags::refusal) {
         return Err(ApiError::invalid_field("tags", reason));
     }
 
     let mut tx = store.begin().await?;
-    tx.set_key_tags(key.id, &req.tags).await?;
-    tx.audit(AuditEntry {
-        actor_user_id: Some(me.user_id),
-        actor_email: &me.email,
-        action: "key.tags",
-        target_type: "key",
-        target_id: Some(key.id),
-        summary: &format!("Changed the tags of key {} ({})", key.name, key.display),
-    })
-    .await?;
+    let attach = match &req.guardrail_ids {
+        Some(asked) => match guardrails::resolve_ids(&mut tx, asked).await? {
+            Ok(found) => Some(found),
+            Err(message) => return Err(ApiError::invalid_field("guardrail_ids", &message)),
+        },
+        None => None,
+    };
+    if let Some(key_tags) = &req.tags {
+        tx.set_key_tags(key.id, key_tags).await?;
+        tx.audit(AuditEntry {
+            actor_user_id: Some(me.user_id),
+            actor_email: &me.email,
+            action: "key.tags",
+            target_type: "key",
+            target_id: Some(key.id),
+            summary: &format!("Changed the tags of key {} ({})", key.name, key.display),
+        })
+        .await?;
+    }
+    if let Some(attach) = attach {
+        let before = tx.key_guardrail_ids(key.id).await?;
+        if attach.iter().map(|g| g.id).collect::<Vec<_>>() != before {
+            attach_guardrails(&mut tx, me, key.id, &key.name, &attach).await?;
+        }
+    }
     tx.commit().await?;
     refresh_snapshot(&state).await?;
     let row = store
         .key_by_id(key.id)
         .await?
-        .ok_or_else(|| anyhow!("the key is missing after its tags were changed"))?;
-    Ok(Json(KeyView::new(row, &now())).into_response())
+        .ok_or_else(|| anyhow!("the key is missing after it was changed"))?;
+    Ok(Json(view_of(store, row).await?).into_response())
 }
 
 #[utoipa::path(

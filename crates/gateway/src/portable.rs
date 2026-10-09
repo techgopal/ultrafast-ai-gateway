@@ -21,6 +21,10 @@ use ultrafast_translate::provider::ProviderKind;
 use crate::alerts::rules as alert_rules;
 use crate::alerts::sign::new_secret;
 use crate::api::budgets::MAX_AMOUNT_MICROS;
+use crate::api::guardrails::{
+    check_description, check_fail_mode, check_rules_sync, check_timeout, rules_of,
+    DEFAULT_TIMEOUT_MS, KINDS as GUARDRAIL_KINDS, MAX_ATTACHED,
+};
 use crate::api::limits::{checked as checked_limit, MAX_COUNT, MAX_TOKENS};
 use crate::api::providers::{check_api_version, checked as checked_provider};
 use crate::api::routes::check_settings;
@@ -30,10 +34,12 @@ use crate::budgets::{BudgetAction, Period};
 use crate::cache::{CacheScope, RouteCache};
 use crate::catalog::validate_model_name;
 use crate::config::{same_host, validate_base_url, validate_provider_name};
+use crate::guardrails::{Directions, RuleSpec};
 use crate::limits::{LimitScope, RateLimit};
 use crate::secrets::Cipher;
 use crate::store::{
-    AuditEntry, ConfigState, Grants, RouteSettings, Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
+    AuditEntry, ConfigState, Grants, GuardrailPatch, NewGuardrail, RouteSettings, Store,
+    TargetsInput, Tx, SESSION_HOURS_RANGE,
 };
 
 /// The `format` of the file.
@@ -126,6 +132,11 @@ pub struct RouteEntry {
     pub cache_ttl_s: i64,
     #[serde(default = "default_cache_scope")]
     pub cache_scope: String,
+    /// Names of guardrails, in the order they apply. Left out of the file
+    /// for a route that has none; a file that leaves it out does not change
+    /// what is attached (`[]` takes them all off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardrails: Option<Vec<String>>,
 }
 
 fn default_cache_ttl() -> i64 {
@@ -218,6 +229,57 @@ fn yes() -> bool {
     true
 }
 
+fn default_timeout() -> i64 {
+    DEFAULT_TIMEOUT_MS
+}
+
+fn default_fail_mode() -> String {
+    "open".to_string()
+}
+
+fn both() -> Directions {
+    Directions::Both
+}
+
+/// How an external guardrail behaves. Its URL and signing secret are never
+/// in a file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalEntry {
+    /// 1 000 to 10 000. Not in the file: 3 000.
+    #[serde(default = "default_timeout")]
+    pub timeout_ms: i64,
+    /// `open` or `closed`. Not in the file: `open`.
+    #[serde(default = "default_fail_mode")]
+    pub fail_mode: String,
+    /// What it is asked about. Not in the file: `both`.
+    #[serde(default = "both")]
+    pub directions: Directions,
+}
+
+/// A guardrail. The URL and the signing secret of an external one are never
+/// in a file; one an import creates is off until its URL is set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GuardrailEntry {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// `rules` or `external`.
+    pub kind: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Applies to every call of the gateway.
+    #[serde(default)]
+    pub is_default: bool,
+    /// The rules of a `rules` guardrail; empty for an external one.
+    #[serde(default)]
+    pub rules: Vec<RuleSpec>,
+    /// An external guardrail's settings; left out for `rules`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<ExternalEntry>,
+}
+
 /// The configuration file. `format` and `version` come first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -245,13 +307,16 @@ pub struct ConfigFile {
     pub alert_channels: Vec<AlertChannelEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alert_rules: Vec<AlertRuleEntry>,
+    /// Left out of the file when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guardrails: Vec<GuardrailEntry>,
 }
 
 /// Something the import did, or would do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct Item {
-    /// `provider`, `team`, `model`, `route`, `limit`, `budget`, `alert_channel`,
-    /// `alert_rule` or `settings`.
+    /// `provider`, `team`, `model`, `guardrail`, `route`, `limit`, `budget`,
+    /// `alert_channel`, `alert_rule` or `settings`.
     pub kind: String,
     pub name: String,
     /// For an update: the fields that change. Empty for a creation.
@@ -478,6 +543,32 @@ fn alerts_of(state: &ConfigState) -> (Vec<AlertChannelEntry>, Vec<AlertRuleEntry
     (channels, rules)
 }
 
+/// The guardrails of the file, by name.
+fn guardrails_of(state: &ConfigState) -> Vec<GuardrailEntry> {
+    let mut entries: Vec<GuardrailEntry> = state
+        .guardrails
+        .iter()
+        .map(|g| {
+            let external = g.kind == "external";
+            GuardrailEntry {
+                name: g.name.clone(),
+                description: g.description.clone(),
+                kind: g.kind.clone(),
+                enabled: g.enabled,
+                is_default: g.is_default,
+                rules: if external { Vec::new() } else { rules_of(g) },
+                external: external.then(|| ExternalEntry {
+                    timeout_ms: g.timeout_ms,
+                    fail_mode: g.fail_mode.clone(),
+                    directions: Directions::parse(&g.directions).unwrap_or(Directions::Both),
+                }),
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+}
+
 /// The file for the configuration as it is stored.
 pub fn file_of(state: &ConfigState) -> ConfigFile {
     let team_names: HashMap<i64, &str> =
@@ -531,6 +622,12 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
                 .filter_map(|(_, team)| team_names.get(team).map(|n| (*n).to_string()))
                 .collect();
             route_teams.sort();
+            let attached: Vec<String> = state
+                .route_guardrails
+                .iter()
+                .filter(|(route, _, _)| *route == r.id)
+                .map(|(_, _, name)| name.clone())
+                .collect();
             RouteEntry {
                 name: r.name.clone(),
                 primaries: targets
@@ -553,6 +650,7 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
                 cache_enabled: r.cache.enabled,
                 cache_ttl_s: r.cache.ttl_s,
                 cache_scope: r.cache.scope.as_str().to_string(),
+                guardrails: (!attached.is_empty()).then_some(attached),
             }
         })
         .collect();
@@ -606,6 +704,7 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
         version: VERSION,
         alert_channels,
         alert_rules,
+        guardrails: guardrails_of(state),
         providers,
         models,
         teams,
@@ -662,6 +761,13 @@ enum Op {
         input: Option<Option<i64>>,
         output: Option<Option<i64>>,
         grants: Option<GrantEntry>,
+    },
+    CreateGuardrail {
+        entry: GuardrailEntry,
+    },
+    UpdateGuardrail {
+        id: i64,
+        entry: GuardrailEntry,
     },
     UpsertRoute {
         id: Option<i64>,
@@ -726,6 +832,8 @@ struct Planner<'a> {
     providers: HashSet<String>,
     teams: HashSet<String>,
     models: HashSet<String>,
+    /// Names of the guardrails the gateway has or the file creates.
+    guardrails: HashSet<String>,
     /// Whether the import can encrypt (the API can, the command line cannot).
     can_encrypt: bool,
 }
@@ -1004,6 +1112,132 @@ impl Planner<'_> {
         }
     }
 
+    fn guardrails(&mut self) {
+        let file = self.file;
+        let state = self.state;
+        let mut seen = HashSet::new();
+        for (i, entry) in file.guardrails.iter().enumerate() {
+            let at = format!("guardrails[{i}]");
+            let before = self.report.errors.len();
+            if let Err(message) = trimmed_name(&entry.name) {
+                self.error(format!("{at}.name"), message);
+            } else if entry.name.trim() != entry.name {
+                self.error(format!("{at}.name"), "must not start or end with a space");
+            }
+            if !seen.insert(entry.name.clone()) {
+                self.error(at.clone(), "this name appears more than once");
+            }
+            let mut fields = BTreeMap::new();
+            check_description(&entry.description, &mut fields);
+            self.fields(&at, fields);
+            let external = entry.kind == "external";
+            if !GUARDRAIL_KINDS.contains(&entry.kind.as_str()) {
+                self.error(format!("{at}.kind"), "kind must be rules or external");
+            } else if external {
+                if !entry.rules.is_empty() {
+                    self.error(format!("{at}.rules"), "only for rules guardrails");
+                }
+                let mut fields = BTreeMap::new();
+                if let Some(x) = &entry.external {
+                    check_timeout(x.timeout_ms, &mut fields);
+                    check_fail_mode(&x.fail_mode, &mut fields);
+                }
+                self.fields(&format!("{at}.external"), fields);
+            } else {
+                if entry.external.is_some() {
+                    self.error(format!("{at}.external"), "only for external guardrails");
+                }
+                let mut fields = BTreeMap::new();
+                check_rules_sync(&entry.rules, &mut fields);
+                self.fields(&at, fields);
+            }
+            let existing = state.guardrails.iter().find(|g| g.name == entry.name);
+            if let Some(g) = existing {
+                if g.kind != entry.kind {
+                    self.error(
+                        format!("{at}.kind"),
+                        format!("guardrail '{}' exists with another kind", entry.name),
+                    );
+                }
+            }
+            self.guardrails.insert(entry.name.clone());
+            if self.report.errors.len() > before {
+                continue;
+            }
+            let mut wanted = entry.clone();
+            if external && wanted.external.is_none() {
+                // Left out: the defaults.
+                wanted.external = Some(ExternalEntry {
+                    timeout_ms: DEFAULT_TIMEOUT_MS,
+                    fail_mode: default_fail_mode(),
+                    directions: Directions::Both,
+                });
+            }
+            let current = self
+                .current
+                .guardrails
+                .iter()
+                .find(|g| g.name == entry.name);
+            let Some((existing, current)) = existing.zip(current) else {
+                if external && !self.can_encrypt {
+                    self.error(
+                        at.clone(),
+                        format!(
+                            "guardrail '{}' does not exist; the command line cannot create an external one (import the file in the console)",
+                            entry.name
+                        ),
+                    );
+                    continue;
+                }
+                if external {
+                    // Off until it has a URL.
+                    wanted.enabled = false;
+                    self.report.warnings.push(Issue {
+                        at: at.clone(),
+                        message: format!("guardrail '{}' needs a URL", entry.name),
+                    });
+                }
+                self.push(
+                    Op::CreateGuardrail { entry: wanted },
+                    "guardrail",
+                    entry.name.clone(),
+                    Vec::new(),
+                    true,
+                );
+                continue;
+            };
+            // A file never turns on an external guardrail that has no URL.
+            if external && existing.url_host.as_deref().is_none_or(str::is_empty) {
+                wanted.enabled = false;
+            }
+            if wanted == *current {
+                self.report.unchanged += 1;
+                continue;
+            }
+            let mut changes = Vec::new();
+            let mut note = |changed: bool, name: &str| {
+                if changed {
+                    changes.push(name.to_string());
+                }
+            };
+            note(current.description != wanted.description, "description");
+            note(current.enabled != wanted.enabled, "enabled");
+            note(current.is_default != wanted.is_default, "is_default");
+            note(current.rules != wanted.rules, "rules");
+            note(current.external != wanted.external, "external");
+            self.push(
+                Op::UpdateGuardrail {
+                    id: existing.id,
+                    entry: wanted,
+                },
+                "guardrail",
+                entry.name.clone(),
+                changes,
+                false,
+            );
+        }
+    }
+
     fn routes(&mut self) {
         let file = self.file;
         let state = self.state;
@@ -1081,12 +1315,33 @@ impl Planner<'_> {
                     );
                 }
             }
+            if let Some(names) = &entry.guardrails {
+                if names.len() > MAX_ATTACHED {
+                    self.error(
+                        format!("{at}.guardrails"),
+                        format!("at most {MAX_ATTACHED} guardrails"),
+                    );
+                }
+                for (j, guardrail) in names.iter().enumerate() {
+                    if !self.guardrails.contains(guardrail) {
+                        self.error(
+                            format!("{at}.guardrails[{j}]"),
+                            format!("guardrail '{guardrail}' does not exist"),
+                        );
+                    }
+                }
+            }
             if self.report.errors.len() > before {
                 continue;
             }
             let mut wanted = entry.clone();
             wanted.teams.sort();
             wanted.teams.dedup();
+            if let Some(names) = &mut wanted.guardrails {
+                // The order is kept; a repeat counts where it first is.
+                let mut seen = HashSet::new();
+                names.retain(|n| seen.insert(n.clone()));
+            }
             let Some(existing) = state.routes.iter().find(|r| r.name == entry.name) else {
                 self.push(
                     Op::UpsertRoute {
@@ -1143,6 +1398,14 @@ impl Planner<'_> {
             );
             note(current.cache_ttl_s != wanted.cache_ttl_s, "cache_ttl_s");
             note(current.cache_scope != wanted.cache_scope, "cache_scope");
+            // A file that does not say leaves the guardrails alone.
+            note(
+                wanted
+                    .guardrails
+                    .as_ref()
+                    .is_some_and(|w| *w != current.guardrails.clone().unwrap_or_default()),
+                "guardrails",
+            );
             if changes.is_empty() {
                 self.report.unchanged += 1;
             } else {
@@ -1685,11 +1948,13 @@ fn plan(file: &ConfigFile, state: &ConfigState, can_encrypt: bool) -> Plan {
         providers,
         teams,
         models,
+        guardrails: state.guardrails.iter().map(|g| g.name.clone()).collect(),
         can_encrypt,
     };
     planner.providers();
     planner.teams();
     planner.models();
+    planner.guardrails();
     planner.routes();
     planner.limits();
     planner.budgets();
@@ -1714,6 +1979,7 @@ struct Ids {
     users: HashMap<String, i64>,
     models: HashMap<String, i64>,
     alert_channels: HashMap<String, i64>,
+    guardrails: HashMap<String, i64>,
 }
 
 impl Ids {
@@ -1736,7 +2002,19 @@ impl Ids {
                 .iter()
                 .map(|(id, name, _)| (name.clone(), *id))
                 .collect(),
+            guardrails: state
+                .guardrails
+                .iter()
+                .map(|g| (g.name.clone(), g.id))
+                .collect(),
         }
+    }
+
+    fn guardrail(&self, name: &str) -> Result<i64> {
+        self.guardrails
+            .get(name)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("a guardrail of the plan is missing"))
     }
 
     /// Checked by the plan: every name the ops use is known.
@@ -1856,6 +2134,64 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                     tx.replace_grants(id, &ids.grants(&grants)?).await?;
                 }
             }
+            Op::CreateGuardrail { entry } => {
+                let rules = serde_json::to_string(&entry.rules)?;
+                let external = entry.external.as_ref();
+                // An external one is off, with no URL (the encrypted empty
+                // text); its signing secret is made now and shown by
+                // "rotate secret".
+                let cipher =
+                    if external.is_some() {
+                        Some(actor.cipher.ok_or_else(|| {
+                            anyhow::anyhow!("the import has no key to encrypt with")
+                        })?)
+                    } else {
+                        None
+                    };
+                let (url_enc, secret_enc) = match cipher {
+                    Some(c) => (
+                        Some(c.encrypt(b"")),
+                        Some(c.encrypt(new_secret().as_bytes())),
+                    ),
+                    None => (None, None),
+                };
+                let id = tx
+                    .insert_guardrail(NewGuardrail {
+                        name: &entry.name,
+                        description: &entry.description,
+                        kind: &entry.kind,
+                        rules: &rules,
+                        url: url_enc.as_deref().map(|enc| (enc, "")),
+                        secret_enc: secret_enc.as_deref(),
+                        timeout_ms: external.map_or(DEFAULT_TIMEOUT_MS, |x| x.timeout_ms),
+                        fail_mode: external.map_or("open", |x| x.fail_mode.as_str()),
+                        directions: external.map_or(Directions::Both, |x| x.directions).as_str(),
+                        enabled: entry.enabled,
+                        is_default: entry.is_default,
+                    })
+                    .await?;
+                ids.guardrails.insert(entry.name, id);
+            }
+            Op::UpdateGuardrail { id, entry } => {
+                let rules = (entry.kind == "rules")
+                    .then(|| serde_json::to_string(&entry.rules))
+                    .transpose()?;
+                let external = entry.external.as_ref();
+                tx.update_guardrail(
+                    id,
+                    GuardrailPatch {
+                        description: Some(&entry.description),
+                        rules: rules.as_deref(),
+                        timeout_ms: external.map(|x| x.timeout_ms),
+                        fail_mode: external.map(|x| x.fail_mode.as_str()),
+                        directions: external.map(|x| x.directions.as_str()),
+                        enabled: Some(entry.enabled),
+                        is_default: Some(entry.is_default),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            }
             Op::UpsertRoute { id, entry } => {
                 let settings = RouteSettings {
                     retries: entry.retries,
@@ -1895,6 +2231,13 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                     .map(|t| ids.team(t))
                     .collect::<Result<Vec<_>>>()?;
                 tx.replace_route_grants(id, &team_ids).await?;
+                if let Some(names) = &entry.guardrails {
+                    let guardrail_ids = names
+                        .iter()
+                        .map(|n| ids.guardrail(n))
+                        .collect::<Result<Vec<_>>>()?;
+                    tx.replace_route_guardrails(id, &guardrail_ids).await?;
+                }
                 tx.set_route_cache(
                     id,
                     &RouteCache {

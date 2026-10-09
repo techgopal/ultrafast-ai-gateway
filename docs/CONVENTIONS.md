@@ -92,8 +92,8 @@ and briefs add to these; they do not repeat them.
     infer (cast or type them), integer booleans, `BLOB` columns are all
     spelled through the dialect helpers.
   - Every migration exists in both directories: `migrations/sqlite/` (next
-    number, today 0017) and `migrations/postgres/` (its own next number, today
-    0003: the Postgres baseline `0001_baseline.sql` folds SQLite 0001-0015 into
+    number, today 0018) and `migrations/postgres/` (its own next number, today
+    0004: the Postgres baseline `0001_baseline.sql` folds SQLite 0001-0015 into
     one, so the numbers differ). Pinned files never change. A schema change in
     only one fails the baseline parity test in `store/mod.rs`, which runs only
     with `UF_TEST_DATABASE_URL` set.

@@ -32,6 +32,9 @@ pub struct ConfigState {
     /// `(id, name, kind)`: never a URL or a secret.
     pub alert_channels: Vec<(i64, String, String)>,
     pub alert_rules: Vec<super::alerts::RuleRow>,
+    pub guardrails: Vec<super::GuardrailRow>,
+    /// `(route id, guardrail id, guardrail name)`, in each route's order.
+    pub route_guardrails: Vec<(i64, i64, String)>,
 }
 
 async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
@@ -63,6 +66,8 @@ async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
     let session_hours = settings::session_hours_in(conn).await?;
     let alert_channels = super::alerts::list_channel_names_in(conn).await?;
     let alert_rules = super::alerts::list_alert_rules_in(conn).await?;
+    let guardrails = super::guardrails::list_guardrails_in(conn).await?;
+    let route_guardrails = super::guardrails::route_guardrail_refs_in(conn).await?;
     Ok(ConfigState {
         providers,
         models,
@@ -78,6 +83,8 @@ async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
         session_hours,
         alert_channels,
         alert_rules,
+        guardrails,
+        route_guardrails,
     })
 }
 

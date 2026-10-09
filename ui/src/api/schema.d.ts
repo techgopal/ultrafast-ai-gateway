@@ -388,6 +388,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/guardrails": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["guardrails_list"];
+        put?: never;
+        post: operations["guardrails_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/guardrails/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["guardrails_test"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/guardrails/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["guardrails_view"];
+        put?: never;
+        post?: never;
+        delete: operations["guardrails_delete"];
+        options?: never;
+        head?: never;
+        patch: operations["guardrails_update"];
+        trace?: never;
+    };
+    "/api/guardrails/{id}/rotate-secret": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["guardrails_rotate_secret"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/keys": {
         parameters: {
             query?: never;
@@ -417,7 +481,10 @@ export interface paths {
         delete: operations["keys_revoke"];
         options?: never;
         head?: never;
-        /** Replaces the tags of a key. Admins only: the key's tags win over a call's. */
+        /**
+         * Replaces the tags or the guardrails of a key. Admins only: the key's tags
+         *     win over a call's, and guardrails are the admin's.
+         */
         patch: operations["keys_update"];
         trace?: never;
     };
@@ -924,6 +991,8 @@ export interface components {
             /** @description The token of the invite link. */
             token: string;
         };
+        /** @enum {string} */
+        Action: "block" | "redact" | "flag";
         AddMemberRequest: {
             email: string;
         };
@@ -1080,6 +1149,8 @@ export interface components {
             budgets?: components["schemas"]["BudgetEntry"][];
             /** @description Always `ultrafast-config`. */
             format: string;
+            /** @description Left out of the file when there are none. */
+            guardrails?: components["schemas"]["GuardrailEntry"][];
             limits?: components["schemas"]["LimitEntry"][];
             models?: components["schemas"]["ModelEntry"][];
             providers?: components["schemas"]["ProviderEntry"][];
@@ -1107,6 +1178,39 @@ export interface components {
              */
             url: string;
         };
+        CreateGuardrailRequest: {
+            /** @description Up to 500 characters. Left out: none. */
+            description?: string | null;
+            directions?: components["schemas"]["Directions"] | null;
+            /** @description On when left out. */
+            enabled?: boolean | null;
+            /**
+             * @description `external` only: what to do when the call fails, `open` (let the text
+             *     through and flag it) or `closed` (block). Left out: `open`.
+             */
+            fail_mode?: string | null;
+            /** @description Applies to every call of the gateway. Off when left out. */
+            is_default?: boolean | null;
+            /**
+             * @description `rules` (keywords, regular expressions and PII detectors, run in the
+             *     gateway) or `external` (a signed webhook that decides).
+             */
+            kind: string;
+            /** @description Unique, 1 to 100 characters. */
+            name: string;
+            /** @description `rules` only: 1 to 50 rules. */
+            rules?: components["schemas"]["RuleSpec"][] | null;
+            /**
+             * Format: int64
+             * @description `external` only: how long to wait, 1 000 to 10 000. Left out: 3 000.
+             */
+            timeout_ms?: number | null;
+            /**
+             * @description `external` only, required: where to post the text. Kept encrypted and
+             *     never shown again; only its scheme, host and port are.
+             */
+            url?: string | null;
+        };
         CreateKeyRequest: {
             /**
              * @description The names the key may call: `provider/model` of a model in the
@@ -1114,6 +1218,12 @@ export interface components {
              */
             allowed?: string[] | null;
             expires_at?: string | null;
+            /**
+             * @description The guardrails applied to every call of the key, in this order, after
+             *     the gateway-wide ones and the route's. Admins only: sending the field
+             *     at all, even `[]`, is refused for anyone else. At most 20.
+             */
+            guardrail_ids?: number[] | null;
             name: string;
             /** Format: int64 */
             owner_id?: number | null;
@@ -1172,6 +1282,15 @@ export interface components {
              */
             secret: string;
         };
+        /** @description A created guardrail and, for an external one, its signing secret. */
+        CreatedGuardrail: {
+            guardrail: components["schemas"]["GuardrailView"];
+            /**
+             * @description The signing secret of an `external` guardrail. It is shown once, in
+             *     this answer, and cannot be read again. `null` for `rules`.
+             */
+            secret: string | null;
+        };
         CreatedKey: {
             key: components["schemas"]["KeyView"];
             /**
@@ -1193,6 +1312,13 @@ export interface components {
          * @enum {string}
          */
         DatabaseKind: "sqlite" | "postgres";
+        /** @enum {string} */
+        Direction: "input" | "output";
+        /**
+         * @description The directions a rule applies to.
+         * @enum {string}
+         */
+        Directions: "input" | "output" | "both";
         EventList: {
             events: components["schemas"]["EventView"][];
         };
@@ -1221,6 +1347,21 @@ export interface components {
             subject: string;
             summary: string;
         };
+        /**
+         * @description How an external guardrail behaves. Its URL and signing secret are never
+         *     in a file.
+         */
+        ExternalEntry: {
+            /** @description What it is asked about. Not in the file: `both`. */
+            directions?: components["schemas"]["Directions"];
+            /** @description `open` or `closed`. Not in the file: `open`. */
+            fail_mode?: string;
+            /**
+             * Format: int64
+             * @description 1 000 to 10 000. Not in the file: 3 000.
+             */
+            timeout_ms?: number;
+        };
         FallbackView: {
             enabled: boolean;
             /** @description `provider_name/model_name`. */
@@ -1241,6 +1382,16 @@ export interface components {
              */
             subject: string;
         };
+        /** @description A rule that flagged the text. */
+        FlagView: {
+            /**
+             * Format: int64
+             * @description 0 for rules sent with the request.
+             */
+            guardrail_id: number;
+            guardrail_name: string;
+            rule_id: string;
+        };
         GrantEntry: {
             everyone?: boolean;
             /** @description Names of teams. */
@@ -1260,6 +1411,97 @@ export interface components {
             everyone: boolean;
             team_ids: number[];
             user_ids: number[];
+        };
+        /**
+         * @description A guardrail. The URL and the signing secret of an external one are never
+         *     in a file; one an import creates is off until its URL is set.
+         */
+        GuardrailEntry: {
+            description?: string;
+            enabled?: boolean;
+            external?: components["schemas"]["ExternalEntry"] | null;
+            /** @description Applies to every call of the gateway. */
+            is_default?: boolean;
+            /** @description `rules` or `external`. */
+            kind: string;
+            name: string;
+            /** @description The rules of a `rules` guardrail; empty for an external one. */
+            rules?: components["schemas"]["RuleSpec"][];
+        };
+        GuardrailList: {
+            guardrails: components["schemas"]["GuardrailView"][];
+        };
+        /** @description A guardrail by id and name. */
+        GuardrailRef: {
+            /** Format: int64 */
+            id: number;
+            name: string;
+        };
+        /** @description What a test sends: rules, or the id of a stored guardrail. */
+        GuardrailTestRequest: {
+            /**
+             * @description With the id of an external guardrail: really call it. Otherwise an
+             *     external guardrail is never called by a test.
+             */
+            call_external?: boolean;
+            /** @description `input` or `output`: which rules apply. */
+            direction: components["schemas"]["Direction"];
+            /**
+             * Format: int64
+             * @description A stored guardrail, enabled or not.
+             */
+            guardrail_id?: number | null;
+            /** @description Rules to try, as for a new guardrail. Send these or `guardrail_id`. */
+            rules?: components["schemas"]["RuleSpec"][] | null;
+            /** @description Up to 20 000 characters. */
+            text: string;
+        };
+        GuardrailTestResult: {
+            outcome: components["schemas"]["OutcomeView"];
+            /**
+             * @description The text as the guardrail leaves it: redacted, or unchanged when it
+             *     is blocked or only flagged.
+             */
+            redacted_text: string;
+        };
+        /**
+         * @description A guardrail as `/api` shows it: the host of an external one's URL, never
+         *     the URL or the secret.
+         */
+        GuardrailView: {
+            created_at: string;
+            description: string;
+            directions: components["schemas"]["Directions"] | null;
+            enabled: boolean;
+            /** @description `open` or `closed`; `external` only. */
+            fail_mode: string | null;
+            /** Format: int64 */
+            id: number;
+            /** @description Applies to every call of the gateway. */
+            is_default: boolean;
+            /**
+             * Format: int64
+             * @description How many keys it is attached to.
+             */
+            key_count: number;
+            /** @description `rules` or `external`. */
+            kind: string;
+            name: string;
+            /** @description The routes it is attached to. */
+            routes: components["schemas"]["GuardrailRef"][];
+            /** @description The rules of a `rules` guardrail; empty for an `external` one. */
+            rules: components["schemas"]["RuleSpec"][];
+            /**
+             * Format: int64
+             * @description `external` only; `null` for `rules`.
+             */
+            timeout_ms: number | null;
+            /**
+             * @description `external`: scheme, host and port of the URL, like
+             *     `https://guard.example.com`; empty until a URL is set (a guardrail an
+             *     import made). `null` for `rules`.
+             */
+            url_host: string | null;
         };
         /** @description What an import did, or with `dry_run` would do. */
         ImportReport: {
@@ -1298,8 +1540,8 @@ export interface components {
             /** @description For an update: the fields that change. Empty for a creation. */
             changes: string[];
             /**
-             * @description `provider`, `team`, `model`, `route`, `limit`, `budget`, `alert_channel`,
-             *     `alert_rule` or `settings`.
+             * @description `provider`, `team`, `model`, `guardrail`, `route`, `limit`, `budget`,
+             *     `alert_channel`, `alert_rule` or `settings`.
              */
             kind: string;
             name: string;
@@ -1314,6 +1556,11 @@ export interface components {
             created_at: string;
             display: string;
             expires_at: string | null;
+            /**
+             * @description The guardrails applied to every call of the key, in order. Anyone who
+             *     may see the key sees them; only an admin changes them.
+             */
+            guardrails: components["schemas"]["GuardrailRef"][];
             /** Format: int64 */
             id: number;
             name: string;
@@ -1557,6 +1804,22 @@ export interface components {
             csrf_token: string;
             user: components["schemas"]["UserView"];
         };
+        /**
+         * @description What a rule looks for. Written as `{"keywords": {"words": [...],
+         *     "whole_word": true}}`, `{"regex": "..."}` or `{"pii": ["EMAIL", ...]}`.
+         */
+        Matcher: {
+            keywords: {
+                /** @description Match whole words only (the default); `false` matches substrings. */
+                whole_word?: boolean;
+                /** @description Up to 1 000, each 1 to 256 characters. Case-insensitive. */
+                words: string[];
+            };
+        } | {
+            regex: string;
+        } | {
+            pii: components["schemas"]["PiiType"][];
+        };
         MeResponse: {
             /**
              * @description The CSRF token of the session. `null` for a caller with an access
@@ -1720,6 +1983,17 @@ export interface components {
             /** @description Scopes asked for besides `openid email profile`, space separated. */
             scopes: string;
         };
+        /** @description What a check found. Holds counts and ids only, never matched text. */
+        OutcomeView: {
+            blocked_by: components["schemas"]["GuardrailRef"] | null;
+            flags: components["schemas"]["FlagView"][];
+            /** @description Replacements made, by PII type (`EMAIL`) or by rule id. */
+            redactions: {
+                [key: string]: number;
+            };
+        };
+        /** @enum {string} */
+        PiiType: "EMAIL" | "PHONE" | "CREDIT_CARD" | "IBAN" | "US_SSN" | "IPV4" | "IPV6" | "SECRET";
         /** @description The answer of `/v1/chat/completions`, in the OpenAI shape. */
         PlaygroundChatAnswer: {
             choices: Record<string, never>[];
@@ -1879,6 +2153,12 @@ export interface components {
             fallbacks?: string[];
             /** Format: int64 */
             first_token_timeout_ms: number;
+            /**
+             * @description Names of guardrails, in the order they apply. Left out of the file
+             *     for a route that has none; a file that leaves it out does not change
+             *     what is attached (`[]` takes them all off).
+             */
+            guardrails?: string[] | null;
             name: string;
             primaries: components["schemas"]["PrimaryEntry"][];
             /** Format: int64 */
@@ -1937,6 +2217,12 @@ export interface components {
              */
             first_token_timeout_ms: number;
             /**
+             * @description The guardrails applied to calls of this route, in this order, after
+             *     the gateway-wide ones. At most 20. Left out, the route keeps the ones
+             *     it has; `[]` takes them all off.
+             */
+            guardrail_ids?: number[] | null;
+            /**
              * @description 1 to 64 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting with a
              *     letter or digit. No `/`, so a route never reads as `provider/model`.
              */
@@ -1985,6 +2271,11 @@ export interface components {
             fallbacks: components["schemas"]["FallbackView"][];
             /** Format: int64 */
             first_token_timeout_ms: number;
+            /**
+             * @description The guardrails applied to calls of this route, in order. Hidden
+             *     (empty) for a non-admin.
+             */
+            guardrails: components["schemas"]["GuardrailRef"][];
             /** Format: int64 */
             id: number;
             name: string;
@@ -2001,6 +2292,15 @@ export interface components {
         };
         RuleList: {
             rules: components["schemas"]["RuleView"][];
+        };
+        /** @description One rule of a guardrail. */
+        RuleSpec: {
+            action: components["schemas"]["Action"];
+            /** @description The directions the rule applies to. */
+            directions: components["schemas"]["Directions"];
+            /** @description Stable within a guardrail; the label of keyword/regex redaction counts. */
+            id: string;
+            matcher: components["schemas"]["Matcher"];
         };
         /** @description A rule as `/api` shows it. */
         RuleView: {
@@ -2219,15 +2519,34 @@ export interface components {
             name?: string | null;
             url?: string | null;
         };
-        /** @description The new tags of a key. */
+        UpdateGuardrailRequest: {
+            description?: string | null;
+            directions?: components["schemas"]["Directions"] | null;
+            enabled?: boolean | null;
+            fail_mode?: string | null;
+            is_default?: boolean | null;
+            name?: string | null;
+            /** @description `rules` only: replaces all the rules. */
+            rules?: components["schemas"]["RuleSpec"][] | null;
+            /** Format: int64 */
+            timeout_ms?: number | null;
+            /** @description `external` only: a new URL. */
+            url?: string | null;
+        };
+        /** @description What to change on a key. Admins only; send at least one field. */
         UpdateKeyRequest: {
             /**
-             * @description Replaces all the tags of the key; `{}` removes them. The same limits
-             *     as when the key is created.
+             * @description Replaces the guardrails of the key; `[]` takes them all off. Left
+             *     out, they stay.
              */
-            tags: {
+            guardrail_ids?: number[] | null;
+            /**
+             * @description Replaces all the tags of the key; `{}` removes them. The same limits
+             *     as when the key is created. Left out, the tags stay.
+             */
+            tags?: {
                 [key: string]: string;
-            };
+            } | null;
         };
         UpdateModelRequest: {
             /** @description Left out, the model stays as it is. */
@@ -4043,6 +4362,516 @@ export interface operations {
             };
         };
     };
+    guardrails_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every guardrail, by name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardrailList"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    guardrails_create: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateGuardrailRequest"];
+            };
+        };
+        responses: {
+            /** @description The new guardrail and, for an external one, its signing secret. The secret is shown once, here. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedGuardrail"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `guardrail_exists`: the name is taken. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. A rule that does not compile is `rules[0]`, `rules[1]`, ... */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    guardrails_test: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GuardrailTestRequest"];
+            };
+        };
+        responses: {
+            /** @description What the rules do to the text. Nothing is stored or logged, and an external guardrail is not called. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardrailTestResult"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    guardrails_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id of the guardrail. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The guardrail. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardrailView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    guardrails_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the guardrail. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The guardrail is deleted; routes and keys lose it. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    guardrails_update: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the guardrail. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateGuardrailRequest"];
+            };
+        };
+        responses: {
+            /** @description The guardrail after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardrailView"];
+                };
+            };
+            /** @description The request is not of the expected form, or changes nothing. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `guardrail_exists`: the name is taken. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    guardrails_rotate_secret: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the guardrail. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The new signing secret, shown once, here. The old one stops working at once. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RotatedSecret"];
+                };
+            };
+            /** @description The guardrail is not an external one, so it has no secret. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     keys_list: {
         parameters: {
             query?: never;
@@ -4291,7 +5120,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The key with its new tags. */
+            /** @description The key after the change. */
             200: {
                 headers: {
                     [name: string]: unknown;

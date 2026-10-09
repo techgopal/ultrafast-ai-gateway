@@ -248,6 +248,7 @@ impl<'a> Actor<'a> {
                 allowed: None,
                 tags: Tags::new(),
                 team_only: false,
+                guardrails: Vec::new(),
             }),
             key_id: None,
         }

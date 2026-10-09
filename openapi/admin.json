@@ -2240,6 +2240,686 @@
         ]
       }
     },
+    "/api/guardrails": {
+      "get": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_list",
+        "responses": {
+          "200": {
+            "description": "Every guardrail, by name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardrailList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_create",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGuardrailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new guardrail and, for an external one, its signing secret. The secret is shown once, here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedGuardrail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`guardrail_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them. A rule that does not compile is `rules[0]`, `rules[1]`, ...",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/guardrails/test": {
+      "post": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_test",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuardrailTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the rules do to the text. Nothing is stored or logged, and an external guardrail is not called.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardrailTestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/guardrails/{id}": {
+      "get": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the guardrail.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The guardrail.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardrailView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the guardrail.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The guardrail is deleted; routes and keys lose it."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the guardrail.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateGuardrailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The guardrail after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardrailView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form, or changes nothing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`guardrail_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/guardrails/{id}/rotate-secret": {
+      "post": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_rotate_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the guardrail.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The new signing secret, shown once, here. The old one stops working at once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotatedSecret"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The guardrail is not an external one, so it has no secret.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/keys": {
       "get": {
         "tags": [
@@ -2548,7 +3228,7 @@
         "tags": [
           "keys"
         ],
-        "summary": "Replaces the tags of a key. Admins only: the key's tags win over a call's.",
+        "summary": "Replaces the tags or the guardrails of a key. Admins only: the key's tags\nwin over a call's, and guardrails are the admin's.",
         "operationId": "keys_update",
         "parameters": [
           {
@@ -2583,7 +3263,7 @@
         },
         "responses": {
           "200": {
-            "description": "The key with its new tags.",
+            "description": "The key after the change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7162,6 +7842,14 @@
         },
         "additionalProperties": false
       },
+      "Action": {
+        "type": "string",
+        "enum": [
+          "block",
+          "redact",
+          "flag"
+        ]
+      },
       "AddMemberRequest": {
         "type": "object",
         "required": [
@@ -7563,6 +8251,13 @@
             "type": "string",
             "description": "Always `ultrafast-config`."
           },
+          "guardrails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailEntry"
+            },
+            "description": "Left out of the file when there are none."
+          },
           "limits": {
             "type": "array",
             "items": {
@@ -7635,6 +8330,89 @@
         },
         "additionalProperties": false
       },
+      "CreateGuardrailRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Up to 500 characters. Left out: none."
+          },
+          "directions": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Directions",
+                "description": "`external` only: what it is asked about. Left out: `both`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "On when left out."
+          },
+          "fail_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`external` only: what to do when the call fails, `open` (let the text\nthrough and flag it) or `closed` (block). Left out: `open`."
+          },
+          "is_default": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Applies to every call of the gateway. Off when left out."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`rules` (keywords, regular expressions and PII detectors, run in the\ngateway) or `external` (a signed webhook that decides)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Unique, 1 to 100 characters."
+          },
+          "rules": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RuleSpec"
+            },
+            "description": "`rules` only: 1 to 50 rules."
+          },
+          "timeout_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`external` only: how long to wait, 1 000 to 10 000. Left out: 3 000."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`external` only, required: where to post the text. Kept encrypted and\nnever shown again; only its scheme, host and port are.",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateKeyRequest": {
         "type": "object",
         "required": [
@@ -7656,6 +8434,17 @@
               "string",
               "null"
             ]
+          },
+          "guardrail_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The guardrails applied to every call of the key, in this order, after\nthe gateway-wide ones and the route's. Admins only: sending the field\nat all, even `[]`, is refused for anyone else. At most 20."
           },
           "name": {
             "type": "string"
@@ -7814,6 +8603,26 @@
           }
         }
       },
+      "CreatedGuardrail": {
+        "type": "object",
+        "description": "A created guardrail and, for an external one, its signing secret.",
+        "required": [
+          "guardrail",
+          "secret"
+        ],
+        "properties": {
+          "guardrail": {
+            "$ref": "#/components/schemas/GuardrailView"
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The signing secret of an `external` guardrail. It is shown once, in\nthis answer, and cannot be read again. `null` for `rules`."
+          }
+        }
+      },
       "CreatedKey": {
         "type": "object",
         "required": [
@@ -7852,6 +8661,22 @@
         "enum": [
           "sqlite",
           "postgres"
+        ]
+      },
+      "Direction": {
+        "type": "string",
+        "enum": [
+          "input",
+          "output"
+        ]
+      },
+      "Directions": {
+        "type": "string",
+        "description": "The directions a rule applies to.",
+        "enum": [
+          "input",
+          "output",
+          "both"
         ]
       },
       "EventList": {
@@ -7929,6 +8754,26 @@
           }
         }
       },
+      "ExternalEntry": {
+        "type": "object",
+        "description": "How an external guardrail behaves. Its URL and signing secret are never\nin a file.",
+        "properties": {
+          "directions": {
+            "$ref": "#/components/schemas/Directions",
+            "description": "What it is asked about. Not in the file: `both`."
+          },
+          "fail_mode": {
+            "type": "string",
+            "description": "`open` or `closed`. Not in the file: `open`."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "1 000 to 10 000. Not in the file: 3 000."
+          }
+        },
+        "additionalProperties": false
+      },
       "FallbackView": {
         "type": "object",
         "required": [
@@ -7966,6 +8811,28 @@
           "subject": {
             "type": "string",
             "description": "`budget:<id>:<period start>`, `route:<name>`, `provider:<name>`,\n`key:<id>`, `gateway` or `target:<provider>/<model>`."
+          }
+        }
+      },
+      "FlagView": {
+        "type": "object",
+        "description": "A rule that flagged the text.",
+        "required": [
+          "guardrail_id",
+          "guardrail_name",
+          "rule_id"
+        ],
+        "properties": {
+          "guardrail_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "0 for rules sent with the request."
+          },
+          "guardrail_name": {
+            "type": "string"
+          },
+          "rule_id": {
+            "type": "string"
           }
         }
       },
@@ -8021,6 +8888,238 @@
           }
         },
         "additionalProperties": false
+      },
+      "GuardrailEntry": {
+        "type": "object",
+        "description": "A guardrail. The URL and the signing secret of an external one are never\nin a file; one an import creates is off until its URL is set.",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "external": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExternalEntry",
+                "description": "An external guardrail's settings; left out for `rules`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "Applies to every call of the gateway."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`rules` or `external`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleSpec"
+            },
+            "description": "The rules of a `rules` guardrail; empty for an external one."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GuardrailList": {
+        "type": "object",
+        "required": [
+          "guardrails"
+        ],
+        "properties": {
+          "guardrails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailView"
+            }
+          }
+        }
+      },
+      "GuardrailRef": {
+        "type": "object",
+        "description": "A guardrail by id and name.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GuardrailTestRequest": {
+        "type": "object",
+        "description": "What a test sends: rules, or the id of a stored guardrail.",
+        "required": [
+          "direction",
+          "text"
+        ],
+        "properties": {
+          "call_external": {
+            "type": "boolean",
+            "description": "With the id of an external guardrail: really call it. Otherwise an\nexternal guardrail is never called by a test."
+          },
+          "direction": {
+            "$ref": "#/components/schemas/Direction",
+            "description": "`input` or `output`: which rules apply."
+          },
+          "guardrail_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "A stored guardrail, enabled or not."
+          },
+          "rules": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RuleSpec"
+            },
+            "description": "Rules to try, as for a new guardrail. Send these or `guardrail_id`."
+          },
+          "text": {
+            "type": "string",
+            "description": "Up to 20 000 characters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GuardrailTestResult": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "redacted_text"
+        ],
+        "properties": {
+          "outcome": {
+            "$ref": "#/components/schemas/OutcomeView"
+          },
+          "redacted_text": {
+            "type": "string",
+            "description": "The text as the guardrail leaves it: redacted, or unchanged when it\nis blocked or only flagged."
+          }
+        }
+      },
+      "GuardrailView": {
+        "type": "object",
+        "description": "A guardrail as `/api` shows it: the host of an external one's URL, never\nthe URL or the secret.",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "kind",
+          "enabled",
+          "is_default",
+          "rules",
+          "url_host",
+          "timeout_ms",
+          "fail_mode",
+          "directions",
+          "created_at",
+          "routes",
+          "key_count"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "directions": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Directions",
+                "description": "What an external guardrail is asked about; `null` for `rules`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "fail_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`open` or `closed`; `external` only."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "Applies to every call of the gateway."
+          },
+          "key_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many keys it is attached to."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`rules` or `external`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailRef"
+            },
+            "description": "The routes it is attached to."
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleSpec"
+            },
+            "description": "The rules of a `rules` guardrail; empty for an `external` one."
+          },
+          "timeout_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`external` only; `null` for `rules`."
+          },
+          "url_host": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`external`: scheme, host and port of the URL, like\n`https://guard.example.com`; empty until a URL is set (a guardrail an\nimport made). `null` for `rules`."
+          }
+        }
       },
       "ImportReport": {
         "type": "object",
@@ -8137,7 +9236,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`provider`, `team`, `model`, `route`, `limit`, `budget`, `alert_channel`,\n`alert_rule` or `settings`."
+            "description": "`provider`, `team`, `model`, `guardrail`, `route`, `limit`, `budget`,\n`alert_channel`, `alert_rule` or `settings`."
           },
           "name": {
             "type": "string"
@@ -8175,6 +9274,7 @@
           "allowed",
           "tags",
           "team_only",
+          "guardrails",
           "status"
         ],
         "properties": {
@@ -8199,6 +9299,13 @@
               "string",
               "null"
             ]
+          },
+          "guardrails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailRef"
+            },
+            "description": "The guardrails applied to every call of the key, in order. Anyone who\nmay see the key sees them; only an admin changes them."
           },
           "id": {
             "type": "integer",
@@ -8798,6 +9905,63 @@
           }
         }
       },
+      "Matcher": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "keywords"
+            ],
+            "properties": {
+              "keywords": {
+                "type": "object",
+                "required": [
+                  "words"
+                ],
+                "properties": {
+                  "whole_word": {
+                    "type": "boolean",
+                    "description": "Match whole words only (the default); `false` matches substrings."
+                  },
+                  "words": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Up to 1 000, each 1 to 256 characters. Case-insensitive."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "regex"
+            ],
+            "properties": {
+              "regex": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "pii"
+            ],
+            "properties": {
+              "pii": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PiiType"
+                }
+              }
+            }
+          }
+        ],
+        "description": "What a rule looks for. Written as `{\"keywords\": {\"words\": [...],\n\"whole_word\": true}}`, `{\"regex\": \"...\"}` or `{\"pii\": [\"EMAIL\", ...]}`."
+      },
       "MeResponse": {
         "type": "object",
         "required": [
@@ -9162,6 +10326,59 @@
             "description": "Scopes asked for besides `openid email profile`, space separated."
           }
         }
+      },
+      "OutcomeView": {
+        "type": "object",
+        "description": "What a check found. Holds counts and ids only, never matched text.",
+        "required": [
+          "blocked_by",
+          "redactions",
+          "flags"
+        ],
+        "properties": {
+          "blocked_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GuardrailRef",
+                "description": "The first guardrail that blocks the text; `id` is 0 for rules sent\nwith the request."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlagView"
+            }
+          },
+          "redactions": {
+            "type": "object",
+            "description": "Replacements made, by PII type (`EMAIL`) or by rule id.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "PiiType": {
+        "type": "string",
+        "enum": [
+          "EMAIL",
+          "PHONE",
+          "CREDIT_CARD",
+          "IBAN",
+          "US_SSN",
+          "IPV4",
+          "IPV6",
+          "SECRET"
+        ]
       },
       "PlaygroundChatAnswer": {
         "type": "object",
@@ -9578,6 +10795,16 @@
             "type": "integer",
             "format": "int64"
           },
+          "guardrails": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of guardrails, in the order they apply. Left out of the file\nfor a route that has none; a file that leaves it out does not change\nwhat is attached (`[]` takes them all off)."
+          },
           "name": {
             "type": "string"
           },
@@ -9680,6 +10907,17 @@
             "format": "int64",
             "description": "1 000 to 300 000."
           },
+          "guardrail_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The guardrails applied to calls of this route, in this order, after\nthe gateway-wide ones. At most 20. Left out, the route keeps the ones\nit has; `[]` takes them all off."
+          },
           "name": {
             "type": "string",
             "description": "1 to 64 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting with a\nletter or digit. No `/`, so a route never reads as `provider/model`."
@@ -9731,6 +10969,7 @@
           "cache_enabled",
           "cache_ttl_s",
           "cache_scope",
+          "guardrails",
           "broken",
           "created_at"
         ],
@@ -9780,6 +11019,13 @@
           "first_token_timeout_ms": {
             "type": "integer",
             "format": "int64"
+          },
+          "guardrails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailRef"
+            },
+            "description": "The guardrails applied to calls of this route, in order. Hidden\n(empty) for a non-admin."
           },
           "id": {
             "type": "integer",
@@ -9839,6 +11085,33 @@
             }
           }
         }
+      },
+      "RuleSpec": {
+        "type": "object",
+        "description": "One rule of a guardrail.",
+        "required": [
+          "id",
+          "matcher",
+          "action",
+          "directions"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "directions": {
+            "$ref": "#/components/schemas/Directions",
+            "description": "The directions the rule applies to."
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable within a guardrail; the label of keyword/regex redaction counts."
+          },
+          "matcher": {
+            "$ref": "#/components/schemas/Matcher"
+          }
+        },
+        "additionalProperties": false
       },
       "RuleView": {
         "type": "object",
@@ -10413,16 +11686,98 @@
         },
         "additionalProperties": false
       },
+      "UpdateGuardrailRequest": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "directions": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Directions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "fail_mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_default": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rules": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RuleSpec"
+            },
+            "description": "`rules` only: replaces all the rules."
+          },
+          "timeout_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`external` only: a new URL.",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateKeyRequest": {
         "type": "object",
-        "description": "The new tags of a key.",
-        "required": [
-          "tags"
-        ],
+        "description": "What to change on a key. Admins only; send at least one field.",
         "properties": {
+          "guardrail_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Replaces the guardrails of the key; `[]` takes them all off. Left\nout, they stay."
+          },
           "tags": {
-            "type": "object",
-            "description": "Replaces all the tags of the key; `{}` removes them. The same limits\nas when the key is created.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Replaces all the tags of the key; `{}` removes them. The same limits\nas when the key is created. Left out, the tags stay.",
             "additionalProperties": {
               "type": "string"
             },
@@ -10859,6 +12214,10 @@
     {
       "name": "alerts",
       "description": "Alert channels, rules and the events they raised."
+    },
+    {
+      "name": "guardrails",
+      "description": "Guardrails: rules and external hooks that block, redact or flag the text of calls."
     }
   ]
 }

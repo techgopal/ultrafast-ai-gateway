@@ -62,6 +62,10 @@ struct World {
     channel: i64,
     /// An alert rule with no channel.
     rule: i64,
+    /// A guardrail of rules.
+    guardrail: i64,
+    /// An external guardrail.
+    external_guardrail: i64,
     /// Keeps `syncable` answering.
     _upstream: MockServer,
     /// Owned by lena, in Platform.
@@ -180,6 +184,40 @@ async fn world() -> World {
         .insert_alert_rule("table", "circuit_open", "{}", true)
         .await
         .unwrap();
+    let cipher = &org.api.state.cipher;
+    let (hook_url, hook_secret) = (
+        cipher.encrypt(b"https://guard.example.com/check"),
+        cipher.encrypt(b"whsec_table"),
+    );
+    let new_guardrail = |name, kind, rules| ultrafast_gateway::store::NewGuardrail {
+        name,
+        description: "",
+        kind,
+        rules,
+        url: None,
+        secret_enc: None,
+        timeout_ms: 3000,
+        fail_mode: "open",
+        directions: "both",
+        enabled: true,
+        is_default: false,
+    };
+    let guardrail = tx
+        .insert_guardrail(new_guardrail(
+            "table",
+            "rules",
+            r#"[{"id":"mail","matcher":{"pii":["EMAIL"]},"action":"redact","directions":"both"}]"#,
+        ))
+        .await
+        .unwrap();
+    let external_guardrail = tx
+        .insert_guardrail(ultrafast_gateway::store::NewGuardrail {
+            url: Some((&hook_url, "https://guard.example.com")),
+            secret_enc: Some(&hook_secret),
+            ..new_guardrail("external", "external", "[]")
+        })
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     org.api.state.refresh().await.unwrap();
 
@@ -246,6 +284,8 @@ async fn world() -> World {
         route,
         channel,
         rule,
+        guardrail,
+        external_guardrail,
         _upstream: upstream,
         lena_key,
         tomas_key,
@@ -532,6 +572,27 @@ fn table() -> Vec<Row> {
         row(78, "POST", "/api/settings/oidc/test", "an unreachable issuer", |_, _| "/api/settings/oidc/test".into(),
             || Some(json!({ "issuer": "http://127.0.0.1:1" })),
             [200, 403, 403, 401]),
+        row(79, "GET", "/api/guardrails", "", |_, _| "/api/guardrails".into(), no_body,
+            [200, 403, 403, 401]),
+        row(80, "POST", "/api/guardrails", "a rules guardrail", |_, _| "/api/guardrails".into(),
+            || Some(json!({ "name": "emails", "kind": "rules", "rules": [
+                { "id": "mail", "matcher": { "pii": ["EMAIL"] }, "action": "redact", "directions": "both" }] })),
+            [201, 403, 403, 401]),
+        row(81, "GET", "/api/guardrails/{id}", "", |w, _| format!("/api/guardrails/{}", w.guardrail), no_body,
+            [200, 403, 403, 401]),
+        row(82, "PATCH", "/api/guardrails/{id}", "", |w, _| format!("/api/guardrails/{}", w.guardrail),
+            || Some(json!({ "enabled": false })),
+            [200, 403, 403, 401]),
+        row(83, "DELETE", "/api/guardrails/{id}", "", |w, _| format!("/api/guardrails/{}", w.guardrail), no_body,
+            [204, 403, 403, 401]),
+        row(84, "POST", "/api/guardrails/{id}/rotate-secret", "an external guardrail",
+            |w, _| format!("/api/guardrails/{}/rotate-secret", w.external_guardrail), no_body,
+            [200, 403, 403, 401]),
+        row(85, "POST", "/api/guardrails/test", "rules sent with the request", |_, _| "/api/guardrails/test".into(),
+            || Some(json!({ "rules": [
+                { "id": "mail", "matcher": { "pii": ["EMAIL"] }, "action": "redact", "directions": "both" }],
+                "direction": "input", "text": "a@b.co" })),
+            [200, 403, 403, 401]),
     ]
 }
 
@@ -604,7 +665,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=78).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=85).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -736,7 +797,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 78);
+    assert_eq!(operations, 85);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

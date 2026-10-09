@@ -64,6 +64,7 @@ function viewOf(id: number, body: RouteRequest): fixtures.Route {
     cache_scope: body.cache_scope ?? "team",
     everyone: body.everyone,
     team_ids: body.team_ids,
+    guardrails: [],
     broken: false,
     created_at: "2026-09-30 09:00:00",
   };

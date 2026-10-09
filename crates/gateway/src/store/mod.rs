@@ -6,6 +6,7 @@ mod audit;
 mod backup;
 mod budgets;
 pub mod dialect;
+mod guardrails;
 mod keys;
 mod limits;
 mod logs;
@@ -38,6 +39,7 @@ pub use backup::POSTGRES_BACKUP_TEXT;
 pub use budgets::{BudgetRow, UsageDelta, UsageRow, UsageTotal};
 pub use dialect::Dialect;
 pub(crate) use dialect::Dialected;
+pub use guardrails::{GuardrailPatch, GuardrailRow, NewGuardrail};
 pub use keys::{parse_allowed, KeyRow, LiveKey};
 pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
@@ -186,6 +188,12 @@ pub struct SnapshotRows {
     pub teams: std::collections::HashMap<i64, Vec<UserTeam>>,
     /// `(id, created_at)` of every team.
     pub team_stamps: Vec<(i64, String)>,
+    /// Every guardrail, enabled or not, by name.
+    pub guardrails: Vec<GuardrailRow>,
+    /// `(route id, guardrail id, guardrail name)`, in each route's order.
+    pub route_guardrails: Vec<(i64, i64, String)>,
+    /// `(key id, guardrail id, guardrail name)`, in each key's order.
+    pub key_guardrails: Vec<(i64, i64, String)>,
 }
 
 #[derive(Clone)]
@@ -387,6 +395,9 @@ impl Store {
         let team_stamps = teams::team_stamps_in(conn).await?;
         let limits = limits::list_limits_in(conn).await?;
         let budgets = budgets::list_budgets_in(conn).await?;
+        let guardrails = guardrails::list_guardrails_in(conn).await?;
+        let route_guardrails = guardrails::route_guardrail_refs_in(conn).await?;
+        let key_guardrails = guardrails::key_guardrail_refs_in(conn).await?;
         tx.commit().await?;
         Ok(SnapshotRows {
             keys,
@@ -401,6 +412,9 @@ impl Store {
             budgets,
             teams,
             team_stamps,
+            guardrails,
+            route_guardrails,
+            key_guardrails,
         })
     }
 

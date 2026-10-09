@@ -240,6 +240,7 @@ function key(
     allowed: null,
     tags: {},
     team_only: false,
+    guardrails: [],
   };
 }
 
@@ -371,6 +372,7 @@ export const routes = {
     ...defaultSettings,
     everyone: true,
     team_ids: [],
+    guardrails: [],
     broken: false,
     created_at: "2026-09-10 09:00:00",
   },
@@ -391,6 +393,7 @@ export const routes = {
     cache_scope: "user",
     everyone: false,
     team_ids: [teams.platform.id, teams.research.id],
+    guardrails: [],
     broken: false,
     created_at: "2026-09-11 09:00:00",
   },
@@ -405,6 +408,7 @@ export const routes = {
     ...defaultSettings,
     everyone: false,
     team_ids: [],
+    guardrails: [],
     broken: true,
     created_at: "2026-09-12 09:00:00",
   },

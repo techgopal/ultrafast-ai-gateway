@@ -137,7 +137,8 @@ async fn a_database_written_by_the_earlier_build_opens_and_reads() {
             (13, "key team only", true),
             (14, "alerts", true),
             (15, "oidc", true),
-            (16, "alert owner", true)
+            (16, "alert owner", true),
+            (17, "guardrails", true)
         ]
     );
 

@@ -130,7 +130,7 @@ fn check_name(name: &str, fields: &mut BTreeMap<String, String>) {
 }
 
 /// The URL is valid and has a host to show; the message never repeats it.
-fn check_url(url: &str, fields: &mut BTreeMap<String, String>) -> Option<String> {
+pub(super) fn check_url(url: &str, fields: &mut BTreeMap<String, String>) -> Option<String> {
     if let Err(e) = validate_webhook_url(url) {
         fields.insert("url".to_string(), e.to_string());
         return None;

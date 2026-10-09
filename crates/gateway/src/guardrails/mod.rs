@@ -46,14 +46,14 @@ pub const REGEX_SIZE_LIMIT: usize = 1 << 20;
 /// this may be missed in streams.
 pub const HOLD_BACK_CHARS: usize = 256;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     Input,
     Output,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     Block,
@@ -62,7 +62,7 @@ pub enum Action {
 }
 
 /// The directions a rule applies to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Directions {
     Input,
@@ -71,6 +71,24 @@ pub enum Directions {
 }
 
 impl Directions {
+    /// `input`, `output` or `both`: the form it is stored in.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Directions::Input => "input",
+            Directions::Output => "output",
+            Directions::Both => "both",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "input" => Some(Directions::Input),
+            "output" => Some(Directions::Output),
+            "both" => Some(Directions::Both),
+            _ => None,
+        }
+    }
+
     pub fn covers(self, dir: Direction) -> bool {
         matches!(
             (self, dir),
@@ -85,11 +103,15 @@ fn whole_word_default() -> bool {
     true
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// What a rule looks for. Written as `{"keywords": {"words": [...],
+/// "whole_word": true}}`, `{"regex": "..."}` or `{"pii": ["EMAIL", ...]}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Matcher {
     Keywords {
+        /// Up to 1 000, each 1 to 256 characters. Case-insensitive.
         words: Vec<String>,
+        /// Match whole words only (the default); `false` matches substrings.
         #[serde(default = "whole_word_default")]
         whole_word: bool,
     },
@@ -97,12 +119,15 @@ pub enum Matcher {
     Pii(Vec<PiiType>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One rule of a guardrail.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RuleSpec {
     /// Stable within a guardrail; the label of keyword/regex redaction counts.
     pub id: String,
     pub matcher: Matcher,
     pub action: Action,
+    /// The directions the rule applies to.
     pub directions: Directions,
 }
 

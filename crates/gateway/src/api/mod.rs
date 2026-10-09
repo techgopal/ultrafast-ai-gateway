@@ -7,6 +7,7 @@ pub mod auth;
 pub mod backup;
 pub mod budgets;
 pub mod config;
+pub mod guardrails;
 pub mod health;
 pub mod keys;
 pub mod limits;
@@ -118,6 +119,14 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(alerts::rules_list, alerts::rules_create))
         .routes(routes!(alerts::rules_update, alerts::rules_delete))
         .routes(routes!(alerts::events_list))
+        .routes(routes!(guardrails::list, guardrails::create))
+        .routes(routes!(
+            guardrails::view,
+            guardrails::update,
+            guardrails::delete
+        ))
+        .routes(routes!(guardrails::rotate_secret))
+        .routes(routes!(guardrails::test))
 }
 
 pub fn router() -> Router<Arc<AppState>> {
