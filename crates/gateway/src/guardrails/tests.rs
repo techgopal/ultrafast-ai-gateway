@@ -214,7 +214,16 @@ fn ipv6_table() {
             "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
             "::ffff:192.168.1.1",
         ],
-        &["12:30:45", "std::vector", "10:15", "::", "1:2:3"],
+        &[
+            "12:30:45",
+            "std::vector",
+            "10:15",
+            "::",
+            "1:2:3",
+            "a::b",
+            "C++ A::B",
+            "Foo::Bar",
+        ],
     );
 }
 
@@ -234,8 +243,8 @@ fn secret_table() {
         "xoxa-1234567890-abcdefghij",
         "xoxp-1234567890-abcdefghij",
         &aiza,
-        "-----BEGIN RSA PRIVATE KEY-----",
-        "-----BEGIN PRIVATE KEY-----",
+        "xoxr-1234567890-abcdefghij",
+        "xoxe-1234567890-abcdefghij",
         &uf_key,
         &uf_tok,
     ];
@@ -251,6 +260,8 @@ fn secret_table() {
             "xoxz-1234567890-abcdefghij",
             "-----BEGIN PUBLIC KEY-----",
             "uf-sk-short",
+            "AKIAIOSFODNN7EXAMPLEXTRA",
+            "xoxz-1234567890-abcdefghij",
         ],
     );
 }
@@ -429,7 +440,7 @@ fn regex_limits() {
 
 #[test]
 fn catastrophic_regex_is_linear() {
-    let g = guard(1, &[re("r", r"(a+)+$", Action::Redact)]);
+    let g = guard(1, &[re("r", r"(a+)+c", Action::Redact)]);
     let mut text = "a".repeat(1 << 20);
     text.push('b');
     let started = Instant::now();
@@ -439,7 +450,7 @@ fn catastrophic_regex_is_linear() {
     assert!(o.redactions.is_empty());
     assert!(took < Duration::from_secs(20), "took {took:?}");
     // and when it does match
-    let text = "a".repeat(1 << 20);
+    let text = format!("{}c", "a".repeat(1 << 20));
     let started = Instant::now();
     let (out, o) = run(&[g], Direction::Input, &text);
     assert_eq!(out, "[REDACTED]");
@@ -642,8 +653,11 @@ fn stream_holds_back_exactly_the_tail() {
     let mut s = StreamScanner::new(vec![g]);
     let r = s.push_text(&"x".repeat(1000));
     assert_eq!(r.text.chars().count(), 1000 - HOLD_BACK_CHARS);
-    let r = s.push_text("tail");
-    assert_eq!(r.text.chars().count(), 4);
+    // a few letters alone do not trigger a scan ...
+    assert_eq!(s.push_text("tail").text, "");
+    // ... a non-letter does
+    let r = s.push_text(".");
+    assert_eq!(r.text.chars().count(), 5);
     let f = s.finish();
     assert_eq!(f.text.chars().count(), HOLD_BACK_CHARS);
 }
@@ -842,6 +856,13 @@ const PIECES: &[&str] = &[
     "+14155552671",
     "(415) 555-2671",
     "hello world",
+    "1.2.3.4.5",
+    "\\nsk-ABCDEFGHIJKLMNOPQRSTUVWX",
+    "\\n123-45-6789\\t",
+    "-----BEGIN RSA PRIVATE KEY-----\\nMIIEabcdefghij\\n-----END RSA PRIVATE KEY-----",
+    "-----BEGIN PGP PRIVATE KEY BLOCK-----\nabcdefghijklmnop\n-----END PGP PRIVATE KEY BLOCK-----\n",
+    "密码",
+    "josé@gmail.com",
 ];
 
 fn random_text(rng: &mut Rng) -> String {
@@ -856,6 +877,11 @@ fn random_text(rng: &mut Rng) -> String {
         if rng.below(25) == 0 {
             s.push_str(&"q".repeat(rng.below(300)));
         }
+    }
+    if rng.below(8) == 0 {
+        // a key that never ends: the stream swallows it to the end
+        s.push_str(" -----BEGIN PRIVATE KEY-----\nMIIabcdefghijklmnop");
+        s.push_str(&"A1b2".repeat(rng.below(200)));
     }
     s
 }
@@ -993,7 +1019,7 @@ fn property_stream_hold_back_is_bounded() {
             all.push_str(&r.text);
             assert!(out <= fed, "case {case}");
             assert!(
-                fed - out <= 2 * HOLD_BACK_CHARS,
+                fed - out <= 2 * HOLD_BACK_CHARS + 128,
                 "case {case}: {} held",
                 fed - out
             );
@@ -1050,4 +1076,299 @@ fn property_stream_block_never_releases_the_blocked_match() {
         }
     }
     assert!(blocked_cases > 20);
+}
+
+// ---------- fix round 1 ----------
+
+fn redact_all(text: &str) -> String {
+    let g = guard(1, &[pii("p", &PiiType::ALL, Action::Redact)]);
+    run(&[g], Direction::Input, text).0
+}
+
+#[test]
+fn json_escapes_are_boundaries() {
+    let key = "sk-abcdefghijklmnopqrstuv";
+    let cases = [
+        (format!(r"a\n{key}"), r"a\n[REDACTED:SECRET]"),
+        (format!(r"a\t{key}\n"), r"a\t[REDACTED:SECRET]\n"),
+        (r"x\n123-45-6789".to_string(), r"x\n[REDACTED:US_SSN]"),
+        (r"x\n10.0.0.1\n".to_string(), r"x\n[REDACTED:IPV4]\n"),
+        (
+            r"x\nDE89370400440532013000\n".to_string(),
+            r"x\n[REDACTED:IBAN]\n",
+        ),
+        (r"x\n+14155552671\n".to_string(), r"x\n[REDACTED:PHONE]\n"),
+        (r"x\n(415) 555-2671\n".to_string(), r"x\n[REDACTED:PHONE]\n"),
+        (r"x\nbob@x.com\n".to_string(), r"x\n[REDACTED:EMAIL]\n"),
+        (r"x bob@x.com".to_string(), r"x [REDACTED:EMAIL]"),
+        (
+            r#"{\"k\":\"4111 1111 1111 1111\"}"#.to_string(),
+            r#"{\"k\":\"[REDACTED:CREDIT_CARD]\"}"#,
+        ),
+    ];
+    for (input, want) in cases {
+        assert_eq!(redact_all(&input), want, "{input}");
+    }
+    // an escaped backslash followed by n is a backslash and a letter
+    let t = format!(r"a\\n{key}");
+    assert_eq!(redact_all(&t), t);
+    // keywords too
+    let g = guard(1, &[kw("k", &["secret"], true, Action::Redact)]);
+    assert_eq!(
+        run(&[g], Direction::Input, r"x\nsecret\t").0,
+        r"x\n[REDACTED]\t"
+    );
+}
+
+#[test]
+fn json_escapes_in_a_stream_cut_anywhere() {
+    let g = guard(1, &[pii("p", &PiiType::ALL, Action::Redact)]);
+    let key = "sk-abcdefghijklmnopqrstuv";
+    for pad in 240..300 {
+        let text = format!("{}\\n{key}\\n123-45-6789\\t end", "z ".repeat(pad / 2));
+        let chars: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+        let refs: Vec<&str> = chars.iter().map(String::as_str).collect();
+        let (out, o, _) = feed(std::slice::from_ref(&g), &refs);
+        let (want, wo) = run(std::slice::from_ref(&g), Direction::Output, &text);
+        assert_eq!(out, want, "pad {pad}");
+        assert_eq!(o, wo);
+    }
+}
+
+#[test]
+fn email_accepts_unicode_letters() {
+    table(
+        PiiType::Email,
+        "EMAIL",
+        &[
+            "josé@gmail.com",
+            "café@example.com",
+            "user@münchen.de",
+            "用户@例子.广告",
+            "bob@мир.рф",
+        ],
+        &["é@", "@é.com", "user@é"],
+    );
+}
+
+#[test]
+fn whole_word_keywords_in_unspaced_scripts_match_as_substrings() {
+    for (word, text, want) in [
+        ("密码", "我的密码是abc", "我的[REDACTED]是abc"),
+        ("パスワード", "これはパスワードです", "これは[REDACTED]です"),
+        ("ภาษาไทย", "ผมพูดภาษาไทยได้", "ผมพูด[REDACTED]ได้"),
+        ("한국", "한국어", "한국어"), // Hangul has spaces: stays whole-word
+        ("cat", "catalog 密码 cat", "catalog 密码 [REDACTED]"),
+    ] {
+        let g = guard(1, &[kw("k", &[word], true, Action::Redact)]);
+        assert_eq!(run(&[g], Direction::Input, text).0, want, "{word}");
+    }
+    // a block keyword in Chinese fires on running text
+    let g = guard(2, &[kw("k", &["密码"], true, Action::Block)]);
+    let o = run(&[g], Direction::Input, "请告诉我密码").1;
+    assert_eq!(o.blocked_by, Some((2, "g2".to_string())));
+}
+
+#[test]
+fn regex_anchors_are_refused() {
+    for p in [
+        "^a", "a$", r"\Aa", r"a\z", "(?m)^a", "(?m)a$", "(a|^b)c", "x(?:$)",
+    ] {
+        let r = Compiled::compile(1, "g", &[re("r", p, Action::Flag)]);
+        assert!(
+            matches!(r, Err(GuardrailError::RegexAnchor(ref id)) if id == "r"),
+            "{p}: {r:?}"
+        );
+    }
+    for p in [r"\bfoo\b", "[^a]x", r"a\$", r"a\^", "[$^]x", r"\Bfoo"] {
+        assert!(
+            Compiled::compile(1, "g", &[re("r", p, Action::Flag)]).is_ok(),
+            "{p}"
+        );
+    }
+}
+
+#[test]
+fn phone_is_not_numbers_that_merely_have_digits() {
+    for neg in [
+        "0.123456789012",
+        "1234567.1234567",
+        "3.14159265358979",
+        "-122.4194155",
+        "Order #20240115-0042",
+        "ISBN 978-3-16-148410-0",
+        "12345-67890",
+        "12-34-56-78-90",
+        "37.7749295 -122.4194155",
+    ] {
+        let text = format!("see {neg} now");
+        assert_eq!(redact_pii(PiiType::Phone, &text), text, "{neg}");
+    }
+    table(
+        PiiType::Phone,
+        "PHONE",
+        &[
+            "+14155552671",
+            "+1 415 555 2671",
+            "(415) 555-2671",
+            "1 (415) 555-2671",
+            "415-555-2671",
+            "415.555.2671",
+            "415 555 2671",
+            "1-415-555-2671",
+            "+44 20 7946 0958",
+            "020 7946 0958",
+            "01 23 45 67 89",
+            "030 12345678",
+            "+49 30 901820",
+        ],
+        &[],
+    );
+}
+
+#[test]
+fn secret_boundaries_and_block_kinds() {
+    assert_eq!(
+        redact_pii(PiiType::Secret, "key_sk-abcdefghijklmnopqrstuv end"),
+        "key_[REDACTED:SECRET] end"
+    );
+    assert_eq!(
+        redact_pii(PiiType::Secret, "AKIAIOSFODNN7EXAMPLEXTRA"),
+        "AKIAIOSFODNN7EXAMPLEXTRA"
+    );
+    assert_eq!(
+        redact_pii(PiiType::Secret, "a AKIAIOSFODNN7EXAMPLE."),
+        "a [REDACTED:SECRET]."
+    );
+}
+
+const PEM: &str = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAabc\ndefGHI+/=\n-----END RSA PRIVATE KEY-----";
+const PGP: &str =
+    "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQdGBF\n=abcd\n-----END PGP PRIVATE KEY BLOCK-----";
+
+#[test]
+fn private_key_blocks_are_redacted_whole() {
+    for block in [
+        PEM,
+        PGP,
+        "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----",
+    ] {
+        assert_eq!(
+            redact_pii(PiiType::Secret, &format!("before\n{block}\nafter")),
+            "before\n[REDACTED:SECRET]\nafter"
+        );
+    }
+    // two blocks, then an unterminated one that runs to the end
+    let text = format!("{PEM} and {PGP} and -----BEGIN PRIVATE KEY-----\nAAAA tail");
+    assert_eq!(
+        redact_pii(PiiType::Secret, &text),
+        "[REDACTED:SECRET] and [REDACTED:SECRET] and [REDACTED:SECRET]"
+    );
+    // a public key is not private
+    let public = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----";
+    assert_eq!(redact_pii(PiiType::Secret, public), public);
+}
+
+#[test]
+fn private_key_blocks_are_swallowed_in_streams() {
+    let g = guard(1, &[pii("p", &PiiType::ALL, Action::Redact)]);
+    let body = "MIIEowIBAAKCAQEA".repeat(400); // 6400 chars of key
+    let text = format!(
+        "here is the key: -----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY----- and bob@example.com after"
+    );
+    for size in [1usize, 7, 50, 300, 5000] {
+        let chunks: Vec<String> = text
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(size)
+            .map(|c| c.iter().collect())
+            .collect();
+        let refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+        let mut s = StreamScanner::new(vec![g.clone()]);
+        let mut out = String::new();
+        for c in &refs {
+            out.push_str(&s.push_text(c).text);
+            assert!(!out.contains("MIIE"), "size {size}: key body released");
+        }
+        out.push_str(&s.finish().text);
+        assert_eq!(
+            out, "here is the key: [REDACTED:SECRET] and [REDACTED:EMAIL] after",
+            "size {size}"
+        );
+        assert_eq!(s.outcome().redactions.get("SECRET"), Some(&1));
+    }
+    // the stream ends inside the key: nothing of it comes out
+    let cut = format!("x -----BEGIN PGP PRIVATE KEY BLOCK-----\n{body}");
+    let chunks: Vec<String> = cut
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(40)
+        .map(|c| c.iter().collect())
+        .collect();
+    let refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+    let (out, o, _) = feed(&[g], &refs);
+    assert_eq!(out, "x [REDACTED:SECRET]");
+    assert_eq!(o.redactions.get("SECRET"), Some(&1));
+}
+
+#[test]
+fn ipv4_inside_a_longer_dotted_number_in_a_stream() {
+    let g = guard(1, &[pii("p", &[PiiType::Ipv4], Action::Redact)]);
+    for pad in 200..330 {
+        let text = format!("{}1.2.3.4.5 and 10.0.0.1 end", "z ".repeat(pad / 2));
+        let chars: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+        let refs: Vec<&str> = chars.iter().map(String::as_str).collect();
+        let (out, o, _) = feed(std::slice::from_ref(&g), &refs);
+        let (want, wo) = run(std::slice::from_ref(&g), Direction::Output, &text);
+        assert_eq!(out, want, "pad {pad}");
+        assert_eq!(o, wo);
+    }
+}
+
+/// CPU time of this thread (so other load on the machine does not count);
+/// falls back to the wall clock where `/proc` has no schedstat.
+fn cpu_time() -> Duration {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let on_cpu = std::fs::read_to_string("/proc/thread-self/schedstat")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse::<u64>().ok());
+    match on_cpu {
+        Some(ns) => Duration::from_nanos(ns),
+        None => START.get_or_init(Instant::now).elapsed(),
+    }
+}
+
+/// Release builds only (`cargo test --release`): 4k tokens (about 16k chars)
+/// of content that keeps every detector busy, fed one character at a time.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "timing: run with --release")]
+fn stream_cpu_is_bounded_on_adversarial_text() {
+    let set = vec![guard(
+        1,
+        &[
+            pii("p", &PiiType::ALL, Action::Flag),
+            kw("k", &["secret", "token"], true, Action::Flag),
+        ],
+    )];
+    for unit in [
+        "AB12 CD34 ",
+        "12-34-",
+        "1:2:3:",
+        "1 1 1 ",
+        "10.0.0.",
+        "a@b.c ",
+        "12345 6789 ",
+    ] {
+        let text = unit.repeat(16_000 / unit.len());
+        let started = cpu_time();
+        let mut s = StreamScanner::new(set.clone());
+        let mut buf = [0u8; 4];
+        for c in text.chars() {
+            let _ = s.push_text(c.encode_utf8(&mut buf));
+        }
+        let _ = s.finish();
+        let took = cpu_time() - started;
+        eprintln!("stream cpu {unit:?}: {took:?}");
+        assert!(took < Duration::from_millis(200), "{unit:?} took {took:?}");
+    }
 }

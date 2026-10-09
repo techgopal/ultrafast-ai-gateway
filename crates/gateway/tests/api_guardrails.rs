@@ -256,6 +256,22 @@ async fn bad_input_is_refused_with_the_field() {
     )
     .await;
     assert_invalid(status, &body, "rules[0]");
+    // An anchored one: a stream never sees the start or end of the whole text.
+    for anchored in [
+        "^secret",
+        "secret$",
+        r"\Asecret",
+        r"secret\z",
+        "(?m)^secret",
+    ] {
+        let (status, body) = create(
+            json!({ "name": "g", "kind": "rules", "rules": [pii_email(), rule(json!({ "regex": anchored }))] }),
+        )
+        .await;
+        assert_invalid(status, &body, "rules[1]");
+        let message = body["error"]["fields"]["rules[1]"].as_str().unwrap();
+        assert!(message.contains("anchor"), "{message}");
+    }
     // Keywords: none, or an empty one.
     let (status, body) = create(json!({
         "name": "g", "kind": "rules",
@@ -1009,6 +1025,12 @@ async fn the_test_endpoint_runs_the_engine_and_never_echoes_a_match() {
     assert_invalid(status, &v, "guardrail_id");
     let (status, v) = test(json!({
         "rules": [{ "id": "r", "matcher": { "regex": "(" }, "action": "block", "directions": "both" }],
+        "direction": "input", "text": "x"
+    }))
+    .await;
+    assert_invalid(status, &v, "rules[0]");
+    let (status, v) = test(json!({
+        "rules": [{ "id": "r", "matcher": { "regex": "^x" }, "action": "block", "directions": "both" }],
         "direction": "input", "text": "x"
     }))
     .await;

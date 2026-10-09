@@ -9,6 +9,24 @@ fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// Characters of scripts written without spaces between words (Han, Hiragana,
+/// Katakana, Thai, Lao, Khmer, Myanmar): Unicode word boundaries never fall
+/// between two of them, so a keyword containing one is matched as a substring.
+fn is_unspaced_script(c: char) -> bool {
+    matches!(u32::from(c),
+        0x0E00..=0x0EFF // Thai, Lao
+        | 0x1000..=0x109F // Myanmar
+        | 0x1780..=0x17FF // Khmer
+        | 0x3040..=0x30FF // Hiragana, Katakana
+        | 0x31F0..=0x31FF // Katakana extensions
+        | 0x3400..=0x4DBF // Han extension A
+        | 0x4E00..=0x9FFF // Han
+        | 0xF900..=0xFAFF // Han compatibility
+        | 0xFF66..=0xFF9F // half-width Katakana
+        | 0x20000..=0x3FFFF // Han extensions B and later
+    )
+}
+
 /// One case-insensitive alternation over the escaped keywords, longest first.
 /// Whole-word mode adds Unicode word boundaries on each side where the
 /// keyword's edge character is a word character (a keyword like `c++` has no
@@ -43,11 +61,12 @@ pub(crate) fn build(
         .iter()
         .map(|w| {
             let mut s = String::new();
-            if whole_word && w.chars().next().is_some_and(is_word) {
+            let bounded = whole_word && !w.chars().any(is_unspaced_script);
+            if bounded && w.chars().next().is_some_and(is_word) {
                 s.push_str(r"\b");
             }
             s.push_str(&regex::escape(w));
-            if whole_word && w.chars().next_back().is_some_and(is_word) {
+            if bounded && w.chars().next_back().is_some_and(is_word) {
                 s.push_str(r"\b");
             }
             s

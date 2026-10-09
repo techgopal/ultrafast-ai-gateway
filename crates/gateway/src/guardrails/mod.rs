@@ -14,6 +14,22 @@
 //!   first (ties: the earlier rule), never twice over the same characters;
 //! - `flag` matches are recorded once per rule.
 //!
+//! Text handling:
+//! - JSON string escapes (`\n`, `\t`, `\"`, `\uXXXX`, ...) count as a boundary:
+//!   detectors and whole-word keywords see a space there, so tool-call
+//!   arguments (JSON text) match like plain text. Positions are unchanged.
+//! - Whole-word keywords that contain a character of a script written without
+//!   spaces (Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar) match as
+//!   substrings, because Unicode word boundaries never fall between such letters.
+//! - No Unicode normalization or full case folding is done: `café` written
+//!   with a combining accent does not match `café` written precomposed, and
+//!   zero-width characters inside a word defeat a keyword.
+//! - Regular expressions may not use anchors (`^ $ \A \z`): a stream only
+//!   sees part of the text.
+//! - A private key block (`-----BEGIN ... PRIVATE KEY-----` to the matching
+//!   END line, PGP blocks included) is redacted whole; a stream swallows
+//!   everything after a BEGIN line until the END line or the end of the stream.
+//!
 //! Matched text is never logged, stored or returned except as the redacted
 //! output itself.
 
@@ -154,6 +170,8 @@ pub enum GuardrailError {
     RegexTooLarge(String),
     #[error("rule '{0}': the regular expression matches the empty string")]
     RegexMatchesEmpty(String),
+    #[error("rule '{0}': the regular expression uses an anchor (^, $, \\A, \\z); anchors mean the start or end of the whole text, which a stream never sees, so they are not allowed")]
+    RegexAnchor(String),
     #[error("rule '{0}': pick at least one PII type")]
     NoPiiTypes(String),
 }

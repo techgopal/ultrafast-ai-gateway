@@ -35,6 +35,7 @@ hmac.workspace = true
 http-body-util.workspace = true
 mime_guess.workspace = true
 regex.workspace = true
+regex-syntax.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 rust-embed.workspace = true

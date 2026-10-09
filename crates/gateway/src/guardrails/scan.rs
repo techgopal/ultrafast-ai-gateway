@@ -1,6 +1,7 @@
 //! Rule compilation and the shared matching/redaction engine used by both
 //! whole-text checks and the stream scanner.
 
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::sync::Arc;
 
@@ -72,6 +73,16 @@ fn build_regex(rule: &str, pattern: &str) -> Result<Regex, GuardrailError> {
     if re.is_match("") {
         return Err(GuardrailError::RegexMatchesEmpty(rule.to_string()));
     }
+    // `^`, `$`, `\A`, `\z` (and the multi-line forms) mean "start/end of the
+    // text"; a stream only ever sees part of it, so they would behave
+    // differently there than on a whole answer.
+    let anchored = regex_syntax::Parser::new()
+        .parse(pattern)
+        .map(|hir| hir.properties().look_set().contains_anchor())
+        .unwrap_or(false);
+    if anchored {
+        return Err(GuardrailError::RegexAnchor(rule.to_string()));
+    }
     Ok(re)
 }
 
@@ -91,10 +102,55 @@ fn find_plain(re: &Regex, hay: &str, from: usize, out: &mut Vec<pii::Span>) {
                 start: m.start(),
                 end: m.end(),
                 matched: true,
+                open: false,
             });
             pos = m.end();
         }
     }
+}
+
+/// Byte spans of JSON string escapes (`\n \t \r \" \\ \/ \b \f \uXXXX`) in
+/// `raw`, scanning from `from` (which must be the start of a token).
+pub(crate) fn escape_spans(raw: &str, from: usize, out: &mut Vec<(usize, usize)>) {
+    let b = raw.as_bytes();
+    let mut i = from;
+    while i < b.len() {
+        if b[i] != b'\\' || i + 1 >= b.len() {
+            i += 1;
+            continue;
+        }
+        match b[i + 1] {
+            b'n' | b't' | b'r' | b'"' | b'\\' | b'/' | b'b' | b'f' => {
+                out.push((i, i + 2));
+                i += 2;
+            }
+            b'u' if i + 6 <= b.len() && b[i + 2..i + 6].iter().all(u8::is_ascii_hexdigit) => {
+                out.push((i, i + 6));
+                i += 6;
+            }
+            _ => i += 1,
+        }
+    }
+}
+
+/// `raw` with every JSON escape replaced by spaces of the same length, so
+/// detectors see a boundary there (tool-call arguments are JSON text, and the
+/// `n` of `\n` is not a letter of the next word). Positions are unchanged.
+pub(crate) fn mask_escapes(raw: &str) -> Cow<'_, str> {
+    if !raw.contains('\\') {
+        return Cow::Borrowed(raw);
+    }
+    let mut spans = Vec::new();
+    escape_spans(raw, 0, &mut spans);
+    if spans.is_empty() {
+        return Cow::Borrowed(raw);
+    }
+    let mut bytes = raw.as_bytes().to_vec();
+    for (s, e) in spans {
+        bytes[s..e].fill(b' ');
+    }
+    // only ASCII bytes were replaced by ASCII, so this is valid UTF-8
+    Cow::Owned(String::from_utf8(bytes).unwrap_or_else(|_| raw.to_string()))
 }
 
 /// One match of one rule.
@@ -110,6 +166,8 @@ pub(crate) struct Hit<'a> {
     /// Key of the redaction count: the PII type name or the rule id.
     pub label: &'a str,
     pub placeholder: &'a str,
+    /// A private-key block still waiting for its END line.
+    pub open: bool,
 }
 
 /// Every match at or after `from` of every rule that covers `dir`.
@@ -150,6 +208,7 @@ pub(crate) fn collect_hits<'a>(
                         rule,
                         label,
                         placeholder,
+                        open: sp.open,
                     });
                 }
             }
@@ -211,7 +270,10 @@ pub(crate) fn blocked_of(h: &Hit<'_>) -> (i64, String) {
 
 pub(crate) fn check_texts(set: &[Arc<Compiled>], dir: Direction, texts: &mut [String]) -> Outcome {
     let mut outcome = Outcome::default();
-    let all: Vec<Vec<Hit<'_>>> = texts.iter().map(|t| collect_hits(set, dir, t, 0)).collect();
+    let all: Vec<Vec<Hit<'_>>> = texts
+        .iter()
+        .map(|t| collect_hits(set, dir, &mask_escapes(t), 0))
+        .collect();
     for h in all
         .iter()
         .flatten()

@@ -2877,6 +2877,7 @@ dependencies = [
  "mime_guess",
  "rand",
  "regex",
+ "regex-syntax",
  "reqwest",
  "rust-embed",
  "serde",
