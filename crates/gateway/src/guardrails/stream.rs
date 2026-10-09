@@ -57,6 +57,9 @@ struct Buf {
     hay: String,
     /// The look-behind of `hay` with its JSON escapes masked (same length).
     lead: String,
+    /// The same look-behind as the PII detectors read it (escapes and
+    /// unspaced scripts filled with `scan::EDGE`).
+    lead_pii: String,
     /// Byte index in `hay` where unreleased text starts; always a token boundary.
     base: usize,
     /// Characters added since the last scan.
@@ -119,18 +122,22 @@ fn advance(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, last: bo
     let mut scan = buf.lead.clone();
     scan.push_str(&scan::mask_escapes(&buf.hay[buf.base..]));
     let masked = scan::blank_scripts(&scan);
+    let mut pii_scan = buf.lead_pii.clone();
+    pii_scan.push_str(&scan::mask_escapes_with(&buf.hay[buf.base..], scan::EDGE));
+    let pii_view = scan::blank_scripts_with(&pii_scan, scan::EDGE);
     let hay = buf.hay.as_str();
     let hays = scan::Hays {
         raw: hay,
         esc: &scan,
         masked: &masked,
+        pii: &pii_view,
     };
     let target = if last {
         hay.len()
     } else {
         nth_char_byte(hay, buf.base, pending - HOLD_BACK_CHARS)
     };
-    let hits: Vec<Hit<'_>> = scan::collect_hits(set, Direction::Output, &hays, buf.base);
+    let hits: Vec<Hit<'_>> = scan::collect_hits(set, Direction::Output, &hays, buf.base, true);
     buf.wait = if hits.len() <= CHEAP_SCAN_HITS {
         0
     } else {
@@ -209,6 +216,7 @@ fn advance(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, last: bo
         let keep = tail_window(&buf.hay);
         buf.hay.drain(..keep);
         buf.lead.clear();
+        buf.lead_pii.clear();
         buf.base = 0;
         buf.swallow = true;
         return Step::Text(text);
@@ -218,6 +226,7 @@ fn advance(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, last: bo
     // keep the last released characters so word boundaries still see them
     let keep_from = look_behind_start(&buf.hay, release_end);
     buf.lead = scan[keep_from..release_end].to_string();
+    buf.lead_pii = pii_scan[keep_from..release_end].to_string();
     buf.hay.drain(..keep_from);
     buf.base = release_end - keep_from;
     Step::Text(text)
@@ -241,6 +250,7 @@ fn push_chunk(set: &[Arc<Compiled>], buf: &mut Buf, outcome: &mut Outcome, chunk
         buf.hay.drain(..keep_from);
         buf.base = end - keep_from;
         buf.lead = buf.hay[..buf.base].to_string();
+        buf.lead_pii = buf.hay[..buf.base].to_string();
         buf.swallow = false;
         buf.since = RESCAN_AFTER_CHARS;
     } else {

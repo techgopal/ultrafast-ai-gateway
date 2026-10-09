@@ -2,7 +2,8 @@
 //!
 //! Each detector is a regular expression that proposes candidates plus a
 //! validator that confirms one (Luhn, mod-97, octet ranges, ...) and may
-//! shorten it. A rejected candidate is retried from the next character, so a
+//! shorten it. A rejected candidate is retried from the next place a match could
+//! start (the next character, or past the characters that rule out a start), so a
 //! valid match hiding inside a longer rejected candidate is still found.
 //! Every candidate is bounded well under the 256 character stream hold-back.
 
@@ -83,7 +84,7 @@ impl PiiType {
         }
     }
 
-    fn candidates(self) -> &'static Regex {
+    pub(crate) fn candidates(self) -> &'static Regex {
         // emails and IBANs have scanners of their own (`emails`, `ibans`)
         static EMAIL: LazyLock<Regex> = LazyLock::new(|| Regex::new("@").expect("at regex"));
         static PHONE: LazyLock<Regex> =
@@ -119,6 +120,38 @@ impl PiiType {
             PiiType::Ipv6 => &IPV6,
             PiiType::Secret => &SECRET,
         }
+    }
+
+    /// The first candidate at or after `pos`: the same as the leftmost match
+    /// of `candidates()`, found by hand for the two detectors whose regexes
+    /// (bounded repeats of a class) are slow on text full of near-matches.
+    pub(crate) fn next_candidate(self, hay: &str, pos: usize) -> Option<(usize, usize)> {
+        match self {
+            PiiType::Phone => phone_candidate(hay.as_bytes(), pos),
+            PiiType::CreditCard => card_candidate(hay.as_bytes(), pos),
+            _ => self
+                .candidates()
+                .find_at(hay, pos)
+                .map(|m| (m.start(), m.end())),
+        }
+    }
+
+    /// Where to search again after a rejected candidate starting at `start`:
+    /// the next character, or for detectors that refuse a start next to a
+    /// character of their own alphabet (`bad` previous character), the next start they would
+    /// not refuse. Dense text (`1:2:3:`, `10.0.0.`) then costs a few
+    /// candidates per run instead of one per character.
+    fn retry_from(self, hay: &str, start: usize) -> usize {
+        let mut pos = super::scan::next_char(hay, start);
+        let bad: fn(Option<char>) -> bool = match self {
+            PiiType::Phone | PiiType::Ipv6 => |c| is_alnum(c) || c == Some(':'),
+            PiiType::CreditCard => is_digit,
+            _ => return pos,
+        };
+        while pos < hay.len() && bad(before(hay, pos)) {
+            pos = super::scan::next_char(hay, pos);
+        }
+        pos
     }
 
     /// Confirms a candidate `hay[start..end]`; returns its (possibly shorter) end.
@@ -164,24 +197,26 @@ impl From<Option<usize>> for Verdict {
 /// All matches of `ty` in `hay` starting at or after `from`, in order and
 /// without overlap. Look-behind (word boundaries, neighbours) sees all of `hay`.
 ///
-/// Candidates a validator rejected are reported too (`matched == false`): the
-/// stream scanner must not cut a stream inside one, or the next scan would
-/// start in the middle of it and could accept a piece the whole text rejects.
-pub(crate) fn find_all(ty: PiiType, hay: &str, from: usize, out: &mut Vec<Span>) {
+/// With `rejected`, candidates a validator turned down are reported too
+/// (`matched == false`): the stream scanner must not cut a stream inside one,
+/// or the next scan would start in the middle of it and could accept a piece
+/// the whole text rejects. A whole-text check leaves them out.
+pub(crate) fn find_all(ty: PiiType, hay: &str, from: usize, rejected: bool, out: &mut Vec<Span>) {
     match ty {
         PiiType::Secret => pem_blocks(hay, from, out),
-        PiiType::Email => return emails(hay, from, out),
-        PiiType::Iban => return ibans(hay, from, out),
+        PiiType::Email => return emails(hay, from, rejected, out),
+        PiiType::Iban => return ibans(hay, from, rejected, out),
         _ => {}
     }
-    let re = ty.candidates();
     let mut pos = from;
     while pos <= hay.len() {
-        let Some(m) = re.find_at(hay, pos) else { break };
-        match ty.refine(hay, m.start(), m.end()) {
-            Verdict::Match(end) if end > m.start() => {
+        let Some((m_start, m_end)) = ty.next_candidate(hay, pos) else {
+            break;
+        };
+        match ty.refine(hay, m_start, m_end) {
+            Verdict::Match(end) if end > m_start => {
                 out.push(Span {
-                    start: m.start(),
+                    start: m_start,
                     end,
                     matched: true,
                     open: false,
@@ -189,25 +224,89 @@ pub(crate) fn find_all(ty: PiiType, hay: &str, from: usize, out: &mut Vec<Span>)
                 pos = end;
             }
             Verdict::Skip => {
-                out.push(Span {
-                    start: m.start(),
-                    end: m.end(),
-                    matched: false,
-                    open: false,
-                });
-                pos = m.end();
+                if rejected {
+                    out.push(Span {
+                        start: m_start,
+                        end: m_end,
+                        matched: false,
+                        open: false,
+                    });
+                }
+                pos = m_end;
             }
             _ => {
-                out.push(Span {
-                    start: m.start(),
-                    end: m.end(),
-                    matched: false,
-                    open: false,
-                });
-                pos = super::scan::next_char(hay, m.start());
+                if rejected {
+                    out.push(Span {
+                        start: m_start,
+                        end: m_end,
+                        matched: false,
+                        open: false,
+                    });
+                }
+                pos = ty.retry_from(hay, m_start);
             }
         }
     }
+}
+
+/// `\+?\(?\d[\d ().\-]{8,24}\d`, leftmost and greedy.
+fn phone_candidate(b: &[u8], pos: usize) -> Option<(usize, usize)> {
+    let class = |c: u8| c.is_ascii_digit() || matches!(c, b' ' | b'(' | b')' | b'.' | b'-');
+    let mut i = pos;
+    while i < b.len() {
+        let mut p = i;
+        if b[p] == b'+' {
+            p += 1;
+        }
+        if p < b.len() && b[p] == b'(' {
+            p += 1;
+        }
+        if p < b.len() && b[p].is_ascii_digit() {
+            // the run of class characters after the first digit, 25 at most
+            let run = b[p + 1..]
+                .iter()
+                .take(25)
+                .take_while(|c| class(**c))
+                .count();
+            if let Some(m) = (9..=run).rev().find(|m| b[p + m].is_ascii_digit()) {
+                return Some((i, p + m + 1));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `\d(?:[ \-]?\d){12,18}`, leftmost and greedy: a digit, then up to 18 more,
+/// each optionally behind one space or dash, and at least 13 digits in all.
+fn card_candidate(b: &[u8], pos: usize) -> Option<(usize, usize)> {
+    let mut i = pos;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let (mut j, mut count) = (i + 1, 1usize);
+        while count < 19 {
+            let k = if matches!(b.get(j), Some(b' ' | b'-')) {
+                j + 1
+            } else {
+                j
+            };
+            if b.get(k).is_some_and(u8::is_ascii_digit) {
+                j = k + 1;
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        if count >= 13 {
+            return Some((i, j));
+        }
+        // a chain that is too short: every start inside it is shorter still
+        i = j.max(i + 1);
+    }
+    None
 }
 
 /// Letters, digits and combining marks of any script.
@@ -235,7 +334,7 @@ fn is_tld(c: char) -> bool {
 /// Email addresses: 1-64 local characters, `@`, up to four labels of up to 40
 /// characters, and a 2-20 letter top-level domain (at most 249 characters).
 /// Local parts, labels and domains may use letters of any script.
-fn emails(hay: &str, from: usize, out: &mut Vec<Span>) {
+fn emails(hay: &str, from: usize, rejected: bool, out: &mut Vec<Span>) {
     let mut pos = from;
     while let Some(i) = hay[pos..].find('@') {
         let at = pos + i;
@@ -276,12 +375,13 @@ fn emails(hay: &str, from: usize, out: &mut Vec<Span>) {
                 });
                 pos = end;
             }
-            None => out.push(Span {
+            None if rejected => out.push(Span {
                 start,
                 end: (at + 1 + region.len()).max(at + 1),
                 matched: false,
                 open: false,
             }),
+            None => {}
         }
     }
 }
@@ -417,28 +517,37 @@ fn phone_grouping(cand: &str) -> bool {
     if cand.starts_with('+') {
         return true;
     }
-    if PAREN.is_match(cand) {
+    if cand.contains('(') && PAREN.is_match(cand) {
         return true;
     }
-    let mut groups: Vec<usize> = Vec::new();
-    let mut seps: Vec<char> = Vec::new();
-    let mut run = 0usize;
-    for c in cand.chars() {
-        if c.is_ascii_digit() {
+    // Groups of digits and the separators between them. A candidate has at
+    // most 15 digits here, so 16 groups and 16 separators cannot overflow.
+    let mut groups = [0usize; 16];
+    let mut seps = [0u8; 16];
+    let (mut n_groups, mut n_seps, mut run) = (0usize, 0usize, 0usize);
+    for &b in cand.as_bytes() {
+        if b.is_ascii_digit() {
             run += 1;
         } else {
             if run > 0 {
-                groups.push(run);
+                groups[n_groups] = run;
+                n_groups += 1;
                 run = 0;
             }
-            seps.push(c);
+            // one separator character between groups, nothing else
+            if !matches!(b, b' ' | b'.' | b'-' | b'/') || n_seps >= 15 {
+                return false;
+            }
+            seps[n_seps] = b;
+            n_seps += 1;
         }
     }
     if run > 0 {
-        groups.push(run);
+        groups[n_groups] = run;
+        n_groups += 1;
     }
-    // one separator character between groups, nothing else
-    if seps.len() + 1 != groups.len() || !seps.iter().all(|c| matches!(c, ' ' | '.' | '-' | '/')) {
+    let (groups, seps) = (&groups[..n_groups], &seps[..n_seps]);
+    if seps.len() + 1 != groups.len() {
         return false;
     }
     let same = seps.windows(2).all(|w| w[0] == w[1]);
@@ -456,11 +565,14 @@ fn phone_grouping(cand: &str) -> bool {
 }
 
 fn is_ipv4_shape(s: &str) -> bool {
-    let parts: Vec<&str> = s.split('.').collect();
-    parts.len() == 4
-        && parts
-            .iter()
-            .all(|p| (1..=3).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
+    let mut parts = 0;
+    for p in s.split('.') {
+        parts += 1;
+        if parts > 4 || !(1..=3).contains(&p.len()) || !p.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+    }
+    parts == 4
 }
 
 fn starts_with_date(s: &str) -> bool {
@@ -571,7 +683,7 @@ fn iban_valid_bytes(chars: impl Iterator<Item = u8> + Clone) -> bool {
 /// IBANs: two capitals, two digits and 11-30 more capitals or digits, with a
 /// single space allowed before any of them. A byte scan, because a regex pays
 /// its per-call cost at every capital pair in text like `AB12 CD34 ...`.
-fn ibans(hay: &str, from: usize, out: &mut Vec<Span>) {
+fn ibans(hay: &str, from: usize, rejected: bool, out: &mut Vec<Span>) {
     let b = hay.as_bytes();
     let alnum = |c: u8| c.is_ascii_uppercase() || c.is_ascii_digit();
     let mut i = from;
@@ -609,12 +721,14 @@ fn ibans(hay: &str, from: usize, out: &mut Vec<Span>) {
                 i = end;
             }
             None => {
-                out.push(Span {
-                    start: i,
-                    end: j,
-                    matched: false,
-                    open: false,
-                });
+                if rejected {
+                    out.push(Span {
+                        start: i,
+                        end: j,
+                        matched: false,
+                        open: false,
+                    });
+                }
                 i += 1;
             }
         }

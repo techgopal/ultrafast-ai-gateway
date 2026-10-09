@@ -35,9 +35,16 @@ pub(crate) struct Hays<'a> {
     pub raw: &'a str,
     /// JSON escapes blanked; scripts kept (email addresses may use them).
     pub esc: &'a str,
-    /// Escapes and unspaced-script characters blanked.
+    /// Escapes and unspaced-script characters blanked (with spaces).
     pub masked: &'a str,
+    /// Escapes and unspaced-script characters filled with [`EDGE`]: a byte no
+    /// detector reads as a separator or as part of a word (spaces and dashes
+    /// join the digits of a phone number; this does not).
+    pub pii: &'a str,
 }
+
+/// The fill of the view the PII detectors read.
+pub(crate) const EDGE: u8 = 0x1f;
 
 pub(crate) struct CompiledRule {
     pub id: String,
@@ -178,6 +185,11 @@ pub(crate) fn is_unspaced_script(c: char) -> bool {
 /// letter or digit becomes letters (`jos\u00e9@x.com` is one address).
 /// Positions are unchanged.
 pub(crate) fn mask_escapes(raw: &str) -> Cow<'_, str> {
+    mask_escapes_with(raw, b' ')
+}
+
+/// [`mask_escapes`] with the blank byte of the caller's choice (ASCII).
+pub(crate) fn mask_escapes_with(raw: &str, blank: u8) -> Cow<'_, str> {
     if !raw.contains('\\') {
         return Cow::Borrowed(raw);
     }
@@ -193,9 +205,9 @@ pub(crate) fn mask_escapes(raw: &str) -> Cow<'_, str> {
                 .ok()
                 .and_then(char::from_u32)
                 .filter(|c| c.is_alphanumeric() && !is_unspaced_script(*c))
-                .map_or(b' ', |_| b'x')
+                .map_or(blank, |_| b'x')
         } else {
-            b' '
+            blank
         };
         bytes[s..e].fill(fill);
     }
@@ -206,13 +218,18 @@ pub(crate) fn mask_escapes(raw: &str) -> Cow<'_, str> {
 /// `text` with each character of an unspaced script replaced by as many
 /// blanks as it has bytes (positions unchanged).
 pub(crate) fn blank_scripts(text: &str) -> Cow<'_, str> {
+    blank_scripts_with(text, b' ')
+}
+
+/// [`blank_scripts`] with the blank byte of the caller's choice (ASCII).
+pub(crate) fn blank_scripts_with(text: &str, blank: u8) -> Cow<'_, str> {
     if !text.chars().any(is_unspaced_script) {
         return Cow::Borrowed(text);
     }
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         if is_unspaced_script(c) {
-            out.extend(std::iter::repeat_n(' ', c.len_utf8()));
+            out.extend(std::iter::repeat_n(char::from(blank), c.len_utf8()));
         } else {
             out.push(c);
         }
@@ -237,12 +254,15 @@ pub(crate) struct Hit<'a> {
     pub open: bool,
 }
 
-/// Every match at or after `from` of every rule that covers `dir`.
+/// Every match at or after `from` of every rule that covers `dir`. With
+/// `rejected`, candidates a detector turned down are listed too (a stream
+/// needs them to cut safely; a whole-text check does not).
 pub(crate) fn collect_hits<'a>(
     set: &'a [Arc<Compiled>],
     dir: Direction,
     hays: &Hays<'_>,
     from: usize,
+    rejected: bool,
 ) -> Vec<Hit<'a>> {
     let mut hits = Vec::new();
     let mut spans = Vec::new();
@@ -270,9 +290,9 @@ pub(crate) fn collect_hits<'a>(
                         let hay = if *ty == PiiType::Email {
                             hays.esc
                         } else {
-                            hays.masked
+                            hays.pii
                         };
-                        pii::find_all(*ty, hay, from, &mut spans);
+                        pii::find_all(*ty, hay, from, rejected, &mut spans);
                         (ty.name(), ty.placeholder())
                     }
                 };
@@ -378,12 +398,15 @@ pub(crate) fn check_texts(set: &[Arc<Compiled>], dir: Direction, texts: &mut [St
         .map(|t| {
             let esc = mask_escapes(t);
             let masked = blank_scripts(&esc);
+            let pii_esc = mask_escapes_with(t, EDGE);
+            let pii_view = blank_scripts_with(&pii_esc, EDGE);
             let hays = Hays {
                 raw: t,
                 esc: &esc,
                 masked: &masked,
+                pii: &pii_view,
             };
-            collect_hits(set, dir, &hays, 0)
+            collect_hits(set, dir, &hays, 0, false)
         })
         .collect();
     for h in all

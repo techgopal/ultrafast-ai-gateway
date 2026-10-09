@@ -1327,6 +1327,7 @@ fn ipv4_inside_a_longer_dotted_number_in_a_stream() {
 
 /// CPU time of this thread (so other load on the machine does not count);
 /// falls back to the wall clock where `/proc` has no schedstat.
+#[cfg(not(debug_assertions))]
 fn cpu_time() -> Duration {
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let on_cpu = std::fs::read_to_string("/proc/thread-self/schedstat")
@@ -1338,10 +1339,43 @@ fn cpu_time() -> Duration {
     }
 }
 
-/// Release builds only (`cargo test --release`): 4k tokens (about 16k chars)
-/// of content that keeps every detector busy, fed one character at a time.
+/// Text that keeps one detector busy.
+#[cfg(not(debug_assertions))]
+const DENSE_UNITS: [&str; 10] = [
+    "AB12 CD34 ",
+    "12-34-",
+    "1:2:3:",
+    "1 1 1 ",
+    "10.0.0.",
+    "a@b.c ",
+    "12345 6789 ",
+    "4111 1111 ",
+    "-----",
+    "\\",
+];
+
+/// Thread CPU of the median of three runs of `f`.
+#[cfg(not(debug_assertions))]
+fn median_cpu(mut f: impl FnMut()) -> Duration {
+    let mut runs: Vec<Duration> = (0..3)
+        .map(|_| {
+            let started = cpu_time();
+            f();
+            cpu_time() - started
+        })
+        .collect();
+    runs.sort();
+    runs[1]
+}
+
+/// Release builds only (`cargo test --release`; debug builds are several
+/// times slower and CI runs this as its own release step): 4k tokens (about
+/// 16k chars) of content that keeps every detector busy, fed one character at
+/// a time. The assertion is on how the cost scales (4x the text takes at most
+/// 6x the CPU; quadratic work would take 16x), not on a fixed bound, so a busy
+/// machine does not fail it; the absolute ceiling is only a backstop.
 #[test]
-#[cfg_attr(debug_assertions, ignore = "timing: run with --release")]
+#[cfg(not(debug_assertions))]
 fn stream_cpu_is_bounded_on_adversarial_text() {
     let set = vec![guard(
         1,
@@ -1350,28 +1384,61 @@ fn stream_cpu_is_bounded_on_adversarial_text() {
             kw("k", &["secret", "token"], true, Action::Flag),
         ],
     )];
-    for unit in [
-        "AB12 CD34 ",
-        "12-34-",
-        "1:2:3:",
-        "1 1 1 ",
-        "10.0.0.",
-        "a@b.c ",
-        "12345 6789 ",
-        "-----",
-        "\\",
-    ] {
-        let text = unit.repeat(16_000 / unit.len());
-        let started = cpu_time();
-        let mut s = StreamScanner::new(set.clone());
-        let mut buf = [0u8; 4];
-        for c in text.chars() {
-            let _ = s.push_text(c.encode_utf8(&mut buf));
-        }
-        let _ = s.finish();
-        let took = cpu_time() - started;
-        eprintln!("stream cpu {unit:?}: {took:?}");
-        assert!(took < Duration::from_millis(500), "{unit:?} took {took:?}");
+    let feed_cpu = |unit: &str, chars: usize| {
+        let text = unit.repeat(chars / unit.len());
+        median_cpu(|| {
+            let mut s = StreamScanner::new(set.clone());
+            let mut buf = [0u8; 4];
+            for c in text.chars() {
+                let _ = s.push_text(c.encode_utf8(&mut buf));
+            }
+            let _ = s.finish();
+        })
+    };
+    for unit in DENSE_UNITS {
+        let small = feed_cpu(unit, 16_000);
+        let large = feed_cpu(unit, 64_000);
+        eprintln!("stream cpu {unit:?}: 16k {small:?}, 64k {large:?}");
+        assert!(large < Duration::from_secs(2), "{unit:?} took {large:?}");
+        // below a few milliseconds the ratio is noise
+        assert!(
+            large < small.max(Duration::from_millis(5)) * 6,
+            "{unit:?}: 16k took {small:?}, 64k took {large:?}"
+        );
+    }
+}
+
+/// The whole-text scan of a request body is linear in its size too, for text
+/// that is dense in candidates of every detector.
+#[test]
+#[cfg(not(debug_assertions))]
+fn whole_text_cpu_is_linear_on_dense_candidates() {
+    let set = vec![guard(
+        1,
+        &[
+            pii("p", &PiiType::ALL, Action::Redact),
+            kw("k", &["secret", "token"], true, Action::Flag),
+        ],
+    )];
+    let scan = |unit: &str, bytes: usize| {
+        let text = unit.repeat(bytes / unit.len());
+        median_cpu(|| {
+            let mut t = [text.clone()];
+            let _ = check_texts(&set, Direction::Input, &mut t);
+        })
+    };
+    for unit in DENSE_UNITS {
+        let small = scan(unit, 256 * 1024);
+        let large = scan(unit, 1024 * 1024);
+        eprintln!("whole cpu {unit:?}: 256k {small:?}, 1M {large:?}");
+        assert!(
+            large < Duration::from_millis(500),
+            "{unit:?} took {large:?}"
+        );
+        assert!(
+            large < small.max(Duration::from_millis(5)) * 6,
+            "{unit:?}: 256k took {small:?}, 1M took {large:?}"
+        );
     }
 }
 
@@ -1702,6 +1769,71 @@ fn a_glued_chain_of_matches_streams_like_the_whole_text() {
                 "{secret_len} {size}"
             );
             assert_eq!(out, whole, "{secret_len} chunk {size}");
+        }
+    }
+}
+
+/// A JSON escape or a letter of a script written without spaces ends a phone
+/// number: it is not a separator that joins the digits after it.
+#[test]
+fn phone_next_to_escapes_and_unspaced_scripts_is_redacted() {
+    let cases = [
+        ("+14155552671\\n12345", "[REDACTED:PHONE]\\n12345"),
+        (
+            "call (415) 555-2671\\n2024-01-01",
+            "call [REDACTED:PHONE]\\n2024-01-01",
+        ),
+        ("415-555-2671\\t42", "[REDACTED:PHONE]\\t42"),
+        ("电话+14155552671号码12345", "电话[REDACTED:PHONE]号码12345"),
+        (
+            "电话ครับ+14155552671ครับ12345",
+            "电话ครับ[REDACTED:PHONE]ครับ12345",
+        ),
+        (
+            "{\"a\":\"+44 20 7946 0958\\n99 bottles\"}",
+            "{\"a\":\"[REDACTED:PHONE]\\n99 bottles\"}",
+        ),
+    ];
+    let g = guard(1, &[pii("p", &[PiiType::Phone], Action::Redact)]);
+    for (text, want) in cases {
+        let (got, _) = run(std::slice::from_ref(&g), Direction::Input, text);
+        assert_eq!(got, want, "whole text {text:?}");
+        let chars: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+        let refs: Vec<&str> = chars.iter().map(String::as_str).collect();
+        let (out, _, _) = feed(std::slice::from_ref(&g), &refs);
+        assert_eq!(out, want, "stream {text:?}");
+    }
+}
+
+/// The hand-written candidate finders find what the regexes they replace
+/// find, at every start position, on text built from their alphabets.
+#[test]
+fn hand_written_candidates_equal_their_regexes() {
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move |n: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % n as u64) as usize
+    };
+    let alphabet: Vec<&str> = vec![
+        "0", "1", "4", "9", "0", "1", " ", " ", "-", ".", "(", ")", "+", ":", "a", "-", "5", "2",
+    ];
+    for ty in [PiiType::Phone, PiiType::CreditCard] {
+        for _ in 0..4000 {
+            let len = 1 + next(80);
+            let text: String = (0..len).map(|_| alphabet[next(alphabet.len())]).collect();
+            for pos in 0..=text.len() {
+                let want = ty
+                    .candidates()
+                    .find_at(&text, pos)
+                    .map(|m| (m.start(), m.end()));
+                assert_eq!(
+                    ty.next_candidate(&text, pos),
+                    want,
+                    "{ty:?} {text:?} at {pos}"
+                );
+            }
         }
     }
 }
