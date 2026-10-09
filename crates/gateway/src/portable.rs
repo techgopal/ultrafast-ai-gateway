@@ -603,7 +603,8 @@ fn guardrails_of(state: &ConfigState) -> Vec<GuardrailEntry> {
 }
 
 /// The prompt templates of the file, by name, each with all its versions.
-/// A template or version that cannot be read is left out of the file.
+/// A template with a version that cannot be read is left out here;
+/// [`export`] refuses to write such a file (see [`unreadable_prompts`]).
 fn prompts_of(state: &ConfigState) -> Vec<PromptEntry> {
     let mut entries: Vec<PromptEntry> = state
         .prompt_templates
@@ -632,6 +633,49 @@ fn prompts_of(state: &ConfigState) -> Vec<PromptEntry> {
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries
 }
+
+/// The names of the templates that have a version which cannot be read, and
+/// so would be missing from an exported file.
+pub fn unreadable_prompts(state: &ConfigState) -> Vec<String> {
+    let mut names: Vec<String> = state
+        .prompt_templates
+        .iter()
+        .filter(|t| {
+            state
+                .prompt_versions
+                .iter()
+                .filter(|v| v.template_id == t.id)
+                .any(|v| {
+                    serde_json::from_str::<Vec<serde_json::Value>>(&v.messages).is_err()
+                        || serde_json::from_str::<serde_json::Value>(&v.params).is_err()
+                })
+        })
+        .map(|t| t.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+/// An export that would silently leave templates out is refused instead.
+#[derive(Debug)]
+pub struct UnreadablePrompts(pub Vec<String>);
+
+impl std::fmt::Display for UnreadablePrompts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "The export was not made: a version of the prompt template(s) {} cannot be read, \
+             so the file would leave them out. Fix or delete them first.",
+            self.0
+                .iter()
+                .map(|n| format!("'{n}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnreadablePrompts {}
 
 /// The file for the configuration as it is stored.
 pub fn file_of(state: &ConfigState) -> ConfigFile {
@@ -785,7 +829,13 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
 
 /// The configuration of the gateway as a file.
 pub async fn export(store: &Store) -> Result<ConfigFile> {
-    Ok(file_of(&store.config_state().await?))
+    let state = store.config_state().await?;
+    let unreadable = unreadable_prompts(&state);
+    if !unreadable.is_empty() {
+        tracing::error!(templates = ?unreadable, "prompt templates with an unreadable version");
+        return Err(UnreadablePrompts(unreadable).into());
+    }
+    Ok(file_of(&state))
 }
 
 // ---------------------------------------------------------------- import

@@ -45,6 +45,9 @@ pub const MAX_VARIABLES: usize = 64;
 pub const MAX_VERSIONS: usize = 200;
 /// Most templates.
 pub const MAX_TEMPLATES: usize = 1000;
+/// Most templates one team lead who is not an admin may have made, so that
+/// no single lead can fill the gateway's share.
+pub const MAX_TEMPLATES_PER_LEAD: usize = 100;
 /// How many older versions are kept in memory, to be read from the
 /// database only once.
 pub const OLD_VERSIONS_KEPT: usize = 256;

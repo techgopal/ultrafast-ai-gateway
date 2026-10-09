@@ -343,18 +343,32 @@ async fn load_guardrails(
 /// The templates by name, each with its newest version. A template whose
 /// newest version cannot be read is left out (and logged): serving an older
 /// version in place of the latest would be worse than refusing the name.
-/// Templates are not in the cache fingerprint: the cache key holds the
-/// rendered request, which already tells one rendering from another.
+/// A template that is as `previous` held it (same id, creation time, name
+/// and newest version number) is taken over as it is: its version was not
+/// read again. Templates are not in the cache fingerprint: the cache key
+/// holds the rendered request, which already tells one rendering from
+/// another.
 fn load_prompts(
     templates: &[crate::store::TemplateRow],
-    latest: &[crate::store::VersionRow],
+    newest: &[(i64, i64)],
+    read: &[crate::store::VersionRow],
+    previous: Option<&Snapshot>,
 ) -> HashMap<String, Arc<Template>> {
     let mut by_template: HashMap<i64, &crate::store::VersionRow> = HashMap::new();
-    for v in latest {
+    for v in read {
         by_template.insert(v.template_id, v);
     }
+    let numbers: HashMap<i64, i64> = newest.iter().copied().collect();
     let mut out = HashMap::new();
     for t in templates {
+        if let (Some(previous), Some(number)) = (previous, numbers.get(&t.id)) {
+            if previous.prompt_unchanged(t, *number) {
+                if let Some(kept) = previous.prompts.get(&t.name) {
+                    out.insert(t.name.clone(), kept.clone());
+                    continue;
+                }
+            }
+        }
         match by_template.get(&t.id).and_then(|row| Version::of_row(row)) {
             Some(v) => {
                 out.insert(t.name.clone(), Arc::new(Template::new(t, Arc::new(v))));
@@ -431,7 +445,11 @@ impl Snapshot {
         previous: Option<&Snapshot>,
     ) -> Result<Snapshot> {
         // One read transaction: the tables are never read at different moments.
-        let rows = store.snapshot_rows().await?;
+        let rows = store
+            .snapshot_rows_after(&|t, newest| {
+                previous.is_some_and(|p| p.prompt_unchanged(t, newest))
+            })
+            .await?;
         // Everything a cached answer depends on besides the call itself.
         let mut fp = Fingerprint(Sha256::new());
         fp.section("teams", rows.team_stamps.len());
@@ -738,7 +756,12 @@ impl Snapshot {
         }
         let (guardrails, default_guardrails, guardrails_compiled) =
             load_guardrails(&rows.guardrails, cipher, previous).await?;
-        let prompts = load_prompts(&rows.prompt_templates, &rows.prompt_versions);
+        let prompts = load_prompts(
+            &rows.prompt_templates,
+            &rows.prompt_latest,
+            &rows.prompt_versions,
+            previous,
+        );
         Ok(Snapshot {
             keys,
             providers,
@@ -773,6 +796,19 @@ impl Snapshot {
     /// The prompt template with this name (exact), with its versions.
     pub fn prompt(&self, name: &str) -> Option<&Arc<Template>> {
         self.prompts.get(name)
+    }
+
+    /// Whether this snapshot already holds the template as it is stored:
+    /// same id, creation time and name, and `newest` is its newest version.
+    pub fn prompt_unchanged(&self, t: &crate::store::TemplateRow, newest: i64) -> bool {
+        self.prompts.get(&t.name).is_some_and(|held| {
+            held.id == t.id && held.created_at == t.created_at && held.latest.number == newest
+        })
+    }
+
+    /// `(template id, newest version number)` of every template served.
+    pub fn prompt_numbers(&self) -> impl Iterator<Item = (i64, i64)> + '_ {
+        self.prompts.values().map(|t| (t.id, t.latest.number))
     }
 
     /// The template with this id.

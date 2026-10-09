@@ -46,7 +46,7 @@ pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use portable::ConfigState;
-pub use prompts::{NewVersion, TemplateRow, VersionRow, VersionStub};
+pub use prompts::{LatestStub, NewVersion, TemplateRow, VersionRow, VersionStub};
 pub use providers::ProviderRow;
 pub use routes::{is_missing_reference, RouteRow, RouteSettings, TargetRow, TargetsInput};
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
@@ -198,8 +198,11 @@ pub struct SnapshotRows {
     pub key_guardrails: Vec<(i64, i64, String)>,
     /// Every prompt template, by name.
     pub prompt_templates: Vec<TemplateRow>,
-    /// The newest version of every template, by template. Older versions are
-    /// read when a call asks for one.
+    /// `(template id, number of its newest version)`.
+    pub prompt_latest: Vec<(i64, i64)>,
+    /// The newest version of each template that `known` (see
+    /// [`Store::snapshot_rows_after`]) did not hold, by template. Older
+    /// versions are read when a call asks for one.
     pub prompt_versions: Vec<VersionRow>,
 }
 
@@ -388,6 +391,16 @@ impl Store {
     /// Reads every table the snapshot needs inside one read transaction, so
     /// the rows never mix two moments.
     pub async fn snapshot_rows(&self) -> Result<SnapshotRows> {
+        self.snapshot_rows_after(&|_, _| false).await
+    }
+
+    /// [`Store::snapshot_rows`], reading the text of a template's newest
+    /// version only when `known(template, newest version number)` is false:
+    /// a refresh that finds a template as it was keeps what it has.
+    pub async fn snapshot_rows_after(
+        &self,
+        known: &(dyn Fn(&TemplateRow, i64) -> bool + Send + Sync),
+    ) -> Result<SnapshotRows> {
         let mut tx = self.begin_read().await?;
         let conn: &mut AnyConnection = &mut tx;
         let keys = keys::live_keys_in(conn).await?;
@@ -406,7 +419,10 @@ impl Store {
         let route_guardrails = guardrails::route_guardrail_refs_in(conn).await?;
         let key_guardrails = guardrails::key_guardrail_refs_in(conn).await?;
         let prompt_templates = prompts::list_templates_in(conn).await?;
-        let prompt_versions = prompts::list_latest_versions_in(conn).await?;
+        let prompt_latest = prompts::latest_numbers_in(conn).await?;
+        let prompt_versions =
+            prompts::changed_latest_versions_in(conn, &prompt_templates, &prompt_latest, known)
+                .await?;
         tx.commit().await?;
         Ok(SnapshotRows {
             keys,
@@ -425,6 +441,7 @@ impl Store {
             route_guardrails,
             key_guardrails,
             prompt_templates,
+            prompt_latest,
             prompt_versions,
         })
     }

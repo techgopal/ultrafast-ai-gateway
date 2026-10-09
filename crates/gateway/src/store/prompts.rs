@@ -118,6 +118,74 @@ pub(super) async fn list_latest_versions_in(conn: &mut AnyConnection) -> Result<
     Ok(rows.iter().map(version_from).collect())
 }
 
+/// `(template id, number of its newest version)` of every template that has
+/// a version.
+pub(super) async fn latest_numbers_in(conn: &mut AnyConnection) -> Result<Vec<(i64, i64)>> {
+    let rows = conn
+        .q("SELECT v.template_id, MAX(v.version) FROM prompt_versions v
+            JOIN prompt_templates t ON t.id = v.template_id
+            WHERE t.org_id = ? GROUP BY v.template_id ORDER BY v.template_id")
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+}
+
+/// How many templates are read one by one before one read of them all is
+/// cheaper.
+const READ_ONE_BY_ONE: usize = 25;
+
+/// The newest versions, with their text, of the templates `known` does not
+/// already hold: a refresh reads the text of what changed, not of every
+/// template. `latest` is [`latest_numbers_in`].
+pub(super) async fn changed_latest_versions_in(
+    conn: &mut AnyConnection,
+    templates: &[TemplateRow],
+    latest: &[(i64, i64)],
+    known: &(dyn Fn(&TemplateRow, i64) -> bool + Send + Sync),
+) -> Result<Vec<VersionRow>> {
+    let needed: Vec<(i64, i64)> = templates
+        .iter()
+        .filter_map(|t| {
+            let number = latest.iter().find(|(id, _)| *id == t.id)?.1;
+            (!known(t, number)).then_some((t.id, number))
+        })
+        .collect();
+    if needed.len() > READ_ONE_BY_ONE {
+        let all = list_latest_versions_in(conn).await?;
+        return Ok(all
+            .into_iter()
+            .filter(|v| needed.iter().any(|(id, _)| *id == v.template_id))
+            .collect());
+    }
+    let mut out = Vec::with_capacity(needed.len());
+    for (id, number) in needed {
+        let sql = format!("{VERSION} WHERE v.template_id = ? AND v.version = ? AND t.org_id = ?");
+        if let Some(row) = conn
+            .q_dyn(sql)
+            .bind(id)
+            .bind(number)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(&mut *conn)
+            .await?
+        {
+            out.push(version_from(&row));
+        }
+    }
+    Ok(out)
+}
+
+/// The newest version of a template without its text: what a list shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LatestStub {
+    pub template_id: i64,
+    pub version: i64,
+    pub created_at: String,
+    pub model: Option<String>,
+    /// A JSON array of the variable names.
+    pub variables: String,
+}
+
 /// A version without its text: what a list of versions shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionStub {
@@ -132,6 +200,17 @@ impl Tx<'_> {
         let n: i64 = self
             .scalar("SELECT COUNT(*) FROM prompt_templates WHERE org_id = ?")
             .bind(DEFAULT_ORG)
+            .fetch_one(self.conn())
+            .await?;
+        Ok(n)
+    }
+
+    /// How many templates this user made.
+    pub async fn count_prompt_templates_by(&mut self, user_id: i64) -> Result<i64> {
+        let n: i64 = self
+            .scalar("SELECT COUNT(*) FROM prompt_templates WHERE org_id = ? AND created_by = ?")
+            .bind(DEFAULT_ORG)
+            .bind(user_id)
             .fetch_one(self.conn())
             .await?;
         Ok(n)
@@ -250,6 +329,43 @@ impl Store {
     pub async fn list_latest_prompt_versions(&self) -> Result<Vec<VersionRow>> {
         let mut conn = self.pool().acquire().await?;
         list_latest_versions_in(&mut conn).await
+    }
+
+    /// The newest version of every template without its messages: a list of
+    /// templates must not read and parse every text.
+    pub async fn list_latest_prompt_stubs(&self) -> Result<Vec<LatestStub>> {
+        let rows = self
+            .q(
+                "SELECT v.template_id, v.version, v.created_at, v.model, v.variables
+                 FROM prompt_versions v JOIN prompt_templates t ON t.id = v.template_id
+                 WHERE t.org_id = ? AND v.version =
+                   (SELECT MAX(version) FROM prompt_versions WHERE template_id = v.template_id)
+                 ORDER BY v.template_id",
+            )
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| LatestStub {
+                template_id: r.get("template_id"),
+                version: r.get("version"),
+                created_at: r.get("created_at"),
+                model: r.get("model"),
+                variables: r.get("variables"),
+            })
+            .collect())
+    }
+
+    /// How many templates this user made.
+    pub async fn count_prompt_templates_by(&self, user_id: i64) -> Result<i64> {
+        let n: i64 = self
+            .scalar("SELECT COUNT(*) FROM prompt_templates WHERE org_id = ? AND created_by = ?")
+            .bind(DEFAULT_ORG)
+            .bind(user_id)
+            .fetch_one(self.pool())
+            .await?;
+        Ok(n)
     }
 
     /// `(template id, number of versions)` of every template.

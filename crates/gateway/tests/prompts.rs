@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use common::{
-    allow_model, call, error_code, org_with_sink, post_to, seed_team, seed_user, MemorySink, Org,
-    Signed, ORG_PASSWORD,
+    allow_model, call, error_code, org_tweaked, org_with_sink, post_to, seed_team, seed_user,
+    MemorySink, Org, Signed, ORG_PASSWORD,
 };
 use serde_json::{json, Value};
 use ultrafast_gateway::identity::{Role, TeamRole};
@@ -53,6 +53,10 @@ fn ok() -> ResponseTemplate {
 async fn world() -> World {
     let sink = Arc::new(MemorySink::default());
     let org = org_with_sink(Some(sink.clone())).await;
+    world_of(org, sink).await
+}
+
+async fn world_of(org: Org, sink: Arc<MemorySink>) -> World {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -1295,6 +1299,211 @@ async fn an_older_version_is_read_from_the_database_once_and_forgotten_with_its_
     );
 }
 
+// A template made again under the same name straight after a delete (SQLite
+// may give it the same id, in the same second) never shows the old one's text.
+#[tokio::test]
+async fn a_template_made_again_after_a_delete_shows_none_of_the_old_text() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    let id = w
+        .make(
+            &maya,
+            json!({ "name": "again", "model": "p/m", "messages": messages("old one") }),
+        )
+        .await;
+    w.api(
+        &maya,
+        "POST",
+        &format!("{}/versions", one(id)),
+        Some(json!({ "model": "p/m", "messages": messages("old two") })),
+    )
+    .await;
+    let (status, v) = w
+        .chat(json!({ "prompt": { "id": "again", "version": 1 } }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    w.api(&maya, "DELETE", &one(id), None).await;
+    let new = w
+        .make(
+            &maya,
+            json!({ "name": "again", "model": "p/m", "messages": messages("new one") }),
+        )
+        .await;
+    w.api(
+        &maya,
+        "POST",
+        &format!("{}/versions", one(new)),
+        Some(json!({ "model": "p/m", "messages": messages("new two") })),
+    )
+    .await;
+    let (status, v) = w
+        .chat(json!({ "prompt": { "id": "again", "version": 1 } }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        w.sent().await.last().unwrap()["messages"][0]["content"],
+        "new one"
+    );
+}
+
+// `/v1` does not wait on the database for an older version beyond a short
+// time: a pool that is all taken answers 503, and the call is not charged.
+#[tokio::test]
+async fn an_older_version_that_the_database_is_slow_to_give_is_a_503() {
+    let sink = Arc::new(MemorySink::default());
+    let org = org_tweaked(Some(sink.clone()), |s| {
+        s.prompt_read_timeout = std::time::Duration::from_millis(200);
+    })
+    .await;
+    let w = world_of(org, sink).await;
+    let maya = w.org.sign_in("maya").await;
+    let id = w
+        .make(
+            &maya,
+            json!({ "name": "slow", "model": "p/m", "messages": messages("first") }),
+        )
+        .await;
+    w.api(
+        &maya,
+        "POST",
+        &format!("{}/versions", one(id)),
+        Some(json!({ "model": "p/m", "messages": messages("second") })),
+    )
+    .await;
+    // Every connection of the pool is taken.
+    let held = w.org.api.store.begin().await.unwrap();
+    let started = std::time::Instant::now();
+    let (status, v) = w
+        .chat(json!({ "prompt": { "id": "slow", "version": 1 } }))
+        .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(w.sent().await.is_empty());
+    drop(held);
+    // The latest is the snapshot's: it never waited on the database.
+    let (status, v) = w.chat(json!({ "prompt": { "id": "slow" } })).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (status, v) = w
+        .chat(json!({ "prompt": { "id": "slow", "version": 1 } }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+}
+
+// A refresh reads the text of what changed, and hands on the rest as it was.
+#[tokio::test]
+async fn a_refresh_keeps_the_templates_that_did_not_change() {
+    let w = world().await;
+    let maya = w.org.sign_in("maya").await;
+    let id = w.make(&maya, body("steady", "one")).await;
+    w.make(&maya, body("other", "two")).await;
+    let state = &w.org.api.state;
+    let before = state.snapshot.load().prompt("steady").unwrap().clone();
+    let other_before = state.snapshot.load().prompt("other").unwrap().clone();
+    state.refresh().await.unwrap();
+    let after = state.snapshot.load().prompt("steady").unwrap().clone();
+    assert!(Arc::ptr_eq(&before, &after), "read again though unchanged");
+    // The rows of a refresh that holds both carry no text at all.
+    let rows = w
+        .org
+        .api
+        .store
+        .snapshot_rows_after(&|_, _| true)
+        .await
+        .unwrap();
+    assert_eq!(rows.prompt_templates.len(), 2);
+    assert_eq!(rows.prompt_latest.len(), 2);
+    assert!(rows.prompt_versions.is_empty());
+    // A new version of one is read; the other is still the one it was.
+    w.api(
+        &maya,
+        "POST",
+        &format!("{}/versions", one(id)),
+        Some(json!({ "messages": messages("three") })),
+    )
+    .await;
+    let changed = state.snapshot.load().prompt("steady").unwrap().clone();
+    assert!(!Arc::ptr_eq(&before, &changed));
+    assert_eq!(changed.latest.number, 2);
+    assert!(Arc::ptr_eq(
+        &other_before,
+        state.snapshot.load().prompt("other").unwrap()
+    ));
+    let (status, v) = w
+        .chat(json!({ "prompt": { "id": "steady" }, "model": "p/m" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        w.sent().await.last().unwrap()["messages"][0]["content"],
+        "three"
+    );
+}
+
+// One team lead cannot fill the gateway's share of templates.
+#[tokio::test]
+async fn a_team_lead_may_make_100_templates_and_an_admin_more() {
+    let w = world().await;
+    let (arjun, maya) = (w.org.sign_in("arjun").await, w.org.sign_in("maya").await);
+    {
+        let store = &w.org.api.store;
+        let mut tx = store.begin_immediate().await.unwrap();
+        for i in 0..99 {
+            let t = tx
+                .insert_prompt_template(&format!("lead{i}"), "", Some(w.org.arjun))
+                .await
+                .unwrap();
+            tx.insert_prompt_version(
+                t,
+                ultrafast_gateway::store::NewVersion {
+                    messages: "[{\"role\":\"user\",\"content\":\"x\"}]",
+                    variables: "[]",
+                    model: None,
+                    params: "{}",
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+    let (status, v) = w
+        .api(&arjun, "POST", LIST, Some(body("hundredth", "x")))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    let (status, v) = w
+        .api(&arjun, "POST", LIST, Some(body("hundred-and-one", "x")))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(
+        v["error"]["fields"]["name"]
+            .as_str()
+            .unwrap()
+            .contains("100 templates"),
+        "{v}"
+    );
+    // Deleting one makes room, and an admin is not held to it.
+    let (_, list) = w.api(&arjun, "GET", LIST, None).await;
+    let first = list["prompts"][0]["id"].as_i64().unwrap();
+    assert_eq!(
+        w.api(&arjun, "DELETE", &one(first), None).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        w.api(&arjun, "POST", LIST, Some(body("hundred-and-one", "x")))
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    for i in 0..2 {
+        assert_eq!(
+            w.api(&maya, "POST", LIST, Some(body(&format!("admin{i}"), "x")))
+                .await
+                .0,
+            StatusCode::CREATED
+        );
+    }
+}
+
 #[tokio::test]
 async fn there_are_at_most_1000_templates_and_200_versions_each() {
     let w = world().await;
@@ -1460,6 +1669,22 @@ async fn a_template_that_cannot_be_read_is_flagged_in_the_list_not_fatal() {
             .0,
         StatusCode::OK
     );
+    // An export would leave it out silently: it is refused, naming it, until
+    // the template is fixed or deleted.
+    let (status, v) = w.api(&maya, "GET", "/api/config/export", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("'broken'") && !message.contains("'fine'"),
+        "{v}"
+    );
+    let broken = list["prompts"][0]["id"].as_i64().unwrap();
+    assert_eq!(
+        w.api(&maya, "DELETE", &one(broken), None).await.0,
+        StatusCode::NO_CONTENT
+    );
+    let (status, v) = w.api(&maya, "GET", "/api/config/export", None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
 }
 
 // ------------------------------------------------------- export and import

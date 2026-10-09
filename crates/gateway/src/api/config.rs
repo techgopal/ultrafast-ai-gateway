@@ -29,6 +29,7 @@ use crate::store::{now, AuditEntry};
         (status = 200, description = "The configuration file, as a download.", body = ConfigFile),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
         (status = 403, description = "The caller is not allowed to do this.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "A prompt template has a version that cannot be read, so the file would leave it out; the message names it.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
     security(("session" = []), ("token" = [])),
@@ -39,7 +40,13 @@ pub async fn export(
 ) -> Result<Response, ApiError> {
     let me = &authed.principal;
     require(me, &Action::ManageSettings)?;
-    let file = portable::export(&state.store).await?;
+    let file = match portable::export(&state.store).await {
+        Ok(file) => file,
+        Err(e) => match e.downcast_ref::<portable::UnreadablePrompts>() {
+            Some(blocked) => return Err(ApiError::conflict("export_blocked", blocked.to_string())),
+            None => return Err(e.into()),
+        },
+    };
     let mut tx = state.store.begin().await?;
     tx.audit(AuditEntry {
         actor_user_id: Some(me.user_id),

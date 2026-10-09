@@ -6,7 +6,7 @@
 //! signed in reads and renders any template, and anyone who can call may use
 //! any template by name: a template is a convenience, not a secret.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -21,9 +21,9 @@ use crate::app::AppState;
 use crate::identity::policy::Action;
 use crate::prompts::{
     self, Params, TemplateMessage, Version, MAX_CONTENT_BYTES, MAX_MESSAGES, MAX_MODEL_CHARS,
-    MAX_TEMPLATES, MAX_TOTAL_BYTES, MAX_VARIABLES, MAX_VERSIONS, ROLES,
+    MAX_TEMPLATES, MAX_TEMPLATES_PER_LEAD, MAX_TOTAL_BYTES, MAX_VARIABLES, MAX_VERSIONS, ROLES,
 };
-use crate::store::{AuditEntry, NewVersion, StoreError, TemplateRow, VersionRow};
+use crate::store::{AuditEntry, LatestStub, NewVersion, StoreError, TemplateRow, VersionRow};
 use ultrafast_translate::ingress::openai::parse_response_format;
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -180,8 +180,17 @@ fn version_view(row: &VersionRow) -> Result<VersionView, ApiError> {
     })
 }
 
-fn summary_of(t: &TemplateRow, latest: Option<&VersionRow>, count: i64) -> PromptSummary {
-    let read = latest.and_then(|row| version_view(row).ok());
+/// A template's row in a list. `readable` is whether its newest version can
+/// be read; when it cannot, the model and variables are empty.
+fn summary_of(
+    t: &TemplateRow,
+    latest: Option<&LatestStub>,
+    count: i64,
+    readable: bool,
+) -> PromptSummary {
+    let variables: Option<Vec<String>> =
+        latest.and_then(|v| serde_json::from_str(&v.variables).ok());
+    let readable = readable && variables.is_some();
     PromptSummary {
         id: t.id,
         name: t.name.clone(),
@@ -191,16 +200,36 @@ fn summary_of(t: &TemplateRow, latest: Option<&VersionRow>, count: i64) -> Promp
         latest_version: latest.map_or(0, |v| v.version),
         version_count: count,
         updated_at: latest.map_or_else(|| t.created_at.clone(), |v| v.created_at.clone()),
-        unreadable: read.is_none(),
-        model: read.as_ref().and_then(|v| v.model.clone()),
-        variables: read.map(|v| v.variables).unwrap_or_default(),
+        unreadable: !readable,
+        model: latest.filter(|_| readable).and_then(|v| v.model.clone()),
+        variables: if readable {
+            variables.unwrap_or_default()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+fn stub_of(row: &VersionRow) -> LatestStub {
+    LatestStub {
+        template_id: row.template_id,
+        version: row.version,
+        created_at: row.created_at.clone(),
+        model: row.model.clone(),
+        variables: row.variables.clone(),
     }
 }
 
 async fn view_of(state: &AppState, t: &TemplateRow) -> Result<PromptView, ApiError> {
     let latest = state.store.prompt_latest_version(t.id).await?;
     let stubs = state.store.prompt_version_stubs(t.id).await?;
-    let s = summary_of(t, latest.as_ref(), stubs.len() as i64);
+    let readable = latest.as_ref().is_some_and(|row| version_view(row).is_ok());
+    let s = summary_of(
+        t,
+        latest.as_ref().map(stub_of).as_ref(),
+        stubs.len() as i64,
+        readable,
+    );
     Ok(PromptView {
         id: s.id,
         name: s.name,
@@ -410,19 +439,43 @@ pub async fn list(
 ) -> Result<Response, ApiError> {
     require(&authed.principal, &Action::ListPrompts)?;
     let templates = state.store.list_prompt_templates().await?;
-    let latest = state.store.list_latest_prompt_versions().await?;
-    let counts = state.store.prompt_version_counts().await?;
-    let prompts: Vec<PromptSummary> = templates
-        .iter()
-        .map(|t| {
-            let newest = latest.iter().find(|v| v.template_id == t.id);
-            let count = counts
-                .iter()
-                .find(|(id, _)| *id == t.id)
-                .map_or(0, |(_, n)| *n);
-            summary_of(t, newest, count)
-        })
+    // Without the messages: a list does not read and parse every text.
+    let latest: HashMap<i64, LatestStub> = state
+        .store
+        .list_latest_prompt_stubs()
+        .await?
+        .into_iter()
+        .map(|v| (v.template_id, v))
         .collect();
+    let counts: HashMap<i64, i64> = state
+        .store
+        .prompt_version_counts()
+        .await?
+        .into_iter()
+        .collect();
+    // A template the snapshot serves at this version was read when the
+    // snapshot was made. Any other (a corrupt one, or a write the snapshot
+    // has not caught up with) is read here and checked.
+    let served: HashMap<i64, i64> = state.snapshot.load().prompt_numbers().collect();
+    let mut prompts = Vec::with_capacity(templates.len());
+    for t in &templates {
+        let newest = latest.get(&t.id);
+        let readable = match newest {
+            None => false,
+            Some(v) if served.get(&t.id) == Some(&v.version) => true,
+            Some(_) => state
+                .store
+                .prompt_latest_version(t.id)
+                .await?
+                .is_some_and(|row| version_view(&row).is_ok()),
+        };
+        prompts.push(summary_of(
+            t,
+            newest,
+            counts.get(&t.id).copied().unwrap_or(0),
+            readable,
+        ));
+    }
     Ok(Json(PromptList { prompts }).into_response())
 }
 
@@ -496,7 +549,7 @@ pub async fn version(
         (status = 403, description = "Only admins and team leads make templates, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
         (status = 409, description = "`prompt_exists`: the name is taken.", body = super::openapi::ApiErrorBody),
         (status = 413, description = "The request body is larger than 1 MiB.", body = super::openapi::ApiErrorBody),
-        (status = 422, description = "Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, `name` for an `@` in the name or when there are already 1000 templates, ...).", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, `name` for an `@` in the name, when there are already 1000 templates or when a team lead has already made 100, ...).", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
     security(("session" = []), ("token" = [])),
@@ -524,6 +577,15 @@ pub async fn create(
         return Err(ApiError::invalid_field(
             "name",
             &format!("there are already {MAX_TEMPLATES} templates, the most there can be; delete one first"),
+        ));
+    }
+    // Admins are trusted with the whole of it; a lead has their own share.
+    if !me.is_admin()
+        && tx.count_prompt_templates_by(me.user_id).await? >= MAX_TEMPLATES_PER_LEAD as i64
+    {
+        return Err(ApiError::invalid_field(
+            "name",
+            &format!("you have already made {MAX_TEMPLATES_PER_LEAD} templates, the most a team lead can; delete one first"),
         ));
     }
     let id = match tx
@@ -675,6 +737,13 @@ pub async fn delete(
     })
     .await?;
     tx.commit().await?;
+    // SQLite gives the id of a deleted template to the next one made, and a
+    // creation time has one-second resolution: what this process kept of the
+    // old template must not be found under the new one, whatever a refresh
+    // does next. (Other processes drop theirs when their refresh sees the
+    // template gone; a process that misses the gap between delete and
+    // re-creation keeps a stale old version until then.)
+    state.old_prompts.retain(|kept, _| kept != id);
     refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }

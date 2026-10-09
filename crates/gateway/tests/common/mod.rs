@@ -550,6 +550,22 @@ pub async fn org_with_sink(sink: Option<Arc<dyn RequestSink>>) -> Org {
     build_org(api_full(Store::open_in_memory().await.unwrap(), false, &[], sink).await).await
 }
 
+/// [`org`], with `sink` receiving the request records and `tweak` run on the
+/// state before it is shared.
+pub async fn org_tweaked(
+    sink: Option<Arc<dyn RequestSink>>,
+    tweak: impl FnOnce(&mut AppState),
+) -> Org {
+    let api = api_tweaked(Store::open_in_memory().await.unwrap(), |s| {
+        if let Some(sink) = sink {
+            s.sink = sink;
+        }
+        tweak(s);
+    })
+    .await;
+    build_org(api).await
+}
+
 /// [`org`], started with `UF_PUBLIC_URL` set to this URL.
 pub async fn org_with_public_url(url: &str) -> Org {
     let url = url.parse().unwrap();
