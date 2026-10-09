@@ -1,5 +1,5 @@
-//! Guardrails in the `/v1` pipeline: input checks after resolve (before limits
-//! and the cache), output checks on whole answers before the cache keeps them,
+//! Guardrails in the `/v1` pipeline: input checks after resolve and the rate
+//! limits (before budgets and the cache), output checks on whole answers before the cache keeps them,
 //! stream scanning, and what a record says about it.
 
 mod common;
@@ -223,6 +223,40 @@ async fn a_blocked_input_is_not_charged_to_a_limit() {
     // The one request of the minute is still there.
     let (s, body) = post_chat(&h.app, Some(&h.key), &chat_body("fine")).await;
     assert_eq!(s, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn a_call_a_limit_refuses_is_not_scanned() {
+    let h = harness("openai").await;
+    mount_chat(&h, completion("hello")).await;
+    guardrail(
+        &h,
+        "g",
+        vec![word_rule("w", "swordfish", "block", "input")],
+        true,
+    )
+    .await;
+    let mut tx = h.store.begin().await.unwrap();
+    tx.upsert_limit(
+        LimitScope::Gateway,
+        None,
+        &RateLimit {
+            requests_per_minute: Some(1),
+            tokens_per_minute: None,
+            concurrent: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    let (s, body) = post_chat(&h.app, Some(&h.key), &chat_body("fine")).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    // The minute is spent. The limit answers before the rules look at the
+    // input, so a body that would be blocked is refused as rate limited: the
+    // work of scanning is only done for calls the limits let in.
+    let (s, _) = post_chat(&h.app, Some(&h.key), &chat_body("swordfish")).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]

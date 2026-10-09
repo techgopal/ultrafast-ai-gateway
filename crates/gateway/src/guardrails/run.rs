@@ -1,7 +1,10 @@
 //! Running guardrails over a call: the set that applies, and a check over the
 //! text slots of a request or an answer.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
+
+use tokio::sync::Semaphore;
 
 use super::external::{self, CallMeta, HookGates};
 use super::log::GuardrailRef;
@@ -11,6 +14,18 @@ use crate::snapshot::{SnapExternal, SnapGuardrail};
 /// Text above this many bytes is scanned on a blocking thread, so a large
 /// prompt does not hold a runtime worker.
 pub const INLINE_LIMIT_BYTES: usize = 64 * 1024;
+
+/// How long a scan of a large text waits for a CPU slot when the caller gives
+/// no deadline of its own.
+const SCAN_WAIT: Duration = Duration::from_secs(10);
+
+/// The blocking scans that may run at once in this process: as many as there
+/// are CPUs, so a burst of large bodies cannot pin every core (and every other
+/// team's calls) for as long as it takes to scan them all.
+static SCAN_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
+    let cpus = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
+    Arc::new(Semaphore::new(cpus))
+});
 
 /// How to reach the external guardrails of a call.
 #[derive(Clone)]
@@ -31,9 +46,18 @@ pub struct Active {
     externals: Vec<Arc<SnapGuardrail>>,
     refs: Vec<GuardrailRef>,
     hooks: Option<Hooks>,
+    scan_slots: Option<Arc<Semaphore>>,
 }
 
 impl Active {
+    /// This set with its own pool of scan slots (the process-wide one is
+    /// used otherwise).
+    #[cfg(test)]
+    pub(crate) fn with_scan_slots(mut self, slots: Arc<Semaphore>) -> Self {
+        self.scan_slots = Some(slots);
+        self
+    }
+
     /// The running part of an effective set (defaults, route, key), in order.
     /// `hooks` is how external guardrails are reached; without it they are
     /// not part of the set.
@@ -157,12 +181,16 @@ impl Active {
     }
 
     /// The rules over `slots`, redacting in place; a block leaves them as
-    /// they were. `Err` only when the scan itself failed, in which case the
+    /// they were. A text above [`INLINE_LIMIT_BYTES`] is scanned on a
+    /// blocking thread once a CPU slot is free; a call that finds none by
+    /// `deadline` (ten seconds when it has none) is refused as busy. `Err`
+    /// only when the scan itself failed or was refused, in which case the
     /// slots are left empty and the caller must refuse the call.
     pub async fn check_rules(
         &self,
         dir: Direction,
         slots: &mut [&mut String],
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<Outcome, ScanFailed> {
         if !self.covers_rules(dir) || slots.is_empty() {
             return Ok(Outcome::default());
@@ -172,12 +200,22 @@ impl Active {
         let outcome;
         if total > INLINE_LIMIT_BYTES {
             let rules = self.rules.clone();
+            let slots_pool = self.scan_slots.as_ref().unwrap_or(&SCAN_SLOTS).clone();
+            let until = deadline.unwrap_or_else(|| tokio::time::Instant::now() + SCAN_WAIT);
+            // the slot stays taken until the scan is over, even if the call
+            // that asked for it is dropped meanwhile
+            let slot = match tokio::time::timeout_at(until, slots_pool.acquire_owned()).await {
+                Ok(Ok(slot)) => slot,
+                Ok(Err(_)) => return Err(ScanFailed::Failed),
+                Err(_) => return Err(ScanFailed::Busy),
+            };
             (texts, outcome) = tokio::task::spawn_blocking(move || {
                 let outcome = check_texts(&rules, dir, &mut texts);
+                drop(slot);
                 (texts, outcome)
             })
             .await
-            .map_err(|_| ScanFailed)?;
+            .map_err(|_| ScanFailed::Failed)?;
         } else {
             outcome = check_texts(&self.rules, dir, &mut texts);
         }
@@ -212,16 +250,88 @@ impl Active {
         &self,
         dir: Direction,
         mut slots: Vec<&mut String>,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<Outcome, ScanFailed> {
-        let mut outcome = self.check_rules(dir, &mut slots).await?;
+        let mut outcome = self.check_rules(dir, &mut slots, deadline).await?;
         if outcome.blocked_by.is_none() {
-            let asked = self.check_hooks(dir, &mut slots, None).await;
+            let asked = self.check_hooks(dir, &mut slots, deadline).await;
             outcome.merge(&asked);
         }
         Ok(outcome)
     }
 }
 
-/// The scan did not finish (its thread panicked).
-#[derive(Debug)]
-pub struct ScanFailed;
+/// The scan did not happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanFailed {
+    /// Its thread panicked.
+    Failed,
+    /// No CPU slot was free before the deadline.
+    Busy,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::guardrails::{Action, Directions, Matcher, PiiType, RuleSpec};
+
+    fn active(slots: Arc<Semaphore>) -> Active {
+        let rule = RuleSpec {
+            id: "p".into(),
+            matcher: Matcher::Pii(vec![PiiType::Email]),
+            action: Action::Redact,
+            directions: Directions::Both,
+        };
+        let compiled = Compiled::compile(1, "g", &[rule]).expect("compiles");
+        Active {
+            rules: vec![Arc::new(compiled)],
+            ..Active::default()
+        }
+        .with_scan_slots(slots)
+    }
+
+    fn big_text() -> String {
+        format!(
+            "{} mail bob@example.com",
+            "word ".repeat(INLINE_LIMIT_BYTES)
+        )
+    }
+
+    #[tokio::test]
+    async fn a_large_scan_with_no_free_slot_is_refused_as_busy() {
+        let slots = Arc::new(Semaphore::new(1));
+        let held = slots.clone().acquire_owned().await.expect("a slot");
+        let guard = active(slots.clone());
+        let mut text = big_text();
+        let until = tokio::time::Instant::now() + Duration::from_millis(100);
+        let started = std::time::Instant::now();
+        let refused = guard
+            .check_rules(Direction::Input, &mut [&mut text], Some(until))
+            .await;
+        assert_eq!(refused.unwrap_err(), ScanFailed::Busy);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // the slot comes back when its holder lets go, and the scan runs
+        drop(held);
+        let mut text = big_text();
+        let outcome = guard
+            .check_rules(Direction::Input, &mut [&mut text], Some(until))
+            .await
+            .expect("scans");
+        assert_eq!(outcome.redactions.get("EMAIL"), Some(&1));
+        assert!(text.ends_with("mail [REDACTED:EMAIL]"));
+        assert_eq!(slots.available_permits(), 1, "the slot is given back");
+    }
+
+    #[tokio::test]
+    async fn a_small_text_needs_no_slot() {
+        let slots = Arc::new(Semaphore::new(0));
+        let guard = active(slots);
+        let mut text = "mail bob@example.com".to_string();
+        let outcome = guard
+            .check_rules(Direction::Input, &mut [&mut text], None)
+            .await
+            .expect("scans inline");
+        assert_eq!(text, "mail [REDACTED:EMAIL]");
+        assert_eq!(outcome.redactions.get("EMAIL"), Some(&1));
+    }
+}

@@ -1131,7 +1131,7 @@ async fn an_input_hook_is_asked_after_the_limits_and_a_refusal_gives_the_permit_
 }
 
 #[tokio::test]
-async fn rules_still_run_before_the_limits() {
+async fn rules_run_before_the_hooks_and_a_block_gives_the_permit_back() {
     let h = harness("openai").await;
     let hook = MockServer::start().await;
     hook_says(&hook, json!({ "action": "allow" })).await;
@@ -1299,6 +1299,84 @@ async fn past_the_cap_on_a_fail_open_stream_the_rules_still_redact_what_follows(
     assert_eq!(out.redactions.get("EMAIL"), Some(&1));
 }
 
+/// A route `r` whose whole request may take 1.5 s.
+async fn route_with_one_and_a_half_seconds(h: &Harness) {
+    use ultrafast_gateway::store::{RouteSettings, TargetsInput};
+    let models = h.store.list_models().await.unwrap();
+    let model = models.iter().find(|m| m.name == "m").unwrap().id;
+    let mut tx = h.store.begin().await.unwrap();
+    let id = tx
+        .insert_route(
+            "r",
+            &RouteSettings {
+                retries: 0,
+                first_token_timeout_ms: 1_500,
+                total_timeout_ms: 1_500,
+                breaker_failures: 5,
+                breaker_window_s: 60,
+                breaker_open_s: 30,
+            },
+            true,
+        )
+        .await
+        .unwrap();
+    tx.replace_targets(
+        id,
+        &TargetsInput {
+            primaries: vec![(model, 1)],
+            fallbacks: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_hook_on_a_whole_answer_is_held_to_the_request_deadline() {
+    let h = harness("openai").await;
+    let hook = MockServer::start().await;
+    hook_answers(
+        &hook,
+        ResponseTemplate::new(200)
+            .set_body_json(json!({ "action": "allow" }))
+            .set_delay(Duration::from_secs(4)),
+    )
+    .await;
+    mount_chat(&h, completion("some words")).await;
+    external(
+        &h,
+        &hook,
+        Spec::new("strict")
+            .closed()
+            .directions("output")
+            .timeout(9000),
+    )
+    .await;
+    route_with_one_and_a_half_seconds(&h).await;
+    let body = json!({ "model": "r",
+        "messages": [{ "role": "user", "content": "hi" }] })
+    .to_string();
+    let started = Instant::now();
+    let (s, text) = post_chat(&h.app, Some(&h.key), &body).await;
+    assert_eq!(s, StatusCode::OK, "{text}");
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        started.elapsed()
+    );
+    // closed: an answer the hook could not check in time is blocked
+    assert!(text.contains("content_filter"), "{text}");
+    let out = h.sink.wait_for(1).await[0]
+        .guardrails
+        .clone()
+        .unwrap()
+        .output
+        .unwrap();
+    assert_eq!(out.flags[0].rule_id, "external_error:timeout");
+}
+
 #[tokio::test]
 async fn the_hook_after_the_last_event_is_held_to_the_request_deadline() {
     let h = harness("openai").await;
@@ -1320,39 +1398,7 @@ async fn the_hook_after_the_last_event_is_held_to_the_request_deadline() {
             .timeout(9000),
     )
     .await;
-    // A route whose whole request may take 1.5 s.
-    {
-        use ultrafast_gateway::store::{RouteSettings, TargetsInput};
-        let models = h.store.list_models().await.unwrap();
-        let model = models.iter().find(|m| m.name == "m").unwrap().id;
-        let mut tx = h.store.begin().await.unwrap();
-        let id = tx
-            .insert_route(
-                "r",
-                &RouteSettings {
-                    retries: 0,
-                    first_token_timeout_ms: 1_500,
-                    total_timeout_ms: 1_500,
-                    breaker_failures: 5,
-                    breaker_window_s: 60,
-                    breaker_open_s: 30,
-                },
-                true,
-            )
-            .await
-            .unwrap();
-        tx.replace_targets(
-            id,
-            &TargetsInput {
-                primaries: vec![(model, 1)],
-                fallbacks: vec![],
-            },
-        )
-        .await
-        .unwrap();
-        tx.commit().await.unwrap();
-        h.state.refresh().await.unwrap();
-    }
+    route_with_one_and_a_half_seconds(&h).await;
     let body = json!({ "model": "r", "stream": true,
         "messages": [{ "role": "user", "content": "hi" }] })
     .to_string();

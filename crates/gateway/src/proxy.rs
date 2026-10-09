@@ -44,7 +44,7 @@ use crate::cache::{Answer, CacheKey, CacheScope, Cached, KeyParts, ScopeId};
 use crate::errors::{caller_message, Shape};
 use crate::guardrails::external::CallMeta;
 use crate::guardrails::log::{GuardrailRef, SideLog};
-use crate::guardrails::run::{Active, Hooks};
+use crate::guardrails::run::{Active, Hooks, ScanFailed};
 use crate::guardrails::{Direction, Outcome, Release, StreamScanner};
 use crate::routing::{
     self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
@@ -562,10 +562,29 @@ async fn dispatch(
         Resolved::Route(route) => Some(route.name.as_str()),
         _ => None,
     });
-    // 3a. The guardrails of the call (the gateway's defaults, then the
-    // route's, then the key's), over its input. After access, before any
-    // limit, budget or cache: a blocked call is refused here and counts
-    // nowhere, and everything after this sees the redacted input.
+    // 3a. The rate limits of the key, its owner, their teams and the gateway.
+    // First, so that the work of scanning a body is only done for a call the
+    // limits let in. The permit goes with the scope, which a stream carries to
+    // its end. A call that a limit refuses counts nowhere; one that is refused
+    // after this (a guardrail block, a spent budget, no usable model) gives
+    // back its request and its token estimate at every scope. The estimate is
+    // of the input as it came, before any redaction.
+    let subjects = snapshot.subjects_of(actor.key_id, key.user_id, key.team_id);
+    match state
+        .rate
+        .acquire(&subjects, call.estimated_tokens(), Instant::now())
+    {
+        Ok(permit) => record.hold(permit),
+        Err(refusal) => {
+            state.metrics.rate_limited(refusal.limit_name);
+            return shape.rate_limited(&refusal);
+        }
+    }
+    // 3b. The guardrails of the call (the gateway's defaults, then the
+    // route's, then the key's), over its input. After access and the rate
+    // limits, before any budget or cache: a blocked call gives its permit
+    // back and counts nowhere, and everything after this sees the redacted
+    // input.
     let effective = snapshot.effective_guardrails(
         match &resolved {
             Resolved::Route(route) => Some(route),
@@ -595,24 +614,11 @@ async fn dispatch(
     let guard = Active::of(&effective, hooks);
     let input_rules = match check_input_rules(&guard, &mut call, record, shape).await {
         Ok(outcome) => outcome,
-        Err(refusal) => return refusal,
-    };
-    // 3b. The rate limits of the key, its owner, their teams and the gateway.
-    // The permit goes with the scope, which a stream carries to its end. A
-    // call that a limit refuses counts nowhere; one that is refused after
-    // this (a spent budget, no usable model) gives back its request and its
-    // token estimate at every scope.
-    let subjects = snapshot.subjects_of(actor.key_id, key.user_id, key.team_id);
-    match state
-        .rate
-        .acquire(&subjects, call.estimated_tokens(), Instant::now())
-    {
-        Ok(permit) => record.hold(permit),
         Err(refusal) => {
-            state.metrics.rate_limited(refusal.limit_name);
-            return shape.rate_limited(&refusal);
+            record.refund_permit();
+            return refusal;
         }
-    }
+    };
     // 3c. The budgets of the same subjects: a spent `block` budget refuses
     // the call. Spend is counted when the log writer prices a call, so what
     // was already running is not stopped.
@@ -719,7 +725,8 @@ async fn dispatch(
     }
     let _flight = flight;
 
-    // 4. Try the targets in order.
+    // 4. Try the targets in order. The request ends `total_timeout` from now.
+    let request_deadline = tokio::time::Instant::now() + settings.total_timeout;
     let served = routing::run(
         &*state.health,
         record,
@@ -746,7 +753,7 @@ async fn dispatch(
             record.usage(response.usage);
             // Before the cache keeps it: the cache never holds an answer the
             // guardrails have not seen.
-            match check_output(&guard, &mut response, record, shape).await {
+            match check_output(&guard, &mut response, record, shape, request_deadline).await {
                 Ok(Kept::Yes) => keep(state, &cache, record, Answer::Chat(response.clone())),
                 // A blocked answer is not kept: every call is checked afresh
                 // and recorded as blocked. Nor is one an external guardrail
@@ -867,6 +874,7 @@ fn chat_slots(request: &mut ChatRequest) -> Vec<&mut String> {
 }
 
 const SCAN_FAILED: &str = "The guardrails could not check this request.";
+const SCAN_BUSY: &str = "The guardrails are busy checking other requests. Try again shortly.";
 
 /// The chat or embeddings text slots of a call, joined text parts first.
 fn input_slots(call: &mut Call) -> Vec<&mut String> {
@@ -879,7 +887,11 @@ fn input_slots(call: &mut Call) -> Vec<&mut String> {
     }
 }
 
-fn scan_failed(shape: Shape) -> Response {
+fn scan_failed(shape: Shape, failed: ScanFailed) -> Response {
+    if failed == ScanFailed::Busy {
+        tracing::warn!("a guardrail scan found no free CPU slot");
+        return shape.error(StatusCode::SERVICE_UNAVAILABLE, "upstream_error", SCAN_BUSY);
+    }
     tracing::error!("a guardrail scan did not finish");
     shape.error(
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -901,9 +913,9 @@ async fn check_input_rules(
         return Ok(Outcome::default());
     }
     let mut slots = input_slots(call);
-    let outcome = match guard.check_rules(Direction::Input, &mut slots).await {
+    let outcome = match guard.check_rules(Direction::Input, &mut slots, None).await {
         Ok(outcome) => outcome,
-        Err(_) => return Err(scan_failed(shape)),
+        Err(failed) => return Err(scan_failed(shape, failed)),
     };
     record.guardrails_found(Direction::Input, SideLog::of(guard.refs(), &outcome));
     match outcome.blocked_by {
@@ -943,28 +955,23 @@ enum Kept {
 /// Checks a whole answer against `guard`: text and tool-call arguments are
 /// redacted in place; a block empties the answer and ends it with
 /// `content_filter`. Says whether the answer may be kept: not when it was
-/// blocked or when an external guardrail could not check it.
+/// blocked or when an external guardrail could not check it. No external
+/// guardrail runs past `deadline`, the end of the request.
 async fn check_output(
     guard: &Active,
     response: &mut ChatResponse,
     record: &mut Scope,
     shape: Shape,
+    deadline: tokio::time::Instant,
 ) -> Result<Kept, Response> {
     if !guard.covers(Direction::Output) {
         return Ok(Kept::Yes);
     }
     let mut slots = vec![&mut response.content];
     slots.extend(response.tool_calls.iter_mut().map(|c| &mut c.arguments));
-    let outcome = match guard.check(Direction::Output, slots).await {
+    let outcome = match guard.check(Direction::Output, slots, Some(deadline)).await {
         Ok(outcome) => outcome,
-        Err(_) => {
-            tracing::error!("a guardrail scan did not finish");
-            return Err(shape.error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                SCAN_FAILED,
-            ));
-        }
+        Err(failed) => return Err(scan_failed(shape, failed)),
     };
     record.guardrails_found(Direction::Output, SideLog::of(guard.refs(), &outcome));
     if outcome.blocked_by.is_none() {

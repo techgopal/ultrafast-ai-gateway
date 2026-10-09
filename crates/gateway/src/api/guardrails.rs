@@ -1160,7 +1160,7 @@ pub async fn test(
         let active = Active::of(&[g], Some(hooks));
         let mut text = req.text;
         let outcome = active
-            .check(req.direction, vec![&mut text])
+            .check(req.direction, vec![&mut text], None)
             .await
             .map_err(|_| ApiError::internal())?;
         return Ok(Json(test_result(outcome, text, &name)).into_response());
