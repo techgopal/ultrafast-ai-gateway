@@ -7,6 +7,7 @@ mod common;
 use axum::http::StatusCode;
 use common::{error_code, org, Org, Signed};
 use serde_json::{json, Value};
+use wiremock::ResponseTemplate;
 
 const LIST: &str = "/api/guardrails";
 
@@ -1039,8 +1040,7 @@ async fn the_test_endpoint_runs_the_engine_and_never_echoes_a_match() {
         test(json!({ "rules": [pii_email()], "direction": "sideways", "text": "x" })).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // An external guardrail is never called by the test unless asked, and
-    // the asking is not available yet.
+    // An external guardrail is never called by the test unless asked.
     let (_, ext) = org
         .call(
             Some(&maya),
@@ -1052,11 +1052,18 @@ async fn the_test_endpoint_runs_the_engine_and_never_echoes_a_match() {
     let ext = ext["guardrail"]["id"].as_i64().unwrap();
     let (status, v) = test(json!({ "guardrail_id": ext, "direction": "input", "text": "x" })).await;
     assert_invalid(status, &v, "guardrail_id");
+    // Asked, it is called for real: nothing listens at that URL, the guardrail
+    // fails open, and the outcome says why.
     let (status, v) = test(json!({
         "guardrail_id": ext, "direction": "input", "text": "x", "call_external": true
     }))
     .await;
-    assert_invalid(status, &v, "call_external");
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["redacted_text"], "x");
+    assert_eq!(
+        v["outcome"]["flags"][0]["rule_id"],
+        "external_error:connect"
+    );
     // The test changes nothing and is not audited.
     assert!(!org.audit_actions().await.iter().any(|a| a.contains("test")));
 }
@@ -1696,4 +1703,226 @@ async fn admin_writes_that_read_then_write_wait_for_a_writer_instead_of_failing(
         let ((status, resp), ()) = tokio::join!(call, release);
         assert_eq!(status, want, "{resp}");
     }
+}
+
+// ---- calling an external guardrail from the test ------------------------------
+
+mod hook {
+    use serde_json::{json, Value};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    pub const PATH: &str = "/check/9f3a";
+
+    pub async fn answering(template: ResponseTemplate) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(PATH))
+            .respond_with(template)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    pub fn says(answer: Value) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(answer)
+    }
+
+    pub async fn calls(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| json!({
+                "body": serde_json::from_slice::<Value>(&r.body).unwrap(),
+                "signature": r.headers.get("x-uf-signature").map(|v| v.to_str().unwrap().to_string()),
+                "raw": String::from_utf8_lossy(&r.body).to_string(),
+            }))
+            .collect()
+    }
+}
+
+async fn external_at(
+    org: &Org,
+    who: &Signed,
+    server: &wiremock::MockServer,
+    extra: Value,
+) -> (i64, String) {
+    let mut body = json!({ "name": "hook", "kind": "external",
+        "url": format!("{}{}", server.uri(), hook::PATH) });
+    body.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    let v = make(org, who, body).await;
+    (
+        v["guardrail"]["id"].as_i64().unwrap(),
+        v["secret"].as_str().unwrap().to_string(),
+    )
+}
+
+#[tokio::test]
+async fn the_test_calls_the_hook_signed_and_returns_what_it_decided() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let server = hook::answering(hook::says(
+        json!({ "action": "redact", "texts": ["hello [GONE]"] }),
+    ))
+    .await;
+    let (id, secret) = external_at(&org, &maya, &server, json!({})).await;
+    let call = |body: Value| {
+        let (org, maya) = (&org, &maya);
+        async move {
+            org.call(Some(maya), "POST", "/api/guardrails/test", Some(body))
+                .await
+        }
+    };
+
+    // Without call_external the hook is never called.
+    let (status, v) =
+        call(json!({ "guardrail_id": id, "direction": "input", "text": "hello ann" })).await;
+    assert_invalid(status, &v, "guardrail_id");
+    assert!(hook::calls(&server).await.is_empty());
+
+    // With it, once, signed with the guardrail's secret, with the text only.
+    let (status, v) = call(json!({
+        "guardrail_id": id, "direction": "output", "text": "hello ann", "call_external": true
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["redacted_text"], "hello [GONE]");
+    assert_eq!(v["outcome"]["redactions"], json!({ "external": 1 }));
+    assert!(v["outcome"]["blocked_by"].is_null());
+    let calls = hook::calls(&server).await;
+    assert_eq!(calls.len(), 1);
+    let sent = &calls[0]["body"];
+    assert_eq!(sent["version"], 1);
+    assert_eq!(sent["direction"], "output");
+    assert_eq!(sent["endpoint"], "test");
+    assert_eq!(sent["texts"], json!(["hello ann"]));
+    assert!(sent["key_id"].is_null() && sent["user_id"].is_null() && sent["team_id"].is_null());
+    let header = calls[0]["signature"].as_str().unwrap();
+    let (t, v1) = header
+        .strip_prefix("t=")
+        .and_then(|r| r.split_once(",v1="))
+        .unwrap();
+    assert_eq!(
+        v1,
+        ultrafast_gateway::alerts::sign::signature(
+            &secret,
+            t.parse().unwrap(),
+            calls[0]["raw"].as_str().unwrap().as_bytes()
+        )
+    );
+}
+
+#[tokio::test]
+async fn the_test_shows_a_block_a_failure_and_a_direction_that_is_not_asked() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let call = |body: Value| {
+        let (org, maya) = (&org, &maya);
+        async move {
+            org.call(Some(maya), "POST", "/api/guardrails/test", Some(body))
+                .await
+        }
+    };
+
+    let blocking = hook::answering(hook::says(json!({ "action": "block", "reason": "no" }))).await;
+    let (id, _) = external_at(&org, &maya, &blocking, json!({ "directions": "input" })).await;
+    let (_, v) = call(json!({
+        "guardrail_id": id, "direction": "input", "text": "x", "call_external": true
+    }))
+    .await;
+    assert_eq!(
+        v["outcome"]["blocked_by"],
+        json!({ "id": id, "name": "hook" })
+    );
+    assert_eq!(v["redacted_text"], "x");
+    assert!(!v.to_string().contains("\"no\""));
+    // Output is not a direction of this guardrail: no call.
+    let (status, v) = call(json!({
+        "guardrail_id": id, "direction": "output", "text": "x", "call_external": true
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(v["outcome"]["blocked_by"].is_null());
+    assert_eq!(hook::calls(&blocking).await.len(), 1);
+
+    // A hook that errors: fail closed blocks, fail open flags.
+    let broken = hook::answering(ResponseTemplate::new(500)).await;
+    let (strict, _) = external_at(
+        &org,
+        &maya,
+        &broken,
+        json!({ "name": "strict", "fail_mode": "closed" }),
+    )
+    .await;
+    let (_, v) = call(json!({
+        "guardrail_id": strict, "direction": "input", "text": "x", "call_external": true
+    }))
+    .await;
+    assert_eq!(v["outcome"]["blocked_by"]["name"], "strict");
+    assert_eq!(v["outcome"]["flags"][0]["rule_id"], "external_error:status");
+    assert_eq!(v["outcome"]["flags"][0]["guardrail_name"], "strict");
+    let (lax, _) = external_at(&org, &maya, &broken, json!({ "name": "lax" })).await;
+    let (_, v) = call(json!({
+        "guardrail_id": lax, "direction": "input", "text": "x", "call_external": true
+    }))
+    .await;
+    assert!(v["outcome"]["blocked_by"].is_null());
+    assert_eq!(v["outcome"]["flags"][0]["rule_id"], "external_error:status");
+
+    // A slow hook ends at its timeout.
+    let slow = hook::answering(
+        hook::says(json!({ "action": "allow" })).set_delay(std::time::Duration::from_secs(4)),
+    )
+    .await;
+    let (slow_id, _) = external_at(
+        &org,
+        &maya,
+        &slow,
+        json!({ "name": "slow", "timeout_ms": 1000 }),
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let (_, v) = call(json!({
+        "guardrail_id": slow_id, "direction": "input", "text": "x", "call_external": true
+    }))
+    .await;
+    assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+    assert_eq!(
+        v["outcome"]["flags"][0]["rule_id"],
+        "external_error:timeout"
+    );
+}
+
+#[tokio::test]
+async fn only_an_admin_can_make_the_test_call_a_hook() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let server = hook::answering(hook::says(json!({ "action": "allow" }))).await;
+    let (id, _) = external_at(&org, &maya, &server, json!({})).await;
+    for who in ["arjun", "lena"] {
+        let signed = org.sign_in(who).await;
+        let (status, _) = org
+            .call(
+                Some(&signed),
+                "POST",
+                "/api/guardrails/test",
+                Some(json!({ "guardrail_id": id, "direction": "input", "text": "x", "call_external": true })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{who}");
+    }
+    let (status, _) = org
+        .call(
+            None,
+            "POST",
+            "/api/guardrails/test",
+            Some(json!({ "guardrail_id": id, "direction": "input", "text": "x", "call_external": true })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(hook::calls(&server).await.is_empty());
 }

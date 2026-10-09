@@ -1453,9 +1453,13 @@ export interface components {
         /** @description What a test sends: rules, or the id of a stored guardrail. */
         GuardrailTestRequest: {
             /**
-             * @description Reserved for calling an external guardrail from the test. Not
-             *     available yet: sent with the id of an external guardrail it is
-             *     refused (422), and an external guardrail is never called by a test.
+             * @description Call the external guardrail `guardrail_id` for real, as a call would
+             *     (signed, with its timeout and fail mode): the text is sent to its
+             *     URL, and the outcome says what it decided or, in `flags`, why it
+             *     could not (`external_error:<reason>`). The hook is asked only when
+             *     the guardrail covers `direction`. Without this, an external guardrail
+             *     is never called by a test, and sending its id is refused (422).
+             *     Not for `rules`.
              */
             call_external?: boolean;
             /** @description `input` or `output`: which rules apply. */
@@ -4551,7 +4555,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description What the rules do to the text. Nothing is stored or logged, and an external guardrail is not called. */
+            /** @description What the rules do to the text, or with `call_external` what an external guardrail decided. Nothing is stored or logged. */
             200: {
                 headers: {
                     [name: string]: unknown;

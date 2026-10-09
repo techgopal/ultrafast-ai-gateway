@@ -2444,7 +2444,7 @@
         },
         "responses": {
           "200": {
-            "description": "What the rules do to the text. Nothing is stored or logged, and an external guardrail is not called.",
+            "description": "What the rules do to the text, or with `call_external` what an external guardrail decided. Nothing is stored or logged.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9035,7 +9035,7 @@
         "properties": {
           "call_external": {
             "type": "boolean",
-            "description": "Reserved for calling an external guardrail from the test. Not\navailable yet: sent with the id of an external guardrail it is\nrefused (422), and an external guardrail is never called by a test."
+            "description": "Call the external guardrail `guardrail_id` for real, as a call would\n(signed, with its timeout and fail mode): the text is sent to its\nURL, and the outcome says what it decided or, in `flags`, why it\ncould not (`external_error:<reason>`). The hook is asked only when\nthe guardrail covers `direction`. Without this, an external guardrail\nis never called by a test, and sending its id is refused (422).\nNot for `rules`."
           },
           "direction": {
             "$ref": "#/components/schemas/Direction",

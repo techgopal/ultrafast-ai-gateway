@@ -42,9 +42,10 @@ use crate::app::AppState;
 use crate::auth::authenticate;
 use crate::cache::{Answer, CacheKey, CacheScope, Cached, KeyParts, ScopeId};
 use crate::errors::{caller_message, Shape};
+use crate::guardrails::external::CallMeta;
 use crate::guardrails::log::{GuardrailRef, SideLog};
-use crate::guardrails::run::Active;
-use crate::guardrails::{Direction, Release, StreamScanner};
+use crate::guardrails::run::{Active, Hooks};
+use crate::guardrails::{Direction, Outcome, Release, StreamScanner};
 use crate::routing::{
     self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
 };
@@ -572,7 +573,25 @@ async fn dispatch(
         },
         Some(key),
     );
-    let guard = Active::of(&effective);
+    // Only a call with an external guardrail needs to say who is asking.
+    let hooks = effective
+        .iter()
+        .any(|g| g.external.is_some())
+        .then(|| Hooks {
+            http: state.http.clone(),
+            meta: Arc::new(CallMeta {
+                endpoint: endpoint.name(),
+                model: call.model().to_string(),
+                route: match &resolved {
+                    Resolved::Route(route) => Some(route.name.clone()),
+                    Resolved::Model(_) => None,
+                },
+                key_id: actor.key_id,
+                team_id: key.team_id,
+                user_id: key.user_id,
+            }),
+        });
+    let guard = Active::of(&effective, hooks);
     if let Err(refusal) = check_input(&guard, &mut call, record, shape).await {
         return refusal;
     }
@@ -718,10 +737,11 @@ async fn dispatch(
             // Before the cache keeps it: the cache never holds an answer the
             // guardrails have not seen.
             match check_output(&guard, &mut response, record, shape).await {
-                Ok(true) => {}
+                Ok(Kept::Yes) => keep(state, &cache, record, Answer::Chat(response.clone())),
                 // A blocked answer is not kept: every call is checked afresh
-                // and recorded as blocked.
-                Ok(false) => keep(state, &cache, record, Answer::Chat(response.clone())),
+                // and recorded as blocked. Nor is one an external guardrail
+                // could not check: the next call asks again.
+                Ok(Kept::No) => {}
                 Err(refusal) => return refusal,
             }
             match endpoint {
@@ -742,9 +762,21 @@ async fn dispatch(
             if let Some(scope) = scope.as_mut() {
                 scope.begin_stream(call.input_estimate());
             }
+            let scanner = guard.stream_scanner();
+            // An external guardrail on the output sees the whole answer at
+            // once, so the stream is held until it has.
+            let hold = guard.holds_streams().then(|| Hold {
+                active: guard.clone(),
+                events: Vec::new(),
+                bytes: 0,
+                cap: state.max_provider_response_bytes,
+                outcome: Outcome::default(),
+                passing: false,
+            });
             let guard = StreamRecord {
-                guard: guard.stream_scanner().map(|scanner| StreamGuard {
+                guard: (scanner.is_some() || hold.is_some()).then(|| StreamGuard {
                     scanner,
+                    hold,
                     checked: guard.refs().to_vec(),
                 }),
                 scope: scope.take(),
@@ -831,15 +863,22 @@ async fn check_input(
     }
 }
 
+/// Whether a checked answer may go in the cache.
+enum Kept {
+    Yes,
+    No,
+}
+
 /// Checks a whole answer against `guard`: text and tool-call arguments are
 /// redacted in place; a block empties the answer and ends it with
-/// `content_filter`. `Ok(true)` when it was blocked.
+/// `content_filter`. Says whether the answer may be kept: not when it was
+/// blocked or when an external guardrail could not check it.
 async fn check_output(
     guard: &Active,
     response: &mut ChatResponse,
     record: &mut Scope,
     shape: Shape,
-) -> Result<bool, Response> {
+) -> Result<Kept, Response> {
     let mut slots = vec![&mut response.content];
     slots.extend(response.tool_calls.iter_mut().map(|c| &mut c.arguments));
     let outcome = match guard.check(Direction::Output, slots).await {
@@ -855,12 +894,16 @@ async fn check_output(
     };
     record.guardrails_found(Direction::Output, SideLog::of(guard.refs(), &outcome));
     if outcome.blocked_by.is_none() {
-        return Ok(false);
+        return Ok(if outcome.external_failed() {
+            Kept::No
+        } else {
+            Kept::Yes
+        });
     }
     response.content.clear();
     response.tool_calls.clear();
     response.finish_reason = Some(FinishReason::ContentFilter);
-    Ok(true)
+    Ok(Kept::No)
 }
 
 /// The longest wait a caller is told to keep.
@@ -1333,8 +1376,160 @@ fn stream_failure(format: &StreamFormat, provider: &str, e: &TranslateError) -> 
 /// The guardrails of a stream: a scanner with hold-back, and the guardrails
 /// it runs, for the record.
 struct StreamGuard {
-    scanner: StreamScanner,
+    /// The rules guardrails over the output, when there are any.
+    scanner: Option<StreamScanner>,
+    /// The answer held for the external guardrails over the output.
+    hold: Option<Hold>,
     checked: Vec<GuardrailRef>,
+}
+
+/// An answer held back until the external guardrails have seen all of it.
+/// What the rules scanner lets through is kept here instead of being sent;
+/// at the end the hooks are asked once, and the answer is sent as one text
+/// and one piece of arguments per tool call (with whatever they redacted), or
+/// replaced by a `content_filter` ending.
+struct Hold {
+    active: Active,
+    events: Vec<StreamEvent>,
+    /// Bytes of text and arguments held.
+    bytes: usize,
+    /// The most that is held: the provider response cap.
+    cap: usize,
+    outcome: Outcome,
+    /// The cap was passed and the guardrails fail open: the rest goes on
+    /// unchecked.
+    passing: bool,
+}
+
+/// Where a held event goes back when the answer is sent.
+enum Slot {
+    Event(StreamEvent),
+    Text,
+    Tool(u32),
+}
+
+impl Hold {
+    /// Takes what the scanner let through. Nothing is released before the
+    /// end of the answer.
+    async fn step(&mut self, guarded: Guarded) -> Guarded {
+        if self.passing {
+            return guarded;
+        }
+        if guarded.cut {
+            // A rule ended the answer: nothing of it was sent and nothing
+            // will be.
+            self.events.clear();
+            return guarded;
+        }
+        for ev in guarded.events {
+            match ev {
+                StreamEvent::Done {
+                    finish_reason,
+                    usage,
+                } => return self.finish(finish_reason, usage).await,
+                other => {
+                    self.bytes += match &other {
+                        StreamEvent::Delta { text } => text.len(),
+                        StreamEvent::ToolCallDelta { arguments, .. } => arguments.len(),
+                        _ => 0,
+                    };
+                    self.events.push(other);
+                }
+            }
+            if self.bytes > self.cap {
+                let failed = self.active.fail_output_buffer();
+                let blocked = failed.blocked_by.is_some();
+                self.outcome.merge(&failed);
+                if blocked {
+                    self.events.clear();
+                    return StreamGuard::cut(None);
+                }
+                // Fail open: what is held was never checked, and goes out.
+                // The guardrails were already flagged.
+                self.passing = true;
+                return Guarded {
+                    events: std::mem::take(&mut self.events),
+                    cut: false,
+                };
+            }
+        }
+        Guarded {
+            events: Vec::new(),
+            cut: false,
+        }
+    }
+
+    async fn finish(
+        &mut self,
+        finish_reason: Option<FinishReason>,
+        usage: Option<Usage>,
+    ) -> Guarded {
+        let held = std::mem::take(&mut self.events);
+        let mut slots = Vec::with_capacity(held.len());
+        let mut text = String::new();
+        let mut seen_text = false;
+        let mut tools: Vec<(u32, String)> = Vec::new();
+        for ev in held {
+            match ev {
+                StreamEvent::Delta { text: t } => {
+                    if !seen_text {
+                        seen_text = true;
+                        slots.push(Slot::Text);
+                    }
+                    text.push_str(&t);
+                }
+                StreamEvent::ToolCallDelta { index, arguments } => {
+                    match tools.iter_mut().find(|(i, _)| *i == index) {
+                        Some((_, all)) => all.push_str(&arguments),
+                        None => {
+                            slots.push(Slot::Tool(index));
+                            tools.push((index, arguments));
+                        }
+                    }
+                }
+                other => slots.push(Slot::Event(other)),
+            }
+        }
+        // The answer text first, then the arguments of each tool call in
+        // the order they began.
+        let (indices, arguments): (Vec<u32>, Vec<String>) = tools.into_iter().unzip();
+        let mut texts = vec![text];
+        texts.extend(arguments);
+        let asked = self
+            .active
+            .check_externals(Direction::Output, &mut texts)
+            .await;
+        self.outcome.merge(&asked);
+        if asked.blocked_by.is_some() {
+            // The provider's usage is the truth for the whole answer.
+            return StreamGuard::cut(usage);
+        }
+        let mut texts: Vec<Option<String>> = texts.into_iter().map(Some).collect();
+        let mut events = Vec::with_capacity(slots.len() + 1);
+        for slot in slots {
+            match slot {
+                Slot::Event(ev) => events.push(ev),
+                Slot::Text => {
+                    if let Some(text) = texts[0].take().filter(|t| !t.is_empty()) {
+                        events.push(StreamEvent::Delta { text });
+                    }
+                }
+                Slot::Tool(index) => {
+                    let at = indices.iter().position(|i| *i == index).map(|p| p + 1);
+                    if let Some(arguments) =
+                        at.and_then(|at| texts[at].take()).filter(|a| !a.is_empty())
+                    {
+                        events.push(StreamEvent::ToolCallDelta { index, arguments });
+                    }
+                }
+            }
+        }
+        events.push(StreamEvent::Done {
+            finish_reason,
+            usage,
+        });
+        Guarded { events, cut: false }
+    }
 }
 
 /// What the scanner makes of one event of the stream.
@@ -1346,6 +1541,27 @@ struct Guarded {
 }
 
 impl StreamGuard {
+    /// What the rules and the external guardrails found so far.
+    fn outcome(&self) -> Outcome {
+        let mut outcome = self
+            .scanner
+            .as_ref()
+            .map(|s| s.outcome().clone())
+            .unwrap_or_default();
+        if let Some(hold) = &self.hold {
+            outcome.merge(&hold.outcome);
+        }
+        outcome
+    }
+
+    /// Holds back what the external guardrails have yet to see.
+    async fn held(&mut self, guarded: Guarded) -> Guarded {
+        match self.hold.as_mut() {
+            Some(hold) => hold.step(guarded).await,
+            None => guarded,
+        }
+    }
+
     /// The closing event of an answer a guardrail ended.
     fn cut(usage: Option<Usage>) -> Guarded {
         Guarded {
@@ -1377,13 +1593,19 @@ impl StreamGuard {
     /// is held. A block ends the stream with `content_filter`; what was sent
     /// before stays sent, because it was clean.
     fn apply(&mut self, event: StreamEvent) -> Guarded {
+        let Some(scanner) = self.scanner.as_mut() else {
+            return Guarded {
+                events: vec![event],
+                cut: false,
+            };
+        };
         match event {
             StreamEvent::Delta { text } => {
-                let release = self.scanner.push_text(&text);
+                let release = scanner.push_text(&text);
                 Self::released(release, |text| StreamEvent::Delta { text })
             }
             StreamEvent::ToolCallDelta { index, arguments } => {
-                let release = self.scanner.push_tool_args(index, &arguments);
+                let release = scanner.push_tool_args(index, &arguments);
                 Self::released(release, |arguments| StreamEvent::ToolCallDelta {
                     index,
                     arguments,
@@ -1393,7 +1615,7 @@ impl StreamGuard {
                 finish_reason,
                 usage,
             } => {
-                let tail = self.scanner.finish();
+                let tail = scanner.finish();
                 if tail.blocked.is_some() {
                     // The provider's usage is the truth for the whole answer.
                     return Self::cut(usage);
@@ -1437,7 +1659,7 @@ impl StreamRecord {
         if let (Some(guard), Some(scope)) = (self.guard.as_ref(), self.scope.as_mut()) {
             scope.guardrails_found(
                 Direction::Output,
-                SideLog::of(&guard.checked, guard.scanner.outcome()),
+                SideLog::of(&guard.checked, &guard.outcome()),
             );
         }
     }
@@ -1573,6 +1795,10 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
                 let guarded = match record.guard.as_mut() {
                     Some(guard) => guard.apply(ev),
                     None => Guarded { events: vec![ev], cut: false },
+                };
+                let guarded = match record.guard.as_mut() {
+                    Some(guard) => guard.held(guarded).await,
+                    None => guarded,
                 };
                 if guarded.cut {
                     record.cut_short();

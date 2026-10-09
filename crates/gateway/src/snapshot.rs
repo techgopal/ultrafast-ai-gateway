@@ -337,7 +337,7 @@ fn rules_guardrail(g: &GuardrailRow) -> Option<SnapGuardrail> {
     }
 }
 
-fn external_of(g: &GuardrailRow, cipher: &Cipher) -> Option<SnapExternal> {
+pub(crate) fn external_of(g: &GuardrailRow, cipher: &Cipher) -> Option<SnapExternal> {
     let read = |bytes: Option<&[u8]>| {
         cipher
             .decrypt(bytes?)

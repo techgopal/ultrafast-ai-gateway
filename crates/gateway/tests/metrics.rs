@@ -280,6 +280,7 @@ async fn the_output_is_valid_exposition_text_with_every_metric() {
         ("uf_rate_limited_total", "counter"),
         ("uf_budget_blocked_total", "counter"),
         ("uf_guardrail_actions_total", "counter"),
+        ("uf_guardrail_external_errors_total", "counter"),
         ("uf_circuit_open", "gauge"),
     ] {
         assert!(text.contains(&format!("# TYPE {name} {kind}\n")), "{name}");

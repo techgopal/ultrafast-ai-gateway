@@ -19,8 +19,13 @@ use super::alerts::check_url;
 use super::{path_id, refresh_snapshot, require, trimmed_name, ApiError, ApiJson, Authed};
 use crate::alerts::sign::new_secret;
 use crate::app::AppState;
-use crate::guardrails::{check_texts, Compiled, Direction, Directions, RuleSpec, MAX_RULES};
+use crate::guardrails::external::CallMeta;
+use crate::guardrails::run::{Active, Hooks};
+use crate::guardrails::{
+    check_texts, Compiled, Direction, Directions, Outcome, RuleSpec, MAX_RULES,
+};
 use crate::identity::policy::Action;
+use crate::snapshot::{external_of, SnapGuardrail};
 use crate::store::{AuditEntry, GuardrailPatch, GuardrailRow, NewGuardrail, Store, StoreError, Tx};
 
 /// The kinds of guardrail.
@@ -42,6 +47,8 @@ const MAX_MESSAGE_CHARS: usize = 400;
 const TEST_NAME: &str = "Test rules";
 /// The longest text the test endpoint takes, in characters.
 const MAX_TEST_CHARS: usize = 20_000;
+/// The model name a hook is told when it is called from the test.
+const TEST_MODEL: &str = "guardrail-test";
 
 // The request types of an external guardrail hold a URL, which is a
 // credential, so they have neither `Debug` nor `Serialize`.
@@ -164,9 +171,13 @@ pub struct GuardrailTestRequest {
     direction: Direction,
     /// Up to 20 000 characters.
     text: String,
-    /// Reserved for calling an external guardrail from the test. Not
-    /// available yet: sent with the id of an external guardrail it is
-    /// refused (422), and an external guardrail is never called by a test.
+    /// Call the external guardrail `guardrail_id` for real, as a call would
+    /// (signed, with its timeout and fail mode): the text is sent to its
+    /// URL, and the outcome says what it decided or, in `flags`, why it
+    /// could not (`external_error:<reason>`). The hook is asked only when
+    /// the guardrail covers `direction`. Without this, an external guardrail
+    /// is never called by a test, and sending its id is refused (422).
+    /// Not for `rules`.
     #[serde(default)]
     call_external: bool,
 }
@@ -1015,7 +1026,7 @@ pub async fn rotate_secret(
     operation_id = "guardrails_test",
     request_body = GuardrailTestRequest,
     responses(
-        (status = 200, description = "What the rules do to the text. Nothing is stored or logged, and an external guardrail is not called.", body = GuardrailTestResult),
+        (status = 200, description = "What the rules do to the text, or with `call_external` what an external guardrail decided. Nothing is stored or logged.", body = GuardrailTestResult),
         (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
         (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
@@ -1032,6 +1043,7 @@ pub async fn test(
 ) -> Result<Response, ApiError> {
     require(&authed.principal, &Action::ManageGuardrails)?;
     let mut fields = BTreeMap::new();
+    let mut external: Option<Arc<SnapGuardrail>> = None;
     let given_rules = parse_rules(req.rules.take(), &mut fields);
     if req.text.chars().count() > MAX_TEST_CHARS {
         fields.insert(
@@ -1078,11 +1090,23 @@ pub async fn test(
                 }
                 Some(row) if row.kind == "external" => {
                     if req.call_external {
-                        fields.insert(
-                            "call_external".to_string(),
-                            "calling an external guardrail from a test is not available yet"
-                                .to_string(),
-                        );
+                        match external_of(&row, &state.cipher) {
+                            Some(ext) => {
+                                external = Some(Arc::new(SnapGuardrail {
+                                    id: row.id,
+                                    name: row.name.clone(),
+                                    rules_text: String::new(),
+                                    rules: None,
+                                    external: Some(ext),
+                                }));
+                            }
+                            None => {
+                                fields.insert(
+                                    "call_external".to_string(),
+                                    "the guardrail has no URL to call".to_string(),
+                                );
+                            }
+                        }
                     } else {
                         fields.insert(
                             "guardrail_id".to_string(),
@@ -1107,6 +1131,29 @@ pub async fn test(
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
+    if let Some(g) = external {
+        // The hook is called for real, as a call would: same request, same
+        // signature, same timeout, same fail mode.
+        let hooks = Hooks {
+            http: state.http.clone(),
+            meta: Arc::new(CallMeta {
+                endpoint: "test",
+                model: TEST_MODEL.to_string(),
+                route: None,
+                key_id: None,
+                team_id: None,
+                user_id: None,
+            }),
+        };
+        let name = g.name.clone();
+        let active = Active::of(&[g], Some(hooks));
+        let mut text = req.text;
+        let outcome = active
+            .check(req.direction, vec![&mut text])
+            .await
+            .map_err(|_| ApiError::internal())?;
+        return Ok(Json(test_result(outcome, text, &name)).into_response());
+    }
     let (direction, text) = (req.direction, req.text);
     let guardrail_name = name.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -1126,7 +1173,13 @@ pub async fn test(
             return Err(ApiError::internal());
         }
     };
-    let body = GuardrailTestResult {
+    let body = test_result(outcome, redacted_text, &name);
+    Ok(Json(body).into_response())
+}
+
+/// What the test endpoint answers for the outcome of a check.
+fn test_result(outcome: Outcome, redacted_text: String, name: &str) -> GuardrailTestResult {
+    GuardrailTestResult {
         outcome: OutcomeView {
             blocked_by: outcome
                 .blocked_by
@@ -1137,12 +1190,11 @@ pub async fn test(
                 .into_iter()
                 .map(|(guardrail_id, rule_id)| FlagView {
                     guardrail_id,
-                    guardrail_name: name.clone(),
+                    guardrail_name: name.to_string(),
                     rule_id,
                 })
                 .collect(),
         },
         redacted_text,
-    };
-    Ok(Json(body).into_response())
+    }
 }

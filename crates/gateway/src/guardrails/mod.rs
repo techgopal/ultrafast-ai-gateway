@@ -33,6 +33,7 @@
 //! Matched text is never logged, stored or returned except as the redacted
 //! output itself.
 
+pub mod external;
 mod keywords;
 pub mod log;
 mod pii;
@@ -237,6 +238,27 @@ impl Outcome {
     pub(crate) fn add_flag(&mut self, guardrail: i64, rule: &str) {
         if !self.flags.iter().any(|(g, r)| *g == guardrail && r == rule) {
             self.flags.push((guardrail, rule.to_string()));
+        }
+    }
+
+    /// Whether an external guardrail could not be used for this check.
+    pub fn external_failed(&self) -> bool {
+        self.flags
+            .iter()
+            .any(|(_, rule)| rule.starts_with(external::ERROR_FLAG_PREFIX))
+    }
+
+    /// Adds what `other` found after this: the first block stays, counts
+    /// add up, flags are kept once each.
+    pub fn merge(&mut self, other: &Outcome) {
+        if self.blocked_by.is_none() {
+            self.blocked_by = other.blocked_by.clone();
+        }
+        for (label, n) in &other.redactions {
+            *self.redactions.entry(label.clone()).or_insert(0) += n;
+        }
+        for (g, r) in &other.flags {
+            self.add_flag(*g, r);
         }
     }
 

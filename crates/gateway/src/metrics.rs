@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 
 use crate::app::AppState;
 use crate::errors::error_response;
+use crate::guardrails::external;
 use crate::logs::LogStats;
 use crate::routing::health::TargetHealth;
 use crate::routing::TargetState;
@@ -84,6 +85,9 @@ pub struct Metrics {
     budget_blocked: AtomicU64,
     /// By action (blocked, redacted, flagged), then direction (input, output).
     guardrail_actions: [[AtomicU64; 2]; 3],
+    /// External guardrail checks that failed, by reason (see
+    /// `guardrails::external::REASONS`).
+    guardrail_external_errors: [AtomicU64; external::REASONS.len()],
     otel_exported: AtomicU64,
     otel_dropped: AtomicU64,
     otel_failures: AtomicU64,
@@ -132,6 +136,14 @@ impl Metrics {
                 for (a, found) in found.into_iter().enumerate() {
                     if found {
                         self.guardrail_actions[a][d].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                for flag in &side.flags {
+                    let reason = flag.rule_id.strip_prefix(external::ERROR_FLAG_PREFIX);
+                    if let Some(r) =
+                        reason.and_then(|r| external::REASONS.iter().position(|x| *x == r))
+                    {
+                        self.guardrail_external_errors[r].fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -401,6 +413,20 @@ impl Metrics {
                     n(&self.guardrail_actions[a][d])
                 );
             }
+        }
+
+        header(
+            &mut out,
+            "uf_guardrail_external_errors_total",
+            "counter",
+            "Checks by an external guardrail that failed, by reason: timeout, connect, status, too_large, invalid, buffer_full or other.",
+        );
+        for (r, reason) in external::REASONS.into_iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "uf_guardrail_external_errors_total{{reason=\"{reason}\"}} {}",
+                n(&self.guardrail_external_errors[r])
+            );
         }
 
         header(
