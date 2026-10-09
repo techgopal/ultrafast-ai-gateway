@@ -66,11 +66,12 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
   a signed external webhook that decides; on routes, keys or every call;
   streams included. See Guardrails.
 - **Operations.** Online backup, configuration export and import, a CLI for
-  setup, an OpenAPI description of the admin API.
+  setup, an OpenAPI description of the admin API, and admin SDKs for
+  TypeScript and Python generated from it (`clients/admin-ts`,
+  `clients/admin-py`; built from source, see Clients).
 - **Clients.** Rust, Python and TypeScript, sharing one Rust core.
 
-Not yet (phase 2): MCP tools, alerts by email and an
-admin SDK. Not planned for now: a stateful Responses API, image edits and
+Not yet (phase 2): MCP tools and alerts by email. Not planned for now: a stateful Responses API, image edits and
 variations, and realtime audio.
 
 ## Quickstart
@@ -250,6 +251,7 @@ secrets: a flag shows in the process list.
 | `UF_OTEL_SERVICE_NAME` | `--otel-service-name` | `ultrafast` | The `service.name` resource attribute. |
 | `UF_OTEL_SAMPLE_RATIO` | `--otel-sample-ratio` | `1.0` | Share of calls traced, 0.0 to 1.0, when the caller sent no `traceparent`. |
 | `UF_MAX_AUDIO_BYTES` | `--max-audio-bytes` | `26214400` (25 MiB) | `serve`: the largest audio file `/v1/audio/transcriptions` and `/v1/audio/translations` take, 1 to 1 GiB. A larger upload is refused with 413 while it is read. |
+| `UF_MAX_CONCURRENT_UPLOADS` | `--max-concurrent-uploads` | `8` | `serve`: how many audio uploads are received at once by this process, 1 to 1024. Each holds up to `UF_MAX_AUDIO_BYTES` in memory while its body arrives; the place is given back once the body has been received, not kept while the provider answers. One past the bound is refused with 503 before its body is read. |
 | `UF_PROVIDER_API_KEY` | `--api-key` | unset | `provider add` only: the provider's API key. |
 | `RUST_LOG` | none | `info` | Log filter. A gateway that starts with no user logs its one-time setup code at `info` under the target `ultrafast::setup`: when you lower the level, keep it, as in `RUST_LOG=warn,ultrafast::setup=info`. |
 
@@ -315,6 +317,11 @@ external guardrail is told.
 | `max_completion_tokens` | sent as such to `api.openai.com` | sent as such | `max_tokens` | `maxOutputTokens` |
 | `function.strict` | yes | yes | ignored | ignored |
 
+For Azure, set the provider's API version (`provider add --api-version`, or
+the console) to a current one: the default, `2024-10-21`, predates the image
+and audio models (`gpt-image-1`, `gpt-4o-transcribe`, `gpt-4o-mini-tts`) and
+`reasoning_effort`, so use a newer version, such as a 2025 preview, for them.
+
 Groq, Mistral, OpenRouter, Ollama and other OpenAI-compatible APIs are the
 `openai` kind: the gateway sends them the OpenAI form, and whether a given host
 has the images, audio or reasoning API is up to it (its error comes back to
@@ -353,7 +360,9 @@ How each provider gets it:
   schema may hold (no recursion, no numeric or string constraints,
   `additionalProperties` only `false`) and answers 400 for one that breaks
   them; that error comes back as it is. `/v1/messages` takes
-  `output_config.format` too (any other `output_config` key is a 400).
+  `output_config.format` too (any other `output_config` key is a 400); a
+  schema given that way is sent to OpenAI and Azure with `strict: true`, since
+  Anthropic always enforces it.
 - **Gemini:** `generationConfig.responseMimeType` of `application/json`, and
   for a schema `generationConfig.responseJsonSchema` (full JSON Schema).
   `json_object` sends the mime type only; `name`, `description` and `strict` are
@@ -437,10 +446,12 @@ unpriced). Images are never cached, and the gateway never fetches a returned
 An image costs money when the request is sent, so a call that was sent is
 **never repeated**: if the provider does not answer within the time (a first-byte
 timeout of at least 180 s and a total of at least 300 s, or your route's
-settings if longer), the connection breaks, or the answer cannot be read, the
-caller gets 504 "The provider did not answer in time. The request may still be
-processed and billed; it was not repeated." and no fallback is tried. A
-connection that failed before the request was sent is retried as usual. A
+settings if longer), the request runs out of time after it was sent, or the
+connection breaks after it was sent, the caller gets 504 "The provider did not
+answer in time. The request may still be processed and billed; it was not
+repeated." and no fallback is tried. An answer that arrives but cannot be read
+is a 502, also not repeated. A connection that failed before the request was
+sent is retried as usual. A
 provider's image answer may be up to **128 MiB** (chat answers are capped at
 32 MiB); it is held in memory whole and converted, which takes a few hundred
 MiB for one such answer, so use a concurrency limit on routes that generate
@@ -485,10 +496,14 @@ after under 1 MiB; with `file` first the whole file (up to the cap) is read
 before the refusal. The file is at most `UF_MAX_AUDIO_BYTES` (25 MiB by default;
 a larger one is a 413 naming the field), other text fields at most 64 KiB, and
 the whole upload must arrive within 60 s with no pause longer than 15 s (a 408
-otherwise). At most **8 uploads are received at once** across the gateway; a
-ninth is a 503 "The gateway is busy receiving other uploads" with
-`Retry-After: 1`, and its body is not read. A file is held in memory while its
-call runs, so plan for up to 8 times the cap. Audio calls are slow, billed once
+otherwise). At most `UF_MAX_CONCURRENT_UPLOADS` (**8** by default) uploads are
+being received at once by a process; one more is a 503 "Too many audio uploads
+are in progress. Try again shortly." with `Retry-After: 1`, and its body is not
+read. A place is held from the first byte of the upload to the end of its
+body, not while the provider answers, so many slow transcriptions can run at
+once. A file is held in memory while it arrives and while its call runs, so
+plan for the cap times the uploads that can be in flight, not only those
+being received. Audio calls are slow, billed once
 and not cached: the timeouts and the no-repeat rule are those of images. A
 speech answer is streamed back with the provider's content type, up to 64 MiB.
 
@@ -546,9 +561,12 @@ out.
 - **Latest in memory.** The gateway keeps the latest version of every
   template in its snapshot, so a call by name never waits for the database. An
   explicit older version is read from the database the first time and then
-  kept (the last 256 used); if that read fails the call is a 503. A change
-  reaches other processes on PostgreSQL within about 30 s, as other settings do.
-- **Limits.** 1000 templates, 200 versions each, 64 messages per version, a
+  kept (the last 256 used); if that read fails or takes longer than 2 s the
+  call is a 503. A change reaches other processes on PostgreSQL within about
+  30 s, as other settings do. A refresh reads the text of a template only when
+  its latest version changed, and the Prompts list does not read texts at all.
+- **Limits.** 1000 templates (a team lead who is not an admin may have made
+  at most 100), 200 versions each, 64 messages per version, a
   message of at most 64 KiB and a version of at most 256 KiB, 64 variables, the
   rendered messages at most 1 MiB together. Names are 1 to 100 characters and
   cannot contain `@`. An unknown template or version is a 404
@@ -568,7 +586,9 @@ out.
 - **Export and import.** `config export` writes the templates with all their
   versions (as `prompts`); an import adds the templates and versions a gateway
   lacks and never rewrites one it has: a version that differs from the stored
-  one is an error. An imported template belongs to the importing admin.
+  one is an error. An imported template belongs to the importing admin. An
+  export is refused (409, or an error on the command line) while a template has a
+  version that cannot be read, naming it, rather than leaving it out of the file.
 
 ## Console
 
@@ -597,8 +617,8 @@ called with "Template's model", and with no message of your own). The Prompts
 page has an *Open in Playground* link for each template and version
 (`/playground?prompt=<name>&version=<n>`). **Images** generates images and
 **Audio** transcribes, translates and speaks. The audio file check in the
-playground uses the default 25 MiB cap; if you raise `UF_MAX_AUDIO_BYTES`, use
-`curl` for larger files. The Logs page filters by endpoint and shows the
+playground checks a file against the gateway's own `UF_MAX_AUDIO_BYTES` (it asks
+`GET /api/playground/config`). The Logs page filters by endpoint and shows the
 endpoint and the prompt (`name@version`) of each call.
 
 MCP tools appears in the navigation as coming. Leads and members do not see the
@@ -1207,7 +1227,9 @@ UF_OTEL_SAMPLE_RATIO=0.25 ultrafast serve
   `uf.estimated`, `uf.key_id` / `uf.user_id` / `uf.team_id` when known,
   `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` when counted,
   `uf.guardrail.action` (`blocked`, `redacted` or `flagged`, the worst the
-  guardrails did to the call; absent when they found nothing), and
+  guardrails did to the call; absent when they found nothing),
+  `uf.prompt_template` (`name@version`, when the call used a prompt template;
+  the template's text is never in a span), and
   the call's tags as `uf.tags.<name>`. Status is an error for 5xx. Under it, one
   client span per attempt that reached a provider, named
   `uf.attempt <provider>`, with `uf.provider`, `gen_ai.request.model`,
@@ -1480,8 +1502,9 @@ SDK against the gateway for those.
   only; there are no image edits or variations, no streamed image or
   transcription events, and no realtime audio. An image answer is buffered whole
   (up to 128 MiB, a few hundred MiB of memory while it is converted), and an
-  audio upload is held in memory while the call runs (up to
-  `UF_MAX_AUDIO_BYTES` each, 8 at once). A generated image or a transcription
+  audio upload is held in memory while it arrives and while the call runs (up
+  to `UF_MAX_AUDIO_BYTES` each; at most `UF_MAX_CONCURRENT_UPLOADS` are
+  received at once, the calls themselves are not bounded by it). A generated image or a transcription
   that was sent and did not answer in time is never repeated, so it fails with
   a 504 rather than being tried on a fallback.
 - Structured outputs: `strict`, `name` and `description` of a JSON schema reach

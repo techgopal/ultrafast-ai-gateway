@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `responseJsonSchema`. `strict`, `name` and `description` are not sent to
   Anthropic and Gemini. The clients take it (`responseFormat` with
   `jsonSchema` in TypeScript); the playground has a *Response format* control.
+  A schema given as `output_config.format` on `/v1/messages` is sent to
+  OpenAI and Azure as `strict: true`, as Anthropic always enforces it.
 - **Responses API.** `POST /v1/responses` over any provider, stateless, with
   streaming (no `[DONE]`), function tools, images, `text.format`,
   `reasoning.effort` and `prompt`. `store`, `previous_response_id`,
@@ -32,12 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Audio.** `POST /v1/audio/transcriptions`, `/v1/audio/translations` and
   `/v1/audio/speech` for OpenAI, Azure and compatible providers. Uploads are
   capped by `UF_MAX_AUDIO_BYTES` (25 MiB by default), must arrive within 60 s
-  (15 s idle), and at most 8 are received at once; send `model` before `file`
-  to be refused early. Guardrails check speech input, the transcription
-  `prompt` and the transcript (subtitles by cue line). Playground *Audio* mode.
+  (15 s idle), and at most `UF_MAX_CONCURRENT_UPLOADS` (8 by default) are
+  being received at once per process (a place is given back when the body has
+  arrived); send `model` before `file` to be refused early. Guardrails check
+  speech input, the transcription `prompt` and the transcript (subtitles by
+  cue). Playground *Audio* mode, which checks a file against the gateway's cap
+  (`GET /api/playground/config`).
 - **Prompt templates.** Named, versioned messages with `{{variables}}`: a
   `prompt` object (`id`, `version`, `variables`) on `/v1/chat/completions` and
-  `/v1/responses`; versions never change; the latest is kept in memory. A
+  `/v1/responses`; versions never change; the latest is kept in memory (a
+  refresh reads only what changed; a team lead may make 100 templates). A
   Prompts page (versions, a line diff between versions, variables found as you
   type, *Open in Playground*), a template picker in the playground,
   `/api/prompts/*`, templates in configuration export and import, and the
