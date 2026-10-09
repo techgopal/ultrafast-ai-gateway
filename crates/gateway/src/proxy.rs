@@ -579,6 +579,7 @@ async fn dispatch(
         .any(|g| g.external.is_some())
         .then(|| Hooks {
             http: state.http.clone(),
+            gates: state.hook_gates.clone(),
             meta: Arc::new(CallMeta {
                 endpoint: endpoint.name(),
                 model: call.model().to_string(),
@@ -592,9 +593,10 @@ async fn dispatch(
             }),
         });
     let guard = Active::of(&effective, hooks);
-    if let Err(refusal) = check_input(&guard, &mut call, record, shape).await {
-        return refusal;
-    }
+    let input_rules = match check_input_rules(&guard, &mut call, record, shape).await {
+        Ok(outcome) => outcome,
+        Err(refusal) => return refusal,
+    };
     // 3b. The rate limits of the key, its owner, their teams and the gateway.
     // The permit goes with the scope, which a stream carries to its end. A
     // call that a limit refuses counts nowhere; one that is refused after
@@ -621,6 +623,14 @@ async fn dispatch(
             record.refund_permit();
             return shape.budget_exceeded(&refusal);
         }
+    }
+    // 3c'. The external guardrails over the input: a call a limit or a budget
+    // refused never reaches a third party, and one the hooks refuse gives its
+    // permit back. They see the input as the rules left it, and what they
+    // redact is what the cache key and the provider get.
+    if let Err(refusal) = check_input_hooks(&guard, &mut call, input_rules, record, shape).await {
+        record.refund_permit();
+        return refusal;
     }
     // Seeded from the thread's generator (itself seeded once per thread), not
     // from the operating system on every request. It is `Send`: it lives
@@ -765,13 +775,12 @@ async fn dispatch(
             let scanner = guard.stream_scanner();
             // An external guardrail on the output sees the whole answer at
             // once, so the stream is held until it has.
-            let hold = guard.holds_streams().then(|| Hold {
-                active: guard.clone(),
-                events: Vec::new(),
-                bytes: 0,
-                cap: state.max_provider_response_bytes,
-                outcome: Outcome::default(),
-                passing: false,
+            let hold = guard.holds_streams().then(|| {
+                Hold::new(
+                    guard.clone(),
+                    state.max_provider_response_bytes,
+                    state.stream_keepalive,
+                )
             });
             let guard = StreamRecord {
                 guard: (scanner.is_some() || hold.is_some()).then(|| StreamGuard {
@@ -859,38 +868,67 @@ fn chat_slots(request: &mut ChatRequest) -> Vec<&mut String> {
 
 const SCAN_FAILED: &str = "The guardrails could not check this request.";
 
-/// Checks the input of a call against `guard` and redacts it in place. A
-/// block is the refusal to give the caller. What was found goes to the record
-/// either way.
-async fn check_input(
-    guard: &Active,
-    call: &mut Call,
-    record: &mut Scope,
-    shape: Shape,
-) -> Result<(), Response> {
-    if !guard.covers(Direction::Input) {
-        return Ok(());
-    }
-    let slots = match call {
+/// The chat or embeddings text slots of a call, joined text parts first.
+fn input_slots(call: &mut Call) -> Vec<&mut String> {
+    match call {
         Call::Chat(r) => {
             merge_text_parts(r);
             chat_slots(r)
         }
         Call::Embed(r) => r.input.iter_mut().collect(),
-    };
-    let outcome = match guard.check(Direction::Input, slots).await {
+    }
+}
+
+fn scan_failed(shape: Shape) -> Response {
+    tracing::error!("a guardrail scan did not finish");
+    shape.error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "server_error",
+        SCAN_FAILED,
+    )
+}
+
+/// Checks the input of a call against the rules of `guard` and redacts it in
+/// place. A block is the refusal to give the caller. What was found goes to
+/// the record either way, and is returned for [`check_input_hooks`].
+async fn check_input_rules(
+    guard: &Active,
+    call: &mut Call,
+    record: &mut Scope,
+    shape: Shape,
+) -> Result<Outcome, Response> {
+    if !guard.covers(Direction::Input) {
+        return Ok(Outcome::default());
+    }
+    let mut slots = input_slots(call);
+    let outcome = match guard.check_rules(Direction::Input, &mut slots).await {
         Ok(outcome) => outcome,
-        Err(_) => {
-            tracing::error!("a guardrail scan did not finish");
-            return Err(shape.error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                SCAN_FAILED,
-            ));
-        }
+        Err(_) => return Err(scan_failed(shape)),
     };
     record.guardrails_found(Direction::Input, SideLog::of(guard.refs(), &outcome));
     match outcome.blocked_by {
+        Some((_, name)) => Err(shape.guardrail_blocked(&name)),
+        None => Ok(outcome),
+    }
+}
+
+/// Asks the external guardrails about the input, after the rules (whose
+/// `outcome` is joined with theirs in the record).
+async fn check_input_hooks(
+    guard: &Active,
+    call: &mut Call,
+    mut outcome: Outcome,
+    record: &mut Scope,
+    shape: Shape,
+) -> Result<(), Response> {
+    if !guard.has_hooks(Direction::Input) {
+        return Ok(());
+    }
+    let mut slots = input_slots(call);
+    let asked = guard.check_hooks(Direction::Input, &mut slots, None).await;
+    outcome.merge(&asked);
+    record.guardrails_found(Direction::Input, SideLog::of(guard.refs(), &outcome));
+    match asked.blocked_by {
         Some((_, name)) => Err(shape.guardrail_blocked(&name)),
         None => Ok(()),
     }
@@ -1420,24 +1458,32 @@ struct StreamGuard {
 }
 
 /// An answer held back until the external guardrails have seen all of it.
-/// What the rules scanner lets through is kept here instead of being sent;
-/// at the end the hooks are asked once, and the answer is sent as one text
-/// and one piece of arguments per tool call (with whatever they redacted), or
-/// replaced by a `content_filter` ending.
+/// What the rules scanner lets through is kept here instead of being sent,
+/// appended to one buffer for the text and one per tool call as it arrives
+/// (so the memory held is about the bytes counted against the cap); at the end
+/// the hooks are asked once, and the answer is sent as one text and one piece
+/// of arguments per tool call (with whatever they redacted), or replaced by a
+/// `content_filter` ending.
 struct Hold {
     active: Active,
-    events: Vec<StreamEvent>,
+    /// The order things came in; text and tool arguments are in the buffers.
+    slots: Vec<Slot>,
+    text: String,
+    /// The arguments of each tool call, in the order the calls first appeared.
+    tools: Vec<(u32, String)>,
     /// Bytes of text and arguments held.
     bytes: usize,
     /// The most that is held: the provider response cap.
     cap: usize,
     outcome: Outcome,
     /// The cap was passed and the guardrails fail open: the rest goes on
-    /// unchecked.
+    /// (already through the rules scanner) without the hooks.
     passing: bool,
+    /// How often an SSE comment is sent while the answer is held.
+    keepalive: Duration,
 }
 
-/// Where a held event goes back when the answer is sent.
+/// Where a held thing goes back when the answer is sent.
 enum Slot {
     Event(StreamEvent),
     Text,
@@ -1445,103 +1491,59 @@ enum Slot {
 }
 
 impl Hold {
-    /// Takes what the scanner let through. Nothing is released before the
-    /// end of the answer.
-    async fn step(&mut self, guarded: Guarded) -> Guarded {
-        if self.passing {
-            return guarded;
-        }
-        if guarded.cut {
-            // A rule ended the answer: nothing of it was sent and nothing
-            // will be.
-            self.events.clear();
-            return guarded;
-        }
-        for ev in guarded.events {
-            match ev {
-                StreamEvent::Done {
-                    finish_reason,
-                    usage,
-                } => return self.finish(finish_reason, usage).await,
-                other => {
-                    self.bytes += match &other {
-                        StreamEvent::Delta { text } => text.len(),
-                        StreamEvent::ToolCallDelta { arguments, .. } => arguments.len(),
-                        _ => 0,
-                    };
-                    self.events.push(other);
-                }
-            }
-            if self.bytes > self.cap {
-                let failed = self.active.fail_output_buffer();
-                let blocked = failed.blocked_by.is_some();
-                self.outcome.merge(&failed);
-                if blocked {
-                    self.events.clear();
-                    return StreamGuard::cut(None);
-                }
-                // Fail open: what is held was never checked, and goes out.
-                // The guardrails were already flagged.
-                self.passing = true;
-                return Guarded {
-                    events: std::mem::take(&mut self.events),
-                    cut: false,
-                };
-            }
-        }
-        Guarded {
-            events: Vec::new(),
-            cut: false,
+    fn new(active: Active, cap: usize, keepalive: Duration) -> Self {
+        Hold {
+            active,
+            slots: Vec::new(),
+            text: String::new(),
+            tools: Vec::new(),
+            bytes: 0,
+            cap,
+            outcome: Outcome::default(),
+            passing: false,
+            keepalive,
         }
     }
 
-    async fn finish(
-        &mut self,
-        finish_reason: Option<FinishReason>,
-        usage: Option<Usage>,
-    ) -> Guarded {
-        let held = std::mem::take(&mut self.events);
-        let mut slots = Vec::with_capacity(held.len());
-        let mut text = String::new();
-        let mut seen_text = false;
-        let mut tools: Vec<(u32, String)> = Vec::new();
-        for ev in held {
-            match ev {
-                StreamEvent::Delta { text: t } => {
-                    if !seen_text {
-                        seen_text = true;
-                        slots.push(Slot::Text);
-                    }
-                    text.push_str(&t);
+    fn push(&mut self, ev: StreamEvent) {
+        match ev {
+            StreamEvent::Delta { text } => {
+                if !self.slots.iter().any(|s| matches!(s, Slot::Text)) {
+                    self.slots.push(Slot::Text);
                 }
-                StreamEvent::ToolCallDelta { index, arguments } => {
-                    match tools.iter_mut().find(|(i, _)| *i == index) {
-                        Some((_, all)) => all.push_str(&arguments),
-                        None => {
-                            slots.push(Slot::Tool(index));
-                            tools.push((index, arguments));
-                        }
-                    }
-                }
-                other => slots.push(Slot::Event(other)),
+                self.bytes += text.len();
+                self.text.push_str(&text);
             }
+            StreamEvent::ToolCallDelta { index, arguments } => {
+                self.bytes += arguments.len();
+                match self.tools.iter_mut().find(|(i, _)| *i == index) {
+                    Some((_, all)) => all.push_str(&arguments),
+                    None => {
+                        self.slots.push(Slot::Tool(index));
+                        self.tools.push((index, arguments));
+                    }
+                }
+            }
+            other => self.slots.push(Slot::Event(other)),
         }
-        // The answer text first, then the arguments of each tool call in
-        // the order they began.
-        let (indices, arguments): (Vec<u32>, Vec<String>) = tools.into_iter().unzip();
-        let mut texts = vec![text];
-        texts.extend(arguments);
-        let asked = self
-            .active
-            .check_externals(Direction::Output, &mut texts)
-            .await;
-        self.outcome.merge(&asked);
-        if asked.blocked_by.is_some() {
-            // The provider's usage is the truth for the whole answer.
-            return StreamGuard::cut(usage);
-        }
+    }
+
+    /// Forgets everything held.
+    fn clear(&mut self) {
+        self.slots = Vec::new();
+        self.text = String::new();
+        self.tools = Vec::new();
+        self.bytes = 0;
+    }
+
+    /// The held answer as events, in the order things came in. `texts` holds
+    /// the answer text first, then the arguments of each tool call.
+    fn events(&mut self, texts: Vec<String>) -> Vec<StreamEvent> {
+        let indices: Vec<u32> = self.tools.iter().map(|(i, _)| *i).collect();
         let mut texts: Vec<Option<String>> = texts.into_iter().map(Some).collect();
-        let mut events = Vec::with_capacity(slots.len() + 1);
+        let slots = std::mem::take(&mut self.slots);
+        self.clear();
+        let mut events = Vec::with_capacity(slots.len());
         for slot in slots {
             match slot {
                 Slot::Event(ev) => events.push(ev),
@@ -1560,6 +1562,90 @@ impl Hold {
                 }
             }
         }
+        events
+    }
+
+    /// The held buffers as the texts a hook is asked about.
+    fn take_texts(&mut self) -> Vec<String> {
+        let mut texts = vec![std::mem::take(&mut self.text)];
+        texts.extend(self.tools.iter_mut().map(|(_, a)| std::mem::take(a)));
+        texts
+    }
+
+    /// Takes what the scanner let through. Nothing is released before the
+    /// end of the answer, except when the cap is passed and the guardrails
+    /// fail open: then what is held goes out and every later event follows
+    /// as it comes (the closing one included).
+    async fn step(&mut self, guarded: Guarded, deadline: tokio::time::Instant) -> Guarded {
+        if self.passing {
+            return guarded;
+        }
+        if guarded.cut {
+            // A rule ended the answer: nothing of it was sent and nothing
+            // will be.
+            self.clear();
+            return guarded;
+        }
+        let mut out = Vec::new();
+        for ev in guarded.events {
+            if self.passing {
+                out.push(ev);
+                continue;
+            }
+            if let StreamEvent::Done {
+                finish_reason,
+                usage,
+            } = ev
+            {
+                let done = self.finish(finish_reason, usage, deadline).await;
+                out.extend(done.events);
+                return Guarded {
+                    events: out,
+                    cut: done.cut,
+                };
+            }
+            self.push(ev);
+            if self.bytes > self.cap {
+                let failed = self.active.fail_output_buffer();
+                let blocked = failed.blocked_by.is_some();
+                self.outcome.merge(&failed);
+                if blocked {
+                    self.clear();
+                    return StreamGuard::cut(None);
+                }
+                // Fail open: what is held was never checked by the hooks,
+                // and goes out; the failure is flagged.
+                self.passing = true;
+                let texts = self.take_texts();
+                out.extend(self.events(texts));
+            }
+        }
+        Guarded {
+            events: out,
+            cut: false,
+        }
+    }
+
+    async fn finish(
+        &mut self,
+        finish_reason: Option<FinishReason>,
+        usage: Option<Usage>,
+        deadline: tokio::time::Instant,
+    ) -> Guarded {
+        // The answer text first, then the arguments of each tool call in the
+        // order they began.
+        let mut texts = self.take_texts();
+        let asked = self
+            .active
+            .check_externals(Direction::Output, &mut texts, Some(deadline))
+            .await;
+        self.outcome.merge(&asked);
+        if asked.blocked_by.is_some() {
+            self.clear();
+            // The provider's usage is the truth for the whole answer.
+            return StreamGuard::cut(usage);
+        }
+        let mut events = self.events(texts);
         events.push(StreamEvent::Done {
             finish_reason,
             usage,
@@ -1590,10 +1676,19 @@ impl StreamGuard {
         outcome
     }
 
+    /// How often to send a keepalive while the answer is held, or `None`
+    /// when nothing is being held.
+    fn keepalive(&self) -> Option<Duration> {
+        self.hold
+            .as_ref()
+            .filter(|h| !h.passing)
+            .map(|h| h.keepalive)
+    }
+
     /// Holds back what the external guardrails have yet to see.
-    async fn held(&mut self, guarded: Guarded) -> Guarded {
+    async fn held(&mut self, guarded: Guarded, deadline: tokio::time::Instant) -> Guarded {
         match self.hold.as_mut() {
-            Some(hold) => hold.step(guarded).await,
+            Some(hold) => hold.step(guarded, deadline).await,
             None => guarded,
         }
     }
@@ -1760,6 +1855,9 @@ impl Drop for StreamRecord {
     }
 }
 
+/// An SSE comment: ignored by every client, it only keeps the connection busy.
+const KEEPALIVE: &str = ": keepalive\n\n";
+
 /// Forwards the provider's stream to the caller as server-sent events in the
 /// format of the endpoint it came in on.
 ///
@@ -1784,7 +1882,28 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
             let (events, error) = match pending.take() {
                 Some(first) => first,
                 None => {
-                    let chunk = match timeout_at(deadline, chunks.next()).await {
+                    // While an answer is held the caller hears nothing, so a
+                    // comment goes out now and then to keep a proxy from
+                    // cutting the connection for being idle.
+                    let keepalive = record.guard.as_ref().and_then(StreamGuard::keepalive);
+                    let waited = {
+                        let mut next = std::pin::pin!(timeout_at(deadline, chunks.next()));
+                        let mut tick = std::pin::pin!(tokio::time::sleep(
+                            keepalive.unwrap_or(Duration::from_secs(3600))
+                        ));
+                        loop {
+                            tokio::select! {
+                                r = &mut next => break r,
+                                _ = &mut tick, if keepalive.is_some() => {
+                                    yield Ok::<String, Infallible>(KEEPALIVE.to_string());
+                                    tick.as_mut().reset(
+                                        tokio::time::Instant::now() + keepalive.unwrap_or_default(),
+                                    );
+                                }
+                            }
+                        }
+                    };
+                    let chunk = match waited {
                         Err(_) => {
                             tracing::warn!(provider = %provider, "request ran out of time during the stream");
                             record.end_out_of_time();
@@ -1832,8 +1951,25 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
                     Some(guard) => guard.apply(ev),
                     None => Guarded { events: vec![ev], cut: false },
                 };
+                let keepalive = record.guard.as_ref().and_then(StreamGuard::keepalive);
                 let guarded = match record.guard.as_mut() {
-                    Some(guard) => guard.held(guarded).await,
+                    Some(guard) => {
+                        let mut held = std::pin::pin!(guard.held(guarded, deadline));
+                        let mut tick = std::pin::pin!(tokio::time::sleep(
+                            keepalive.unwrap_or(Duration::from_secs(3600))
+                        ));
+                        loop {
+                            tokio::select! {
+                                r = &mut held => break r,
+                                _ = &mut tick, if keepalive.is_some() => {
+                                    yield Ok::<String, Infallible>(KEEPALIVE.to_string());
+                                    tick.as_mut().reset(
+                                        tokio::time::Instant::now() + keepalive.unwrap_or_default(),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     None => guarded,
                 };
                 if guarded.cut {
@@ -1875,6 +2011,25 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
 mod tests {
     use super::*;
     use axum::http::HeaderMap;
+
+    #[test]
+    fn a_held_answer_is_appended_to_one_buffer_not_kept_event_by_event() {
+        let mut hold = Hold::new(Active::default(), 1 << 20, Duration::from_secs(10));
+        for i in 0..20_000 {
+            hold.push(StreamEvent::Delta { text: "ab".into() });
+            hold.push(StreamEvent::ToolCallDelta {
+                index: i % 2,
+                arguments: "cd".into(),
+            });
+        }
+        // One slot for the text, one for each of two tool calls.
+        assert_eq!(hold.slots.len(), 3);
+        assert_eq!(hold.text.len(), 40_000);
+        assert_eq!(hold.bytes, 80_000);
+        let texts = hold.take_texts();
+        let events = hold.events(texts);
+        assert_eq!(events.len(), 3);
+    }
 
     fn with(value: &str) -> HeaderMap {
         let mut h = HeaderMap::new();

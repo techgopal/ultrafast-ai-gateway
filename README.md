@@ -615,7 +615,7 @@ Series: `uf_requests_total{endpoint,status_class}`, `uf_tokens_total{direction}`
 `uf_budget_blocked_total`, `uf_guardrail_actions_total{action,direction}`
 (`block`, `redact`, `flag`; `input`, `output`; one count per call),
 `uf_guardrail_external_errors_total{reason}` (checks by an external guardrail that failed:
-`timeout`, `connect`, `status`, `too_large`, `invalid`, `buffer_full`, `other`),
+`timeout`, `connect`, `status`, `too_large`, `invalid`, `buffer_full`, `busy`, `other`),
 `uf_circuit_open{provider,model}`,
 `uf_log_records_dropped_total`, `uf_log_write_failures_total`,
 `uf_otel_spans_exported_total`, `uf_otel_spans_dropped_total`,

@@ -90,7 +90,7 @@ impl SideLog {
             LoggedAction::Blocked
         } else if !outcome.redactions.is_empty() {
             LoggedAction::Redacted
-        } else if !outcome.flags.is_empty() {
+        } else if !outcome.flags.is_empty() || outcome.external_failed() {
             LoggedAction::Flagged
         } else {
             return None;
@@ -104,11 +104,11 @@ impl SideLog {
             }),
             redactions: outcome.redactions.clone(),
             flags: outcome
-                .flags
-                .iter()
+                .all_flags()
+                .into_iter()
                 .map(|(g, r)| FlagLog {
-                    guardrail_id: *g,
-                    rule_id: r.clone(),
+                    guardrail_id: g,
+                    rule_id: r,
                 })
                 .collect(),
         })

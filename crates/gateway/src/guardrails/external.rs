@@ -18,8 +18,12 @@
 //! Nothing of the URL beyond its origin and nothing of the texts or of the
 //! hook's answer is logged or stored; the hook's `reason` is dropped.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::{Direction, Outcome};
 use crate::alerts::sign::{header_value, SIGNATURE_HEADER};
@@ -35,15 +39,42 @@ pub const ERROR_FLAG_PREFIX: &str = "external_error:";
 pub const REDACTION_LABEL: &str = "external";
 
 /// Every reason code a failure can carry (the metric's label values).
-pub const REASONS: [&str; 7] = [
+pub const REASONS: [&str; 8] = [
     "timeout",
     "connect",
     "status",
     "too_large",
     "invalid",
     "buffer_full",
+    "busy",
     "other",
 ];
+
+/// Most calls to one guardrail's URL that may be in flight at once, over all
+/// requests of the process. Past it a check does not wait: it fails by the
+/// guardrail's fail mode with the reason `busy`.
+pub const MAX_IN_FLIGHT: usize = 64;
+
+/// The in-flight limit of each external guardrail (by id).
+#[derive(Default)]
+pub struct HookGates {
+    gates: std::sync::Mutex<std::collections::HashMap<i64, Arc<Semaphore>>>,
+}
+
+impl HookGates {
+    /// A place for one more call to guardrail `id`, or `None` when
+    /// [`MAX_IN_FLIGHT`] are running.
+    pub fn enter(&self, id: i64) -> Option<OwnedSemaphorePermit> {
+        let gate = self
+            .gates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(id)
+            .or_insert_with(|| Arc::new(Semaphore::new(MAX_IN_FLIGHT)))
+            .clone();
+        gate.try_acquire_owned().ok()
+    }
+}
 
 /// What the hook is told about the call besides the texts.
 #[derive(Clone, Debug)]
@@ -97,6 +128,8 @@ pub enum Failure {
     Invalid,
     /// A stream grew past what is buffered for a check.
     BufferFull,
+    /// Too many calls to this guardrail were already running.
+    Busy,
     Other,
 }
 
@@ -109,6 +142,7 @@ impl Failure {
             Failure::TooLarge => "too_large",
             Failure::Invalid => "invalid",
             Failure::BufferFull => "buffer_full",
+            Failure::Busy => "busy",
             Failure::Other => "other",
         }
     }
@@ -133,14 +167,22 @@ fn parse(body: &[u8], sent: usize) -> Result<Verdict, Failure> {
     }
 }
 
-/// One signed call. Never takes longer than `ext.timeout`.
+/// One signed call. Never takes longer than `limit`, which is the guardrail's
+/// timeout or less (what is left of the request's time).
 pub async fn call(
     http: &reqwest::Client,
     ext: &SnapExternal,
     meta: &CallMeta,
     dir: Direction,
     texts: &[String],
+    limit: Duration,
 ) -> Result<Verdict, Failure> {
+    if !ext.usable {
+        return Err(Failure::Other);
+    }
+    if limit.is_zero() {
+        return Err(Failure::Timeout);
+    }
     let body = serde_json::to_vec(&HookRequest {
         version: 1,
         direction: dir,
@@ -156,7 +198,7 @@ pub async fn call(
     let t = OffsetDateTime::now_utc().unix_timestamp();
     let request = http
         .post(&ext.url)
-        .timeout(ext.timeout)
+        .timeout(limit)
         .header("content-type", "application/json")
         .header(
             "user-agent",
@@ -166,7 +208,7 @@ pub async fn call(
         .body(body);
     // The client's own timeout covers the same span; this one also bounds a
     // body that trickles in, whatever the client does.
-    match tokio::time::timeout(ext.timeout, exchange(request)).await {
+    match tokio::time::timeout(limit, exchange(request)).await {
         Ok(Ok(bytes)) => parse(&bytes, texts.len()),
         Ok(Err(failure)) => Err(failure),
         Err(_) => Err(Failure::Timeout),
@@ -215,7 +257,10 @@ pub fn fail(g: &SnapGuardrail, ext: &SnapExternal, failure: Failure, outcome: &m
         fail_open = ext.fail_open,
         "an external guardrail could not be used"
     );
-    outcome.add_flag(g.id, &format!("{ERROR_FLAG_PREFIX}{}", failure.code()));
+    let code = failure.code();
+    if !outcome.external_errors.contains(&(g.id, code)) {
+        outcome.external_errors.push((g.id, code));
+    }
     if !ext.fail_open && outcome.blocked_by.is_none() {
         outcome.blocked_by = Some((g.id, g.name.clone()));
     }
@@ -223,16 +268,32 @@ pub fn fail(g: &SnapGuardrail, ext: &SnapExternal, failure: Failure, outcome: &m
 
 /// Asks the hook of `g` about `texts` and applies what it says to `texts` and
 /// `outcome`. A block leaves the texts as they were.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     http: &reqwest::Client,
+    gates: &HookGates,
     g: &SnapGuardrail,
     ext: &SnapExternal,
     meta: &CallMeta,
     dir: Direction,
     texts: &mut [String],
+    limit: Duration,
     outcome: &mut Outcome,
 ) {
-    match call(http, ext, meta, dir, texts).await {
+    let permit = if ext.usable {
+        match gates.enter(g.id) {
+            Some(permit) => Some(permit),
+            None => {
+                fail(g, ext, Failure::Busy, outcome);
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let result = call(http, ext, meta, dir, texts, limit).await;
+    drop(permit);
+    match result {
         Ok(Verdict::Allow) => {}
         Ok(Verdict::Block) => {
             if outcome.blocked_by.is_none() {
@@ -290,6 +351,19 @@ mod tests {
     }
 
     #[test]
+    fn a_guardrail_has_a_bounded_number_of_calls_in_flight() {
+        let gates = HookGates::default();
+        let held: Vec<_> = (0..MAX_IN_FLIGHT)
+            .map(|_| gates.enter(7).unwrap())
+            .collect();
+        assert!(gates.enter(7).is_none());
+        // Another guardrail has its own limit.
+        assert!(gates.enter(8).is_some());
+        drop(held);
+        assert!(gates.enter(7).is_some());
+    }
+
+    #[test]
     fn every_reason_code_is_listed_for_the_metric() {
         for f in [
             Failure::Timeout,
@@ -298,6 +372,7 @@ mod tests {
             Failure::TooLarge,
             Failure::Invalid,
             Failure::BufferFull,
+            Failure::Busy,
             Failure::Other,
         ] {
             assert!(REASONS.contains(&f.code()), "{}", f.code());

@@ -7,10 +7,13 @@ mod common;
 use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
-use common::{harness, harness_with_response_limit, post_chat, post_to, Harness};
+use common::{
+    harness, harness_with_response_limit, harness_with_state, post_chat, post_to, Harness,
+};
 use serde_json::{json, Value};
 use ultrafast_gateway::alerts::sign::{signature, SIGNATURE_HEADER};
 use ultrafast_gateway::guardrails::log::LoggedAction;
+use ultrafast_gateway::limits::{LimitScope, RateLimit};
 use ultrafast_gateway::store::NewGuardrail;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -1083,4 +1086,351 @@ async fn a_redacted_stream_is_rendered_in_the_anthropic_format_too() {
     assert!(!text.contains("example.com"), "{text}");
     assert!(text.contains("\"stop_reason\":\"end_turn\""), "{text}");
     assert!(text.contains("event: message_stop"), "{text}");
+}
+
+// ---- fix round 1 ---------------------------------------------------------------
+
+async fn one_request_a_minute(h: &Harness) {
+    let mut tx = h.store.begin().await.unwrap();
+    tx.upsert_limit(
+        LimitScope::Gateway,
+        None,
+        &RateLimit {
+            requests_per_minute: Some(1),
+            tokens_per_minute: None,
+            concurrent: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_input_hook_is_asked_after_the_limits_and_a_refusal_gives_the_permit_back() {
+    let h = harness("openai").await;
+    let hook = MockServer::start().await;
+    mount_chat(&h, completion("hello")).await;
+    one_request_a_minute(&h).await;
+    external(&h, &hook, Spec::new("ext").directions("input")).await;
+    // First the hook blocks: the one request of the minute is not spent.
+    hook_says(&hook, json!({ "action": "block" })).await;
+    let (s, _) = post_chat(&h.app, Some(&h.key), &chat_body("hi")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    hook.reset().await;
+    hook_says(&hook, json!({ "action": "allow" })).await;
+    let (s, body) = post_chat(&h.app, Some(&h.key), &chat_body("hi")).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(hook_calls(&hook).await.len(), 1);
+    // The minute is spent: the next call is refused by the limit and the
+    // hook is never asked about it.
+    let (s, _) = post_chat(&h.app, Some(&h.key), &chat_body("again")).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(hook_calls(&hook).await.len(), 1);
+}
+
+#[tokio::test]
+async fn rules_still_run_before_the_limits() {
+    let h = harness("openai").await;
+    let hook = MockServer::start().await;
+    hook_says(&hook, json!({ "action": "allow" })).await;
+    mount_chat(&h, completion("hello")).await;
+    one_request_a_minute(&h).await;
+    rules_guardrail(
+        &h,
+        "words",
+        json!([{ "id": "w", "matcher": { "keywords": { "words": ["swordfish"] } },
+                 "action": "block", "directions": "input" }]),
+    )
+    .await;
+    external(&h, &hook, Spec::new("ext").directions("input")).await;
+    for _ in 0..3 {
+        let (s, _) = post_chat(&h.app, Some(&h.key), &chat_body("swordfish")).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+    }
+    assert!(hook_calls(&hook).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_hook_that_has_too_many_calls_running_fails_by_its_mode_as_busy() {
+    let h = harness("openai").await;
+    let hook = MockServer::start().await;
+    hook_answers(
+        &hook,
+        ResponseTemplate::new(200)
+            .set_body_json(json!({ "action": "allow" }))
+            .set_delay(Duration::from_millis(1500)),
+    )
+    .await;
+    mount_chat(&h, completion("hello")).await;
+    external(&h, &hook, Spec::new("strict").closed().directions("input")).await;
+    let mut tasks = Vec::new();
+    for i in 0..72 {
+        let (app, key) = (h.app.clone(), h.key.clone());
+        tasks.push(tokio::spawn(async move {
+            post_chat(&app, Some(&key), &chat_body(&format!("call {i}"))).await
+        }));
+    }
+    let mut refused = 0;
+    for t in tasks {
+        let (s, _) = t.await.unwrap();
+        if s == StatusCode::BAD_REQUEST {
+            refused += 1;
+        }
+    }
+    assert!(refused >= 8, "{refused} refused");
+    assert!(hook_calls(&hook).await.len() <= 64);
+    let records = h.sink.wait_for(72).await;
+    let busy = records
+        .iter()
+        .filter(|r| {
+            r.guardrails
+                .as_ref()
+                .and_then(|g| g.input.as_ref())
+                .is_some_and(|i| i.flags.iter().any(|f| f.rule_id == "external_error:busy"))
+        })
+        .count();
+    assert_eq!(busy, refused);
+}
+
+#[tokio::test]
+async fn an_unusable_external_guardrail_still_applies_its_fail_mode() {
+    for closed in [true, false] {
+        let h = harness("openai").await;
+        mount_chat(&h, completion("hello")).await;
+        // A URL and a secret the gateway's key cannot read.
+        let mut tx = h.store.begin().await.unwrap();
+        tx.insert_guardrail(NewGuardrail {
+            name: "orphan",
+            description: "",
+            kind: "external",
+            rules: "[]",
+            url: Some((b"not encrypted with this key", "http://hook.example.com")),
+            secret_enc: Some(b"nor this"),
+            timeout_ms: 3000,
+            fail_mode: if closed { "closed" } else { "open" },
+            directions: "input",
+            enabled: true,
+            is_default: true,
+        })
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        h.state.refresh().await.unwrap();
+        let (s, body) = post_chat(&h.app, Some(&h.key), &chat_body("hi")).await;
+        let records = h.sink.wait_for(1).await;
+        let input = records[0].guardrails.clone().unwrap().input.unwrap();
+        assert_eq!(input.flags[0].rule_id, "external_error:other");
+        if closed {
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+            assert!(sent_to_provider(&h).await.is_empty());
+        } else {
+            assert_eq!(s, StatusCode::OK, "{body}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_delta_that_crosses_the_cap_with_a_closing_event_in_its_batch_still_closes() {
+    // A rules scanner makes the last batch [tail text, Done]; the tail crosses
+    // the cap of a fail-open guardrail. The Done must still reach the caller.
+    let h = harness_with_response_limit("openai", 400).await;
+    let hook = MockServer::start().await;
+    hook_says(&hook, json!({ "action": "block" })).await;
+    mount_chat(
+        &h,
+        sse(&format!("{}{}", delta(&"word ".repeat(90)), stream_end())),
+    )
+    .await;
+    rules_guardrail(
+        &h,
+        "pii",
+        json!([{ "id": "email", "matcher": { "pii": ["EMAIL"] },
+                 "action": "redact", "directions": "output" }]),
+    )
+    .await;
+    external(&h, &hook, Spec::new("ext").directions("output")).await;
+    let (s, text) = post_chat(&h.app, Some(&h.key), &stream_body()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(openai_text(&text), "word ".repeat(90));
+    assert_eq!(finish_reason(&text).as_deref(), Some("stop"), "{text}");
+    assert!(text.ends_with("data: [DONE]\n\n"), "{text}");
+    assert!(hook_calls(&hook).await.is_empty());
+}
+
+#[tokio::test]
+async fn past_the_cap_on_a_fail_open_stream_the_rules_still_redact_what_follows() {
+    let h = harness_with_response_limit("openai", 400).await;
+    let hook = MockServer::start().await;
+    hook_says(&hook, json!({ "action": "allow" })).await;
+    mount_chat(
+        &h,
+        sse(&format!(
+            "{}{}{}",
+            delta(&"word ".repeat(100)),
+            delta(&format!("then mail {EMAIL} please")),
+            stream_end()
+        )),
+    )
+    .await;
+    rules_guardrail(
+        &h,
+        "pii",
+        json!([{ "id": "email", "matcher": { "pii": ["EMAIL"] },
+                 "action": "redact", "directions": "output" }]),
+    )
+    .await;
+    external(&h, &hook, Spec::new("ext").directions("output")).await;
+    let (_, text) = post_chat(&h.app, Some(&h.key), &stream_body()).await;
+    assert!(
+        openai_text(&text).ends_with("then mail [REDACTED:EMAIL] please"),
+        "{text}"
+    );
+    assert!(!text.contains("example.com"));
+    let out = h.sink.wait_for(1).await[0]
+        .guardrails
+        .clone()
+        .unwrap()
+        .output
+        .unwrap();
+    let rules: Vec<_> = out.flags.iter().map(|f| f.rule_id.as_str()).collect();
+    assert!(rules.contains(&"external_error:buffer_full"), "{rules:?}");
+    assert_eq!(out.redactions.get("EMAIL"), Some(&1));
+}
+
+#[tokio::test]
+async fn the_hook_after_the_last_event_is_held_to_the_request_deadline() {
+    let h = harness("openai").await;
+    let hook = MockServer::start().await;
+    hook_answers(
+        &hook,
+        ResponseTemplate::new(200)
+            .set_body_json(json!({ "action": "allow" }))
+            .set_delay(Duration::from_secs(4)),
+    )
+    .await;
+    mount_chat(&h, sse(&format!("{}{}", delta("some words"), stream_end()))).await;
+    external(
+        &h,
+        &hook,
+        Spec::new("strict")
+            .closed()
+            .directions("output")
+            .timeout(9000),
+    )
+    .await;
+    // A route whose whole request may take 1.5 s.
+    {
+        use ultrafast_gateway::store::{RouteSettings, TargetsInput};
+        let models = h.store.list_models().await.unwrap();
+        let model = models.iter().find(|m| m.name == "m").unwrap().id;
+        let mut tx = h.store.begin().await.unwrap();
+        let id = tx
+            .insert_route(
+                "r",
+                &RouteSettings {
+                    retries: 0,
+                    first_token_timeout_ms: 1_500,
+                    total_timeout_ms: 1_500,
+                    breaker_failures: 5,
+                    breaker_window_s: 60,
+                    breaker_open_s: 30,
+                },
+                true,
+            )
+            .await
+            .unwrap();
+        tx.replace_targets(
+            id,
+            &TargetsInput {
+                primaries: vec![(model, 1)],
+                fallbacks: vec![],
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        h.state.refresh().await.unwrap();
+    }
+    let body = json!({ "model": "r", "stream": true,
+        "messages": [{ "role": "user", "content": "hi" }] })
+    .to_string();
+    let started = Instant::now();
+    let (s, text) = post_chat(&h.app, Some(&h.key), &body).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        finish_reason(&text).as_deref(),
+        Some("content_filter"),
+        "{text}"
+    );
+    let out = h.sink.wait_for(1).await[0]
+        .guardrails
+        .clone()
+        .unwrap()
+        .output
+        .unwrap();
+    assert_eq!(out.flags[0].rule_id, "external_error:timeout");
+}
+
+#[tokio::test]
+async fn a_held_stream_sends_comments_while_it_waits() {
+    let h = harness_with_state("openai", |state| {
+        state.stream_keepalive = Duration::from_millis(100);
+    })
+    .await;
+    let hook = MockServer::start().await;
+    hook_answers(
+        &hook,
+        ResponseTemplate::new(200)
+            .set_body_json(json!({ "action": "redact", "texts": ["clean words"] }))
+            .set_delay(Duration::from_millis(700)),
+    )
+    .await;
+    mount_chat(
+        &h,
+        sse(&format!("{}{}", delta("dirty words"), stream_end())),
+    )
+    .await;
+    external(&h, &hook, Spec::new("ext").directions("output")).await;
+    let (s, text) = post_chat(&h.app, Some(&h.key), &stream_body()).await;
+    assert_eq!(s, StatusCode::OK);
+    let comments = text.matches(": keepalive\n\n").count();
+    assert!(comments >= 3, "{comments} comments in {text}");
+    // Comments come before the answer, which is released after the hook.
+    assert!(text.find(": keepalive").unwrap() < text.find("clean words").unwrap());
+    assert_eq!(openai_text(&text), "clean words");
+    assert_eq!(finish_reason(&text).as_deref(), Some("stop"));
+    // The Anthropic caller gets them too.
+    let bearer = format!("Bearer {}", h.key);
+    let (_, _, text) = post_to(
+        &h.app,
+        "/v1/messages",
+        &[
+            ("authorization", &bearer),
+            ("anthropic-version", "2023-06-01"),
+        ],
+        &json!({ "model": "p/m", "max_tokens": 30, "stream": true,
+                 "messages": [{ "role": "user", "content": "hi" }] })
+        .to_string(),
+    )
+    .await;
+    assert!(text.contains(": keepalive\n\n"), "{text}");
+    assert!(text.contains("clean words"));
+}
+
+#[tokio::test]
+async fn a_stream_with_no_hook_on_the_output_sends_no_comments() {
+    let h = harness_with_state("openai", |state| {
+        state.stream_keepalive = Duration::from_millis(20);
+    })
+    .await;
+    mount_chat(&h, sse(&format!("{}{}", delta("words"), stream_end()))).await;
+    let (_, text) = post_chat(&h.app, Some(&h.key), &stream_body()).await;
+    assert!(!text.contains("keepalive"));
 }

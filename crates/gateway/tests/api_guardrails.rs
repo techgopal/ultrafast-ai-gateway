@@ -1926,3 +1926,39 @@ async fn only_an_admin_can_make_the_test_call_a_hook() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(hook::calls(&server).await.is_empty());
 }
+
+#[tokio::test]
+async fn rule_ids_that_look_like_an_external_failure_are_refused() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    for id in ["external_error:timeout", "External", "externalx"] {
+        let (status, v) = org
+            .call(
+                Some(&maya),
+                "POST",
+                LIST,
+                Some(json!({ "name": "g", "kind": "rules", "rules": [
+                    { "id": id, "matcher": { "pii": ["EMAIL"] }, "action": "flag", "directions": "both" }] })),
+            )
+            .await;
+        assert_invalid(status, &v, "rules[0]");
+    }
+}
+
+#[tokio::test]
+async fn the_test_does_not_pretend_an_empty_text_was_allowed() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let server = hook::answering(hook::says(json!({ "action": "allow" }))).await;
+    let (id, _) = external_at(&org, &maya, &server, json!({})).await;
+    let (status, v) = org
+        .call(
+            Some(&maya),
+            "POST",
+            "/api/guardrails/test",
+            Some(json!({ "guardrail_id": id, "direction": "input", "text": "", "call_external": true })),
+        )
+        .await;
+    assert_invalid(status, &v, "text");
+    assert!(hook::calls(&server).await.is_empty());
+}

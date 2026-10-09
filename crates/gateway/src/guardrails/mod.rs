@@ -232,6 +232,9 @@ pub struct Outcome {
     pub redactions: BTreeMap<String, u32>,
     /// `(guardrail id, rule id)` of every flag rule that matched, once each.
     pub flags: Vec<(i64, String)>,
+    /// `(guardrail id, reason code)` of every external guardrail that could
+    /// not be used. Kept apart from `flags`, whose ids are free text of rules.
+    pub external_errors: Vec<(i64, &'static str)>,
 }
 
 impl Outcome {
@@ -243,9 +246,20 @@ impl Outcome {
 
     /// Whether an external guardrail could not be used for this check.
     pub fn external_failed(&self) -> bool {
-        self.flags
-            .iter()
-            .any(|(_, rule)| rule.starts_with(external::ERROR_FLAG_PREFIX))
+        !self.external_errors.is_empty()
+    }
+
+    /// The flags as the log shows them: the flag rules that matched, then
+    /// `external_error:<reason>` for each external guardrail that failed.
+    pub fn all_flags(&self) -> Vec<(i64, String)> {
+        let mut flags = self.flags.clone();
+        for (g, reason) in &self.external_errors {
+            let flag = (*g, format!("{}{reason}", external::ERROR_FLAG_PREFIX));
+            if !flags.contains(&flag) {
+                flags.push(flag);
+            }
+        }
+        flags
     }
 
     /// Adds what `other` found after this: the first block stays, counts
@@ -259,6 +273,11 @@ impl Outcome {
         }
         for (g, r) in &other.flags {
             self.add_flag(*g, r);
+        }
+        for e in &other.external_errors {
+            if !self.external_errors.contains(e) {
+                self.external_errors.push(*e);
+            }
         }
     }
 

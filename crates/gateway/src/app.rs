@@ -36,6 +36,8 @@ use crate::web;
 pub const MAX_CONCURRENT_HASHES: usize = 4;
 /// How often a running gateway reads changes made outside it.
 pub const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+/// The default of [`AppState::stream_keepalive`].
+pub const DEFAULT_STREAM_KEEPALIVE: Duration = Duration::from_secs(10);
 pub const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 pub const DEFAULT_MAX_PROVIDER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -80,6 +82,11 @@ pub struct AppState {
     pub flights: Flights,
     /// The spend counters of the budgets of `/v1`.
     pub budgets: Arc<dyn Budgets>,
+    /// The in-flight limit of each external guardrail.
+    pub hook_gates: Arc<crate::guardrails::external::HookGates>,
+    /// How often a stream held for an external guardrail sends an SSE
+    /// comment so a proxy in front does not cut it for being idle.
+    pub stream_keepalive: Duration,
     /// The circuit breaker of every target that was called.
     pub health: Arc<dyn HealthStore>,
     /// The counters `/metrics` shows.
@@ -126,6 +133,8 @@ impl AppState {
             rate: Arc::new(MemoryLimiter::new()),
             cache: Arc::new(MemoryCache::new()),
             flights: Flights::new(),
+            hook_gates: Arc::default(),
+            stream_keepalive: DEFAULT_STREAM_KEEPALIVE,
             budgets: Arc::new(MemoryBudgets::new()),
             health: Arc::new(InMemoryHealth::new()),
             metrics: Arc::new(Metrics::new()),

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::external::{self, CallMeta};
+use super::external::{self, CallMeta, HookGates};
 use super::log::GuardrailRef;
 use super::{check_texts, Compiled, Direction, Outcome, StreamScanner};
 use crate::snapshot::{SnapExternal, SnapGuardrail};
@@ -17,6 +17,7 @@ pub const INLINE_LIMIT_BYTES: usize = 64 * 1024;
 pub struct Hooks {
     pub http: reqwest::Client,
     pub meta: Arc<CallMeta>,
+    pub gates: Arc<HookGates>,
 }
 
 /// The guardrails a call is checked with, ready to run.
@@ -78,7 +79,7 @@ impl Active {
     /// Whether an external guardrail is asked about the output, which makes a
     /// stream wait for the whole answer.
     pub fn holds_streams(&self) -> bool {
-        self.externals_for(Direction::Output).next().is_some()
+        self.has_hooks(Direction::Output)
     }
 
     /// The guardrails in force, by id and name, for the log.
@@ -107,10 +108,21 @@ impl Active {
         outcome
     }
 
+    /// Whether an external guardrail is asked about `dir`.
+    pub fn has_hooks(&self, dir: Direction) -> bool {
+        self.externals_for(dir).next().is_some()
+    }
+
     /// Asks the external guardrails about `texts` (already seen by the
     /// rules) and applies their answers in place. Nothing is asked of an
-    /// empty set of texts.
-    pub async fn check_externals(&self, dir: Direction, texts: &mut [String]) -> Outcome {
+    /// empty set of texts. No call runs past `deadline`: one that would is
+    /// cut short and fails by its mode.
+    pub async fn check_externals(
+        &self,
+        dir: Direction,
+        texts: &mut [String],
+        deadline: Option<tokio::time::Instant>,
+    ) -> Outcome {
         let mut outcome = Outcome::default();
         let Some(hooks) = &self.hooks else {
             return outcome;
@@ -119,7 +131,24 @@ impl Active {
             return outcome;
         }
         for (g, ext) in self.externals_for(dir) {
-            external::run(&hooks.http, g, ext, &hooks.meta, dir, texts, &mut outcome).await;
+            let limit = match deadline {
+                Some(at) => ext
+                    .timeout
+                    .min(at.saturating_duration_since(tokio::time::Instant::now())),
+                None => ext.timeout,
+            };
+            external::run(
+                &hooks.http,
+                &hooks.gates,
+                g,
+                ext,
+                &hooks.meta,
+                dir,
+                texts,
+                limit,
+                &mut outcome,
+            )
+            .await;
             if outcome.blocked_by.is_some() {
                 break;
             }
@@ -127,40 +156,67 @@ impl Active {
         outcome
     }
 
-    /// Checks the texts in `slots` and redacts them in place; a block leaves
-    /// them as they were. `Err` only when the scan itself failed, in which
-    /// case the slots are left empty and the caller must refuse the call.
+    /// The rules over `slots`, redacting in place; a block leaves them as
+    /// they were. `Err` only when the scan itself failed, in which case the
+    /// slots are left empty and the caller must refuse the call.
+    pub async fn check_rules(
+        &self,
+        dir: Direction,
+        slots: &mut [&mut String],
+    ) -> Result<Outcome, ScanFailed> {
+        if !self.covers_rules(dir) || slots.is_empty() {
+            return Ok(Outcome::default());
+        }
+        let mut texts: Vec<String> = slots.iter_mut().map(|s| std::mem::take(&mut **s)).collect();
+        let total: usize = texts.iter().map(String::len).sum();
+        let outcome;
+        if total > INLINE_LIMIT_BYTES {
+            let rules = self.rules.clone();
+            (texts, outcome) = tokio::task::spawn_blocking(move || {
+                let outcome = check_texts(&rules, dir, &mut texts);
+                (texts, outcome)
+            })
+            .await
+            .map_err(|_| ScanFailed)?;
+        } else {
+            outcome = check_texts(&self.rules, dir, &mut texts);
+        }
+        for (slot, text) in slots.iter_mut().zip(texts) {
+            **slot = text;
+        }
+        Ok(outcome)
+    }
+
+    /// The external guardrails over `slots`, in place.
+    pub async fn check_hooks(
+        &self,
+        dir: Direction,
+        slots: &mut [&mut String],
+        deadline: Option<tokio::time::Instant>,
+    ) -> Outcome {
+        if !self.has_hooks(dir) || slots.is_empty() {
+            return Outcome::default();
+        }
+        let mut texts: Vec<String> = slots.iter_mut().map(|s| std::mem::take(&mut **s)).collect();
+        let outcome = self.check_externals(dir, &mut texts, deadline).await;
+        for (slot, text) in slots.iter_mut().zip(texts) {
+            **slot = text;
+        }
+        outcome
+    }
+
+    /// Checks the texts in `slots` and redacts them in place: the rules,
+    /// then (unless a rule blocked) the external guardrails. A block leaves
+    /// them as they were. `Err` only when the scan itself failed.
     pub async fn check(
         &self,
         dir: Direction,
         mut slots: Vec<&mut String>,
     ) -> Result<Outcome, ScanFailed> {
-        if !self.covers(dir) || slots.is_empty() {
-            return Ok(Outcome::default());
-        }
-        let mut texts: Vec<String> = slots.iter_mut().map(|s| std::mem::take(&mut **s)).collect();
-        let mut outcome = Outcome::default();
-        if self.covers_rules(dir) {
-            let total: usize = texts.iter().map(String::len).sum();
-            if total > INLINE_LIMIT_BYTES {
-                let rules = self.rules.clone();
-                (texts, outcome) = tokio::task::spawn_blocking(move || {
-                    let outcome = check_texts(&rules, dir, &mut texts);
-                    (texts, outcome)
-                })
-                .await
-                .map_err(|_| ScanFailed)?;
-            } else {
-                outcome = check_texts(&self.rules, dir, &mut texts);
-            }
-        }
-        // A rule that blocks ends the check; the hooks are not asked.
+        let mut outcome = self.check_rules(dir, &mut slots).await?;
         if outcome.blocked_by.is_none() {
-            let asked = self.check_externals(dir, &mut texts).await;
+            let asked = self.check_hooks(dir, &mut slots, None).await;
             outcome.merge(&asked);
-        }
-        for (slot, text) in slots.into_iter().zip(texts) {
-            *slot = text;
         }
         Ok(outcome)
     }

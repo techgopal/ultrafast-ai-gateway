@@ -427,6 +427,13 @@ fn rule_faults(rules: &[RuleSpec]) -> BTreeMap<String, String> {
                 format!("rules[{i}]"),
                 format!("rule id must be 1 to {MAX_RULE_ID_CHARS} characters"),
             );
+        } else if rule.id.to_ascii_lowercase().starts_with("external") {
+            // The log and the metrics name failures of external guardrails
+            // `external...`; a rule must not be mistaken for one.
+            fields.insert(
+                format!("rules[{i}]"),
+                "rule id must not start with 'external'".to_string(),
+            );
         }
     }
     if !fields.is_empty() {
@@ -1090,22 +1097,25 @@ pub async fn test(
                 }
                 Some(row) if row.kind == "external" => {
                     if req.call_external {
-                        match external_of(&row, &state.cipher) {
-                            Some(ext) => {
-                                external = Some(Arc::new(SnapGuardrail {
-                                    id: row.id,
-                                    name: row.name.clone(),
-                                    rules_text: String::new(),
-                                    rules: None,
-                                    external: Some(ext),
-                                }));
-                            }
-                            None => {
-                                fields.insert(
-                                    "call_external".to_string(),
-                                    "the guardrail has no URL to call".to_string(),
-                                );
-                            }
+                        let ext = external_of(&row, &state.cipher);
+                        if !ext.usable {
+                            fields.insert(
+                                "call_external".to_string(),
+                                "the guardrail has no URL to call".to_string(),
+                            );
+                        } else if req.text.is_empty() {
+                            fields.insert(
+                                "text".to_string(),
+                                "nothing to check: the text is empty".to_string(),
+                            );
+                        } else {
+                            external = Some(Arc::new(SnapGuardrail {
+                                id: row.id,
+                                name: row.name.clone(),
+                                rules_text: String::new(),
+                                rules: None,
+                                external: Some(ext),
+                            }));
                         }
                     } else {
                         fields.insert(
@@ -1136,6 +1146,7 @@ pub async fn test(
         // signature, same timeout, same fail mode.
         let hooks = Hooks {
             http: state.http.clone(),
+            gates: state.hook_gates.clone(),
             meta: Arc::new(CallMeta {
                 endpoint: "test",
                 model: TEST_MODEL.to_string(),
@@ -1179,14 +1190,14 @@ pub async fn test(
 
 /// What the test endpoint answers for the outcome of a check.
 fn test_result(outcome: Outcome, redacted_text: String, name: &str) -> GuardrailTestResult {
+    let all_flags = outcome.all_flags();
     GuardrailTestResult {
         outcome: OutcomeView {
             blocked_by: outcome
                 .blocked_by
                 .map(|(id, name)| GuardrailRef { id, name }),
             redactions: outcome.redactions,
-            flags: outcome
-                .flags
+            flags: all_flags
                 .into_iter()
                 .map(|(guardrail_id, rule_id)| FlagView {
                     guardrail_id,

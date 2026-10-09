@@ -419,7 +419,7 @@ impl Metrics {
             &mut out,
             "uf_guardrail_external_errors_total",
             "counter",
-            "Checks by an external guardrail that failed, by reason: timeout, connect, status, too_large, invalid, buffer_full or other.",
+            "Checks by an external guardrail that failed, by reason: timeout, connect, status, too_large, invalid, buffer_full, busy or other.",
         );
         for (r, reason) in external::REASONS.into_iter().enumerate() {
             let _ = writeln!(

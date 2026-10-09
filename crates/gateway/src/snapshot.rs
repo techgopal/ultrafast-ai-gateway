@@ -110,6 +110,10 @@ pub struct SnapExternal {
     pub fail_open: bool,
     /// What it is asked about.
     pub directions: Directions,
+    /// The URL and secret could be read. When not (a changed master key, an
+    /// empty URL) the guardrail stays in the set and every check of it fails
+    /// by its fail mode: a closed one blocks rather than letting traffic by.
+    pub usable: bool,
 }
 
 impl fmt::Debug for SnapExternal {
@@ -119,6 +123,7 @@ impl fmt::Debug for SnapExternal {
             .field("timeout", &self.timeout)
             .field("fail_open", &self.fail_open)
             .field("directions", &self.directions)
+            .field("usable", &self.usable)
             .field("url", &"<redacted>")
             .field("secret", &"<redacted>")
             .finish()
@@ -251,22 +256,20 @@ async fn load_guardrails(
     enum Slot {
         Ready(Arc<SnapGuardrail>),
         Compile(usize),
-        Left,
     }
     let mut slots = Vec::new();
     let mut pending: Vec<GuardrailRow> = Vec::new();
     for g in rows.iter().filter(|g| g.enabled) {
         let slot = if g.kind == "external" {
-            match external_of(g, cipher) {
-                Some(external) => Slot::Ready(Arc::new(SnapGuardrail {
-                    id: g.id,
-                    name: g.name.clone(),
-                    rules_text: String::new(),
-                    rules: None,
-                    external: Some(external),
-                })),
-                None => Slot::Left,
-            }
+            // Always kept: one that cannot be called (see `SnapExternal::usable`)
+            // fails by its mode on every check instead of vanishing.
+            Slot::Ready(Arc::new(SnapGuardrail {
+                id: g.id,
+                name: g.name.clone(),
+                rules_text: String::new(),
+                rules: None,
+                external: Some(external_of(g, cipher)),
+            }))
         } else {
             let same = previous
                 .and_then(|p| p.guardrails.get(&g.id))
@@ -304,7 +307,6 @@ async fn load_guardrails(
                 Some(built) => Arc::new(built),
                 None => continue,
             },
-            Slot::Left => continue,
         };
         if g.is_default {
             defaults.push(g.id);
@@ -337,36 +339,30 @@ fn rules_guardrail(g: &GuardrailRow) -> Option<SnapGuardrail> {
     }
 }
 
-pub(crate) fn external_of(g: &GuardrailRow, cipher: &Cipher) -> Option<SnapExternal> {
+pub(crate) fn external_of(g: &GuardrailRow, cipher: &Cipher) -> SnapExternal {
     let read = |bytes: Option<&[u8]>| {
         cipher
             .decrypt(bytes?)
             .ok()
             .and_then(|plain| String::from_utf8(plain).ok())
+            .filter(|text| !text.is_empty())
     };
-    let (Some(url), Some(secret)) = (read(g.url_enc.as_deref()), read(g.secret_enc.as_deref()))
-    else {
-        tracing::error!(guardrail = %g.name, "guardrail left out: its URL or secret cannot be read");
-        return None;
-    };
-    // An import leaves an external guardrail off with no URL; enabled
-    // without one it cannot be called.
-    if url.is_empty() {
-        tracing::error!(guardrail = %g.name, "guardrail left out: it is enabled but has no URL");
-        return None;
+    let url = read(g.url_enc.as_deref());
+    let secret = read(g.secret_enc.as_deref());
+    let directions = Directions::parse(&g.directions);
+    let usable = url.is_some() && secret.is_some() && directions.is_some();
+    if !usable {
+        tracing::error!(guardrail = %g.name, "an external guardrail cannot be called: its URL or secret cannot be read, or it has none; its fail mode applies");
     }
-    let Some(directions) = Directions::parse(&g.directions) else {
-        tracing::error!(guardrail = %g.name, "guardrail left out: unknown directions");
-        return None;
-    };
-    Some(SnapExternal {
-        url,
-        secret,
+    SnapExternal {
+        url: url.unwrap_or_default(),
+        secret: secret.unwrap_or_default(),
         host: g.url_host.clone().unwrap_or_default(),
         timeout: Duration::from_millis(u64::try_from(g.timeout_ms).unwrap_or(0)),
         fail_open: g.fail_mode != "closed",
-        directions,
-    })
+        directions: directions.unwrap_or(Directions::Both),
+        usable,
+    }
 }
 
 impl Snapshot {
