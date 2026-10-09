@@ -189,6 +189,18 @@ pub fn render_response(r: &ImageResponse) -> Value {
 }
 
 pub fn build_request(target: &Target, req: &ImageRequest) -> Result<HttpRequest, TranslateError> {
+    // The GPT image models always answer base64 and take no style: they
+    // refuse these fields, so the caller is told before a request is sent.
+    if target.model.starts_with("gpt-image") {
+        if req.response_format.is_some() {
+            return Err(invalid(
+                "response_format is not supported by gpt-image models; they always answer base64",
+            ));
+        }
+        if req.style.is_some() {
+            return Err(invalid("style is not supported by gpt-image models"));
+        }
+    }
     let base = target.base_url.trim_end_matches('/');
     let mut body = Map::new();
     let mut put = |k: &str, v: Value| {
@@ -452,6 +464,38 @@ mod tests {
         t.api_version = Some("2030-01-01".into());
         let out = build_request(&t, &full()).unwrap();
         assert!(out.url.ends_with("?api-version=2030-01-01"));
+    }
+
+    #[test]
+    fn gpt_image_models_refuse_response_format_and_style() {
+        for kind in [ProviderKind::OpenAi, ProviderKind::Azure] {
+            for model in ["gpt-image-1", "gpt-image-1-mini", "gpt-image-2"] {
+                let mut t = target(kind);
+                t.model = model.into();
+                let e = build_request(&t, &full()).unwrap_err();
+                assert!(
+                    matches!(e, TranslateError::InvalidRequest(_)),
+                    "{model}: {e:?}"
+                );
+                for only in [
+                    r#"{"model":"m","prompt":"x","response_format":"b64_json"}"#,
+                    r#"{"model":"m","prompt":"x","style":"vivid"}"#,
+                ] {
+                    let r = parse_request(only.as_bytes()).unwrap();
+                    assert!(matches!(
+                        build_request(&t, &r),
+                        Err(TranslateError::InvalidRequest(_))
+                    ));
+                }
+                // Without them the request goes out.
+                let r = parse_request(br#"{"model":"m","prompt":"x","n":2}"#).unwrap();
+                assert!(build_request(&t, &r).is_ok());
+            }
+            // dall-e and other models take them.
+            let mut t = target(kind);
+            t.model = "dall-e-3".into();
+            assert!(build_request(&t, &full()).is_ok());
+        }
     }
 
     #[test]
