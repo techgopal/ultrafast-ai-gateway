@@ -42,6 +42,7 @@ const statuses: Record<ErrorName, number> = {
   alert_rule_exists: 409,
   guardrail_exists: 409,
   prompt_exists: 409,
+  export_blocked: 409,
   sync_unsupported: 422,
   sync_failed: 502,
 };

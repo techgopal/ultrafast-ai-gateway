@@ -168,6 +168,11 @@ export const errors = {
   alert_rule_exists: error(409, "alert_rule_exists", "An alert rule with this name already exists."),
   guardrail_exists: error(409, "guardrail_exists", "A guardrail with this name already exists."),
   prompt_exists: error(409, "prompt_exists", "A prompt template with this name already exists."),
+  export_blocked: error(
+    409,
+    "export_blocked",
+    "The export was not made: a version of the prompt template(s) 'welcome' cannot be read, so the file would leave them out. Fix or delete them first.",
+  ),
   sync_unsupported: error(422, "sync_unsupported", "Add Azure deployments as models by name."),
   sync_failed: error(502, "sync_failed", "The provider did not return its models."),
 } as const satisfies Record<string, GatewayError>;

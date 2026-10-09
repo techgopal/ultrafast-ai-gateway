@@ -540,7 +540,57 @@ function imports(
 
 const FILE = JSON.stringify(fixtures.configFile);
 
+/** Object URLs: what the console saves a fetched file as. */
+function savedFiles(): { made: Blob[]; names: string[] } {
+  const saved = { made: [] as Blob[], names: [] as string[] };
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    writable: true,
+    value: (blob: Blob) => {
+      saved.made.push(blob);
+      return `blob:test/${String(saved.made.length)}`;
+    },
+  });
+  Object.defineProperty(URL, "revokeObjectURL", { configurable: true, writable: true, value: () => undefined });
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+    saved.names.push(this.download);
+  });
+  return saved;
+}
+
 describe("configuration: export", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(URL, "createObjectURL");
+    Reflect.deleteProperty(URL, "revokeObjectURL");
+  });
+
+  test("a 409 export_blocked names the template and saves no file", async () => {
+    const saved = savedFiles();
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Configuration" });
+    override("get", "/api/config/export", () => refuse(errors.export_blocked));
+    await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
+    expect(await within(section).findByRole("alert")).toHaveTextContent(/prompt template\(s\) 'welcome'/);
+    expect(saved.made).toEqual([]);
+    expect(saved.names).toEqual([]);
+  });
+
+  test("the file is fetched first and then saved as it was sent", async () => {
+    const saved = savedFiles();
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Configuration" });
+    await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
+    await waitFor(() => {
+      expect(saved.names).toHaveLength(1);
+    });
+    expect(saved.names[0]).toMatch(/^ultrafast-config-.*\.json$/);
+    const [file] = saved.made;
+    expect(JSON.parse((await file?.text()) ?? "null")).toEqual(fixtures.configFile);
+    expect(within(section).queryByRole("alert")).toBeNull();
+  });
+
   test("the download is a link to the gateway", async () => {
     await page();
     await days();
@@ -553,19 +603,19 @@ describe("configuration: export", () => {
     ).toBeInTheDocument();
   });
 
-  test("the session is checked first, a refusal is shown in place, then the download starts", async () => {
-    const started = downloads();
+  test("a refusal of the export is shown in place; the next try saves the file", async () => {
+    const saved = savedFiles();
     await page();
     await days();
     const section = screen.getByRole("region", { name: "Configuration" });
-    override("get", "/api/settings", () => refuse(errors.internal_error));
+    override("get", "/api/config/export", () => refuse(errors.internal_error));
     await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
     expect(await within(section).findByRole("alert")).toHaveTextContent("Something went wrong.");
-    expect(started).toEqual([]);
-    override("get", "/api/settings", () => ok("get", "/api/settings", 200, fixtures.settings));
+    expect(saved.names).toEqual([]);
+    override("get", "/api/config/export", () => ok("get", "/api/config/export", 200, fixtures.configFile));
     await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
     await waitFor(() => {
-      expect(started).toEqual(["/api/config/export"]);
+      expect(saved.names).toHaveLength(1);
     });
     expect(within(section).queryByRole("alert")).toBeNull();
   });
