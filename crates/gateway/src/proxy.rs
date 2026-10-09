@@ -1,5 +1,5 @@
-//! The `/v1` call handlers: chat completions, Anthropic messages and
-//! embeddings. They share authentication, body reading, resolution, the
+//! The `/v1` call handlers: chat completions, Anthropic messages, the OpenAI
+//! Responses API and embeddings. They share authentication, body reading, resolution, the
 //! routing engine and recording; only the caller's format differs.
 
 use std::borrow::Cow;
@@ -30,7 +30,7 @@ use ultrafast_translate::embeddings::{
     self, EmbeddingsRequest, EmbeddingsResponse, NOT_SUPPORTED as EMBEDDINGS_NOT_SUPPORTED,
 };
 use ultrafast_translate::error::TranslateError;
-use ultrafast_translate::ingress::{anthropic, openai};
+use ultrafast_translate::ingress::{anthropic, openai, responses};
 use ultrafast_translate::provider::{
     build_request, parse_response, HttpRequest, StreamDecoder, Target,
 };
@@ -109,6 +109,8 @@ const IMAGE_TOKEN_ESTIMATE: u64 = 1_000;
 enum Endpoint {
     Chat,
     Messages,
+    /// The OpenAI Responses API, stateless: chat in another shape.
+    Responses,
     Embeddings,
     /// A chat call the console makes for a signed-in user: the answer of
     /// `/v1/chat/completions`, recorded as its own endpoint.
@@ -121,6 +123,7 @@ impl Endpoint {
         match self {
             Endpoint::Chat => "chat",
             Endpoint::Messages => "messages",
+            Endpoint::Responses => "responses",
             Endpoint::Embeddings => "embeddings",
             Endpoint::Playground => "playground",
         }
@@ -129,7 +132,9 @@ impl Endpoint {
     fn shape(self) -> Shape {
         match self {
             Endpoint::Messages => Shape::Anthropic,
-            Endpoint::Chat | Endpoint::Embeddings | Endpoint::Playground => Shape::OpenAi,
+            Endpoint::Chat | Endpoint::Responses | Endpoint::Embeddings | Endpoint::Playground => {
+                Shape::OpenAi
+            }
         }
     }
 
@@ -137,6 +142,18 @@ impl Endpoint {
         match self {
             Endpoint::Chat | Endpoint::Playground => openai::parse_request(body).map(Call::Chat),
             Endpoint::Messages => anthropic::parse_request(body).map(Call::Chat),
+            Endpoint::Responses => {
+                let parsed = responses::parse_request(body)?;
+                // Seam for prompt templates: the reference is parsed, and
+                // applying it (template messages, model and params) belongs
+                // here once templates exist.
+                if parsed.prompt.is_some() {
+                    return Err(TranslateError::InvalidRequest(
+                        "prompt templates are not available yet".into(),
+                    ));
+                }
+                Ok(Call::Chat(parsed.request))
+            }
             Endpoint::Embeddings => embeddings::parse_request(body).map(Call::Embed),
         }
     }
@@ -218,6 +235,10 @@ pub async fn chat_completions(state: State<Arc<AppState>>, request: Request) -> 
 
 pub async fn messages(state: State<Arc<AppState>>, request: Request) -> Response {
     handle(state.0, request, Endpoint::Messages).await
+}
+
+pub async fn responses(state: State<Arc<AppState>>, request: Request) -> Response {
+    handle(state.0, request, Endpoint::Responses).await
 }
 
 pub async fn embeddings(state: State<Arc<AppState>>, request: Request) -> Response {
@@ -485,11 +506,20 @@ fn cache_config(snapshot: &Snapshot, guardrails: &Active) -> [u8; 32] {
 
 /// The kept answer in the shape the caller asked in, or `None` when it is
 /// of the other kind of call (which a key never allows).
-fn render_cached(endpoint: Endpoint, cached: &Cached) -> Option<Response> {
+fn render_cached(endpoint: Endpoint, call: &Call, cached: &Cached) -> Option<Response> {
     match (&cached.answer, endpoint) {
         (Answer::Chat(r), Endpoint::Messages) => {
             Some(Json(anthropic::render_response(r)).into_response())
         }
+        (Answer::Chat(r), Endpoint::Responses) => Some(
+            Json(responses::render_response(
+                r,
+                &response_id(),
+                now_secs(),
+                &echo_of(call),
+            ))
+            .into_response(),
+        ),
         (Answer::Chat(r), Endpoint::Chat | Endpoint::Playground) => {
             Some(Json(openai::render_response(r, now_secs())).into_response())
         }
@@ -684,7 +714,7 @@ async fn dispatch(
         let answered = |state: &AppState, record: &mut Scope| {
             let now = tokio::time::Instant::now().into_std();
             let hit = state.cache.get(&plan.key, now)?;
-            let response = render_cached(endpoint, &hit)?;
+            let response = render_cached(endpoint, &call, &hit)?;
             state.metrics.cache_hit();
             record.cache_hit(&hit.provider, &hit.model, hit.usage());
             record.guardrails_found(Direction::Output, hit.guardrails.clone());
@@ -765,6 +795,13 @@ async fn dispatch(
             }
             match endpoint {
                 Endpoint::Messages => Json(anthropic::render_response(&response)).into_response(),
+                Endpoint::Responses => Json(responses::render_response(
+                    &response,
+                    &response_id(),
+                    now_secs(),
+                    &echo_of(&call),
+                ))
+                .into_response(),
                 _ => Json(openai::render_response(&response, now_secs())).into_response(),
             }
         }
@@ -803,7 +840,7 @@ async fn dispatch(
                 target: committed.target.clone(),
                 breaker: settings.breaker,
             };
-            stream_to_caller(*committed, guard, endpoint)
+            stream_to_caller(*committed, guard, endpoint, echo_of(&call))
         }
         Err(Stop::Fatal(e)) => e.into_response(shape),
         Err(Stop::Exhausted(_)) if wrong_kind(snapshot, key, &call, &candidates) => shape.error(
@@ -1391,6 +1428,34 @@ fn stream_id(prefix: &str) -> String {
     format!("{prefix}-{}", hex::encode(bytes))
 }
 
+/// `resp_` and 24 hex digits, as OpenAI's response ids.
+fn response_id() -> String {
+    let mut bytes = [0u8; 12];
+    crate::secrets::fill_random(&mut bytes);
+    format!("resp_{}", hex::encode(bytes))
+}
+
+/// The settings of the request a response object repeats.
+fn echo_of(call: &Call) -> responses::Echo {
+    match call {
+        Call::Chat(r) => responses::Echo::of(r),
+        // Only a chat call is answered on `/v1/responses`.
+        Call::Embed(_) => responses::Echo::of(&ChatRequest {
+            model: String::new(),
+            messages: Vec::new(),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            tools: Vec::new(),
+            tool_choice: None,
+            parallel_tool_calls: None,
+            response_format: None,
+        }),
+    }
+}
+
 /// Renders a stream in the caller's format.
 enum StreamFormat {
     OpenAi {
@@ -1399,14 +1464,21 @@ enum StreamFormat {
         created: u64,
     },
     Anthropic(anthropic::StreamRenderer),
+    Responses(responses::StreamRenderer),
 }
 
 impl StreamFormat {
-    fn new(endpoint: Endpoint, model: &str) -> Self {
+    fn new(endpoint: Endpoint, model: &str, echo: responses::Echo) -> Self {
         match endpoint {
             Endpoint::Messages => {
                 StreamFormat::Anthropic(anthropic::StreamRenderer::new(&stream_id("msg"), model))
             }
+            Endpoint::Responses => StreamFormat::Responses(responses::StreamRenderer::new(
+                &response_id(),
+                model,
+                now_secs(),
+                echo,
+            )),
             _ => StreamFormat::OpenAi {
                 id: stream_id("chatcmpl"),
                 model: model.to_string(),
@@ -1421,6 +1493,7 @@ impl StreamFormat {
                 openai::render_stream_event(ev, id, model, *created)
             }
             StreamFormat::Anthropic(r) => r.render(ev),
+            StreamFormat::Responses(r) => r.render(ev),
         }
     }
 
@@ -1428,6 +1501,7 @@ impl StreamFormat {
         match self {
             StreamFormat::OpenAi { .. } => openai::render_stream_error(message),
             StreamFormat::Anthropic(_) => anthropic::render_stream_error(message),
+            StreamFormat::Responses(r) => r.error(message),
         }
     }
 }
@@ -1944,7 +2018,12 @@ const KEEPALIVE: &str = ": keepalive\n\n";
 ///
 /// The body owns the upstream response, so when the caller disconnects and the
 /// body is dropped, the provider request is dropped with it.
-fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoint) -> Response {
+fn stream_to_caller(
+    committed: Committed,
+    record: StreamRecord,
+    endpoint: Endpoint,
+    echo: responses::Echo,
+) -> Response {
     let body = async_stream::stream! {
         let mut record = record;
         let Committed {
@@ -1957,7 +2036,7 @@ fn stream_to_caller(committed: Committed, record: StreamRecord, endpoint: Endpoi
             error,
         } = committed;
         let provider = target.provider.clone();
-        let mut format = StreamFormat::new(endpoint, &target.model);
+        let mut format = StreamFormat::new(endpoint, &target.model, echo);
         let mut pending = Some((events, error));
         loop {
             let (events, error) = match pending.take() {

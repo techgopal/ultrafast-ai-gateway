@@ -49,7 +49,10 @@ const IGNORED_REQUEST_FIELDS: &[&str] = &[
 ];
 
 /// Rejects the first field that is present, not null and not in `allowed`.
-fn reject_unknown(extra: &Map<String, Value>, allowed: &[&str]) -> Result<(), TranslateError> {
+pub(crate) fn reject_unknown(
+    extra: &Map<String, Value>,
+    allowed: &[&str],
+) -> Result<(), TranslateError> {
     match extra
         .iter()
         .find(|(k, v)| !v.is_null() && !allowed.contains(&k.as_str()))
