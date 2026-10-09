@@ -97,6 +97,11 @@ pub fn spans_of(
     for (name, value) in &record.tags {
         attributes.push(string(&format!("uf.tags.{name}"), value));
     }
+    // Which template (`name@version`) the call used: its label, never the
+    // text it holds.
+    if let Some(label) = &record.prompt {
+        attributes.push(string("uf.prompt_template", label));
+    }
     // The worst thing the guardrails did to the call; absent when nothing.
     if let Some(g) = &record.guardrails {
         attributes.push(string("uf.guardrail.action", g.action.as_str()));
@@ -434,6 +439,23 @@ mod tests {
             .map(|e| e["name"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(names, ["uf.circuit_open", "uf.skipped"]);
+    }
+
+    #[test]
+    fn a_span_names_the_prompt_template_the_call_used() {
+        let mut r = base();
+        r.attempts = vec![attempt("a", AttemptOutcome::Ok, Some(200), 0, 5)];
+        let value_of = |r: &RequestRecord| {
+            spans_of(r, &mut counter(), [1; 16])[0]["attributes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["key"] == "uf.prompt_template")
+                .map(|a| a["value"]["stringValue"].as_str().unwrap().to_string())
+        };
+        assert_eq!(value_of(&r), None);
+        r.prompt = Some("greet@3".into());
+        assert_eq!(value_of(&r).as_deref(), Some("greet@3"));
     }
 
     #[test]
