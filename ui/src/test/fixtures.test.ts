@@ -131,6 +131,26 @@ describe("the fixtures have the forms of the gateway", () => {
     expect(fixtures.newInviteLink).toMatch(INVITE_LINK);
     expect(fixtures.newInviteLink.endsWith(fixtures.newInviteToken)).toBe(true);
     expect(fixtures.csrfToken).toMatch(CSRF_TOKEN);
+    // The signing secret of a guardrail is made like that of an alert channel.
+    for (const secret of [fixtures.newGuardrailSecret, fixtures.rotatedGuardrailSecret]) {
+      expect(secret).toMatch(/^whsec_[0-9a-f]{64}$/);
+    }
+    expect(fixtures.newGuardrailSecret).not.toBe(fixtures.rotatedGuardrailSecret);
+  });
+
+  test("the guardrails are the forms the gateway makes", () => {
+    expect(fixtures.guardrailList.map((one) => one.id)).toEqual([1, 2, 3, 4]);
+    expect(new Set(fixtures.guardrailList.map((one) => one.name)).size).toBe(4);
+    for (const one of fixtures.guardrailList) {
+      // Rules for `rules`, a host for `external`; the URL itself is never in a view.
+      expect(one.kind === "rules" ? one.rules.length > 0 : one.rules.length === 0).toBe(true);
+      expect(one.kind === "external" ? one.url_host !== null : one.url_host === null).toBe(true);
+      expect(JSON.stringify(one)).not.toMatch(/https?:\/\/[^"]*\/[^"]/);
+    }
+    // A call's record holds counts and names, never what matched.
+    for (const call of [fixtures.redactedLog, fixtures.blockedLog, fixtures.flaggedLog]) {
+      expect(JSON.stringify(call.guardrails)).not.toContain("@");
+    }
   });
 
   test("the display of keys and tokens", () => {

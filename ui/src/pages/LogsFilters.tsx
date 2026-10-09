@@ -4,6 +4,7 @@ import { keysOptions, teamsOptions, usersOptions } from "@/api/queries";
 import { control } from "@/components/classes";
 import { FilterSelect, type Choice } from "@/components/FilterSelect";
 import { Input } from "@/components/ui/input";
+import { LOGGED_ACTIONS } from "@/lib/guardrails";
 import { parseTagFilter } from "@/lib/tags";
 
 /** The value of a select that leaves nothing out. No id is written so. */
@@ -24,6 +25,11 @@ const STATUSES: readonly Choice[] = [
   { value: "errors", label: "Errors only" },
 ];
 
+const GUARDRAILS: readonly Choice[] = [
+  { value: ANY, label: "Any guardrail result" },
+  ...LOGGED_ACTIONS.map(([value, label]) => ({ value, label })),
+];
+
 /** What the viewer chose. A choice is an id as text, or `ANY`. */
 export interface Filters {
   range: Range;
@@ -35,6 +41,8 @@ export interface Filters {
   team: string;
   model: string;
   errorsOnly: boolean;
+  /** What the guardrails did at worst, or `ANY`. */
+  guardrail: string;
   /** `name:value` as it was applied, or empty. */
   tag: string;
 }
@@ -48,6 +56,7 @@ export const NO_FILTERS: Filters = {
   team: ANY,
   model: "",
   errorsOnly: false,
+  guardrail: ANY,
   tag: "",
 };
 
@@ -252,6 +261,14 @@ export function LogsFilters({ filters, offered, others, onChange }: LogsFiltersP
         choices={STATUSES}
         onChange={(status) => {
           onChange({ errorsOnly: status === "errors" });
+        }}
+      />
+      <FilterSelect
+        label="Guardrails"
+        value={filters.guardrail}
+        choices={GUARDRAILS}
+        onChange={(guardrail) => {
+          onChange({ guardrail });
         }}
       />
     </div>

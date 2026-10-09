@@ -61,6 +61,23 @@ const columns: Column<Route>[] = [
     cell: (route) => teamsText(route),
   },
   {
+    id: "guardrails",
+    header: "Guardrails",
+    // In the order they run. The gateway tells an admin only; this list is theirs.
+    cell: (route) =>
+      route.guardrails.length === 0 ? (
+        <span className="text-muted-foreground">None</span>
+      ) : (
+        <span role="group" aria-label="Guardrails" className="flex flex-wrap gap-1">
+          {route.guardrails.map((one) => (
+            <Badge key={one.id} variant="outline" className="h-auto break-all whitespace-normal">
+              {one.name}
+            </Badge>
+          ))}
+        </span>
+      ),
+  },
+  {
     id: "status",
     header: "Status",
     cell: (route) =>

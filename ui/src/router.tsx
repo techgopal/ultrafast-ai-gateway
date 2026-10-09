@@ -19,6 +19,8 @@ import { Button } from "@/components/ui/button";
 import { AcceptInvite } from "@/pages/AcceptInvite";
 import { Account } from "@/pages/Account";
 import { Alerts } from "@/pages/Alerts";
+import { Guardrails } from "@/pages/Guardrails";
+import { GuardrailsEdit } from "@/pages/GuardrailsEdit";
 import { Keys } from "@/pages/Keys";
 import { Limits } from "@/pages/Limits";
 import { Logs } from "@/pages/Logs";
@@ -184,6 +186,7 @@ function ShellLayout() {
             teams: me.teams,
             maySetSettings: can(me, { type: "manageSettings" }),
             mayManageAlerts: can(me, { type: "manageAlerts" }),
+            mayManageGuardrails: can(me, { type: "manageGuardrails" }),
           },
     [me],
   );
@@ -258,6 +261,33 @@ const limitsRoute = createRoute({
   path: "/limits",
   staticData: { title: "Budgets and limits" },
   component: Limits,
+});
+
+const guardrailsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/guardrails",
+  staticData: { title: "Guardrails" },
+  component: Guardrails,
+});
+
+const guardrailNewRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/guardrails/new",
+  staticData: { title: "New guardrail" },
+  component: function GuardrailNewRoute() {
+    return <GuardrailsEdit id={null} />;
+  },
+});
+
+const guardrailRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/guardrails/$id",
+  staticData: { title: "Guardrail" },
+  component: function GuardrailRoute() {
+    const { id } = guardrailRoute.useParams();
+    // Another guardrail is another page: its form and its state do not carry over.
+    return <GuardrailsEdit key={id} id={id} />;
+  },
 });
 
 const settingsRoute = createRoute({
@@ -414,6 +444,9 @@ const routeTree = rootRoute.addChildren([
     teamRoute,
     auditRoute,
     limitsRoute,
+    guardrailsRoute,
+    guardrailNewRoute,
+    guardrailRoute,
     settingsRoute,
     accountRoute,
   ]),

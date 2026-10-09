@@ -431,6 +431,8 @@ describe("errors in place", () => {
       "budget 'monthly' of user 'lena@example.com' reached Try again in 120 minutes.",
     ],
     ["no provider", pipelineErrors.unavailable, "No provider could serve this request."],
+    // The name of the guardrail, never what matched.
+    ["a guardrail that blocks the message", pipelineErrors.guardrail, "Blocked by guardrail 'house-rules'."],
   ])("%s", async (_, refusal, text) => {
     chats(() => refusePipeline(refusal));
     await page();
@@ -443,6 +445,36 @@ describe("errors in place", () => {
     expect(screen.getByText(/Nothing has been said yet/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
     expect(toasts()).toEqual([]);
+  });
+
+  test("an answer a guardrail stopped says so, and keeps what was shown before", async () => {
+    chats(() =>
+      eventStream([
+        delta("The first part. "),
+        `data: ${JSON.stringify({ model: "gpt-4o-mini", choices: [{ index: 0, delta: {}, finish_reason: "content_filter" }] })}\n\n`,
+        "data: [DONE]\n\n",
+      ]),
+    );
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await say("hi");
+    expect(await screen.findByRole("alert")).toHaveTextContent("A guardrail stopped this answer.");
+    expect(screen.getByText("The first part.")).toBeInTheDocument();
+    expect(toasts()).toEqual([]);
+  });
+
+  test("an answer a guardrail emptied says so", async () => {
+    chats(() =>
+      eventStream([
+        `data: ${JSON.stringify({ model: "gpt-4o-mini", choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "content_filter" }] })}\n\n`,
+        "data: [DONE]\n\n",
+      ]),
+    );
+    await page();
+    await choose(await modelPicker(), "openai/gpt-4o-mini");
+    await say("hi");
+    expect(await screen.findByRole("alert")).toHaveTextContent("A guardrail stopped this answer.");
+    expect(message()).toHaveValue("hi");
   });
 
   test("an error is gone with the next call", async () => {

@@ -1374,18 +1374,25 @@ describe("every mutation calls its operation", () => {
       ["useCreateAlertRule", "POST /api/alerts/rules", q.useCreateAlertRule, { name: "r", kind: "circuit_open", params: {}, channel_ids: [] }],
       ["useUpdateAlertRule", "PATCH /api/alerts/rules/1", q.useUpdateAlertRule, { id: 1, body: { enabled: false } }],
       ["useDeleteAlertRule", "DELETE /api/alerts/rules/1", q.useDeleteAlertRule, { id: 1 }],
+      ["useCreateGuardrail", "POST /api/guardrails", q.useCreateGuardrail, { name: "g", kind: "external", url: "https://guard.example.test/hook" }],
+      ["useUpdateGuardrail", "PATCH /api/guardrails/1", q.useUpdateGuardrail, { id: 1, body: { enabled: false } }],
+      ["useDeleteGuardrail", "DELETE /api/guardrails/1", q.useDeleteGuardrail, { id: 1 }],
+      ["useRotateGuardrailSecret", "POST /api/guardrails/1/rotate-secret", q.useRotateGuardrailSecret, { id: 1 }],
+      ["useTestGuardrail", "POST /api/guardrails/test", q.useTestGuardrail, { direction: "output", text: "a", guardrail_id: 1 }],
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 46 of them, 22 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(46);
+  test("there are 51 of them, 23 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(51);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(71);
+    expect(hooks).toHaveLength(77);
     // The alerts: three queries (channels, rules, events by page), and their eight mutations.
     for (const name of ["useAlertChannels", "useAlertRules", "useAlertEventsPages"]) {
       expect(hooks).toContain(name);
     }
+    // The guardrails: one query (the list), and their five mutations.
+    expect(hooks).toContain("useGuardrails");
     // What only tests used is not kept: a key read by its id, the audit log
     // read as one page, and `me`, which the session reads itself.
     for (const gone of ["useKey", "keyOptions", "useAuditLog", "auditLogOptions", "useMe"]) {
@@ -1426,6 +1433,9 @@ describe("secrets stay out of the caches", () => {
       ["useCreateToken", q.useCreateToken, { name: "t" }, [fixtures.newTokenSecret]],
       ["useCreateAlertChannel", q.useCreateAlertChannel, { name: "c", kind: "webhook", url: "https://example.test/hook" }, [fixtures.newChannelSecret, "https://example.test/hook"]],
       ["useRotateAlertChannelSecret", q.useRotateAlertChannelSecret, { id: 1 }, [fixtures.rotatedChannelSecret]],
+      ["useCreateGuardrail", q.useCreateGuardrail, { name: "g", kind: "external", url: "https://guard.example.test/hook" }, [fixtures.newGuardrailSecret, "https://guard.example.test/hook"]],
+      ["useUpdateGuardrail", q.useUpdateGuardrail, { id: 3, body: { url: "https://guard.example.test/hook" } }, ["https://guard.example.test/hook"]],
+      ["useRotateGuardrailSecret", q.useRotateGuardrailSecret, { id: 3 }, [fixtures.rotatedGuardrailSecret]],
       ["useInviteUser", q.useInviteUser, { email: "s@example.test", name: "S", role: "member" }, [fixtures.newInviteLink]],
       ["useReinviteUser", q.useReinviteUser, { id: 6 }, [fixtures.newInviteLink]],
       ["useLogin", q.useLogin, { email: "m@example.test", password }, [password]],

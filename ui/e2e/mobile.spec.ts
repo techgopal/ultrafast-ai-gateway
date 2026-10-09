@@ -94,6 +94,20 @@ async function content(api: GatewayApi) {
     owner_id: user.id,
     team_id: team,
   });
+  await api.send("POST", "/api/guardrails", {
+    name: "a-guardrail-with-a-name-that-is-rather-long-for-a-phone",
+    kind: "rules",
+    is_default: true,
+    rules: [
+      { id: "email", matcher: { pii: ["EMAIL"] }, action: "redact", directions: "output" },
+      {
+        id: "words",
+        matcher: { keywords: { words: ["a-keyword-that-is-rather-long-for-a-phone"] } },
+        action: "flag",
+        directions: "both",
+      },
+    ],
+  });
   const channel = (await api.send("POST", "/api/alerts/channels", {
     name: "a-channel-with-a-name-that-is-rather-long-for-a-phone",
     kind: "webhook",
@@ -143,6 +157,7 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     ["Models", "a-model-with-a-very-long-name"],
     ["Routing", "a-route-with-a-long-name"],
     ["Alerts", "a-rule-with-a-name-that-is-also-rather-long"],
+    ["Guardrails", "a-guardrail-with-a-name"],
     ["Playground", "Nothing has been said yet"],
     ["Account", "Access tokens"],
     ["Settings", "Session lifetime"],
@@ -153,6 +168,14 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     else await goTo(page, title);
     await expect(page.getByRole("main")).toContainText(shows);
     expect(await scrollsSideways(page), title).toBe(false);
+    if (title === "Guardrails") {
+      // The form of a guardrail, with its rules and Try it.
+      await page.getByRole("link", { name: "Edit", exact: true }).first().click();
+      await expect(heading(page, "Edit guardrail")).toBeVisible();
+      await expect(page.getByRole("group", { name: "Rule 2" })).toBeVisible();
+      expect(await scrollsSideways(page), "guardrail form").toBe(false);
+      await goTo(page, "Guardrails");
+    }
     if (title === "Alerts") {
       const views = page.getByRole("navigation", { name: "Alerts sections" });
       await views.getByRole("link", { name: "Channels" }).click();
@@ -172,7 +195,7 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     .getByRole("listitem")
     .filter({ hasText: "nightly batch job" });
   await expect(card).toBeVisible();
-  await expect(card.getByRole("term")).toHaveText(["Name", "Key", "Owner", "Team", "Models", "Tags", "Expires", "Status"]);
+  await expect(card.getByRole("term")).toHaveText(["Name", "Key", "Owner", "Team", "Models", "Tags", "Guardrails", "Expires", "Status"]);
 
   // The create-key dialog fits the screen, and its submit button can be reached.
   await page.getByRole("button", { name: "Create key" }).click();
@@ -233,6 +256,7 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     ["Virtual keys", "nightly batch job"],
     ["Providers", "a-rather-long-host-name"],
     ["Alerts", "a-rule-with-a-name-that-is-also-rather-long"],
+    ["Guardrails", "a-guardrail-with-a-name"],
     ["Playground", "Nothing has been said yet"],
     ["Account", "Access tokens"],
     ["Settings", "Session lifetime"],
@@ -243,6 +267,13 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     else await goTo(page, title);
     await expect(page.getByRole("main")).toContainText(shows);
     await measure(page.locator("body"), title);
+    if (title === "Guardrails") {
+      await page.getByRole("link", { name: "Edit", exact: true }).first().click();
+      await expect(heading(page, "Edit guardrail")).toBeVisible();
+      await expect(page.getByRole("group", { name: "Rule 2" })).toBeVisible();
+      await measure(page.locator("body"), "the guardrail form");
+      await goTo(page, "Guardrails");
+    }
     if (title === "Alerts") {
       await measureDialog("Add rule", "Add rule", "Name");
       const views = page.getByRole("navigation", { name: "Alerts sections" });

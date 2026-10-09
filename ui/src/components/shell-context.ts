@@ -9,6 +9,8 @@ export interface ShellUser {
   maySetSettings: boolean;
   /** Whether alerts are theirs to see and change: `can(me, { type: "manageAlerts" })`. */
   mayManageAlerts: boolean;
+  /** Whether guardrails are theirs to see and change: `can(me, { type: "manageGuardrails" })`. */
+  mayManageGuardrails: boolean;
 }
 
 /**

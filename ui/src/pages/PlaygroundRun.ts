@@ -8,6 +8,7 @@ import {
   requestBody,
   retryText,
   SseReader,
+  STOPPED_BY_GUARDRAIL,
   ToolCallAssembler,
   type ChatRequestBody,
   type Message,
@@ -120,6 +121,7 @@ export function useRun(): Run {
             model = chunk.model ?? model;
           }
           if (chunk.error !== undefined) failure = chunk.error;
+          if (chunk.blocked === true && failure === null) failure = STOPPED_BY_GUARDRAIL;
         }
       }
     } catch (caught) {

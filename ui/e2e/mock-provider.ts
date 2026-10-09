@@ -26,7 +26,7 @@ export interface MockProvider {
   baseUrl: string;
   /** The API key the provider asks for. */
   apiKey: string;
-  /** What every completion answers. */
+  /** What every completion answers; a test may change it at any time (at least three words, for a stream). */
   answer: string;
   /** The arguments of the tool call that is answered when the request has tools and no tool result. */
   toolArguments: string;
@@ -58,11 +58,12 @@ export async function startMockProvider(
   models: string[] = ["e2e-model", "e2e-other"],
 ): Promise<MockProvider> {
   const apiKey = `mock-${randomBytes(16).toString("hex")}`;
-  const answer = `Hello from the mock provider ${randomBytes(4).toString("hex")}.`;
+  const first = `Hello from the mock provider ${randomBytes(4).toString("hex")}.`;
   const toolArguments = JSON.stringify({ city: "Oslo" });
   const calls: MockCall[] = [];
   const roles: string[][] = [];
   const state = {
+    answer: first,
     listCalls: 0,
     mode: {} as MockMode,
     usage: { prompt: 3, completion: 7 },
@@ -187,7 +188,7 @@ export async function startMockProvider(
       }
       if (streaming) {
         // The answer in three pieces, then the finish and the usage.
-        const words = answer.split(" ");
+        const words = state.answer.split(" ");
         const pieces = [
           words.slice(0, 2).join(" "),
           ` ${words.slice(2, -1).join(" ")}`,
@@ -215,7 +216,7 @@ export async function startMockProvider(
         choices: [
           {
             index: 0,
-            message: { role: "assistant", content: answer },
+            message: { role: "assistant", content: state.answer },
             finish_reason: "stop",
           },
         ],
@@ -241,7 +242,12 @@ export async function startMockProvider(
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     apiKey,
-    answer,
+    get answer() {
+      return state.answer;
+    },
+    set answer(value: string) {
+      state.answer = value;
+    },
     toolArguments,
     models,
     calls,

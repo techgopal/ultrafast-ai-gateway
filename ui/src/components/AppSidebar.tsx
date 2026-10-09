@@ -32,6 +32,7 @@ type Path =
   | "/users"
   | "/teams"
   | "/limits"
+  | "/guardrails"
   | "/settings"
   | "/account";
 
@@ -43,6 +44,8 @@ interface NavItem {
   settings?: boolean;
   /** Shown only to who may manage alerts. */
   alerts?: boolean;
+  /** Shown only to who may manage guardrails. */
+  guardrails?: boolean;
 }
 
 interface NavSection {
@@ -75,7 +78,7 @@ const sections: NavSection[] = [
       { label: "Users", to: "/users" },
       { label: "Teams", to: "/teams" },
       { label: "Budgets and limits", to: "/limits" },
-      { label: "Guardrails" },
+      { label: "Guardrails", to: "/guardrails", guardrails: true },
       { label: "MCP tools" },
     ],
   },
@@ -148,6 +151,9 @@ export function AppSidebar({ user, onSignOut }: AppSidebarProps) {
                 <SidebarMenu>
                   {section.items
                     .filter((item) => item.alerts !== true || user?.mayManageAlerts === true)
+                    .filter(
+                      (item) => item.guardrails !== true || user?.mayManageGuardrails === true,
+                    )
                     .map((item) => (
                       <NavEntry key={item.label} item={item} pathname={pathname} />
                     ))}

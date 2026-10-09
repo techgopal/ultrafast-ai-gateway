@@ -77,6 +77,11 @@ export const fieldMessages = {
   channelMissing: "No such channel.",
   needsUrl: "Set a URL before enabling this channel.",
   budgetMissing: "no such budget",
+  // The guardrails (`api/guardrails.rs`).
+  guardrailRulesNeeded: "add at least one rule",
+  guardrailMatcherKind: "matcher must be keywords, regex or pii",
+  guardrailPiiType:
+    "unknown PII type; use EMAIL, PHONE, CREDIT_CARD, IBAN, US_SSN, IPV4, IPV6 or SECRET",
 } as const;
 
 /** A 422 of the gateway for these fields. */
@@ -161,6 +166,7 @@ export const errors = {
     "An alert channel with this name already exists.",
   ),
   alert_rule_exists: error(409, "alert_rule_exists", "An alert rule with this name already exists."),
+  guardrail_exists: error(409, "guardrail_exists", "A guardrail with this name already exists."),
   sync_unsupported: error(422, "sync_unsupported", "Add Azure deployments as models by name."),
   sync_failed: error(502, "sync_failed", "The provider did not return its models."),
 } as const satisfies Record<string, GatewayError>;
@@ -207,4 +213,7 @@ export const pipelineErrors = {
     { code: "budget_exceeded", retryAfter: 7200 },
   ),
   unavailable: pipelineError(503, "upstream_error", "No provider could serve this request."),
+  guardrail: pipelineError(400, "invalid_request_error", "Blocked by guardrail 'house-rules'.", {
+    code: "guardrail_blocked",
+  }),
 } as const satisfies Record<string, PipelineError>;

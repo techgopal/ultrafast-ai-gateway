@@ -236,6 +236,8 @@ export interface Chunk {
   model?: string;
   error?: string;
   done?: true;
+  /** A guardrail ended the answer (`finish_reason` is `content_filter`). */
+  blocked?: true;
 }
 
 /** One piece of a tool call in a stream; the id and the name come in its first piece only. */
@@ -273,6 +275,8 @@ export class ToolCallAssembler {
 }
 
 export const BROKE_OFF = "The answer broke off.";
+/** A guardrail ended the answer. The stream does not name it: the log of the call does. */
+export const STOPPED_BY_GUARDRAIL = "A guardrail stopped this answer.";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -313,6 +317,7 @@ export function chunkOf(data: string): Chunk {
     }
     if (deltas.length > 0) chunk.toolCalls = deltas;
   }
+  if (isRecord(first) && first.finish_reason === "content_filter") chunk.blocked = true;
   const { usage } = body;
   if (isRecord(usage) && typeof usage.prompt_tokens === "number" && typeof usage.completion_tokens === "number") {
     chunk.usage = { input: usage.prompt_tokens, output: usage.completion_tokens };

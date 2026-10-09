@@ -120,6 +120,10 @@ export const queryKeys = {
     /** Every way the events are read. */
     allEvents: () => ["alerts", "events"] as const,
   },
+  guardrails: {
+    all: () => ["guardrails"] as const,
+    list: () => ["guardrails", "list"] as const,
+  },
   settings: () => ["settings"] as const,
   /** Admin only: the single sign-on settings. */
   oidc: () => ["settings", "oidc"] as const,
@@ -138,6 +142,8 @@ export interface LogsFilter {
   team_id?: number;
   model?: string;
   errors?: boolean;
+  /** The worst thing the guardrails did to the call. */
+  guardrail?: "blocked" | "redacted" | "flagged";
   /** `name:value`, once for each tag the calls must carry. */
   tag?: string[];
 }
@@ -353,6 +359,12 @@ export const alertRulesOptions = () =>
     queryFn: ({ signal }) => api.get("/api/alerts/rules", { signal }),
   });
 
+export const guardrailsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.guardrails.list(),
+    queryFn: ({ signal }) => api.get("/api/guardrails", { signal }),
+  });
+
 export const settingsOptions = () =>
   queryOptions({
     queryKey: queryKeys.settings(),
@@ -413,6 +425,8 @@ export const useAlertChannels = (enabled = true) =>
   useQuery({ ...alertChannelsOptions(), enabled });
 /** Admin only. The alert rules, with what each is firing for. */
 export const useAlertRules = (enabled = true) => useQuery({ ...alertRulesOptions(), enabled });
+/** Admin only. Every guardrail, with the routes and the number of keys it is attached to. */
+export const useGuardrails = (enabled = true) => useQuery({ ...guardrailsOptions(), enabled });
 
 /** How many entries a page of the audit log has. A page with fewer is the last. */
 export const AUDIT_PAGE_SIZE = 50;
@@ -773,7 +787,7 @@ export const useRemoveTeamMember = () =>
 export const useCreateKey = () =>
   useApiMutation(
     (body: BodyOf<"/api/keys", "post">) => api.post("/api/keys", { body }),
-    () => ({ stale: [queryKeys.keys.all(), audit] }),
+    () => ({ stale: [queryKeys.keys.all(), queryKeys.guardrails.all(), audit] }),
   );
 
 /** Replaces the tags of a key. */
@@ -781,7 +795,7 @@ export const useUpdateKey = () =>
   useApiMutation(
     ({ id, body }: { id: number; body: BodyOf<"/api/keys/{id}", "patch"> }) =>
       api.patch("/api/keys/{id}", { params: { id }, body }),
-    () => ({ stale: [queryKeys.keys.all(), audit] }),
+    () => ({ stale: [queryKeys.keys.all(), queryKeys.guardrails.all(), audit] }),
     // The key is not the caller's to see any more: the list shows what is not so.
     (error) => (isNotFound(error) ? [queryKeys.keys.all()] : []),
   );
@@ -877,7 +891,7 @@ const routeIsGone = (error: unknown) => (isNotFound(error) ? [queryKeys.routes.a
 export const useCreateRoute = () =>
   useApiMutation(
     (body: BodyOf<"/api/routes", "post">) => api.post("/api/routes", { body }),
-    () => ({ stale: [queryKeys.routes.all(), audit] }),
+    () => ({ stale: [queryKeys.routes.all(), queryKeys.guardrails.all(), audit] }),
   );
 
 /** Replaces the route: the body is the whole of it. */
@@ -885,7 +899,7 @@ export const useUpdateRoute = () =>
   useApiMutation(
     ({ id, body }: { id: number; body: BodyOf<"/api/routes/{id}", "put"> }) =>
       api.put("/api/routes/{id}", { params: { id }, body }),
-    () => ({ stale: [queryKeys.routes.all(), audit] }),
+    () => ({ stale: [queryKeys.routes.all(), queryKeys.guardrails.all(), audit] }),
     routeIsGone,
   );
 
@@ -1022,6 +1036,61 @@ export const useDeleteAlertRule = () =>
     // Its events stay, without a rule to filter by.
     () => ({ stale: [...anAlertChanged, queryKeys.alerts.allEvents()] }),
     ruleIsGone,
+  );
+
+// guardrails
+
+// A guardrail shows in the routes and keys it is attached to, and they in it.
+const aGuardrailChanged = [
+  queryKeys.guardrails.all(),
+  queryKeys.routes.all(),
+  queryKeys.keys.all(),
+  audit,
+];
+const guardrailIsGone = (error: unknown) =>
+  isNotFound(error) ? [queryKeys.guardrails.all(), queryKeys.routes.all(), queryKeys.keys.all()] : [];
+
+/** The answer holds the signing secret of an external guardrail, which is shown once. */
+export const useCreateGuardrail = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/guardrails", "post">) => api.post("/api/guardrails", { body }),
+    () => ({ stale: [queryKeys.guardrails.all(), audit] }),
+  );
+
+/** The body may hold a new URL, which is never shown again. */
+export const useUpdateGuardrail = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/guardrails/{id}", "patch"> }) =>
+      api.patch("/api/guardrails/{id}", { params: { id }, body }),
+    () => ({ stale: aGuardrailChanged }),
+    guardrailIsGone,
+  );
+
+export const useDeleteGuardrail = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/guardrails/{id}", { params: { id } }),
+    () => ({ stale: aGuardrailChanged }),
+    guardrailIsGone,
+  );
+
+/** The answer holds the new signing secret, which is shown once. */
+export const useRotateGuardrailSecret = () =>
+  useApiMutation(
+    ({ id }: { id: number }) =>
+      api.post("/api/guardrails/{id}/rotate-secret", { params: { id } }),
+    () => ({ stale: [audit] }),
+    guardrailIsGone,
+  );
+
+/**
+ * Tries rules, or a stored guardrail, on a text. Changes and logs nothing; with
+ * `call_external` the text is sent to the external guardrail's URL.
+ */
+export const useTestGuardrail = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/guardrails/test", "post">) => api.post("/api/guardrails/test", { body }),
+    () => ({ stale: [] }),
+    guardrailIsGone,
   );
 
 /**

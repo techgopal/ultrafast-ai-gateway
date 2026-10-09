@@ -263,6 +263,8 @@ export interface LogRow {
   stream: boolean;
   user_email: string | null;
   requested: string;
+  /** What the guardrails did at worst, or `null` when they found nothing. */
+  guardrails: { action: string } | null;
 }
 
 export interface ModelRow {

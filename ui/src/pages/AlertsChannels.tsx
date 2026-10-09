@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { channelKindText, ChannelDialog } from "@/pages/AlertsChannelsEdit";
-import { VerifySignatures } from "@/pages/AlertsVerify";
+import { VerifySignatures } from "@/components/VerifySignatures";
 
 type Channel = components["schemas"]["ChannelView"];
 

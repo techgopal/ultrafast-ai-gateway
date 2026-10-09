@@ -30,6 +30,7 @@ export type Settings = Schemas["SettingsView"];
 export type AlertChannel = Schemas["ChannelView"];
 export type AlertRule = Schemas["RuleView"];
 export type AlertEvent = Schemas["EventView"];
+export type Guardrail = Schemas["GuardrailView"];
 
 /**
  * The time of the fixtures: what they call past (the expired key and token,
@@ -60,6 +61,9 @@ export const newInviteLink = `/accept-invite#token=${newInviteToken}`;
 // crates/gateway/src/alerts/sign.rs, new_secret: `whsec_` and 32 random bytes as hex.
 export const newChannelSecret = `whsec_${"0123456789abcdef".repeat(4)}`;
 export const rotatedChannelSecret = `whsec_${"fedcba9876543210".repeat(4)}`;
+// The signing secret of an external guardrail is made the same way (`api/guardrails.rs`).
+export const newGuardrailSecret = `whsec_${"a1b2c3d4e5f60718".repeat(4)}`;
+export const rotatedGuardrailSecret = `whsec_${"18f6e5d4c3b2a190".repeat(4)}`;
 
 /** What the gateway shows of a secret: the prefix, an ellipsis and the last 4 characters. */
 function displayOf(prefix: "uf-sk-" | "uf-at-", last4: string): string {
@@ -683,6 +687,56 @@ export const logs = {
 
 export const logList: Log[] = Object.values(logs);
 
+/** A call whose answer had an address redacted. Not in `logList`: the counts of the list do not move. */
+export const redactedLog: Log = log(7, "2026-09-30 11:59:00", platformCall, {
+  guardrails: {
+    action: "redacted",
+    output: {
+      action: "redacted",
+      checked_with: [{ id: 1, name: "mask-emails" }],
+      redactions: { EMAIL: 2 },
+    },
+  },
+});
+
+/** A call refused by a guardrail: the input, with no provider called. */
+export const blockedLog: Log = log(8, "2026-09-30 11:59:30", platformCall, {
+  status: 400,
+  provider: null,
+  model: null,
+  input_tokens: null,
+  output_tokens: null,
+  cost_micros: 0,
+  priced: false,
+  duration_ms: 4,
+  guardrails: {
+    action: "blocked",
+    input: {
+      action: "blocked",
+      checked_with: [{ id: 2, name: "house-rules" }],
+      blocked_by: { id: 2, name: "house-rules" },
+    },
+  },
+});
+
+/** A call a flag rule and an external failure marked. */
+export const flaggedLog: Log = log(9, "2026-09-30 11:59:45", platformCall, {
+  guardrails: {
+    action: "flagged",
+    input: {
+      action: "flagged",
+      checked_with: [
+        { id: 2, name: "house-rules" },
+        { id: 3, name: "acme-scanner" },
+      ],
+      flags: [
+        { guardrail_id: 2, rule_id: "ticket" },
+        { guardrail_id: 3, rule_id: "external_error:timeout" },
+      ],
+    },
+  },
+});
+
 /**
  * A stream the caller left: charged an estimate, priced, and marked. It is
  * not in `logList`, so the counts of the list do not move.
@@ -713,7 +767,7 @@ export const logAttempts: Record<number, LogAttempt[]> = {
 };
 
 export function logDetail(id: number): LogDetail | undefined {
-  const row = logList.find((one) => one.id === id);
+  const row = [...logList, redactedLog, blockedLog, flaggedLog].find((one) => one.id === id);
   return row === undefined ? undefined : { ...row, attempts: logAttempts[id] ?? [] };
 }
 
@@ -1068,6 +1122,90 @@ export const alertChannels = {
 } satisfies Record<string, AlertChannel>;
 
 export const alertChannelList: AlertChannel[] = Object.values(alertChannels);
+
+// guardrails as `/api/guardrails` shows them
+
+export const guardrails = {
+  /** Default for every call: emails never leave in an answer. */
+  pii: {
+    id: 1,
+    name: "mask-emails",
+    description: "Emails never leave in an answer.",
+    kind: "rules",
+    enabled: true,
+    is_default: true,
+    rules: [
+      { id: "email", matcher: { pii: ["EMAIL"] }, action: "redact", directions: "output" },
+    ],
+    url_host: null,
+    timeout_ms: null,
+    fail_mode: null,
+    directions: null,
+    created_at: "2026-09-25 09:00:00",
+    routes: [],
+    key_count: 0,
+  },
+  /** Attached to a route and to two keys. */
+  words: {
+    id: 2,
+    name: "house-rules",
+    description: "",
+    kind: "rules",
+    enabled: true,
+    is_default: false,
+    rules: [
+      {
+        id: "secrets",
+        matcher: { keywords: { words: ["swordfish", "project x"], whole_word: true } },
+        action: "block",
+        directions: "both",
+      },
+      { id: "ticket", matcher: { regex: "TICKET-[0-9]+" }, action: "flag", directions: "input" },
+    ],
+    url_host: null,
+    timeout_ms: null,
+    fail_mode: null,
+    directions: null,
+    created_at: "2026-09-26 09:00:00",
+    routes: [{ id: 1, name: "support-chat" }],
+    key_count: 2,
+  },
+  external: {
+    id: 3,
+    name: "acme-scanner",
+    description: "The security team's scanner.",
+    kind: "external",
+    enabled: true,
+    is_default: false,
+    rules: [],
+    url_host: "https://guard.example.test",
+    timeout_ms: 3000,
+    fail_mode: "open",
+    directions: "both",
+    created_at: "2026-09-27 09:00:00",
+    routes: [],
+    key_count: 0,
+  },
+  /** From a configuration file: no URL yet, and so off. */
+  imported: {
+    id: 4,
+    name: "imported-scanner",
+    description: "",
+    kind: "external",
+    enabled: false,
+    is_default: false,
+    rules: [],
+    url_host: "",
+    timeout_ms: 3000,
+    fail_mode: "closed",
+    directions: "output",
+    created_at: "2026-09-28 09:00:00",
+    routes: [],
+    key_count: 0,
+  },
+} satisfies Record<string, Guardrail>;
+
+export const guardrailList: Guardrail[] = Object.values(guardrails);
 
 export const alertRules = {
   budget: {

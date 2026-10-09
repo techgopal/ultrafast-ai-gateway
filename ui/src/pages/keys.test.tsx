@@ -192,6 +192,7 @@ describe("the list of keys", () => {
       "Team",
       "Models",
       "Tags",
+      "Guardrails",
       "Expires",
       "Status",
       "Actions",
@@ -465,6 +466,7 @@ describe("the list of keys", () => {
       "Team",
       "Models",
       "Tags",
+      "Guardrails",
       "Expires",
       "Status",
     ]);
@@ -553,6 +555,7 @@ describe("the list of keys", () => {
       "Team",
       "Models",
       "Tags",
+      "Guardrails",
       "Expires",
       "Status",
     ]);

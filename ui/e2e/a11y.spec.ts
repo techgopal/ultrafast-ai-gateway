@@ -25,7 +25,7 @@ async function markTabStops(scope: Locator): Promise<number> {
   return scope.evaluate(async (root) => {
     const candidates = [
       ...root.querySelectorAll<HTMLElement>(
-        "a[href], button, input, select, textarea, [tabindex], [contenteditable]",
+        "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable]",
       ),
     ];
     const stops = candidates.filter(
@@ -195,6 +195,26 @@ for (const scheme of ["light", "dark"] as const) {
     expect(await axeProblems(page)).toEqual([]);
     await views.getByRole("link", { name: "History" }).click();
     await expect(page.getByText("No alerts yet")).toBeVisible();
+    expect(await axeProblems(page)).toEqual([]);
+
+    // Guardrails: the list and the form of a guardrail with its rules and Try it.
+    await api.send("POST", "/api/guardrails", {
+      name: "a guardrail",
+      kind: "rules",
+      is_default: true,
+      rules: [
+        { id: "email", matcher: { pii: ["EMAIL"] }, action: "redact", directions: "output" },
+        { id: "words", matcher: { keywords: { words: ["swordfish"] } }, action: "block", directions: "input" },
+      ],
+    });
+    await goTo(page, "Guardrails");
+    await expect(page.getByRole("main")).toContainText("a guardrail");
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+    await page.getByRole("link", { name: "Edit", exact: true }).first().click();
+    await expect(heading(page, "Edit guardrail")).toBeVisible();
+    await expect(page.getByRole("group", { name: "Rule 2" })).toBeVisible();
+    await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
 
     await goTo(page, "Virtual keys");

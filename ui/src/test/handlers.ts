@@ -361,6 +361,42 @@ export const handlers = [
     ok("get", "/api/alerts/events", 200, { events: fixtures.alertEventList }),
   ),
 
+  // guardrails
+  handler("get", "/api/guardrails", () =>
+    ok("get", "/api/guardrails", 200, { guardrails: fixtures.guardrailList }),
+  ),
+  handler("post", "/api/guardrails", () =>
+    ok("post", "/api/guardrails", 201, {
+      guardrail: fixtures.guardrails.external,
+      secret: fixtures.newGuardrailSecret,
+    }),
+  ),
+  // Declared before `{id}`: "test" is no id.
+  handler("post", "/api/guardrails/test", () =>
+    ok("post", "/api/guardrails/test", 200, {
+      redacted_text: "Write to [REDACTED:EMAIL].",
+      outcome: { blocked_by: null, flags: [], redactions: { EMAIL: 1 } },
+    }),
+  ),
+  handler("get", "/api/guardrails/{id}", (call) => {
+    const one = byId(fixtures.guardrailList, call);
+    return one === undefined ? notFound() : ok("get", "/api/guardrails/{id}", 200, one);
+  }),
+  handler("patch", "/api/guardrails/{id}", (call) => {
+    const one = byId(fixtures.guardrailList, call);
+    return one === undefined ? notFound() : ok("patch", "/api/guardrails/{id}", 200, one);
+  }),
+  handler("delete", "/api/guardrails/{id}", (call) =>
+    byId(fixtures.guardrailList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("post", "/api/guardrails/{id}/rotate-secret", (call) =>
+    byId(fixtures.guardrailList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/guardrails/{id}/rotate-secret", 200, {
+          secret: fixtures.rotatedGuardrailSecret,
+        }),
+  ),
+
   // audit
   handler("get", "/api/audit", () =>
     ok("get", "/api/audit", 200, { entries: fixtures.auditEntries }),

@@ -130,6 +130,11 @@ describe("chunkOf", () => {
 
   test("done, an error, and what is not understood", () => {
     expect(chunkOf("[DONE]")).toEqual({ done: true });
+    // A guardrail ended the answer.
+    expect(chunkOf(JSON.stringify({ choices: [{ delta: {}, finish_reason: "content_filter" }] }))).toEqual({
+      blocked: true,
+    });
+    expect(chunkOf(JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }))).toEqual({});
     expect(chunkOf(JSON.stringify({ error: { message: "upstream failed", type: "upstream_error" } }))).toEqual({
       error: "upstream failed",
     });
