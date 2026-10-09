@@ -1520,6 +1520,13 @@ export interface components {
              *     import made). `null` for `rules`.
              */
             url_host: string | null;
+            /**
+             * @description Whether the gateway can use it as stored. `false` for an external
+             *     guardrail whose URL or secret cannot be read (it fails by its mode on
+             *     every check), and for an enabled rules guardrail whose rules the
+             *     gateway is not running (they do not compile). A disabled one is `true`.
+             */
+            usable: boolean;
         };
         /** @description What an import did, or with `dry_run` would do. */
         ImportReport: {

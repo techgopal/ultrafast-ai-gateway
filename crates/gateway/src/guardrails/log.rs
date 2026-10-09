@@ -145,6 +145,25 @@ impl GuardrailLog {
         Some(log)
     }
 
+    /// What someone who is not an admin may see: the action of the call and
+    /// of each direction, and nothing about which guardrail, rule or type
+    /// did it (a flag is the silent action, and the people it watches should
+    /// not be able to read its rules from their own log).
+    pub fn action_only(&self) -> Self {
+        let strip = |side: &SideLog| SideLog {
+            action: side.action,
+            checked_with: Vec::new(),
+            blocked_by: None,
+            redactions: BTreeMap::new(),
+            flags: Vec::new(),
+        };
+        GuardrailLog {
+            action: self.action,
+            input: self.input.as_ref().map(strip),
+            output: self.output.as_ref().map(strip),
+        }
+    }
+
     /// The stored form.
     pub fn to_stored(&self) -> String {
         serde_json::to_string(self).expect("a plain struct serializes")

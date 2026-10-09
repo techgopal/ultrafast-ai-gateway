@@ -17,6 +17,7 @@ use super::{path_id, require, ApiError, Authed};
 use crate::app::AppState;
 use crate::guardrails::log::{GuardrailLog, LoggedAction};
 use crate::identity::policy::{list_scope, Action, Scope};
+use crate::identity::Principal;
 use crate::store::{LogDetail, LogFilter, LogScope};
 use crate::tags::{self, Tags};
 
@@ -93,7 +94,10 @@ pub struct LogView {
     /// What the guardrails found, when they found anything: the worst
     /// action, and per direction the guardrails checked with (ids and names),
     /// the one that blocked, the replacements made by PII type or rule id, and
-    /// the flag rules that matched. Never the text that matched. `null` when nothing was found.
+    /// the flag rules that matched. Never the text that matched. Only an
+    /// admin sees those details; everyone else gets the action of the call
+    /// and of each direction, with `checked_with` empty. `null` when nothing
+    /// was found.
     #[schema(required)]
     pub guardrails: Option<GuardrailLog>,
 }
@@ -166,7 +170,10 @@ pub struct LogDetailView {
     /// What the guardrails found, when they found anything: the worst
     /// action, and per direction the guardrails checked with (ids and names),
     /// the one that blocked, the replacements made by PII type or rule id, and
-    /// the flag rules that matched. Never the text that matched. `null` when nothing was found.
+    /// the flag rules that matched. Never the text that matched. Only an
+    /// admin sees those details; everyone else gets the action of the call
+    /// and of each direction, with `checked_with` empty. `null` when nothing
+    /// was found.
     #[schema(required)]
     pub guardrails: Option<GuardrailLog>,
     pub attempts: Vec<LogAttempt>,
@@ -200,6 +207,17 @@ impl LogDetailView {
             guardrails: l.guardrails,
             attempts,
         }
+    }
+}
+
+impl LogView {
+    /// The row as `me` may see it: the details of the guardrails' work are
+    /// for admins.
+    fn shown_to(mut self, me: &Principal) -> Self {
+        if !me.is_admin() {
+            self.guardrails = self.guardrails.map(|g| g.action_only());
+        }
+        self
     }
 }
 
@@ -432,7 +450,7 @@ pub async fn list(
         .store
         .list_logs(&store_scope(list_scope(me)), &filter, limit)
         .await?;
-    let logs: Vec<LogView> = rows.iter().map(LogView::from).collect();
+    let logs: Vec<LogView> = rows.iter().map(|r| LogView::from(r).shown_to(me)).collect();
     Ok(Json(json!({ "logs": logs })).into_response())
 }
 
@@ -476,7 +494,11 @@ pub async fn view(
         },
     )?;
     let attempts: Vec<LogAttempt> = serde_json::from_str(&detail.row.attempts).unwrap_or_default();
-    Ok(Json(LogDetailView::new(LogView::from(&detail), attempts)).into_response())
+    Ok(Json(LogDetailView::new(
+        LogView::from(&detail).shown_to(me),
+        attempts,
+    ))
+    .into_response())
 }
 
 #[cfg(test)]

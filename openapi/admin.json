@@ -9099,7 +9099,8 @@
           "directions",
           "created_at",
           "routes",
-          "key_count"
+          "key_count",
+          "usable"
         ],
         "properties": {
           "created_at": {
@@ -9177,6 +9178,10 @@
               "null"
             ],
             "description": "`external`: scheme, host and port of the URL, like\n`https://guard.example.com`; empty until a URL is set (a guardrail an\nimport made). `null` for `rules`."
+          },
+          "usable": {
+            "type": "boolean",
+            "description": "Whether the gateway can use it as stored. `false` for an external\nguardrail whose URL or secret cannot be read (it fails by its mode on\nevery check), and for an enabled rules guardrail whose rules the\ngateway is not running (they do not compile). A disabled one is `true`."
           }
         }
       },
@@ -9645,7 +9650,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/GuardrailLog",
-                "description": "What the guardrails found, when they found anything: the worst\naction, and per direction the guardrails checked with (ids and names),\nthe one that blocked, the replacements made by PII type or rule id, and\nthe flag rules that matched. Never the text that matched. `null` when nothing was found."
+                "description": "What the guardrails found, when they found anything: the worst\naction, and per direction the guardrails checked with (ids and names),\nthe one that blocked, the replacements made by PII type or rule id, and\nthe flag rules that matched. Never the text that matched. Only an\nadmin sees those details; everyone else gets the action of the call\nand of each direction, with `checked_with` empty. `null` when nothing\nwas found."
               },
               {
                 "type": "null"
@@ -9821,7 +9826,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/GuardrailLog",
-                "description": "What the guardrails found, when they found anything: the worst\naction, and per direction the guardrails checked with (ids and names),\nthe one that blocked, the replacements made by PII type or rule id, and\nthe flag rules that matched. Never the text that matched. `null` when nothing was found."
+                "description": "What the guardrails found, when they found anything: the worst\naction, and per direction the guardrails checked with (ids and names),\nthe one that blocked, the replacements made by PII type or rule id, and\nthe flag rules that matched. Never the text that matched. Only an\nadmin sees those details; everyone else gets the action of the call\nand of each direction, with `checked_with` empty. `null` when nothing\nwas found."
               },
               {
                 "type": "null"

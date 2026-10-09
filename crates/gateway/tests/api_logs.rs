@@ -616,6 +616,51 @@ async fn the_guardrail_outcome_is_in_the_list_and_the_detail() {
 }
 
 #[tokio::test]
+async fn people_who_are_not_admins_see_only_what_the_guardrails_did_not_which_rule() {
+    let org = guarded_world().await;
+    // The member whose calls these are, and the lead of the team
+    for who in ["lena", "arjun"] {
+        let me = org.sign_in(who).await;
+        let (status, list) = org.call(Some(&me), "GET", "/api/logs", None).await;
+        assert_eq!(status, StatusCode::OK, "{list}");
+        let row = |id: i64| {
+            list["logs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|l| l["id"] == id)
+                .unwrap_or_else(|| panic!("{who} sees {id}"))
+                .clone()
+        };
+        let three = &row(3)["guardrails"];
+        assert_eq!(three["action"], "redacted", "{who}");
+        assert_eq!(three["output"]["action"], "redacted", "{who}");
+        assert_eq!(three["output"]["checked_with"], json!([]), "{who}");
+        assert!(
+            three["output"].get("redactions").is_none(),
+            "{who}: {three}"
+        );
+        let four = &row(4)["guardrails"];
+        assert_eq!(four["input"]["action"], "blocked", "{who}");
+        assert!(four["input"].get("blocked_by").is_none(), "{who}: {four}");
+        let two = &row(2)["guardrails"];
+        assert!(two["input"].get("flags").is_none(), "{who}: {two}");
+        let (_, one) = org.call(Some(&me), "GET", "/api/logs/5", None).await;
+        assert_eq!(one["guardrails"]["action"], "blocked", "{who}");
+        assert_eq!(
+            one["guardrails"]["input"]["checked_with"],
+            json!([]),
+            "{who}"
+        );
+        assert_eq!(one["guardrails"]["output"]["action"], "blocked", "{who}");
+    }
+    // an admin still sees the detail
+    let maya = org.sign_in("maya").await;
+    let (_, one) = org.call(Some(&maya), "GET", "/api/logs/5", None).await;
+    assert_eq!(one["guardrails"]["input"]["checked_with"][0]["name"], "pii");
+}
+
+#[tokio::test]
 async fn the_guardrail_filter_matches_the_worst_action_and_combines() {
     let org = guarded_world().await;
     let sorted = |mut v: Vec<i64>| {

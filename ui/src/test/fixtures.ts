@@ -1144,6 +1144,7 @@ export const guardrails = {
     created_at: "2026-09-25 09:00:00",
     routes: [],
     key_count: 0,
+    usable: true,
   },
   /** Attached to a route and to two keys. */
   words: {
@@ -1169,6 +1170,7 @@ export const guardrails = {
     created_at: "2026-09-26 09:00:00",
     routes: [{ id: 1, name: "support-chat" }],
     key_count: 2,
+    usable: true,
   },
   external: {
     id: 3,
@@ -1185,6 +1187,7 @@ export const guardrails = {
     created_at: "2026-09-27 09:00:00",
     routes: [],
     key_count: 0,
+    usable: true,
   },
   /** From a configuration file: no URL yet, and so off. */
   imported: {
@@ -1202,6 +1205,7 @@ export const guardrails = {
     created_at: "2026-09-28 09:00:00",
     routes: [],
     key_count: 0,
+    usable: true,
   },
 } satisfies Record<string, Guardrail>;
 

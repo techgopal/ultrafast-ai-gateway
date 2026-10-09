@@ -25,7 +25,7 @@ use crate::guardrails::{
     check_texts, Compiled, Direction, Directions, Outcome, RuleSpec, MAX_RULES,
 };
 use crate::identity::policy::Action;
-use crate::snapshot::{external_of, SnapGuardrail};
+use crate::snapshot::{external_of, SnapGuardrail, Snapshot};
 use crate::store::{AuditEntry, GuardrailPatch, GuardrailRow, NewGuardrail, Store, StoreError, Tx};
 
 /// The kinds of guardrail.
@@ -141,6 +141,11 @@ pub struct GuardrailView {
     pub routes: Vec<GuardrailRef>,
     /// How many keys it is attached to.
     pub key_count: i64,
+    /// Whether the gateway can use it as stored. `false` for an external
+    /// guardrail whose URL or secret cannot be read (it fails by its mode on
+    /// every check), and for an enabled rules guardrail whose rules the
+    /// gateway is not running (they do not compile). A disabled one is `true`.
+    pub usable: bool,
 }
 
 /// A created guardrail and, for an external one, its signing secret.
@@ -233,10 +238,25 @@ pub(crate) fn rules_of(row: &GuardrailRow) -> Vec<RuleSpec> {
     }
 }
 
+/// Whether the snapshot holds `row` the way it is stored and can use it.
+fn usable_in(snapshot: &Snapshot, row: &GuardrailRow) -> bool {
+    if !row.enabled {
+        return true;
+    }
+    match snapshot.guardrail(row.id) {
+        None => false,
+        Some(g) => match &g.external {
+            Some(external) => external.usable,
+            None => g.rules_text == row.rules,
+        },
+    }
+}
+
 fn view_of(
     row: &GuardrailRow,
     routes: &[(i64, i64, String)],
     key_counts: &[(i64, i64)],
+    snapshot: &Snapshot,
 ) -> GuardrailView {
     let external = row.kind == "external";
     GuardrailView {
@@ -266,13 +286,14 @@ fn view_of(
             .iter()
             .find(|(guardrail, _)| *guardrail == row.id)
             .map_or(0, |(_, n)| *n),
+        usable: usable_in(snapshot, row),
     }
 }
 
-async fn full_view(store: &Store, row: &GuardrailRow) -> Result<GuardrailView, ApiError> {
-    let routes = store.guardrail_routes().await?;
-    let keys = store.guardrail_key_counts().await?;
-    Ok(view_of(row, &routes, &keys))
+async fn full_view(state: &AppState, row: &GuardrailRow) -> Result<GuardrailView, ApiError> {
+    let routes = state.store.guardrail_routes().await?;
+    let keys = state.store.guardrail_key_counts().await?;
+    Ok(view_of(row, &routes, &keys, &state.snapshot.load()))
 }
 
 async fn guardrail_of(store: &Store, raw_id: &str) -> Result<GuardrailRow, ApiError> {
@@ -531,7 +552,11 @@ pub async fn list(
     let rows = state.store.list_guardrails().await?;
     let routes = state.store.guardrail_routes().await?;
     let keys = state.store.guardrail_key_counts().await?;
-    let guardrails: Vec<GuardrailView> = rows.iter().map(|g| view_of(g, &routes, &keys)).collect();
+    let snapshot = state.snapshot.load();
+    let guardrails: Vec<GuardrailView> = rows
+        .iter()
+        .map(|g| view_of(g, &routes, &keys, &snapshot))
+        .collect();
     Ok(Json(GuardrailList { guardrails }).into_response())
 }
 
@@ -559,7 +584,7 @@ pub async fn view(
 ) -> Result<Response, ApiError> {
     require(&authed.principal, &Action::ManageGuardrails)?;
     let row = guardrail_of(&state.store, &raw_id).await?;
-    Ok(Json(full_view(&state.store, &row).await?).into_response())
+    Ok(Json(full_view(&state, &row).await?).into_response())
 }
 
 #[utoipa::path(
@@ -722,7 +747,7 @@ pub async fn create(
         .ok_or_else(|| anyhow!("the guardrail is missing after it was created"))?;
     // The only time the secret is sent.
     let body = CreatedGuardrail {
-        guardrail: full_view(store, &row).await?,
+        guardrail: full_view(&state, &row).await?,
         secret: external.map(|(_, _, _, secret)| secret),
     };
     Ok((StatusCode::CREATED, Json(body)).into_response())
@@ -881,7 +906,7 @@ pub async fn update(
         },
     );
     if changes.is_empty() {
-        return Ok(Json(full_view(store, &was).await?).into_response());
+        return Ok(Json(full_view(&state, &was).await?).into_response());
     }
     let mut tx = store.begin().await?;
     let updated = tx
@@ -925,7 +950,7 @@ pub async fn update(
         .guardrail_by_id(was.id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    Ok(Json(full_view(store, &row).await?).into_response())
+    Ok(Json(full_view(&state, &row).await?).into_response())
 }
 
 #[utoipa::path(

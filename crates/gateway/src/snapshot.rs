@@ -239,10 +239,13 @@ fn push_new(ids: &mut Vec<i64>, id: i64) {
     }
 }
 
-/// Builds every enabled guardrail. A guardrail whose rules do not compile or
-/// whose URL or secret cannot be read is logged and left out; the API checks
-/// rules before it stores them, so this only happens to a row written some
-/// other way.
+/// Builds every enabled guardrail. A rules guardrail that does not compile
+/// (the API checks rules before it stores them, so this only happens to a row
+/// written some other way) keeps the compiled rules of the `previous`
+/// snapshot, if it had any, and is otherwise logged and left out; the view
+/// then shows it as not in force. An external one that cannot be called stays
+/// and fails by its mode. If compiling itself fails (its thread panicked) the
+/// whole load fails, so a refresh keeps the snapshot it has.
 ///
 /// Compiling can take long for a large rule set, so it runs off the async
 /// threads, and a guardrail whose id, name and rules text are what the
@@ -252,7 +255,7 @@ async fn load_guardrails(
     rows: &[GuardrailRow],
     cipher: &Cipher,
     previous: Option<&Snapshot>,
-) -> (HashMap<i64, Arc<SnapGuardrail>>, Vec<i64>, usize) {
+) -> Result<(HashMap<i64, Arc<SnapGuardrail>>, Vec<i64>, usize)> {
     enum Slot {
         Ready(Arc<SnapGuardrail>),
         Compile(usize),
@@ -292,10 +295,7 @@ async fn load_guardrails(
     } else {
         tokio::task::spawn_blocking(move || pending.iter().map(rules_guardrail).collect())
             .await
-            .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "compiling guardrails failed");
-                Vec::new()
-            })
+            .map_err(|e| anyhow::anyhow!("compiling guardrails failed: {e}"))?
     };
     let mut guardrails = HashMap::new();
     // By name (rows come by name): the order the defaults apply in.
@@ -305,7 +305,14 @@ async fn load_guardrails(
             Slot::Ready(built) => built,
             Slot::Compile(i) => match compiled.get_mut(i).and_then(Option::take) {
                 Some(built) => Arc::new(built),
-                None => continue,
+                // It does not compile: what ran before keeps running
+                None => match previous
+                    .and_then(|p| p.guardrails.get(&g.id))
+                    .filter(|old| old.rules.is_some())
+                {
+                    Some(old) => old.clone(),
+                    None => continue,
+                },
             },
         };
         if g.is_default {
@@ -313,7 +320,7 @@ async fn load_guardrails(
         }
         guardrails.insert(g.id, built);
     }
-    (guardrails, defaults, compiled_count)
+    Ok((guardrails, defaults, compiled_count))
 }
 
 fn rules_guardrail(g: &GuardrailRow) -> Option<SnapGuardrail> {
@@ -686,7 +693,7 @@ impl Snapshot {
                 }));
         }
         let (guardrails, default_guardrails, guardrails_compiled) =
-            load_guardrails(&rows.guardrails, cipher, previous).await;
+            load_guardrails(&rows.guardrails, cipher, previous).await?;
         Ok(Snapshot {
             keys,
             providers,

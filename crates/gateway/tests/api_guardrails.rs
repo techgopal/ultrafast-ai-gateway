@@ -1642,6 +1642,144 @@ async fn a_refresh_that_changed_no_guardrail_compiles_nothing() {
     assert_eq!(v["outcome"]["flags"][0]["rule_id"], "w");
 }
 
+#[tokio::test]
+async fn an_edit_that_keeps_the_length_of_the_rules_is_compiled_again() {
+    use ultrafast_gateway::snapshot::Snapshot;
+
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let state = &org.api.state;
+    let rule = |word: &str| json!([{ "id": "w", "matcher": { "keywords": { "words": [word] } }, "action": "flag", "directions": "both" }]);
+    let (status, v) = org
+        .call(
+            Some(&maya),
+            "POST",
+            LIST,
+            Some(json!({ "name": "a", "kind": "rules", "rules": rule("zed") })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    let a = v["guardrail"]["id"].as_i64().unwrap();
+    let first = Snapshot::load(&org.api.store, &state.cipher).await.unwrap();
+    assert_eq!(first.guardrails_compiled(), 1);
+    // "zed" to "zad": the same number of bytes, other rules.
+    let (status, v) = org
+        .call(
+            Some(&maya),
+            "PATCH",
+            &path(a),
+            Some(json!({ "rules": rule("zad") })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(state.snapshot.load().guardrails_compiled(), 1);
+    let (_, v) = org
+        .call(
+            Some(&maya),
+            "POST",
+            "/api/guardrails/test",
+            Some(json!({ "guardrail_id": a, "direction": "input", "text": "a zad and a zed" })),
+        )
+        .await;
+    assert_eq!(v["outcome"]["flags"][0]["rule_id"], "w");
+    let snap = state.snapshot.load();
+    let rules = &snap.guardrail(a).unwrap().rules_text;
+    assert!(rules.contains("zad") && !rules.contains("zed"), "{rules}");
+}
+
+#[tokio::test]
+async fn rules_that_stop_compiling_keep_running_as_they_were_and_show_as_not_usable() {
+    use ultrafast_gateway::snapshot::Snapshot;
+    use ultrafast_gateway::store::GuardrailPatch;
+
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let state = &org.api.state;
+    let a = make_id(&org, &maya, "a").await;
+    let first = Snapshot::load(&org.api.store, &state.cipher).await.unwrap();
+    let was = first.guardrail(a).unwrap().clone();
+    // The stored rules are broken by a write the API would have refused.
+    let mut tx = org.api.store.begin().await.unwrap();
+    tx.update_guardrail(
+        a,
+        GuardrailPatch {
+            rules: Some("not json"),
+            ..GuardrailPatch::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let next = Snapshot::load_after(&org.api.store, &state.cipher, Some(&first))
+        .await
+        .unwrap();
+    let kept = next.guardrail(a).expect("still in force");
+    assert!(std::sync::Arc::ptr_eq(kept, &was), "the old rules run on");
+    // Without a snapshot to fall back on it is left out.
+    let fresh = Snapshot::load(&org.api.store, &state.cipher).await.unwrap();
+    assert!(fresh.guardrail(a).is_none());
+    // The view says it is not in force.
+    state.refresh().await.unwrap();
+    let (status, v) = org.call(Some(&maya), "GET", &path(a), None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["usable"], false, "{v}");
+}
+
+#[tokio::test]
+async fn an_external_guardrail_that_cannot_be_called_shows_as_not_usable() {
+    use ultrafast_gateway::store::GuardrailPatch;
+
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let ok = make(
+        &org,
+        &maya,
+        external_body("ok", "https://hooks.example.com/x"),
+    )
+    .await;
+    let ok = ok["guardrail"]["id"].as_i64().unwrap();
+    let bad = make(
+        &org,
+        &maya,
+        external_body("bad", "https://hooks.example.com/y"),
+    )
+    .await;
+    let bad = bad["guardrail"]["id"].as_i64().unwrap();
+    let off = make(
+        &org,
+        &maya,
+        json!({ "name": "off", "kind": "rules", "rules": [pii_email()], "enabled": false }),
+    )
+    .await;
+    let off = off["guardrail"]["id"].as_i64().unwrap();
+    // The stored URL can no longer be read (not encrypted with this key).
+    let mut tx = org.api.store.begin().await.unwrap();
+    tx.update_guardrail(
+        bad,
+        GuardrailPatch {
+            url: Some((b"not a ciphertext", "https://hooks.example.com")),
+            ..GuardrailPatch::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    org.api.state.refresh().await.unwrap();
+    let (_, v) = org.call(Some(&maya), "GET", LIST, None).await;
+    let usable = |id: i64| {
+        v["guardrails"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["id"] == id)
+            .unwrap()["usable"]
+            .clone()
+    };
+    assert_eq!(usable(ok), true, "{v}");
+    assert_eq!(usable(bad), false, "{v}");
+    assert_eq!(usable(off), true, "a disabled guardrail is not judged");
+}
+
 /// A writer that commits while an admin write is between its reads and its
 /// write must not fail it (a deferred SQLite transaction would, with 517).
 #[tokio::test]
