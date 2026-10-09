@@ -131,6 +131,9 @@ export const queryKeys = {
     /** One version of a template: below its detail, so what drops or marks the template stale does the same to it. */
     version: (id: number, version: number) => ["prompts", DETAIL, id, "version", version] as const,
   },
+  playground: {
+    config: () => ["playground", "config"] as const,
+  },
   settings: () => ["settings"] as const,
   /** Admin only: the single sign-on settings. */
   oidc: () => ["settings", "oidc"] as const,
@@ -380,6 +383,12 @@ export const promptsOptions = () =>
     queryFn: ({ signal }) => api.get("/api/prompts", { signal }),
   });
 
+export const playgroundConfigOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.playground.config(),
+    queryFn: ({ signal }) => api.get("/api/playground/config", { signal }),
+  });
+
 export const promptOptions = (id: number) =>
   queryOptions({
     queryKey: queryKeys.prompts.detail(id),
@@ -459,6 +468,8 @@ export const useAlertRules = (enabled = true) => useQuery({ ...alertRulesOptions
 export const useGuardrails = (enabled = true) => useQuery({ ...guardrailsOptions(), enabled });
 /** Every prompt template, by name, with its latest version's model and variables. Anyone signed in may read them. */
 export const usePrompts = (enabled = true) => useQuery({ ...promptsOptions(), enabled });
+/** What the playground needs to know of the gateway before it sends: the audio cap. Anyone signed in may read it. */
+export const usePlaygroundConfig = (enabled = true) => useQuery({ ...playgroundConfigOptions(), enabled });
 /** One template with the numbers of its versions. */
 export const usePrompt = (id: number, enabled = true) => useQuery({ ...promptOptions(id), enabled });
 /** The text of one version, read only when `enabled`. */

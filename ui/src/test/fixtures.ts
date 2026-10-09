@@ -1332,6 +1332,10 @@ export const alertEvents = {
 
 export const alertEventList: AlertEvent[] = Object.values(alertEvents);
 
+// what `/api/playground/config` says: the gateway's default audio cap
+
+export const playgroundConfig = { max_audio_bytes: 25 * 1024 * 1024 };
+
 // prompt templates as `/api/prompts` shows them
 
 export const prompts = {

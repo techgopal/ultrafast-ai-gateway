@@ -4,6 +4,7 @@
 // fetched from anywhere else.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { playgroundSpeech, playgroundTranscribe } from "@/api/client";
+import { usePlaygroundConfig } from "@/api/queries";
 import { failureText } from "@/pages/PlaygroundRun";
 import type { components } from "@/api/schema";
 import { control } from "@/components/classes";
@@ -76,6 +77,8 @@ function Transcribe({ choices }: { choices: readonly Choice[] }) {
   const [transcript, setTranscript] = useState<string | null>(null);
   const controller = useRef<AbortController | null>(null);
   const target = effective(choices, chosen);
+  // The gateway's own cap; until it is known (or if it cannot be read) the default one.
+  const cap = usePlaygroundConfig().data?.max_audio_bytes;
 
   useEffect(
     () => () => {
@@ -90,7 +93,7 @@ function Transcribe({ choices }: { choices: readonly Choice[] }) {
       setFileError(NO_FILE);
       return;
     }
-    const refused = checkAudioFile(file);
+    const refused = checkAudioFile(file, cap);
     setFileError(refused);
     if (refused !== undefined) return;
     const abort = new AbortController();
@@ -153,7 +156,7 @@ function Transcribe({ choices }: { choices: readonly Choice[] }) {
               onChange={(event) => {
                 const chosenFile = event.target.files?.[0] ?? null;
                 setFile(chosenFile);
-                setFileError(chosenFile === null ? undefined : checkAudioFile(chosenFile));
+                setFileError(chosenFile === null ? undefined : checkAudioFile(chosenFile, cap));
               }}
             />
           )}

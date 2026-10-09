@@ -189,6 +189,34 @@ describe("the prompt template picker", () => {
     expect(sent[0]?.prompt).toEqual({ id: "summarize", version: 2, variables: { text: "x" } });
   });
 
+  test("a version that is asked for is not sent as the latest while the versions are being read", async () => {
+    const sent = chats();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    override("get", "/api/prompts/{id}", async () => {
+      await gate;
+      return ok("get", "/api/prompts/{id}", 200, fixtures.promptViews.summarize);
+    });
+    await page("/playground?prompt=summarize&version=2");
+    // The latest version is read, so its variables are here; the list of versions is not.
+    await fill("Variable: text", "x");
+    await fill("Variable: audience", "kids");
+    await userEvent.click(message());
+    await userEvent.paste("Go");
+    expect(sendButton()).toBeDisabled();
+    release();
+    await waitFor(() => {
+      expect(sendButton()).toBeEnabled();
+    });
+    await userEvent.click(sendButton());
+    await waitFor(() => {
+      expect(sent).toHaveLength(1);
+    });
+    expect(sent[0]?.prompt).toEqual({ id: "summarize", version: 2, variables: { text: "x" } });
+  });
+
   test("a link to a template that is not there, or a version that is not, chooses what is", async () => {
     await page("/playground?prompt=gone&version=2");
     expect(await templatePicker()).toHaveTextContent("No template");

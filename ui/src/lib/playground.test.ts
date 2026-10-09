@@ -451,3 +451,11 @@ test("a file over the default audio cap is refused, one at the cap is not", () =
   expect(checkAudioFile({ size: AUDIO_FILE_LIMIT })).toBeUndefined();
   expect(checkAudioFile({ size: AUDIO_FILE_LIMIT + 1 })).toMatch(/25 MiB/);
 });
+
+test("a file is checked against the cap the gateway names, in MiB when it is whole ones", () => {
+  expect(checkAudioFile({ size: 26 * 1024 * 1024 }, 64 * 1024 * 1024)).toBeUndefined();
+  expect(checkAudioFile({ size: 3 * 1024 * 1024 }, 2 * 1024 * 1024)).toBe(
+    "The file is larger than 2 MiB, the most the gateway takes.",
+  );
+  expect(checkAudioFile({ size: 1001 }, 1000)).toBe("The file is larger than 1000 bytes, the most the gateway takes.");
+});

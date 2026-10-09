@@ -410,6 +410,11 @@ export const handlers = [
         }),
   ),
 
+  // playground
+  handler("get", "/api/playground/config", () =>
+    ok("get", "/api/playground/config", 200, fixtures.playgroundConfig),
+  ),
+
   // prompt templates
   handler("get", "/api/prompts", () =>
     ok("get", "/api/prompts", 200, { prompts: fixtures.promptList }),

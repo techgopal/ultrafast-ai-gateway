@@ -4,7 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest
 import { pipelineErrors } from "@/test/errors";
 import * as fixtures from "@/test/fixtures";
 import { startGateway } from "@/test/gateway";
-import { audioAnswer, override, refusePipeline } from "@/test/handlers";
+import { audioAnswer, ok, override, refusePipeline } from "@/test/handlers";
 import {
   choose,
   expectLabelsNameControls,
@@ -191,6 +191,39 @@ describe("Transcribe", () => {
     expect(await screen.findByText(/larger than 25 MiB/)).toBeInTheDocument();
     await userEvent.click(transcribe());
     expect(sent).toEqual([]);
+  });
+
+  test("the cap is the gateway's own: a smaller one refuses, a larger one lets a file through", async () => {
+    const sent = transcripts();
+    override("get", "/api/playground/config", () =>
+      ok("get", "/api/playground/config", 200, { max_audio_bytes: 2 * 1024 * 1024 }),
+    );
+    await audio();
+    const file = new File(["x"], "mid.mp3", { type: "audio/mpeg" });
+    Object.defineProperty(file, "size", { value: 3 * 1024 * 1024 });
+    // The cap is read when the page opens: wait for the refusal to be the gateway's.
+    await userEvent.upload(fileField(), file);
+    expect(await screen.findByText("The file is larger than 2 MiB, the most the gateway takes.")).toBeInTheDocument();
+    await userEvent.click(transcribe());
+    expect(sent).toEqual([]);
+  });
+
+  test("a larger cap than the default lets a 30 MiB file through to the gateway", async () => {
+    const sent = transcripts();
+    override("get", "/api/playground/config", () =>
+      ok("get", "/api/playground/config", 200, { max_audio_bytes: 64 * 1024 * 1024 }),
+    );
+    await audio();
+    const file = new File(["x"], "long.mp3", { type: "audio/mpeg" });
+    Object.defineProperty(file, "size", { value: 30 * 1024 * 1024 });
+    await waitFor(async () => {
+      await userEvent.upload(fileField(), file);
+      expect(screen.queryByText(/larger than/)).toBeNull();
+    });
+    await userEvent.click(transcribe());
+    await waitFor(() => {
+      expect(sent).toHaveLength(1);
+    });
   });
 
   test("the progress is announced from a status that is always on the page", async () => {

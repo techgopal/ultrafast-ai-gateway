@@ -57,8 +57,11 @@ export function usePromptPicker(initial: { name: string; version: number | null 
   const variables = read.data?.variables ?? [];
   const values = Object.fromEntries(variables.map((one) => [one, typed[one] ?? ""]));
   const chosen = template !== null;
+  // A version was asked for (`Open in Playground`) and the list that tells
+  // whether it exists is not here yet: sending now would send the latest.
+  const waiting = chosen && version !== LATEST && view.data === undefined;
   const body: PromptBody | null =
-    template === null || read.data === undefined
+    template === null || read.data === undefined || waiting
       ? null
       : { id: template.name, ...(explicit === null ? {} : { version: explicit }), variables: values };
 

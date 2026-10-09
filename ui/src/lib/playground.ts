@@ -491,13 +491,20 @@ export function imageCurlOf(origin: string, body: object): string {
 export const MAX_SPEECH_CHARS = 4096;
 export const SPEECH_TOO_LONG = `The text must be at most ${String(MAX_SPEECH_CHARS)} characters.`;
 
-/** The default cap of the gateway on an audio upload (`UF_MAX_AUDIO_BYTES`), in bytes. */
+/** The default cap of the gateway on an audio upload (`UF_MAX_AUDIO_BYTES`), in bytes: used until the gateway says its own. */
 export const AUDIO_FILE_LIMIT = 25 * 1024 * 1024;
-export const AUDIO_FILE_TOO_LARGE = "The file is larger than 25 MiB, the most the gateway takes by default.";
 
-/** Why a file is not sent: it is over the default cap, so the upload would only be refused. */
-export function checkAudioFile(file: { size: number }): string | undefined {
-  return file.size > AUDIO_FILE_LIMIT ? AUDIO_FILE_TOO_LARGE : undefined;
+/** A size as the gateway's cap is usually set: whole MiB as such, anything else in bytes. */
+export function sizeText(bytes: number): string {
+  const mib = 1024 * 1024;
+  return bytes % mib === 0 ? `${String(bytes / mib)} MiB` : `${String(bytes)} bytes`;
+}
+
+export const audioFileTooLarge = (cap: number) => `The file is larger than ${sizeText(cap)}, the most the gateway takes.`;
+
+/** Why a file is not sent: it is over the gateway's cap, so the upload would only be refused. */
+export function checkAudioFile(file: { size: number }, cap: number = AUDIO_FILE_LIMIT): string | undefined {
+  return file.size > cap ? audioFileTooLarge(cap) : undefined;
 }
 
 /** The built-in voices of the speech models. */

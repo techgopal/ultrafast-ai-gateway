@@ -1386,16 +1386,18 @@ describe("every mutation calls its operation", () => {
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 54 of them, 26 queries, and the one that starts the audit log again", () => {
+  test("there are 54 of them, 27 queries, and the one that starts the audit log again", () => {
     expect(cases).toHaveLength(54);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(83);
+    expect(hooks).toHaveLength(84);
     // The alerts: three queries (channels, rules, events by page), and their eight mutations.
     for (const name of ["useAlertChannels", "useAlertRules", "useAlertEventsPages"]) {
       expect(hooks).toContain(name);
     }
     // The guardrails: one query (the list), and their five mutations.
     expect(hooks).toContain("useGuardrails");
+    // The playground: one query (the audio cap).
+    expect(hooks).toContain("usePlaygroundConfig");
     // The prompt templates: three queries (the list, one template, one version), and their three mutations.
     for (const name of ["usePrompts", "usePrompt", "usePromptVersion"]) expect(hooks).toContain(name);
     // What only tests used is not kept: a key read by its id, the audit log
