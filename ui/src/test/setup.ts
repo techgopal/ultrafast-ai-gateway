@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach } from "vitest";
 import { setCsrfToken } from "@/api/client";
 import { resetDevice } from "./device";
@@ -7,6 +7,11 @@ import { server } from "./handlers";
 
 // Tests of the source and of the build run in Node, without a page.
 const hasPage = typeof window !== "undefined";
+
+// Every page is a chunk of its own that loads when it is first visited, and in
+// a test the first visit compiles the page's modules: on a busy machine that
+// takes longer than the second a `findBy` waits by default. One value, here.
+configure({ asyncUtilTimeout: 10_000 });
 
 // A request that no handler answers fails the test: nothing leaves the process.
 beforeAll(() => {

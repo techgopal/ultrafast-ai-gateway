@@ -2,6 +2,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   Outlet,
   redirect,
   useRouter,
@@ -17,29 +18,35 @@ import { Shell } from "@/components/Shell";
 import type { ShellUser } from "@/components/shell-context";
 import { Button } from "@/components/ui/button";
 import { AcceptInvite } from "@/pages/AcceptInvite";
-import { Account } from "@/pages/Account";
-import { Alerts } from "@/pages/Alerts";
-import { Guardrails } from "@/pages/Guardrails";
-import { GuardrailsEdit } from "@/pages/GuardrailsEdit";
-import { Keys } from "@/pages/Keys";
-import { Limits } from "@/pages/Limits";
-import { Logs } from "@/pages/Logs";
-import { LogsDetail } from "@/pages/LogsDetail";
 import { PageProblem } from "@/pages/NotAvailable";
 import { NotFound } from "@/pages/NotFound";
-import { Overview } from "@/pages/Overview";
-import { Playground } from "@/pages/Playground";
-import { Models } from "@/pages/Models";
-import { Routes } from "@/pages/Routes";
-import { RoutesEdit } from "@/pages/RoutesEdit";
-import { Providers } from "@/pages/Providers";
-import { Settings } from "@/pages/Settings";
 import { Setup } from "@/pages/Setup";
-import { TeamDetail } from "@/pages/TeamDetail";
-import { Teams } from "@/pages/Teams";
-import { UserDetail } from "@/pages/UserDetail";
-import { Users } from "@/pages/Users";
 import { SignIn } from "@/pages/SignIn";
+
+// The pages behind the shell load when they are first visited, each in a chunk
+// of its own: the sign-in page, the shell and the router are what a visitor
+// downloads first. The router loads a route's component before it shows it.
+const page = {
+  Account: lazyRouteComponent(() => import("@/pages/Account"), "Account"),
+  Alerts: lazyRouteComponent(() => import("@/pages/Alerts"), "Alerts"),
+  Guardrails: lazyRouteComponent(() => import("@/pages/Guardrails"), "Guardrails"),
+  GuardrailsEdit: lazyRouteComponent(() => import("@/pages/GuardrailsEdit"), "GuardrailsEdit"),
+  Keys: lazyRouteComponent(() => import("@/pages/Keys"), "Keys"),
+  Limits: lazyRouteComponent(() => import("@/pages/Limits"), "Limits"),
+  Logs: lazyRouteComponent(() => import("@/pages/Logs"), "Logs"),
+  LogsDetail: lazyRouteComponent(() => import("@/pages/LogsDetail"), "LogsDetail"),
+  Models: lazyRouteComponent(() => import("@/pages/Models"), "Models"),
+  Overview: lazyRouteComponent(() => import("@/pages/Overview"), "Overview"),
+  Playground: lazyRouteComponent(() => import("@/pages/Playground"), "Playground"),
+  Providers: lazyRouteComponent(() => import("@/pages/Providers"), "Providers"),
+  Routes: lazyRouteComponent(() => import("@/pages/Routes"), "Routes"),
+  RoutesEdit: lazyRouteComponent(() => import("@/pages/RoutesEdit"), "RoutesEdit"),
+  Settings: lazyRouteComponent(() => import("@/pages/Settings"), "Settings"),
+  TeamDetail: lazyRouteComponent(() => import("@/pages/TeamDetail"), "TeamDetail"),
+  Teams: lazyRouteComponent(() => import("@/pages/Teams"), "Teams"),
+  UserDetail: lazyRouteComponent(() => import("@/pages/UserDetail"), "UserDetail"),
+  Users: lazyRouteComponent(() => import("@/pages/Users"), "Users"),
+};
 
 declare module "@tanstack/react-router" {
   interface Register {
@@ -212,7 +219,7 @@ const overviewRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/",
   staticData: { title: "Overview" },
-  component: Overview,
+  component: page.Overview,
 });
 
 // The audit log is a view of the settings page now: the old address leads there.
@@ -229,16 +236,17 @@ const logsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/logs",
   staticData: { title: "Logs" },
-  component: Logs,
+  component: page.Logs,
 });
 
 const logRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/logs/$id",
   staticData: { title: "Call" },
+  loader: () => page.LogsDetail.preload?.(),
   component: function LogRoute() {
     const { id } = logRoute.useParams();
-    return <LogsDetail key={id} id={id} />;
+    return <page.LogsDetail key={id} id={id} />;
   },
 });
 
@@ -246,36 +254,37 @@ const alertsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/alerts",
   staticData: { title: "Alerts" },
-  component: Alerts,
+  component: page.Alerts,
 });
 
 const playgroundRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/playground",
   staticData: { title: "Playground" },
-  component: Playground,
+  component: page.Playground,
 });
 
 const limitsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/limits",
   staticData: { title: "Budgets and limits" },
-  component: Limits,
+  component: page.Limits,
 });
 
 const guardrailsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/guardrails",
   staticData: { title: "Guardrails" },
-  component: Guardrails,
+  component: page.Guardrails,
 });
 
 const guardrailNewRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/guardrails/new",
   staticData: { title: "New guardrail" },
+  loader: () => page.GuardrailsEdit.preload?.(),
   component: function GuardrailNewRoute() {
-    return <GuardrailsEdit id={null} />;
+    return <page.GuardrailsEdit id={null} />;
   },
 });
 
@@ -283,10 +292,11 @@ const guardrailRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/guardrails/$id",
   staticData: { title: "Guardrail" },
+  loader: () => page.GuardrailsEdit.preload?.(),
   component: function GuardrailRoute() {
     const { id } = guardrailRoute.useParams();
     // Another guardrail is another page: its form and its state do not carry over.
-    return <GuardrailsEdit key={id} id={id} />;
+    return <page.GuardrailsEdit key={id} id={id} />;
   },
 });
 
@@ -294,43 +304,44 @@ const settingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings",
   staticData: { title: "Settings" },
-  component: Settings,
+  component: page.Settings,
 });
 
 const accountRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/account",
   staticData: { title: "Account" },
-  component: Account,
+  component: page.Account,
 });
 
 const providersRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/providers",
   staticData: { title: "Providers" },
-  component: Providers,
+  component: page.Providers,
 });
 
 const modelsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/models",
   staticData: { title: "Models" },
-  component: Models,
+  component: page.Models,
 });
 
 const routesRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/routes",
   staticData: { title: "Routing" },
-  component: Routes,
+  component: page.Routes,
 });
 
 const routeNewRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/routes/new",
   staticData: { title: "New route" },
+  loader: () => page.RoutesEdit.preload?.(),
   component: function RouteNewRoute() {
-    return <RoutesEdit id={null} />;
+    return <page.RoutesEdit id={null} />;
   },
 });
 
@@ -338,10 +349,11 @@ const routeRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/routes/$id",
   staticData: { title: "Route" },
+  loader: () => page.RoutesEdit.preload?.(),
   component: function RouteRoute() {
     const { id } = routeRoute.useParams();
     // Another route is another page: its form and its state do not carry over.
-    return <RoutesEdit key={id} id={id} />;
+    return <page.RoutesEdit key={id} id={id} />;
   },
 });
 
@@ -349,24 +361,25 @@ const keysRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/keys",
   staticData: { title: "Virtual keys" },
-  component: Keys,
+  component: page.Keys,
 });
 
 const usersRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/users",
   staticData: { title: "Users" },
-  component: Users,
+  component: page.Users,
 });
 
 const userRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/users/$id",
   staticData: { title: "User" },
+  loader: () => page.UserDetail.preload?.(),
   component: function UserRoute() {
     const { id } = userRoute.useParams();
     // Another user is another page: its dialogs and its state do not carry over.
-    return <UserDetail key={id} id={id} />;
+    return <page.UserDetail key={id} id={id} />;
   },
 });
 
@@ -374,17 +387,18 @@ const teamsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/teams",
   staticData: { title: "Teams" },
-  component: Teams,
+  component: page.Teams,
 });
 
 const teamRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/teams/$id",
   staticData: { title: "Team" },
+  loader: () => page.TeamDetail.preload?.(),
   component: function TeamRoute() {
     const { id } = teamRoute.useParams();
     // Another team is another page: its dialogs and its state do not carry over.
-    return <TeamDetail key={id} id={id} />;
+    return <page.TeamDetail key={id} id={id} />;
   },
 });
 

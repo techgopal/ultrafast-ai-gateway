@@ -55,11 +55,10 @@ export default defineConfig({
   build: {
     outDir: "dist",
     sourcemap: false,
-    // The console is one bundle (936 kB, 272 kB in gzip), embedded in the
-    // binary and sent in gzip; splitting it by route is for later. Past
-    // 1100 kB the warning comes back, and a build that warns fails
-    // `src/test/build.test.ts`.
-    chunkSizeWarningLimit: 1100,
+    // The pages behind the shell load by route (see `src/router.tsx`), so no
+    // chunk comes near this size; past 900 kB the warning comes back, and a
+    // build that warns fails `src/test/build.test.ts`.
+    chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
         entryFileNames: "assets/[name]-[hash].js",
