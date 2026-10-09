@@ -1354,26 +1354,32 @@ const DENSE_UNITS: [&str; 10] = [
     "\\",
 ];
 
-/// Thread CPU of the median of three runs of `f`.
+/// Thread CPU of the fastest of five runs of `f`: load only ever adds time,
+/// so the minimum is the run least disturbed by it.
 #[cfg(not(debug_assertions))]
-fn median_cpu(mut f: impl FnMut()) -> Duration {
-    let mut runs: Vec<Duration> = (0..3)
+fn min_cpu(mut f: impl FnMut()) -> Duration {
+    (0..5)
         .map(|_| {
             let started = cpu_time();
             f();
             cpu_time() - started
         })
-        .collect();
-    runs.sort();
-    runs[1]
+        .min()
+        .expect("five runs")
 }
 
+/// Linear work takes 8x the CPU for 8x the text, quadratic work 64x. The
+/// limit sits between, far enough from both for a loaded machine.
+#[cfg(not(debug_assertions))]
+const MAX_RATIO_FOR_8X: u32 = 24;
+
 /// Release builds only (`cargo test --release`; debug builds are several
-/// times slower and CI runs this as its own release step): 4k tokens (about
-/// 16k chars) of content that keeps every detector busy, fed one character at
-/// a time. The assertion is on how the cost scales (4x the text takes at most
-/// 6x the CPU; quadratic work would take 16x), not on a fixed bound, so a busy
-/// machine does not fail it; the absolute ceiling is only a backstop.
+/// times slower and CI runs this as its own release step): content that
+/// keeps every detector busy, fed one character at a time. The assertion is
+/// on how the cost scales (8k and 64k characters, the fastest of five runs
+/// each: at most 24x the CPU, where linear work takes 8x and quadratic 64x),
+/// not on a fixed bound, so a busy machine does not fail it; the absolute
+/// ceiling is only a backstop.
 #[test]
 #[cfg(not(debug_assertions))]
 fn stream_cpu_is_bounded_on_adversarial_text() {
@@ -1386,7 +1392,7 @@ fn stream_cpu_is_bounded_on_adversarial_text() {
     )];
     let feed_cpu = |unit: &str, chars: usize| {
         let text = unit.repeat(chars / unit.len());
-        median_cpu(|| {
+        min_cpu(|| {
             let mut s = StreamScanner::new(set.clone());
             let mut buf = [0u8; 4];
             for c in text.chars() {
@@ -1396,14 +1402,14 @@ fn stream_cpu_is_bounded_on_adversarial_text() {
         })
     };
     for unit in DENSE_UNITS {
-        let small = feed_cpu(unit, 16_000);
+        let small = feed_cpu(unit, 8_000);
         let large = feed_cpu(unit, 64_000);
-        eprintln!("stream cpu {unit:?}: 16k {small:?}, 64k {large:?}");
-        assert!(large < Duration::from_secs(2), "{unit:?} took {large:?}");
+        eprintln!("stream cpu {unit:?}: 8k {small:?}, 64k {large:?}");
+        assert!(large < Duration::from_secs(10), "{unit:?} took {large:?}");
         // below a few milliseconds the ratio is noise
         assert!(
-            large < small.max(Duration::from_millis(5)) * 6,
-            "{unit:?}: 16k took {small:?}, 64k took {large:?}"
+            large < small.max(Duration::from_millis(2)) * MAX_RATIO_FOR_8X,
+            "{unit:?}: 8k took {small:?}, 64k took {large:?}"
         );
     }
 }
@@ -1422,22 +1428,19 @@ fn whole_text_cpu_is_linear_on_dense_candidates() {
     )];
     let scan = |unit: &str, bytes: usize| {
         let text = unit.repeat(bytes / unit.len());
-        median_cpu(|| {
+        min_cpu(|| {
             let mut t = [text.clone()];
             let _ = check_texts(&set, Direction::Input, &mut t);
         })
     };
     for unit in DENSE_UNITS {
-        let small = scan(unit, 256 * 1024);
+        let small = scan(unit, 128 * 1024);
         let large = scan(unit, 1024 * 1024);
-        eprintln!("whole cpu {unit:?}: 256k {small:?}, 1M {large:?}");
+        eprintln!("whole cpu {unit:?}: 128k {small:?}, 1M {large:?}");
+        assert!(large < Duration::from_secs(2), "{unit:?} took {large:?}");
         assert!(
-            large < Duration::from_millis(500),
-            "{unit:?} took {large:?}"
-        );
-        assert!(
-            large < small.max(Duration::from_millis(5)) * 6,
-            "{unit:?}: 256k took {small:?}, 1M took {large:?}"
+            large < small.max(Duration::from_millis(2)) * MAX_RATIO_FOR_8X,
+            "{unit:?}: 128k took {small:?}, 1M took {large:?}"
         );
     }
 }

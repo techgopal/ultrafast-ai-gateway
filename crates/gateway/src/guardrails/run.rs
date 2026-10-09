@@ -27,6 +27,12 @@ static SCAN_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
     Arc::new(Semaphore::new(cpus))
 });
 
+/// The process-wide pool of scan slots, for a test that must use them all up.
+#[doc(hidden)]
+pub fn scan_slots() -> Arc<Semaphore> {
+    SCAN_SLOTS.clone()
+}
+
 /// How to reach the external guardrails of a call.
 #[derive(Clone)]
 pub struct Hooks {

@@ -310,8 +310,22 @@ async fn load_guardrails(
                     .and_then(|p| p.guardrails.get(&g.id))
                     .filter(|old| old.rules.is_some())
                 {
-                    Some(old) => old.clone(),
-                    None => continue,
+                    Some(old) => {
+                        tracing::warn!(
+                            guardrail_id = g.id,
+                            guardrail = %g.name,
+                            "the stored rules of this guardrail no longer compile; the rules that ran before keep running"
+                        );
+                        old.clone()
+                    }
+                    None => {
+                        tracing::warn!(
+                            guardrail_id = g.id,
+                            guardrail = %g.name,
+                            "the stored rules of this guardrail no longer compile; it is not in force"
+                        );
+                        continue;
+                    }
                 },
             },
         };
