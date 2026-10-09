@@ -36,6 +36,8 @@ export interface MockProvider {
   calls: MockCall[];
   /** The roles of the messages each completion carried, in order. */
   roles: string[][];
+  /** Image generations asked for, in order. */
+  imageCalls: { authorized: boolean; body: unknown }[];
   /** How many times the model list was asked for. */
   listCalls: number;
   /** The token usage every completion reports; a test may change it at any time. */
@@ -54,6 +56,10 @@ async function bodyOf(request: IncomingMessage): Promise<unknown> {
   }
 }
 
+/** A 1 x 1 PNG, base64: what the mock answers to an image generation. */
+export const TINY_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
 export async function startMockProvider(
   models: string[] = ["e2e-model", "e2e-other"],
 ): Promise<MockProvider> {
@@ -62,6 +68,7 @@ export async function startMockProvider(
   const toolArguments = JSON.stringify({ city: "Oslo" });
   const calls: MockCall[] = [];
   const roles: string[][] = [];
+  const imageCalls: { authorized: boolean; body: unknown }[] = [];
   const state = {
     answer: first,
     listCalls: 0,
@@ -91,6 +98,21 @@ export async function startMockProvider(
         send(200, {
           object: "list",
           data: models.map((id) => ({ id, object: "model" })),
+        });
+        return;
+      }
+      if (request.method === "POST" && request.url === "/v1/images/generations") {
+        imageCalls.push({ authorized, body });
+        if (!authorized) {
+          send(401, { error: { message: "Incorrect API key.", type: "invalid_request_error" } });
+          return;
+        }
+        const wanted =
+          typeof body === "object" && body !== null && "n" in body && typeof body.n === "number" ? body.n : 1;
+        send(200, {
+          created: Math.floor(Date.now() / 1000),
+          data: Array.from({ length: wanted }, () => ({ b64_json: TINY_PNG })),
+          usage: { input_tokens: state.usage.prompt, output_tokens: state.usage.completion, total_tokens: state.usage.prompt + state.usage.completion },
         });
         return;
       }
@@ -252,6 +274,7 @@ export async function startMockProvider(
     models,
     calls,
     roles,
+    imageCalls,
     get listCalls() {
       return state.listCalls;
     },

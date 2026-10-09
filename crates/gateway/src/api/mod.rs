@@ -109,6 +109,7 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(logs::view))
         .routes(routes!(usage::usage_view))
         .routes(routes!(playground::chat))
+        .routes(routes!(playground::images))
         .routes(routes!(config::export))
         .routes(routes!(config::import))
         .routes(routes!(backup::download))

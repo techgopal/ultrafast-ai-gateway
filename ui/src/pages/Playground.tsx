@@ -33,6 +33,7 @@ import {
   type ToolChoice,
 } from "@/lib/playground";
 import { bodyOf, useRun, type Call } from "@/pages/PlaygroundRun";
+import { ImagesMode } from "@/pages/PlaygroundImages";
 import { pendingCalls, RESULT_MISSING, Thread, UsageLine } from "@/pages/PlaygroundThread";
 
 type Model = components["schemas"]["ModelView"];
@@ -618,6 +619,7 @@ function Loading() {
 }
 
 function PlaygroundLoaded() {
+  const [mode, setMode] = useState<"chat" | "images">("chat");
   const models = useModels();
   const routes = useRoutes();
   const failure = models.error ?? routes.error;
@@ -646,7 +648,31 @@ function PlaygroundLoaded() {
     <>
       {title}
       {callable ? (
-        <PlaygroundOf models={models.data.models} routes={names} />
+        <>
+          <div role="group" aria-label="Mode" className="flex gap-2">
+            {(["chat", "images"] as const).map((name) => (
+              <Button
+                key={name}
+                type="button"
+                variant={mode === name ? "default" : "outline"}
+                className={control}
+                aria-pressed={mode === name}
+                onClick={() => {
+                  setMode(name);
+                }}
+              >
+                {name === "chat" ? "Chat" : "Images"}
+              </Button>
+            ))}
+          </div>
+          {/* Both stay mounted: switching modes keeps the conversation and the prompt. */}
+          <div hidden={mode !== "chat"}>
+            <PlaygroundOf models={models.data.models} routes={names} />
+          </div>
+          <div hidden={mode !== "images"}>
+            <ImagesMode models={models.data.models} routes={names} />
+          </div>
+        </>
       ) : (
         <EmptyState {...NOTHING_TO_CALL} />
       )}

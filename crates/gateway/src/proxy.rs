@@ -30,6 +30,7 @@ use ultrafast_translate::embeddings::{
     self, EmbeddingsRequest, EmbeddingsResponse, NOT_SUPPORTED as EMBEDDINGS_NOT_SUPPORTED,
 };
 use ultrafast_translate::error::TranslateError;
+use ultrafast_translate::images::{self, ImageRequest, ImageResponse};
 use ultrafast_translate::ingress::{anthropic, openai, responses};
 use ultrafast_translate::provider::{
     build_request, parse_response, HttpRequest, StreamDecoder, Target,
@@ -103,6 +104,9 @@ const TIMED_OUT: &str = "The request timed out.";
 const DEFAULT_MAX_TOKENS_ESTIMATE: u32 = 1_000;
 /// What an image counts for in the estimate of a call's input, in tokens.
 const IMAGE_TOKEN_ESTIMATE: u64 = 1_000;
+/// What one generated image counts for in the estimate of an image call, in
+/// tokens (a 1024 x 1024 image of a GPT image model is about this much).
+const IMAGE_OUTPUT_TOKEN_ESTIMATE: u64 = 1_000;
 
 /// The three calls of `/v1` that reach a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,9 +116,14 @@ enum Endpoint {
     /// The OpenAI Responses API, stateless: chat in another shape.
     Responses,
     Embeddings,
+    /// Image generation.
+    Images,
     /// A chat call the console makes for a signed-in user: the answer of
     /// `/v1/chat/completions`, recorded as its own endpoint.
     Playground,
+    /// An image generation the console makes for a signed-in user. Recorded
+    /// as `playground` too.
+    PlaygroundImages,
 }
 
 impl Endpoint {
@@ -125,16 +134,20 @@ impl Endpoint {
             Endpoint::Messages => "messages",
             Endpoint::Responses => "responses",
             Endpoint::Embeddings => "embeddings",
-            Endpoint::Playground => "playground",
+            Endpoint::Images => "images",
+            Endpoint::Playground | Endpoint::PlaygroundImages => "playground",
         }
     }
 
     fn shape(self) -> Shape {
         match self {
             Endpoint::Messages => Shape::Anthropic,
-            Endpoint::Chat | Endpoint::Responses | Endpoint::Embeddings | Endpoint::Playground => {
-                Shape::OpenAi
-            }
+            Endpoint::Chat
+            | Endpoint::Responses
+            | Endpoint::Embeddings
+            | Endpoint::Images
+            | Endpoint::Playground
+            | Endpoint::PlaygroundImages => Shape::OpenAi,
         }
     }
 
@@ -155,6 +168,9 @@ impl Endpoint {
                 Ok(Call::Chat(parsed.request))
             }
             Endpoint::Embeddings => embeddings::parse_request(body).map(Call::Embed),
+            Endpoint::Images | Endpoint::PlaygroundImages => {
+                images::parse_request(body).map(Call::Image)
+            }
         }
     }
 }
@@ -163,6 +179,7 @@ impl Endpoint {
 enum Call {
     Chat(ChatRequest),
     Embed(EmbeddingsRequest),
+    Image(ImageRequest),
 }
 
 impl Call {
@@ -170,6 +187,7 @@ impl Call {
         match self {
             Call::Chat(r) => &r.model,
             Call::Embed(r) => &r.model,
+            Call::Image(r) => &r.model,
         }
     }
 
@@ -187,6 +205,10 @@ impl Call {
                     + self.input_estimate()
             }
             Call::Embed(_) => self.input_estimate(),
+            // The prompt, and the tokens of the images it may ask for.
+            Call::Image(r) => {
+                self.input_estimate() + u64::from(r.n.unwrap_or(1)) * IMAGE_OUTPUT_TOKEN_ESTIMATE
+            }
         }
     }
 
@@ -217,6 +239,7 @@ impl Call {
                 tokens(chars) + images * IMAGE_TOKEN_ESTIMATE
             }
             Call::Embed(r) => tokens(r.input.iter().map(|s| s.chars().count()).sum()),
+            Call::Image(r) => tokens(r.prompt.chars().count()),
         }
     }
 
@@ -225,6 +248,15 @@ impl Call {
         match self {
             Call::Chat(_) => true,
             Call::Embed(_) => kind.supports_embeddings(),
+            Call::Image(_) => kind.supports_images(),
+        }
+    }
+
+    /// What a caller is told when no target of the plan can serve it.
+    fn not_supported(&self) -> &'static str {
+        match self {
+            Call::Chat(_) | Call::Embed(_) => EMBEDDINGS_NOT_SUPPORTED,
+            Call::Image(_) => images::NOT_SUPPORTED,
         }
     }
 }
@@ -243,6 +275,10 @@ pub async fn responses(state: State<Arc<AppState>>, request: Request) -> Respons
 
 pub async fn embeddings(state: State<Arc<AppState>>, request: Request) -> Response {
     handle(state.0, request, Endpoint::Embeddings).await
+}
+
+pub async fn images(state: State<Arc<AppState>>, request: Request) -> Response {
+    handle(state.0, request, Endpoint::Images).await
 }
 
 /// Who a call is made for: a virtual key, or a signed-in user who has none
@@ -286,6 +322,19 @@ impl<'a> Actor<'a> {
 
 /// A chat call of the console playground for a signed-in user: the same
 /// pipeline as `/v1/chat/completions`, recorded without a key.
+pub(crate) async fn playground_images(state: Arc<AppState>, user_id: i64, body: Body) -> Response {
+    let snapshot = state.snapshot.load_full();
+    run(
+        &state,
+        &snapshot,
+        &Actor::of_user(user_id),
+        None,
+        body,
+        Endpoint::PlaygroundImages,
+    )
+    .await
+}
+
 pub(crate) async fn playground(state: Arc<AppState>, user_id: i64, body: Body) -> Response {
     let snapshot = state.snapshot.load_full();
     run(
@@ -439,7 +488,9 @@ fn cache_plan(
     let Resolved::Route(route) = resolved else {
         return None;
     };
-    if !route.cache.enabled || call.stream() {
+    // An image is never kept: every call is a new picture, and the answer is
+    // large.
+    if !route.cache.enabled || call.stream() || matches!(call, Call::Image(_)) {
         return None;
     }
     if let Call::Chat(r) = call {
@@ -479,6 +530,7 @@ fn cache_plan(
     let cache_key = match call {
         Call::Chat(r) => CacheKey::chat(&parts, r),
         Call::Embed(r) => CacheKey::embeddings(&parts, r),
+        Call::Image(_) => return None,
     };
     let seconds = u64::try_from(route.cache.ttl_s).unwrap_or(0).max(1);
     Some(CachePlan {
@@ -814,6 +866,16 @@ async fn dispatch(
             keep(state, &cache, record, Answer::Embeddings(response.clone()));
             Json(embeddings::render_response(&response)).into_response()
         }
+        Ok(Served::Image(response)) => {
+            let record = scope.as_mut().expect("a whole answer keeps the scope");
+            // Cost comes from the usage the provider reports; without it the
+            // call is unpriced. The images are never inspected.
+            record.usage(response.usage.as_ref().map(|u| Usage {
+                input_tokens: u.input_tokens,
+                output_tokens: u.output_tokens,
+            }));
+            Json(images::render_response(&response)).into_response()
+        }
         Ok(Served::Stream(committed)) => {
             if let Some(scope) = scope.as_mut() {
                 scope.begin_stream(call.input_estimate());
@@ -846,7 +908,7 @@ async fn dispatch(
         Err(Stop::Exhausted(_)) if wrong_kind(snapshot, key, &call, &candidates) => shape.error(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
-            EMBEDDINGS_NOT_SUPPORTED,
+            call.not_supported(),
         ),
         Err(Stop::Exhausted(ex)) => exhausted_response(shape, ex),
     }
@@ -924,6 +986,7 @@ fn input_slots(call: &mut Call) -> Vec<&mut String> {
             chat_slots(r)
         }
         Call::Embed(r) => r.input.iter_mut().collect(),
+        Call::Image(r) => vec![&mut r.prompt],
     }
 }
 
@@ -1124,6 +1187,7 @@ impl CallError {
 enum Served {
     Whole(ChatResponse),
     Embeddings(EmbeddingsResponse),
+    Image(ImageResponse),
     Stream(Box<Committed>),
 }
 
@@ -1237,6 +1301,7 @@ async fn try_target(
     let built = match call {
         Call::Chat(req) => build_request(&wire, req),
         Call::Embed(req) => embeddings::build_request(&wire, req),
+        Call::Image(req) => images::build_request(&wire, req),
     };
     let out = built.map_err(|e| Failure::Fatal {
         error: CallError::Translate(e),
@@ -1300,6 +1365,7 @@ async fn try_target(
         Call::Chat(_) => parse_response(provider.kind, status, &bytes).map(Served::Whole),
         Call::Embed(_) => embeddings::parse_response(provider.kind, status, &bytes, &target.model)
             .map(Served::Embeddings),
+        Call::Image(_) => images::parse_response(provider.kind, status, &bytes).map(Served::Image),
     };
     match parsed {
         Ok(value) => Ok(Success {
@@ -1440,7 +1506,7 @@ fn echo_of(call: &Call) -> responses::Echo {
     match call {
         Call::Chat(r) => responses::Echo::of(r),
         // Only a chat call is answered on `/v1/responses`.
-        Call::Embed(_) => responses::Echo::of(&ChatRequest {
+        Call::Embed(_) | Call::Image(_) => responses::Echo::of(&ChatRequest {
             model: String::new(),
             messages: Vec::new(),
             max_tokens: None,

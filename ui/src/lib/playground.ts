@@ -418,3 +418,60 @@ export function retryText(seconds: number | null): string {
   const minutes = Math.ceil(seconds / 60);
   return ` Try again in ${String(minutes)} ${minutes === 1 ? "minute" : "minutes"}.`;
 }
+
+// Images mode: one prompt, a size and a number of images.
+
+/** The most images one playground call asks for. */
+export const MAX_IMAGES = 4;
+export const IMAGE_COUNT_INVALID = `The number of images must be a whole number from 1 to ${String(MAX_IMAGES)}.`;
+export const PROMPT_REQUIRED = "Write what the image should show.";
+
+/** The sizes offered; `default` sends none, and the provider decides. */
+export const IMAGE_SIZES = ["default", "1024x1024", "1536x1024", "1024x1536"] as const;
+export type ImageSize = (typeof IMAGE_SIZES)[number];
+
+export interface ImageRequestBody {
+  model: string;
+  prompt: string;
+  n?: number;
+  size?: string;
+}
+
+export function checkImageCount(text: string): { n?: number; error?: string } {
+  const typed = text.trim();
+  if (!/^\d+$/.test(typed)) return { error: IMAGE_COUNT_INVALID };
+  const n = Number(typed);
+  return n >= 1 && n <= MAX_IMAGES ? { n } : { error: IMAGE_COUNT_INVALID };
+}
+
+export function imageRequestBody(model: string, prompt: string, n: number, size: ImageSize): ImageRequestBody {
+  return { model, prompt, n, ...(size === "default" ? {} : { size }) };
+}
+
+const IMAGE_FORMATS = ["png", "jpeg", "webp"];
+
+/**
+ * The images of an answer as `data:` URLs. Only `b64_json` images are shown:
+ * a `url` would make the browser load a page of another origin.
+ */
+export function imageUrlsOf(answer: { data: readonly object[]; output_format?: string }): string[] {
+  const format = IMAGE_FORMATS.includes(answer.output_format ?? "") ? (answer.output_format ?? "png") : "png";
+  const urls: string[] = [];
+  for (const item of answer.data) {
+    const b64 = (item as { b64_json?: unknown }).b64_json;
+    if (typeof b64 === "string" && /^[A-Za-z0-9+/=\s]+$/.test(b64)) {
+      urls.push(`data:image/${format};base64,${b64.replace(/\s+/g, "")}`);
+    }
+  }
+  return urls;
+}
+
+/** The call as a `curl` command for `/v1/images/generations`, with a placeholder where the key goes. */
+export function imageCurlOf(origin: string, body: object): string {
+  return [
+    `curl ${origin}/v1/images/generations`,
+    "  -H 'Authorization: Bearer <your key>'",
+    "  -H 'Content-Type: application/json'",
+    `  -d ${shellQuote(JSON.stringify(body))}`,
+  ].join(" \\\n");
+}

@@ -59,7 +59,7 @@ pub struct RequestRecord {
     /// The model or route name the caller asked for; empty when the body
     /// could not be read far enough to tell.
     pub requested: String,
-    /// `"chat"`, `"messages"`, `"responses"`, `"embeddings"` or `"playground"`.
+    /// `"chat"`, `"messages"`, `"responses"`, `"embeddings"`, `"images"` or `"playground"`.
     pub endpoint: &'static str,
     pub stream: bool,
     /// What the caller was answered. A caller that went away before the

@@ -3,6 +3,7 @@
 pub mod classify;
 pub mod embeddings;
 pub mod error;
+pub mod images;
 pub mod ingress;
 pub mod provider;
 pub mod sse;

@@ -148,6 +148,14 @@ impl World {
         raw(&self.org, who, "POST", "/api/playground/chat", Some(body)).await
     }
 
+    async fn play_images(
+        &self,
+        who: &Signed,
+        body: Value,
+    ) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
+        raw(&self.org, who, "POST", "/api/playground/images", Some(body)).await
+    }
+
     /// A key owned by the user, with no team and no allowlist.
     async fn key_of(&self, user: i64) -> String {
         let key = generate_key();
@@ -777,4 +785,54 @@ async fn the_playground_is_checked_by_the_same_guardrails_as_a_key() {
     assert_eq!(code(&key_body), "guardrail_blocked");
     // No provider call for either refusal.
     assert_eq!(w.upstream.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn an_image_call_is_answered_or_refused_as_the_users_key_would_be() {
+    let w = world().await;
+    Mock::given(method("POST"))
+        .and(path("/images/generations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "created": 1, "data": [{ "b64_json": "AAAA" }],
+            "usage": { "input_tokens": 3, "output_tokens": 9, "total_tokens": 12 }
+        })))
+        .mount(&w.upstream)
+        .await;
+    async fn images(
+        w: &World,
+        who: &Signed,
+        model: &str,
+    ) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
+        w.play_images(who, json!({ "model": model, "prompt": "a fox", "n": 1 }))
+            .await
+    }
+    let lena = w.org.sign_in("lena").await;
+    let (status, _, body) = images(&w, &lena, "p/open").await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["data"][0]["b64_json"], "AAAA");
+    // Logged to the user, with no key, as a playground call.
+    let records = w.sink.wait_for(1).await;
+    let r = &records[0];
+    assert_eq!(r.endpoint, "playground");
+    assert_eq!(r.key_id, None);
+    assert_eq!(r.user_id, Some(w.org.lena));
+    assert_eq!(
+        r.usage.map(|u| (u.input_tokens, u.output_tokens)),
+        Some((3, 9))
+    );
+    // The grants decide, as for a key.
+    assert_eq!(
+        images(&w, &lena, "p/research-only").await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(images(&w, &lena, "p/nope").await.0, StatusCode::NOT_FOUND);
+    let tomas = w.org.sign_in("tomas").await;
+    assert_eq!(
+        images(&w, &tomas, "p/research-only").await.0,
+        StatusCode::OK
+    );
+    // A chat body is not an image request.
+    let (status, _, _) = w.play_images(&lena, chat("p/open")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

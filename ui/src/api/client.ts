@@ -274,8 +274,26 @@ export async function playgroundChat(
   body: BodyOf<"/api/playground/chat", "post">,
   signal?: AbortSignal,
 ): Promise<Response> {
+  return playgroundCall("/api/playground/chat", "text/event-stream, application/json", body, signal);
+}
+
+/** An image generation of the playground: the answer is JSON, in the OpenAI shape; refusals as for `playgroundChat`. */
+export async function playgroundImages(
+  body: BodyOf<"/api/playground/images", "post">,
+  signal?: AbortSignal,
+): Promise<ResponseOf<"/api/playground/images", "post">> {
+  const response = await playgroundCall("/api/playground/images", "application/json", body, signal);
+  return (await response.json()) as ResponseOf<"/api/playground/images", "post">;
+}
+
+async function playgroundCall(
+  path: "/api/playground/chat" | "/api/playground/images",
+  accept: string,
+  body: object,
+  signal?: AbortSignal,
+): Promise<Response> {
   const headers: Record<string, string> = {
-    Accept: "text/event-stream, application/json",
+    Accept: accept,
     "Content-Type": "application/json",
   };
   if (csrfToken !== null) headers["x-csrf-token"] = csrfToken;
@@ -290,7 +308,7 @@ export async function playgroundChat(
   const madeUnder = sessionsOver;
   let response: Response;
   try {
-    response = await fetch("/api/playground/chat", init);
+    response = await fetch(path, init);
   } catch (error) {
     if (signal?.aborted === true) throw error;
     if (madeUnder !== sessionsOver) throw new SessionOverError();

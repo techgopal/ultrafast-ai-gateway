@@ -305,9 +305,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 85. Its fallbacks are not
+    /// Every route of `api::router`, which has 86. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 85] = [
+    const ROUTES: [(&str, &str); 86] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -372,6 +372,7 @@ mod tests {
         ("GET", "/api/logs/{id}"),
         ("GET", "/api/usage"),
         ("POST", "/api/playground/chat"),
+        ("POST", "/api/playground/images"),
         ("GET", "/api/config/export"),
         ("POST", "/api/config/import"),
         ("GET", "/api/backup"),
@@ -503,7 +504,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 85);
+        assert_eq!(routes.len(), 86);
         assert_eq!(documented, routes);
     }
 
@@ -525,7 +526,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 85);
+        assert_eq!(ids.len(), 86);
     }
 
     #[test]
@@ -597,7 +598,7 @@ mod tests {
                 }
                 let schema = &response["content"]["application/json"]["schema"];
                 // The playground's errors are of two shapes, in one schema.
-                let shared = if path == "/api/playground/chat" {
+                let shared = if path.starts_with("/api/playground/") {
                     "#/components/schemas/PlaygroundErrorBody"
                 } else if path == "/api/config/import" && status == "422" {
                     // The report of a file that has errors.

@@ -1,11 +1,16 @@
 import { describe, expect, test } from "vitest";
 import {
+  checkImageCount,
   checkParams,
   checkResponseFormat,
   checkTools,
   chunkOf,
   costMicros,
   curlOf,
+  IMAGE_COUNT_INVALID,
+  imageCurlOf,
+  imageRequestBody,
+  imageUrlsOf,
   requestBody,
   retryText,
   SseReader,
@@ -356,4 +361,31 @@ describe("checkResponseFormat", () => {
       });
     },
   );
+});
+
+describe("images mode", () => {
+  test("the number of images is a whole number from 1 to 4", () => {
+    expect(checkImageCount(" 3 ")).toEqual({ n: 3 });
+    for (const bad of ["", "0", "5", "1.5", "-1", "x", "1e1"]) {
+      expect(checkImageCount(bad).error).toBe(IMAGE_COUNT_INVALID);
+    }
+  });
+
+  test("the body leaves out the size when the provider decides", () => {
+    expect(imageRequestBody("p/m", "a fox", 2, "1536x1024")).toEqual({ model: "p/m", prompt: "a fox", n: 2, size: "1536x1024" });
+    expect(imageRequestBody("p/m", "a fox", 1, "default")).toEqual({ model: "p/m", prompt: "a fox", n: 1 });
+  });
+
+  test("only base64 images become data URLs, in the format the answer names", () => {
+    expect(
+      imageUrlsOf({ data: [{ b64_json: "AAAA" }, { url: "https://x.example/a.png" }, { b64_json: "<script>" }], output_format: "webp" }),
+    ).toEqual(["data:image/webp;base64,AAAA"]);
+    expect(imageUrlsOf({ data: [{ b64_json: "AA" }], output_format: "svg+xml" })).toEqual(["data:image/png;base64,AA"]);
+  });
+
+  test("the curl command quotes the prompt", () => {
+    const command = imageCurlOf("https://gw.example", { model: "m", prompt: "it's" });
+    expect(command).toContain("curl https://gw.example/v1/images/generations");
+    expect(command).toContain(`-d '{"model":"m","prompt":"it'"'"'s"}'`);
+  });
 });

@@ -1,4 +1,4 @@
-//! The console playground: a chat call made for the signed-in user.
+//! The console playground: a chat or an image call made for the signed-in user.
 
 use std::sync::Arc;
 
@@ -195,4 +195,71 @@ pub async fn chat(
     }
     require(&authed.principal, &Action::UsePlayground)?;
     Ok(proxy::playground(state, authed.principal.user_id, body).await)
+}
+
+/// An image generation request, as `/v1/images/generations` takes it. The body
+/// is read by the same parser as that call's, so any field it accepts is
+/// accepted here.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PlaygroundImageRequest {
+    /// A model as `provider/name`, or a route name.
+    pub model: String,
+    pub prompt: String,
+    /// The number of images, 1 to 10.
+    #[schema(nullable = false)]
+    pub n: Option<u32>,
+    /// For example `1024x1024`.
+    #[schema(nullable = false)]
+    pub size: Option<String>,
+    #[schema(nullable = false)]
+    pub quality: Option<String>,
+    /// `transparent`, `opaque` or `auto`.
+    #[schema(nullable = false)]
+    pub background: Option<String>,
+    /// `png`, `jpeg` or `webp`.
+    #[schema(nullable = false)]
+    pub output_format: Option<String>,
+}
+
+/// The answer of `/v1/images/generations`, in the OpenAI shape.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PlaygroundImageAnswer {
+    pub created: u64,
+    /// Each image as `b64_json` or `url`, with `revised_prompt` when the
+    /// model gave one.
+    #[schema(value_type = Vec<Object>)]
+    pub data: Vec<serde_json::Value>,
+    /// Only when the provider reports token usage.
+    #[schema(value_type = Object, nullable = false, required = false)]
+    pub usage: Option<serde_json::Value>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/playground/images",
+    tag = "playground",
+    operation_id = "playground_images",
+    request_body = PlaygroundImageRequest,
+    responses(
+        (status = 200, description = "The answer, in the OpenAI shape.", body = PlaygroundImageAnswer),
+        (status = 400, description = "The request is not an image request, or the model cannot generate images. The body is in the OpenAI error shape, as on `/v1`.", body = PlaygroundErrorBody),
+        (status = 401, description = "No valid session.", body = PlaygroundErrorBody),
+        (status = 403, description = "The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.", body = PlaygroundErrorBody),
+        (status = 404, description = "No such model or route, in the OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 429, description = "A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 502, description = "The provider failed; OpenAI error shape.", body = PlaygroundErrorBody),
+        (status = 503, description = "No provider could serve the call; OpenAI error shape.", body = PlaygroundErrorBody),
+    ),
+    security(("session" = [])),
+)]
+pub async fn images(
+    State(state): State<Arc<AppState>>,
+    authed: Authed,
+    body: Body,
+) -> Result<Response, ApiError> {
+    if !matches!(authed.via, AuthVia::Session { .. }) {
+        return Err(ApiError::forbidden());
+    }
+    require(&authed.principal, &Action::UsePlayground)?;
+    Ok(proxy::playground_images(state, authed.principal.user_id, body).await)
 }

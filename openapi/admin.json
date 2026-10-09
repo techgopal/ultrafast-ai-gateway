@@ -4519,6 +4519,122 @@
         ]
       }
     },
+    "/api/playground/images": {
+      "post": {
+        "tags": [
+          "playground"
+        ],
+        "operationId": "playground_images",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaygroundImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The answer, in the OpenAI shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundImageAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not an image request, or the model cannot generate images. The body is in the OpenAI error shape, as on `/v1`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such model or route, in the OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider failed; OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No provider could serve the call; OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/providers": {
       "get": {
         "tags": [
@@ -10622,6 +10738,70 @@
           "type": {
             "type": "string",
             "description": "Only in the OpenAI shape, such as `permission_error`."
+          }
+        }
+      },
+      "PlaygroundImageAnswer": {
+        "type": "object",
+        "description": "The answer of `/v1/images/generations`, in the OpenAI shape.",
+        "required": [
+          "created",
+          "data"
+        ],
+        "properties": {
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Each image as `b64_json` or `url`, with `revised_prompt` when the\nmodel gave one."
+          },
+          "usage": {
+            "type": "object",
+            "description": "Only when the provider reports token usage."
+          }
+        }
+      },
+      "PlaygroundImageRequest": {
+        "type": "object",
+        "description": "An image generation request, as `/v1/images/generations` takes it. The body\nis read by the same parser as that call's, so any field it accepts is\naccepted here.",
+        "required": [
+          "model",
+          "prompt"
+        ],
+        "properties": {
+          "background": {
+            "type": "string",
+            "description": "`transparent`, `opaque` or `auto`."
+          },
+          "model": {
+            "type": "string",
+            "description": "A model as `provider/name`, or a route name."
+          },
+          "n": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of images, 1 to 10.",
+            "minimum": 0
+          },
+          "output_format": {
+            "type": "string",
+            "description": "`png`, `jpeg` or `webp`."
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "quality": {
+            "type": "string"
+          },
+          "size": {
+            "type": "string",
+            "description": "For example `1024x1024`."
           }
         }
       },

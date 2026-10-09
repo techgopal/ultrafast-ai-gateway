@@ -246,3 +246,44 @@ test("an image is attached, sent as a part and shown in the thread", async ({ pa
   await expect(thread).toContainText(mock.answer);
   await expect(thread.getByRole("img", { name: "pixel.png" })).toBeVisible();
 });
+
+test("an admin generates images: the prompt, size and number reach the provider, the images are shown, and the call is logged and priced from its usage", async ({
+  page,
+  admin,
+  apiAs,
+}) => {
+  const api = await apiAs(admin);
+  await setup(api);
+  await signInFromStart(page, admin);
+  await goTo(page, "Playground");
+
+  await page.getByRole("button", { name: "Images" }).click();
+  await picker(page).click();
+  await page.getByRole("option", { name: "alpha/e2e-model" }).click();
+  await page.getByRole("textbox", { name: "Prompt" }).fill("A red fox");
+  await page.getByRole("textbox", { name: "Number of images" }).fill("2");
+  await page.getByRole("button", { name: "Generate" }).click();
+
+  const shown = page.getByRole("list", { name: "Generated images" }).getByRole("img");
+  await expect(shown).toHaveCount(2);
+  // The pictures decode: they are real PNGs of the mock.
+  await expect
+    .poll(() => shown.first().evaluate((img: HTMLImageElement) => img.naturalWidth))
+    .toBe(1);
+  await expect(page.getByText("Tokens: 3 in, 7 out. Cost: $0.00017.")).toBeVisible();
+
+  expect(mock.imageCalls).toHaveLength(1);
+  expect(mock.imageCalls[0]).toMatchObject({
+    authorized: true,
+    body: { model: "e2e-model", prompt: "A red fox", n: 2, size: "1024x1024" },
+  });
+  await expect.poll(async () => (await api.logs()).length, { timeout: 15_000 }).toBe(1);
+  const [row] = await api.logs();
+  expect(row).toMatchObject({
+    endpoint: "playground",
+    status: 200,
+    stream: false,
+    cost_micros: 170,
+    user_email: admin.email,
+  });
+});

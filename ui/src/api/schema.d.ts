@@ -646,6 +646,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/playground/images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["playground_images"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/providers": {
         parameters: {
             query?: never;
@@ -2083,6 +2099,40 @@ export interface components {
             message: string;
             /** @description Only in the OpenAI shape, such as `permission_error`. */
             type?: string;
+        };
+        /** @description The answer of `/v1/images/generations`, in the OpenAI shape. */
+        PlaygroundImageAnswer: {
+            /** Format: int64 */
+            created: number;
+            /**
+             * @description Each image as `b64_json` or `url`, with `revised_prompt` when the
+             *     model gave one.
+             */
+            data: Record<string, never>[];
+            /** @description Only when the provider reports token usage. */
+            usage?: Record<string, never>;
+        };
+        /**
+         * @description An image generation request, as `/v1/images/generations` takes it. The body
+         *     is read by the same parser as that call's, so any field it accepts is
+         *     accepted here.
+         */
+        PlaygroundImageRequest: {
+            /** @description `transparent`, `opaque` or `auto`. */
+            background?: string;
+            /** @description A model as `provider/name`, or a route name. */
+            model: string;
+            /**
+             * Format: int32
+             * @description The number of images, 1 to 10.
+             */
+            n?: number;
+            /** @description `png`, `jpeg` or `webp`. */
+            output_format?: string;
+            prompt: string;
+            quality?: string;
+            /** @description For example `1024x1024`. */
+            size?: string;
         };
         PlaygroundMessage: {
             /** @description Text, or a list of parts (`text` and `image_url`) as in `/v1/chat/completions`. Null is allowed on an assistant message that has `tool_calls`. Images are `data:` URLs or, except for Gemini, `http(s)` URLs, and count toward the request body limit (10 MiB). */
@@ -5986,6 +6036,96 @@ export interface operations {
                 };
             };
             /** @description The request is not a chat request. The body is in the OpenAI error shape, as on `/v1`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No such model or route, in the OpenAI error shape. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description The provider failed; OpenAI error shape. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No provider could serve the call; OpenAI error shape. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+        };
+    };
+    playground_images: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaygroundImageRequest"];
+            };
+        };
+        responses: {
+            /** @description The answer, in the OpenAI shape. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundImageAnswer"];
+                };
+            };
+            /** @description The request is not an image request, or the model cannot generate images. The body is in the OpenAI error shape, as on `/v1`. */
             400: {
                 headers: {
                     [name: string]: unknown;

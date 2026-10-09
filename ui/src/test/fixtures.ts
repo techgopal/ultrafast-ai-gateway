@@ -1073,6 +1073,17 @@ export const playgroundChunks: readonly string[] = [
   "data: [DONE]\n\n",
 ];
 
+/** A 1 x 1 PNG, as an image model answers it (base64, no data: prefix). */
+export const TINY_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/** What the playground's image call answers by default: one image and its token usage. */
+export const playgroundImages = {
+  created: 1_700_000_000,
+  data: [freeForm({ b64_json: TINY_PNG })],
+  usage: freeForm({ input_tokens: 12, output_tokens: 800, total_tokens: 812 }),
+} satisfies components["schemas"]["PlaygroundImageAnswer"];
+
 // alerts: channels, rules and events as `/api/alerts` shows them
 
 /**
