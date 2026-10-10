@@ -4,7 +4,8 @@
 //! attempted); that needs `UF_TEST_DATABASE_URL`. Against a server with TLS it
 //! needs `UF_TEST_TLS_DATABASE_URL` (a URL with no query) and
 //! `UF_TEST_TLS_CA` (the file with the server's certificate, which is
-//! self-signed for `localhost`); CI has no such server and skips those.
+//! self-signed for `localhost`); the CI Postgres job starts such a server
+//! (`postgres-ssl`) and sets both, so they run there.
 
 use ultrafast_gateway::store::Store;
 

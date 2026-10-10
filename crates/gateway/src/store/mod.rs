@@ -98,6 +98,16 @@ pub fn after(seconds: i64) -> String {
         .expect("a UTC time formats with a fixed numeric layout")
 }
 
+/// What [`Store::begin_read`] runs first: PostgreSQL's per-statement
+/// snapshots are replaced by one for the whole transaction; SQLite's WAL
+/// read transaction needs nothing.
+fn read_transaction_statement(dialect: Dialect) -> Option<&'static str> {
+    match dialect {
+        Dialect::Postgres => Some("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"),
+        Dialect::Sqlite => None,
+    }
+}
+
 /// The advisory lock that serializes the transactions that start with
 /// [`Store::begin_immediate`] on PostgreSQL.
 const WRITE_LOCK: i64 = 0x5546_4741_5445_0001;
@@ -459,6 +469,19 @@ impl Store {
         self.teams_of_users_calls.load(Ordering::Relaxed)
     }
 
+    /// The database's own clock as `YYYY-MM-DD HH:MM:SS` UTC (the form of
+    /// [`now`]). For stamps that processes sharing one database compare with
+    /// each other: their local clocks may disagree, the database's is one.
+    pub async fn db_now(&self) -> Result<String> {
+        let sql = match self.dialect {
+            Dialect::Sqlite => "SELECT strftime('%Y-%m-%d %H:%M:%S', 'now')",
+            Dialect::Postgres => {
+                "SELECT to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')"
+            }
+        };
+        Ok(self.scalar(sql).fetch_one(&self.pool).await?)
+    }
+
     /// A transaction for reads that must see one moment: PostgreSQL would
     /// otherwise give each statement its own (READ COMMITTED), so a
     /// concurrent delete could show up in one table and not in another. Here
@@ -466,10 +489,8 @@ impl Store {
     /// read transaction to the moment of its first read.
     pub(crate) async fn begin_read(&self) -> Result<sqlx::Transaction<'static, Any>> {
         let mut tx = self.pool.begin().await?;
-        if self.dialect == Dialect::Postgres {
-            self.q("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-                .execute(&mut *tx)
-                .await?;
+        if let Some(sql) = read_transaction_statement(self.dialect) {
+            self.q(sql).execute(&mut *tx).await?;
         }
         Ok(tx)
     }
@@ -976,5 +997,29 @@ mod tests {
         );
         let fresh = store.begin_read().await.unwrap();
         drop(fresh);
+    }
+
+    /// PostgreSQL gets one snapshot for a multi-table read; SQLite none to ask for.
+    #[test]
+    fn read_transactions_ask_postgres_for_one_snapshot() {
+        assert_eq!(
+            read_transaction_statement(Dialect::Postgres),
+            Some("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        );
+        assert_eq!(read_transaction_statement(Dialect::Sqlite), None);
+    }
+
+    /// The reads that span tables (the snapshot and the export) open their
+    /// transaction with `begin_read`, never a plain `begin` or the pool.
+    #[test]
+    fn the_snapshot_and_export_reads_use_begin_read() {
+        let mod_rs = include_str!("mod.rs");
+        let start = mod_rs.find("pub async fn snapshot_rows_after").unwrap();
+        let body = &mod_rs[start..start + 600];
+        assert!(body.contains("self.begin_read()"), "{body}");
+        assert!(!body.contains("self.begin()"));
+        let portable = include_str!("portable.rs");
+        assert!(portable.contains("self.begin_read().await?"));
+        assert!(!portable.contains("self.begin().await"));
     }
 }
