@@ -28,7 +28,7 @@ env:
 
 jobs:
   # First: the tag, Cargo.toml and every package manifest name one version.
-  # `live` is true only for a real run with PUBLISH_LIVE=true.
+  # `live` is true only for a real run with PUBLISH_LIVE=true on a v* tag.
   plan:
     name: Plan
     runs-on: ubuntu-latest
@@ -65,6 +65,10 @@ jobs:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
         run: |
           if [ "$PUBLISH_LIVE" = "true" ] && [ "$DRY_RUN" != "true" ]; then
+            case "$GITHUB_REF" in
+              refs/tags/v*) ;;
+              *) echo "Live publishing needs a tag ref (refs/tags/v*); this run is on $GITHUB_REF. Use dry_run=true or run from a version tag." >&2; exit 1 ;;
+            esac
             echo "live=true" >> "$GITHUB_OUTPUT"
           else
             echo "live=false" >> "$GITHUB_OUTPUT"
@@ -273,7 +277,7 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
       # Trusted publishing (OIDC) needs npm 11.5.1 or newer.
-      - run: npm install -g npm@latest
+      - run: npm install -g npm@11.6.2
       - name: Publish
         run: |
           for d in clients/ts clients/admin-ts; do

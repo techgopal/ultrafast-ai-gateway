@@ -1986,6 +1986,8 @@ fn unsupported_feature(message: &str) -> &'static str {
         "reasoning_effort"
     } else if m.contains("image") {
         "images"
+    } else if m.contains("audio") {
+        "audio"
     } else if m.contains("tool") {
         "tools"
     } else if m.contains("response_format") || m.contains("json") || m.contains("schema") {

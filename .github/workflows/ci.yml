@@ -124,7 +124,6 @@ jobs:
           [ "$(docker inspect -f '{{.State.Health.Status}}' postgres-ssl)" = healthy ] \
             || { docker logs postgres-ssl; exit 1; }
           {
-            echo "UF_TEST_DATABASE_URL_TLS=postgres://postgres:postgres@localhost:5433/postgres"
             echo "UF_TEST_TLS_DATABASE_URL=postgres://postgres:postgres@localhost:5433/postgres"
             echo "UF_TEST_TLS_CA=$certs/server.crt"
           } >> "$GITHUB_ENV"

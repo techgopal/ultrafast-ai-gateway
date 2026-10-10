@@ -411,3 +411,33 @@ async fn a_personal_key_is_covered_by_the_teams_of_its_owner() {
     let priya = new_key(&org, &maya, "q", org.priya, None).await;
     assert!(effective(&org, &priya, None).await.is_empty());
 }
+
+#[tokio::test]
+async fn a_team_only_key_whose_owner_left_still_carries_the_team_guardrails() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let g = make_id(&org, &maya, "g", false).await;
+    put(&org, &maya, &team_path(org.platform), json!([g])).await;
+
+    let (status, v) = org
+        .call(
+            Some(&maya),
+            "POST",
+            "/api/keys",
+            Some(json!({ "name": "t", "owner_id": org.lena, "team_id": org.platform })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    let secret = v["secret"].as_str().unwrap().to_string();
+    let id = v["key"]["id"].as_i64().expect("a key id");
+    let mut tx = org.api.store.begin().await.unwrap();
+    tx.set_key_origin(id, org.maya, true).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(effective(&org, &secret, None).await, [g]);
+
+    // The owner leaves the team: the key keeps its team, so its guardrails.
+    let path = format!("/api/teams/{}/members/{}", org.platform, org.lena);
+    let (status, _) = org.call(Some(&maya), "DELETE", &path, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(effective(&org, &secret, None).await, [g]);
+}

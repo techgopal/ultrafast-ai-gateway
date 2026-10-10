@@ -148,6 +148,11 @@ export const errors = {
     "not_invited",
     "Only a user who has not accepted an invite can get a new one.",
   ),
+  admin_target: error(
+    409,
+    "admin_target",
+    "Admins get a password through their own account, not a link.",
+  ),
   not_sso_user: error(
     409,
     "not_sso_user",

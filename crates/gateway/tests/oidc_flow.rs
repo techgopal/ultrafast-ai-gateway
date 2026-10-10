@@ -1899,15 +1899,8 @@ async fn single_sign_on_still_works_after_a_password_is_set() {
 
     // Both ways in.
     common::sign_in(&org.api.app, nia, "a long enough phrase 7").await;
-    sign_in_as(
-        &org,
-        &idp,
-        Some("/keys"),
-        "sub-priya",
-        &email_of("priya"),
-        json!({}),
-    )
-    .await
-    .assert_signed_in("/keys");
+    sign_in_as(&org, &idp, Some("/keys"), "sub-nia", nia, json!({}))
+        .await
+        .assert_signed_in("/keys");
     assert_eq!(count_users(&org).await, users);
 }

@@ -325,7 +325,7 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 88. Its fallbacks are not
+    /// Every route of `api::router`, which has 99. Its fallbacks are not
     /// routes.
     const ROUTES: [(&str, &str); 99] = [
         ("GET", "/api/setup"),

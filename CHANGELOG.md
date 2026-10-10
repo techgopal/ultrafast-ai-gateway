@@ -16,7 +16,7 @@ and the clients ready to publish.
 ### Added
 - **Team and user guardrails.** Guardrails attach to teams and to users as
   well as to defaults, routes and keys. They apply in this order: defaults,
-  the caller's team, the teams its owner leads, the user, the route, the key.
+  the caller's team, every team its owner is a member of, the user, the route, the key.
   A personal key is covered by the teams of its owner.
 - **Password links for single sign-on users.** `POST /api/users/{id}/password-link`
   (admin) makes a single-use link, valid 24 hours, that sets a password and
@@ -43,7 +43,8 @@ and the clients ready to publish.
 ### Changed
 - A failed single sign-on attempt returns to
   `/sign-in?sso_error=<code>&next=<page>`, so the deep link is kept.
-- Team leads read the alerts and alert events of their teams (admins read all).
+- Team leads read the alerts and alert events of their teams through the API
+  (admins read all); the console Alerts page stays admin-only.
 - The dependency `source-map-js` is 1.2.2 (build and test tooling only).
 
 ### Fixed

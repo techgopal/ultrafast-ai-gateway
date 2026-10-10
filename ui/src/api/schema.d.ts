@@ -10126,7 +10126,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description `not_sso_user`: the user signs in with a password. `has_password`: the user has one. `not_active`: the user is not active. */
+            /** @description `admin_target`: the user is an admin other than the caller. `not_sso_user`: the user signs in with a password. `has_password`: the user has one. `not_active`: the user is not active. */
             409: {
                 headers: {
                     [name: string]: unknown;

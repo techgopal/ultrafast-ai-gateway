@@ -278,7 +278,7 @@ pub async fn reinvite(
         (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
         (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
         (status = 404, description = "It does not exist.", body = super::openapi::ApiErrorBody),
-        (status = 409, description = "`not_sso_user`: the user signs in with a password. `has_password`: the user has one. `not_active`: the user is not active.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`admin_target`: the user is an admin other than the caller. `not_sso_user`: the user signs in with a password. `has_password`: the user has one. `not_active`: the user is not active.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
     ),
     security(("session" = []), ("token" = [])),
@@ -301,6 +301,12 @@ pub async fn password_link(
         .user_by_id(target.id)
         .await?
         .ok_or_else(ApiError::not_found)?;
+    if user.role == Role::Admin && user.id != me.user_id {
+        return Err(ApiError::conflict(
+            "admin_target",
+            "Admins get a password through their own account, not a link.",
+        ));
+    }
     if user.external_id.is_none() {
         return Err(ApiError::conflict(
             "not_sso_user",

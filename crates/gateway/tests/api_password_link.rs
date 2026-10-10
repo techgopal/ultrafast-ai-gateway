@@ -277,3 +277,42 @@ async fn only_an_admin_issues_a_link_and_only_for_the_right_user() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(error_code(&body), "not_active");
 }
+
+#[tokio::test]
+async fn a_link_is_refused_for_an_admin_unless_it_is_the_caller() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    // Another admin made by single sign-on, without a password.
+    let mut tx = org.api.store.begin().await.unwrap();
+    let boss = tx
+        .insert_user(NewUser {
+            email: "boss@example.com",
+            name: "boss",
+            role: Role::Admin,
+            status: UserStatus::Active,
+            password_hash: None,
+        })
+        .await
+        .unwrap();
+    tx.link_external(boss, "oidc", "https://idp.example.com|sub-boss")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let (status, body) = link_for(&org, &maya, boss).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(error_code(&body), "admin_target");
+    assert_eq!(
+        body["error"]["message"],
+        "Admins get a password through their own account, not a link."
+    );
+    assert!(!org
+        .audit_actions()
+        .await
+        .contains(&"user.password_link".to_string()));
+
+    // The caller themself is not refused for being an admin: here maya has a
+    // password, so the next check answers.
+    let (status, body) = link_for(&org, &maya, org.maya).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_ne!(error_code(&body), "admin_target");
+}

@@ -788,7 +788,9 @@ to send (the gateway sends no mail). The link works once and for 24 hours; a
 new one ends the earlier one. Opened, it asks for the new password ("Set your
 password"). The user keeps their single sign-on link, their role and their
 sessions, and can then sign in either way. It is refused for a user who has a
-password already, who is not active, or who signs in only with a password. The
+password already, who is not active, who signs in only with a password, or
+who is an admin other than the caller ("Admins get a password through their
+own account, not a link.", `admin_target`). The
 audit log records who made a link and when the user used it, never the link.
 A user without a password sees "Ask an admin for a password link" under
 Account.
@@ -1539,7 +1541,8 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   Webhooks only (generic and Slack-compatible): no email, no PagerDuty format.
   Delivery is at most three tries and a delivery cut off at shutdown is not
   retried. Webhook URLs are not restricted to public addresses (admins already
-  set provider URLs). Admins see all alerts and team leads those of their teams. A circuit alert
+  set provider URLs). Admins see all alerts; team leads read those of their teams through the API
+  (the console's Alerts page is for admins). A circuit alert
   resolves only after its breaker has stayed closed for 5 minutes. Alert
   history (events) is deleted with the request logs, after the log retention
   period.
