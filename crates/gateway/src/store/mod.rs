@@ -10,6 +10,7 @@ mod guardrails;
 mod keys;
 mod limits;
 mod logs;
+mod mcp;
 mod models;
 mod portable;
 mod prompts;
@@ -44,6 +45,7 @@ pub use guardrails::{GuardrailPatch, GuardrailRow, NewGuardrail};
 pub use keys::{parse_allowed, KeyRow, LiveKey};
 pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
+pub use mcp::{DiscoveredTool, McpGrantRow, McpServerRow, McpToolRow, NewMcpServer, SyncDelta};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use portable::ConfigState;
 pub use prompts::{LatestStub, NewVersion, TemplateRow, VersionRow, VersionStub};
@@ -210,6 +212,12 @@ pub struct SnapshotRows {
     pub team_guardrails: Vec<(i64, i64, String)>,
     /// `(user id, guardrail id, guardrail name)`, in each user's order.
     pub user_guardrails: Vec<(i64, i64, String)>,
+    /// Every MCP server, by name.
+    pub mcp_servers: Vec<McpServerRow>,
+    /// The tools that are switched on and still offered.
+    pub mcp_tools: Vec<McpToolRow>,
+    /// The grants of `mcp_tools`.
+    pub mcp_tool_grants: Vec<McpGrantRow>,
     /// Every prompt template, by name.
     pub prompt_templates: Vec<TemplateRow>,
     /// `(template id, number of its newest version)`.
@@ -434,6 +442,9 @@ impl Store {
         let key_guardrails = guardrails::key_guardrail_refs_in(conn).await?;
         let team_guardrails = guardrails::team_guardrail_refs_in(conn).await?;
         let user_guardrails = guardrails::user_guardrail_refs_in(conn).await?;
+        let mcp_servers = mcp::list_mcp_servers_in(conn).await?;
+        let mcp_tools = mcp::list_live_mcp_tools_in(conn).await?;
+        let mcp_tool_grants = mcp::list_live_mcp_grants_in(conn).await?;
         let prompt_templates = prompts::list_templates_in(conn).await?;
         let prompt_latest = prompts::latest_numbers_in(conn).await?;
         let prompt_versions =
@@ -458,6 +469,9 @@ impl Store {
             key_guardrails,
             team_guardrails,
             user_guardrails,
+            mcp_servers,
+            mcp_tools,
+            mcp_tool_grants,
             prompt_templates,
             prompt_latest,
             prompt_versions,
