@@ -1,4 +1,5 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
+import { REVOKE_AFTER_MS } from "@/components/DownloadLink";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { errors, validationFailed } from "@/test/errors";
@@ -540,9 +541,11 @@ function imports(
 
 const FILE = JSON.stringify(fixtures.configFile);
 
+const realSetTimeout = globalThis.setTimeout.bind(globalThis);
+
 /** Object URLs: what the console saves a fetched file as. */
-function savedFiles(): { made: Blob[]; names: string[] } {
-  const saved = { made: [] as Blob[], names: [] as string[] };
+function savedFiles(): { made: Blob[]; names: string[]; revoked: string[]; later: (() => void)[] } {
+  const saved = { made: [] as Blob[], names: [] as string[], revoked: [] as string[], later: [] as (() => void)[] };
   Object.defineProperty(URL, "createObjectURL", {
     configurable: true,
     writable: true,
@@ -551,7 +554,21 @@ function savedFiles(): { made: Blob[]; names: string[] } {
       return `blob:test/${String(saved.made.length)}`;
     },
   });
-  Object.defineProperty(URL, "revokeObjectURL", { configurable: true, writable: true, value: () => undefined });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    writable: true,
+    value: (url: string) => {
+      saved.revoked.push(url);
+    },
+  });
+  // The download link's revoke timer: held back so the test can look before and after it.
+  vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, delay?: number) => {
+    if (delay === REVOKE_AFTER_MS) {
+      saved.later.push(handler);
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return realSetTimeout(handler, delay);
+  }));
   vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
     saved.names.push(this.download);
   });
@@ -560,6 +577,7 @@ function savedFiles(): { made: Blob[]; names: string[] } {
 
 describe("configuration: export", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     Reflect.deleteProperty(URL, "createObjectURL");
     Reflect.deleteProperty(URL, "revokeObjectURL");
   });
@@ -589,6 +607,23 @@ describe("configuration: export", () => {
     const [file] = saved.made;
     expect(JSON.parse((await file?.text()) ?? "null")).toEqual(fixtures.configFile);
     expect(within(section).queryByRole("alert")).toBeNull();
+  });
+
+  test("the object URL is revoked later, not while the browser starts the download", async () => {
+    const saved = savedFiles();
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Configuration" });
+    await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
+    await waitFor(() => {
+      expect(saved.names).toHaveLength(1);
+    });
+    expect(saved.revoked).toEqual([]);
+    // Other timers of the same length may be held back too (the test library's own): run them all.
+    act(() => {
+      for (const run of saved.later) run();
+    });
+    expect(saved.revoked).toEqual(["blob:test/1"]);
   });
 
   test("the download is a link to the gateway", async () => {

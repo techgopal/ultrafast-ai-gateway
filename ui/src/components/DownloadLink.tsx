@@ -17,6 +17,9 @@ import { Button } from "@/components/ui/button";
  * (the configuration export) is fetched through the client instead (`fetchFile`):
  * a refusal is shown in place and a file is saved only when there is one.
  */
+/** How long the object URL of a saved file stays valid. */
+export const REVOKE_AFTER_MS = 10_000;
+
 export function DownloadLink({
   href,
   variant,
@@ -64,7 +67,10 @@ export function DownloadLink({
     link.href = url;
     link.download = filename?.() ?? "";
     link.click();
-    URL.revokeObjectURL(url);
+    // Some browsers start a blob download after the click returns: revoking now could save nothing.
+    window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, REVOKE_AFTER_MS);
   }
 
   return (
