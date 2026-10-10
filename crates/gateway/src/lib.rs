@@ -14,6 +14,7 @@ pub mod guardrails;
 pub mod identity;
 pub mod limits;
 pub mod logs;
+pub mod mcp;
 pub mod metrics;
 pub mod otel;
 pub mod portable;
