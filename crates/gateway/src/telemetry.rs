@@ -48,6 +48,9 @@ pub struct Attempt {
     /// Milliseconds from the start of the call to the start of the attempt.
     /// Only the trace export reads it; the request log does not store it.
     pub offset_ms: u64,
+    /// Why the target was passed over, when the request could not be
+    /// expressed for it: `unsupported:<feature>`.
+    pub skipped: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -301,6 +304,7 @@ impl Scope {
             status,
             duration_ms: elapsed_ms(started),
             offset_ms,
+            skipped: None,
         });
     }
 
@@ -316,7 +320,15 @@ impl Scope {
             status: None,
             duration_ms: 0,
             offset_ms,
+            skipped: None,
         });
+    }
+
+    /// Marks the attempt that began last as passed over, for `reason`.
+    pub fn skipped_for(&mut self, reason: &str) {
+        if let Some(a) = self.record_mut().attempts.last_mut() {
+            a.skipped = Some(reason.to_string());
+        }
     }
 
     /// What the attempt that began last came to.
@@ -410,6 +422,7 @@ impl Scope {
             status: None,
             duration_ms: 0,
             offset_ms: 0,
+            skipped: None,
         });
     }
 
@@ -447,6 +460,7 @@ impl Scope {
                         status: None,
                         duration_ms: 0,
                         // Passed over when the call ended.
+                        skipped: None,
                         offset_ms: elapsed_ms(self.started),
                     });
                 }
@@ -575,6 +589,7 @@ mod tests {
             status,
             duration_ms: 1,
             offset_ms: 0,
+            skipped: None,
         }
     }
 

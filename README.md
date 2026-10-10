@@ -328,10 +328,10 @@ has the images, audio or reasoning API is up to it (its error comes back to
 the caller). A model that cannot serve images or audio answers 400 "This model
 does not support image generation." (or "audio."), without a provider being
 called; on a route, targets that cannot serve a call are skipped and the first
-that can serves it. For features of chat calls the rule is different: a feature
-the first target lacks (`reasoning_effort` on Anthropic or Gemini, `tool_choice`
-with no tools, ...) is a 400, and the call does not move on to a fallback that
-has it.
+that can serves it. A target that cannot express a feature of the request
+(reasoning effort, tools, images, structured output) is skipped and the next
+target is tried; the log shows the skipped attempt. When no target can express
+it, the call is a 400 with the first target's message.
 
 ### Structured outputs
 
@@ -1582,9 +1582,6 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   and `json_object` on Anthropic is the schema `{"type":"object"}`, which the
   model may satisfy with `{}`. A schema a provider does not accept is that
   provider's 400.
-- A feature a provider lacks (`reasoning_effort`, `tool_choice` on a model that
-  has no tools, ...) is a 400 when the first target a route tries lacks it: the
-  gateway does not move on to a fallback that has it.
 - Prompt templates: a version never changes, and there is no API to delete one
   version (the database does not block a raw delete of a row, and the
   numbering is checked in code); a template is deleted with all its versions.

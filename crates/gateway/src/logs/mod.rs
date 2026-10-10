@@ -159,13 +159,17 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
         .attempts
         .iter()
         .map(|a| {
-            serde_json::json!({
+            let mut v = serde_json::json!({
                 "provider": a.provider,
                 "model": a.model,
                 "outcome": outcome_name(a.outcome),
                 "status": a.status,
                 "duration_ms": a.duration_ms,
-            })
+            });
+            if let Some(reason) = &a.skipped {
+                v["skipped"] = reason.clone().into();
+            }
+            v
         })
         .collect();
     NewLog {
@@ -262,6 +266,7 @@ mod tests {
                 status: Some(200),
                 duration_ms: 1,
                 offset_ms: 0,
+                skipped: None,
             }],
             cached: false,
             estimated: true,
