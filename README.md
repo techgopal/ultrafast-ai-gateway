@@ -86,14 +86,14 @@ variations, and realtime audio.
 printf 'UF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' > admin.env
 chmod 600 admin.env
 docker run -d --name ultrafast -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast \
-  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.3
+  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.4
 ```
 
 **Or a binary** from the [latest release](https://github.com/techgopal/ultrafast-ai-gateway/releases)
 (Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x64). For Linux x86_64:
 
 ```bash
-V=2.0.0-beta.3; T=x86_64-unknown-linux-musl
+V=2.0.0-beta.4; T=x86_64-unknown-linux-musl
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/ultrafast-v$V-$T.tar.gz
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c
@@ -1459,9 +1459,9 @@ admin API (`/api`: providers, models, routes, keys, users, teams, limits,
 budgets, alerts, guardrails, prompts, settings, usage, logs, audit, backup and
 configuration). Both are generated from `openapi/admin.json`, authenticate with an
 access token (Account, Access tokens in the console), and raise a typed error
-with the gateway's `status`, `code` and field messages. They are published to
-npm and PyPI from v2.0.0-beta.4 (install commands above); before that, build
-from source. CI regenerates both and fails when the
+with the gateway's `status`, `code` and field messages. They are meant for
+npm and PyPI from v2.0.0-beta.4 (install commands above), once publishing is
+live (see Known limits); until then, build from source. CI regenerates both and fails when the
 committed copy differs.
 
 TypeScript ([`clients/admin-ts`](clients/admin-ts/README.md)):
@@ -1539,7 +1539,7 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   Webhooks only (generic and Slack-compatible): no email, no PagerDuty format.
   Delivery is at most three tries and a delivery cut off at shutdown is not
   retried. Webhook URLs are not restricted to public addresses (admins already
-  set provider URLs). Only admins see alerts; leads cannot. A circuit alert
+  set provider URLs). Admins see all alerts and team leads those of their teams. A circuit alert
   resolves only after its breaker has stayed closed for 5 minutes. Alert
   history (events) is deleted with the request logs, after the log retention
   period.
@@ -1570,6 +1570,9 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   authorization code only once, as the standard requires. The
   provider's groups claim can be missing (Entra ID overage), in which case
   the role stays as it is.
+- Registry publishing (crates.io, PyPI, npm) is a dry run until the owner has
+  registered the trusted publishers and set `PUBLISH_LIVE` (`docs/RELEASING.md`):
+  until then, build the clients and SDKs from source.
 - A backup restore is manual, and a configuration import never deletes. There
   is no online migration between SQLite and Postgres (see Using PostgreSQL).
 - On Postgres the console and `ultrafast backup` do not back up: use `pg_dump`.

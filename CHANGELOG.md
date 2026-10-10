@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0-beta.4] - 2026-10-10
+
+Hardening: guardrails for teams and users, single sign-on password links, a
+fallback that skips targets which cannot express a request, console branding,
+and the clients ready to publish.
+
 ### Added
+- **Team and user guardrails.** Guardrails attach to teams and to users as
+  well as to defaults, routes and keys. They apply in this order: defaults,
+  the caller's team, the teams its owner leads, the user, the route, the key.
+  A personal key is covered by the teams of its owner.
+- **Password links for single sign-on users.** `POST /api/users/{id}/password-link`
+  (admin) makes a single-use link, valid 24 hours, that sets a password and
+  keeps the identity link, role and sessions. The console shows it once to
+  copy; an SSO-only user who opens the password page is told to ask an admin.
+- **Skip to the fallback on unsupported features.** A target that cannot
+  express a feature of the request (for example audio input) is skipped and
+  the next target is tried. The log's attempt has outcome `skipped` and a
+  `skipped` reason, `unsupported:<feature>`, shown in the console's call
+  detail.
+- **Console branding.** The brand mark and name in the sidebar, the mobile
+  header and the sign-in pages.
 - **Clients on the registries.** `.github/workflows/publish.yml` (tag `v*`)
   publishes `ultrafast-translate` and `ultrafast-client` to crates.io,
   `ultrafast` and `ultrafast-admin` to PyPI (trusted publishing, no stored
@@ -16,7 +37,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PUBLISH_LIVE` is `true`; the one-time owner steps are in
   `docs/RELEASING.md`. Package metadata (description, license, repository,
   homepage, keywords, readme) is complete, and the READMEs show the install
-  commands. The packages appear from v2.0.0-beta.4.
+  commands. The packages appear once the owner has registered the trusted publishers and
+  set `PUBLISH_LIVE`; until then this release publishes nothing.
+
+### Changed
+- A failed single sign-on attempt returns to
+  `/sign-in?sso_error=<code>&next=<page>`, so the deep link is kept.
+- Team leads read the alerts and alert events of their teams (admins read all).
+- The dependency `source-map-js` is 1.2.2 (build and test tooling only).
+
+### Fixed
+- Alert heartbeats use the database clock, so processes on a shared PostgreSQL
+  agree.
+- The CI Postgres job starts a TLS server, so the TLS tests run.
 
 ## [2.0.0-beta.3] - 2026-10-10
 
