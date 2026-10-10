@@ -7,9 +7,11 @@ code and CI. The types and the typed client are generated from
 typed error. It is not published to npm: build it from source.
 
 ```sh
-pnpm --dir clients/admin-ts install && pnpm --dir clients/admin-ts build
-# then depend on the folder, e.g. "@ultrafast/admin": "file:../ultrafast-ai-gateway/clients/admin-ts"
+npm i @ultrafast/admin@beta
 ```
+
+The package appears on npm from v2.0.0-beta.4. Before that, build it from a checkout:
+`pnpm --dir clients/admin-ts install && pnpm --dir clients/admin-ts build`, then depend on the folder.
 
 Create an access token under Account, Access tokens (it starts with `uf-at-`).
 A token acts as its user and needs no CSRF header. Keep it out of logs and source.

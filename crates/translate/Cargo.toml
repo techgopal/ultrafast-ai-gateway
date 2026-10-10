@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Provider format translation for Ultrafast. No networking."
+homepage = "https://github.com/techgopal/ultrafast-ai-gateway"
+readme = "README.md"
+keywords = ["llm", "openai", "anthropic", "gateway", "translation"]
+categories = ["api-bindings", "web-programming"]
 
 [dependencies]
 serde.workspace = true

@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rust client for the Ultrafast gateway and for LLM providers directly."
+homepage = "https://github.com/techgopal/ultrafast-ai-gateway"
+readme = "README.md"
+keywords = ["llm", "openai", "anthropic", "gateway", "client"]
+categories = ["api-bindings", "web-programming::http-client"]
 
 [dependencies]
 ultrafast-translate = { version = "2.0.0-beta.3", path = "../translate" }

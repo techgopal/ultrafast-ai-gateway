@@ -4,6 +4,18 @@
   "description": "TypeScript SDK for the Ultrafast gateway admin API (/api): a typed openapi-fetch client generated from openapi/admin.json, with an access-token wrapper and a typed error.",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://github.com/techgopal/ultrafast-ai-gateway#readme",
+  "bugs": {
+    "url": "https://github.com/techgopal/ultrafast-ai-gateway/issues"
+  },
+  "keywords": [
+    "llm",
+    "gateway",
+    "openai",
+    "anthropic",
+    "admin",
+    "typescript"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/techgopal/ultrafast-ai-gateway.git",
@@ -46,5 +58,9 @@
     "typescript-eslint": "8.71.0",
     "vitest": "4.1.11"
   },
-  "packageManager": "pnpm@11.20.0"
+  "packageManager": "pnpm@11.20.0",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }

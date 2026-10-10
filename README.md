@@ -1389,8 +1389,14 @@ trusted network use `--insecure-cookies`. `/v1` with a key works over HTTP.
 Rust, Python and TypeScript clients for the gateway (or a provider directly),
 built on one Rust core, `ultrafast-translate`, and tested with shared fixtures
 (`clients/fixtures/`). They do not retry, route or cache; an error says
-whether to retry and when. Wheels and an npm package are not published yet,
-and the crates are not on crates.io: build from source as each README says.
+whether to retry and when. Install them (the packages appear from v2.0.0-beta.4,
+as pre-releases; before that, build from source as each README says):
+
+```sh
+cargo add ultrafast-client
+pip install --pre ultrafast ultrafast-admin
+npm i @ultrafast/client@beta @ultrafast/admin@beta
+```
 
 Rust ([`crates/client`](crates/client/README.md)):
 
@@ -1440,15 +1446,16 @@ admin API (`/api`: providers, models, routes, keys, users, teams, limits,
 budgets, alerts, guardrails, prompts, settings, usage, logs, audit, backup and
 configuration). Both are generated from `openapi/admin.json`, authenticate with an
 access token (Account, Access tokens in the console), and raise a typed error
-with the gateway's `status`, `code` and field messages. They are not published
-to npm or PyPI: build from source. CI regenerates both and fails when the
+with the gateway's `status`, `code` and field messages. They are published to
+npm and PyPI from v2.0.0-beta.4 (install commands above); before that, build
+from source. CI regenerates both and fails when the
 committed copy differs.
 
 TypeScript ([`clients/admin-ts`](clients/admin-ts/README.md)):
 
 ```sh
-pnpm --dir clients/admin-ts install && pnpm --dir clients/admin-ts build
-# then depend on the folder: "@ultrafast/admin": "file:../ultrafast-ai-gateway/clients/admin-ts"
+npm i @ultrafast/admin@beta
+# from a checkout: pnpm --dir clients/admin-ts install && pnpm --dir clients/admin-ts build
 ```
 
 ```ts
@@ -1466,7 +1473,7 @@ console.log("created channel", channel.id);
 Python 3.11 or newer ([`clients/admin-py`](clients/admin-py/README.md)):
 
 ```sh
-pip install ./clients/admin-py
+pip install --pre ultrafast-admin   # from a checkout: pip install ./clients/admin-py
 ```
 
 ```python

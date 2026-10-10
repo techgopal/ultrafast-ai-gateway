@@ -4,6 +4,12 @@ Python client for an Ultrafast gateway, or for an LLM provider directly. It
 wraps the Rust client (`crates/client`) with PyO3: one wheel per platform for
 Python 3.9 and newer (abi3). It does not retry, route, cache or break circuits.
 
+```sh
+pip install --pre ultrafast
+```
+
+The wheels appear on PyPI from v2.0.0-beta.4.
+
 ```python
 import ultrafast
 
