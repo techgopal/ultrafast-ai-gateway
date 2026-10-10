@@ -40,6 +40,11 @@ pub struct ConfigState {
     /// Every prompt template, by name, and all their versions.
     pub prompt_templates: Vec<super::TemplateRow>,
     pub prompt_versions: Vec<super::VersionRow>,
+    /// Every MCP server, with its encrypted secret (never exported).
+    pub mcp_servers: Vec<super::McpServerRow>,
+    /// The tools still offered, switched on or not.
+    pub mcp_tools: Vec<super::McpToolRow>,
+    pub mcp_tool_grants: Vec<super::McpGrantRow>,
 }
 
 async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
@@ -76,6 +81,9 @@ async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
     let team_guardrails = super::guardrails::team_guardrail_refs_in(conn).await?;
     let prompt_templates = super::prompts::list_templates_in(conn).await?;
     let prompt_versions = super::prompts::list_versions_in(conn).await?;
+    let mcp_servers = super::mcp::list_mcp_servers_in(conn).await?;
+    let mcp_tools = super::mcp::list_offered_mcp_tools_in(conn).await?;
+    let mcp_tool_grants = super::mcp::list_offered_mcp_grants_in(conn).await?;
     Ok(ConfigState {
         providers,
         models,
@@ -96,6 +104,9 @@ async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
         team_guardrails,
         prompt_templates,
         prompt_versions,
+        mcp_servers,
+        mcp_tools,
+        mcp_tool_grants,
     })
 }
 

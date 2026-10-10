@@ -12,8 +12,10 @@
 //! never its owner's own grants or an admin's reach, and nothing once its
 //! owner is out of that team.
 
+use std::collections::HashSet;
+
 use crate::identity::Role;
-use crate::snapshot::{SnapKey, SnapModel, SnapRoute, Snapshot};
+use crate::snapshot::{SnapKey, SnapMcpServer, SnapMcpTool, SnapModel, SnapRoute, Snapshot};
 
 pub enum Resolved<'a> {
     Model(&'a SnapModel),
@@ -91,6 +93,78 @@ pub fn model_callable(viewer: Viewer<'_>, model: &ModelFacts<'_>) -> bool {
                 || team_ids.iter().any(|t| model.team_ids.contains(t))
         }
     }
+}
+
+/// What decides whether an MCP tool may be called, as plain data.
+#[derive(Debug, Clone, Copy)]
+pub struct ToolFacts<'a> {
+    pub enabled: bool,
+    /// Whether its server is switched on and usable.
+    pub server_present: bool,
+    pub everyone: bool,
+    pub team_ids: &'a [i64],
+    pub user_ids: &'a [i64],
+}
+
+/// Whether the tool is enabled, its server present and the tool granted to
+/// the viewer: exactly the rule of [`model_callable`].
+pub fn tool_callable(viewer: Viewer<'_>, tool: &ToolFacts<'_>) -> bool {
+    model_callable(
+        viewer,
+        &ModelFacts {
+            enabled: tool.enabled,
+            provider_present: tool.server_present,
+            everyone: tool.everyone,
+            team_ids: tool.team_ids,
+            user_ids: tool.user_ids,
+        },
+    )
+}
+
+fn tool_facts<'a>(server: &SnapMcpServer, tool: &'a SnapMcpTool) -> ToolFacts<'a> {
+    ToolFacts {
+        // The snapshot holds only tools that are on.
+        enabled: true,
+        server_present: server.enabled && server.usable,
+        everyone: tool.everyone,
+        team_ids: &tool.team_ids,
+        user_ids: &tool.user_ids,
+    }
+}
+
+/// Whether the viewer may call the tool of the snapshot. The allowlist of a
+/// key is not looked at here.
+pub fn may_call_tool(viewer: Viewer<'_>, server: &SnapMcpServer, tool: &SnapMcpTool) -> bool {
+    tool_callable(viewer, &tool_facts(server, tool))
+}
+
+/// Every tool the viewer may call, by server and tool name. `allowed` is
+/// the allowlist of a key, if it has one: it must name `mcp:<server>/<tool>`.
+pub fn callable_tools<'a>(
+    snapshot: &'a Snapshot,
+    viewer: Viewer<'_>,
+    allowed: Option<&HashSet<String>>,
+) -> Vec<(&'a SnapMcpServer, &'a SnapMcpTool)> {
+    let mut out = Vec::new();
+    for server in snapshot.mcp_servers() {
+        for tool in snapshot.mcp_tools_of(server.id) {
+            let named = allowed.is_none_or(|names| {
+                names.contains(&crate::mcp::allow_entry(&server.name, &tool.name))
+            });
+            if named && may_call_tool(viewer, server, tool) {
+                out.push((server, tool));
+            }
+        }
+    }
+    out
+}
+
+/// [`callable_tools`] for a virtual key: its owner's reach, cut by its allowlist.
+pub fn callable_tools_of_key<'a>(
+    snapshot: &'a Snapshot,
+    key: &SnapKey,
+) -> Vec<(&'a SnapMcpServer, &'a SnapMcpTool)> {
+    callable_tools(snapshot, viewer(snapshot, key), key.allowed.as_ref())
 }
 
 /// Whether the route is open to the viewer: to everyone, to one of their
@@ -258,5 +332,83 @@ mod tests {
         assert!(route_usable(team, &route(false, &[10])));
         assert!(!route_usable(team, &route(false, &[20])));
         assert!(!route_usable(team, &route(false, &[])));
+    }
+
+    fn tool<'a>(everyone: bool, team_ids: &'a [i64], user_ids: &'a [i64]) -> ToolFacts<'a> {
+        ToolFacts {
+            enabled: true,
+            server_present: true,
+            everyone,
+            team_ids,
+            user_ids,
+        }
+    }
+
+    fn user<'a>(id: i64, admin: bool, team_ids: &'a [i64]) -> Viewer<'a> {
+        Viewer::User {
+            id,
+            admin,
+            team_ids,
+        }
+    }
+
+    /// A tool is granted exactly like a model: the same viewers get the same
+    /// answers for the same facts.
+    #[test]
+    fn a_tool_follows_the_model_rule_for_every_viewer() {
+        let teams = [10];
+        let viewers = [
+            Viewer::Nobody,
+            Viewer::Missing,
+            user(1, false, &teams),
+            user(1, false, &[]),
+            user(2, true, &[]),
+            Viewer::Team { team_id: 10 },
+            Viewer::Team { team_id: 20 },
+        ];
+        let grants: [(bool, &[i64], &[i64]); 5] = [
+            (true, &[], &[]),
+            (false, &[10], &[]),
+            (false, &[], &[1]),
+            (false, &[20], &[2]),
+            (false, &[], &[]),
+        ];
+        for viewer in viewers {
+            for (everyone, t, u) in grants {
+                for (enabled, present) in [(true, true), (false, true), (true, false)] {
+                    let mut facts = tool(everyone, t, u);
+                    facts.enabled = enabled;
+                    facts.server_present = present;
+                    let as_model = ModelFacts {
+                        enabled,
+                        provider_present: present,
+                        everyone,
+                        team_ids: t,
+                        user_ids: u,
+                    };
+                    assert_eq!(
+                        tool_callable(viewer, &facts),
+                        model_callable(viewer, &as_model),
+                        "{viewer:?} {facts:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_tool_is_not_callable_when_off_or_its_server_is_gone() {
+        let mut facts = tool(true, &[], &[]);
+        assert!(tool_callable(user(1, true, &[]), &facts));
+        facts.enabled = false;
+        assert!(!tool_callable(user(1, true, &[]), &facts));
+        facts.enabled = true;
+        facts.server_present = false;
+        assert!(!tool_callable(user(1, true, &[]), &facts));
+        // Admins need no grant; others need one.
+        let facts = tool(false, &[], &[]);
+        assert!(tool_callable(user(1, true, &[]), &facts));
+        assert!(!tool_callable(user(1, false, &[10]), &facts));
+        assert!(!tool_callable(Viewer::Team { team_id: 10 }, &facts));
     }
 }

@@ -231,6 +231,7 @@ pub struct RoutingHealth {
         (name = "keys", description = "Virtual keys for /v1."),
         (name = "providers", description = "Upstream providers."),
         (name = "models", description = "The model catalog and who may call each model."),
+        (name = "mcp", description = "MCP servers, the tools they offer and who may call each tool."),
         (name = "routes", description = "Routes: named sets of models with fallbacks and limits."),
         (name = "tokens", description = "The caller's access tokens for /api."),
         (name = "audit", description = "The audit log."),
@@ -325,9 +326,9 @@ mod tests {
 
     use super::*;
 
-    /// Every route of `api::router`, which has 99. Its fallbacks are not
+    /// Every route of `api::router`, which has 108. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 99] = [
+    const ROUTES: [(&str, &str); 108] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -370,6 +371,15 @@ mod tests {
         ("PATCH", "/api/models/{id}"),
         ("DELETE", "/api/models/{id}"),
         ("PUT", "/api/models/{id}/grants"),
+        ("GET", "/api/mcp/servers"),
+        ("POST", "/api/mcp/servers"),
+        ("GET", "/api/mcp/servers/{id}"),
+        ("PATCH", "/api/mcp/servers/{id}"),
+        ("DELETE", "/api/mcp/servers/{id}"),
+        ("POST", "/api/mcp/servers/{id}/sync"),
+        ("GET", "/api/mcp/servers/{id}/tools"),
+        ("PATCH", "/api/mcp/tools/{id}"),
+        ("PUT", "/api/mcp/tools/{id}/grants"),
         ("GET", "/api/routes"),
         ("POST", "/api/routes"),
         ("GET", "/api/routes/{id}"),
@@ -429,15 +439,17 @@ mod tests {
         ("POST", "/api/prompts/{id}/render"),
     ];
 
-    const SECRET_REQUEST_FIELDS: [&str; 5] = [
+    const SECRET_REQUEST_FIELDS: [&str; 6] = [
         "password",
         "current_password",
         "new_password",
         "api_key",
         "token",
+        "secret",
     ];
 
-    const NEVER_SHOWN: [&str; 5] = [
+    const NEVER_SHOWN: [&str; 6] = [
+        "auth_secret_enc",
         "password_hash",
         "credential",
         "key_hash",
@@ -580,7 +592,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 99);
+        assert_eq!(routes.len(), 108);
         assert_eq!(documented, routes);
     }
 
@@ -602,7 +614,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 99);
+        assert_eq!(ids.len(), 108);
     }
 
     #[test]

@@ -3874,6 +3874,967 @@
         ]
       }
     },
+    "/api/mcp/servers": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_servers_list",
+        "parameters": [
+          {
+            "name": "key_team_id",
+            "in": "query",
+            "description": "A team the caller leads: only the servers with a tool a key they make for another member of it may call, those granted to everyone or to the team. An admin's keys are not cut.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An admin gets every server with its settings. Everyone else gets the enabled servers that have a tool they may call, without URL or authentication.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`key_team_id` names a team the caller does not lead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_servers_create",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMcpServerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new server. It has no tools until it is synced.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`mcp_server_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/servers/{id}": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_servers_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the server.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The server.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_servers_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the server.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The server, its tools and their grants are deleted."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_servers_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the server.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMcpServerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The server after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid, or the host changed and the secret was not sent again; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/servers/{id}/sync": {
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_servers_sync",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the server.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "New tools are added, switched off. Tools the server no longer offers are marked removed; their grants are kept.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpSyncResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`server_unusable`: the server needs a secret that is missing or cannot be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "`sync_failed`: the server did not return its tools. The server's `last_sync_error` says why in our words.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/servers/{id}/tools": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_tools_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the server.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "key_team_id",
+            "in": "query",
+            "description": "A team the caller leads: only the tools a key they make for another member of it may call, those granted to everyone or to the team. An admin's keys are not cut.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An admin gets every tool of the server with its grants, removed ones included. Everyone else gets the tools they may call, with empty grants.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpToolList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`key_team_id` names a team the caller does not lead.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or the caller may call none of its tools.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/tools/{id}": {
+      "patch": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_tools_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the tool.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMcpToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The tool after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpToolView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/tools/{id}/grants": {
+      "put": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_tools_grants_put",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the tool.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantsView"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The tool with its new grants. They replace the old ones.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpToolView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is hidden from the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A team or user does not exist, or everyone is combined with others; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/models": {
       "get": {
         "tags": [
@@ -9735,6 +10696,13 @@
               "$ref": "#/components/schemas/LimitEntry"
             }
           },
+          "mcp_servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerEntry"
+            },
+            "description": "MCP servers with the settings of their tools. Left out of the file\nwhen there are none."
+          },
           "models": {
             "type": "array",
             "items": {
@@ -9905,7 +10873,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The names the key may call: `provider/model` of a model in the\ncatalog, or the name of a route. Left out, the key has no allowlist."
+            "description": "The names the key may call: `provider/model` of a model in the\ncatalog, the name of a route, or `mcp:{server}/{tool}` of an MCP tool. Left out, the key has no allowlist."
           },
           "expires_at": {
             "type": [
@@ -9953,6 +10921,59 @@
               "null"
             ],
             "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateMcpServerRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "url"
+        ],
+        "properties": {
+          "auth_header": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The header that carries the secret, for `auth_kind` `header`."
+          },
+          "auth_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`none` (the default), `bearer` or `header`."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "On by default."
+          },
+          "name": {
+            "type": "string",
+            "description": "1 to 63 characters of `a-z`, `0-9` and `-`, starting with a letter or\na digit. It is the name in the endpoint `/mcp/{name}` and in a key's\nallowlist (`mcp:{name}/{tool}`), and cannot be changed."
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Required with `bearer` or `header`.",
+            "writeOnly": true
+          },
+          "url": {
+            "type": "string",
+            "description": "The streamable-HTTP endpoint of the server."
           }
         },
         "additionalProperties": false
@@ -10851,7 +11872,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`provider`, `team`, `model`, `guardrail`, `prompt`, `route`, `limit`,\n`budget`, `alert_channel`, `alert_rule` or `settings`."
+            "description": "`provider`, `team`, `model`, `guardrail`, `prompt`, `route`, `limit`,\n`budget`, `alert_channel`, `alert_rule`, `mcp_server`, `mcp_tool` or\n`settings`."
           },
           "name": {
             "type": "string"
@@ -11637,6 +12658,285 @@
           }
         ],
         "description": "What a rule looks for. Written as `{\"keywords\": {\"words\": [...],\n\"whole_word\": true}}`, `{\"regex\": \"...\"}` or `{\"pii\": [\"EMAIL\", ...]}`."
+      },
+      "McpServerEntry": {
+        "type": "object",
+        "description": "An MCP server. Its secret is never in a file: a server an import\ncreates with authentication cannot be called until an admin enters it.",
+        "required": [
+          "name",
+          "url",
+          "auth_header"
+        ],
+        "properties": {
+          "auth_header": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The header name, for `auth_kind` `header`."
+          },
+          "auth_kind": {
+            "type": "string",
+            "description": "`none`, `bearer` or `header`."
+          },
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpToolEntry"
+            },
+            "description": "The tools the server offers that have settings. A tool the server\ndoes not offer yet is reported, not created."
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpServerList": {
+        "type": "object",
+        "required": [
+          "servers"
+        ],
+        "properties": {
+          "servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpServerView"
+            }
+          }
+        }
+      },
+      "McpServerView": {
+        "type": "object",
+        "description": "A server as `/api` shows it. Everything but the name and description is\nfor admins: anybody else gets `null` (and a count of the tools they may\ncall).",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "enabled",
+          "tool_count",
+          "created_at",
+          "url",
+          "auth_kind",
+          "auth_header",
+          "has_secret",
+          "usable",
+          "last_sync_at",
+          "last_sync_error"
+        ],
+        "properties": {
+          "auth_header": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auth_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`none`, `bearer` or `header`."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "has_secret": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_sync_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_sync_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Our summary of why the last sync failed; never text from the server."
+          },
+          "name": {
+            "type": "string"
+          },
+          "tool_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many tools: for an admin those the server offers, for anybody\nelse those they may call."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "usable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The server can be called: it needs no secret, or its secret can be read."
+          }
+        }
+      },
+      "McpSyncResult": {
+        "type": "object",
+        "required": [
+          "added",
+          "updated",
+          "removed",
+          "skipped"
+        ],
+        "properties": {
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tools that are new, now switched off."
+          },
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tools the server no longer offers; their grants are kept."
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Tools the server listed that were left out.",
+            "minimum": 0
+          },
+          "updated": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "McpToolEntry": {
+        "type": "object",
+        "description": "What an admin set on a tool of an MCP server: whether it is on and who\nmay call it. The tool itself (its schema) is the server's to say; it\narrives with a sync.",
+        "required": [
+          "name",
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "grants": {
+            "$ref": "#/components/schemas/GrantEntry"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpToolList": {
+        "type": "object",
+        "required": [
+          "tools"
+        ],
+        "properties": {
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/McpToolView"
+            }
+          }
+        }
+      },
+      "McpToolView": {
+        "type": "object",
+        "required": [
+          "id",
+          "server_id",
+          "name",
+          "title",
+          "description",
+          "input_schema",
+          "output_schema",
+          "annotations",
+          "enabled",
+          "removed",
+          "grants"
+        ],
+        "properties": {
+          "annotations": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "grants": {
+            "$ref": "#/components/schemas/GrantsView",
+            "description": "Who may call it. For everyone who is not an admin it is always empty."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "input_schema": {
+            "type": "object",
+            "description": "JSON Schema of the arguments, as the server gave it."
+          },
+          "name": {
+            "type": "string"
+          },
+          "output_schema": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "removed": {
+            "type": "boolean",
+            "description": "The server no longer offers it; its grants are kept."
+          },
+          "server_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "MeResponse": {
         "type": "object",
@@ -14058,6 +15358,62 @@
         },
         "additionalProperties": false
       },
+      "UpdateMcpServerRequest": {
+        "type": "object",
+        "properties": {
+          "auth_header": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auth_kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Absent leaves the secret, `null` removes it, a string replaces it.\nChanging the host of a server that has a secret needs it again.",
+            "writeOnly": true
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpdateMcpToolRequest": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateModelRequest": {
         "type": "object",
         "properties": {
@@ -14523,6 +15879,10 @@
     {
       "name": "models",
       "description": "The model catalog and who may call each model."
+    },
+    {
+      "name": "mcp",
+      "description": "MCP servers, the tools they offer and who may call each tool."
     },
     {
       "name": "routes",

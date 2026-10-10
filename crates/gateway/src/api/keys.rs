@@ -29,7 +29,7 @@ pub struct CreateKeyRequest {
     owner_id: Option<i64>,
     expires_at: Option<String>,
     /// The names the key may call: `provider/model` of a model in the
-    /// catalog, or the name of a route. Left out, the key has no allowlist.
+    /// catalog, the name of a route, or `mcp:{server}/{tool}` of an MCP tool. Left out, the key has no allowlist.
     allowed: Option<Vec<String>>,
     /// Tags every call of the key is recorded with, over those the call
     /// sends. At most 20; names of `A-Z a-z 0-9 _ . -`, names and values
@@ -65,6 +65,7 @@ const MAX_ALLOWED_NAME_BYTES: usize = 300;
 /// everyone's or the team's, and may name nothing else.
 async fn checked_allowed(
     store: &Store,
+    snapshot: &crate::snapshot::Snapshot,
     me: &Principal,
     team_key: Option<i64>,
     asked: &[String],
@@ -134,24 +135,73 @@ async fn checked_allowed(
         })
         .map(|r| r.name)
         .collect();
+    // `mcp:<server>/<tool>`: a tool the creator can call. Only read when the
+    // list names one.
+    let tools: HashSet<String> = if names
+        .iter()
+        .any(|n| n.starts_with(crate::mcp::ALLOW_PREFIX))
+    {
+        callable_tool_names(store, snapshot, admin, viewer)
+            .await
+            .map_err(failed)?
+    } else {
+        HashSet::new()
+    };
     for name in &names {
-        // A route name has no `/`; a model name always has one.
-        let known = if name.contains('/') {
+        // A tool starts with `mcp:`. A route name has no `/`; a model name
+        // always has one.
+        let known = if name.starts_with(crate::mcp::ALLOW_PREFIX) {
+            crate::mcp::parse_allow_entry(name).is_some() && tools.contains(name)
+        } else if name.contains('/') {
             models.contains(name)
         } else {
             routes.contains(name)
         };
         if !known {
-            return Err(if admin {
-                format!("'{name}' is not a model or route that exists")
-            } else if team_key.is_some() {
-                format!("'{name}' is not a model or route of everyone or of this team")
+            // The tool form of the message, so the model and route wording
+            // the console pins stays as it was.
+            let what = if name.starts_with(crate::mcp::ALLOW_PREFIX) {
+                "tool"
             } else {
-                format!("'{name}' is not a model or route you can use")
+                "model or route"
+            };
+            return Err(if admin {
+                format!("'{name}' is not a {what} that exists")
+            } else if team_key.is_some() {
+                format!("'{name}' is not a {what} of everyone or of this team")
+            } else {
+                format!("'{name}' is not a {what} you can use")
             });
         }
     }
     Ok(names)
+}
+
+/// The allowlist entries (`mcp:<server>/<tool>`) the creator may name. An
+/// admin may name any tool that is offered, switched on or not. Anyone else
+/// only a tool the `/mcp` rule lets the viewer call (the snapshot, which
+/// `/mcp` reads).
+async fn callable_tool_names(
+    store: &Store,
+    snapshot: &crate::snapshot::Snapshot,
+    admin: bool,
+    viewer: Viewer<'_>,
+) -> anyhow::Result<HashSet<String>> {
+    let mut out = HashSet::new();
+    if admin {
+        for server in store.list_mcp_servers().await? {
+            for tool in store.list_tools(server.id).await? {
+                if tool.removed_at.is_none() {
+                    out.insert(crate::mcp::allow_entry(&server.name, &tool.name));
+                }
+            }
+        }
+    } else {
+        for (server, tool) in crate::access::callable_tools(snapshot, viewer, None) {
+            out.insert(crate::mcp::allow_entry(&server.name, &tool.name));
+        }
+    }
+    Ok(out)
 }
 
 /// A key as `/api` shows it. It has no field for the key or its hash.
@@ -374,7 +424,10 @@ pub async fn create(
     };
     // Before the transaction: it holds the connection the checks read with.
     let allowed = match &req.allowed {
-        Some(asked) => Some(checked_allowed(store, me, team_key, asked).await),
+        Some(asked) => {
+            let snapshot = state.snapshot.load_full();
+            Some(checked_allowed(store, &snapshot, me, team_key, asked).await)
+        }
         None => None,
     };
     let mut tx = store.begin_immediate().await?;

@@ -582,6 +582,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/mcp/servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["mcp_servers_list"];
+        put?: never;
+        post: operations["mcp_servers_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/servers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["mcp_servers_view"];
+        put?: never;
+        post?: never;
+        delete: operations["mcp_servers_delete"];
+        options?: never;
+        head?: never;
+        patch: operations["mcp_servers_update"];
+        trace?: never;
+    };
+    "/api/mcp/servers/{id}/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["mcp_servers_sync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/servers/{id}/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["mcp_tools_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/tools/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["mcp_tools_update"];
+        trace?: never;
+    };
+    "/api/mcp/tools/{id}/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["mcp_tools_grants_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/models": {
         parameters: {
             query?: never;
@@ -1363,6 +1459,11 @@ export interface components {
             /** @description Left out of the file when there are none. */
             guardrails?: components["schemas"]["GuardrailEntry"][];
             limits?: components["schemas"]["LimitEntry"][];
+            /**
+             * @description MCP servers with the settings of their tools. Left out of the file
+             *     when there are none.
+             */
+            mcp_servers?: components["schemas"]["McpServerEntry"][];
             models?: components["schemas"]["ModelEntry"][];
             /**
              * @description Prompt templates with all their versions. Left out of the file when
@@ -1430,7 +1531,7 @@ export interface components {
         CreateKeyRequest: {
             /**
              * @description The names the key may call: `provider/model` of a model in the
-             *     catalog, or the name of a route. Left out, the key has no allowlist.
+             *     catalog, the name of a route, or `mcp:{server}/{tool}` of an MCP tool. Left out, the key has no allowlist.
              */
             allowed?: string[] | null;
             expires_at?: string | null;
@@ -1453,6 +1554,25 @@ export interface components {
             } | null;
             /** Format: int64 */
             team_id?: number | null;
+        };
+        CreateMcpServerRequest: {
+            /** @description The header that carries the secret, for `auth_kind` `header`. */
+            auth_header?: string | null;
+            /** @description `none` (the default), `bearer` or `header`. */
+            auth_kind?: string | null;
+            description?: string | null;
+            /** @description On by default. */
+            enabled?: boolean | null;
+            /**
+             * @description 1 to 63 characters of `a-z`, `0-9` and `-`, starting with a letter or
+             *     a digit. It is the name in the endpoint `/mcp/{name}` and in a key's
+             *     allowlist (`mcp:{name}/{tool}`), and cannot be changed.
+             */
+            name: string;
+            /** @description Required with `bearer` or `header`. */
+            secret?: string | null;
+            /** @description The streamable-HTTP endpoint of the server. */
+            url: string;
         };
         CreateModelRequest: {
             /** @description The provider's id for the model, 1 to 200 characters, no whitespace. */
@@ -1811,7 +1931,8 @@ export interface components {
             changes: string[];
             /**
              * @description `provider`, `team`, `model`, `guardrail`, `prompt`, `route`, `limit`,
-             *     `budget`, `alert_channel`, `alert_rule` or `settings`.
+             *     `budget`, `alert_channel`, `alert_rule`, `mcp_server`, `mcp_tool` or
+             *     `settings`.
              */
             kind: string;
             name: string;
@@ -2117,6 +2238,100 @@ export interface components {
             regex: string;
         } | {
             pii: components["schemas"]["PiiType"][];
+        };
+        /**
+         * @description An MCP server. Its secret is never in a file: a server an import
+         *     creates with authentication cannot be called until an admin enters it.
+         */
+        McpServerEntry: {
+            /** @description The header name, for `auth_kind` `header`. */
+            auth_header: string | null;
+            /** @description `none`, `bearer` or `header`. */
+            auth_kind?: string;
+            description?: string;
+            enabled?: boolean;
+            name: string;
+            /**
+             * @description The tools the server offers that have settings. A tool the server
+             *     does not offer yet is reported, not created.
+             */
+            tools?: components["schemas"]["McpToolEntry"][];
+            url: string;
+        };
+        McpServerList: {
+            servers: components["schemas"]["McpServerView"][];
+        };
+        /**
+         * @description A server as `/api` shows it. Everything but the name and description is
+         *     for admins: anybody else gets `null` (and a count of the tools they may
+         *     call).
+         */
+        McpServerView: {
+            auth_header: string | null;
+            /** @description `none`, `bearer` or `header`. */
+            auth_kind: string | null;
+            created_at: string;
+            description: string;
+            enabled: boolean;
+            has_secret: boolean | null;
+            /** Format: int64 */
+            id: number;
+            last_sync_at: string | null;
+            /** @description Our summary of why the last sync failed; never text from the server. */
+            last_sync_error: string | null;
+            name: string;
+            /**
+             * Format: int64
+             * @description How many tools: for an admin those the server offers, for anybody
+             *     else those they may call.
+             */
+            tool_count: number;
+            url: string | null;
+            /** @description The server can be called: it needs no secret, or its secret can be read. */
+            usable: boolean | null;
+        };
+        McpSyncResult: {
+            /** @description Tools that are new, now switched off. */
+            added: string[];
+            /** @description Tools the server no longer offers; their grants are kept. */
+            removed: string[];
+            /**
+             * Format: int32
+             * @description Tools the server listed that were left out.
+             */
+            skipped: number;
+            updated: string[];
+        };
+        /**
+         * @description What an admin set on a tool of an MCP server: whether it is on and who
+         *     may call it. The tool itself (its schema) is the server's to say; it
+         *     arrives with a sync.
+         */
+        McpToolEntry: {
+            enabled: boolean;
+            grants?: components["schemas"]["GrantEntry"];
+            name: string;
+        };
+        McpToolList: {
+            tools: components["schemas"]["McpToolView"][];
+        };
+        McpToolView: {
+            annotations: Record<string, never> | null;
+            description: string;
+            enabled: boolean;
+            /** @description Who may call it. For everyone who is not an admin it is always empty. */
+            grants: components["schemas"]["GrantsView"];
+            /** Format: int64 */
+            id: number;
+            /** @description JSON Schema of the arguments, as the server gave it. */
+            input_schema: Record<string, never>;
+            name: string;
+            output_schema: Record<string, never> | null;
+            /** @description The server no longer offers it; its grants are kept. */
+            removed: boolean;
+            /** Format: int64 */
+            server_id: number;
+            title: string | null;
         };
         MeResponse: {
             /**
@@ -3125,6 +3340,21 @@ export interface components {
             tags?: {
                 [key: string]: string;
             } | null;
+        };
+        UpdateMcpServerRequest: {
+            auth_header?: string | null;
+            auth_kind?: string | null;
+            description?: string | null;
+            enabled?: boolean | null;
+            /**
+             * @description Absent leaves the secret, `null` removes it, a string replaces it.
+             *     Changing the host of a server that has a secret needs it again.
+             */
+            secret?: string | null;
+            url?: string | null;
+        };
+        UpdateMcpToolRequest: {
+            enabled: boolean;
         };
         UpdateModelRequest: {
             /** @description Left out, the model stays as it is. */
@@ -6110,6 +6340,713 @@ export interface operations {
             };
             /** @description There is no such call, or the caller may not see it. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_servers_list: {
+        parameters: {
+            query?: {
+                /** @description A team the caller leads: only the servers with a tool a key they make for another member of it may call, those granted to everyone or to the team. An admin's keys are not cut. */
+                key_team_id?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An admin gets every server with its settings. Everyone else gets the enabled servers that have a tool they may call, without URL or authentication. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerList"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `key_team_id` names a team the caller does not lead. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_servers_create: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateMcpServerRequest"];
+            };
+        };
+        responses: {
+            /** @description The new server. It has no tools until it is synced. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `mcp_server_exists`: the name is taken. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_servers_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id of the server. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The server. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_servers_delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the server. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The server, its tools and their grants are deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_servers_update: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the server. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMcpServerRequest"];
+            };
+        };
+        responses: {
+            /** @description The server after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid, or the host changed and the secret was not sent again; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_servers_sync: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the server. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description New tools are added, switched off. Tools the server no longer offers are marked removed; their grants are kept. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpSyncResult"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `server_unusable`: the server needs a secret that is missing or cannot be read. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `sync_failed`: the server did not return its tools. The server's `last_sync_error` says why in our words. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_tools_list: {
+        parameters: {
+            query?: {
+                /** @description A team the caller leads: only the tools a key they make for another member of it may call, those granted to everyone or to the team. An admin's keys are not cut. */
+                key_team_id?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The id of the server. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An admin gets every tool of the server with its grants, removed ones included. Everyone else gets the tools they may call, with empty grants. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpToolList"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `key_team_id` names a team the caller does not lead. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or the caller may call none of its tools. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_tools_update: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the tool. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMcpToolRequest"];
+            };
+        };
+        responses: {
+            /** @description The tool after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpToolView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_tools_grants_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the tool. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GrantsView"];
+            };
+        };
+        responses: {
+            /** @description The tool with its new grants. They replace the old ones. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpToolView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is hidden from the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description A team or user does not exist, or everyone is combined with others; `fields` names each of them. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

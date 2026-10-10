@@ -162,6 +162,25 @@ fn same(row: &McpToolRow, t: &DiscoveredTool) -> bool {
 }
 
 impl Tx<'_> {
+    /// For use inside a transaction; see `Store::server_by_id`.
+    pub async fn server_by_id(&mut self, id: i64) -> Result<Option<McpServerRow>> {
+        let sql = format!("{SERVER_SELECT} WHERE id = ? AND org_id = ?");
+        let row = self
+            .q_dyn(sql)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(self.conn())
+            .await?;
+        Ok(row.as_ref().map(server_from))
+    }
+
+    /// For use inside a transaction; see `Store::tool_by_id`.
+    pub async fn tool_by_id(&mut self, id: i64) -> Result<Option<McpToolRow>> {
+        let sql = format!("{TOOL_SELECT} WHERE id = ?");
+        let row = self.q_dyn(sql).bind(id).fetch_optional(self.conn()).await?;
+        Ok(row.as_ref().map(tool_from))
+    }
+
     /// A taken name is `StoreError::Duplicate`.
     pub async fn insert_server(&mut self, s: NewMcpServer<'_>) -> Result<i64> {
         let at = now();
@@ -361,6 +380,32 @@ impl Tx<'_> {
 }
 
 impl Store {
+    /// The grants of every tool of the server, by tool id.
+    pub async fn mcp_grants_of_server(&self, server_id: i64) -> Result<HashMap<i64, Grants>> {
+        let rows = self
+            .q(
+                "SELECT g.tool_id, g.team_id, g.user_id FROM mcp_tool_grants g
+                 JOIN mcp_tools t ON t.id = g.tool_id
+                 WHERE t.server_id = ? ORDER BY g.tool_id, g.team_id, g.user_id",
+            )
+            .bind(server_id)
+            .fetch_all(self.pool())
+            .await?;
+        let mut by_tool: HashMap<i64, Vec<GrantRow>> = HashMap::new();
+        for r in &rows {
+            let g = grant_from(r);
+            by_tool.entry(g.tool_id).or_default().push(GrantRow {
+                model_id: g.tool_id,
+                team_id: g.team_id,
+                user_id: g.user_id,
+            });
+        }
+        Ok(by_tool
+            .into_iter()
+            .map(|(id, rows)| (id, grants_of_rows(rows.into_iter())))
+            .collect())
+    }
+
     /// Every server, by name.
     pub async fn list_mcp_servers(&self) -> Result<Vec<McpServerRow>> {
         let mut conn = self.pool().acquire().await?;
@@ -376,6 +421,12 @@ impl Store {
             .fetch_optional(self.pool())
             .await?;
         Ok(row.as_ref().map(server_from))
+    }
+
+    pub async fn tool_by_id(&self, id: i64) -> Result<Option<McpToolRow>> {
+        let sql = format!("{TOOL_SELECT} WHERE id = ?");
+        let row = self.q_dyn(sql).bind(id).fetch_optional(self.pool()).await?;
+        Ok(row.as_ref().map(tool_from))
     }
 
     pub async fn server_by_name(&self, name: &str) -> Result<Option<McpServerRow>> {
@@ -428,6 +479,29 @@ pub(crate) async fn list_mcp_servers_in(conn: &mut AnyConnection) -> Result<Vec<
         .fetch_all(&mut *conn)
         .await?;
     Ok(rows.iter().map(server_from).collect())
+}
+
+/// Every tool still offered, switched on or not (the configuration export).
+pub(crate) async fn list_offered_mcp_tools_in(conn: &mut AnyConnection) -> Result<Vec<McpToolRow>> {
+    let sql = format!("{TOOL_SELECT} WHERE removed_at IS NULL ORDER BY server_id, name");
+    let rows = conn.q_dyn(sql).fetch_all(&mut *conn).await?;
+    Ok(rows.iter().map(tool_from).collect())
+}
+
+/// The grants of the tools [`list_offered_mcp_tools_in`] reads.
+pub(crate) async fn list_offered_mcp_grants_in(
+    conn: &mut AnyConnection,
+) -> Result<Vec<McpGrantRow>> {
+    let rows = conn
+        .q(
+            "SELECT g.tool_id, g.team_id, g.user_id FROM mcp_tool_grants g
+             JOIN mcp_tools t ON t.id = g.tool_id
+             WHERE t.removed_at IS NULL
+             ORDER BY g.tool_id, g.team_id, g.user_id",
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows.iter().map(grant_from).collect())
 }
 
 /// The tools a call could reach: switched on and still offered.

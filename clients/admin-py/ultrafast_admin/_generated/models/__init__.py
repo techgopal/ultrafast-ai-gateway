@@ -26,6 +26,7 @@ from .create_channel_request import CreateChannelRequest
 from .create_guardrail_request import CreateGuardrailRequest
 from .create_key_request import CreateKeyRequest
 from .create_key_request_tags_type_0 import CreateKeyRequestTagsType0
+from .create_mcp_server_request import CreateMcpServerRequest
 from .create_model_request import CreateModelRequest
 from .create_prompt_request import CreatePromptRequest
 from .create_provider_request import CreateProviderRequest
@@ -83,6 +84,16 @@ from .login_response import LoginResponse
 from .matcher_type_0 import MatcherType0
 from .matcher_type_1 import MatcherType1
 from .matcher_type_2 import MatcherType2
+from .mcp_server_entry import McpServerEntry
+from .mcp_server_list import McpServerList
+from .mcp_server_view import McpServerView
+from .mcp_sync_result import McpSyncResult
+from .mcp_tool_entry import McpToolEntry
+from .mcp_tool_list import McpToolList
+from .mcp_tool_view import McpToolView
+from .mcp_tool_view_annotations_type_0 import McpToolViewAnnotationsType0
+from .mcp_tool_view_input_schema import McpToolViewInputSchema
+from .mcp_tool_view_output_schema_type_0 import McpToolViewOutputSchemaType0
 from .me_response import MeResponse
 from .member_detail import MemberDetail
 from .member_request import MemberRequest
@@ -181,6 +192,8 @@ from .update_channel_request import UpdateChannelRequest
 from .update_guardrail_request import UpdateGuardrailRequest
 from .update_key_request import UpdateKeyRequest
 from .update_key_request_tags_type_0 import UpdateKeyRequestTagsType0
+from .update_mcp_server_request import UpdateMcpServerRequest
+from .update_mcp_tool_request import UpdateMcpToolRequest
 from .update_model_request import UpdateModelRequest
 from .update_provider_request import UpdateProviderRequest
 from .update_request import UpdateRequest
@@ -223,6 +236,7 @@ __all__ = (
     "CreateGuardrailRequest",
     "CreateKeyRequest",
     "CreateKeyRequestTagsType0",
+    "CreateMcpServerRequest",
     "CreateModelRequest",
     "CreatePromptRequest",
     "CreateProviderRequest",
@@ -280,6 +294,16 @@ __all__ = (
     "MatcherType0",
     "MatcherType1",
     "MatcherType2",
+    "McpServerEntry",
+    "McpServerList",
+    "McpServerView",
+    "McpSyncResult",
+    "McpToolEntry",
+    "McpToolList",
+    "McpToolView",
+    "McpToolViewAnnotationsType0",
+    "McpToolViewInputSchema",
+    "McpToolViewOutputSchemaType0",
     "MeResponse",
     "MemberDetail",
     "MemberRequest",
@@ -372,6 +396,8 @@ __all__ = (
     "UpdateGuardrailRequest",
     "UpdateKeyRequest",
     "UpdateKeyRequestTagsType0",
+    "UpdateMcpServerRequest",
+    "UpdateMcpToolRequest",
     "UpdateModelRequest",
     "UpdateProviderRequest",
     "UpdateRequest",

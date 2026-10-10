@@ -17,7 +17,8 @@ class Item:
     Attributes:
         changes (list[str]): For an update: the fields that change. Empty for a creation.
         kind (str): `provider`, `team`, `model`, `guardrail`, `prompt`, `route`, `limit`,
-            `budget`, `alert_channel`, `alert_rule` or `settings`.
+            `budget`, `alert_channel`, `alert_rule`, `mcp_server`, `mcp_tool` or
+            `settings`.
         name (str):
     """
 

@@ -37,11 +37,12 @@ use crate::catalog::validate_model_name;
 use crate::config::{same_host, validate_base_url, validate_provider_name};
 use crate::guardrails::{Directions, RuleSpec};
 use crate::limits::{LimitScope, RateLimit};
+use crate::mcp::{check_auth, validate_server_name, MAX_TOOL_NAME_BYTES};
 use crate::prompts::{self, Params, TemplateMessage, MAX_TEMPLATES, MAX_VERSIONS};
 use crate::secrets::Cipher;
 use crate::store::{
-    AuditEntry, ConfigState, Grants, GuardrailPatch, NewGuardrail, NewVersion, RouteSettings,
-    Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
+    AuditEntry, ConfigState, Grants, GuardrailPatch, NewGuardrail, NewMcpServer, NewVersion,
+    RouteSettings, Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
 };
 
 /// The `format` of the file.
@@ -93,6 +94,46 @@ pub struct ModelEntry {
     pub output_price_micros: Option<i64>,
     #[serde(default)]
     pub grants: GrantEntry,
+}
+
+/// What an admin set on a tool of an MCP server: whether it is on and who
+/// may call it. The tool itself (its schema) is the server's to say; it
+/// arrives with a sync.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpToolEntry {
+    pub name: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub grants: GrantEntry,
+}
+
+/// An MCP server. Its secret is never in a file: a server an import
+/// creates with authentication cannot be called until an admin enters it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerEntry {
+    pub name: String,
+    pub url: String,
+    /// `none`, `bearer` or `header`.
+    #[serde(default = "no_auth")]
+    pub auth_kind: String,
+    /// The header name, for `auth_kind` `header`.
+    #[serde(default)]
+    #[schema(required)]
+    pub auth_header: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// The tools the server offers that have settings. A tool the server
+    /// does not offer yet is reported, not created.
+    #[serde(default)]
+    pub tools: Vec<McpToolEntry>,
+}
+
+fn no_auth() -> String {
+    "none".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -349,13 +390,18 @@ pub struct ConfigFile {
     /// there are none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prompts: Vec<PromptEntry>,
+    /// MCP servers with the settings of their tools. Left out of the file
+    /// when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<McpServerEntry>,
 }
 
 /// Something the import did, or would do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct Item {
     /// `provider`, `team`, `model`, `guardrail`, `prompt`, `route`, `limit`,
-    /// `budget`, `alert_channel`, `alert_rule` or `settings`.
+    /// `budget`, `alert_channel`, `alert_rule`, `mcp_server`, `mcp_tool` or
+    /// `settings`.
     pub kind: String,
     pub name: String,
     /// For an update: the fields that change. Empty for a creation.
@@ -476,14 +522,40 @@ fn period_rank(period: Period) -> u8 {
 
 /// Names of the teams and emails of the users that a model is granted to.
 fn grants_by_model(state: &ConfigState) -> HashMap<i64, GrantEntry> {
+    grant_entries(
+        state,
+        state
+            .model_grants
+            .iter()
+            .map(|g| (g.model_id, g.team_id, g.user_id)),
+    )
+}
+
+/// The grants of each MCP tool, by tool id.
+fn grants_by_tool(state: &ConfigState) -> HashMap<i64, GrantEntry> {
+    grant_entries(
+        state,
+        state
+            .mcp_tool_grants
+            .iter()
+            .map(|g| (g.tool_id, g.team_id, g.user_id)),
+    )
+}
+
+/// `(id, team, user)` grants as file entries by id: names of teams, emails
+/// of users, sorted.
+fn grant_entries(
+    state: &ConfigState,
+    grants: impl Iterator<Item = (i64, Option<i64>, Option<i64>)>,
+) -> HashMap<i64, GrantEntry> {
     let team_names: HashMap<i64, &str> =
         state.teams.iter().map(|(i, n)| (*i, n.as_str())).collect();
     let user_emails: HashMap<i64, &str> =
         state.users.iter().map(|(i, e)| (*i, e.as_str())).collect();
     let mut out: HashMap<i64, GrantEntry> = HashMap::new();
-    for grant in &state.model_grants {
-        let entry = out.entry(grant.model_id).or_default();
-        match (grant.team_id, grant.user_id) {
+    for (id, team_id, user_id) in grants {
+        let entry = out.entry(id).or_default();
+        match (team_id, user_id) {
             (None, None) => entry.everyone = true,
             (Some(team), _) => {
                 if let Some(name) = team_names.get(&team) {
@@ -823,8 +895,37 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
     budgets.sort_by(|a, b| (a.0, &a.2.name, a.1).cmp(&(b.0, &b.2.name, b.1)));
 
     let (alert_channels, alert_rules) = alerts_of(state);
+    let mut tool_grants = grants_by_tool(state);
+    let mut mcp_servers: Vec<McpServerEntry> = state
+        .mcp_servers
+        .iter()
+        .map(|server| {
+            let mut tools: Vec<McpToolEntry> = state
+                .mcp_tools
+                .iter()
+                .filter(|t| t.server_id == server.id && t.removed_at.is_none())
+                .map(|t| McpToolEntry {
+                    name: t.name.clone(),
+                    enabled: t.enabled,
+                    grants: tool_grants.remove(&t.id).unwrap_or_default(),
+                })
+                .collect();
+            tools.sort_by(|a, b| a.name.cmp(&b.name));
+            McpServerEntry {
+                name: server.name.clone(),
+                url: server.url.clone(),
+                auth_kind: server.auth_kind.clone(),
+                auth_header: server.auth_header.clone(),
+                description: server.description.clone(),
+                enabled: server.enabled,
+                tools,
+            }
+        })
+        .collect();
+    mcp_servers.sort_by(|a, b| a.name.cmp(&b.name));
 
     ConfigFile {
+        mcp_servers,
         format: FORMAT.to_string(),
         version: VERSION,
         alert_channels,
@@ -940,6 +1041,20 @@ enum Op {
         budget: Option<BudgetRef>,
         /// The parameters differ from those stored: its state is forgotten.
         params_changed: bool,
+    },
+    CreateMcpServer {
+        entry: McpServerEntry,
+    },
+    UpdateMcpServer {
+        id: i64,
+        entry: McpServerEntry,
+        /// The stored secret as it stays: `None` when the import removes it.
+        secret_enc: Option<String>,
+    },
+    UpdateMcpTool {
+        id: i64,
+        enabled: Option<bool>,
+        grants: Option<GrantEntry>,
     },
     SetRetention(i64),
     SetSessionHours(i64),
@@ -1259,6 +1374,173 @@ impl Planner<'_> {
                     };
                     self.push(op, "model", reference, changes, false);
                 }
+            }
+        }
+    }
+
+    fn mcp_servers(&mut self) {
+        let file = self.file;
+        let state = self.state;
+        let mut seen = HashSet::new();
+        for (i, entry) in file.mcp_servers.iter().enumerate() {
+            let at = format!("mcp_servers[{i}]");
+            let before = self.report.errors.len();
+            let mut fields = BTreeMap::new();
+            checked_provider("name", validate_server_name(&entry.name), &mut fields);
+            checked_provider("url", validate_base_url(&entry.url), &mut fields);
+            check_auth(&entry.auth_kind, entry.auth_header.as_deref(), &mut fields);
+            check_description(&entry.description, &mut fields);
+            self.fields(&at, fields);
+            if !seen.insert(entry.name.clone()) {
+                self.error(
+                    at.clone(),
+                    format!("MCP server '{}' appears more than once", entry.name),
+                );
+            }
+            let mut tool_names = HashSet::new();
+            for (j, tool) in entry.tools.iter().enumerate() {
+                let tat = format!("{at}.tools[{j}]");
+                if tool.name.is_empty() || tool.name.len() > MAX_TOOL_NAME_BYTES {
+                    self.error(format!("{tat}.name"), "must be 1 to 128 bytes");
+                } else if !tool_names.insert(tool.name.clone()) {
+                    self.error(
+                        tat.clone(),
+                        format!("tool '{}' appears more than once", tool.name),
+                    );
+                }
+                self.check_grants(&tat, &tool.grants);
+            }
+            if self.report.errors.len() > before {
+                continue;
+            }
+            let existing = state.mcp_servers.iter().find(|s| s.name == entry.name);
+            let Some(existing) = existing else {
+                if entry.auth_kind != "none" {
+                    self.report.warnings.push(Issue {
+                        at: at.clone(),
+                        message: format!(
+                            "MCP server '{}' is created with no secret; set one before it can be called",
+                            entry.name
+                        ),
+                    });
+                }
+                if !entry.tools.is_empty() {
+                    self.report.warnings.push(Issue {
+                        at: format!("{at}.tools"),
+                        message: format!(
+                            "the tools of MCP server '{}' are settled by a sync; sync it, then import the file again to apply their settings",
+                            entry.name
+                        ),
+                    });
+                }
+                let op = Op::CreateMcpServer {
+                    entry: McpServerEntry {
+                        tools: Vec::new(),
+                        ..entry.clone()
+                    },
+                };
+                self.push(op, "mcp_server", entry.name.clone(), Vec::new(), true);
+                continue;
+            };
+            let mut changes = Vec::new();
+            let mut secret_enc = existing.auth_secret_enc.clone();
+            if existing.url != entry.url {
+                changes.push("url".to_string());
+                // The stored secret goes only to the host it was given for.
+                if secret_enc.is_some()
+                    && entry.auth_kind != "none"
+                    && !same_host(&existing.url, &entry.url)
+                {
+                    secret_enc = None;
+                    self.report.warnings.push(Issue {
+                        at: format!("{at}.url"),
+                        message: format!(
+                            "MCP server '{}' moves to another host: its stored secret is removed; set it again",
+                            entry.name
+                        ),
+                    });
+                }
+            }
+            if existing.auth_kind != entry.auth_kind || existing.auth_header != entry.auth_header {
+                changes.push("auth".to_string());
+                if entry.auth_kind == "none" {
+                    secret_enc = None;
+                } else if secret_enc.is_none() {
+                    self.report.warnings.push(Issue {
+                        at: format!("{at}.auth_kind"),
+                        message: format!(
+                            "MCP server '{}' has no secret; set one before it can be called",
+                            entry.name
+                        ),
+                    });
+                }
+            }
+            if existing.description != entry.description {
+                changes.push("description".to_string());
+            }
+            if existing.enabled != entry.enabled {
+                changes.push("enabled".to_string());
+            }
+            if changes.is_empty() {
+                self.report.unchanged += 1;
+            } else {
+                let op = Op::UpdateMcpServer {
+                    id: existing.id,
+                    entry: McpServerEntry {
+                        tools: Vec::new(),
+                        ..entry.clone()
+                    },
+                    secret_enc,
+                };
+                self.push(op, "mcp_server", entry.name.clone(), changes, false);
+            }
+            let current = self
+                .current
+                .mcp_servers
+                .iter()
+                .find(|s| s.name == entry.name)
+                .map(|s| s.tools.clone())
+                .unwrap_or_default();
+            for (j, tool) in entry.tools.iter().enumerate() {
+                let row = state.mcp_tools.iter().find(|t| {
+                    t.server_id == existing.id && t.name == tool.name && t.removed_at.is_none()
+                });
+                let Some(row) = row else {
+                    self.report.warnings.push(Issue {
+                        at: format!("{at}.tools[{j}]"),
+                        message: format!(
+                            "tool '{}' is not offered by the server yet; sync the server, then import again",
+                            tool.name
+                        ),
+                    });
+                    continue;
+                };
+                let wanted = grants_of(&tool.grants);
+                let have = current.iter().find(|t| t.name == tool.name);
+                let mut tool_changes = Vec::new();
+                if have.is_none_or(|t| t.enabled != tool.enabled) {
+                    tool_changes.push("enabled".to_string());
+                }
+                if have.is_none_or(|t| t.grants != wanted) {
+                    tool_changes.push("grants".to_string());
+                }
+                if tool_changes.is_empty() {
+                    self.report.unchanged += 1;
+                    continue;
+                }
+                let has = |name: &str| tool_changes.iter().any(|c| c == name);
+                let op = Op::UpdateMcpTool {
+                    id: row.id,
+                    enabled: has("enabled").then_some(tool.enabled),
+                    grants: has("grants").then_some(wanted),
+                };
+                self.push(
+                    op,
+                    "mcp_tool",
+                    format!("{}/{}", entry.name, tool.name),
+                    tool_changes,
+                    false,
+                );
             }
         }
     }
@@ -2321,6 +2603,7 @@ fn plan(
     planner.providers();
     planner.teams();
     planner.models();
+    planner.mcp_servers();
     planner.guardrails();
     planner.team_guardrails();
     planner.prompts();
@@ -2759,6 +3042,54 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                     })
                     .collect::<Result<Vec<_>>>()?;
                 tx.set_alert_rule_channels(rule_id, &channel_ids).await?;
+            }
+            Op::CreateMcpServer { entry } => {
+                tx.insert_server(NewMcpServer {
+                    name: &entry.name,
+                    url: &entry.url,
+                    auth_kind: &entry.auth_kind,
+                    auth_header: entry.auth_header.as_deref(),
+                    // A file holds no secret.
+                    auth_secret_enc: None,
+                    enabled: entry.enabled,
+                    description: &entry.description,
+                })
+                .await?;
+            }
+            Op::UpdateMcpServer {
+                id,
+                entry,
+                secret_enc,
+            } => {
+                let updated = tx
+                    .update_server(
+                        id,
+                        NewMcpServer {
+                            name: &entry.name,
+                            url: &entry.url,
+                            auth_kind: &entry.auth_kind,
+                            auth_header: entry.auth_header.as_deref(),
+                            auth_secret_enc: secret_enc.as_deref(),
+                            enabled: entry.enabled,
+                            description: &entry.description,
+                        },
+                    )
+                    .await?;
+                if !updated {
+                    anyhow::bail!("an MCP server of the plan is missing");
+                }
+            }
+            Op::UpdateMcpTool {
+                id,
+                enabled,
+                grants,
+            } => {
+                if let Some(enabled) = enabled {
+                    tx.set_tool_enabled(id, enabled).await?;
+                }
+                if let Some(grants) = grants {
+                    tx.replace_tool_grants(id, &ids.grants(&grants)?).await?;
+                }
             }
             Op::SetRetention(days) => tx.set_log_retention_days(days).await?,
             Op::SetSessionHours(hours) => tx.set_session_hours(hours).await?,

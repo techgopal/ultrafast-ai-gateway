@@ -21,7 +21,7 @@ class CreateKeyRequest:
     Attributes:
         name (str):
         allowed (list[str] | None | Unset): The names the key may call: `provider/model` of a model in the
-            catalog, or the name of a route. Left out, the key has no allowlist.
+            catalog, the name of a route, or `mcp:{server}/{tool}` of an MCP tool. Left out, the key has no allowlist.
         expires_at (None | str | Unset):
         guardrail_ids (list[int] | None | Unset): The guardrails applied to every call of the key, in this order, after
             the gateway-wide ones and the route's. Admins only: sending the field
