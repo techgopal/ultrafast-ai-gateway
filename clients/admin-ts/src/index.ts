@@ -92,7 +92,14 @@ export function createAdminClient(options: AdminClientOptions): AdminClient {
   const base = options.fetch ?? ((input, init) => fetch(input, init));
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
   // Reasons of aborts that the caller's own signals gave: they are rethrown as given.
+  // Objects go in a WeakSet; a primitive reason (`abort("stop")`) can only come from an abort,
+  // since a network failure is always an Error.
   const callerReasons = new WeakSet<object>();
+  const callerPrimitives = new Set<unknown>();
+  const remember = (reason: unknown): void => {
+    if (typeof reason === "object" && reason !== null) callerReasons.add(reason);
+    else callerPrimitives.add(reason);
+  };
 
   const guard = (timeoutMs: number): typeof fetch => async (input, init) => {
     const callers = [init?.signal, input instanceof Request ? input.signal : undefined].filter(
@@ -100,13 +107,13 @@ export function createAdminClient(options: AdminClientOptions): AdminClient {
     );
     for (const signal of callers) {
       if (signal.aborted) {
-        if (typeof signal.reason === "object" && signal.reason !== null) callerReasons.add(signal.reason);
+        remember(signal.reason);
         throw signal.reason;
       }
       signal.addEventListener(
         "abort",
         () => {
-          if (typeof signal.reason === "object" && signal.reason !== null) callerReasons.add(signal.reason);
+          remember(signal.reason);
         },
         { once: true },
       );
@@ -121,7 +128,9 @@ export function createAdminClient(options: AdminClientOptions): AdminClient {
   /** What a failure becomes: the caller's own abort stays as it was, the rest is an `AdminApiError`. */
   function mapped(error: unknown, timeoutMs: number): unknown {
     if (error instanceof AdminApiError) return error;
-    if (typeof error === "object" && error !== null && callerReasons.has(error)) return error;
+    if (typeof error === "object" && error !== null ? callerReasons.has(error) : callerPrimitives.has(error)) {
+      return error;
+    }
     if (error instanceof DOMException && error.name === "TimeoutError") {
       return new AdminApiError(0, "timeout", `No answer within ${String(timeoutMs)} ms.`);
     }
@@ -164,7 +173,12 @@ export function createAdminClient(options: AdminClientOptions): AdminClient {
       const ms = download?.timeoutMs ?? defaultTimeoutMs;
       const client = download?.timeoutMs === undefined ? raw : build(ms);
       const text = await settle(client.GET("/api/config/export", { parseAs: "text" }), ms);
-      return JSON.parse(text as unknown as string) as components["schemas"]["ConfigFile"];
+      try {
+        return JSON.parse(text as unknown as string) as components["schemas"]["ConfigFile"];
+      } catch {
+        // A proxy's page, say: say what happened, never echo the body.
+        throw new AdminApiError(200, "invalid_response", "The answer was not a configuration file (not JSON).");
+      }
     },
   };
 }

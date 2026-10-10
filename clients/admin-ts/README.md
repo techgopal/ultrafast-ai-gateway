@@ -13,6 +13,9 @@ pnpm --dir clients/admin-ts install && pnpm --dir clients/admin-ts build
 
 Create an access token under Account, Access tokens (it starts with `uf-at-`).
 A token acts as its user and needs no CSRF header. Keep it out of logs and source.
+The playground operations (`/api/playground/*`) and creating access tokens
+(`tokens_create`) refuse access tokens by design: they answer 403 `forbidden`
+and need a signed-in browser session.
 
 ```ts
 import { createAdminClient, AdminApiError } from "@ultrafast/admin";
@@ -116,7 +119,8 @@ A call times out after `timeoutMs` (30 s) from the request until its body is rea
 and throws `AdminApiError` with code `timeout`. A large backup can need longer:
 `api.downloadBackup({ timeoutMs: 600_000 })`; `exportConfig` takes the same
 option. A signal you give to `raw` aborts the call, and what you aborted with is
-rethrown as given. (Used on `raw` alone, a body that stalls after its headers
+rethrown as given, whatever its type. A 200 answer to `exportConfig` that is not
+JSON throws `AdminApiError` with code `invalid_response`. (Used on `raw` alone, a body that stalls after its headers
 rejects with the platform's `TimeoutError`; `call` and the helpers map it.)
 
 ## Regenerating

@@ -142,4 +142,32 @@ describe("timeouts cover the body, aborts stay the caller's", () => {
     early.abort(reason);
     await expect(api.call(api.raw.GET("/api/providers", { signal: early.signal }))).rejects.toBe(reason);
   });
+
+  it("a caller's abort with a primitive reason is rethrown as given", async () => {
+    const api = createAdminClient({ baseUrl: origin, token: TOKEN });
+    const controller = new AbortController();
+    const pending = api.call(api.raw.GET("/api/providers", { signal: controller.signal }));
+    setTimeout(() => {
+      controller.abort("stop");
+    }, 100);
+    await expect(pending).rejects.toBe("stop");
+    const early = new AbortController();
+    early.abort(42);
+    await expect(api.call(api.raw.GET("/api/providers", { signal: early.signal }))).rejects.toBe(42);
+  });
+});
+
+describe("an answer that is not what was asked for", () => {
+  it("a 200 export that is not JSON is an AdminApiError that does not echo the body", async () => {
+    const api = createAdminClient({
+      baseUrl: "http://gateway.test",
+      token: TOKEN,
+      fetch: answering(() => new Response("<html>login uf-at-secret-value-1234567890</html>", { status: 200 })),
+    });
+    const error = await api.exportConfig().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AdminApiError);
+    expect((error as AdminApiError).status).toBe(200);
+    expect((error as AdminApiError).code).toBe("invalid_response");
+    expect((error as AdminApiError).message).not.toContain("html");
+  });
 });
