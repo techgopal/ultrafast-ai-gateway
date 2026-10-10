@@ -7631,6 +7631,136 @@
         ]
       }
     },
+    "/api/teams/{id}/guardrails": {
+      "put": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "Replaces the guardrails applied to every key of the team. Admins only.",
+        "operationId": "teams_set_guardrails",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the team.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The guardrails of the team after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Attached"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/teams/{id}/members": {
       "post": {
         "tags": [
@@ -8797,6 +8927,136 @@
         ]
       }
     },
+    "/api/users/{id}/guardrails": {
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Replaces the guardrails applied to every key the user owns. Admins only.",
+        "operationId": "users_set_guardrails",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the user.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The guardrails of the user after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Attached"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/users/{id}/invite": {
       "post": {
         "tags": [
@@ -9025,6 +9285,40 @@
           "message": {
             "type": "string",
             "description": "Text for a person. It may change."
+          }
+        }
+      },
+      "AttachRequest": {
+        "type": "object",
+        "description": "The body that sets the guardrails of a team or a user.",
+        "required": [
+          "guardrail_ids"
+        ],
+        "properties": {
+          "guardrail_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The guardrails to apply, in this order, to every key of the team, or\nevery key the user owns. `[]` takes them all off. At most 20, each\none an existing guardrail."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Attached": {
+        "type": "object",
+        "description": "The guardrails attached to a team or a user, in order.",
+        "required": [
+          "guardrail_ids"
+        ],
+        "properties": {
+          "guardrail_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         }
       },
@@ -13284,9 +13578,18 @@
         "type": "object",
         "required": [
           "team",
-          "members"
+          "members",
+          "guardrail_ids"
         ],
         "properties": {
+          "guardrail_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The guardrails applied to every key of the team, in order."
+          },
           "members": {
             "type": "array",
             "items": {
@@ -13304,6 +13607,16 @@
           "name"
         ],
         "properties": {
+          "guardrails": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of guardrails, in the order they apply to every key of the\nteam. Left out of the file for a team that has none; a file that\nleaves it out does not change what is attached (`[]` takes them all\noff)."
+          },
           "name": {
             "type": "string"
           }
@@ -13914,7 +14227,8 @@
           "has_password",
           "created_at",
           "last_active_at",
-          "teams"
+          "teams",
+          "guardrail_ids"
         ],
         "properties": {
           "auth_provider": {
@@ -13926,6 +14240,14 @@
           },
           "email": {
             "type": "string"
+          },
+          "guardrail_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The guardrails applied to every key the user owns, in order."
           },
           "has_password": {
             "type": "boolean",

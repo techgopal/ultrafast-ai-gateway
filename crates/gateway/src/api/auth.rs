@@ -51,6 +51,8 @@ pub struct UserView {
     pub last_active_at: Option<String>,
     /// The user's teams, ordered by name.
     pub teams: Vec<UserTeamView>,
+    /// The guardrails applied to every key the user owns, in order.
+    pub guardrail_ids: Vec<i64>,
 }
 
 /// How a user signs in, as `/api` shows it.
@@ -83,8 +85,25 @@ impl UserView {
             created_at: u.created_at,
             last_active_at: u.last_active_at,
             teams: teams.into_iter().map(UserTeamView::from).collect(),
+            guardrail_ids: Vec::new(),
         }
     }
+
+    pub fn with_guardrail_ids(mut self, ids: Vec<i64>) -> Self {
+        self.guardrail_ids = ids;
+        self
+    }
+}
+
+/// The guardrails of every user that has some, in each user's order.
+pub async fn guardrail_ids_of_users(
+    store: &Store,
+) -> anyhow::Result<std::collections::HashMap<i64, Vec<i64>>> {
+    let mut out: std::collections::HashMap<i64, Vec<i64>> = Default::default();
+    for (user, id, _) in store.user_guardrail_refs().await? {
+        out.entry(user).or_default().push(id);
+    }
+    Ok(out)
 }
 
 /// The teams of `user_id` that `viewer` may see: all of them for an admin
@@ -108,7 +127,11 @@ pub async fn user_view_for(
 ) -> anyhow::Result<UserView> {
     let mut teams = store.teams_of_users(&[user.id]).await?;
     let teams = teams_visible_to(viewer, user.id, teams.remove(&user.id).unwrap_or_default());
-    Ok(UserView::new(user, teams))
+    let ids = guardrail_ids_of_users(store)
+        .await?
+        .remove(&user.id)
+        .unwrap_or_default();
+    Ok(UserView::new(user, teams).with_guardrail_ids(ids))
 }
 
 /// The view of a single user, with all their teams: for the user
@@ -116,7 +139,11 @@ pub async fn user_view_for(
 pub async fn user_view(store: &Store, user: UserRow) -> anyhow::Result<UserView> {
     let mut teams = store.teams_of_users(&[user.id]).await?;
     let teams = teams.remove(&user.id).unwrap_or_default();
-    Ok(UserView::new(user, teams))
+    let ids = guardrail_ids_of_users(store)
+        .await?
+        .remove(&user.id)
+        .unwrap_or_default();
+    Ok(UserView::new(user, teams).with_guardrail_ids(ids))
 }
 
 // Request types have no `Debug`: most of them hold a password or a token.

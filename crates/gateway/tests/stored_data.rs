@@ -139,7 +139,8 @@ async fn a_database_written_by_the_earlier_build_opens_and_reads() {
             (15, "oidc", true),
             (16, "alert owner", true),
             (17, "guardrails", true),
-            (18, "prompts", true)
+            (18, "prompts", true),
+            (19, "team user guardrails", true)
         ]
     );
 

@@ -6,16 +6,20 @@ import {
   usePutTeamMember,
   useRemoveTeamMember,
   useRenameTeam,
+  useSetTeamGuardrails,
   useTeam,
 } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can, isAdmin, type Me } from "@/auth/guards";
 import { useSession } from "@/auth/session";
+import { AttachedGuardrails } from "@/components/AttachedGuardrails";
 import { control } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { NotFoundContent } from "@/components/NotFoundContent";
+import { TEAM_HINT } from "@/components/GuardrailPicker";
+import { GuardrailsHolderDialog, HOLDER_SAVED } from "@/components/GuardrailsHolderDialog";
 import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
 import { TeamRoleBadge } from "@/components/RoleBadge";
@@ -52,7 +56,7 @@ export const DONE = {
   leave: "You left the team.",
 } as const;
 
-type Asking = "rename" | "add" | "delete" | "role" | "remove";
+type Asking = "rename" | "add" | "delete" | "role" | "remove" | "guardrails";
 
 const memberColumns = (ownId: number): Column<Member>[] => [
   {
@@ -80,7 +84,17 @@ const memberColumns = (ownId: number): Column<Member>[] => [
   },
 ];
 
-function Team({ me, team, members }: { me: Me; team: Team; members: readonly Member[] }) {
+function Team({
+  me,
+  team,
+  members,
+  guardrailIds,
+}: {
+  me: Me;
+  team: Team;
+  members: readonly Member[];
+  guardrailIds: readonly number[];
+}) {
   const navigate = useNavigate();
   const toast = useToast();
   const rename = useRenameTeam();
@@ -88,6 +102,7 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
   const add = useAddTeamMember();
   const put = usePutTeamMember();
   const removeMember = useRemoveTeamMember();
+  const setGuardrails = useSetTeamGuardrails();
   const [asking, setAsking] = useState<Asking | null>(null);
   // Who the question is about. Kept while the dialog closes.
   const [member, setMember] = useState<Member | null>(null);
@@ -98,6 +113,7 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
   const mayDelete = can(me, { type: "deleteTeam", teamId: id });
   const mayAdd = can(me, { type: "addMember", teamId: id });
   const mayChangeRoles = can(me, { type: "makeLead", teamId: id });
+  const mayGuard = can(me, { type: "manageGuardrails" });
   // Only who may read the list of all users is given it to choose from.
   const mayChoose = can(me, { type: "listAllUsers" });
   // What may be removed is decided for each row: a lead does not remove another lead.
@@ -165,7 +181,7 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
 
   return (
     <>
-      {mayRename || mayAdd || mayDelete ? (
+      {mayRename || mayAdd || mayDelete || mayGuard ? (
         <div role="group" aria-label="Actions" className="flex flex-wrap gap-2">
           {mayRename ? (
             <Button
@@ -189,6 +205,18 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
               }}
             >
               Add member
+            </Button>
+          ) : null}
+          {mayGuard ? (
+            <Button
+              type="button"
+              variant="outline"
+              className={control}
+              onClick={() => {
+                setAsking("guardrails");
+              }}
+            >
+              Edit guardrails
             </Button>
           ) : null}
           {mayDelete ? (
@@ -216,6 +244,23 @@ function Team({ me, team, members }: { me: Me; team: Team; members: readonly Mem
         {...(rowActions === undefined ? {} : { actions: rowActions })}
       />
 
+      {mayGuard ? (
+        <GuardrailsHolderDialog
+          open={asking === "guardrails"}
+          description="The team's guardrails check every call of every key of the team, after the guardrails of the gateway."
+          hint={TEAM_HINT}
+          start={guardrailIds}
+          pending={setGuardrails.isPending}
+          send={(ids) => setGuardrails.mutateAsync({ id, ids })}
+          onCancel={() => {
+            closing(setGuardrails.reset)(false);
+          }}
+          onDone={() => {
+            closing(setGuardrails.reset)(false);
+            toast(HOLDER_SAVED);
+          }}
+        />
+      ) : null}
       {mayRename ? (
         <TeamNameDialog
           open={asking === "rename"}
@@ -358,8 +403,21 @@ function Details({ id }: { id: number }) {
         <dd>
           <Timestamp value={shown.team.created_at} />
         </dd>
+        {can(session.me, { type: "manageGuardrails" }) ? (
+          <>
+            <dt className="text-muted-foreground">Guardrails</dt>
+            <dd className="min-w-0">
+              <AttachedGuardrails ids={shown.guardrail_ids} />
+            </dd>
+          </>
+        ) : null}
       </dl>
-      <Team me={session.me} team={shown.team} members={shown.members} />
+      <Team
+        me={session.me}
+        team={shown.team}
+        members={shown.members}
+        guardrailIds={shown.guardrail_ids}
+      />
     </>
   );
 }

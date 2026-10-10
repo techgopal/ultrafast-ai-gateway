@@ -196,6 +196,10 @@ pub struct SnapshotRows {
     pub route_guardrails: Vec<(i64, i64, String)>,
     /// `(key id, guardrail id, guardrail name)`, in each key's order.
     pub key_guardrails: Vec<(i64, i64, String)>,
+    /// `(team id, guardrail id, guardrail name)`, in each team's order.
+    pub team_guardrails: Vec<(i64, i64, String)>,
+    /// `(user id, guardrail id, guardrail name)`, in each user's order.
+    pub user_guardrails: Vec<(i64, i64, String)>,
     /// Every prompt template, by name.
     pub prompt_templates: Vec<TemplateRow>,
     /// `(template id, number of its newest version)`.
@@ -418,6 +422,8 @@ impl Store {
         let guardrails = guardrails::list_guardrails_in(conn).await?;
         let route_guardrails = guardrails::route_guardrail_refs_in(conn).await?;
         let key_guardrails = guardrails::key_guardrail_refs_in(conn).await?;
+        let team_guardrails = guardrails::team_guardrail_refs_in(conn).await?;
+        let user_guardrails = guardrails::user_guardrail_refs_in(conn).await?;
         let prompt_templates = prompts::list_templates_in(conn).await?;
         let prompt_latest = prompts::latest_numbers_in(conn).await?;
         let prompt_versions =
@@ -440,6 +446,8 @@ impl Store {
             guardrails,
             route_guardrails,
             key_guardrails,
+            team_guardrails,
+            user_guardrails,
             prompt_templates,
             prompt_latest,
             prompt_versions,

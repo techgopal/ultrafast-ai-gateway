@@ -157,6 +157,16 @@ export const handlers = [
       role: "member",
     });
   }),
+  handler("put", "/api/teams/{id}/guardrails", (call) =>
+    byId(fixtures.teamList, call) === undefined
+      ? notFound()
+      : ok("put", "/api/teams/{id}/guardrails", 200, { guardrail_ids: [] }),
+  ),
+  handler("put", "/api/users/{id}/guardrails", (call) =>
+    byId(fixtures.userList, call) === undefined
+      ? notFound()
+      : ok("put", "/api/users/{id}/guardrails", 200, { guardrail_ids: [] }),
+  ),
   handler("put", "/api/teams/{id}/members/{user_id}", (call) =>
     byId(fixtures.teamList, call) === undefined ? notFound() : noContent(),
   ),

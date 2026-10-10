@@ -59,6 +59,7 @@ const platformWithMaya: fixtures.TeamDetail = {
     ...fixtures.teamDetails.platform.members,
     { user_id: maya.id, email: maya.email, name: maya.name, role: "lead" },
   ],
+  guardrail_ids: [],
 };
 
 const HOLDS =
@@ -152,7 +153,7 @@ function keeps(start: fixtures.TeamDetail) {
     patches: [] as unknown[],
   };
   function count(members: fixtures.TeamDetail["members"]): fixtures.TeamDetail {
-    return { team: { ...state.detail.team, member_count: members.length }, members };
+    return { team: { ...state.detail.team, member_count: members.length }, members, guardrail_ids: [] };
   }
   override("get", "/api/teams", () => {
     state.lists += 1;
@@ -531,6 +532,7 @@ describe("the page of a team", () => {
       HttpResponse.json({
         team: platform,
         members: [{ user_id: lena.id, email: lena.email, name: lena.name, role: "observer" }],
+        guardrail_ids: [],
       }),
     );
     await detail(platform);
@@ -542,13 +544,13 @@ describe("the page of a team", () => {
   test("a team without members says so", async () => {
     await detail(growth);
     expect(await screen.findByRole("heading", { name: "No members" })).toBeInTheDocument();
-    expect(actions()).toEqual(["Rename", "Add member", "Delete"]);
+    expect(actions()).toEqual(["Rename", "Add member", "Edit guardrails", "Delete"]);
   });
 
   test("detail controls by role: an admin sees all controls", async () => {
     await detail(platform);
     await table("Members");
-    expect(actions()).toEqual(["Rename", "Add member", "Delete"]);
+    expect(actions()).toEqual(["Rename", "Add member", "Edit guardrails", "Delete"]);
     expect(names(rowOf(arjun.name))).toEqual(["Make member", "Remove"]);
     expect(names(rowOf(lena.name))).toEqual(["Make lead", "Remove"]);
   });
@@ -569,6 +571,7 @@ describe("the page of a team", () => {
         ...fixtures.teamDetails.platform.members,
         { user_id: tomas.id, email: tomas.email, name: tomas.name, role: "lead" },
       ],
+      guardrail_ids: [],
     };
     keeps(twoLeads);
     await detail(platform, { user: fixtures.me.arjun });
@@ -1104,6 +1107,7 @@ describe("adding a member", () => {
       ...fixtures.teamDetails.platform.members,
       { user_id: tomas.id, email: tomas.email, name: tomas.name, role: "lead" },
     ],
+    guardrail_ids: [],
   };
   test.each([
     ["a member of the team", lena, "Member"],
@@ -1318,7 +1322,7 @@ describe("changing the role of a member", () => {
     expect(href(app)).toBe(`/teams/${platform.id}`);
     expect(toasts()).toEqual(["Role changed."]);
     expect(rowOf(maya.name)).toHaveTextContent("Member");
-    expect(actions()).toEqual(["Rename", "Add member", "Delete"]);
+    expect(actions()).toEqual(["Rename", "Add member", "Edit guardrails", "Delete"]);
   });
 
   test("a lead who is made a member meanwhile loses the controls at once", async () => {

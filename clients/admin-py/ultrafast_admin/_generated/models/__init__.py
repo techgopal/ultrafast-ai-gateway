@@ -9,6 +9,8 @@ from .alert_rule_entry_params import AlertRuleEntryParams
 from .api_error_body import ApiErrorBody
 from .api_error_detail import ApiErrorDetail
 from .api_error_detail_fields import ApiErrorDetailFields
+from .attach_request import AttachRequest
+from .attached import Attached
 from .audit_page import AuditPage
 from .audit_row import AuditRow
 from .auth_provider_view import AuthProviderView
@@ -203,6 +205,8 @@ __all__ = (
     "ApiErrorBody",
     "ApiErrorDetail",
     "ApiErrorDetailFields",
+    "AttachRequest",
+    "Attached",
     "AuditPage",
     "AuditRow",
     "AuthProviderView",

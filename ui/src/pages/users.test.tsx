@@ -969,6 +969,7 @@ describe("the page of a user", () => {
       "Teams",
       "Created",
       "Last active",
+      "Guardrails",
     ]);
     expect(details).toHaveTextContent(dana.email);
     expect(within(details).getByText("Member")).toHaveAttribute("data-variant", "outline");
@@ -1018,7 +1019,7 @@ describe("the page of a user", () => {
   test("detail controls by role: an admin sees all controls", async () => {
     await detail(lena);
     await screen.findByRole("heading", { level: 1, name: lena.name });
-    expect(actions()).toEqual(["Edit name", "Make admin", "Disable", "Delete"]);
+    expect(actions()).toEqual(["Edit name", "Make admin", "Disable", "Edit guardrails", "Delete"]);
   });
 
   test("detail controls by role: a member on their own page sees only name edit", async () => {
@@ -1038,13 +1039,13 @@ describe("the page of a user", () => {
   test("an admin and a disabled user: Enable, and Make member for an admin", async () => {
     await detail(dana);
     await screen.findByRole("heading", { level: 1, name: dana.name });
-    expect(actions()).toEqual(["Edit name", "Make admin", "Enable", "Delete"]);
+    expect(actions()).toEqual(["Edit name", "Make admin", "Enable", "Edit guardrails", "Delete"]);
   });
 
   test("resend invite only when invited: the button New invite link", async () => {
     const first = await detail(sam);
     await screen.findByRole("heading", { level: 1, name: sam.name });
-    expect(actions()).toEqual(["Edit name", "Make admin", "Disable", "New invite link", "Delete"]);
+    expect(actions()).toEqual(["Edit name", "Make admin", "Disable", "New invite link", "Edit guardrails", "Delete"]);
     first.unmount();
     for (const user of [lena, dana]) {
       const app = await detail(user);
@@ -1243,7 +1244,7 @@ describe("the page of a user", () => {
     await settle();
     expect(screen.getByRole("heading", { level: 1, name: lena.name })).toBeInTheDocument();
     expect(screen.getByLabelText("Details")).toHaveTextContent(lena.email);
-    expect(actions()).toEqual(["Edit name", "Make admin", "Disable", "Delete"]);
+    expect(actions()).toEqual(["Edit name", "Make admin", "Disable", "Edit guardrails", "Delete"]);
     expect(screen.queryByRole("heading", { name: NOT_FOUND })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -1625,7 +1626,7 @@ describe("changing the own account", () => {
     expect(within(details).getByText("active")).toBeInTheDocument();
     expect(app.queryClient.getQueryData(queryKeys.me())).toBeDefined();
     await confirm(dialog, "Cancel");
-    expect(actions()).toEqual(["Edit name", "Make member", "Disable"]);
+    expect(actions()).toEqual(["Edit name", "Make member", "Disable", "Edit guardrails"]);
   });
 
   test("a change of the own name signs nobody out", async () => {
@@ -1907,7 +1908,7 @@ describe("deleting a user", () => {
   test("delete is not offered on the own page", async () => {
     await detail(maya);
     await screen.findByRole("heading", { level: 1, name: maya.name });
-    expect(actions()).toEqual(["Edit name", "Make member", "Disable"]);
+    expect(actions()).toEqual(["Edit name", "Make member", "Disable", "Edit guardrails"]);
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });

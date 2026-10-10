@@ -646,6 +646,14 @@ fn table() -> Vec<Row> {
             [200, 200, 200, 401]),
         row(96, "GET", "/api/playground/config", "", |_, _| "/api/playground/config".into(), no_body,
             [200, 200, 200, 401]),
+        row(97, "PUT", "/api/teams/{id}/guardrails", "platform, none",
+            |w, _| format!("/api/teams/{}/guardrails", w.org.platform),
+            || Some(json!({ "guardrail_ids": [] })),
+            [200, 403, 403, 401]),
+        row(98, "PUT", "/api/users/{id}/guardrails", "lena, none",
+            |w, _| format!("/api/users/{}/guardrails", w.org.lena),
+            || Some(json!({ "guardrail_ids": [] })),
+            [200, 403, 403, 401]),
     ]
 }
 
@@ -720,7 +728,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=96).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=98).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -855,7 +863,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 96);
+    assert_eq!(operations, 98);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

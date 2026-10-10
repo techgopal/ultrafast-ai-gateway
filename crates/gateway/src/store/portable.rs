@@ -35,6 +35,8 @@ pub struct ConfigState {
     pub guardrails: Vec<super::GuardrailRow>,
     /// `(route id, guardrail id, guardrail name)`, in each route's order.
     pub route_guardrails: Vec<(i64, i64, String)>,
+    /// `(team id, guardrail id, guardrail name)`, in each team's order.
+    pub team_guardrails: Vec<(i64, i64, String)>,
     /// Every prompt template, by name, and all their versions.
     pub prompt_templates: Vec<super::TemplateRow>,
     pub prompt_versions: Vec<super::VersionRow>,
@@ -71,6 +73,7 @@ async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
     let alert_rules = super::alerts::list_alert_rules_in(conn).await?;
     let guardrails = super::guardrails::list_guardrails_in(conn).await?;
     let route_guardrails = super::guardrails::route_guardrail_refs_in(conn).await?;
+    let team_guardrails = super::guardrails::team_guardrail_refs_in(conn).await?;
     let prompt_templates = super::prompts::list_templates_in(conn).await?;
     let prompt_versions = super::prompts::list_versions_in(conn).await?;
     Ok(ConfigState {
@@ -90,6 +93,7 @@ async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
         alert_rules,
         guardrails,
         route_guardrails,
+        team_guardrails,
         prompt_templates,
         prompt_versions,
     })

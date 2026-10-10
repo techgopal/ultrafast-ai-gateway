@@ -117,6 +117,8 @@ pub struct TeamList {
 pub struct TeamDetail {
     pub team: TeamSummary,
     pub members: Vec<MemberDetail>,
+    /// The guardrails applied to every key of the team, in order.
+    pub guardrail_ids: Vec<i64>,
 }
 
 #[derive(ToSchema)]
@@ -315,7 +317,7 @@ mod tests {
 
     /// Every route of `api::router`, which has 88. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 96] = [
+    const ROUTES: [(&str, &str); 98] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -329,12 +331,14 @@ mod tests {
         ("GET", "/api/users"),
         ("POST", "/api/users"),
         ("GET", "/api/users/{id}"),
+        ("PUT", "/api/users/{id}/guardrails"),
         ("PATCH", "/api/users/{id}"),
         ("DELETE", "/api/users/{id}"),
         ("POST", "/api/users/{id}/invite"),
         ("GET", "/api/teams"),
         ("POST", "/api/teams"),
         ("GET", "/api/teams/{id}"),
+        ("PUT", "/api/teams/{id}/guardrails"),
         ("PATCH", "/api/teams/{id}"),
         ("DELETE", "/api/teams/{id}"),
         ("POST", "/api/teams/{id}/members"),
@@ -565,7 +569,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 96);
+        assert_eq!(routes.len(), 98);
         assert_eq!(documented, routes);
     }
 
@@ -587,7 +591,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 96);
+        assert_eq!(ids.len(), 98);
     }
 
     #[test]

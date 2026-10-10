@@ -738,6 +738,16 @@ export const useUpdateUser = () =>
     () => ({ stale: aUserChanged }),
   );
 
+/** Replaces the guardrails of a user: they check every key the user owns. */
+export const useSetUserGuardrails = () =>
+  useApiMutation(
+    ({ id, ids }: { id: number; ids: readonly number[] }) =>
+      api.put("/api/users/{id}/guardrails", { params: { id }, body: { guardrail_ids: [...ids] } }),
+    () => ({ stale: [queryKeys.users.all(), queryKeys.guardrails.all(), audit] }),
+    // The user is gone: the list shows what is not so.
+    (error) => (isNotFound(error) ? [queryKeys.users.all()] : []),
+  );
+
 export const useDeleteUser = () =>
   useApiMutation(
     ({ id }: { id: number }) => api.delete("/api/users/{id}", { params: { id } }),
@@ -776,6 +786,16 @@ export const useRenameTeam = () =>
     ({ id, body }: { id: number; body: BodyOf<"/api/teams/{id}", "patch"> }) =>
       api.patch("/api/teams/{id}", { params: { id }, body }),
     () => ({ stale: aTeamChanged }),
+  );
+
+/** Replaces the guardrails of a team: they check every key of the team. */
+export const useSetTeamGuardrails = () =>
+  useApiMutation(
+    ({ id, ids }: { id: number; ids: readonly number[] }) =>
+      api.put("/api/teams/{id}/guardrails", { params: { id }, body: { guardrail_ids: [...ids] } }),
+    () => ({ stale: [queryKeys.teams.all(), queryKeys.guardrails.all(), audit] }),
+    // The team is gone: the list shows what is not so.
+    (error) => (isNotFound(error) ? [queryKeys.teams.all()] : []),
   );
 
 export const useDeleteTeam = () =>

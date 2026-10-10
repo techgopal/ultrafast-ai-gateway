@@ -1377,6 +1377,8 @@ describe("every mutation calls its operation", () => {
       ["useCreateGuardrail", "POST /api/guardrails", q.useCreateGuardrail, { name: "g", kind: "external", url: "https://guard.example.test/hook" }],
       ["useUpdateGuardrail", "PATCH /api/guardrails/1", q.useUpdateGuardrail, { id: 1, body: { enabled: false } }],
       ["useDeleteGuardrail", "DELETE /api/guardrails/1", q.useDeleteGuardrail, { id: 1 }],
+      ["useSetTeamGuardrails", "PUT /api/teams/1/guardrails", q.useSetTeamGuardrails, { id: 1, ids: [1] }],
+      ["useSetUserGuardrails", "PUT /api/users/1/guardrails", q.useSetUserGuardrails, { id: 1, ids: [1] }],
       ["useRotateGuardrailSecret", "POST /api/guardrails/1/rotate-secret", q.useRotateGuardrailSecret, { id: 1 }],
       ["useTestGuardrail", "POST /api/guardrails/test", q.useTestGuardrail, { direction: "output", text: "a", guardrail_id: 1 }],
       ["useCreatePrompt", "POST /api/prompts", q.useCreatePrompt, { name: "p", messages: [{ role: "user", content: "a" }] }],
@@ -1386,10 +1388,10 @@ describe("every mutation calls its operation", () => {
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 54 of them, 27 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(54);
+  test("there are 56 of them, 27 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(56);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(84);
+    expect(hooks).toHaveLength(86);
     // The alerts: three queries (channels, rules, events by page), and their eight mutations.
     for (const name of ["useAlertChannels", "useAlertRules", "useAlertEventsPages"]) {
       expect(hooks).toContain(name);

@@ -203,6 +203,10 @@ pub struct Snapshot {
     guardrails: HashMap<i64, Arc<SnapGuardrail>>,
     /// The ids of the enabled guardrails that apply to every call, by name.
     default_guardrails: Vec<i64>,
+    /// The guardrails attached to each team, in order (ids).
+    team_guardrails: HashMap<i64, Vec<i64>>,
+    /// The guardrails attached to each user, in order (ids).
+    user_guardrails: HashMap<i64, Vec<i64>>,
     /// How many guardrails this load compiled (the rest were taken over).
     guardrails_compiled: usize,
     /// The prompt templates with all their versions, by name.
@@ -528,6 +532,24 @@ impl Snapshot {
             fp.num(*key);
             fp.num(*guardrail);
         }
+        fp.section("team_guardrails", rows.team_guardrails.len());
+        for (team, guardrail, _) in &rows.team_guardrails {
+            fp.num(*team);
+            fp.num(*guardrail);
+        }
+        fp.section("user_guardrails", rows.user_guardrails.len());
+        for (user, guardrail, _) in &rows.user_guardrails {
+            fp.num(*user);
+            fp.num(*guardrail);
+        }
+        let mut team_guardrails: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (team, guardrail, _) in &rows.team_guardrails {
+            team_guardrails.entry(*team).or_default().push(*guardrail);
+        }
+        let mut user_guardrails: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (user, guardrail, _) in &rows.user_guardrails {
+            user_guardrails.entry(*user).or_default().push(*guardrail);
+        }
         let mut key_guardrails: HashMap<i64, Vec<i64>> = HashMap::new();
         for (key, guardrail, _) in &rows.key_guardrails {
             key_guardrails.entry(*key).or_default().push(*guardrail);
@@ -772,6 +794,8 @@ impl Snapshot {
             budgets,
             guardrails,
             default_guardrails,
+            team_guardrails,
+            user_guardrails,
             guardrails_compiled,
             prompts,
             cache_fingerprint,
@@ -827,17 +851,21 @@ impl Snapshot {
     }
 
     /// The guardrails a call is checked with: the gateway-wide defaults,
-    /// then the route's, then the key's, each in its configured order, each
-    /// guardrail once (where it first appears). A disabled or gone guardrail
-    /// is not in it.
-    pub fn effective_guardrails(
-        &self,
+    /// then those of the key's team, of the key's owner, of the route and
+    /// of the key, each in its configured order, each guardrail once (where
+    /// it first appears). A disabled or gone guardrail is not in it.
+    pub fn effective_guardrails<'a>(
+        &'a self,
         route: Option<&SnapRoute>,
         key: Option<&SnapKey>,
     ) -> Vec<Arc<SnapGuardrail>> {
-        let attached = route
-            .map(|r| r.guardrails.as_slice())
+        let of = |map: &'a HashMap<i64, Vec<i64>>, id: Option<i64>| {
+            id.and_then(|id| map.get(&id)).map(Vec::as_slice)
+        };
+        let attached = of(&self.team_guardrails, key.and_then(|k| k.team_id))
             .into_iter()
+            .chain(of(&self.user_guardrails, key.and_then(|k| k.user_id)))
+            .chain(route.map(|r| r.guardrails.as_slice()))
             .chain(key.map(|k| k.guardrails.as_slice()));
         let mut seen = HashSet::new();
         std::iter::once(self.default_guardrails.as_slice())

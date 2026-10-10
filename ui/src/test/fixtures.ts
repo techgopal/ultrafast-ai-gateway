@@ -85,6 +85,7 @@ export const users = {
     has_password: true,
     created_at: "2026-06-01 09:00:00",
     last_active_at: "2026-09-28 16:20:00",
+    guardrail_ids: [],
     teams: [],
   },
   /** Lead of Platform, member of Research. */
@@ -98,6 +99,7 @@ export const users = {
     has_password: true,
     created_at: "2026-06-03 10:00:00",
     last_active_at: "2026-09-27 11:05:00",
+    guardrail_ids: [],
     teams: [
       { team_id: 1, name: "Platform", role: "lead" },
       { team_id: 2, name: "Research", role: "member" },
@@ -114,6 +116,7 @@ export const users = {
     has_password: true,
     created_at: "2026-06-10 08:30:00",
     last_active_at: "2026-09-26 09:45:00",
+    guardrail_ids: [],
     teams: [{ team_id: 1, name: "Platform", role: "member" }],
   },
   /** Member of Research. */
@@ -127,6 +130,7 @@ export const users = {
     has_password: true,
     created_at: "2026-07-01 12:00:00",
     last_active_at: "2026-09-20 14:00:00",
+    guardrail_ids: [],
     teams: [{ team_id: 2, name: "Research", role: "member" }],
   },
   /** In no team. */
@@ -140,6 +144,7 @@ export const users = {
     has_password: true,
     created_at: "2026-07-15 12:00:00",
     last_active_at: null,
+    guardrail_ids: [],
     teams: [],
   },
   /** Invited, has not set a password yet. */
@@ -153,6 +158,7 @@ export const users = {
     has_password: false,
     created_at: "2026-09-25 15:00:00",
     last_active_at: null,
+    guardrail_ids: [],
     teams: [],
   },
   /** Disabled. Owns a key, which is suspended. */
@@ -166,6 +172,7 @@ export const users = {
     has_password: true,
     created_at: "2026-06-20 10:00:00",
     last_active_at: "2026-08-01 10:00:00",
+    guardrail_ids: [],
     teams: [],
   },
 } as const satisfies Record<string, User>;
@@ -189,12 +196,14 @@ export const teamDetails = {
   platform: {
     team: teams.platform,
     members: [member(users.arjun, "lead"), member(users.lena, "member")],
+    guardrail_ids: [],
   },
   research: {
     team: teams.research,
     members: [member(users.arjun, "member"), member(users.tomas, "member")],
+    guardrail_ids: [],
   },
-  growth: { team: teams.growth, members: [] },
+  growth: { team: teams.growth, members: [], guardrail_ids: [] },
 } satisfies Record<keyof typeof teams, TeamDetail>;
 
 export const teamDetailList: TeamDetail[] = Object.values(teamDetails);

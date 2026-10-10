@@ -22,6 +22,10 @@ export const ORDER_HINT =
   "They run in this order, after the guardrails that apply to every call. Built-in rules run before external ones.";
 /** What a guardrail on a key does not cover: a person can make another key. */
 export const KEY_HINT = `${ORDER_HINT} These check only the calls made with this key: a new key, or a direct call to a model, is not checked by them.`;
+/** What a guardrail on a team covers: every key of the team, also one made later. */
+export const TEAM_HINT = `${ORDER_HINT} These check the calls of every key of this team, also a key made later. A key's own guardrails run after them.`;
+/** What a guardrail on a user covers: every key the user owns. */
+export const USER_HINT = `${ORDER_HINT} These check the calls of every key this user owns, also a key made later. A key's own guardrails run after them.`;
 /** What a guardrail on a route does not cover: a model can be called directly. */
 export const ROUTE_HINT = `${ORDER_HINT} These check only the calls that go through this route: a key that may also call a model directly is not checked by them.`;
 

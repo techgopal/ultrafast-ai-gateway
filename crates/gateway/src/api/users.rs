@@ -11,7 +11,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::auth::{teams_visible_to, user_view_for, UserView};
+use super::auth::{guardrail_ids_of_users, teams_visible_to, user_view_for, UserView};
 use super::{path_id, refresh_snapshot, require, trimmed_name, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
@@ -101,11 +101,13 @@ pub async fn list(
     // One query for the teams of everyone listed.
     let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
     let mut teams = store.teams_of_users(&ids).await?;
+    let mut attached = guardrail_ids_of_users(store).await?;
     let users: Vec<UserView> = users
         .into_iter()
         .map(|u| {
             let teams = teams_visible_to(me, u.id, teams.remove(&u.id).unwrap_or_default());
-            UserView::new(u, teams)
+            let guardrail_ids = attached.remove(&u.id).unwrap_or_default();
+            UserView::new(u, teams).with_guardrail_ids(guardrail_ids)
         })
         .collect();
     Ok(Json(json!({ "users": users })).into_response())
@@ -292,6 +294,47 @@ pub async fn view(
         },
     )?;
     Ok(Json(user_view_for(store, me, target).await?).into_response())
+}
+
+#[utoipa::path(
+    put,
+    path = "/users/{id}/guardrails",
+    tag = "users",
+    operation_id = "users_set_guardrails",
+    params(
+        ("id" = i64, Path, description = "The id of the user."),
+    ),
+    request_body = super::guardrails::AttachRequest,
+    responses(
+        (status = 200, description = "The guardrails of the user after the change.", body = super::guardrails::Attached),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+/// Replaces the guardrails applied to every key the user owns. Admins only.
+pub async fn set_guardrails(
+    State(state): State<Arc<AppState>>,
+    Path(raw_id): Path<String>,
+    authed: Authed,
+    ApiJson(req): ApiJson<super::guardrails::AttachRequest>,
+) -> Result<Response, ApiError> {
+    let me = &authed.principal;
+    require(me, &Action::ManageGuardrails)?;
+    let id = path_id(&raw_id)?;
+    super::guardrails::set_attached(
+        &state,
+        me,
+        super::guardrails::Holder::User,
+        id,
+        &req.guardrail_ids,
+    )
+    .await
 }
 
 #[utoipa::path(

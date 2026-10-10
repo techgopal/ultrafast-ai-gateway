@@ -193,7 +193,7 @@ async fn team_detail_lists_members() {
         .call(Some(&lena), "GET", &team_path(org.platform), None)
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_object().unwrap().len(), 2);
+    assert_eq!(body.as_object().unwrap().len(), 3);
     assert_eq!(body["team"]["id"], org.platform);
     assert_eq!(body["team"]["name"], "Platform");
     assert_eq!(body["team"]["member_count"], 2);

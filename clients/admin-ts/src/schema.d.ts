@@ -986,6 +986,23 @@ export interface paths {
         patch: operations["teams_rename"];
         trace?: never;
     };
+    "/api/teams/{id}/guardrails": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replaces the guardrails applied to every key of the team. Admins only. */
+        put: operations["teams_set_guardrails"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/teams/{id}/members": {
         parameters: {
             query?: never;
@@ -1110,6 +1127,23 @@ export interface paths {
         patch: operations["users_update"];
         trace?: never;
     };
+    "/api/users/{id}/guardrails": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replaces the guardrails applied to every key the user owns. Admins only. */
+        put: operations["users_set_guardrails"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/users/{id}/invite": {
         parameters: {
             query?: never;
@@ -1182,6 +1216,19 @@ export interface components {
             };
             /** @description Text for a person. It may change. */
             message: string;
+        };
+        /** @description The body that sets the guardrails of a team or a user. */
+        AttachRequest: {
+            /**
+             * @description The guardrails to apply, in this order, to every key of the team, or
+             *     every key the user owns. `[]` takes them all off. At most 20, each
+             *     one an existing guardrail.
+             */
+            guardrail_ids: number[];
+        };
+        /** @description The guardrails attached to a team or a user, in order. */
+        Attached: {
+            guardrail_ids: number[];
         };
         AuditPage: {
             entries: components["schemas"]["AuditRow"][];
@@ -2936,10 +2983,19 @@ export interface components {
          */
         TargetState: "closed" | "open" | "half_open";
         TeamDetail: {
+            /** @description The guardrails applied to every key of the team, in order. */
+            guardrail_ids: number[];
             members: components["schemas"]["MemberDetail"][];
             team: components["schemas"]["TeamSummary"];
         };
         TeamEntry: {
+            /**
+             * @description Names of guardrails, in the order they apply to every key of the
+             *     team. Left out of the file for a team that has none; a file that
+             *     leaves it out does not change what is attached (`[]` takes them all
+             *     off).
+             */
+            guardrails?: string[] | null;
             name: string;
         };
         TeamList: {
@@ -3165,6 +3221,8 @@ export interface components {
             auth_provider: components["schemas"]["AuthProviderView"];
             created_at: string;
             email: string;
+            /** @description The guardrails applied to every key the user owns, in order. */
+            guardrail_ids: number[];
             /**
              * @description Whether the user has a password. A user made by single sign-on has
              *     none and can sign in only while single sign-on works. Read only.
@@ -8868,6 +8926,99 @@ export interface operations {
             };
         };
     };
+    teams_set_guardrails: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the team. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachRequest"];
+            };
+        };
+        responses: {
+            /** @description The guardrails of the team after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Attached"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     teams_member_add: {
         parameters: {
             query?: never;
@@ -9689,6 +9840,99 @@ export interface operations {
             };
             /** @description `last_admin`: no active admin would be left. `no_password`: the user has no password yet. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    users_set_guardrails: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the user. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachRequest"];
+            };
+        };
+        responses: {
+            /** @description The guardrails of the user after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Attached"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

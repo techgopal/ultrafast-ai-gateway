@@ -26,6 +26,7 @@ class UserView:
         auth_provider (AuthProviderView): How a user signs in, as `/api` shows it.
         created_at (str):
         email (str):
+        guardrail_ids (list[int]): The guardrails applied to every key the user owns, in order.
         has_password (bool): Whether the user has a password. A user made by single sign-on has
             none and can sign in only while single sign-on works. Read only.
         id (int):
@@ -39,6 +40,7 @@ class UserView:
     auth_provider: AuthProviderView
     created_at: str
     email: str
+    guardrail_ids: list[int]
     has_password: bool
     id: int
     last_active_at: None | str
@@ -54,6 +56,8 @@ class UserView:
         created_at = self.created_at
 
         email = self.email
+
+        guardrail_ids = self.guardrail_ids
 
         has_password = self.has_password
 
@@ -80,6 +84,7 @@ class UserView:
                 "auth_provider": auth_provider,
                 "created_at": created_at,
                 "email": email,
+                "guardrail_ids": guardrail_ids,
                 "has_password": has_password,
                 "id": id,
                 "last_active_at": last_active_at,
@@ -102,6 +107,8 @@ class UserView:
         created_at = d.pop("created_at")
 
         email = d.pop("email")
+
+        guardrail_ids = cast(list[int], d.pop("guardrail_ids"))
 
         has_password = d.pop("has_password")
 
@@ -131,6 +138,7 @@ class UserView:
             auth_provider=auth_provider,
             created_at=created_at,
             email=email,
+            guardrail_ids=guardrail_ids,
             has_password=has_password,
             id=id,
             last_active_at=last_active_at,

@@ -151,6 +151,32 @@ pub(super) async fn key_guardrail_refs_in(
     .await
 }
 
+/// `(team id, guardrail id, guardrail name)`, as for routes.
+pub(super) async fn team_guardrail_refs_in(
+    conn: &mut AnyConnection,
+) -> Result<Vec<(i64, i64, String)>> {
+    refs_in(
+        conn,
+        "SELECT l.team_id, g.id, g.name FROM team_guardrails l
+         JOIN guardrails g ON g.id = l.guardrail_id
+         WHERE g.org_id = ? ORDER BY l.team_id, l.position",
+    )
+    .await
+}
+
+/// `(user id, guardrail id, guardrail name)`, as for routes.
+pub(super) async fn user_guardrail_refs_in(
+    conn: &mut AnyConnection,
+) -> Result<Vec<(i64, i64, String)>> {
+    refs_in(
+        conn,
+        "SELECT l.user_id, g.id, g.name FROM user_guardrails l
+         JOIN guardrails g ON g.id = l.guardrail_id
+         WHERE g.org_id = ? ORDER BY l.user_id, l.position",
+    )
+    .await
+}
+
 async fn refs_in(conn: &mut AnyConnection, sql: &'static str) -> Result<Vec<(i64, i64, String)>> {
     let rows = conn.q(sql).bind(DEFAULT_ORG).fetch_all(conn).await?;
     Ok(rows
@@ -324,6 +350,72 @@ impl Tx<'_> {
         }
         Ok(())
     }
+
+    /// The guardrails attached to a team, in order.
+    pub async fn team_guardrail_ids(&mut self, team_id: i64) -> Result<Vec<i64>> {
+        let rows = self
+            .q("SELECT guardrail_id FROM team_guardrails WHERE team_id = ? ORDER BY position")
+            .bind(team_id)
+            .fetch_all(self.conn())
+            .await?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
+    /// The guardrails attached to a user, in order.
+    pub async fn user_guardrail_ids(&mut self, user_id: i64) -> Result<Vec<i64>> {
+        let rows = self
+            .q("SELECT guardrail_id FROM user_guardrails WHERE user_id = ? ORDER BY position")
+            .bind(user_id)
+            .fetch_all(self.conn())
+            .await?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
+    /// As [`Tx::replace_route_guardrails`], for a team.
+    pub async fn replace_team_guardrails(
+        &mut self,
+        team_id: i64,
+        guardrail_ids: &[i64],
+    ) -> Result<()> {
+        self.q("DELETE FROM team_guardrails WHERE team_id = ?")
+            .bind(team_id)
+            .execute(self.conn())
+            .await?;
+        for (position, guardrail_id) in (0_i64..).zip(guardrail_ids) {
+            self.q(
+                "INSERT INTO team_guardrails (team_id, guardrail_id, position) VALUES (?, ?, ?)",
+            )
+            .bind(team_id)
+            .bind(guardrail_id)
+            .bind(position)
+            .execute(self.conn())
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// As [`Tx::replace_route_guardrails`], for a user.
+    pub async fn replace_user_guardrails(
+        &mut self,
+        user_id: i64,
+        guardrail_ids: &[i64],
+    ) -> Result<()> {
+        self.q("DELETE FROM user_guardrails WHERE user_id = ?")
+            .bind(user_id)
+            .execute(self.conn())
+            .await?;
+        for (position, guardrail_id) in (0_i64..).zip(guardrail_ids) {
+            self.q(
+                "INSERT INTO user_guardrails (user_id, guardrail_id, position) VALUES (?, ?, ?)",
+            )
+            .bind(user_id)
+            .bind(guardrail_id)
+            .bind(position)
+            .execute(self.conn())
+            .await?;
+        }
+        Ok(())
+    }
 }
 
 impl Store {
@@ -382,6 +474,18 @@ impl Store {
     pub async fn route_guardrail_refs(&self) -> Result<Vec<(i64, i64, String)>> {
         let mut conn = self.pool().acquire().await?;
         route_guardrail_refs_in(&mut conn).await
+    }
+
+    /// `(team id, guardrail id, guardrail name)`, as for routes.
+    pub async fn team_guardrail_refs(&self) -> Result<Vec<(i64, i64, String)>> {
+        let mut conn = self.pool().acquire().await?;
+        team_guardrail_refs_in(&mut conn).await
+    }
+
+    /// `(user id, guardrail id, guardrail name)`, as for routes.
+    pub async fn user_guardrail_refs(&self) -> Result<Vec<(i64, i64, String)>> {
+        let mut conn = self.pool().acquire().await?;
+        user_guardrail_refs_in(&mut conn).await
     }
 
     /// `(key id, guardrail id, guardrail name)`, as for routes.

@@ -1,51 +1,34 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from typing_extensions import Self
 
-if TYPE_CHECKING:
-    from ..models.member_detail import MemberDetail
-    from ..models.team_summary import TeamSummary
-
-
-T = TypeVar("T", bound="TeamDetail")
+T = TypeVar("T", bound="Attached")
 
 
 @_attrs_define
-class TeamDetail:
-    """
+class Attached:
+    """The guardrails attached to a team or a user, in order.
+
     Attributes:
-        guardrail_ids (list[int]): The guardrails applied to every key of the team, in order.
-        members (list[MemberDetail]):
-        team (TeamSummary): A team with the number of its members.
+        guardrail_ids (list[int]):
     """
 
     guardrail_ids: list[int]
-    members: list[MemberDetail]
-    team: TeamSummary
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         guardrail_ids = self.guardrail_ids
-
-        members = []
-        for members_item_data in self.members:
-            members_item = members_item_data.to_dict()
-            members.append(members_item)
-
-        team = self.team.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "guardrail_ids": guardrail_ids,
-                "members": members,
-                "team": team,
             }
         )
 
@@ -53,29 +36,15 @@ class TeamDetail:
 
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
-        from ..models.member_detail import MemberDetail
-        from ..models.team_summary import TeamSummary
-
         d = dict(src_dict)
         guardrail_ids = cast(list[int], d.pop("guardrail_ids"))
 
-        members = []
-        _members = d.pop("members")
-        for members_item_data in _members:
-            members_item = MemberDetail.from_dict(members_item_data)
-
-            members.append(members_item)
-
-        team = TeamSummary.from_dict(d.pop("team"))
-
-        team_detail = cls(
+        attached = cls(
             guardrail_ids=guardrail_ids,
-            members=members,
-            team=team,
         )
 
-        team_detail.additional_properties = d
-        return team_detail
+        attached.additional_properties = d
+        return attached
 
     @property
     def additional_keys(self) -> list[str]:

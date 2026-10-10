@@ -1,11 +1,20 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { useDeleteUser, useReinviteUser, useUpdateUser, useUser } from "@/api/queries";
+import {
+  useDeleteUser,
+  useReinviteUser,
+  useSetUserGuardrails,
+  useUpdateUser,
+  useUser,
+} from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can, type Me } from "@/auth/guards";
 import { useSession, useSessionControl } from "@/auth/session";
+import { AttachedGuardrails } from "@/components/AttachedGuardrails";
 import { control } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { USER_HINT } from "@/components/GuardrailPicker";
+import { GuardrailsHolderDialog, HOLDER_SAVED } from "@/components/GuardrailsHolderDialog";
 import { NameDialog } from "@/components/NameDialog";
 import { NotFoundContent } from "@/components/NotFoundContent";
 import { PageHeader } from "@/components/PageHeader";
@@ -51,7 +60,7 @@ export const DONE = {
   delete: "User deleted.",
 } as const;
 
-type Asking = "name" | "role" | "disable" | "enable" | "reinvite" | "delete";
+type Asking = "name" | "role" | "disable" | "enable" | "reinvite" | "delete" | "guardrails";
 
 function Controls({ me, user }: { me: Me; user: User }) {
   const navigate = useNavigate();
@@ -59,6 +68,7 @@ function Controls({ me, user }: { me: Me; user: User }) {
   const update = useUpdateUser();
   const remove = useDeleteUser();
   const reinvite = useReinviteUser();
+  const setGuardrails = useSetUserGuardrails();
   const once = useSecretOnce(reinvite);
   const { end } = useSessionControl();
   const [asking, setAsking] = useState<Asking | null>(null);
@@ -68,7 +78,8 @@ function Controls({ me, user }: { me: Me; user: User }) {
   // Nobody can delete their own account: the API refuses it to everybody.
   const mayDelete = !own && can(me, { type: "deleteUser" });
   const mayRename = can(me, { type: "renameUser", userId: user.id });
-  if (!mayRename && !mayDelete) return null;
+  const mayGuard = can(me, { type: "manageGuardrails" });
+  if (!mayRename && !mayDelete && !mayGuard) return null;
 
   const { id } = user;
   const otherRole = user.role === "admin" ? "member" : "admin";
@@ -130,6 +141,11 @@ function Controls({ me, user }: { me: Me; user: User }) {
             ) : null}
           </>
         ) : null}
+        {mayGuard ? (
+          <Button type="button" variant="outline" className={control} onClick={ask("guardrails")}>
+            Edit guardrails
+          </Button>
+        ) : null}
         {mayDelete ? (
           <Button type="button" variant="destructive" className={control} onClick={ask("delete")}>
             Delete
@@ -137,6 +153,25 @@ function Controls({ me, user }: { me: Me; user: User }) {
         ) : null}
       </div>
 
+      {mayGuard ? (
+        <GuardrailsHolderDialog
+          open={asking === "guardrails"}
+          description="The user's guardrails check every call of every key the user owns, after the guardrails of the gateway and of the team."
+          hint={USER_HINT}
+          start={user.guardrail_ids}
+          pending={setGuardrails.isPending}
+          send={(ids) => setGuardrails.mutateAsync({ id, ids })}
+          onCancel={() => {
+            closeUpdate(false);
+            setGuardrails.reset();
+          }}
+          onDone={() => {
+            closeUpdate(false);
+            setGuardrails.reset();
+            toast(HOLDER_SAVED);
+          }}
+        />
+      ) : null}
       <NameDialog
         open={asking === "name"}
         user={user}
@@ -328,6 +363,14 @@ function Details({ id }: { id: number }) {
         <dd>
           <Timestamp value={shown.last_active_at} />
         </dd>
+        {can(session.me, { type: "manageGuardrails" }) ? (
+          <>
+            <dt className="text-muted-foreground">Guardrails</dt>
+            <dd className="min-w-0">
+              <AttachedGuardrails ids={shown.guardrail_ids} />
+            </dd>
+          </>
+        ) : null}
       </dl>
       <Controls me={session.me} user={shown} />
     </>

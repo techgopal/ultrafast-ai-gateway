@@ -841,11 +841,13 @@ stream, or a separate `[REDACTED:EMAIL]`, so the stream is then not exactly the
 whole-text redaction (no key material is involved).
 
 **Which guardrails apply, and in which order.** For every call: the guardrails
-marked *applies to every call* (by name), then those of the route (in the order
-set on the route), then those of the key (in the order set on the key), each
-guardrail once, at its first place. A disabled guardrail is not part of it.
-Attach them in the console (route form, key form) or with `guardrail_ids` on
-`POST/PUT /api/routes`, `POST /api/keys` and `PATCH /api/keys/{id}` (admins
+marked *applies to every call* (by name), then those of the key's team (if it
+has one), then those of the key's owner, then those of the route, then those of
+the key, each in the order set on it, each guardrail once, at its first place.
+A disabled guardrail is not part of it. Attach them in the console (route form,
+key form, the team and user pages) or with `guardrail_ids` on
+`POST/PUT /api/routes`, `POST /api/keys`, `PATCH /api/keys/{id}`,
+`PUT /api/teams/{id}/guardrails` and `PUT /api/users/{id}/guardrails` (admins
 only; on a route `PUT`, leaving the field out keeps the attachment and `[]`
 takes them all off; at most 20 each). All **built-in rules run before any
 external guardrail**, whatever the order; the external ones then run in order,
@@ -854,11 +856,12 @@ over the text the rules left. A rule block means no external guardrail is asked.
 *What attaching does not do.* A guardrail on a key checks the calls made with
 that key, and one on a route checks the calls that go through that route.
 Neither follows a person or a model: a member can make a new key, which has no
-guardrails, and a key that may also call `openai/gpt-4o` directly skips the
-guardrail on the route `support` that serves it. A policy that must hold for
-everyone is a guardrail marked *applies to every call*. To make a route's
-guardrails certain, give people keys whose models list names only the route.
-Attaching guardrails to teams and users is not available yet.
+guardrails of its own, and a key that may also call `openai/gpt-4o` directly
+skips the guardrail on the route `support` that serves it. A guardrail on a
+team or a user follows every key of that team or owned by that user, also a key
+made afterwards. A policy that must hold for everyone is a guardrail marked
+*applies to every call*. To make a route's guardrails certain, give people keys
+whose models list names only the route.
 
 **What is checked.**
 
@@ -1038,6 +1041,7 @@ could not check is not cached. A webhook cannot redact an answer, or the texts o
 an input, so that they exceed 1 MiB.
 
 *Configuration files.* Export and import carry guardrails and their attachments
+(to routes and teams; user attachments are not in the file, as users are not)
 by name, never a URL or secret: an imported external guardrail is created off,
 with a warning, until an admin sets its URL in the console.
 
@@ -1528,8 +1532,8 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   it is: no Unicode normalisation, JSON escapes count as word edges, and the
   PII detectors have known misses (a bare 10-digit phone number, an IBAN not
   checked against a length table, IPv6 without a digit or three colons).
-  Guardrails on a route or a key can be stepped around with a new key or a
-  direct model call (see Which guardrails apply).
+  A guardrail on a route can be stepped around with a direct model call, and
+  one on a single key with another key (see Which guardrails apply).
   A private-key block in a stream swallows everything up to its `END` line;
   an address glued to an `END` line may show its domain. External output
   checks hold the whole stream (and a stream over 32 MiB is not checked when

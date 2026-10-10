@@ -99,6 +99,12 @@ pub struct ModelEntry {
 #[serde(deny_unknown_fields)]
 pub struct TeamEntry {
     pub name: String,
+    /// Names of guardrails, in the order they apply to every key of the
+    /// team. Left out of the file for a team that has none; a file that
+    /// leaves it out does not change what is attached (`[]` takes them all
+    /// off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardrails: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -712,7 +718,18 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
     let mut teams: Vec<TeamEntry> = state
         .teams
         .iter()
-        .map(|(_, name)| TeamEntry { name: name.clone() })
+        .map(|(id, name)| {
+            let attached: Vec<String> = state
+                .team_guardrails
+                .iter()
+                .filter(|(team, _, _)| team == id)
+                .map(|(_, _, guardrail)| guardrail.clone())
+                .collect();
+            TeamEntry {
+                name: name.clone(),
+                guardrails: (!attached.is_empty()).then_some(attached),
+            }
+        })
         .collect();
     teams.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -866,6 +883,10 @@ enum Op {
     },
     CreateTeam {
         name: String,
+    },
+    SetTeamGuardrails {
+        name: String,
+        guardrails: Vec<String>,
     },
     CreateModel {
         entry: ModelEntry,
@@ -1112,7 +1133,11 @@ impl Planner<'_> {
                 continue;
             }
             if state.teams.iter().any(|(_, n)| *n == entry.name) {
-                self.report.unchanged += 1;
+                // A team with guardrails in the file is judged by
+                // `team_guardrails`, once the guardrails are known.
+                if entry.guardrails.is_none() {
+                    self.report.unchanged += 1;
+                }
             } else {
                 let op = Op::CreateTeam {
                     name: entry.name.clone(),
@@ -1234,6 +1259,77 @@ impl Planner<'_> {
                     };
                     self.push(op, "model", reference, changes, false);
                 }
+            }
+        }
+    }
+
+    /// The guardrails of the teams of the file. After `guardrails`, whose
+    /// names they use.
+    fn team_guardrails(&mut self) {
+        let file = self.file;
+        let state = self.state;
+        for (i, entry) in file.teams.iter().enumerate() {
+            let Some(names) = &entry.guardrails else {
+                continue;
+            };
+            let at = format!("teams[{i}].guardrails");
+            let before = self.report.errors.len();
+            if names.len() > MAX_ATTACHED {
+                self.error(at.clone(), format!("at most {MAX_ATTACHED} guardrails"));
+            }
+            for (j, guardrail) in names.iter().enumerate() {
+                if !self.guardrails.contains(guardrail) {
+                    self.error(
+                        format!("{at}[{j}]"),
+                        format!("guardrail '{guardrail}' does not exist"),
+                    );
+                }
+            }
+            if self.report.errors.len() > before {
+                continue;
+            }
+            // The order is kept; a repeat counts where it first is.
+            let mut seen = HashSet::new();
+            let mut wanted = names.clone();
+            wanted.retain(|n| seen.insert(n.clone()));
+            let op = Op::SetTeamGuardrails {
+                name: entry.name.clone(),
+                guardrails: wanted.clone(),
+            };
+            let exists = state.teams.iter().any(|(_, n)| *n == entry.name);
+            if !exists {
+                // Created with the team, which the report already lists.
+                if !wanted.is_empty() {
+                    let item = Item {
+                        kind: "team".to_string(),
+                        name: entry.name.clone(),
+                        changes: vec!["guardrails".to_string()],
+                    };
+                    self.ops.push(Planned {
+                        op,
+                        item,
+                        created: false,
+                    });
+                }
+                continue;
+            }
+            let current = self
+                .current
+                .teams
+                .iter()
+                .find(|t| t.name == entry.name)
+                .and_then(|t| t.guardrails.clone())
+                .unwrap_or_default();
+            if current == wanted {
+                self.report.unchanged += 1;
+            } else {
+                self.push(
+                    op,
+                    "team",
+                    entry.name.clone(),
+                    vec!["guardrails".to_string()],
+                    false,
+                );
             }
         }
     }
@@ -2226,6 +2322,7 @@ fn plan(
     planner.teams();
     planner.models();
     planner.guardrails();
+    planner.team_guardrails();
     planner.prompts();
     planner.routes();
     planner.limits();
@@ -2369,6 +2466,14 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
             Op::CreateTeam { name } => {
                 let id = tx.insert_team(&name).await?;
                 ids.teams.insert(name, id);
+            }
+            Op::SetTeamGuardrails { name, guardrails } => {
+                let team = ids.team(&name)?;
+                let guardrail_ids = guardrails
+                    .iter()
+                    .map(|n| ids.guardrail(n))
+                    .collect::<Result<Vec<_>>>()?;
+                tx.replace_team_guardrails(team, &guardrail_ids).await?;
             }
             Op::CreateModel { entry } => {
                 let provider = ids
