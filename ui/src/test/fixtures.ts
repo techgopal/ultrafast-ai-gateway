@@ -787,7 +787,7 @@ export const logAttempts: Record<number, LogAttempt[]> = {
   3: [{ provider: "openai", model: "gpt-4o", outcome: "cached", status: null, duration_ms: 3 }],
   2: [
     { provider: "openai", model: "gpt-4o", outcome: "fatal", status: 401, duration_ms: 120 },
-    { provider: "anthropic", model: "claude-haiku", outcome: "skipped", status: null, duration_ms: 0 },
+    { provider: "anthropic", model: "claude-haiku", outcome: "skipped", status: null, duration_ms: 0, skipped: "unsupported:audio" },
   ],
   1: [{ provider: "ollama", model: "llama3", outcome: "ok", status: 200, duration_ms: 850 }],
 };

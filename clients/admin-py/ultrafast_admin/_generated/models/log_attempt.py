@@ -7,6 +7,8 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from typing_extensions import Self
 
+from ..types import UNSET, Unset
+
 T = TypeVar("T", bound="LogAttempt")
 
 
@@ -21,6 +23,8 @@ class LogAttempt:
             cache, no provider called).
         provider (str):
         status (int | None): What the provider answered, when it did.
+        skipped (None | str | Unset): Why the target was passed over without a call, when the request could
+            not be expressed for it: `unsupported:<feature>`. Absent otherwise.
     """
 
     duration_ms: int
@@ -28,6 +32,7 @@ class LogAttempt:
     outcome: str
     provider: str
     status: int | None
+    skipped: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,6 +47,12 @@ class LogAttempt:
         status: int | None
         status = self.status
 
+        skipped: None | str | Unset
+        if isinstance(self.skipped, Unset):
+            skipped = UNSET
+        else:
+            skipped = self.skipped
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -53,6 +64,8 @@ class LogAttempt:
                 "status": status,
             }
         )
+        if skipped is not UNSET:
+            field_dict["skipped"] = skipped
 
         return field_dict
 
@@ -74,12 +87,22 @@ class LogAttempt:
 
         status = _parse_status(d.pop("status"))
 
+        def _parse_skipped(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        skipped = _parse_skipped(d.pop("skipped", UNSET))
+
         log_attempt = cls(
             duration_ms=duration_ms,
             model=model,
             outcome=outcome,
             provider=provider,
             status=status,
+            skipped=skipped,
         )
 
         log_attempt.additional_properties = d

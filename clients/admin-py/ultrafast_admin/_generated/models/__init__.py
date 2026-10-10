@@ -97,6 +97,7 @@ from .outcome_view import OutcomeView
 from .outcome_view_redactions import OutcomeViewRedactions
 from .params import Params
 from .params_response_format_type_0 import ParamsResponseFormatType0
+from .password_link_response import PasswordLinkResponse
 from .pii_type import PiiType
 from .playground_chat_answer import PlaygroundChatAnswer
 from .playground_chat_answer_choices_item import PlaygroundChatAnswerChoicesItem
@@ -293,6 +294,7 @@ __all__ = (
     "OutcomeViewRedactions",
     "Params",
     "ParamsResponseFormatType0",
+    "PasswordLinkResponse",
     "PiiType",
     "PlaygroundChatAnswer",
     "PlaygroundChatAnswerChoicesItem",

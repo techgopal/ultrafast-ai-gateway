@@ -245,7 +245,7 @@ export interface paths {
         };
         /**
          * Start signing in with the identity provider
-         * @description A browser navigation, not a call for a script: a GET that needs no session and no CSRF header. Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the limit the browser is sent to `/sign-in?sso_error=rate_limited` and a flow cookie already set is left alone.
+         * @description A browser navigation, not a call for a script: a GET that needs no session and no CSRF header. Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the limit the browser is sent to `/sign-in?sso_error=rate_limited` (with `&next=<return_to>` when that is not `/`) and a flow cookie already set is left alone.
          */
         get: operations["auth_oidc_start"];
         put?: never;
@@ -1160,13 +1160,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/users/{id}/password-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Make a link that lets a user of single sign-on set a password
+         * @description For an active user who signs in through the identity provider and has no password. The link works once and for 24 hours; a new one ends the earlier one. Setting the password keeps the user's single sign-on link and role. Admins only.
+         */
+        post: operations["users_password_link"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         AcceptInviteRequest: {
             password: string;
-            /** @description The token of the invite link. */
+            /** @description The token of the invite link or of the password link. */
             token: string;
         };
         /** @enum {string} */
@@ -1900,6 +1920,11 @@ export interface components {
             outcome: string;
             provider: string;
             /**
+             * @description Why the target was passed over without a call, when the request could
+             *     not be expressed for it: `unsupported:<feature>`. Absent otherwise.
+             */
+            skipped?: string | null;
+            /**
              * Format: int64
              * @description What the provider answered, when it did.
              */
@@ -2290,6 +2315,16 @@ export interface components {
              * @description 0 to 1.
              */
             top_p?: number | null;
+        };
+        PasswordLinkResponse: {
+            /** @description When the link stops working, UTC, `YYYY-MM-DD HH:MM:SS`. */
+            expires_at: string;
+            /**
+             * @description The console path that lets the user set a password: open it on the
+             *     gateway's address. It is shown once, in this answer, and cannot be
+             *     read again. Single use.
+             */
+            url: string;
         };
         /** @enum {string} */
         PiiType: "EMAIL" | "PHONE" | "CREDIT_CARD" | "IBAN" | "US_SSN" | "IPV4" | "IPV6" | "SECRET";
@@ -4155,7 +4190,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The password is set and the user is active. */
+            /** @description The password is set. For an invite the user is active now; for a password link the user's single sign-on link, role and sessions are unchanged. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -4171,7 +4206,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
-            /** @description The invite does not exist, has expired or was used. */
+            /** @description The link does not exist, has expired or was used, or its user can no longer use it. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -4420,7 +4455,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Signed in: the session cookie is set and the browser is sent to the path given at the start (`/` when it was not a console path). Not signed in: the browser is sent to `/sign-in?sso_error=<code>` with code `state`, `expired`, `idp`, `token`, `not_allowed`, `disabled`, `rate_limited` or `config`. The flow cookie is cleared either way. */
+            /** @description Signed in: the session cookie is set and the browser is sent to the path given at the start (`/` when it was not a console path). Not signed in: the browser is sent to `/sign-in?sso_error=<code>` (and `&next=<the page given at the start>` when that was not `/`) with code `state`, `expired`, `idp`, `token`, `not_allowed`, `disabled`, `rate_limited` or `config`. The flow cookie is cleared either way. */
             302: {
                 headers: {
                     /** @description The console path, or the sign-in page with the reason. */
@@ -10021,6 +10056,77 @@ export interface operations {
                 };
             };
             /** @description `not_invited`: the user has accepted an invite already. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    users_password_link: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the user. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The link, shown once. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PasswordLinkResponse"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `not_sso_user`: the user signs in with a password. `has_password`: the user has one. `not_active`: the user is not active. */
             409: {
                 headers: {
                     [name: string]: unknown;
