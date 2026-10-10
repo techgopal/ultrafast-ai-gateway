@@ -1,5 +1,6 @@
 // The parts the sign-in, setup and invite pages share. The error of the form
 // and the focus after a failed submit are the ones every form of the console has.
+import { Brand } from "@/components/Brand";
 import type { ComponentProps, ReactNode } from "react";
 import { Field as SharedField } from "@/components/Field";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,7 +23,8 @@ interface AuthPageProps {
 /** A page for somebody who is not signed in: one card in the middle. */
 export function AuthPage({ title, description, children }: AuthPageProps) {
   return (
-    <main className="flex min-h-svh flex-col items-center justify-center bg-background p-4">
+    <main className="flex min-h-svh flex-col items-center justify-center gap-6 bg-background p-4">
+      <Brand className="text-lg" />
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle>

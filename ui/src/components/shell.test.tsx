@@ -79,6 +79,8 @@ describe("sidebar", () => {
       .getAllByRole("link")
       .map((el) => [el.textContent, el.getAttribute("href")]);
     expect(hrefs).toEqual([
+      // The brand at the top goes home too.
+      ["Ultrafast", "/"],
       ["Overview", "/"],
       ["Logs", "/logs"],
       ["Alerts", "/alerts"],

@@ -1,5 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { LogOutIcon } from "lucide-react";
+import { Brand } from "@/components/Brand";
 import { control } from "@/components/classes";
 import { ROLE_NAMES } from "@/components/RoleBadge";
 import type { ShellUser } from "@/components/shell-context";
@@ -12,6 +13,7 @@ import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
+  SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -143,6 +145,11 @@ export function AppSidebar({ user, onSignOut }: AppSidebarProps) {
   return (
     <Sidebar>
       <nav aria-label="Main" className="flex min-h-0 flex-1 flex-col">
+        <SidebarHeader className="px-4 py-3">
+          <Link to="/" aria-label="Ultrafast, go to Overview" className="flex min-h-11 w-fit items-center rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+            <Brand />
+          </Link>
+        </SidebarHeader>
         <SidebarContent>
           {sections.map((section) => (
             <SidebarGroup key={section.label}>

@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { AppSidebar } from "@/components/AppSidebar";
 import { InShell, type ShellUser } from "@/components/shell-context";
 import { Button } from "@/components/ui/button";
+import { BrandMark } from "@/components/Brand";
 import {
   SidebarProvider,
   SidebarTrigger,
@@ -60,6 +61,7 @@ function TopBar() {
       >
         <MenuIcon aria-hidden="true" />
       </Button>
+      <BrandMark className="size-6" />
       <span className="truncate font-medium">{title}</span>
     </header>
   );
