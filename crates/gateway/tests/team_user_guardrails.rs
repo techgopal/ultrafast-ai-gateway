@@ -391,3 +391,23 @@ async fn a_new_team_of_a_file_gets_its_guardrails() {
         .unwrap();
     assert_eq!(fresh["guardrails"], json!(["a"]));
 }
+
+#[tokio::test]
+async fn a_personal_key_is_covered_by_the_teams_of_its_owner() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let g = make_id(&org, &maya, "g", false).await;
+    let h = make_id(&org, &maya, "h", false).await;
+    put(&org, &maya, &team_path(org.platform), json!([g])).await;
+    put(&org, &maya, &team_path(org.research), json!([h, g])).await;
+
+    // Arjun is in Platform and Research; his key has no team.
+    let personal = new_key(&org, &maya, "p", org.arjun, None).await;
+    assert_eq!(effective(&org, &personal, None).await, [g, h]);
+    // With a team on the key, that team comes first, then his others.
+    let in_research = new_key(&org, &maya, "r", org.arjun, Some(org.research)).await;
+    assert_eq!(effective(&org, &in_research, None).await, [h, g]);
+    // A key without an owner in no team has none of them.
+    let priya = new_key(&org, &maya, "q", org.priya, None).await;
+    assert!(effective(&org, &priya, None).await.is_empty());
+}
