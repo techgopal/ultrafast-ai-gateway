@@ -52,7 +52,7 @@ tracing-subscriber.workspace = true
 utoipa.workspace = true
 utoipa-axum.workspace = true
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_lc_rs"] }
-base64 = "0.22"
+base64 = "0.23"
 
 [dev-dependencies]
 ultrafast-gateway = { path = ".", features = ["test-support"] }
