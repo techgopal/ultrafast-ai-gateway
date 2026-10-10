@@ -5,6 +5,12 @@ Rust client for an Ultrafast gateway, or for a provider directly. Built on
 the gateway uses; error classification and stream decoding are shared with the
 other clients) and `reqwest` with rustls.
 
+```sh
+cargo add ultrafast-client
+```
+
+The crates appear on crates.io from v2.0.0-beta.4.
+
 ```rust
 use futures::StreamExt;
 use ultrafast_client::{ChatRequest, Client, EmbeddingsRequest, Target};

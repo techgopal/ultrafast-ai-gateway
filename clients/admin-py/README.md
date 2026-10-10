@@ -6,8 +6,10 @@ settings, usage, logs, audit, backup and configuration. Synchronous and
 asynchronous calls, generated from `openapi/admin.json`.
 
 ```sh
-pip install ./clients/admin-py   # Python 3.11 or newer; not published to PyPI, build from source
+pip install --pre ultrafast-admin   # Python 3.11 or newer
 ```
+
+The package appears on PyPI from v2.0.0-beta.4. Before that, `pip install ./clients/admin-py` builds it from a checkout.
 
 Create an access token in the console (Account, Access tokens). The playground
 operations (`api.playground`) and `tokens_create` refuse access tokens by

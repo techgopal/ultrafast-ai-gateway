@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Clients on the registries.** `.github/workflows/publish.yml` (tag `v*`)
+  publishes `ultrafast-translate` and `ultrafast-client` to crates.io,
+  `ultrafast` and `ultrafast-admin` to PyPI (trusted publishing, no stored
+  tokens) and `@ultrafast/client` and `@ultrafast/admin` to npm (with
+  provenance). It stays a dry run until the repository variable
+  `PUBLISH_LIVE` is `true`; the one-time owner steps are in
+  `docs/RELEASING.md`. Package metadata (description, license, repository,
+  homepage, keywords, readme) is complete, and the READMEs show the install
+  commands. The packages appear from v2.0.0-beta.4.
+
 ## [2.0.0-beta.3] - 2026-10-10
 
 Phase 2: tracing and alerts, single sign-on, optional PostgreSQL, guardrails,

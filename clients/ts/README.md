@@ -9,6 +9,12 @@ APIs in `src/`: it runs in Node 20+, Bun, Deno and browsers with no setup, and o
 edge runtimes that forbid compiling WebAssembly at run time with one extra call
 (see below).
 
+```sh
+npm i @ultrafast/client@beta
+```
+
+The package appears on npm from v2.0.0-beta.4.
+
 ```ts
 import { Client, gateway } from "@ultrafast/client";
 

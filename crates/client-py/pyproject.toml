@@ -10,7 +10,13 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 license-files = ["LICENSE"]
+keywords = ["llm", "gateway", "openai", "anthropic"]
 classifiers = ["Programming Language :: Rust", "Programming Language :: Python :: 3"]
+
+[project.urls]
+Homepage = "https://github.com/techgopal/ultrafast-ai-gateway"
+Repository = "https://github.com/techgopal/ultrafast-ai-gateway"
+Issues = "https://github.com/techgopal/ultrafast-ai-gateway/issues"
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-asyncio"]
