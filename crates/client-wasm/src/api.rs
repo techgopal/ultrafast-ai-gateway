@@ -9,7 +9,9 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use ultrafast_translate::classify::{classify_answer, parse_retry_after, Classified, ErrorKind};
 use ultrafast_translate::embeddings::{self, EmbeddingsRequest};
-use ultrafast_translate::ingress::openai::{parse_messages, parse_tool_choice, parse_tools};
+use ultrafast_translate::ingress::openai::{
+    parse_messages, parse_response_format, parse_tool_choice, parse_tools,
+};
 use ultrafast_translate::provider::{
     self, HttpRequest, ProviderKind, StreamDecoder, Target as WireTarget,
 };
@@ -204,6 +206,9 @@ struct ChatIn {
     tool_choice: Option<Value>,
     #[serde(default)]
     parallel_tool_calls: Option<bool>,
+    /// OpenAI's `response_format` object, checked by the gateway's parser.
+    #[serde(default)]
+    response_format: Option<Value>,
     #[serde(default)]
     max_tokens: Option<u32>,
     #[serde(default)]
@@ -278,6 +283,11 @@ pub fn build_request(target_json: &str, request_json: &str) -> Result<String, Fa
             }
         },
         parallel_tool_calls: r.parallel_tool_calls,
+        response_format: match r.response_format {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(parse_response_format(&v).map_err(|e| classified(e, None))?),
+        },
+        reasoning_effort: None,
     };
     let http = provider::build_request(&target, &req).map_err(|e| classified(e, None))?;
     http_json(http, tag_header, r.stream)

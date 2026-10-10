@@ -51,6 +51,16 @@ impl TargetState {
     }
 }
 
+/// A change of the breaker that alerts care about. Open to half open is
+/// not one: nothing was learned by waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transition {
+    /// Closed or half open to open.
+    Opened,
+    /// Half open to closed: the trial call succeeded.
+    Closed,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Phase {
     Closed,
@@ -125,14 +135,15 @@ impl Breaker {
         status: Option<u16>,
         now: Instant,
         s: &BreakerSettings,
-    ) {
+    ) -> Option<Transition> {
         if ok {
             self.successes += 1;
             if matches!(self.phase, Phase::HalfOpen { .. }) {
                 self.phase = Phase::Closed;
                 self.window.clear();
+                return Some(Transition::Closed);
             }
-            return;
+            return None;
         }
         if !retryable_failure {
             // A trial that got a rejection of the request was answered, but
@@ -140,7 +151,7 @@ impl Breaker {
             if matches!(self.phase, Phase::HalfOpen { .. }) {
                 self.phase = Phase::HalfOpen { trial_until: None };
             }
-            return;
+            return None;
         }
         self.failures += 1;
         self.last_failure_at = Some(store::now());
@@ -150,6 +161,7 @@ impl Breaker {
                 self.phase = Phase::Open {
                     until: now + s.open,
                 };
+                Some(Transition::Opened)
             }
             Phase::Closed => {
                 self.window.push_back(now);
@@ -165,10 +177,12 @@ impl Breaker {
                         until: now + s.open,
                     };
                     self.window.clear();
+                    return Some(Transition::Opened);
                 }
+                None
             }
             // A late answer of a call that began before it opened.
-            Phase::Open { .. } => {}
+            Phase::Open { .. } => None,
         }
     }
 
@@ -331,5 +345,38 @@ mod tests {
         assert!(b.last_failure_at.is_some());
         b.report(false, true, Some(429), t0, &S);
         assert_eq!(b.last_status, Some(429));
+    }
+
+    #[test]
+    fn each_change_is_reported_exactly_once() {
+        let t0 = Instant::now();
+        let mut b = Breaker::new();
+        assert_eq!(b.report(true, false, Some(200), t0, &S), None);
+        assert_eq!(b.report(false, true, Some(500), t0, &S), None);
+        assert_eq!(b.report(false, true, Some(500), secs(t0, 1), &S), None);
+        assert_eq!(
+            b.report(false, true, Some(500), secs(t0, 2), &S),
+            Some(Transition::Opened),
+            "the third failure opens it"
+        );
+        // A late answer of a call that began before it opened: no change.
+        assert_eq!(b.report(false, true, Some(500), secs(t0, 3), &S), None);
+        assert_eq!(b.report(true, false, Some(200), secs(t0, 3), &S), None);
+        // Waiting is not a change that matters.
+        assert!(b.allow(secs(t0, 40), &S));
+        // A failed trial opens it again: a change.
+        assert_eq!(
+            b.report(false, true, Some(500), secs(t0, 40), &S),
+            Some(Transition::Opened)
+        );
+        assert!(b.allow(secs(t0, 80), &S));
+        // A rejected trial proves nothing.
+        assert_eq!(b.report(false, false, Some(400), secs(t0, 80), &S), None);
+        assert!(b.allow(secs(t0, 80), &S));
+        assert_eq!(
+            b.report(true, false, Some(200), secs(t0, 81), &S),
+            Some(Transition::Closed)
+        );
+        assert_eq!(b.report(true, false, Some(200), secs(t0, 82), &S), None);
     }
 }

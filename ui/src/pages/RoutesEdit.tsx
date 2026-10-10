@@ -23,6 +23,7 @@ import {
   useSubmit,
 } from "@/components/form";
 import { FormError } from "@/components/FormError";
+import { GuardrailPicker, ROUTE_HINT } from "@/components/GuardrailPicker";
 import { NotAvailableContent } from "@/components/NotAvailableContent";
 import { NotFoundContent } from "@/components/NotFoundContent";
 import { PageHeader } from "@/components/PageHeader";
@@ -41,6 +42,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { attachmentOf } from "@/lib/guardrails";
 import { idOf } from "@/lib/id";
 import { sortModels } from "@/lib/models";
 import {
@@ -145,7 +147,10 @@ function Editor({ route }: EditorProps) {
   const pending = create.isPending || update.isPending;
 
   const form = useForm({
-    defaultValues: route === null ? emptyForm() : formOf(route),
+    defaultValues: {
+      ...(route === null ? emptyForm() : formOf(route)),
+      guardrail_ids: route?.guardrails.map((one) => one.id) ?? [],
+    },
     onSubmit: async ({ value }) => {
       if (hasProblems(check(value, offered))) {
         setAttempted(true);
@@ -153,6 +158,12 @@ function Editor({ route }: EditorProps) {
         return;
       }
       const body = requestOf(value, offered);
+      // Only an admin edits a route; the guardrails are left alone unless they were changed.
+      const attached = attachmentOf(
+        value.guardrail_ids,
+        route === null ? null : route.guardrails.map((one) => one.id),
+      );
+      if (attached !== undefined) body.guardrail_ids = attached;
       try {
         if (route === null) {
           await create.mutateAsync(body);
@@ -339,6 +350,26 @@ function Editor({ route }: EditorProps) {
           )}
         </form.Field>
       ) : null}
+
+      <form.Field name="guardrail_ids">
+        {(field) => (
+          <Field
+            group
+            label="Guardrails"
+            name={field.name}
+            hint={ROUTE_HINT}
+            error={failure.fieldError(field.name)}
+          >
+            {(wiring) => (
+              <GuardrailPicker
+                wiring={wiring}
+                value={field.state.value}
+                onChange={field.handleChange}
+              />
+            )}
+          </Field>
+        )}
+      </form.Field>
 
       <section className="flex flex-col gap-4">
         <h2 className="text-base font-medium">

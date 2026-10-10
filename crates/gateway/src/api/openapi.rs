@@ -13,6 +13,7 @@ use utoipa::openapi::Required;
 use utoipa::{Modify, OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 
+use super::alerts::{ChannelView, EventView, RuleView};
 use super::auth::{UserTeamView, UserView};
 use super::keys::KeyView;
 use super::logs::LogView;
@@ -22,6 +23,13 @@ use super::usage::UsageRow;
 use super::{CSRF_HEADER, SESSION_COOKIE};
 use crate::routing::TargetHealth;
 use crate::store::{AuditRow, MemberDetail, TeamSummary};
+
+// A body that is bytes, not JSON: `type: string, format: binary`, so that
+// generated clients return the bytes (a `Vec<u8>` would be an array of
+// integers).
+#[derive(ToSchema)]
+#[schema(value_type = String, format = Binary)]
+pub struct BinaryBody(#[allow(dead_code)] Vec<u8>);
 
 /// Every error of `/api` has this shape.
 #[derive(ToSchema)]
@@ -45,6 +53,21 @@ pub struct ApiErrorDetail {
 pub struct SetupStatus {
     /// True while no user exists.
     pub needs_setup: bool,
+}
+
+#[derive(ToSchema)]
+pub struct SignInMethods {
+    /// Always true: passwords are never turned off.
+    pub password: bool,
+    /// The single sign-on provider, when it is on; `null` otherwise.
+    #[schema(required)]
+    pub oidc: Option<SignInMethodOidc>,
+}
+
+#[derive(ToSchema)]
+pub struct SignInMethodOidc {
+    /// The name for the sign-in button.
+    pub label: String,
 }
 
 #[derive(ToSchema)]
@@ -128,6 +151,36 @@ pub struct CreatedToken {
 }
 
 #[derive(ToSchema)]
+pub struct ChannelList {
+    pub channels: Vec<ChannelView>,
+}
+
+#[derive(ToSchema)]
+pub struct RuleList {
+    pub rules: Vec<RuleView>,
+}
+
+#[derive(ToSchema)]
+pub struct EventList {
+    pub events: Vec<EventView>,
+}
+
+#[derive(ToSchema)]
+pub struct CreatedChannel {
+    pub channel: ChannelView,
+    /// The signing secret of the channel. It is shown once, in this answer,
+    /// and cannot be read again.
+    pub secret: String,
+}
+
+#[derive(ToSchema)]
+pub struct RotatedSecret {
+    /// The new signing secret. It is shown once, in this answer, and cannot
+    /// be read again.
+    pub secret: String,
+}
+
+#[derive(ToSchema)]
 pub struct AuditPage {
     pub entries: Vec<AuditRow>,
 }
@@ -178,6 +231,9 @@ pub struct RoutingHealth {
         (name = "playground", description = "Chat calls made from the console for the signed-in user."),
         (name = "config", description = "The configuration as a file: export and import."),
         (name = "backup", description = "A copy of the database."),
+        (name = "alerts", description = "Alert channels, rules and the events they raised."),
+        (name = "guardrails", description = "Guardrails: rules and external hooks that block, redact or flag the text of calls."),
+        (name = "prompts", description = "Prompt templates: versioned messages with {{variables}}, used by name on /v1/chat/completions and /v1/responses."),
     )
 )]
 struct AdminApi;
@@ -253,16 +309,19 @@ pub fn spec() -> utoipa::openapi::OpenApi {
 mod tests {
     use std::collections::BTreeSet;
 
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     use super::*;
 
-    /// Every route of `api::router`, which has 61. Its fallbacks are not
+    /// Every route of `api::router`, which has 88. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 61] = [
+    const ROUTES: [(&str, &str); 96] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
+        ("GET", "/api/auth/methods"),
+        ("GET", "/api/auth/oidc/start"),
+        ("GET", "/api/auth/oidc/callback"),
         ("POST", "/api/auth/logout"),
         ("GET", "/api/auth/me"),
         ("POST", "/api/auth/accept-invite"),
@@ -308,6 +367,9 @@ mod tests {
         ("GET", "/api/routing/health"),
         ("GET", "/api/settings"),
         ("PATCH", "/api/settings"),
+        ("GET", "/api/settings/oidc"),
+        ("PUT", "/api/settings/oidc"),
+        ("POST", "/api/settings/oidc/test"),
         ("GET", "/api/limits"),
         ("PUT", "/api/limits"),
         ("DELETE", "/api/limits/{id}"),
@@ -317,10 +379,39 @@ mod tests {
         ("GET", "/api/logs"),
         ("GET", "/api/logs/{id}"),
         ("GET", "/api/usage"),
+        ("GET", "/api/playground/config"),
         ("POST", "/api/playground/chat"),
+        ("POST", "/api/playground/images"),
+        ("POST", "/api/playground/transcriptions"),
+        ("POST", "/api/playground/speech"),
         ("GET", "/api/config/export"),
         ("POST", "/api/config/import"),
         ("GET", "/api/backup"),
+        ("GET", "/api/alerts/channels"),
+        ("POST", "/api/alerts/channels"),
+        ("PATCH", "/api/alerts/channels/{id}"),
+        ("DELETE", "/api/alerts/channels/{id}"),
+        ("POST", "/api/alerts/channels/{id}/rotate-secret"),
+        ("POST", "/api/alerts/channels/{id}/test"),
+        ("GET", "/api/alerts/rules"),
+        ("POST", "/api/alerts/rules"),
+        ("PATCH", "/api/alerts/rules/{id}"),
+        ("DELETE", "/api/alerts/rules/{id}"),
+        ("GET", "/api/alerts/events"),
+        ("GET", "/api/guardrails"),
+        ("POST", "/api/guardrails"),
+        ("GET", "/api/guardrails/{id}"),
+        ("PATCH", "/api/guardrails/{id}"),
+        ("DELETE", "/api/guardrails/{id}"),
+        ("POST", "/api/guardrails/{id}/rotate-secret"),
+        ("POST", "/api/guardrails/test"),
+        ("GET", "/api/prompts"),
+        ("POST", "/api/prompts"),
+        ("GET", "/api/prompts/{id}"),
+        ("DELETE", "/api/prompts/{id}"),
+        ("POST", "/api/prompts/{id}/versions"),
+        ("GET", "/api/prompts/{id}/versions/{version}"),
+        ("POST", "/api/prompts/{id}/render"),
     ];
 
     const SECRET_REQUEST_FIELDS: [&str; 5] = [
@@ -402,6 +493,49 @@ mod tests {
     }
 
     #[test]
+    fn generator_friendly_shapes() {
+        let spec = spec_json();
+        let schemas = &spec["components"]["schemas"];
+        // The keywords variant of a guardrail matcher has a name.
+        assert_eq!(
+            schemas["Matcher"]["oneOf"][0]["properties"]["keywords"]["$ref"],
+            "#/components/schemas/KeywordsMatcher"
+        );
+        // An alert rule's params are an open object.
+        for (schema, optional) in [
+            ("CreateRuleRequest", false),
+            ("UpdateRuleRequest", true),
+            ("RuleView", false),
+        ] {
+            let params = &schemas[schema]["properties"]["params"];
+            assert_eq!(
+                params["type"],
+                if optional {
+                    json!(["object", "null"])
+                } else {
+                    json!("object")
+                },
+                "{schema}"
+            );
+            assert!(
+                params["additionalProperties"].as_object().is_some()
+                    || params["additionalProperties"] == json!(true),
+                "{schema}.params is not open"
+            );
+        }
+        // Downloads are bytes, also under application/octet-stream (the one
+        // binary type the Python generator reads).
+        for (path, method) in [("/api/backup", "get"), ("/api/playground/speech", "post")] {
+            let content = &spec["paths"][path][method]["responses"]["200"]["content"];
+            for (media, body) in content.as_object().unwrap() {
+                assert_eq!(body["schema"]["type"], "string", "{path} {media}");
+                assert_eq!(body["schema"]["format"], "binary", "{path} {media}");
+            }
+            assert!(content["application/octet-stream"].is_object(), "{path}");
+        }
+    }
+
+    #[test]
     fn playground_tools_and_calls_are_described_and_free_form() {
         let spec = spec_json();
         let schemas = &spec["components"]["schemas"];
@@ -431,7 +565,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 61);
+        assert_eq!(routes.len(), 96);
         assert_eq!(documented, routes);
     }
 
@@ -453,7 +587,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 61);
+        assert_eq!(ids.len(), 96);
     }
 
     #[test]
@@ -519,12 +653,13 @@ mod tests {
         let spec = spec_json();
         for (method, path, operation) in operations(&spec) {
             for (status, response) in operation["responses"].as_object().unwrap() {
-                if status.starts_with('2') {
+                // A redirect of a browser navigation has no body.
+                if status.starts_with('2') || status.starts_with('3') {
                     continue;
                 }
                 let schema = &response["content"]["application/json"]["schema"];
                 // The playground's errors are of two shapes, in one schema.
-                let shared = if path == "/api/playground/chat" {
+                let shared = if path.starts_with("/api/playground/") {
                     "#/components/schemas/PlaygroundErrorBody"
                 } else if path == "/api/config/import" && status == "422" {
                     // The report of a file that has errors.

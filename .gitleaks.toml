@@ -18,3 +18,8 @@ paths = [
 description = "Example tokens in the v1 README (commit 8a399c8, v1 code since removed)"
 targetRules = ["curl-auth-header"]
 commits = ["8a399c86fd4f3b2e953885e55bc2137230591be6"]
+
+[[allowlists]]
+description = "Fake credentials the guardrail detector tests must recognise (test fixtures, not credentials)"
+targetRules = ["private-key", "slack-legacy-workspace-token"]
+paths = ['''crates/gateway/src/guardrails/tests\.rs''']

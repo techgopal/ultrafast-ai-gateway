@@ -155,3 +155,41 @@ describe("message checks", () => {
     }
   });
 });
+
+describe("response format", () => {
+  it("sends response_format in the OpenAI shape", async () => {
+    const { fetch, seen } = fakeFetch(json(200, TOOL_ANSWER));
+    const schema = { type: "object", properties: { a: { type: "string" } } };
+    await gw(fetch).chat({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "x" }],
+      responseFormat: { type: "json_schema", jsonSchema: { name: "n", schema, strict: true, description: "d" } },
+    });
+    expect(JSON.parse(seen[0]!.body).response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "n", schema, strict: true, description: "d" },
+    });
+    await gw(fetch).chat({ model: "gpt-4o", messages: [{ role: "user", content: "x" }], responseFormat: { type: "json_object" } });
+    expect(JSON.parse(seen[1]!.body).response_format).toEqual({ type: "json_object" });
+    await gw(fetch).chat({ model: "gpt-4o", messages: [{ role: "user", content: "x" }] });
+    expect(JSON.parse(seen[2]!.body)).not.toHaveProperty("response_format");
+  });
+
+  it("uses Anthropic's output_config for a direct provider", async () => {
+    const { fetch, seen } = fakeFetch(json(200, { id: "m", model: "c", content: [{ type: "text", text: "{}" }], usage: { input_tokens: 1, output_tokens: 1 } }));
+    const c = new Client(anthropic({ key: KEY }), { fetch });
+    await c.chat({
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "x" }],
+      responseFormat: { type: "json_schema", jsonSchema: { name: "n", schema: { type: "object" } } },
+    });
+    expect(JSON.parse(seen[0]!.body).output_config).toEqual({ format: { type: "json_schema", schema: { type: "object" } } });
+  });
+
+  it("refuses an unknown type", async () => {
+    const { fetch } = fakeFetch(json(200, TOOL_ANSWER));
+    await expect(
+      gw(fetch).chat({ model: "m", messages: [{ role: "user", content: "x" }], responseFormat: { type: "xml" } as never }),
+    ).rejects.toBeInstanceOf(UltrafastError);
+  });
+});

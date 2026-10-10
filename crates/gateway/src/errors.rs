@@ -67,6 +67,23 @@ impl Shape {
         response
     }
 
+    /// A call refused because a guardrail blocked its input: 400, with the
+    /// code `guardrail_blocked` for OpenAI callers (Anthropic's error body has
+    /// no code). The message names the guardrail, never what matched.
+    pub fn guardrail_blocked(self, guardrail: &str) -> Response {
+        let message = format!("Blocked by guardrail '{guardrail}'.");
+        match self {
+            Shape::OpenAi => {
+                let mut body = render_error("invalid_request_error", &message);
+                body["error"]["code"] = "guardrail_blocked".into();
+                (StatusCode::BAD_REQUEST, Json(body)).into_response()
+            }
+            Shape::Anthropic => {
+                self.error(StatusCode::BAD_REQUEST, "invalid_request_error", &message)
+            }
+        }
+    }
+
     pub fn translate_error(self, e: &TranslateError) -> Response {
         let (status, kind, message) = caller_message(e);
         self.error(status, kind, &message)

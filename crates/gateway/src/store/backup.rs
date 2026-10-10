@@ -4,7 +4,12 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 
+use super::dialect::Dialected;
 use super::Store;
+
+/// What is answered where a backup of a PostgreSQL database is asked for:
+/// the gateway does not copy it.
+pub const POSTGRES_BACKUP_TEXT: &str = "Use pg_dump to back up a Postgres database.";
 
 impl Store {
     /// The directory the database file is in; `None` for an in-memory
@@ -20,6 +25,9 @@ impl Store {
     /// the master key, which is not in it: provider credentials in the copy
     /// are unreadable without that key.
     pub async fn backup_to(&self, path: &Path) -> Result<()> {
+        if self.dialect != super::Dialect::Sqlite {
+            bail!("{POSTGRES_BACKUP_TEXT}");
+        }
         if self.dir.is_none() {
             // SQLite writes nothing for an in-memory database.
             bail!("an in-memory database cannot be backed up");
@@ -34,7 +42,8 @@ impl Store {
         // readable by others while it is written (`VACUUM INTO` takes an
         // empty file that exists).
         create_private(path)?;
-        let done = sqlx::query("VACUUM INTO ?")
+        let done = self
+            .q("VACUUM INTO ?")
             .bind(target)
             .execute(self.pool())
             .await;

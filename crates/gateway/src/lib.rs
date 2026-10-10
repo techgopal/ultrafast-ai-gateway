@@ -1,6 +1,7 @@
 //! Ultrafast gateway library.
 
 pub mod access;
+pub mod alerts;
 pub mod api;
 pub mod app;
 pub mod auth;
@@ -9,11 +10,14 @@ pub mod cache;
 pub mod catalog;
 pub mod config;
 pub mod errors;
+pub mod guardrails;
 pub mod identity;
 pub mod limits;
 pub mod logs;
 pub mod metrics;
+pub mod otel;
 pub mod portable;
+pub mod prompts;
 pub mod proxy;
 pub mod routing;
 pub mod secrets;

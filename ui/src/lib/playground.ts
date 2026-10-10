@@ -26,6 +26,13 @@ export type ToolDef = {
   function: { name: string } & Record<string, unknown>;
 };
 
+/** What the answer must look like, as the request names it. */
+export type ResponseFormatBody =
+  | { type: "json_object" }
+  | { type: "json_schema"; json_schema: { name: string; schema: Record<string, unknown> } };
+
+export type ResponseFormatKind = "text" | "json_object" | "json_schema";
+
 export type ToolChoice = "none" | "required" | { type: "function"; function: { name: string } };
 
 /** The parameters as they are typed. */
@@ -36,14 +43,23 @@ export interface Params {
   stop: string;
 }
 
+/** A prompt template, as a call names it: its name, a version when one is chosen, and the value of each variable. */
+export interface PromptBody {
+  id: string;
+  version?: number;
+  variables: Record<string, string>;
+}
+
 /** The parameters that were given, as the request names them. */
 export interface ParamValues {
+  prompt?: PromptBody;
   max_tokens?: number;
   temperature?: number;
   top_p?: number;
   stop?: string[];
   tools?: ToolDef[];
   tool_choice?: ToolChoice;
+  response_format?: ResponseFormatBody;
 }
 
 export interface Checked {
@@ -111,7 +127,9 @@ export type WireMessage =
   | { role: "tool"; content: string; tool_call_id: string };
 
 export interface ChatRequestBody {
-  model: string;
+  /** Left out when the template of `prompt` names the model. */
+  model?: string;
+  prompt?: PromptBody;
   stream: true;
   messages: WireMessage[];
   max_tokens?: number;
@@ -120,6 +138,7 @@ export interface ChatRequestBody {
   stop?: string[];
   tools?: ToolDef[];
   tool_choice?: ToolChoice;
+  response_format?: ResponseFormatBody;
 }
 
 function wireOf(message: Message): WireMessage {
@@ -178,6 +197,29 @@ export function checkTools(text: string): CheckedTools {
   return { tools: parsed as ToolDef[], names, error: undefined };
 }
 
+export const SCHEMA_INVALID = 'The schema must be a JSON object, such as {"type":"object"}.';
+
+export interface CheckedFormat {
+  /** What to send; nothing for plain text. */
+  format: ResponseFormatBody | undefined;
+  error: string | undefined;
+}
+
+/** Reads the chosen response format. Text is the default and is not sent. */
+export function checkResponseFormat(kind: ResponseFormatKind, schemaText: string): CheckedFormat {
+  if (kind === "text") return { format: undefined, error: undefined };
+  if (kind === "json_object") return { format: { type: "json_object" }, error: undefined };
+  const refused: CheckedFormat = { format: undefined, error: SCHEMA_INVALID };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(schemaText);
+  } catch {
+    return refused;
+  }
+  if (!isRecord(parsed)) return refused;
+  return { format: { type: "json_schema", json_schema: { name: "response", schema: parsed } }, error: undefined };
+}
+
 /** The request of the playground: always a stream. */
 export function requestBody(
   model: string,
@@ -187,7 +229,7 @@ export function requestBody(
 ): ChatRequestBody {
   const prompt = system.trim();
   return {
-    model,
+    ...(model === "" ? {} : { model }),
     stream: true,
     ...values,
     messages: [
@@ -236,6 +278,8 @@ export interface Chunk {
   model?: string;
   error?: string;
   done?: true;
+  /** A guardrail ended the answer (`finish_reason` is `content_filter`). */
+  blocked?: true;
 }
 
 /** One piece of a tool call in a stream; the id and the name come in its first piece only. */
@@ -273,6 +317,8 @@ export class ToolCallAssembler {
 }
 
 export const BROKE_OFF = "The answer broke off.";
+/** A guardrail ended the answer. The stream does not name it: the log of the call does. */
+export const STOPPED_BY_GUARDRAIL = "A guardrail stopped this answer.";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -313,6 +359,7 @@ export function chunkOf(data: string): Chunk {
     }
     if (deltas.length > 0) chunk.toolCalls = deltas;
   }
+  if (isRecord(first) && first.finish_reason === "content_filter") chunk.blocked = true;
   const { usage } = body;
   if (isRecord(usage) && typeof usage.prompt_tokens === "number" && typeof usage.completion_tokens === "number") {
     chunk.usage = { input: usage.prompt_tokens, output: usage.completion_tokens };
@@ -380,4 +427,138 @@ export function retryText(seconds: number | null): string {
   if (seconds < 60) return ` Try again in ${String(seconds)} ${seconds === 1 ? "second" : "seconds"}.`;
   const minutes = Math.ceil(seconds / 60);
   return ` Try again in ${String(minutes)} ${minutes === 1 ? "minute" : "minutes"}.`;
+}
+
+// Images mode: one prompt, a size and a number of images.
+
+/** The most images one playground call asks for. */
+export const MAX_IMAGES = 4;
+export const IMAGE_COUNT_INVALID = `The number of images must be a whole number from 1 to ${String(MAX_IMAGES)}.`;
+
+/** The sizes offered; `default` sends none, and the provider decides. */
+export const IMAGE_SIZES = ["default", "1024x1024", "1536x1024", "1024x1536"] as const;
+export type ImageSize = (typeof IMAGE_SIZES)[number];
+
+export interface ImageRequestBody {
+  model: string;
+  prompt: string;
+  n?: number;
+  size?: string;
+}
+
+export function checkImageCount(text: string): { n?: number; error?: string } {
+  const typed = text.trim();
+  if (!/^\d+$/.test(typed)) return { error: IMAGE_COUNT_INVALID };
+  const n = Number(typed);
+  return n >= 1 && n <= MAX_IMAGES ? { n } : { error: IMAGE_COUNT_INVALID };
+}
+
+export function imageRequestBody(model: string, prompt: string, n: number, size: ImageSize): ImageRequestBody {
+  return { model, prompt, n, ...(size === "default" ? {} : { size }) };
+}
+
+const IMAGE_FORMATS = ["png", "jpeg", "webp"];
+
+/**
+ * The images of an answer as `data:` URLs. Only `b64_json` images are shown:
+ * a `url` would make the browser load a page of another origin.
+ */
+export function imageUrlsOf(answer: { data: readonly object[]; output_format?: string }): string[] {
+  const format = IMAGE_FORMATS.includes(answer.output_format ?? "") ? (answer.output_format ?? "png") : "png";
+  const urls: string[] = [];
+  for (const item of answer.data) {
+    const b64 = (item as { b64_json?: unknown }).b64_json;
+    if (typeof b64 === "string" && /^[A-Za-z0-9+/=\s]+$/.test(b64)) {
+      urls.push(`data:image/${format};base64,${b64.replace(/\s+/g, "")}`);
+    }
+  }
+  return urls;
+}
+
+/** The call as a `curl` command for `/v1/images/generations`, with a placeholder where the key goes. */
+export function imageCurlOf(origin: string, body: object): string {
+  return [
+    `curl ${origin}/v1/images/generations`,
+    "  -H 'Authorization: Bearer <your key>'",
+    "  -H 'Content-Type: application/json'",
+    `  -d ${shellQuote(JSON.stringify(body))}`,
+  ].join(" \\\n");
+}
+
+// Audio mode: a file to transcribe, or a text to speak.
+
+/** The longest text one speech call takes, in characters. */
+export const MAX_SPEECH_CHARS = 4096;
+export const SPEECH_TOO_LONG = `The text must be at most ${String(MAX_SPEECH_CHARS)} characters.`;
+
+/** The default cap of the gateway on an audio upload (`UF_MAX_AUDIO_BYTES`), in bytes: used until the gateway says its own. */
+export const AUDIO_FILE_LIMIT = 25 * 1024 * 1024;
+
+/** A size as the gateway's cap is usually set: whole MiB as such, anything else in bytes. */
+export function sizeText(bytes: number): string {
+  const mib = 1024 * 1024;
+  return bytes % mib === 0 ? `${String(bytes / mib)} MiB` : `${String(bytes)} bytes`;
+}
+
+export const audioFileTooLarge = (cap: number) => `The file is larger than ${sizeText(cap)}, the most the gateway takes.`;
+
+/** Why a file is not sent: it is over the gateway's cap, so the upload would only be refused. */
+export function checkAudioFile(file: { size: number }, cap: number = AUDIO_FILE_LIMIT): string | undefined {
+  return file.size > cap ? audioFileTooLarge(cap) : undefined;
+}
+
+/** The built-in voices of the speech models. */
+export const VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"] as const;
+export type Voice = (typeof VOICES)[number];
+
+export interface SpeechRequestBody {
+  model: string;
+  input: string;
+  voice: string;
+}
+
+export function checkSpeechInput(text: string): string | undefined {
+  return Array.from(text).length > MAX_SPEECH_CHARS ? SPEECH_TOO_LONG : undefined;
+}
+
+export function speechRequestBody(model: string, input: string, voice: Voice): SpeechRequestBody {
+  return { model, input, voice };
+}
+
+/** The transcript of a JSON answer, or `null` when it holds none. */
+export function transcriptOf(answer: { text?: unknown }): string | null {
+  return typeof answer.text === "string" ? answer.text : null;
+}
+
+/** The form a transcription is sent as: the file last, as the OpenAI clients send it. */
+export function transcriptionForm(model: string, language: string, file: File): FormData {
+  const form = new FormData();
+  form.append("model", model);
+  const code = language.trim();
+  if (code !== "") form.append("language", code);
+  form.append("file", file, file.name);
+  return form;
+}
+
+/** The transcription as a `curl` command for `/v1/audio/transcriptions`, with placeholders for the key and the file. */
+export function transcriptionCurlOf(origin: string, model: string, language: string): string {
+  const code = language.trim();
+  return [
+    `curl ${origin}/v1/audio/transcriptions`,
+    "  -H 'Authorization: Bearer <your key>'",
+    "  -F file=@audio.mp3",
+    `  -F model=${shellQuote(model)}`,
+    ...(code === "" ? [] : [`  -F language=${shellQuote(code)}`]),
+  ].join(" \\\n");
+}
+
+/** The speech as a `curl` command for `/v1/audio/speech`, with a placeholder where the key goes. */
+export function speechCurlOf(origin: string, body: object): string {
+  return [
+    `curl ${origin}/v1/audio/speech`,
+    "  -H 'Authorization: Bearer <your key>'",
+    "  -H 'Content-Type: application/json'",
+    `  -d ${shellQuote(JSON.stringify(body))}`,
+    "  --output speech.mp3",
+  ].join(" \\\n");
 }

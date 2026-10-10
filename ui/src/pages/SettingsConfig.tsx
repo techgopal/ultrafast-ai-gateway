@@ -1,6 +1,6 @@
 import { useId, useRef, useState } from "react";
 import { useImportConfig } from "@/api/queries";
-import type { ImportReport } from "@/api/client";
+import { api, type ImportReport } from "@/api/client";
 import { ConsoleRefusal, messageOfError } from "@/api/errors";
 import { control } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -11,6 +11,12 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+
+/** `ultrafast-config-YYYYMMDD-HHMMSS.json`, as the gateway names its own download (UTC). */
+function exportName(): string {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
+  return `ultrafast-config-${stamp}.json`;
+}
 
 /** The largest file the gateway reads. */
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -185,7 +191,12 @@ export function ConfigSection() {
           them, teams, routes, limits, budgets and settings. No credential, key, token, password or
           log is in the file.
         </p>
-        <DownloadLink href="/api/config/export" variant="outline">
+        <DownloadLink
+          href="/api/config/export"
+          variant="outline"
+          fetchFile={() => api.get("/api/config/export")}
+          filename={exportName}
+        >
           Download configuration
         </DownloadLink>
       </div>

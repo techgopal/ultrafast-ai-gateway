@@ -12,6 +12,46 @@ pub fn db_path(data_dir: &Path) -> PathBuf {
     data_dir.join("gateway.db")
 }
 
+/// The most connections to the database that may be asked for.
+pub const MAX_DATABASE_CONNECTIONS: u32 = 1000;
+
+/// How many connections the gateway opens to PostgreSQL unless told.
+pub const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 10;
+
+/// The PostgreSQL URL from `UF_DATABASE_URL`, or `None` when it is unset or
+/// blank (then the SQLite file in the data directory is used). Error
+/// messages never echo the URL, since it holds the password.
+pub fn parse_database_url(raw: Option<&str>) -> Result<Option<String>> {
+    let Some(url) = raw.map(str::trim).filter(|u| !u.is_empty()) else {
+        return Ok(None);
+    };
+    if !(url.starts_with("postgres://") || url.starts_with("postgresql://")) {
+        bail!("UF_DATABASE_URL must start with postgres:// or postgresql://");
+    }
+    Ok(Some(url.to_string()))
+}
+
+/// Checks `UF_DATABASE_MAX_CONNECTIONS`.
+pub fn validate_database_max_connections(n: u32) -> Result<u32> {
+    if n == 0 || n > MAX_DATABASE_CONNECTIONS {
+        bail!("UF_DATABASE_MAX_CONNECTIONS must be between 1 and {MAX_DATABASE_CONNECTIONS}");
+    }
+    Ok(n)
+}
+
+/// The master key on PostgreSQL, where there is no data directory to keep a
+/// `master.key` in, and each of several gateway processes must be given the
+/// same key: it must be set, and valid. Nothing is read or created.
+pub fn master_key_from_env_only(from_env: Option<&str>) -> Result<String> {
+    let Some(v) = from_env.map(str::trim).filter(|v| !v.is_empty()) else {
+        bail!(
+            "UF_MASTER_KEY is required when UF_DATABASE_URL is set: 64 hex characters, the same for every gateway on the database (there is no data directory to keep a master.key in)"
+        );
+    };
+    Cipher::from_hex(v).context("UF_MASTER_KEY is not valid")?;
+    Ok(v.to_string())
+}
+
 /// Returns the master key as hex. Uses `from_env` when given. Otherwise reads
 /// `master.key` in the data directory, creating it on first use. The data
 /// directory is created in both cases, since the database lives there too.
@@ -62,6 +102,51 @@ pub fn validate_base_url(url: &str) -> Result<()> {
         bail!("base URL must include a host");
     }
     Ok(())
+}
+
+/// The longest webhook URL accepted, in bytes.
+const MAX_WEBHOOK_URL: usize = 2048;
+
+/// Checks the URL of an alert channel. Like a provider base URL it must be
+/// `http://` or `https://` with a host and carry no credentials or fragment,
+/// but a query string is allowed: generic webhooks carry their token there.
+/// Error messages never echo the URL, since it is a credential.
+pub fn validate_webhook_url(url: &str) -> Result<()> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"));
+    let Some(rest) = rest else {
+        bail!("URL must start with http:// or https://");
+    };
+    if url.len() > MAX_WEBHOOK_URL {
+        bail!("URL must be at most {MAX_WEBHOOK_URL} bytes");
+    }
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        bail!("URL must not contain whitespace");
+    }
+    if rest.contains('#') {
+        bail!("URL must not contain a fragment");
+    }
+    let authority = rest.split(['/', '?']).next().unwrap_or_default();
+    if authority.contains('@') {
+        bail!("URL must not contain credentials");
+    }
+    if authority.is_empty() || authority.starts_with(':') {
+        bail!("URL must include a host");
+    }
+    Ok(())
+}
+
+/// The scheme, host and port of a URL, like `https://hooks.slack.com`: what
+/// may be shown of a URL whose path or query is a credential. `None` if the
+/// URL cannot be read.
+pub fn url_origin(url: &str) -> Option<String> {
+    let u = reqwest::Url::parse(url).ok()?;
+    let host = u.host_str()?;
+    Some(match u.port() {
+        Some(port) => format!("{}://{host}:{port}", u.scheme()),
+        None => format!("{}://{host}", u.scheme()),
+    })
 }
 
 /// Whether two base URLs name the same host: scheme, host and port (the
@@ -207,9 +292,124 @@ pub fn parse_trusted_proxies(values: &[String]) -> Result<Vec<ipnet::IpNet>> {
         .collect()
 }
 
+/// The address people reach the gateway at, from `--public-url` /
+/// `UF_PUBLIC_URL`, like `https://gateway.example.com`: the origin the
+/// console is served from. Only an `http` or `https` URL with a host,
+/// without credentials, path, query or fragment, is accepted (the sign-in
+/// callback and the console live at the root of the host). Plain `http` is
+/// accepted only for the machine itself (`localhost`, `127.0.0.1`,
+/// `[::1]`), unless `allow_plain_http` (`--insecure-cookies`) says the
+/// operator knows. The error never repeats the value.
+pub fn parse_public_url(value: &str, allow_plain_http: bool) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(value.trim())
+        .map_err(|_| anyhow::anyhow!("the public URL is not a valid URL"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        anyhow::bail!("the public URL must be an http:// or https:// URL with a host");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!("the public URL must not hold a user name or password");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        anyhow::bail!("the public URL must not hold a query or a fragment");
+    }
+    if url.path() != "/" {
+        anyhow::bail!("the public URL must not hold a path: the console is served at the root");
+    }
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if url.scheme() == "http" && !loopback && !allow_plain_http {
+        anyhow::bail!(
+            "the public URL must be https (plain http only for localhost, or with --insecure-cookies)"
+        );
+    }
+    Ok(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_urls_are_plain_origins() {
+        for ok in [
+            "https://gateway.example.com",
+            "https://gateway.example.com/",
+            "https://gateway.example.com:8443",
+            " http://localhost:3000 ",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000/",
+        ] {
+            assert!(parse_public_url(ok, false).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "gateway.example.com",
+            "ftp://gateway.example.com",
+            "https://u:p@gateway.example.com",
+            "https://gateway.example.com/?a=1",
+            "https://gateway.example.com/#a",
+            "mailto:a@example.com",
+            // The console and the callback live at the root of the host.
+            "https://example.com/gateway",
+            "https://example.com/gateway/",
+            // Plain http away from the machine itself.
+            "http://gateway.example.com",
+            "http://192.168.1.10:3000",
+        ] {
+            let e = parse_public_url(bad, false).expect_err(bad).to_string();
+            assert!(!e.contains("gateway.example.com"), "{bad}: {e}");
+            assert!(!e.contains("192.168"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn plain_http_is_allowed_with_insecure_cookies() {
+        for ok in ["http://gateway.example.com", "http://192.168.1.10:3000"] {
+            assert!(parse_public_url(ok, true).is_ok(), "{ok}");
+        }
+        // The other rules still hold.
+        for bad in ["http://gateway.example.com/gw", "http://u:p@h.example.com"] {
+            assert!(parse_public_url(bad, true).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn webhook_urls_may_carry_a_query_but_no_credentials_or_fragment() {
+        for ok in [
+            "https://hooks.slack.com/services/T/B/x",
+            "http://h:8080/p?token=abc&x=1",
+            "https://h?token=abc",
+        ] {
+            assert!(validate_webhook_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "ftp://h/x",
+            "h/x",
+            "https://u:p@h/x",
+            "https://h?x=a@b#f",
+            "https://h/x#f",
+            "https:///x",
+            "https://:80/x",
+            "https://h /x",
+        ] {
+            let e = validate_webhook_url(bad).unwrap_err().to_string();
+            assert!(!e.contains(bad), "the message repeats the URL: {e}");
+        }
+        assert!(validate_webhook_url(&format!("https://h/{}", "a".repeat(3000))).is_err());
+    }
+
+    #[test]
+    fn the_origin_of_a_url_is_scheme_host_and_port_only() {
+        assert_eq!(
+            url_origin("https://hooks.slack.com/services/T/B/x?t=1").as_deref(),
+            Some("https://hooks.slack.com")
+        );
+        assert_eq!(
+            url_origin("http://h:8080/p").as_deref(),
+            Some("http://h:8080")
+        );
+        assert_eq!(url_origin("https://h:443/p").as_deref(), Some("https://h"));
+        assert_eq!(url_origin("nope"), None);
+    }
 
     #[test]
     fn same_host_is_scheme_host_and_port() {

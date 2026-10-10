@@ -53,6 +53,11 @@ export function eventStream(chunks: readonly string[]): Response {
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+/** An answer of audio: three bytes of what a speech model makes. */
+export function audioAnswer(): Response {
+  return new HttpResponse(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/mpeg" } });
+}
+
 export function noContent(): Response {
   return new HttpResponse(null, { status: 204 });
 }
@@ -93,6 +98,9 @@ export const handlers = [
   ),
   handler("post", "/api/auth/logout", noContent),
   handler("get", "/api/auth/me", () => ok("get", "/api/auth/me", 200, fixtures.me.maya)),
+  handler("get", "/api/auth/methods", () =>
+    ok("get", "/api/auth/methods", 200, fixtures.signInMethods.passwordOnly),
+  ),
   handler("post", "/api/auth/accept-invite", noContent),
   handler("post", "/api/auth/password", noContent),
 
@@ -262,6 +270,19 @@ export const handlers = [
   ),
   handler("get", "/api/settings", () => ok("get", "/api/settings", 200, fixtures.settings)),
   handler("patch", "/api/settings", () => ok("patch", "/api/settings", 200, fixtures.settings)),
+  handler("get", "/api/settings/oidc", () =>
+    ok("get", "/api/settings/oidc", 200, fixtures.oidc.fresh),
+  ),
+  handler("put", "/api/settings/oidc", () =>
+    ok("put", "/api/settings/oidc", 200, fixtures.oidc.configured),
+  ),
+  handler("post", "/api/settings/oidc/test", () =>
+    ok("post", "/api/settings/oidc/test", 200, {
+      ok: true,
+      issuer: "https://idp.example.test",
+      jwks_keys: 2,
+    }),
+  ),
 
   // logs and usage
   handler("get", "/api/logs", () => ok("get", "/api/logs", 200, { logs: fixtures.logList })),
@@ -280,6 +301,14 @@ export const handlers = [
 
   // playground
   handler("post", "/api/playground/chat", () => eventStream(fixtures.playgroundChunks)),
+  handler("post", "/api/playground/images", () =>
+    ok("post", "/api/playground/images", 200, fixtures.playgroundImages),
+  ),
+
+  handler("post", "/api/playground/transcriptions", () =>
+    HttpResponse.json({ text: fixtures.playgroundTranscript }),
+  ),
+  handler("post", "/api/playground/speech", () => audioAnswer()),
 
   // configuration and backup
   handler("get", "/api/config/export", () =>
@@ -296,6 +325,120 @@ export const handlers = [
         headers: { "content-type": "application/vnd.sqlite3" },
       }),
   ),
+
+  // alerts
+  handler("get", "/api/alerts/channels", () =>
+    ok("get", "/api/alerts/channels", 200, { channels: fixtures.alertChannelList }),
+  ),
+  handler("post", "/api/alerts/channels", () =>
+    ok("post", "/api/alerts/channels", 201, {
+      channel: fixtures.alertChannels.ops,
+      secret: fixtures.newChannelSecret,
+    }),
+  ),
+  handler("patch", "/api/alerts/channels/{id}", (call) => {
+    const channel = byId(fixtures.alertChannelList, call);
+    return channel === undefined
+      ? notFound()
+      : ok("patch", "/api/alerts/channels/{id}", 200, channel);
+  }),
+  handler("delete", "/api/alerts/channels/{id}", (call) =>
+    byId(fixtures.alertChannelList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("post", "/api/alerts/channels/{id}/rotate-secret", (call) =>
+    byId(fixtures.alertChannelList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/alerts/channels/{id}/rotate-secret", 200, {
+          secret: fixtures.rotatedChannelSecret,
+        }),
+  ),
+  handler("post", "/api/alerts/channels/{id}/test", (call) =>
+    byId(fixtures.alertChannelList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/alerts/channels/{id}/test", 200, { ok: true, status: 200, error: null }),
+  ),
+  handler("get", "/api/alerts/rules", () =>
+    ok("get", "/api/alerts/rules", 200, { rules: fixtures.alertRuleList }),
+  ),
+  handler("post", "/api/alerts/rules", () =>
+    ok("post", "/api/alerts/rules", 201, fixtures.alertRules.budget),
+  ),
+  handler("patch", "/api/alerts/rules/{id}", (call) => {
+    const rule = byId(fixtures.alertRuleList, call);
+    return rule === undefined ? notFound() : ok("patch", "/api/alerts/rules/{id}", 200, rule);
+  }),
+  handler("delete", "/api/alerts/rules/{id}", (call) =>
+    byId(fixtures.alertRuleList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("get", "/api/alerts/events", () =>
+    ok("get", "/api/alerts/events", 200, { events: fixtures.alertEventList }),
+  ),
+
+  // guardrails
+  handler("get", "/api/guardrails", () =>
+    ok("get", "/api/guardrails", 200, { guardrails: fixtures.guardrailList }),
+  ),
+  handler("post", "/api/guardrails", () =>
+    ok("post", "/api/guardrails", 201, {
+      guardrail: fixtures.guardrails.external,
+      secret: fixtures.newGuardrailSecret,
+    }),
+  ),
+  // Declared before `{id}`: "test" is no id.
+  handler("post", "/api/guardrails/test", () =>
+    ok("post", "/api/guardrails/test", 200, {
+      redacted_text: "Write to [REDACTED:EMAIL].",
+      outcome: { blocked_by: null, flags: [], redactions: { EMAIL: 1 } },
+    }),
+  ),
+  handler("get", "/api/guardrails/{id}", (call) => {
+    const one = byId(fixtures.guardrailList, call);
+    return one === undefined ? notFound() : ok("get", "/api/guardrails/{id}", 200, one);
+  }),
+  handler("patch", "/api/guardrails/{id}", (call) => {
+    const one = byId(fixtures.guardrailList, call);
+    return one === undefined ? notFound() : ok("patch", "/api/guardrails/{id}", 200, one);
+  }),
+  handler("delete", "/api/guardrails/{id}", (call) =>
+    byId(fixtures.guardrailList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("post", "/api/guardrails/{id}/rotate-secret", (call) =>
+    byId(fixtures.guardrailList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/guardrails/{id}/rotate-secret", 200, {
+          secret: fixtures.rotatedGuardrailSecret,
+        }),
+  ),
+
+  // playground
+  handler("get", "/api/playground/config", () =>
+    ok("get", "/api/playground/config", 200, fixtures.playgroundConfig),
+  ),
+
+  // prompt templates
+  handler("get", "/api/prompts", () =>
+    ok("get", "/api/prompts", 200, { prompts: fixtures.promptList }),
+  ),
+  handler("post", "/api/prompts", () =>
+    ok("post", "/api/prompts", 201, fixtures.promptViews.greet),
+  ),
+  handler("get", "/api/prompts/{id}", (call) => {
+    const one = Object.values(fixtures.promptViews).find((view) => view.id === Number(call.params.id));
+    return one === undefined ? notFound() : ok("get", "/api/prompts/{id}", 200, one);
+  }),
+  handler("delete", "/api/prompts/{id}", (call) =>
+    byId(fixtures.promptList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("post", "/api/prompts/{id}/versions", (call) =>
+    byId(fixtures.promptList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/prompts/{id}/versions", 201, fixtures.newPromptVersion),
+  ),
+  handler("get", "/api/prompts/{id}/versions/{version}", (call) => {
+    const name = call.params.id === "1" ? "summarize" : call.params.id === "2" ? "greet" : null;
+    const version = name === null ? undefined : fixtures.promptVersions[name].find((one) => one.version === Number(call.params.version));
+    return version === undefined ? notFound() : ok("get", "/api/prompts/{id}/versions/{version}", 200, version);
+  }),
 
   // audit
   handler("get", "/api/audit", () =>

@@ -113,11 +113,18 @@ describe("guards", () => {
     ["set and delete limits", { type: "manageLimits" }, [true, false, false, false]],
     ["set and delete budgets", { type: "manageBudgets" }, [true, false, false, false]],
     ["change the settings", { type: "manageSettings" }, [true, false, false, false]],
+    ["manage alert rules and channels", { type: "manageAlerts" }, [true, false, false, false]],
+    ["manage guardrails and attach them", { type: "manageGuardrails" }, [true, false, false, false]],
     // The overview counts users and teams for who manages some: admins, and leads.
     ["view the counts of users and teams", { type: "viewUserAndTeamCounts" }, [true, true, false, false]],
     // Logs and usage of others: filters by key, user and team, and the top keys.
     ["see the logs and usage of others", { type: "viewOthersUsage" }, [true, true, false, false]],
     ["use the playground", { type: "usePlayground" }, [true, true, true, true]],
+    // Prompt templates: an admin, and the lead of a team for the ones they made.
+    ["make a prompt template", { type: "createPrompt" }, [true, true, false, false]],
+    ["manage the template the lead made", { type: "managePrompt", createdBy: leadId }, [true, true, false, false]],
+    ["manage the template the member made", { type: "managePrompt", createdBy: memberId }, [true, false, false, false]],
+    ["manage a template whose maker is gone", { type: "managePrompt", createdBy: null }, [true, false, false, false]],
   ];
 
   test.each(table)("%s", (_, action, expected) => {
@@ -153,9 +160,13 @@ describe("guards", () => {
       manageLimits: true,
       manageBudgets: true,
       manageSettings: true,
+      manageAlerts: true,
+      manageGuardrails: true,
       viewUserAndTeamCounts: true,
       viewOthersUsage: true,
       usePlayground: true,
+      createPrompt: true,
+      managePrompt: true,
     };
     expect([...seen].sort()).toEqual(Object.keys(all).sort());
   });

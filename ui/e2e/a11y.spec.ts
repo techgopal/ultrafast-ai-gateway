@@ -25,7 +25,7 @@ async function markTabStops(scope: Locator): Promise<number> {
   return scope.evaluate(async (root) => {
     const candidates = [
       ...root.querySelectorAll<HTMLElement>(
-        "a[href], button, input, select, textarea, [tabindex], [contenteditable]",
+        "a[href], button, input, select, textarea, summary, [tabindex], [contenteditable]",
       ),
     ];
     const stops = candidates.filter(
@@ -170,6 +170,69 @@ for (const scheme of ["light", "dark"] as const) {
 
     await goTo(page, "Settings");
     await expect(page.getByRole("region", { name: "Sign-in" })).toBeVisible();
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+
+    // A prompt template: the list, the template with its editor, and the form of a new one.
+    await api.send("POST", "/api/prompts", {
+      name: "a prompt",
+      messages: [{ role: "user", content: "Say hello to {{name}}." }],
+    });
+    await goTo(page, "Prompts");
+    await expect(page.getByRole("main")).toContainText("a prompt");
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+    await page.getByRole("link", { name: "Open", exact: true }).first().click();
+    await expect(page.getByRole("button", { name: "Save as version 2" })).toBeVisible();
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+    await goTo(page, "Prompts");
+    await page.getByRole("link", { name: "New template" }).click();
+    await expect(heading(page, "New template")).toBeVisible();
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+
+    // Alerts: a channel and a rule, so that the three views show their tables.
+    const channel = (await api.send("POST", "/api/alerts/channels", {
+      name: "a channel",
+      kind: "webhook",
+      url: "https://alerts.example.test/hook",
+    })) as { channel: { id: number } };
+    await api.send("POST", "/api/alerts/rules", {
+      name: "a rule",
+      kind: "circuit_open",
+      params: {},
+      channel_ids: [channel.channel.id],
+    });
+    await goTo(page, "Alerts");
+    await expect(page.getByRole("main")).toContainText("Circuit opens on any target");
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+    const views = page.getByRole("navigation", { name: "Alerts sections" });
+    await views.getByRole("link", { name: "Channels" }).click();
+    await expect(page.getByRole("main")).toContainText("alerts.example.test");
+    expect(await axeProblems(page)).toEqual([]);
+    await views.getByRole("link", { name: "History" }).click();
+    await expect(page.getByText("No alerts yet")).toBeVisible();
+    expect(await axeProblems(page)).toEqual([]);
+
+    // Guardrails: the list and the form of a guardrail with its rules and Try it.
+    await api.send("POST", "/api/guardrails", {
+      name: "a guardrail",
+      kind: "rules",
+      is_default: true,
+      rules: [
+        { id: "email", matcher: { pii: ["EMAIL"] }, action: "redact", directions: "output" },
+        { id: "words", matcher: { keywords: { words: ["swordfish"] } }, action: "block", directions: "input" },
+      ],
+    });
+    await goTo(page, "Guardrails");
+    await expect(page.getByRole("main")).toContainText("a guardrail");
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+    await page.getByRole("link", { name: "Edit", exact: true }).first().click();
+    await expect(heading(page, "Edit guardrail")).toBeVisible();
+    await expect(page.getByRole("group", { name: "Rule 2" })).toBeVisible();
     await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
 

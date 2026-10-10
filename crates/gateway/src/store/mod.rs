@@ -1,45 +1,59 @@
-//! SQLite storage. Nothing outside this module writes SQL.
+//! Storage on one connection API (`sqlx::Any`), SQLite today. Nothing outside
+//! this module writes SQL, and nothing in it names a database except `dialect`.
 
+mod alerts;
 mod audit;
 mod backup;
 mod budgets;
+pub mod dialect;
+mod guardrails;
 mod keys;
 mod limits;
 mod logs;
 mod models;
 mod portable;
+mod prompts;
 mod providers;
 mod routes;
+#[cfg(feature = "test-support")]
+mod scratch;
 mod sessions;
 mod settings;
 mod teams;
 mod users;
 
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteConnection, SqliteJournalMode, SqlitePool, SqlitePoolOptions,
-};
-use sqlx::Sqlite;
+use sqlx::any::{install_default_drivers, AnyPoolOptions};
+use sqlx::Any;
+use sqlx::{AnyConnection, AnyPool};
 use time::format_description::BorrowedFormatItem;
 use time::macros::format_description;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 
+pub use alerts::{AlertEventRow, ChannelRow, NewAlertEvent, RuleRow, StateRow};
 pub use audit::{AuditEntry, AuditRow};
-pub use budgets::{BudgetRow, UsageRow};
+pub use backup::POSTGRES_BACKUP_TEXT;
+pub use budgets::{BudgetRow, UsageDelta, UsageRow, UsageTotal};
+pub use dialect::Dialect;
+pub(crate) use dialect::Dialected;
+pub use guardrails::{GuardrailPatch, GuardrailRow, NewGuardrail};
 pub use keys::{parse_allowed, KeyRow, LiveKey};
 pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use portable::ConfigState;
+pub use prompts::{LatestStub, NewVersion, TemplateRow, VersionRow, VersionStub};
 pub use providers::ProviderRow;
 pub use routes::{is_missing_reference, RouteRow, RouteSettings, TargetRow, TargetsInput};
 pub use sessions::{NewSession, SessionRow, TokenRow, SESSION_SECONDS};
-pub use settings::{DEFAULT_LOG_RETENTION_DAYS, DEFAULT_SESSION_HOURS, SESSION_HOURS_RANGE};
+pub use settings::{
+    OidcSettings, DEFAULT_LOG_RETENTION_DAYS, DEFAULT_OIDC_GROUPS_CLAIM, DEFAULT_OIDC_LABEL,
+    DEFAULT_SESSION_HOURS, SESSION_HOURS_RANGE,
+};
 pub use teams::{MemberDetail, MemberRow, TeamRow, TeamSummary, UserTeam};
 pub use users::{InviteRow, NewUser, UserRow};
 
@@ -49,7 +63,7 @@ pub const DEFAULT_ORG: i64 = 1;
 const TIMESTAMP: &[BorrowedFormatItem<'static>] =
     format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
 
-/// Timestamps are compared as text against each other and `datetime('now')`,
+/// Timestamps are compared as text against each other and [`now`],
 /// so anything other than exactly `YYYY-MM-DD HH:MM:SS` could compare wrongly.
 pub fn check_timestamp(value: &str) -> Result<()> {
     if value.len() == 19 && PrimitiveDateTime::parse(value, TIMESTAMP).is_ok() {
@@ -65,6 +79,13 @@ pub fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
         .map(PrimitiveDateTime::assume_utc)
 }
 
+/// `at` as `YYYY-MM-DD HH:MM:SS` (UTC), the form [`now`] writes.
+pub fn format_timestamp(at: OffsetDateTime) -> String {
+    at.to_offset(time::UtcOffset::UTC)
+        .format(TIMESTAMP)
+        .expect("a UTC time formats with a fixed numeric layout")
+}
+
 /// The current UTC time as `YYYY-MM-DD HH:MM:SS`.
 pub fn now() -> String {
     after(0)
@@ -77,6 +98,37 @@ pub fn after(seconds: i64) -> String {
         .expect("a UTC time formats with a fixed numeric layout")
 }
 
+/// The advisory lock that serializes the transactions that start with
+/// [`Store::begin_immediate`] on PostgreSQL.
+const WRITE_LOCK: i64 = 0x5546_4741_5445_0001;
+
+/// A file path as the path part of a `sqlite:` URL.
+fn encode_path(path: &Path) -> String {
+    let mut out = String::new();
+    for b in path.to_string_lossy().bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(char::from(b));
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// A flag as it is stored: an integer, on every database.
+pub(crate) fn flag(on: bool) -> i64 {
+    i64::from(on)
+}
+
+/// The day after `day` (`YYYY-MM-DD`), or `None` when it is not a date.
+pub(crate) fn next_day(day: &str) -> Option<String> {
+    let date = time::Date::parse(day, format_description!("[year]-[month]-[day]")).ok()?;
+    date.next_day()?
+        .format(format_description!("[year]-[month]-[day]"))
+        .ok()
+}
+
 /// A failure a caller can act on. Every other failure is a plain error.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -87,7 +139,9 @@ pub enum StoreError {
 /// Turns a unique-constraint failure into `StoreError::Duplicate`.
 pub(crate) fn write_error(e: sqlx::Error) -> anyhow::Error {
     match &e {
-        sqlx::Error::Database(db) if db.is_unique_violation() => StoreError::Duplicate.into(),
+        sqlx::Error::Database(db) if Dialect::is_unique_violation(db.as_ref()) => {
+            StoreError::Duplicate.into()
+        }
         _ => e.into(),
     }
 }
@@ -100,7 +154,14 @@ pub(crate) fn write_error(e: sqlx::Error) -> anyhow::Error {
 /// (the in-memory database) that call waits forever. Read what you need
 /// first, then `begin`, write, and `commit`.
 pub struct Tx<'c> {
-    inner: sqlx::Transaction<'c, Sqlite>,
+    inner: sqlx::Transaction<'c, Any>,
+    dialect: Dialect,
+}
+
+impl Dialected for Tx<'_> {
+    fn dialect(&self) -> Dialect {
+        self.dialect
+    }
 }
 
 impl Tx<'_> {
@@ -109,7 +170,7 @@ impl Tx<'_> {
         Ok(())
     }
 
-    pub(crate) fn conn(&mut self) -> &mut SqliteConnection {
+    pub(crate) fn conn(&mut self) -> &mut AnyConnection {
         &mut self.inner
     }
 }
@@ -129,55 +190,179 @@ pub struct SnapshotRows {
     pub teams: std::collections::HashMap<i64, Vec<UserTeam>>,
     /// `(id, created_at)` of every team.
     pub team_stamps: Vec<(i64, String)>,
+    /// Every guardrail, enabled or not, by name.
+    pub guardrails: Vec<GuardrailRow>,
+    /// `(route id, guardrail id, guardrail name)`, in each route's order.
+    pub route_guardrails: Vec<(i64, i64, String)>,
+    /// `(key id, guardrail id, guardrail name)`, in each key's order.
+    pub key_guardrails: Vec<(i64, i64, String)>,
+    /// Every prompt template, by name.
+    pub prompt_templates: Vec<TemplateRow>,
+    /// `(template id, number of its newest version)`.
+    pub prompt_latest: Vec<(i64, i64)>,
+    /// The newest version of each template that `known` (see
+    /// [`Store::snapshot_rows_after`]) did not hold, by template. Older
+    /// versions are read when a call asks for one.
+    pub prompt_versions: Vec<VersionRow>,
 }
 
 #[derive(Clone)]
 pub struct Store {
-    pool: SqlitePool,
+    pool: AnyPool,
+    dialect: Dialect,
     /// The directory of the database file; `None` for an in-memory one.
     dir: Option<std::path::PathBuf>,
     /// How many times `teams_of_users` was called, so a test can see that
     /// a list asks once and not once per row.
     teams_of_users_calls: Arc<AtomicU64>,
+    /// Drops a test's private schema when the last clone goes away.
+    #[cfg(feature = "test-support")]
+    scratch: Option<Arc<scratch::Schema>>,
+}
+
+impl Dialected for Store {
+    fn dialect(&self) -> Dialect {
+        self.dialect
+    }
+}
+
+/// How long to wait for the PostgreSQL server: at start-up, and for a
+/// connection while it is away.
+pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Tries to connect until the server answers or `wait` is over. A refused
+/// connection is retried (the server may be starting); any other error ends
+/// it at once. Only the connection is timed, never the migrations.
+async fn wait_for_server(url: &str, wait: std::time::Duration) -> Result<()> {
+    use sqlx::Connection;
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut last_refused = false;
+    let mut pause = std::time::Duration::from_millis(50);
+    loop {
+        match tokio::time::timeout_at(deadline, AnyConnection::connect(url)).await {
+            Ok(Ok(conn)) => {
+                let _ = conn.close().await;
+                return Ok(());
+            }
+            Ok(Err(sqlx::Error::Io(e))) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                last_refused = true;
+            }
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {}
+        }
+        if tokio::time::Instant::now() + pause >= deadline {
+            bail!(
+                "no answer within {} s{}",
+                wait.as_secs().max(1),
+                if last_refused {
+                    " (the connection was refused)"
+                } else {
+                    ""
+                }
+            );
+        }
+        tokio::time::sleep(pause).await;
+        pause = (pause * 2).min(std::time::Duration::from_secs(1));
+    }
 }
 
 impl Store {
+    /// Opens (creating it if needed) the SQLite database at `path`.
     pub async fn open(path: &Path) -> Result<Self> {
-        let opts = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .foreign_keys(true);
+        // sqlx's SQLite defaults give foreign keys on and a busy timeout of
+        // 5 s; WAL is set on each connection (a no-op once the file is in
+        // it). `mode=rwc` creates the file.
+        let url = format!("sqlite:{}?mode=rwc", encode_path(path));
         let dir = match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
             _ => std::path::PathBuf::from("."),
         };
-        Self::connect(opts, SqlitePoolOptions::new().max_connections(8), Some(dir)).await
+        let pool = AnyPoolOptions::new()
+            .max_connections(8)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    sqlx::query("PRAGMA journal_mode = WAL")
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            });
+        Self::connect(&url, pool, Some(dir)).await
     }
 
     /// One connection only: every in-memory connection is its own database,
     /// so that connection must never be reaped.
+    ///
+    /// With the `test-support` feature (the tests turn it on) and when
+    /// `UF_TEST_DATABASE_URL` names a PostgreSQL database, this is a
+    /// fresh, private schema in it instead (dropped when the store goes
+    /// away), so the whole test suite can run on either database.
     pub async fn open_in_memory() -> Result<Self> {
-        let opts = SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
+        #[cfg(feature = "test-support")]
+        if let Some(url) = scratch::test_database_url() {
+            return scratch::open(&url).await;
+        }
+        let pool = AnyPoolOptions::new()
             .max_connections(1)
             .min_connections(1)
             .idle_timeout(None)
             .max_lifetime(None);
-        Self::connect(opts, pool, None).await
+        Self::connect("sqlite::memory:", pool, None).await
+    }
+
+    /// Connects to the PostgreSQL database at `url` (`postgres://` or
+    /// `postgresql://`) with up to `max` connections, and brings its schema
+    /// up to date. The tables live in the schema the connection's
+    /// `search_path` starts with (`public` unless the server says otherwise).
+    ///
+    /// The wait for the server is capped at [`CONNECT_TIMEOUT`]; running the
+    /// migrations is not (a large one may take longer).
+    pub async fn connect_url(url: &str, max: u32) -> Result<Self> {
+        Self::connect_url_within(url, max, CONNECT_TIMEOUT).await
+    }
+
+    /// [`Store::connect_url`] with the cap on the wait for the server given.
+    /// Nothing the server or the driver said is quoted except the last
+    /// connection error of a server that refused: the URL is never in it.
+    pub async fn connect_url_within(
+        url: &str,
+        max: u32,
+        wait: std::time::Duration,
+    ) -> Result<Self> {
+        install_default_drivers();
+        if Dialect::of_url(url) != Some(Dialect::Postgres) {
+            bail!("the database URL must start with postgres:// or postgresql://");
+        }
+        wait_for_server(url, wait).await?;
+        // A call that needs a connection while the database is away answers
+        // after this, not after sqlx's 30 s default.
+        let pool = AnyPoolOptions::new()
+            .max_connections(max.max(1))
+            .acquire_timeout(CONNECT_TIMEOUT);
+        Self::connect(url, pool, None).await
     }
 
     async fn connect(
-        opts: SqliteConnectOptions,
-        pool: SqlitePoolOptions,
+        url: &str,
+        pool: AnyPoolOptions,
         dir: Option<std::path::PathBuf>,
     ) -> Result<Self> {
-        let pool = pool.connect_with(opts).await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        install_default_drivers();
+        let dialect = Dialect::of_url(url).ok_or_else(|| {
+            anyhow::anyhow!("the database URL must start with sqlite: or postgres://")
+        })?;
+        let pool = pool.connect(url).await?;
+        match dialect {
+            Dialect::Sqlite => sqlx::migrate!("./migrations/sqlite").run(&pool).await?,
+            Dialect::Postgres => sqlx::migrate!("./migrations/postgres").run(&pool).await?,
+        }
         let store = Self {
             pool,
+            dialect,
             dir,
             teams_of_users_calls: Arc::default(),
+            #[cfg(feature = "test-support")]
+            scratch: None,
         };
         // So the planner has statistics for `request_logs` from the first
         // call on (without them the lead's scope OR chose a temporary
@@ -188,19 +373,36 @@ impl Store {
         Ok(store)
     }
 
+    pub fn dialect(&self) -> Dialect {
+        self.dialect
+    }
+
     /// Lets SQLite refresh the statistics the planner uses. Cheap; it only
     /// analyzes what changed enough to matter. The log list is meant to walk
-    /// the primary key downwards and stop at its limit.
+    /// the primary key downwards and stop at its limit. Other databases keep
+    /// their own statistics.
     pub async fn optimize(&self) -> Result<()> {
-        sqlx::query("PRAGMA optimize").execute(&self.pool).await?;
+        if self.dialect == Dialect::Sqlite {
+            self.q("PRAGMA optimize").execute(&self.pool).await?;
+        }
         Ok(())
     }
 
     /// Reads every table the snapshot needs inside one read transaction, so
     /// the rows never mix two moments.
     pub async fn snapshot_rows(&self) -> Result<SnapshotRows> {
-        let mut tx = self.pool.begin().await?;
-        let conn: &mut SqliteConnection = &mut tx;
+        self.snapshot_rows_after(&|_, _| false).await
+    }
+
+    /// [`Store::snapshot_rows`], reading the text of a template's newest
+    /// version only when `known(template, newest version number)` is false:
+    /// a refresh that finds a template as it was keeps what it has.
+    pub async fn snapshot_rows_after(
+        &self,
+        known: &(dyn Fn(&TemplateRow, i64) -> bool + Send + Sync),
+    ) -> Result<SnapshotRows> {
+        let mut tx = self.begin_read().await?;
+        let conn: &mut AnyConnection = &mut tx;
         let keys = keys::live_keys_in(conn).await?;
         let providers = providers::list_providers_in(conn).await?;
         let models = models::list_models_in(conn).await?;
@@ -209,11 +411,18 @@ impl Store {
         let route_targets = routes::list_route_targets_in(conn).await?;
         let route_grants = routes::list_route_grants_in(conn).await?;
         let users = users::list_users_in(conn).await?;
-        let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
-        let teams = teams::teams_of_users_in(conn, &ids).await?;
+        let teams = teams::teams_of_all_users_in(conn).await?;
         let team_stamps = teams::team_stamps_in(conn).await?;
         let limits = limits::list_limits_in(conn).await?;
         let budgets = budgets::list_budgets_in(conn).await?;
+        let guardrails = guardrails::list_guardrails_in(conn).await?;
+        let route_guardrails = guardrails::route_guardrail_refs_in(conn).await?;
+        let key_guardrails = guardrails::key_guardrail_refs_in(conn).await?;
+        let prompt_templates = prompts::list_templates_in(conn).await?;
+        let prompt_latest = prompts::latest_numbers_in(conn).await?;
+        let prompt_versions =
+            prompts::changed_latest_versions_in(conn, &prompt_templates, &prompt_latest, known)
+                .await?;
         tx.commit().await?;
         Ok(SnapshotRows {
             keys,
@@ -228,6 +437,12 @@ impl Store {
             budgets,
             teams,
             team_stamps,
+            guardrails,
+            route_guardrails,
+            key_guardrails,
+            prompt_templates,
+            prompt_latest,
+            prompt_versions,
         })
     }
 
@@ -236,9 +451,25 @@ impl Store {
         self.teams_of_users_calls.load(Ordering::Relaxed)
     }
 
+    /// A transaction for reads that must see one moment: PostgreSQL would
+    /// otherwise give each statement its own (READ COMMITTED), so a
+    /// concurrent delete could show up in one table and not in another. Here
+    /// it is `REPEATABLE READ, READ ONLY`. SQLite's WAL mode already holds a
+    /// read transaction to the moment of its first read.
+    pub(crate) async fn begin_read(&self) -> Result<sqlx::Transaction<'static, Any>> {
+        let mut tx = self.pool.begin().await?;
+        if self.dialect == Dialect::Postgres {
+            self.q("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                .execute(&mut *tx)
+                .await?;
+        }
+        Ok(tx)
+    }
+
     pub async fn begin(&self) -> Result<Tx<'_>> {
         Ok(Tx {
             inner: self.pool.begin().await?,
+            dialect: self.dialect,
         })
     }
 
@@ -247,9 +478,26 @@ impl Store {
     /// deferred one fails with SQLITE_BUSY_SNAPSHOT, which the busy timeout
     /// does not retry, when anything else commits in between.
     pub async fn begin_immediate(&self) -> Result<Tx<'_>> {
-        Ok(Tx {
-            inner: self.pool.begin_with("BEGIN IMMEDIATE").await?,
-        })
+        match self.dialect {
+            Dialect::Sqlite => Ok(Tx {
+                inner: self.pool.begin_with("BEGIN IMMEDIATE").await?,
+                dialect: self.dialect,
+            }),
+            Dialect::Postgres => {
+                let mut inner = self.pool.begin().await?;
+                // One writer at a time, as BEGIN IMMEDIATE gives on SQLite;
+                // the lock goes with the transaction. The function answers
+                // void, a type the driver cannot decode, so it is not selected.
+                self.q("SELECT 1 WHERE pg_advisory_xact_lock(?) IS NOT NULL")
+                    .bind(WRITE_LOCK)
+                    .fetch_optional(&mut *inner)
+                    .await?;
+                Ok(Tx {
+                    inner,
+                    dialect: self.dialect,
+                })
+            }
+        }
     }
 
     /// Closes every connection. Every later call fails.
@@ -257,7 +505,7 @@ impl Store {
         self.pool.close().await;
     }
 
-    pub(crate) fn pool(&self) -> &SqlitePool {
+    pub(crate) fn pool(&self) -> &AnyPool {
         &self.pool
     }
 }
@@ -265,6 +513,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
     const MALFORMED: [&str; 16] = [
         "",
@@ -433,12 +682,12 @@ mod tests {
                 .connect_with(opts)
                 .await
                 .unwrap();
-            let mut m = sqlx::migrate!("./migrations");
+            let mut m = sqlx::migrate!("./migrations/sqlite");
             m.migrations.to_mut().retain(|x| x.version == 1);
             assert_eq!(m.migrations.len(), 1);
             assert_eq!(
                 m.migrations[0].sql.as_ref(),
-                include_str!("../../migrations/0001_init.sql")
+                include_str!("../../migrations/sqlite/0001_init.sql")
             );
             m.run(&pool).await.unwrap();
             sqlx::query(
@@ -469,5 +718,255 @@ mod tests {
         assert_eq!(k.name, "old");
         assert_eq!(k.user_id, None);
         assert_eq!(k.team_id, None);
+    }
+
+    type Shape = std::collections::BTreeSet<String>;
+
+    /// Every column (`table.column`, with `NOT NULL` where it is), every
+    /// named index and every foreign key with its ON DELETE action, from the
+    /// catalog of the database behind `s`.
+    async fn shape_of(s: &Store) -> (Shape, Shape, Shape) {
+        let (columns, indexes, keys) = match s.dialect() {
+            Dialect::Sqlite => (
+                "SELECT m.name || '.' || p.name ||
+                        CASE WHEN p.\"notnull\" = 1 OR p.pk > 0 THEN ' NOT NULL' ELSE '' END
+                 FROM sqlite_master m, pragma_table_info(m.name) p
+                 WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> '_sqlx_migrations'",
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'",
+                "SELECT m.name || '.' || f.\"from\" || ' -> ' || f.\"table\" || '.' || f.\"to\" ||
+                        ' ON DELETE ' || f.on_delete
+                 FROM sqlite_master m, pragma_foreign_key_list(m.name) f
+                 WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'",
+            ),
+            Dialect::Postgres => (
+                "SELECT table_name || '.' || column_name ||
+                        CASE WHEN is_nullable = 'NO' THEN ' NOT NULL' ELSE '' END
+                 FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name <> '_sqlx_migrations'",
+                "SELECT CAST(c.relname AS TEXT) FROM pg_index i
+                 JOIN pg_class c ON c.oid = i.indexrelid
+                 JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE n.nspname = current_schema()
+                   AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = i.indexrelid)",
+                "SELECT CAST(cl.relname AS TEXT) || '.' || CAST(a.attname AS TEXT) || ' -> ' ||
+                        CAST(rc.relname AS TEXT) || '.' || CAST(ra.attname AS TEXT) ||
+                        ' ON DELETE ' || CASE c.confdeltype
+                            WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
+                            WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL'
+                            ELSE 'SET DEFAULT' END
+                 FROM pg_constraint c
+                 JOIN pg_class cl ON cl.oid = c.conrelid
+                 JOIN pg_class rc ON rc.oid = c.confrelid
+                 JOIN pg_namespace n ON n.oid = cl.relnamespace
+                 CROSS JOIN LATERAL unnest(c.conkey, c.confkey) AS k(attnum, refnum)
+                 JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+                 JOIN pg_attribute ra ON ra.attrelid = c.confrelid AND ra.attnum = k.refnum
+                 WHERE c.contype = 'f' AND n.nspname = current_schema()",
+            ),
+        };
+        let mut out = Vec::new();
+        for sql in [columns, indexes, keys] {
+            let rows: Vec<String> = s.scalar(sql).fetch_all(s.pool()).await.unwrap();
+            out.push(rows.into_iter().collect::<Shape>());
+        }
+        let keys = out.pop().unwrap();
+        let indexes = out.pop().unwrap();
+        (out.pop().unwrap(), indexes, keys)
+    }
+
+    /// The PostgreSQL baseline plus its later migrations are the SQLite
+    /// migrations: the same tables, columns (and which may be NULL), named
+    /// indexes and foreign keys with their ON DELETE action (PostgreSQL adds
+    /// `route_grants.seq`, what SQLite's rowid is). A later migration must go
+    /// into both.
+    #[tokio::test]
+    async fn the_postgres_baseline_has_the_tables_of_the_sqlite_migrations() {
+        if scratch::test_database_url().is_none() {
+            eprintln!("SKIPPED without UF_TEST_DATABASE_URL: nothing to compare with");
+            return;
+        }
+        let pg = Store::open_in_memory().await.unwrap();
+        assert_eq!(pg.dialect(), Dialect::Postgres);
+        let dir = tempfile::tempdir().unwrap();
+        let lite = Store::open(&dir.path().join("gateway.db")).await.unwrap();
+        let (mut pg_columns, pg_indexes, pg_keys) = shape_of(&pg).await;
+        let (lite_columns, lite_indexes, lite_keys) = shape_of(&lite).await;
+        assert!(pg_columns.remove("route_grants.seq NOT NULL"));
+        assert_eq!(pg_columns, lite_columns, "columns and nullability");
+        assert_eq!(pg_indexes, lite_indexes);
+        assert_eq!(pg_keys, lite_keys, "foreign keys and their ON DELETE");
+        assert!(
+            lite_keys.contains("team_members.team_id -> teams.id ON DELETE CASCADE"),
+            "{lite_keys:?}"
+        );
+        assert!(
+            lite_columns.contains("users.external_id") && lite_indexes.contains("users_external")
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_url_takes_only_postgres_urls_and_lands_in_the_url_schema() {
+        let e = Store::connect_url("sqlite::memory:", 2)
+            .await
+            .err()
+            .unwrap();
+        assert!(e.to_string().contains("postgres"), "{e}");
+        let e = Store::connect_url("mysql://x/y", 2).await.err().unwrap();
+        assert!(e.to_string().contains("postgres"), "{e}");
+        let Some(base) = scratch::test_database_url() else {
+            eprintln!("SKIPPED without UF_TEST_DATABASE_URL: no PostgreSQL to connect to");
+            return;
+        };
+        // An own schema, chosen the way an operator can: by the URL.
+        let admin = Store::open_in_memory().await.unwrap();
+        let schema = format!("t_url_{}", std::process::id());
+        admin
+            .q_dyn(format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+            .execute(admin.pool())
+            .await
+            .unwrap();
+        admin
+            .q_dyn(format!("CREATE SCHEMA {schema}"))
+            .execute(admin.pool())
+            .await
+            .unwrap();
+        let sep = if base.contains('?') { '&' } else { '?' };
+        let url = format!("{base}{sep}options=-c%20search_path%3D{schema}");
+        let store = Store::connect_url(&url, 3).await.unwrap();
+        assert_eq!(
+            store.pool().options().get_acquire_timeout(),
+            CONNECT_TIMEOUT
+        );
+        store.insert_key("k", "h", "d", None).await.unwrap();
+        assert!(store.active_key_by_hash("h").await.unwrap().is_some());
+        let tables: i64 = admin
+            .scalar_dyn(format!(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '{schema}' AND table_name = 'virtual_keys'"
+            ))
+            .fetch_one(admin.pool())
+            .await
+            .unwrap();
+        assert_eq!(tables, 1, "the tables are in the schema of the URL");
+        // Opening it again changes nothing (the migrations are recorded).
+        let again = Store::connect_url(&url, 3).await.unwrap();
+        assert!(again.active_key_by_hash("h").await.unwrap().is_some());
+        admin
+            .q_dyn(format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(admin.pool())
+            .await
+            .unwrap();
+    }
+
+    /// The wait for the server is capped; the migrations are not: a run held
+    /// up longer than the cap by a lock on its own table still finishes.
+    #[tokio::test]
+    async fn a_slow_migration_is_not_cut_off_by_the_connect_cap() {
+        use sqlx::Connection;
+        let Some(base) = scratch::test_database_url() else {
+            eprintln!("SKIPPED without UF_TEST_DATABASE_URL: no PostgreSQL to connect to");
+            return;
+        };
+        let admin = Store::open_in_memory().await.unwrap();
+        let schema = format!("t_slow_{}", std::process::id());
+        for sql in [
+            format!("DROP SCHEMA IF EXISTS {schema} CASCADE"),
+            format!("CREATE SCHEMA {schema}"),
+        ] {
+            admin.q_dyn(sql).execute(admin.pool()).await.unwrap();
+        }
+        let sep = if base.contains('?') { '&' } else { '?' };
+        let url = format!("{base}{sep}options=-c%20search_path%3D{schema}");
+        drop(Store::connect_url(&url, 2).await.unwrap());
+        // Another session holds the migration table for 3 s.
+        let mut holder = sqlx::postgres::PgConnection::connect(&url).await.unwrap();
+        sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
+        sqlx::query("LOCK TABLE _sqlx_migrations IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut holder)
+            .await
+            .unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            sqlx::query("COMMIT").execute(&mut holder).await.unwrap();
+        });
+        let started = std::time::Instant::now();
+        let store = Store::connect_url_within(&url, 2, std::time::Duration::from_secs(1))
+            .await
+            .expect("the cap is for the connection, not the migrations");
+        assert!(started.elapsed() >= std::time::Duration::from_secs(2));
+        drop(store);
+        release.await.unwrap();
+        admin
+            .q_dyn(format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(admin.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refused_port_is_reported_with_the_wait() {
+        let e = Store::connect_url_within(
+            "postgres://u:hunter2-secret@127.0.0.1:1/db",
+            2,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .err()
+        .unwrap();
+        let text = format!("{e:#}");
+        assert!(text.contains("within 1 s"), "{text}");
+        assert!(text.contains("refused"), "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
+    }
+
+    /// A read transaction sees one moment: what another session commits
+    /// meanwhile is not in its later reads (on PostgreSQL this is
+    /// REPEATABLE READ, READ ONLY; on SQLite the WAL snapshot).
+    #[tokio::test]
+    async fn a_read_transaction_sees_one_moment() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = if scratch::test_database_url().is_some() {
+            Store::open_in_memory().await.unwrap()
+        } else {
+            // An in-memory SQLite store has one connection only.
+            Store::open(&dir.path().join("gateway.db")).await.unwrap()
+        };
+        async fn count(store: &Store, tx: &mut sqlx::Transaction<'static, Any>) -> i64 {
+            store
+                .scalar("SELECT COUNT(*) FROM teams")
+                .fetch_one(&mut **tx)
+                .await
+                .unwrap()
+        }
+        let mut tx = store.begin_read().await.unwrap();
+        let before: i64 = count(&store, &mut tx).await;
+        let mut other = store.begin().await.unwrap();
+        other.insert_team("Late").await.unwrap();
+        other.commit().await.unwrap();
+        assert_eq!(
+            count(&store, &mut tx).await,
+            before,
+            "the later commit is not seen"
+        );
+        if store.dialect() == Dialect::Postgres {
+            let iso: String = store
+                .scalar("SHOW transaction_isolation")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            assert_eq!(iso, "repeatable read");
+            let write = store
+                .q("INSERT INTO teams (org_id, name) VALUES (1, 'No')")
+                .execute(&mut *tx)
+                .await;
+            assert!(write.is_err(), "the transaction is read only");
+        }
+        drop(tx);
+        // And it is the transaction the snapshot and the export read in.
+        assert_eq!(
+            store.snapshot_rows().await.unwrap().team_stamps.len() as i64,
+            before + 1
+        );
+        let fresh = store.begin_read().await.unwrap();
+        drop(fresh);
     }
 }

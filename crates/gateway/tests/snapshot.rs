@@ -415,7 +415,7 @@ async fn cli_changes_appear_after_refresh() {
 async fn concurrent_refreshes_end_equal_to_the_database() {
     // A database on disk, so writes and reads really run side by side.
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(&dir.path().join("test.db")).await.unwrap();
+    let store = common::concurrent_store(dir.path()).await;
     let api = api_on(store, false).await;
 
     let mut tasks = Vec::new();
@@ -804,6 +804,12 @@ async fn in_snapshot(api: &Api, hash: &str) -> bool {
 async fn a_refresh_finishes_when_its_caller_goes_away() {
     let w = world().await;
     let api = &w.org.api;
+    if common::skipped_on_postgres(
+        &api.store,
+        "the test holds the in-memory SQLite database's only connection; a Postgres pool has several",
+    ) {
+        return;
+    }
     let key = generate_key();
     // The open transaction holds the only connection, so the refresh waits.
     let mut tx = api.store.begin().await.unwrap();

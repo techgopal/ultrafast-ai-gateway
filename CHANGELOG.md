@@ -5,6 +5,157 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.0.0-beta.3] - 2026-10-10
+
+Phase 2: tracing and alerts, single sign-on, optional PostgreSQL, guardrails,
+the Responses API, structured outputs, images, audio and prompt templates, and
+admin SDKs for TypeScript and Python.
+
+### Added
+- **Admin SDKs.** `@ultrafast/admin` (`clients/admin-ts`, TypeScript) and
+  `ultrafast-admin` (`clients/admin-py`, Python 3.11 or newer, sync and async)
+  for the admin API (`/api`), generated from `openapi/admin.json`, with an
+  access-token wrapper, a total timeout per call and a typed `AdminApiError`
+  (`status`, `code`, `message`, `fields`). Build from source; not published to
+  npm or PyPI. CI regenerates both and fails when the committed copy differs,
+  and runs their tests against the real gateway (Python 3.11 and 3.14). The
+  Python calls are imported from `ultrafast_admin.api` and
+  `ultrafast_admin.models`.
+- **Structured outputs.** `response_format` (`text`, `json_object`, `json_schema`)
+  on `/v1/chat/completions`, `text.format` on `/v1/responses`, and
+  `output_config.format` on `/v1/messages`. OpenAI and Azure get it as it
+  came; Anthropic gets `output_config.format` (generally available, no beta
+  header; `json_object` is the schema `{"type":"object"}`, which may be
+  answered with `{}`); Gemini gets `responseMimeType` and
+  `responseJsonSchema`. `strict`, `name` and `description` are not sent to
+  Anthropic and Gemini. The clients take it (`responseFormat` with
+  `jsonSchema` in TypeScript); the playground has a *Response format* control.
+  A schema given as `output_config.format` on `/v1/messages` is sent to
+  OpenAI and Azure as `strict: true`, as Anthropic always enforces it.
+- **Responses API.** `POST /v1/responses` over any provider, stateless, with
+  streaming (no `[DONE]`), function tools, images, `text.format`,
+  `reasoning.effort` and `prompt`. `store`, `previous_response_id`,
+  conversations, background mode, built-in tools and an array
+  `function_call_output` are a 400; `reasoning` items and
+  `include: ["reasoning.encrypted_content"]` are accepted and ignored.
+  `reasoning_effort` is also accepted on chat completions (OpenAI and Azure;
+  a 400 elsewhere).
+- **Images.** `POST /v1/images/generations` for OpenAI, Azure and compatible
+  providers. A call that was sent is never repeated (504 on a timeout, no
+  fallback); timeouts of at least 180 s and 300 s; answers up to 128 MiB.
+  Playground *Images* mode.
+- **Audio.** `POST /v1/audio/transcriptions`, `/v1/audio/translations` and
+  `/v1/audio/speech` for OpenAI, Azure and compatible providers. Uploads are
+  capped by `UF_MAX_AUDIO_BYTES` (25 MiB by default), must arrive within 60 s
+  (15 s idle), and at most `UF_MAX_CONCURRENT_UPLOADS` (8 by default) are
+  being received at once per process (a place is given back when the body has
+  arrived); send `model` before `file` to be refused early. Guardrails check
+  speech input, the transcription `prompt` and the transcript (subtitles by
+  cue). Playground *Audio* mode, which checks a file against the gateway's cap
+  (`GET /api/playground/config`).
+- **Prompt templates.** Named, versioned messages with `{{variables}}`: a
+  `prompt` object (`id`, `version`, `variables`) on `/v1/chat/completions` and
+  `/v1/responses`; versions never change; the latest is kept in memory (a
+  refresh reads only what changed; a team lead may make 100 templates). A
+  Prompts page (versions, a line diff between versions, variables found as you
+  type, *Open in Playground*), a template picker in the playground,
+  `/api/prompts/*`, templates in configuration export and import, and the
+  `name@version` of a call in the logs (migrations: SQLite 0018, PostgreSQL
+  0004).
+- The logs filter by endpoint (`GET /api/logs?endpoint=`) and show each call's
+  endpoint and prompt. Calls are logged, counted and traced under `responses`,
+  `images`, `transcriptions`, `translations` and `speech` too, and an external
+  guardrail is told these endpoint names.
+- **PostgreSQL (optional).** `UF_DATABASE_URL` (a `postgres://` URL, TLS by
+  `sslmode`; `UF_DATABASE_MAX_CONNECTIONS`, default 10) runs the gateway on
+  PostgreSQL instead of SQLite, so several processes can share one database.
+  `UF_MASTER_KEY` is required there. Budgets are shared (each process flushes
+  its spend about every 5 s); rate limits, the response cache, single-flight,
+  breaker health, the setup code and alert error windows stay per process.
+  Back up with `pg_dump`: the console's Backup panel says so, `GET /api/backup`
+  answers 409 `backup_unsupported`, and `settings` reports `database`. A
+  Settings panel shows which database is in use. Docker Compose example in
+  `docs/compose/postgres.yml`; README section "Using PostgreSQL", including
+  what a configuration export and import moves from SQLite. The browser tests
+  run on PostgreSQL with `UF_E2E_DATABASE_URL`. No online migration from
+  SQLite. Tested on PostgreSQL 14 and 17 (the Rust suite, and for this release
+  the whole browser suite on 14.24 and 17: 111 passed, the 7 SQLite-only tests
+  skipped); the gateway logs `database: sqlite`
+  or `database: postgres` at start. Revocations (keys, users, grants) and
+  single sign-on settings reach the other processes within about 30 s. An
+  error-rate or circuit alert episode belongs to the process that opened it
+  (migrations: SQLite 0016, PostgreSQL 0002).
+- **Guardrails.** Block, redact or flag what goes to models and what comes
+  back. Rules that run in the gateway (keywords, regular expressions, PII types
+  `EMAIL`, `PHONE`, `CREDIT_CARD`, `IBAN`, `US_SSN`, `IPV4`, `IPV6`, `SECRET`)
+  with an action and a direction each, or an external signed webhook (timeout,
+  fail open or closed, `x-uf-signature`). They apply to every call, to a route
+  or to a key, in order; built-in rules run before external ones. Inputs
+  (text parts, system, tool results, tool-call arguments, names, embeddings
+  inputs) and outputs (answers and tool-call arguments), streams included, are
+  checked with a 256-character hold-back; a block is a 400 `guardrail_blocked`
+  on input and a `content_filter` ending on output. The logs carry a badge,
+  details and a filter (`guardrail=`); a console page with a rule editor, *Try
+  it* and attachment on routes and keys; `/api/guardrails/*` (admin only);
+  guardrails in configuration export and import; metrics
+  `uf_guardrail_actions_total` and `uf_guardrail_external_errors_total`; span
+  attribute `uf.guardrail.action` (migrations: SQLite 0017, PostgreSQL 0003).
+  README section "Guardrails" lists the detectors' known misses and the limits.
+  The rate limits run before the guardrails (a blocked call gives its request
+  and tokens back), large scans are bounded to as many at once as CPUs, and
+  only admins see which guardrail or rule acted in the logs.
+- Multiple Anthropic `system` blocks are now joined with a newline (they were
+  joined with nothing), so a guardrail sees, and the provider receives, the
+  blocks apart.
+- **Tracing.** `UF_OTEL_ENDPOINT` (also `UF_OTEL_HEADERS`, `UF_OTEL_SERVICE_NAME`,
+  `UF_OTEL_SAMPLE_RATIO`): every `/v1` call is exported as an OpenTelemetry
+  trace over OTLP/HTTP (JSON), one server span per call and one span per
+  provider attempt, with `gen_ai.*` attributes; an incoming `traceparent` is
+  honored. Best effort: bounded queue, drops counted, 5 s cap at shutdown.
+  Metrics `uf_otel_spans_exported_total`, `uf_otel_spans_dropped_total`,
+  `uf_otel_export_failures_total`.
+- **Alerts.** Budget, error-rate and circuit-open rules, delivered to signed
+  webhook or Slack-compatible channels (`x-uf-signature`, retries at now, +5 s,
+  +30 s, per-channel limits); a console page, `/api/alerts/*` (admin only),
+  and alert channels and rules in configuration export and import. Metric
+  `uf_alert_deliveries_total{result}`.
+- Alert history is now deleted with the request logs, after the log retention
+  period (it was kept for ever).
+- A circuit alert resolves only after its breaker has stayed closed for
+  5 minutes, so a flapping provider is one episode. Budget alerts of a past
+  period no longer show as firing. The `requested` name in logs and traces is
+  cut at 256 bytes.
+- **Single sign-on.** Sign in with one OpenID Connect provider (Google,
+  Microsoft Entra ID, Okta, Keycloak, any with discovery): authorization code
+  flow with PKCE, ID token checks (RS/PS256-512, ES256/384), settings in the
+  console (Settings, Single sign-on) and `GET/PUT /api/settings/oidc`, a test
+  endpoint that fetches the issuer's discovery and key set (admin only).
+  `UF_PUBLIC_URL` / `--public-url` names the gateway's address (no path; plain
+  http only for localhost unless `--insecure-cookies`). Users are linked by
+  `<issuer>|<sub>`, by verified email, or created for allowed domains; an
+  optional admin group sets the role at each sign-in (a missing groups claim
+  leaves the role; the last admin is never demoted). Starting a sign-in and the
+  callback each have a rate limit of their own, apart from password failures;
+  `sso_error` codes on the sign-in page; metric
+  `uf_oidc_signins_total{result}`. Users show how they sign in (Password, SSO only
+  or Password and SSO; `has_password` in the user view), and the Account page
+  tells a user without a password so. Migration 0015.
+
+### Changed
+- The admin API description (`openapi/admin.json`) names the keywords variant of
+  a guardrail matcher (`KeywordsMatcher`), declares alert rule `params` as an
+  open object, and types the backup and playground speech downloads as binary
+  (`string`, `format: binary`, also under `application/octet-stream`).
+- The console's Settings configuration export is fetched first: a refusal
+  (409 `export_blocked`, with the name of the prompt template that cannot be
+  read) is shown in place, and a file is saved only when there is one.
+- OpenAI (base URL host `api.openai.com`) and Azure targets are sent
+  `max_completion_tokens` in place of `max_tokens`, which the o-series and
+  GPT-5 models require; chat completions accept `max_completion_tokens`. Other
+  OpenAI-compatible hosts keep `max_tokens`.
+
 ## [2.0.0-beta.2] - 2026-10-05
 
 Tool calling and image input on both chat endpoints, single-flight for the

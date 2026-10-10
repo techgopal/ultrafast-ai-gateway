@@ -93,3 +93,24 @@ const SPAN: Readonly<Record<Preset, number>> = {
 export function sinceFor(preset: Preset, now: number): string {
   return new Date(now - SPAN[preset]).toISOString().slice(0, 19) + "Z";
 }
+
+/**
+ * The endpoints a call is logged under, as the gateway names them, with the
+ * words the console uses. The playground logs its calls as `playground`.
+ */
+export const ENDPOINTS: readonly (readonly [value: string, label: string])[] = [
+  ["chat", "Chat completions"],
+  ["messages", "Messages"],
+  ["responses", "Responses"],
+  ["embeddings", "Embeddings"],
+  ["images", "Images"],
+  ["transcriptions", "Transcriptions"],
+  ["translations", "Translations"],
+  ["speech", "Speech"],
+  ["playground", "Playground"],
+];
+
+/** The words for an endpoint; a name this console does not know is shown as it is. */
+export function endpointLabel(endpoint: string): string {
+  return ENDPOINTS.find(([value]) => value === endpoint)?.[1] ?? endpoint;
+}

@@ -1,8 +1,9 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{compared, error_code, org, raw, Org, Signed};
+use common::{compared, error_code, org, raw, Org, Signed, ORG_PASSWORD};
 use serde_json::{json, Value};
+use ultrafast_gateway::identity::{Role, UserStatus};
 use ultrafast_gateway::secrets::{generate_key, generate_secret, TOKEN_PREFIX};
 
 const NEW_PASSWORD: &str = "another horse battery";
@@ -77,9 +78,9 @@ async fn admin_lists_everyone() {
         ]
     );
     let text = body.to_string();
-    assert!(!text.contains("password"));
+    assert!(!text.contains("password_hash"));
     assert!(!text.contains("argon2"));
-    assert_eq!(body["users"][0].as_object().unwrap().len(), 8);
+    assert_eq!(body["users"][0].as_object().unwrap().len(), 10);
 }
 
 #[tokio::test]
@@ -309,8 +310,8 @@ async fn viewing_users_hides_outsiders() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["email"], "lena@example.com");
-    assert_eq!(body.as_object().unwrap().len(), 8);
-    assert!(!body.to_string().contains("password"));
+    assert_eq!(body.as_object().unwrap().len(), 10);
+    assert!(!body.to_string().contains("password_hash"));
 
     // tomas shares Research with arjun, but arjun does not lead it.
     let hidden = org
@@ -607,6 +608,108 @@ async fn two_admins_cannot_both_be_removed() {
     assert_eq!(error_code(&answer), "last_admin");
     assert_eq!(me_status(&org, &arjun).await, StatusCode::OK);
     assert_eq!(org.api.store.count_active_admins().await.unwrap(), 1);
+}
+
+/// Two admins who disable each other at the same moment: the guard reads the
+/// admins after writing, so it must run alone (on PostgreSQL a plain
+/// transaction sees the other one still active and both commit).
+#[tokio::test]
+async fn two_admins_disabling_each_other_at_once_leave_one() {
+    let org = common::org_concurrent().await;
+    let store = org.api.store.clone();
+    // Maya is demoted so that each round's pair are the only admins.
+    let mut tx = store.begin().await.unwrap();
+    tx.set_user_role(org.maya, Role::Member).await.unwrap();
+    tx.commit().await.unwrap();
+    let mut survivor: Option<i64> = None;
+    for round in 0..15 {
+        if let Some(id) = survivor.take() {
+            let mut tx = store.begin().await.unwrap();
+            tx.set_user_status(id, UserStatus::Disabled).await.unwrap();
+            tx.commit().await.unwrap();
+        }
+        let (ea, eb) = (
+            format!("a{round}@example.com"),
+            format!("b{round}@example.com"),
+        );
+        let a = common::seed_user(&store, &ea, Role::Admin, ORG_PASSWORD).await;
+        let b = common::seed_user(&store, &eb, Role::Admin, ORG_PASSWORD).await;
+        org.api.state.refresh().await.unwrap();
+        let sa = common::sign_in(&org.api.app, &ea, ORG_PASSWORD).await;
+        let sb = common::sign_in(&org.api.app, &eb, ORG_PASSWORD).await;
+        let (path_a, path_b) = (user_path(a), user_path(b));
+        let ((s1, _), (s2, _)) = tokio::join!(
+            org.call(
+                Some(&sa),
+                "PATCH",
+                &path_b,
+                Some(json!({ "status": "disabled" }))
+            ),
+            org.call(
+                Some(&sb),
+                "PATCH",
+                &path_a,
+                Some(json!({ "status": "disabled" }))
+            ),
+        );
+        assert!(
+            s1 == StatusCode::OK || s2 == StatusCode::OK,
+            "round {round}: neither change was made: {s1} {s2}"
+        );
+        assert_eq!(
+            store.count_active_admins().await.unwrap(),
+            1,
+            "round {round}: {s1} {s2}"
+        );
+        survivor = if s1 == StatusCode::OK {
+            Some(a)
+        } else {
+            Some(b)
+        };
+    }
+}
+
+/// Two admins who delete each other at the same moment: the guard counts the
+/// admins left after the delete, so the deletes must run one at a time.
+#[tokio::test]
+async fn two_admins_deleting_each_other_at_once_leave_one() {
+    let org = common::org_concurrent().await;
+    let store = org.api.store.clone();
+    let mut tx = store.begin().await.unwrap();
+    tx.set_user_role(org.maya, Role::Member).await.unwrap();
+    tx.commit().await.unwrap();
+    for round in 0..15 {
+        let (ea, eb) = (
+            format!("da{round}@example.com"),
+            format!("db{round}@example.com"),
+        );
+        let a = common::seed_user(&store, &ea, Role::Admin, ORG_PASSWORD).await;
+        let b = common::seed_user(&store, &eb, Role::Admin, ORG_PASSWORD).await;
+        org.api.state.refresh().await.unwrap();
+        let sa = common::sign_in(&org.api.app, &ea, ORG_PASSWORD).await;
+        let sb = common::sign_in(&org.api.app, &eb, ORG_PASSWORD).await;
+        let (path_a, path_b) = (user_path(a), user_path(b));
+        let ((s1, _), (s2, _)) = tokio::join!(
+            org.call(Some(&sa), "DELETE", &path_b, None),
+            org.call(Some(&sb), "DELETE", &path_a, None),
+        );
+        assert!(
+            s1 == StatusCode::NO_CONTENT || s2 == StatusCode::NO_CONTENT,
+            "round {round}: neither delete was made: {s1} {s2}"
+        );
+        assert_eq!(
+            store.count_active_admins().await.unwrap(),
+            1,
+            "round {round}: {s1} {s2}"
+        );
+        // The survivor goes, so the next round's pair are the only admins.
+        let survivor = if s1 == StatusCode::NO_CONTENT { a } else { b };
+        let mut tx = store.begin().await.unwrap();
+        tx.set_user_status(survivor, UserStatus::Disabled)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
 }
 
 #[tokio::test]

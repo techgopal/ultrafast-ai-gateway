@@ -1,16 +1,18 @@
 //! Users and their invites.
 
+use sqlx::AnyConnection;
 use std::fmt;
 
 use anyhow::{anyhow, Context, Result};
-use sqlx::sqlite::SqliteRow;
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::Row;
 
-use super::{check_timestamp, write_error, Store, Tx, DEFAULT_ORG};
+use super::dialect::Dialected;
+use super::{check_timestamp, now, write_error, Store, Tx, DEFAULT_ORG};
 use crate::identity::{Role, UserStatus};
 
 const USER_COLUMNS: &str =
-    "id, email, name, role, status, password_hash, created_at, last_active_at";
+    "id, email, name, role, status, password_hash, auth_provider, external_id, created_at, last_active_at";
 
 const COUNT_ACTIVE_ADMINS: &str =
     "SELECT COUNT(*) FROM users WHERE org_id = ? AND role = 'admin' AND status = 'active'";
@@ -23,6 +25,10 @@ pub struct UserRow {
     pub role: Role,
     pub status: UserStatus,
     pub password_hash: Option<String>,
+    /// `password`, or the id of the sign-in provider the user is linked to.
+    pub auth_provider: String,
+    /// The user's identity at that provider; `None` for password users.
+    pub external_id: Option<String>,
     pub created_at: String,
     pub last_active_at: Option<String>,
 }
@@ -42,6 +48,8 @@ impl fmt::Debug for UserRow {
             .field("role", &self.role)
             .field("status", &self.status)
             .field("password_hash", &password_hash)
+            .field("auth_provider", &self.auth_provider)
+            .field("external_id", &self.external_id)
             .field("created_at", &self.created_at)
             .field("last_active_at", &self.last_active_at)
             .finish()
@@ -65,7 +73,7 @@ pub struct InviteRow {
     pub expires_at: String,
 }
 
-fn user_from(r: &SqliteRow) -> Result<UserRow> {
+fn user_from(r: &AnyRow) -> Result<UserRow> {
     let role: String = r.get("role");
     let status: String = r.get("status");
     Ok(UserRow {
@@ -76,6 +84,8 @@ fn user_from(r: &SqliteRow) -> Result<UserRow> {
         status: UserStatus::parse(&status)
             .ok_or_else(|| anyhow!("stored user status is not known"))?,
         password_hash: r.get("password_hash"),
+        auth_provider: r.get("auth_provider"),
+        external_id: r.get("external_id"),
         created_at: r.get("created_at"),
         last_active_at: r.get("last_active_at"),
     })
@@ -83,7 +93,8 @@ fn user_from(r: &SqliteRow) -> Result<UserRow> {
 
 impl Store {
     pub async fn count_users(&self) -> Result<i64> {
-        let n = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE org_id = ?")
+        let n = self
+            .scalar("SELECT COUNT(*) FROM users WHERE org_id = ?")
             .bind(DEFAULT_ORG)
             .fetch_one(self.pool())
             .await?;
@@ -91,7 +102,8 @@ impl Store {
     }
 
     pub async fn count_active_admins(&self) -> Result<i64> {
-        let n = sqlx::query_scalar(COUNT_ACTIVE_ADMINS)
+        let n = self
+            .scalar(COUNT_ACTIVE_ADMINS)
             .bind(DEFAULT_ORG)
             .fetch_one(self.pool())
             .await?;
@@ -100,7 +112,8 @@ impl Store {
 
     pub async fn user_by_id(&self, id: i64) -> Result<Option<UserRow>> {
         let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -111,9 +124,31 @@ impl Store {
     /// `email` must already be normalized.
     pub async fn user_by_email(&self, email: &str) -> Result<Option<UserRow>> {
         let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE email = ? AND org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(email)
             .bind(DEFAULT_ORG)
+            .fetch_optional(self.pool())
+            .await?;
+        row.as_ref().map(user_from).transpose()
+    }
+
+    /// The user linked to this identity at a sign-in provider, whatever
+    /// the user's status.
+    pub async fn user_by_external(
+        &self,
+        provider: &str,
+        external_id: &str,
+    ) -> Result<Option<UserRow>> {
+        let sql = format!(
+            "SELECT {USER_COLUMNS} FROM users
+             WHERE org_id = ? AND auth_provider = ? AND external_id = ?"
+        );
+        let row = self
+            .q_dyn(sql)
+            .bind(DEFAULT_ORG)
+            .bind(provider)
+            .bind(external_id)
             .fetch_optional(self.pool())
             .await?;
         row.as_ref().map(user_from).transpose()
@@ -139,7 +174,8 @@ impl Store {
                    WHERE org_id = ? AND team_id IN ({marks})))
              ORDER BY email"
         );
-        let mut query = sqlx::query(AssertSqlSafe(sql))
+        let mut query = self
+            .q_dyn(sql)
             .bind(DEFAULT_ORG)
             .bind(own_id)
             .bind(DEFAULT_ORG);
@@ -152,47 +188,47 @@ impl Store {
 
     /// Whether `user_id` belongs to at least one team that `lead_id` leads.
     pub async fn shares_led_team(&self, lead_id: i64, user_id: i64) -> Result<bool> {
-        let found: bool = sqlx::query_scalar(
-            "SELECT EXISTS (
+        let found: i64 = self
+            .scalar(
+                "SELECT CASE WHEN EXISTS (
                  SELECT 1 FROM team_members led
                  JOIN team_members theirs ON theirs.team_id = led.team_id
                  WHERE led.user_id = ? AND led.role = 'lead' AND led.org_id = ?
-                   AND theirs.user_id = ? AND theirs.org_id = ?)",
-        )
-        .bind(lead_id)
-        .bind(DEFAULT_ORG)
-        .bind(user_id)
-        .bind(DEFAULT_ORG)
-        .fetch_one(self.pool())
-        .await?;
-        Ok(found)
+                   AND theirs.user_id = ? AND theirs.org_id = ?) THEN 1 ELSE 0 END",
+            )
+            .bind(lead_id)
+            .bind(DEFAULT_ORG)
+            .bind(user_id)
+            .bind(DEFAULT_ORG)
+            .fetch_one(self.pool())
+            .await?;
+        Ok(found != 0)
     }
 
     /// Records that the user was active just now.
     pub async fn touch_user(&self, id: i64) -> Result<()> {
-        sqlx::query(
-            "UPDATE users SET last_active_at = datetime('now') WHERE id = ? AND org_id = ?",
-        )
-        .bind(id)
-        .bind(DEFAULT_ORG)
-        .execute(self.pool())
-        .await?;
+        self.q("UPDATE users SET last_active_at = ? WHERE id = ? AND org_id = ?")
+            .bind(now())
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.pool())
+            .await?;
         Ok(())
     }
 
     /// Finds an invite that is unused and has not expired.
     pub async fn invite_by_hash(&self, hash: &str) -> Result<Option<InviteRow>> {
-        let row = sqlx::query(
-            "SELECT id, user_id, expires_at FROM invites
+        let row = self
+            .q("SELECT id, user_id, expires_at FROM invites
              WHERE token_hash = ?
                AND org_id = ?
                AND used_at IS NULL
-               AND expires_at > datetime('now')",
-        )
-        .bind(hash)
-        .bind(DEFAULT_ORG)
-        .fetch_optional(self.pool())
-        .await?;
+               AND expires_at > ?")
+            .bind(hash)
+            .bind(DEFAULT_ORG)
+            .bind(now())
+            .fetch_optional(self.pool())
+            .await?;
         Ok(row.map(|r| InviteRow {
             id: r.get("id"),
             user_id: r.get("user_id"),
@@ -205,7 +241,8 @@ impl Tx<'_> {
     /// The user as the transaction sees them.
     pub async fn user_by_id(&mut self, id: i64) -> Result<Option<UserRow>> {
         let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())
@@ -217,7 +254,8 @@ impl Tx<'_> {
     /// already be normalized.
     pub async fn user_by_email(&mut self, email: &str) -> Result<Option<UserRow>> {
         let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE email = ? AND org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(email)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())
@@ -225,9 +263,31 @@ impl Tx<'_> {
         row.as_ref().map(user_from).transpose()
     }
 
+    /// The user linked to this identity at a sign-in provider, as the
+    /// transaction sees them, whatever the user's status.
+    pub async fn user_by_external(
+        &mut self,
+        provider: &str,
+        external_id: &str,
+    ) -> Result<Option<UserRow>> {
+        let sql = format!(
+            "SELECT {USER_COLUMNS} FROM users
+             WHERE org_id = ? AND auth_provider = ? AND external_id = ?"
+        );
+        let row = self
+            .q_dyn(sql)
+            .bind(DEFAULT_ORG)
+            .bind(provider)
+            .bind(external_id)
+            .fetch_optional(self.conn())
+            .await?;
+        row.as_ref().map(user_from).transpose()
+    }
+
     /// Counts inside the transaction, so it sees the transaction's own changes.
     pub async fn count_users(&mut self) -> Result<i64> {
-        let n = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE org_id = ?")
+        let n = self
+            .scalar("SELECT COUNT(*) FROM users WHERE org_id = ?")
             .bind(DEFAULT_ORG)
             .fetch_one(self.conn())
             .await?;
@@ -236,20 +296,42 @@ impl Tx<'_> {
 
     /// Fails with `StoreError::Duplicate` when the email is taken.
     pub async fn insert_user(&mut self, u: NewUser<'_>) -> Result<i64> {
-        let r = sqlx::query(
-            "INSERT INTO users (org_id, email, name, role, status, password_hash)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(u.email)
-        .bind(u.name)
-        .bind(u.role.as_str())
-        .bind(u.status.as_str())
-        .bind(u.password_hash)
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
-        Ok(r.last_insert_rowid())
+        let id: i64 = self
+            .scalar(
+                "INSERT INTO users (org_id, email, name, role, status, password_hash)
+             VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            )
+            .bind(DEFAULT_ORG)
+            .bind(u.email)
+            .bind(u.name)
+            .bind(u.role.as_str())
+            .bind(u.status.as_str())
+            .bind(u.password_hash)
+            .fetch_one(self.conn())
+            .await
+            .map_err(write_error)?;
+        Ok(id)
+    }
+
+    /// Links the user to an identity at a sign-in provider. Fails with
+    /// `StoreError::Duplicate` when another user has that identity; false
+    /// when the user does not exist.
+    pub async fn link_external(
+        &mut self,
+        user_id: i64,
+        provider: &str,
+        external_id: &str,
+    ) -> Result<bool> {
+        let r = self
+            .q("UPDATE users SET auth_provider = ?, external_id = ? WHERE id = ? AND org_id = ?")
+            .bind(provider)
+            .bind(external_id)
+            .bind(user_id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await
+            .map_err(write_error)?;
+        Ok(r.rows_affected() == 1)
     }
 
     pub async fn set_user_name(&mut self, id: i64, name: &str) -> Result<bool> {
@@ -289,7 +371,8 @@ impl Tx<'_> {
     }
 
     async fn set_user_column(&mut self, sql: &'static str, value: &str, id: i64) -> Result<bool> {
-        let r = sqlx::query(sql)
+        let r = self
+            .q(sql)
             .bind(value)
             .bind(id)
             .bind(DEFAULT_ORG)
@@ -301,7 +384,8 @@ impl Tx<'_> {
     /// Also removes the user's invites, memberships, sessions and access
     /// tokens, and detaches their keys.
     pub async fn delete_user(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM users WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM users WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -311,7 +395,8 @@ impl Tx<'_> {
 
     /// Counts inside the transaction, so it sees the transaction's own changes.
     pub async fn count_active_admins(&mut self) -> Result<i64> {
-        let n = sqlx::query_scalar(COUNT_ACTIVE_ADMINS)
+        let n = self
+            .scalar(COUNT_ACTIVE_ADMINS)
             .bind(DEFAULT_ORG)
             .fetch_one(self.conn())
             .await?;
@@ -326,33 +411,33 @@ impl Tx<'_> {
         expires_at: &str,
     ) -> Result<i64> {
         check_timestamp(expires_at).context("expires_at is not valid")?;
-        let r = sqlx::query(
-            "INSERT INTO invites (org_id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)",
+        let id: i64 = self.scalar(
+            "INSERT INTO invites (org_id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?) RETURNING id",
         )
         .bind(DEFAULT_ORG)
         .bind(user_id)
         .bind(token_hash)
         .bind(expires_at)
-        .execute(self.conn())
+        .fetch_one(self.conn())
         .await?;
-        Ok(r.last_insert_rowid())
+        Ok(id)
     }
 
     /// Returns `false` if the invite was already used.
     pub async fn use_invite(&mut self, invite_id: i64) -> Result<bool> {
-        let r = sqlx::query(
-            "UPDATE invites SET used_at = datetime('now')
-             WHERE id = ? AND org_id = ? AND used_at IS NULL",
-        )
-        .bind(invite_id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await?;
+        let r = self
+            .q("UPDATE invites SET used_at = ?
+             WHERE id = ? AND org_id = ? AND used_at IS NULL")
+            .bind(now())
+            .bind(invite_id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
         Ok(r.rows_affected() == 1)
     }
 
     pub async fn delete_invites_of(&mut self, user_id: i64) -> Result<()> {
-        sqlx::query("DELETE FROM invites WHERE user_id = ? AND org_id = ?")
+        self.q("DELETE FROM invites WHERE user_id = ? AND org_id = ?")
             .bind(user_id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -361,9 +446,10 @@ impl Tx<'_> {
     }
 }
 
-pub(crate) async fn list_users_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<UserRow>> {
+pub(crate) async fn list_users_in(conn: &mut AnyConnection) -> Result<Vec<UserRow>> {
     let sql = format!("SELECT {USER_COLUMNS} FROM users WHERE org_id = ? ORDER BY email");
-    let rows = sqlx::query(AssertSqlSafe(sql))
+    let rows = conn
+        .q_dyn(sql)
         .bind(DEFAULT_ORG)
         .fetch_all(&mut *conn)
         .await?;
@@ -373,6 +459,81 @@ pub(crate) async fn list_users_in(conn: &mut sqlx::SqliteConnection) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn external_identities_are_unique_and_found() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let mut ids = Vec::new();
+        for email in ["a@example.com", "b@example.com", "c@example.com"] {
+            ids.push(
+                tx.insert_user(new_user(email, Role::Member, UserStatus::Active))
+                    .await
+                    .unwrap(),
+            );
+        }
+        // Password users all have no external id and never collide.
+        assert!(tx
+            .user_by_id(ids[0])
+            .await
+            .unwrap()
+            .unwrap()
+            .external_id
+            .is_none());
+        assert!(tx
+            .link_external(ids[0], "oidc", "https://idp|sub-1")
+            .await
+            .unwrap());
+        tx.commit().await.unwrap();
+        // Another user cannot take the same identity. (A failed statement
+        // ends a PostgreSQL transaction: it gets its own.)
+        let mut tx = s.begin().await.unwrap();
+        let err = tx
+            .link_external(ids[1], "oidc", "https://idp|sub-1")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<StoreError>(),
+            Some(StoreError::Duplicate)
+        ));
+        drop(tx);
+        let mut tx = s.begin().await.unwrap();
+        // The same id under another provider is another identity.
+        assert!(tx
+            .link_external(ids[1], "other", "https://idp|sub-1")
+            .await
+            .unwrap());
+        // Linking again to the same value is fine; a missing user is false.
+        assert!(tx
+            .link_external(ids[0], "oidc", "https://idp|sub-1")
+            .await
+            .unwrap());
+        assert!(!tx.link_external(9999, "oidc", "x|y").await.unwrap());
+        tx.commit().await.unwrap();
+
+        let found = s
+            .user_by_external("oidc", "https://idp|sub-1")
+            .await
+            .unwrap()
+            .expect("linked");
+        assert_eq!(found.id, ids[0]);
+        assert_eq!(found.auth_provider, "oidc");
+        assert_eq!(found.external_id.as_deref(), Some("https://idp|sub-1"));
+        assert!(s
+            .user_by_external("oidc", "https://idp|sub-2")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(s
+            .user_by_external("password", "https://idp|sub-1")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            s.user_by_id(ids[2]).await.unwrap().unwrap().auth_provider,
+            "password"
+        );
+    }
 
     #[tokio::test]
     async fn users_of_teams_and_shared_led_teams() {
@@ -532,6 +693,8 @@ mod tests {
             role: Role::Admin,
             status: UserStatus::Active,
             password_hash: Some("$argon2id$very-secret-hash".into()),
+            auth_provider: "password".into(),
+            external_id: None,
             created_at: "2026-01-01 00:00:00".into(),
             last_active_at: None,
         };

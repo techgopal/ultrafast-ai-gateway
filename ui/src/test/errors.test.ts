@@ -38,6 +38,11 @@ const statuses: Record<ErrorName, number> = {
   provider_exists: 409,
   model_exists: 409,
   route_exists: 409,
+  alert_channel_exists: 409,
+  alert_rule_exists: 409,
+  guardrail_exists: 409,
+  prompt_exists: 409,
+  export_blocked: 409,
   sync_unsupported: 422,
   sync_failed: 502,
 };
@@ -184,6 +189,24 @@ test("the messages of the routes are in the gateway source", () => {
   expect(fieldMessages.routeFirstToken).toBe("must be 1000 to 300000");
 });
 
+test("the messages of the alerts are in the gateway source", () => {
+  const dir = fileURLToPath(new URL("../../../crates/gateway/src/", import.meta.url));
+  const source = ["api/alerts.rs", "config.rs"]
+    .map((file) => readFileSync(dir + file, "utf8"))
+    .join("\n");
+  for (const message of [
+    fieldMessages.channelUrlScheme,
+    fieldMessages.channelUrlInvalid,
+    fieldMessages.channelMissing,
+    fieldMessages.needsUrl,
+    fieldMessages.budgetMissing,
+    errors.alert_channel_exists.body.error.message,
+    errors.alert_rule_exists.body.error.message,
+  ]) {
+    expect(source).toContain(`"${message}`);
+  }
+});
+
 test("the messages of team members, key allowlists and the API version are in the gateway source", () => {
   const dir = fileURLToPath(new URL("../../../crates/gateway/src/", import.meta.url));
   const source = ["api/teams.rs", "api/keys.rs", "api/providers.rs", "config.rs"]
@@ -205,7 +228,7 @@ test("the messages of team members, key allowlists and the API version are in th
 
 test("the refusals of the pipeline are in the gateway source, in the OpenAI shape", () => {
   const dir = fileURLToPath(new URL("../../../crates/gateway/src/", import.meta.url));
-  const source = ["proxy.rs", "limits/mod.rs", "budgets/mod.rs"]
+  const source = ["proxy.rs", "errors.rs", "limits/mod.rs", "budgets/mod.rs"]
     .map((file) => readFileSync(dir + file, "utf8"))
     .join("\n");
   // The messages are made with the name asked for, or of the limit.
@@ -221,11 +244,35 @@ test("the refusals of the pipeline are in the gateway source, in the OpenAI shap
     [429, "rate_limit_error"],
     [429, "rate_limit_error"],
     [503, "upstream_error"],
+    [413, "invalid_request_error"],
+    [400, "invalid_request_error"],
   ]);
+  expect(source).toContain("The audio file is too large.");
   for (const e of Object.values(pipelineErrors)) {
     expect(Object.keys(e.body.error)).toEqual(["message", "type", "param", "code"]);
   }
   expect(pipelineErrors.budget.body.error.code).toBe("budget_exceeded");
+  // The message names the guardrail and never what matched (`errors.rs`, `guardrail_blocked`).
+  expect(source).toContain("Blocked by guardrail '{guardrail}'.");
+  expect(pipelineErrors.guardrail.body.error.code).toBe("guardrail_blocked");
+});
+
+test("the messages of guardrails are in the gateway source", () => {
+  const path = fileURLToPath(new URL("../../../crates/gateway/src/api/guardrails.rs", import.meta.url));
+  const source = readFileSync(path, "utf8");
+  for (const message of [
+    fieldMessages.guardrailRulesNeeded,
+    fieldMessages.guardrailMatcherKind,
+    fieldMessages.guardrailPiiType,
+    errors.guardrail_exists.body.error.message,
+  ]) {
+    expect(source).toContain(`"${message}`);
+  }
+});
+
+test("the message of a taken prompt name is in the gateway source", () => {
+  const path = fileURLToPath(new URL("../../../crates/gateway/src/api/prompts.rs", import.meta.url));
+  expect(readFileSync(path, "utf8")).toContain(`"${errors.prompt_exists.body.error.message}"`);
 });
 
 test("the message of a wrong setup code is in the gateway source", () => {

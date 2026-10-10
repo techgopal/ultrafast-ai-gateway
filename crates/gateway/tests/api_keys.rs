@@ -146,6 +146,7 @@ async fn admin_lists_all_keys() {
             "created_at",
             "display",
             "expires_at",
+            "guardrails",
             "id",
             "name",
             "owner_email",

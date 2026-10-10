@@ -148,6 +148,14 @@ impl World {
         raw(&self.org, who, "POST", "/api/playground/chat", Some(body)).await
     }
 
+    async fn play_images(
+        &self,
+        who: &Signed,
+        body: Value,
+    ) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
+        raw(&self.org, who, "POST", "/api/playground/images", Some(body)).await
+    }
+
     /// A key owned by the user, with no team and no allowlist.
     async fn key_of(&self, user: i64) -> String {
         let key = generate_key();
@@ -693,4 +701,254 @@ async fn playground_accepts_tools_and_images() {
     let refused: Value = serde_json::from_str(&refused).unwrap();
     assert_eq!(refused["error"]["code"], "csrf_failed");
     assert_eq!(w.upstream.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn playground_passes_response_format_to_the_provider() {
+    let w = world().await;
+    let lena = w.org.sign_in("lena").await;
+    let format = json!({ "type": "json_schema", "json_schema": {
+        "name": "pet", "strict": true,
+        "schema": { "type": "object", "properties": { "n": { "type": "string" } } } } });
+    let body = json!({
+        "model": "p/open",
+        "messages": [{ "role": "user", "content": "a pet" }],
+        "response_format": format
+    });
+    let (status, _, out) = w.play(&lena, body).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&out));
+    let sent = w.upstream.received_requests().await.unwrap();
+    let sent: Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(sent["response_format"], format);
+    // A malformed one is refused before any upstream call.
+    let bad = json!({ "model": "p/open", "messages": [{ "role": "user", "content": "x" }],
+        "response_format": { "type": "xml" } });
+    let (status, _, _) = w.play(&lena, bad).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(w.upstream.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_playground_is_checked_by_the_same_guardrails_as_a_key() {
+    let w = world().await;
+    let rules = json!([
+        { "id": "email", "matcher": { "pii": ["EMAIL"] }, "action": "redact", "directions": "input" },
+        { "id": "w", "matcher": { "keywords": { "words": ["swordfish"] } },
+          "action": "block", "directions": "input" }
+    ])
+    .to_string();
+    let mut tx = w.org.api.store.begin().await.unwrap();
+    tx.insert_guardrail(ultrafast_gateway::store::NewGuardrail {
+        name: "house-rules",
+        description: "",
+        kind: "rules",
+        rules: &rules,
+        url: None,
+        secret_enc: None,
+        timeout_ms: 3000,
+        fail_mode: "open",
+        directions: "both",
+        enabled: true,
+        is_default: true,
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.org.api.state.refresh().await.unwrap();
+
+    let lena = w.org.sign_in("lena").await;
+    let key = w.key_of(lena.user_id).await;
+    let mail = json!({ "model": "p/open",
+        "messages": [{ "role": "user", "content": "write ada@example.com" }] });
+    let blocked = json!({ "model": "p/open",
+        "messages": [{ "role": "user", "content": "swordfish" }] });
+
+    let (via_play, _, _) = w.play(&lena, mail.clone()).await;
+    let (via_key, _, _) = w.with_key(&key, &mail).await;
+    assert_eq!((via_play, via_key), (StatusCode::OK, StatusCode::OK));
+    let sent = w.upstream.received_requests().await.unwrap();
+    assert_eq!(sent.len(), 2);
+    for request in &sent {
+        let body = String::from_utf8_lossy(&request.body);
+        assert!(body.contains("write [REDACTED:EMAIL]"), "{body}");
+        assert!(!body.contains("example.com"), "{body}");
+    }
+
+    let (play_status, _, play_body) = w.play(&lena, blocked.clone()).await;
+    let (key_status, _, key_body) = w.with_key(&key, &blocked).await;
+    assert_eq!(
+        (play_status, key_status),
+        (StatusCode::BAD_REQUEST, StatusCode::BAD_REQUEST)
+    );
+    let code = |b: &[u8]| serde_json::from_slice::<Value>(b).unwrap()["error"]["code"].clone();
+    assert_eq!(code(&play_body), "guardrail_blocked");
+    assert_eq!(code(&key_body), "guardrail_blocked");
+    // No provider call for either refusal.
+    assert_eq!(w.upstream.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn an_image_call_is_answered_or_refused_as_the_users_key_would_be() {
+    let w = world().await;
+    Mock::given(method("POST"))
+        .and(path("/images/generations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "created": 1, "data": [{ "b64_json": "AAAA" }],
+            "usage": { "input_tokens": 3, "output_tokens": 9, "total_tokens": 12 }
+        })))
+        .mount(&w.upstream)
+        .await;
+    async fn images(
+        w: &World,
+        who: &Signed,
+        model: &str,
+    ) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
+        w.play_images(who, json!({ "model": model, "prompt": "a fox", "n": 1 }))
+            .await
+    }
+    let lena = w.org.sign_in("lena").await;
+    let (status, _, body) = images(&w, &lena, "p/open").await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["data"][0]["b64_json"], "AAAA");
+    // Logged to the user, with no key, as a playground call.
+    let records = w.sink.wait_for(1).await;
+    let r = &records[0];
+    assert_eq!(r.endpoint, "playground");
+    assert_eq!(r.key_id, None);
+    assert_eq!(r.user_id, Some(w.org.lena));
+    assert_eq!(
+        r.usage.map(|u| (u.input_tokens, u.output_tokens)),
+        Some((3, 9))
+    );
+    // The grants decide, as for a key.
+    assert_eq!(
+        images(&w, &lena, "p/research-only").await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(images(&w, &lena, "p/nope").await.0, StatusCode::NOT_FOUND);
+    let tomas = w.org.sign_in("tomas").await;
+    assert_eq!(
+        images(&w, &tomas, "p/research-only").await.0,
+        StatusCode::OK
+    );
+    // A chat body is not an image request.
+    let (status, _, _) = w.play_images(&lena, chat("p/open")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn audio_calls_are_answered_or_refused_as_the_users_key_would_be() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    let w = world().await;
+    Mock::given(method("POST"))
+        .and(path("/audio/transcriptions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "hello" })))
+        .mount(&w.upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/audio/speech"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"AUDIO".to_vec(), "audio/mpeg"))
+        .mount(&w.upstream)
+        .await;
+    let lena = w.org.sign_in("lena").await;
+
+    let form = |model: &str, file: &str| {
+        format!(
+            "--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n\
+             --b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.mp3\"\r\n\
+             Content-Type: audio/mpeg\r\n\r\n{file}\r\n--b--\r\n"
+        )
+    };
+    let send = |who: &Signed, token: bool, body: String| {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/playground/transcriptions")
+            .header("cookie", &who.cookie)
+            .header("content-type", "multipart/form-data; boundary=b");
+        if token {
+            req = req.header("x-csrf-token", &who.csrf);
+        }
+        let app = w.org.api.app.clone();
+        async move {
+            let resp = app
+                .oneshot(req.body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, bytes.to_vec())
+        }
+    };
+    let (status, body) = send(&lena, true, form("p/open", "abc")).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["text"],
+        "hello"
+    );
+    let records = w.sink.wait_for(1).await;
+    assert_eq!(records[0].endpoint, "playground");
+    assert_eq!(records[0].key_id, None);
+    assert_eq!(records[0].user_id, Some(w.org.lena));
+    // Grants decide, as for a key; a form without the CSRF token is refused.
+    assert_eq!(
+        send(&lena, true, form("p/research-only", "abc")).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(&lena, true, form("p/nope", "abc")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(&lena, false, form("p/open", "abc")).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    let speech = |model: &str| json!({ "model": model, "input": "hi", "voice": "alloy" });
+    let (status, headers, body) = raw(
+        &w.org,
+        &lena,
+        "POST",
+        "/api/playground/speech",
+        Some(speech("p/open")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"AUDIO");
+    assert!(headers
+        .iter()
+        .any(|(k, v)| k == "content-type" && v == "audio/mpeg"));
+    assert_eq!(
+        raw(
+            &w.org,
+            &lena,
+            "POST",
+            "/api/playground/speech",
+            Some(speech("p/research-only"))
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+// The console checks an audio file against the gateway's own cap before it
+// sends it: any signed-in user may read it.
+#[tokio::test]
+async fn the_playground_config_tells_every_user_the_audio_cap() {
+    let org = common::org_tweaked(None, |s| s.max_audio_bytes = 1234).await;
+    for name in USERS {
+        let who = org.sign_in(name).await;
+        let (status, v) = org
+            .call(Some(&who), "GET", "/api/playground/config", None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{name}: {v}");
+        assert_eq!(v, json!({ "max_audio_bytes": 1234 }), "{name}");
+    }
+    let (status, _) = org.call(None, "GET", "/api/playground/config", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

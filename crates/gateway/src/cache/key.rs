@@ -4,7 +4,7 @@
 use sha2::{Digest, Sha256};
 use ultrafast_translate::embeddings::EmbeddingsRequest;
 use ultrafast_translate::types::{
-    ChatRequest, ImageSource, Message, Part, Role, Tool, ToolCall, ToolChoice,
+    ChatRequest, ImageSource, Message, Part, ResponseFormat, Role, Tool, ToolCall, ToolChoice,
 };
 
 use super::ScopeId;
@@ -126,6 +126,27 @@ impl Encoder {
         }
     }
 
+    fn response_format(&mut self, format: Option<&ResponseFormat>) {
+        match format {
+            None => self.optional(37, None),
+            Some(ResponseFormat::Text) => self.optional(37, Some(b"text")),
+            Some(ResponseFormat::JsonObject) => self.optional(37, Some(b"json_object")),
+            Some(ResponseFormat::JsonSchema {
+                name,
+                schema,
+                strict,
+                description,
+            }) => {
+                self.optional(37, Some(b"json_schema"));
+                self.field(38, name.as_bytes());
+                // `serde_json::Map` is ordered by key, so this is canonical.
+                self.field(39, &serde_json::to_vec(schema).unwrap_or_default());
+                self.optional(40, strict.map(|b| [u8::from(b)]).as_ref().map(|b| &b[..]));
+                self.optional(41, description.as_deref().map(str::as_bytes));
+            }
+        }
+    }
+
     fn parts(&mut self, parts: &KeyParts<'_>) {
         self.field(1, parts.route.as_bytes());
         self.number(2, parts.targets.len() as u64);
@@ -177,6 +198,8 @@ impl CacheKey {
             tools,
             tool_choice: choice,
             parallel_tool_calls,
+            response_format,
+            reasoning_effort,
         } = request;
         let mut e = Encoder::new("chat");
         e.parts(parts);
@@ -228,6 +251,8 @@ impl CacheKey {
                 .as_ref()
                 .map(|b| &b[..]),
         );
+        e.response_format(response_format.as_ref());
+        e.optional(42, reasoning_effort.as_deref().map(str::as_bytes));
         e.finish()
     }
 
@@ -285,6 +310,8 @@ mod tests {
             tools: Vec::new(),
             tool_choice: None,
             parallel_tool_calls: None,
+            response_format: None,
+            reasoning_effort: None,
         }
     }
 
@@ -361,6 +388,58 @@ mod tests {
             change(&mut r);
             let key = key_of(&r);
             assert!(!seen.contains(&key), "{field} does not change the key");
+            seen.push(key);
+        }
+    }
+
+    #[test]
+    fn the_response_format_and_its_schema_change_the_key() {
+        use ultrafast_translate::types::ResponseFormat;
+        let schema = |s: serde_json::Value, strict: Option<bool>, name: &str| {
+            Some(ResponseFormat::JsonSchema {
+                name: name.into(),
+                schema: s,
+                strict,
+                description: None,
+            })
+        };
+        let a = serde_json::json!({"type": "object", "properties": {"a": {"type": "string"}}});
+        let b = serde_json::json!({"type": "object", "properties": {"b": {"type": "string"}}});
+        let formats = [
+            None,
+            Some(ResponseFormat::Text),
+            Some(ResponseFormat::JsonObject),
+            schema(a.clone(), None, "n"),
+            schema(b, None, "n"),
+            schema(a.clone(), Some(true), "n"),
+            schema(a.clone(), Some(false), "n"),
+            schema(a.clone(), None, "other"),
+            Some(ResponseFormat::JsonSchema {
+                name: "n".into(),
+                schema: a,
+                strict: None,
+                description: Some("d".into()),
+            }),
+        ];
+        let mut seen = Vec::new();
+        for f in formats {
+            let mut r = base();
+            r.response_format = f.clone();
+            let key = key_of(&r);
+            assert!(!seen.contains(&key), "{f:?} does not change the key");
+            seen.push(key);
+            assert_eq!(key, key_of(&r), "{f:?} is stable");
+        }
+    }
+
+    #[test]
+    fn the_reasoning_effort_changes_the_key() {
+        let mut seen = Vec::new();
+        for effort in [None, Some("low"), Some("high"), Some("")] {
+            let mut r = base();
+            r.reasoning_effort = effort.map(str::to_string);
+            let key = key_of(&r);
+            assert!(!seen.contains(&key), "{effort:?} does not change the key");
             seen.push(key);
         }
     }

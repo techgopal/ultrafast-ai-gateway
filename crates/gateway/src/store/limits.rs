@@ -1,9 +1,11 @@
 //! Rate limits.
 
 use anyhow::{anyhow, Result};
-use sqlx::sqlite::{SqliteConnection, SqliteRow};
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::AnyConnection;
+use sqlx::Row;
 
+use super::dialect::Dialected;
 use super::{Store, Tx, DEFAULT_ORG};
 use crate::limits::{LimitScope, RateLimit};
 
@@ -46,14 +48,14 @@ const SELECT: &str = "SELECT l.id, l.scope, l.scope_id,
      LEFT JOIN users u ON l.scope = 'user' AND u.id = l.scope_id AND u.org_id = l.org_id
      LEFT JOIN teams t ON l.scope = 'team' AND t.id = l.scope_id AND t.org_id = l.org_id";
 
-fn count(r: &SqliteRow, column: &str) -> Result<Option<u64>> {
+fn count(r: &AnyRow, column: &str) -> Result<Option<u64>> {
     let value: Option<i64> = r.get(column);
     value
         .map(|v| u64::try_from(v).map_err(|_| anyhow!("stored limit is negative")))
         .transpose()
 }
 
-fn limit_from(r: &SqliteRow) -> Result<LimitRow> {
+fn limit_from(r: &AnyRow) -> Result<LimitRow> {
     let scope: String = r.get("scope");
     Ok(LimitRow {
         id: r.get("id"),
@@ -72,18 +74,16 @@ fn limit_from(r: &SqliteRow) -> Result<LimitRow> {
 }
 
 /// Every limit, oldest first, on the connection of a transaction.
-pub(super) async fn list_limits_in(conn: &mut SqliteConnection) -> Result<Vec<LimitRow>> {
+pub(super) async fn list_limits_in(conn: &mut AnyConnection) -> Result<Vec<LimitRow>> {
     let sql = format!("{SELECT} WHERE l.org_id = ? ORDER BY l.id");
-    let rows = sqlx::query(AssertSqlSafe(sql))
-        .bind(DEFAULT_ORG)
-        .fetch_all(conn)
-        .await?;
+    let rows = conn.q_dyn(sql).bind(DEFAULT_ORG).fetch_all(conn).await?;
     rows.iter().map(limit_from).collect()
 }
 
-async fn limit_in(conn: &mut SqliteConnection, id: i64) -> Result<Option<LimitRow>> {
+async fn limit_in(conn: &mut AnyConnection, id: i64) -> Result<Option<LimitRow>> {
     let sql = format!("{SELECT} WHERE l.id = ? AND l.org_id = ?");
-    let row = sqlx::query(AssertSqlSafe(sql))
+    let row = conn
+        .q_dyn(sql)
         .bind(id)
         .bind(DEFAULT_ORG)
         .fetch_optional(conn)
@@ -118,7 +118,7 @@ impl Tx<'_> {
         scope_id: Option<i64>,
         limit: &RateLimit,
     ) -> Result<i64> {
-        let id: i64 = sqlx::query_scalar(
+        let id: i64 = self.scalar(
             "INSERT INTO rate_limits (org_id, scope, scope_id, requests_per_minute, tokens_per_minute, concurrent)
              VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT (org_id, scope, COALESCE(scope_id, 0)) DO UPDATE SET
@@ -139,7 +139,8 @@ impl Tx<'_> {
     }
 
     pub async fn delete_limit(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM rate_limits WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM rate_limits WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())

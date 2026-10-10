@@ -2,9 +2,10 @@
 //! as they are at one moment, with the names that identify them.
 
 use anyhow::Result;
-use sqlx::sqlite::SqliteConnection;
+use sqlx::AnyConnection;
 use sqlx::Row;
 
+use super::dialect::Dialected;
 use super::{
     budgets, limits, models, providers, routes, settings, BudgetRow, GrantRow, LimitRow, ModelRow,
     ProviderRow, RouteRow, Store, TargetRow, Tx, DEFAULT_ORG,
@@ -28,20 +29,31 @@ pub struct ConfigState {
     pub budgets: Vec<BudgetRow>,
     pub log_retention_days: i64,
     pub session_hours: i64,
+    /// `(id, name, kind)`: never a URL or a secret.
+    pub alert_channels: Vec<(i64, String, String)>,
+    pub alert_rules: Vec<super::alerts::RuleRow>,
+    pub guardrails: Vec<super::GuardrailRow>,
+    /// `(route id, guardrail id, guardrail name)`, in each route's order.
+    pub route_guardrails: Vec<(i64, i64, String)>,
+    /// Every prompt template, by name, and all their versions.
+    pub prompt_templates: Vec<super::TemplateRow>,
+    pub prompt_versions: Vec<super::VersionRow>,
 }
 
-async fn read(conn: &mut SqliteConnection) -> Result<ConfigState> {
+async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
     let providers = providers::list_providers_in(conn).await?;
     let models = models::list_models_in(conn).await?;
     let model_grants = models::list_model_grants_in(conn).await?;
-    let teams = sqlx::query("SELECT id, name FROM teams WHERE org_id = ? ORDER BY name")
+    let teams = conn
+        .q("SELECT id, name FROM teams WHERE org_id = ? ORDER BY name")
         .bind(DEFAULT_ORG)
         .fetch_all(&mut *conn)
         .await?
         .iter()
         .map(|r| (r.get("id"), r.get("name")))
         .collect();
-    let users = sqlx::query("SELECT id, email FROM users WHERE org_id = ? ORDER BY email")
+    let users = conn
+        .q("SELECT id, email FROM users WHERE org_id = ? ORDER BY email")
         .bind(DEFAULT_ORG)
         .fetch_all(&mut *conn)
         .await?
@@ -55,6 +67,12 @@ async fn read(conn: &mut SqliteConnection) -> Result<ConfigState> {
     let budgets = budgets::list_budgets_in(conn).await?;
     let log_retention_days = settings::log_retention_days_in(conn).await?;
     let session_hours = settings::session_hours_in(conn).await?;
+    let alert_channels = super::alerts::list_channel_names_in(conn).await?;
+    let alert_rules = super::alerts::list_alert_rules_in(conn).await?;
+    let guardrails = super::guardrails::list_guardrails_in(conn).await?;
+    let route_guardrails = super::guardrails::route_guardrail_refs_in(conn).await?;
+    let prompt_templates = super::prompts::list_templates_in(conn).await?;
+    let prompt_versions = super::prompts::list_versions_in(conn).await?;
     Ok(ConfigState {
         providers,
         models,
@@ -68,13 +86,19 @@ async fn read(conn: &mut SqliteConnection) -> Result<ConfigState> {
         budgets,
         log_retention_days,
         session_hours,
+        alert_channels,
+        alert_rules,
+        guardrails,
+        route_guardrails,
+        prompt_templates,
+        prompt_versions,
     })
 }
 
 impl Store {
     /// The configuration, read in one transaction.
     pub async fn config_state(&self) -> Result<ConfigState> {
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.begin_read().await?;
         let state = read(&mut tx).await?;
         tx.commit().await?;
         Ok(state)

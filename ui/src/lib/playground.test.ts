@@ -1,10 +1,26 @@
 import { describe, expect, test } from "vitest";
 import {
+  checkAudioFile,
+  AUDIO_FILE_LIMIT,
+  checkImageCount,
+  checkSpeechInput,
   checkParams,
+  checkResponseFormat,
   checkTools,
   chunkOf,
   costMicros,
   curlOf,
+  IMAGE_COUNT_INVALID,
+  MAX_SPEECH_CHARS,
+  SPEECH_TOO_LONG,
+  speechCurlOf,
+  speechRequestBody,
+  transcriptionCurlOf,
+  transcriptionForm,
+  transcriptOf,
+  imageCurlOf,
+  imageRequestBody,
+  imageUrlsOf,
   requestBody,
   retryText,
   SseReader,
@@ -130,6 +146,11 @@ describe("chunkOf", () => {
 
   test("done, an error, and what is not understood", () => {
     expect(chunkOf("[DONE]")).toEqual({ done: true });
+    // A guardrail ended the answer.
+    expect(chunkOf(JSON.stringify({ choices: [{ delta: {}, finish_reason: "content_filter" }] }))).toEqual({
+      blocked: true,
+    });
+    expect(chunkOf(JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }))).toEqual({});
     expect(chunkOf(JSON.stringify({ error: { message: "upstream failed", type: "upstream_error" } }))).toEqual({
       error: "upstream failed",
     });
@@ -322,4 +343,119 @@ describe("the request with tools and images", () => {
   test("without an image there is no note", () => {
     expect(curlOf("https://gw", { messages: [{ role: "user", content: "x" }] })).not.toContain("omitted");
   });
+});
+
+describe("checkResponseFormat", () => {
+  test("text sends nothing, JSON sends json_object", () => {
+    expect(checkResponseFormat("text", "ignored")).toEqual({ format: undefined, error: undefined });
+    expect(checkResponseFormat("json_object", "ignored")).toEqual({
+      format: { type: "json_object" },
+      error: undefined,
+    });
+  });
+
+  test("a JSON schema is read from its text", () => {
+    const schema = { type: "object", properties: { a: { type: "string" } } };
+    expect(checkResponseFormat("json_schema", JSON.stringify(schema))).toEqual({
+      format: { type: "json_schema", json_schema: { name: "response", schema } },
+      error: undefined,
+    });
+  });
+
+  test.each([["empty", "  "], ["not json", "{"], ["an array", "[]"], ["a string", '"x"'], ["null", "null"]])(
+    "a schema that is %s is refused",
+    (_why, text) => {
+      expect(checkResponseFormat("json_schema", text)).toEqual({
+        format: undefined,
+        error: "The schema must be a JSON object, such as {\"type\":\"object\"}.",
+      });
+    },
+  );
+});
+
+describe("images mode", () => {
+  test("the number of images is a whole number from 1 to 4", () => {
+    expect(checkImageCount(" 3 ")).toEqual({ n: 3 });
+    for (const bad of ["", "0", "5", "1.5", "-1", "x", "1e1"]) {
+      expect(checkImageCount(bad).error).toBe(IMAGE_COUNT_INVALID);
+    }
+  });
+
+  test("the body leaves out the size when the provider decides", () => {
+    expect(imageRequestBody("p/m", "a fox", 2, "1536x1024")).toEqual({ model: "p/m", prompt: "a fox", n: 2, size: "1536x1024" });
+    expect(imageRequestBody("p/m", "a fox", 1, "default")).toEqual({ model: "p/m", prompt: "a fox", n: 1 });
+  });
+
+  test("only base64 images become data URLs, in the format the answer names", () => {
+    expect(
+      imageUrlsOf({ data: [{ b64_json: "AAAA" }, { url: "https://x.example/a.png" }, { b64_json: "<script>" }], output_format: "webp" }),
+    ).toEqual(["data:image/webp;base64,AAAA"]);
+    expect(imageUrlsOf({ data: [{ b64_json: "AA" }], output_format: "svg+xml" })).toEqual(["data:image/png;base64,AA"]);
+  });
+
+  test("the curl command quotes the prompt", () => {
+    const command = imageCurlOf("https://gw.example", { model: "m", prompt: "it's" });
+    expect(command).toContain("curl https://gw.example/v1/images/generations");
+    expect(command).toContain(`-d '{"model":"m","prompt":"it'"'"'s"}'`);
+  });
+});
+
+describe("audio helpers", () => {
+  test("a text of 4096 characters is the longest speech takes, counted in characters", () => {
+    expect(checkSpeechInput("a".repeat(MAX_SPEECH_CHARS))).toBeUndefined();
+    expect(checkSpeechInput("a".repeat(MAX_SPEECH_CHARS + 1))).toBe(SPEECH_TOO_LONG);
+    // An emoji is one character for the gateway, though two UTF-16 units.
+    expect(checkSpeechInput("😀".repeat(MAX_SPEECH_CHARS))).toBeUndefined();
+  });
+
+  test("the speech request names the model, the text and the voice only", () => {
+    expect(speechRequestBody("openai/tts-1", "hi", "nova")).toEqual({
+      model: "openai/tts-1",
+      input: "hi",
+      voice: "nova",
+    });
+  });
+
+  test("a transcript is the text of the answer, or none", () => {
+    expect(transcriptOf({ text: "hello" })).toBe("hello");
+    expect(transcriptOf({ text: 3 })).toBeNull();
+    expect(transcriptOf({})).toBeNull();
+  });
+
+  test("the transcription form carries the model, a language when given, and the file last", () => {
+    const file = new File(["abc"], "a.wav", { type: "audio/wav" });
+    expect([...transcriptionForm("p/m", " en ", file).keys()]).toEqual(["model", "language", "file"]);
+    expect([...transcriptionForm("p/m", "  ", file).keys()]).toEqual(["model", "file"]);
+    const sent = transcriptionForm("p/m", "", file).get("file");
+    expect(sent instanceof File && sent.name).toBe("a.wav");
+  });
+
+  test("the curl commands hold a placeholder for the key and never a secret", () => {
+    const stt = transcriptionCurlOf("https://gw.example", "p/it's", "");
+    expect(stt).toBe(
+      [
+        "curl https://gw.example/v1/audio/transcriptions",
+        "  -H 'Authorization: Bearer <your key>'",
+        "  -F file=@audio.mp3",
+        `  -F model='p/it'"'"'s'`,
+      ].join(" \\\n"),
+    );
+    const tts = speechCurlOf("https://gw.example", { model: "p/m", input: "it's", voice: "alloy" });
+    expect(tts).toContain("curl https://gw.example/v1/audio/speech");
+    expect(tts).toContain(`-d '{"model":"p/m","input":"it'"'"'s","voice":"alloy"}'`);
+    expect(tts).toContain("--output speech.mp3");
+  });
+});
+
+test("a file over the default audio cap is refused, one at the cap is not", () => {
+  expect(checkAudioFile({ size: AUDIO_FILE_LIMIT })).toBeUndefined();
+  expect(checkAudioFile({ size: AUDIO_FILE_LIMIT + 1 })).toMatch(/25 MiB/);
+});
+
+test("a file is checked against the cap the gateway names, in MiB when it is whole ones", () => {
+  expect(checkAudioFile({ size: 26 * 1024 * 1024 }, 64 * 1024 * 1024)).toBeUndefined();
+  expect(checkAudioFile({ size: 3 * 1024 * 1024 }, 2 * 1024 * 1024)).toBe(
+    "The file is larger than 2 MiB, the most the gateway takes.",
+  );
+  expect(checkAudioFile({ size: 1001 }, 1000)).toBe("The file is larger than 1000 bytes, the most the gateway takes.");
 });

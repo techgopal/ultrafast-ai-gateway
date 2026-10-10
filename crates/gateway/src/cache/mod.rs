@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::guardrails::log::SideLog;
 pub use flight::{FlightGuard, Flights};
 pub use key::{CacheKey, KeyParts};
 use ultrafast_translate::embeddings::EmbeddingsResponse;
@@ -118,6 +119,9 @@ pub struct Cached {
     pub answer: Answer,
     pub provider: String,
     pub model: String,
+    /// What the guardrails did to the answer before it was kept, for the
+    /// record of every call it is given out to.
+    pub guardrails: Option<SideLog>,
 }
 
 impl Cached {
@@ -316,6 +320,7 @@ mod tests {
             }),
             provider: "p".into(),
             model: "gpt-4o".into(),
+            guardrails: None,
         }
     }
 
@@ -331,6 +336,8 @@ mod tests {
             tools: Vec::new(),
             tool_choice: None,
             parallel_tool_calls: None,
+            response_format: None,
+            reasoning_effort: None,
         };
         CacheKey::chat(
             &KeyParts {

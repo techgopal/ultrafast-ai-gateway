@@ -64,6 +64,7 @@ function viewOf(id: number, body: RouteRequest): fixtures.Route {
     cache_scope: body.cache_scope ?? "team",
     everyone: body.everyone,
     team_ids: body.team_ids,
+    guardrails: [],
     broken: false,
     created_at: "2026-09-30 09:00:00",
   };
@@ -185,6 +186,7 @@ describe("the list of routes", () => {
       "Primary targets",
       "Fallbacks",
       "Teams",
+      "Guardrails",
       "Status",
       "Actions",
     ]);
@@ -195,6 +197,7 @@ describe("the list of routes", () => {
       "openai/gpt-4o-mini ×3openai/gpt-4o ×1",
       "1",
       "All teams",
+      "None",
       "Ready",
       "EditDelete",
     ]);
@@ -203,10 +206,11 @@ describe("the list of routes", () => {
       "openai/gpt-4o ×1",
       "0",
       "2 teams",
+      "None",
       "Ready",
       "EditDelete",
     ]);
-    expect(cells("legacy.v1").slice(3, 5)).toEqual(["Admins only", "Broken"]);
+    expect(cells("legacy.v1").slice(3, 6)).toEqual(["Admins only", "None", "Broken"]);
     expect(rowWithCell("support-chat").querySelector("td")?.firstElementChild?.className).toContain(
       "font-mono",
     );

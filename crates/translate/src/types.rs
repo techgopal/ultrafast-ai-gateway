@@ -167,6 +167,29 @@ pub struct ChatRequest {
     pub tools: Vec<Tool>,
     pub tool_choice: Option<ToolChoice>,
     pub parallel_tool_calls: Option<bool>,
+    /// How the answer text must be shaped (structured outputs).
+    #[serde(default)]
+    pub response_format: Option<ResponseFormat>,
+    /// OpenAI's `reasoning_effort` (`none` .. `max`). Only OpenAI and Azure
+    /// can express it; the other providers refuse a call that sets it.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+}
+
+/// OpenAI's `response_format`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ResponseFormat {
+    Text,
+    /// Any JSON object.
+    JsonObject,
+    /// JSON that matches `schema` (a full JSON Schema).
+    JsonSchema {
+        name: String,
+        schema: serde_json::Value,
+        /// OpenAI's `strict`; other providers cannot express it and ignore it.
+        strict: Option<bool>,
+        description: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

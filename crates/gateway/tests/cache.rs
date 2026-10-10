@@ -502,6 +502,11 @@ async fn a_hit_still_passes_the_budgets() {
         estimated: false,
         started_at: ultrafast_gateway::store::now(),
         duration_ms: 1,
+        trace_parent: None,
+        provider_kinds: Vec::new(),
+        started_unix_ms: 0,
+        guardrails: None,
+        prompt: None,
     };
     account(&w.h.state, &spent, 1_000_000, OffsetDateTime::now_utc());
     let (status, _, body) = w.chat_as(&a, BODY).await;
@@ -614,7 +619,7 @@ async fn a_new_team_with_the_id_of_a_deleted_team_is_not_given_its_answers() {
     assert!(tx.delete_team(a).await.unwrap());
     tx.commit().await.unwrap();
     let b = seed_team(&w.h.store, "B", &[]).await;
-    assert_eq!(a, b, "the database hands the id out again");
+    common::assert_id_given_again(&w.h.store, a, b, "team");
     let kb = w.key("b", None, Some(b)).await;
     assert_eq!(w.chat(&kb, BODY).await, StatusCode::OK);
     assert_eq!(w.provider_calls().await, 2, "B was given A's answer");
@@ -633,7 +638,7 @@ async fn a_new_user_with_the_id_of_a_deleted_user_is_not_given_its_answers() {
     assert!(tx.delete_user(a).await.unwrap());
     tx.commit().await.unwrap();
     let b = seed_user(&w.h.store, "b@example.com", Role::Member, PASSWORD).await;
-    assert_eq!(a, b);
+    common::assert_id_given_again(&w.h.store, a, b, "user");
     let kb = w.key("b", Some(b), None).await;
     w.chat(&kb, BODY).await;
     assert_eq!(w.provider_calls().await, 2, "B was given A's answer");
@@ -744,7 +749,7 @@ async fn an_answer_stored_after_the_configuration_changed_is_not_found_under_the
         assert!(tx.delete_team(a).await.unwrap());
         tx.commit().await.unwrap();
         let b = seed_team(&w.h.store, "B", &[]).await;
-        assert_eq!(a, b);
+        common::assert_id_given_again(&w.h.store, a, b, "team");
         let kb = w.key("b", None, Some(b)).await;
         w.h.state.refresh().await.unwrap();
         kb

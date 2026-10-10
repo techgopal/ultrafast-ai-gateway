@@ -27,6 +27,13 @@ export type UsagePage = Schemas["UsagePage"];
 export type Limit = Schemas["LimitView"];
 export type Budget = Schemas["BudgetView"];
 export type Settings = Schemas["SettingsView"];
+export type AlertChannel = Schemas["ChannelView"];
+export type AlertRule = Schemas["RuleView"];
+export type AlertEvent = Schemas["EventView"];
+export type Guardrail = Schemas["GuardrailView"];
+export type PromptSummary = Schemas["PromptSummary"];
+export type PromptView = Schemas["PromptView"];
+export type PromptVersion = Schemas["VersionView"];
 
 /**
  * The time of the fixtures: what they call past (the expired key and token,
@@ -54,6 +61,13 @@ export const newTokenSecret = `uf-at-${"fedcba9876543210".repeat(4)}`;
 export const newInviteToken = `uf-inv-${"00ff".repeat(16)}`;
 export const newInviteLink = `/accept-invite#token=${newInviteToken}`;
 
+// crates/gateway/src/alerts/sign.rs, new_secret: `whsec_` and 32 random bytes as hex.
+export const newChannelSecret = `whsec_${"0123456789abcdef".repeat(4)}`;
+export const rotatedChannelSecret = `whsec_${"fedcba9876543210".repeat(4)}`;
+// The signing secret of an external guardrail is made the same way (`api/guardrails.rs`).
+export const newGuardrailSecret = `whsec_${"a1b2c3d4e5f60718".repeat(4)}`;
+export const rotatedGuardrailSecret = `whsec_${"18f6e5d4c3b2a190".repeat(4)}`;
+
 /** What the gateway shows of a secret: the prefix, an ellipsis and the last 4 characters. */
 function displayOf(prefix: "uf-sk-" | "uf-at-", last4: string): string {
   return `${prefix}\u2026${last4}`;
@@ -67,6 +81,8 @@ export const users = {
     name: "Maya Okafor",
     role: "admin",
     status: "active",
+    auth_provider: "password",
+    has_password: true,
     created_at: "2026-06-01 09:00:00",
     last_active_at: "2026-09-28 16:20:00",
     teams: [],
@@ -78,6 +94,8 @@ export const users = {
     name: "Arjun Mehta",
     role: "member",
     status: "active",
+    auth_provider: "password",
+    has_password: true,
     created_at: "2026-06-03 10:00:00",
     last_active_at: "2026-09-27 11:05:00",
     teams: [
@@ -92,6 +110,8 @@ export const users = {
     name: "Lena Fischer",
     role: "member",
     status: "active",
+    auth_provider: "password",
+    has_password: true,
     created_at: "2026-06-10 08:30:00",
     last_active_at: "2026-09-26 09:45:00",
     teams: [{ team_id: 1, name: "Platform", role: "member" }],
@@ -103,6 +123,8 @@ export const users = {
     name: "Tomas Novak",
     role: "member",
     status: "active",
+    auth_provider: "password",
+    has_password: true,
     created_at: "2026-07-01 12:00:00",
     last_active_at: "2026-09-20 14:00:00",
     teams: [{ team_id: 2, name: "Research", role: "member" }],
@@ -114,6 +136,8 @@ export const users = {
     name: "Priya Raman",
     role: "member",
     status: "active",
+    auth_provider: "password",
+    has_password: true,
     created_at: "2026-07-15 12:00:00",
     last_active_at: null,
     teams: [],
@@ -125,6 +149,8 @@ export const users = {
     name: "Sam Carter",
     role: "member",
     status: "invited",
+    auth_provider: "password",
+    has_password: false,
     created_at: "2026-09-25 15:00:00",
     last_active_at: null,
     teams: [],
@@ -136,6 +162,8 @@ export const users = {
     name: "Dana Whitfield",
     role: "member",
     status: "disabled",
+    auth_provider: "password",
+    has_password: true,
     created_at: "2026-06-20 10:00:00",
     last_active_at: "2026-08-01 10:00:00",
     teams: [],
@@ -219,6 +247,7 @@ function key(
     allowed: null,
     tags: {},
     team_only: false,
+    guardrails: [],
   };
 }
 
@@ -350,6 +379,7 @@ export const routes = {
     ...defaultSettings,
     everyone: true,
     team_ids: [],
+    guardrails: [],
     broken: false,
     created_at: "2026-09-10 09:00:00",
   },
@@ -370,6 +400,7 @@ export const routes = {
     cache_scope: "user",
     everyone: false,
     team_ids: [teams.platform.id, teams.research.id],
+    guardrails: [],
     broken: false,
     created_at: "2026-09-11 09:00:00",
   },
@@ -384,6 +415,7 @@ export const routes = {
     ...defaultSettings,
     everyone: false,
     team_ids: [],
+    guardrails: [],
     broken: true,
     created_at: "2026-09-12 09:00:00",
   },
@@ -597,7 +629,7 @@ function log(
     team_id: who.team?.id ?? null,
     team_name: who.team?.name ?? null,
     requested: "gpt-4o",
-    endpoint: "/v1/chat/completions",
+    endpoint: "chat",
     stream: false,
     status: 200,
     provider: "openai",
@@ -610,6 +642,8 @@ function log(
     estimated: false,
     duration_ms: 850,
     tags: {},
+    guardrails: null,
+    prompt: null,
     ...call,
   };
 }
@@ -657,6 +691,62 @@ export const logs = {
 
 export const logList: Log[] = Object.values(logs);
 
+/** A call that named a prompt template. Not in `logList`: the counts of the list do not move. */
+export const promptedLog: Log = log(12, "2026-09-30 11:58:00", platformCall, {
+  endpoint: "responses",
+  prompt: "summarize@3",
+});
+
+/** A call whose answer had an address redacted. Not in `logList`: the counts of the list do not move. */
+export const redactedLog: Log = log(7, "2026-09-30 11:59:00", platformCall, {
+  guardrails: {
+    action: "redacted",
+    output: {
+      action: "redacted",
+      checked_with: [{ id: 1, name: "mask-emails" }],
+      redactions: { EMAIL: 2 },
+    },
+  },
+});
+
+/** A call refused by a guardrail: the input, with no provider called. */
+export const blockedLog: Log = log(8, "2026-09-30 11:59:30", platformCall, {
+  status: 400,
+  provider: null,
+  model: null,
+  input_tokens: null,
+  output_tokens: null,
+  cost_micros: 0,
+  priced: false,
+  duration_ms: 4,
+  guardrails: {
+    action: "blocked",
+    input: {
+      action: "blocked",
+      checked_with: [{ id: 2, name: "house-rules" }],
+      blocked_by: { id: 2, name: "house-rules" },
+    },
+  },
+});
+
+/** A call a flag rule and an external failure marked. */
+export const flaggedLog: Log = log(9, "2026-09-30 11:59:45", platformCall, {
+  guardrails: {
+    action: "flagged",
+    input: {
+      action: "flagged",
+      checked_with: [
+        { id: 2, name: "house-rules" },
+        { id: 3, name: "acme-scanner" },
+      ],
+      flags: [
+        { guardrail_id: 2, rule_id: "ticket" },
+        { guardrail_id: 3, rule_id: "external_error:timeout" },
+      ],
+    },
+  },
+});
+
 /**
  * A stream the caller left: charged an estimate, priced, and marked. It is
  * not in `logList`, so the counts of the list do not move.
@@ -687,7 +777,7 @@ export const logAttempts: Record<number, LogAttempt[]> = {
 };
 
 export function logDetail(id: number): LogDetail | undefined {
-  const row = logList.find((one) => one.id === id);
+  const row = [...logList, redactedLog, blockedLog, flaggedLog].find((one) => one.id === id);
   return row === undefined ? undefined : { ...row, attempts: logAttempts[id] ?? [] };
 }
 
@@ -878,7 +968,53 @@ export const settings: Settings = {
   session_hours: 12,
   trusted_proxies: ["10.0.0.0/8"],
   login_limits: { window_minutes: 15, max_per_email: 5, max_per_address: 20 },
+  database: "sqlite",
 };
+
+type OidcView = components["schemas"]["OidcView"];
+type SignInMethods = components["schemas"]["SignInMethods"];
+
+/** `GET /api/auth/methods`: password only, and with single sign-on. */
+export const signInMethods = {
+  passwordOnly: { password: true, oidc: null },
+  withOidc: { password: true, oidc: { label: "Test IdP" } },
+} satisfies Record<string, SignInMethods>;
+
+/** `GET /api/settings/oidc`: as it is before anything is set, and a working setup. */
+export const oidc = {
+  fresh: {
+    enabled: false,
+    label: "SSO",
+    issuer: "",
+    client_id: "",
+    client_secret_set: false,
+    client_secret_unreadable: false,
+    scopes: "",
+    groups_claim: "groups",
+    admin_group: "",
+    link_by_email: true,
+    auto_create: false,
+    allowed_domains: [],
+    redirect_uri: "https://gateway.example.test/api/auth/oidc/callback",
+    public_url_set: true,
+  },
+  configured: {
+    enabled: true,
+    label: "Test IdP",
+    issuer: "https://idp.example.test",
+    client_id: "gateway-client",
+    client_secret_set: true,
+    client_secret_unreadable: false,
+    scopes: "offline_access",
+    groups_claim: "groups",
+    admin_group: "gateway-admins",
+    link_by_email: true,
+    auto_create: true,
+    allowed_domains: ["example.test"],
+    redirect_uri: "https://gateway.example.test/api/auth/oidc/callback",
+    public_url_set: true,
+  },
+} satisfies Record<string, OidcView>;
 
 type ImportReport = components["schemas"]["ImportReport"];
 
@@ -946,3 +1082,370 @@ export const playgroundChunks: readonly string[] = [
   'data: {"id":"chatcmpl-1","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\n',
   "data: [DONE]\n\n",
 ];
+
+/** A 1 x 1 PNG, as an image model answers it (base64, no data: prefix). */
+export const TINY_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/** What the playground's image call answers by default: one image and its token usage. */
+export const playgroundImages = {
+  created: 1_700_000_000,
+  data: [freeForm({ b64_json: TINY_PNG })],
+  usage: freeForm({ input_tokens: 12, output_tokens: 800, total_tokens: 812 }),
+} satisfies components["schemas"]["PlaygroundImageAnswer"];
+
+/** What the playground's transcription answers by default. */
+export const playgroundTranscript = "Hello from the recording.";
+
+// alerts: channels, rules and events as `/api/alerts` shows them
+
+/**
+ * The API description types a free-form JSON object (the parameters of a
+ * rule, the details of an event, a delivery) as `Record<string, never>`: this
+ * is how a fixture says "an object". The pages read these by kind (`lib/alerts`).
+ */
+export function freeForm(value: object): Record<string, never> {
+  return value as Record<string, never>;
+}
+
+export const alertChannels = {
+  ops: {
+    id: 1,
+    name: "ops-webhook",
+    kind: "webhook",
+    url_host: "https://hooks.example.test",
+    enabled: true,
+    created_at: "2026-09-20 09:00:00",
+    rules: [
+      { id: 1, name: "Search budget 80%" },
+      { id: 2, name: "Chat errors" },
+    ],
+  },
+  slack: {
+    id: 2,
+    name: "team-slack",
+    kind: "slack",
+    url_host: "https://hooks.slack.com",
+    enabled: true,
+    created_at: "2026-09-21 09:00:00",
+    rules: [
+      { id: 1, name: "Search budget 80%" },
+      { id: 3, name: "Circuit anywhere" },
+    ],
+  },
+  // From a configuration file: no URL yet, and so disabled.
+  imported: {
+    id: 3,
+    name: "imported-pager",
+    kind: "webhook",
+    url_host: "",
+    enabled: false,
+    created_at: "2026-09-22 09:00:00",
+    rules: [],
+  },
+} satisfies Record<string, AlertChannel>;
+
+export const alertChannelList: AlertChannel[] = Object.values(alertChannels);
+
+// guardrails as `/api/guardrails` shows them
+
+export const guardrails = {
+  /** Default for every call: emails never leave in an answer. */
+  pii: {
+    id: 1,
+    name: "mask-emails",
+    description: "Emails never leave in an answer.",
+    kind: "rules",
+    enabled: true,
+    is_default: true,
+    rules: [
+      { id: "email", matcher: { pii: ["EMAIL"] }, action: "redact", directions: "output" },
+    ],
+    url_host: null,
+    timeout_ms: null,
+    fail_mode: null,
+    directions: null,
+    created_at: "2026-09-25 09:00:00",
+    routes: [],
+    key_count: 0,
+    usable: true,
+  },
+  /** Attached to a route and to two keys. */
+  words: {
+    id: 2,
+    name: "house-rules",
+    description: "",
+    kind: "rules",
+    enabled: true,
+    is_default: false,
+    rules: [
+      {
+        id: "secrets",
+        matcher: { keywords: { words: ["swordfish", "project x"], whole_word: true } },
+        action: "block",
+        directions: "both",
+      },
+      { id: "ticket", matcher: { regex: "TICKET-[0-9]+" }, action: "flag", directions: "input" },
+    ],
+    url_host: null,
+    timeout_ms: null,
+    fail_mode: null,
+    directions: null,
+    created_at: "2026-09-26 09:00:00",
+    routes: [{ id: 1, name: "support-chat" }],
+    key_count: 2,
+    usable: true,
+  },
+  external: {
+    id: 3,
+    name: "acme-scanner",
+    description: "The security team's scanner.",
+    kind: "external",
+    enabled: true,
+    is_default: false,
+    rules: [],
+    url_host: "https://guard.example.test",
+    timeout_ms: 3000,
+    fail_mode: "open",
+    directions: "both",
+    created_at: "2026-09-27 09:00:00",
+    routes: [],
+    key_count: 0,
+    usable: true,
+  },
+  /** From a configuration file: no URL yet, and so off. */
+  imported: {
+    id: 4,
+    name: "imported-scanner",
+    description: "",
+    kind: "external",
+    enabled: false,
+    is_default: false,
+    rules: [],
+    url_host: "",
+    timeout_ms: 3000,
+    fail_mode: "closed",
+    directions: "output",
+    created_at: "2026-09-28 09:00:00",
+    routes: [],
+    key_count: 0,
+    usable: true,
+  },
+} satisfies Record<string, Guardrail>;
+
+export const guardrailList: Guardrail[] = Object.values(guardrails);
+
+export const alertRules = {
+  budget: {
+    id: 1,
+    name: "Search budget 80%",
+    kind: "budget",
+    enabled: true,
+    created_at: "2026-09-20 10:00:00",
+    params: freeForm({ budget_id: budgets.team.id, percent: 80 }),
+    channels: [
+      { id: 1, name: "ops-webhook" },
+      { id: 2, name: "team-slack" },
+    ],
+    firing: [{ subject: `budget:${budgets.team.id}:2026-09-28`, since: "2026-09-30 10:00:00" }],
+  },
+  errors: {
+    id: 2,
+    name: "Chat errors",
+    kind: "error_rate",
+    enabled: true,
+    created_at: "2026-09-20 10:05:00",
+    params: freeForm({
+      scope: "route",
+      subject: "support-chat",
+      percent: 10,
+      window_minutes: 5,
+      min_requests: 20,
+    }),
+    channels: [{ id: 1, name: "ops-webhook" }],
+    firing: [],
+  },
+  circuit: {
+    id: 3,
+    name: "Circuit anywhere",
+    kind: "circuit_open",
+    enabled: false,
+    created_at: "2026-09-20 10:10:00",
+    params: freeForm({ provider: null, model: null }),
+    channels: [{ id: 2, name: "team-slack" }],
+    firing: [],
+  },
+} satisfies Record<string, AlertRule>;
+
+export const alertRuleList: AlertRule[] = Object.values(alertRules);
+
+export const alertEvents = {
+  firing: {
+    id: 3,
+    rule_id: alertRules.budget.id,
+    rule_name: alertRules.budget.name,
+    kind: "budget",
+    subject: `budget:${budgets.team.id}:2026-09-28`,
+    state: "firing",
+    summary: "Budget 'team Platform weekly' passed 80% (8.00 of 10.00 USD)",
+    details: freeForm({ budget_id: budgets.team.id, percent: 80 }),
+    at: "2026-09-30 10:00:00",
+    deliveries: [
+      freeForm({ channel_id: 1, channel_name: "ops-webhook", ok: true, status: 200, tries: 1, error: null }),
+      freeForm({
+        channel_id: 2,
+        channel_name: "team-slack",
+        ok: false,
+        status: 500,
+        tries: 3,
+        error: "the receiver answered 500",
+      }),
+    ],
+  },
+  resolved: {
+    id: 2,
+    rule_id: alertRules.errors.id,
+    rule_name: alertRules.errors.name,
+    kind: "error_rate",
+    subject: "route:support-chat",
+    state: "resolved",
+    summary: "Error rate of route support-chat is back under 10%",
+    details: freeForm({}),
+    at: "2026-09-29 15:00:00",
+    deliveries: [
+      freeForm({ channel_id: 1, channel_name: "ops-webhook", ok: true, status: 204, tries: 1, error: null }),
+    ],
+  },
+  test: {
+    id: 1,
+    rule_id: null,
+    rule_name: "Test",
+    kind: "test",
+    subject: "channel:1",
+    state: "test",
+    summary: "Test notification from the Ultrafast gateway",
+    details: freeForm({}),
+    at: "2026-09-28 08:00:00",
+    deliveries: [],
+  },
+} satisfies Record<string, AlertEvent>;
+
+export const alertEventList: AlertEvent[] = Object.values(alertEvents);
+
+// what `/api/playground/config` says: the gateway's default audio cap
+
+export const playgroundConfig = { max_audio_bytes: 25 * 1024 * 1024 };
+
+// prompt templates as `/api/prompts` shows them
+
+export const prompts = {
+  /** Made by the admin, three versions, the latest names a model. */
+  summarize: {
+    id: 1,
+    name: "summarize",
+    description: "Summarizes a text for a reader.",
+    created_by: 1,
+    created_at: "2026-09-20 09:00:00",
+    latest_version: 3,
+    version_count: 3,
+    updated_at: "2026-09-22 09:00:00",
+    model: "openai/gpt-4o",
+    variables: ["audience", "text"],
+    unreadable: false,
+  },
+  /** Made by the lead of Platform, one version, no model. */
+  greet: {
+    id: 2,
+    name: "greet",
+    description: "",
+    created_by: 2,
+    created_at: "2026-09-21 09:00:00",
+    latest_version: 1,
+    version_count: 1,
+    updated_at: "2026-09-21 09:00:00",
+    model: null,
+    variables: ["name"],
+    unreadable: false,
+  },
+} satisfies Record<string, PromptSummary>;
+
+export const promptList: PromptSummary[] = Object.values(prompts);
+
+export const promptVersions = {
+  summarize: [
+    {
+      version: 1,
+      messages: [{ role: "user", content: "Summarize {{text}}" }],
+      variables: ["text"],
+      model: null,
+      params: {},
+      created_by: 1,
+      created_at: "2026-09-20 09:00:00",
+    },
+    {
+      version: 2,
+      messages: [
+        { role: "system", content: "You write short summaries." },
+        { role: "user", content: "Summarize {{text}}\nKeep it short." },
+      ],
+      variables: ["text"],
+      model: null,
+      params: { temperature: 0.2 },
+      created_by: 1,
+      created_at: "2026-09-21 09:00:00",
+    },
+    {
+      version: 3,
+      messages: [
+        { role: "system", content: "You write short summaries for {{audience}}." },
+        { role: "user", content: "Summarize {{text}}\nKeep it short." },
+      ],
+      variables: ["audience", "text"],
+      model: "openai/gpt-4o",
+      params: { temperature: 0.2, max_tokens: 200 },
+      created_by: 1,
+      created_at: "2026-09-22 09:00:00",
+    },
+  ],
+  greet: [
+    {
+      version: 1,
+      messages: [{ role: "user", content: "Say hello to {{name}}." }],
+      variables: ["name"],
+      model: null,
+      params: {},
+      created_by: 2,
+      created_at: "2026-09-21 09:00:00",
+    },
+  ],
+} satisfies Record<string, PromptVersion[]>;
+
+export const promptViews = {
+  summarize: {
+    ...prompts.summarize,
+    versions: promptVersions.summarize.map(({ version, created_by, created_at }) => ({
+      version,
+      created_by,
+      created_at,
+    })),
+  },
+  greet: {
+    ...prompts.greet,
+    versions: promptVersions.greet.map(({ version, created_by, created_at }) => ({
+      version,
+      created_by,
+      created_at,
+    })),
+  },
+} satisfies Record<string, PromptView>;
+
+/** What adding a version answers: the version that was made. */
+export const newPromptVersion: PromptVersion = {
+  version: 4,
+  messages: [{ role: "user", content: "Summarize {{text}} for {{audience}}." }],
+  variables: ["audience", "text"],
+  model: null,
+  params: {},
+  created_by: 1,
+  created_at: "2026-09-30 11:00:00",
+};

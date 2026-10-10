@@ -25,6 +25,7 @@ export type {
   StreamEvent,
   Tool,
   ToolCall,
+  ResponseFormat,
   ToolChoice,
   Usage,
 } from "./types.js";

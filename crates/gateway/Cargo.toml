@@ -11,6 +11,12 @@ description = "Ultrafast AI gateway"
 name = "ultrafast"
 path = "src/main.rs"
 
+[features]
+# Test scaffolding: lets `Store::open_in_memory` return a private schema of the
+# PostgreSQL database named by UF_TEST_DATABASE_URL. Switched on for the tests
+# by the self dev-dependency below; never in a release build.
+test-support = []
+
 [dependencies]
 ultrafast-translate = { path = "../translate" }
 anyhow.workspace = true
@@ -25,8 +31,12 @@ flate2.workspace = true
 futures.workspace = true
 hex.workspace = true
 ipnet.workspace = true
+hmac.workspace = true
 http-body-util.workspace = true
 mime_guess.workspace = true
+multer.workspace = true
+regex.workspace = true
+regex-syntax.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 rust-embed.workspace = true
@@ -41,8 +51,12 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
 utoipa-axum.workspace = true
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_lc_rs"] }
+base64 = "0.22"
 
 [dev-dependencies]
+ultrafast-gateway = { path = ".", features = ["test-support"] }
+aws-lc-rs = "1.18"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true

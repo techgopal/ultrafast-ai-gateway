@@ -23,7 +23,7 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
             api_version
         ),
         headers,
-        body: openai::body(req, None)?,
+        body: openai::body(req, None, true)?,
     })
 }
 
@@ -61,6 +61,8 @@ mod tests {
             tools: Vec::new(),
             tool_choice: None,
             parallel_tool_calls: None,
+            response_format: None,
+            reasoning_effort: None,
         }
     }
 
@@ -78,9 +80,20 @@ mod tests {
         assert!(v.get("model").is_none(), "{v}");
         assert_eq!(v["messages"][0]["role"], "system");
         assert_eq!(v["messages"][1]["name"], "ann");
-        assert_eq!(v["max_tokens"], 5);
+        // Azure's reasoning deployments refuse `max_tokens`.
+        assert_eq!(v["max_completion_tokens"], 5);
+        assert!(v.get("max_tokens").is_none());
         assert_eq!(v["stop"][0], "x");
         assert!(v.get("stream").is_none());
+    }
+
+    #[test]
+    fn sends_reasoning_effort() {
+        let mut req = request(false);
+        req.reasoning_effort = Some("high".into());
+        let r = build_request(&target(None), &req).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(v["reasoning_effort"], "high");
     }
 
     #[test]
@@ -191,5 +204,18 @@ mod tests {
         assert_eq!(v["tools"][0]["function"]["strict"], true);
         assert_eq!(v["tool_choice"], "required");
         assert!(v.get("model").is_none());
+    }
+
+    #[test]
+    fn sends_response_format_as_is() {
+        use crate::types::ResponseFormat;
+        let mut req = request(false);
+        req.response_format = Some(ResponseFormat::JsonObject);
+        let r = build_request(&target(None), &req).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(
+            v["response_format"],
+            serde_json::json!({"type":"json_object"})
+        );
     }
 }

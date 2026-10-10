@@ -30,7 +30,20 @@ export class BrowserRules {
   /** The refusals this test expects on purpose, each until it is seen. */
   private readonly expected: { status: number; path: RegExp; seen: boolean }[] = [];
 
+  /** Origins a test lets the browser go to (never the app's own requests). */
+  private readonly sites = new Set<string>();
+
   constructor(private readonly origin: string) {}
+
+  /**
+   * The test sends the browser to another site on purpose (an identity
+   * provider that the test runs). The browser may go there by a navigation
+   * of the page; a request of the app itself (`fetch`, `xhr`, ...) to it is
+   * still a problem.
+   */
+  allowSite(origin: string): void {
+    this.sites.add(origin);
+  }
 
   /**
    * This test provokes an answer `status` of the gateway's `/api` at a path
@@ -82,6 +95,10 @@ export class BrowserRules {
         // Not a URL with an origin: not the gateway's.
       }
       if (origin === this.origin) {
+        await route.fallback();
+        return;
+      }
+      if (origin !== null && this.sites.has(origin) && route.request().isNavigationRequest()) {
         await route.fallback();
         return;
       }

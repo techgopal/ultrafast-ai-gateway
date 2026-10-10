@@ -66,6 +66,10 @@ export type ConsoleAction =
   | { type: "manageLimits" }
   | { type: "manageBudgets" }
   | { type: "manageSettings" }
+  /** Sees and changes alert rules and channels, and reads their history: what only an admin may. */
+  | { type: "manageAlerts" }
+  /** Sees, changes and attaches guardrails (to routes and keys), and tries them: what only an admin may. */
+  | { type: "manageGuardrails" }
   /**
    * Sees how many users and teams there are, on the overview: who manages
    * some, which is an admin and the lead of a team. The gateway lists users
@@ -79,6 +83,10 @@ export type ConsoleAction =
    * offer them no filter by key, user or team, and the overview no top keys.
    */
   | { type: "viewOthersUsage" }
+  /** Makes a prompt template: an admin, and the lead of any team. Everybody signed in reads and uses them. */
+  | { type: "createPrompt" }
+  /** Adds a version to a template or deletes it: an admin, and its maker while they lead a team. */
+  | { type: "managePrompt"; createdBy: number | null }
   /** Makes chat calls in the playground, as a key of their own would: everybody signed in. */
   | { type: "usePlayground" };
 
@@ -119,6 +127,8 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "manageLimits":
     case "manageBudgets":
     case "manageSettings":
+    case "manageAlerts":
+    case "manageGuardrails":
     case "editKeyTags":
       return false;
     case "renameUser":
@@ -140,6 +150,10 @@ export function can(me: Me, action: ConsoleAction): boolean {
       return ledTeamIds(me).length > 0;
     case "usePlayground":
       return true;
+    case "createPrompt":
+      return ledTeamIds(me).length > 0;
+    case "managePrompt":
+      return action.createdBy === me.user.id && ledTeamIds(me).length > 0;
     case "viewTeam":
       return isIn(me, action.teamId);
     case "createKeyForSelf":

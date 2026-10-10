@@ -1,6 +1,7 @@
 // The rules every browser test is held to (see `BrowserRules` in fixtures.ts)
 // are checked here against what breaks them, so that a test that passes
 // says something.
+import { startMockIdp } from "./mock-idp";
 import { expect, expectNowhere, heading, test } from "./fixtures";
 
 test("the rules of the browser tests see what breaks them", async ({ page, rules, gateway }) => {
@@ -98,6 +99,19 @@ test("the rules of the browser tests see what breaks them", async ({ page, rules
     await fetch("/api/broken");
   });
   await expectSeen(new RegExp(`^answer 500: ${gateway.origin}/api/broken$`));
+
+  // A site the test allows may be navigated to by the page (the policy of the
+  // page stops its own requests there). Another site stays refused, below.
+  const site = await startMockIdp({ sub: "s", email: "s@example.test" });
+  try {
+    rules.allowSite(site.origin);
+    await page.goto(`${site.origin}/jwks`);
+    expect(rules.problems).toEqual([]);
+    await page.goto("/sign-in");
+    await expect(heading(page, "Sign in")).toBeVisible();
+  } finally {
+    await site.stop();
+  }
 
   // A request to another origin is not sent. (The policy stops a `fetch`
   // before it goes out; a navigation it does not.)

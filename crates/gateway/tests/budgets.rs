@@ -401,6 +401,11 @@ impl World {
             estimated: false,
             started_at: ultrafast_gateway::store::now(),
             duration_ms: 1,
+            trace_parent: None,
+            provider_kinds: Vec::new(),
+            started_unix_ms: 0,
+            guardrails: None,
+            prompt: None,
         }
     }
 
@@ -807,6 +812,8 @@ fn log(at: &str, key_id: i64, user_id: i64, team_id: i64, cost: i64) -> NewLog {
         estimated: false,
         duration_ms: 1,
         attempts: "[]".into(),
+        guardrails: None,
+        prompt: None,
     }
 }
 

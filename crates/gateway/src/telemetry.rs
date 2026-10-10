@@ -9,8 +9,13 @@ use std::time::Instant;
 
 use ultrafast_translate::types::Usage;
 
+use crate::alerts::errors_window::Sample;
+use crate::alerts::EngineHandle;
+use crate::guardrails::log::{GuardrailLog, SideLog};
+use crate::guardrails::Direction;
 use crate::limits::Permit;
 use crate::metrics::Metrics;
+use crate::otel::{Exporter, TraceParent};
 use crate::store;
 use crate::tags::Tags;
 
@@ -40,6 +45,9 @@ pub struct Attempt {
     /// What the provider answered, when it did.
     pub status: Option<u16>,
     pub duration_ms: u64,
+    /// Milliseconds from the start of the call to the start of the attempt.
+    /// Only the trace export reads it; the request log does not store it.
+    pub offset_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,7 +59,7 @@ pub struct RequestRecord {
     /// The model or route name the caller asked for; empty when the body
     /// could not be read far enough to tell.
     pub requested: String,
-    /// `"chat"`, `"messages"`, `"embeddings"` or `"playground"`.
+    /// `"chat"`, `"messages"`, `"responses"`, `"embeddings"`, `"images"`, `"transcriptions"`, `"translations"`, `"speech"` or `"playground"`.
     pub endpoint: &'static str,
     pub stream: bool,
     /// What the caller was answered. A caller that went away before the
@@ -69,6 +77,38 @@ pub struct RequestRecord {
     pub duration_ms: u64,
     /// What the call sent in `x-uf-tags`, overlaid by the tags of its key.
     pub tags: Tags,
+    /// The incoming W3C `traceparent` of the call, when it had a valid one.
+    /// Only the trace export reads it; the request log does not store it.
+    pub trace_parent: Option<TraceParent>,
+    /// The kind (`openai`, `anthropic`, ...) of each provider the call may
+    /// try, by provider name, for the trace export.
+    pub provider_kinds: Vec<(String, &'static str)>,
+    /// Wall-clock start of the call, milliseconds since the epoch: the
+    /// precise form of `started_at`, for the trace export only.
+    pub started_unix_ms: u64,
+    /// What the guardrail checks found, when they found anything. Counts and
+    /// names only, never the text that matched.
+    pub guardrails: Option<GuardrailLog>,
+    /// The prompt template the call used, as `name@version`: set once the
+    /// template and its version were found.
+    pub prompt: Option<String>,
+}
+
+/// The longest `requested` a record keeps, in bytes. The name is whatever the
+/// caller sent (also for models that do not exist); every queue that holds a
+/// record would otherwise hold it whole.
+pub const MAX_REQUESTED: usize = 256;
+
+/// `text` cut to at most `max` bytes, on a char boundary.
+fn truncated(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// Receives the records. `record` is called on the request path and must not
@@ -106,6 +146,18 @@ pub struct Scope {
     stream_input: Option<u64>,
     /// Characters of answer streamed to the caller so far.
     streamed_chars: u64,
+    /// Where a copy of the record goes to become a trace, when enabled.
+    otel: Option<Exporter>,
+    /// Counts the call toward error rates, when alert rules exist.
+    alerts: Option<EngineHandle>,
+    /// Set once the name the caller asked for resolved to something it may
+    /// call: only such calls are counted toward error rates.
+    resolved: bool,
+    /// The configured route it resolved to, if it is a route.
+    resolved_route: Option<String>,
+    /// The answer was cut off by a guardrail while it streamed: the provider
+    /// kept generating, so the call is charged an estimate if it has no usage.
+    cut_short: bool,
 }
 
 impl Scope {
@@ -124,6 +176,11 @@ impl Scope {
             metrics: None,
             stream_input: None,
             streamed_chars: 0,
+            otel: None,
+            alerts: None,
+            resolved: false,
+            resolved_route: None,
+            cut_short: false,
             record: Some(RequestRecord {
                 key_id,
                 user_id,
@@ -139,6 +196,11 @@ impl Scope {
                 started_at: store::now(),
                 duration_ms: 0,
                 tags: Tags::new(),
+                trace_parent: None,
+                provider_kinds: Vec::new(),
+                started_unix_ms: unix_ms_now(),
+                guardrails: None,
+                prompt: None,
             }),
         }
     }
@@ -146,6 +208,66 @@ impl Scope {
     /// The call is counted in `metrics` when it is recorded.
     pub fn metered(&mut self, metrics: Arc<Metrics>) {
         self.metrics = Some(metrics);
+    }
+
+    /// The call is exported as a trace by `exporter` when it is recorded.
+    pub fn traced(&mut self, exporter: Option<Exporter>) {
+        self.otel = exporter;
+    }
+
+    /// The call is counted toward error rates by `engine` when it is recorded.
+    pub fn watched(&mut self, engine: Option<EngineHandle>) {
+        self.alerts = engine;
+    }
+
+    /// The name the caller asked for resolved: to the configured route
+    /// `route`, or (none) to a `provider/model`. Calls that never get here
+    /// (unknown names, refused ones) are not counted toward error rates, so a
+    /// caller cannot make subjects up.
+    pub fn resolved(&mut self, route: Option<&str>) {
+        self.resolved = true;
+        // The name is kept only while a rule reads it: no copy per call
+        // otherwise.
+        self.resolved_route = route
+            .filter(|_| self.alerts.as_ref().is_some_and(EngineHandle::is_active))
+            .map(str::to_string);
+    }
+
+    /// The `traceparent` the caller sent: the call's trace continues it.
+    pub fn parented(&mut self, parent: TraceParent) {
+        self.record_mut().trace_parent = Some(parent);
+    }
+
+    /// What the guardrails found in one direction of the call (nothing found
+    /// leaves the record as it is).
+    pub fn guardrails_found(&mut self, dir: Direction, side: Option<SideLog>) {
+        let r = self.record_mut();
+        r.guardrails = GuardrailLog::with(r.guardrails.take(), dir, side);
+    }
+
+    /// The call used this version of a prompt template.
+    pub fn prompt(&mut self, name: &str, version: i64) {
+        self.record_mut().prompt = Some(format!("{name}@{version}"));
+    }
+
+    /// What the guardrails found in the output of the call so far.
+    pub fn output_guardrails(&self) -> Option<SideLog> {
+        self.record.as_ref()?.guardrails.as_ref()?.output.clone()
+    }
+
+    /// A guardrail ended the answer while it streamed.
+    pub fn cut_short(&mut self) {
+        self.cut_short = true;
+    }
+
+    /// The kind of each provider the call may try, by provider name.
+    pub fn provider_kinds(&mut self, kinds: Vec<(String, &'static str)>) {
+        self.record_mut().provider_kinds = kinds;
+    }
+
+    fn offset_of(&self, started: Instant) -> u64 {
+        u64::try_from(started.saturating_duration_since(self.started).as_millis())
+            .unwrap_or(u64::MAX)
     }
 
     fn record_mut(&mut self) -> &mut RequestRecord {
@@ -159,7 +281,7 @@ impl Scope {
 
     pub fn requested(&mut self, name: &str, stream: bool) {
         let r = self.record_mut();
-        r.requested = name.to_string();
+        r.requested = truncated(name, MAX_REQUESTED).to_string();
         r.stream = stream;
     }
 
@@ -171,12 +293,14 @@ impl Scope {
         status: Option<u16>,
         started: Instant,
     ) {
+        let offset_ms = self.offset_of(started);
         self.record_mut().attempts.push(Attempt {
             provider: provider.to_string(),
             model: model.to_string(),
             outcome,
             status,
             duration_ms: elapsed_ms(started),
+            offset_ms,
         });
     }
 
@@ -184,12 +308,14 @@ impl Scope {
     /// [`settle_attempt`](Self::settle_attempt) it reads as retryable with no
     /// status, which is what a caller that goes away leaves behind.
     pub fn begin_attempt(&mut self, provider: &str, model: &str) {
+        let offset_ms = self.offset_of(Instant::now());
         self.record_mut().attempts.push(Attempt {
             provider: provider.to_string(),
             model: model.to_string(),
             outcome: AttemptOutcome::Retryable,
             status: None,
             duration_ms: 0,
+            offset_ms,
         });
     }
 
@@ -200,10 +326,12 @@ impl Scope {
         status: Option<u16>,
         started: Instant,
     ) {
+        let offset_ms = self.offset_of(started);
         if let Some(a) = self.record_mut().attempts.last_mut() {
             a.outcome = outcome;
             a.status = status;
             a.duration_ms = elapsed_ms(started);
+            a.offset_ms = offset_ms;
         }
     }
 
@@ -221,6 +349,14 @@ impl Scope {
     /// token estimate are given back to the rate limits.
     pub fn refund_permit(&mut self) {
         if let Some(permit) = self.permit.as_mut() {
+            permit.refund();
+        }
+    }
+
+    /// Gives back the request, the token estimate and the concurrency slot
+    /// the call holds, so that it can take them again.
+    pub fn release_permit(&mut self) {
+        if let Some(mut permit) = self.permit.take() {
             permit.refund();
         }
     }
@@ -273,6 +409,7 @@ impl Scope {
             outcome: AttemptOutcome::Cached,
             status: None,
             duration_ms: 0,
+            offset_ms: 0,
         });
     }
 
@@ -309,6 +446,8 @@ impl Scope {
                         outcome: AttemptOutcome::Skipped,
                         status: None,
                         duration_ms: 0,
+                        // Passed over when the call ended.
+                        offset_ms: elapsed_ms(self.started),
                     });
                 }
             }
@@ -319,11 +458,14 @@ impl Scope {
             // it is charged an estimate, marked as one.
             if let (None, Some(input)) = (record.usage, self.stream_input) {
                 let ended_early = status == CALLER_GONE
+                    || self.cut_short
                     || record
                         .attempts
                         .last()
                         .is_some_and(|a| a.outcome != AttemptOutcome::Ok);
-                if ended_early && (status == CALLER_GONE || self.streamed_chars > 0) {
+                if ended_early
+                    && (status == CALLER_GONE || self.cut_short || self.streamed_chars > 0)
+                {
                     let to_u32 = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
                     let usage = Usage {
                         input_tokens: to_u32(input),
@@ -347,16 +489,61 @@ impl Scope {
             if let Some(metrics) = &self.metrics {
                 metrics.record(&record);
             }
+            // Offered before the sink takes the record; never blocks.
+            if let Some(otel) = &self.otel {
+                otel.offer(&record);
+            }
+            if let Some(engine) = self
+                .alerts
+                .as_ref()
+                .filter(|e| self.resolved && e.is_active())
+            {
+                if let Some(sample) = alert_sample(&record, self.resolved_route.as_deref()) {
+                    engine.observe(&sample);
+                }
+            }
             self.sink.record(record);
         }
         self.permit = None;
     }
 }
 
+/// How a finished call counts toward error rates: `None` for a caller that
+/// went away (it says nothing about the gateway). It is an error when the
+/// caller was answered with a server error (5xx), or with a 429 that the
+/// provider gave (the last attempt that reached a provider answered 429); a
+/// 429 of the gateway's own limits and budgets, and any other 4xx, are the
+/// caller's.
+pub fn alert_sample<'a>(record: &'a RequestRecord, route: Option<&'a str>) -> Option<Sample<'a>> {
+    if record.status == CALLER_GONE {
+        return None;
+    }
+    let last = record.attempts.iter().rev().find(|a| {
+        !matches!(
+            a.outcome,
+            AttemptOutcome::Skipped | AttemptOutcome::Cached | AttemptOutcome::CircuitOpen
+        )
+    });
+    let error = record.status >= 500
+        || (record.status == 429 && last.is_some_and(|a| a.status == Some(429)));
+    Some(Sample {
+        route,
+        provider: last.map(|a| a.provider.as_str()),
+        key_id: record.key_id,
+        error,
+    })
+}
+
 impl Drop for Scope {
     fn drop(&mut self) {
         self.emit(CALLER_GONE);
     }
+}
+
+fn unix_ms_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 pub fn elapsed_ms(since: Instant) -> u64 {
@@ -380,6 +567,102 @@ mod tests {
         Scope::begin(sink.clone(), Some(7), Some(1), None, "chat")
     }
 
+    fn attempt(provider: &str, outcome: AttemptOutcome, status: Option<u16>) -> Attempt {
+        Attempt {
+            provider: provider.into(),
+            model: "m".into(),
+            outcome,
+            status,
+            duration_ms: 1,
+            offset_ms: 0,
+        }
+    }
+
+    fn finished(status: u16, attempts: Vec<Attempt>) -> RequestRecord {
+        let sink = Arc::new(Mem::default());
+        let mut s = scope(&sink);
+        s.requested("r", false);
+        for a in attempts {
+            s.attempt(&a.provider, &a.model, a.outcome, a.status, Instant::now());
+        }
+        s.finish(status);
+        let record = sink.0.lock().unwrap().remove(0);
+        record
+    }
+
+    #[test]
+    fn what_counts_as_an_error_for_alerts() {
+        let sample = |r: &RequestRecord| alert_sample(r, Some("r")).map(|s| s.error);
+        // Server errors are errors.
+        for status in [500, 502, 503, 504] {
+            let r = finished(
+                status,
+                vec![attempt("p", AttemptOutcome::Retryable, Some(500))],
+            );
+            assert_eq!(sample(&r), Some(true), "{status}");
+        }
+        // A 429 the provider gave is one; the gateway's own 429 is not.
+        let r = finished(
+            429,
+            vec![attempt("p", AttemptOutcome::Retryable, Some(429))],
+        );
+        assert_eq!(sample(&r), Some(true));
+        assert_eq!(alert_sample(&r, Some("r")).unwrap().provider, Some("p"));
+        let r = finished(429, vec![]);
+        assert_eq!(
+            sample(&r),
+            Some(false),
+            "a rate limit or budget of the gateway"
+        );
+        let r = finished(
+            429,
+            vec![
+                attempt("p", AttemptOutcome::Retryable, Some(503)),
+                attempt("q", AttemptOutcome::Skipped, None),
+            ],
+        );
+        assert_eq!(
+            sample(&r),
+            Some(false),
+            "the last call to a provider was not a 429"
+        );
+        // The caller's mistakes and successes are not.
+        for status in [200, 400, 401, 403, 404, 413, 422] {
+            let r = finished(status, vec![attempt("p", AttemptOutcome::Ok, Some(200))]);
+            assert_eq!(sample(&r), Some(false), "{status}");
+        }
+        // A caller that went away is not counted at all.
+        assert!(alert_sample(&finished(CALLER_GONE, vec![]), None).is_none());
+    }
+
+    #[test]
+    fn the_provider_is_that_of_the_last_attempt_that_reached_one() {
+        let r = finished(
+            503,
+            vec![
+                attempt("a", AttemptOutcome::Retryable, Some(500)),
+                attempt("b", AttemptOutcome::Retryable, Some(503)),
+                attempt("c", AttemptOutcome::CircuitOpen, None),
+            ],
+        );
+        assert_eq!(alert_sample(&r, Some("r")).unwrap().provider, Some("b"));
+        let r = finished(200, vec![attempt("a", AttemptOutcome::Cached, None)]);
+        assert_eq!(alert_sample(&r, Some("r")).unwrap().provider, None);
+        assert_eq!(alert_sample(&r, Some("r")).unwrap().key_id, Some(7));
+        assert_eq!(alert_sample(&r, Some("r")).unwrap().route, Some("r"));
+        assert_eq!(alert_sample(&r, None).unwrap().route, None);
+    }
+
+    #[test]
+    fn a_record_names_the_prompt_version_it_used() {
+        let sink = Arc::new(Mem::default());
+        let mut s = scope(&sink);
+        assert_eq!(s.record.as_ref().unwrap().prompt, None);
+        s.prompt("greet", 3);
+        s.finish(200);
+        assert_eq!(sink.0.lock().unwrap()[0].prompt.as_deref(), Some("greet@3"));
+    }
+
     #[test]
     fn finish_emits_once_with_the_status() {
         let sink = Arc::new(Mem::default());
@@ -392,6 +675,51 @@ mod tests {
         assert_eq!(records[0].key_id, Some(7));
         assert_eq!(records[0].requested, "p/m");
         assert!(records[0].stream);
+    }
+
+    #[test]
+    fn a_huge_requested_name_is_cut_on_a_char_boundary() {
+        let sink = Arc::new(Mem::default());
+        // 1 MiB of a two-byte char: the cut must not split one.
+        let mut s = scope(&sink);
+        s.requested(&"\u{e9}".repeat(512 * 1024), false);
+        s.finish(404);
+        let mut s = scope(&sink);
+        s.requested(&format!("a{}", "\u{e9}".repeat(512 * 1024)), false);
+        s.finish(404);
+        let mut s = scope(&sink);
+        s.requested(&"x".repeat(1024 * 1024), false);
+        s.finish(404);
+        let mut s = scope(&sink);
+        s.requested("p/m", false);
+        s.finish(200);
+        let records = sink.0.lock().unwrap();
+        for r in &records[..3] {
+            assert!(r.requested.len() <= 256, "{}", r.requested.len());
+            assert!(r.requested.len() >= 254);
+        }
+        assert_eq!(records[3].requested, "p/m");
+    }
+
+    #[test]
+    fn the_route_name_is_kept_only_while_an_error_rate_rule_reads_it() {
+        let sink = Arc::new(Mem::default());
+        let (engine, _rx) = EngineHandle::unread(4);
+        engine.windows().set_active(false);
+        let mut s = scope(&sink);
+        s.watched(Some(engine.clone()));
+        s.resolved(Some("chat"));
+        assert_eq!(s.resolved_route, None, "no rule: nothing is copied");
+        engine.windows().set_active(true);
+        s.resolved(Some("chat"));
+        assert_eq!(s.resolved_route.as_deref(), Some("chat"));
+        s.resolved(None);
+        assert_eq!(s.resolved_route, None);
+        s.finish(200);
+        let mut no_engine = scope(&sink);
+        no_engine.resolved(Some("chat"));
+        assert_eq!(no_engine.resolved_route, None);
+        no_engine.finish(200);
     }
 
     #[test]
@@ -455,6 +783,32 @@ mod tests {
                 (AttemptOutcome::Fatal, Some(400))
             ]
         );
+    }
+
+    #[test]
+    fn attempts_record_their_offset_from_the_start_of_the_call() {
+        let sink = Arc::new(Mem::default());
+        let mut s = scope(&sink);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        s.begin_attempt("a", "m1");
+        let started = Instant::now();
+        s.settle_attempt(AttemptOutcome::Ok, Some(200), started);
+        s.finish(200);
+        let r = sink.0.lock().unwrap()[0].clone();
+        assert!(r.attempts[0].offset_ms >= 30, "{}", r.attempts[0].offset_ms);
+        assert!(r.attempts[0].offset_ms < 5_000);
+    }
+
+    #[test]
+    fn a_target_passed_over_is_stamped_when_the_call_ended() {
+        let sink = Arc::new(Mem::default());
+        let mut s = scope(&sink);
+        s.targets(vec![("b".into(), "m2".into())]);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        s.finish(200);
+        let r = sink.0.lock().unwrap()[0].clone();
+        assert_eq!(r.attempts[0].outcome, AttemptOutcome::Skipped);
+        assert!(r.attempts[0].offset_ms >= 30);
     }
 
     #[test]

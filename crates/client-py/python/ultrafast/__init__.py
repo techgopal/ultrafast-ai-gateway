@@ -183,6 +183,16 @@ def _parallel(v: Optional[bool]) -> Optional[bool]:
     return v
 
 
+def _response_format(f: Optional[Dict[str, Any]]) -> Optional[str]:
+    """OpenAI's `response_format`: {"type": "text" | "json_object"} or
+    {"type": "json_schema", "json_schema": {"name", "schema", "strict"?, "description"?}}."""
+    if f is None:
+        return None
+    if not isinstance(f, dict):
+        raise TypeError("response_format is a dict")
+    return json.dumps(f)
+
+
 def _stop(stop: Union[None, str, Sequence[str]]) -> Optional[List[str]]:
     if stop is None:
         return None
@@ -218,7 +228,7 @@ def _u32(name: str, value: Optional[int]) -> Optional[int]:
 
 
 def _chat_args(
-    model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls
+    model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls, response_format
 ):
     if not isinstance(model, str):
         raise TypeError("model is a string")
@@ -233,6 +243,7 @@ def _chat_args(
         _tools(tools),
         _tool_choice(tool_choice),
         _parallel(parallel_tool_calls),
+        _response_format(response_format),
     )
 
 
@@ -338,9 +349,10 @@ class Client:
         tools: Optional[Sequence[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
         parallel_tool_calls: Optional[bool] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> ChatResponse:
         args = _chat_args(
-            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls
+            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls, response_format
         )
         return _chat(self._native.chat(*args))
 
@@ -357,10 +369,11 @@ class Client:
         tools: Optional[Sequence[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
         parallel_tool_calls: Optional[bool] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> ChatStream:
         """Sends the request and returns once the answer starts; a refusal raises here."""
         args = _chat_args(
-            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls
+            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls, response_format
         )
         return ChatStream(self._native.chat_stream(*args))
 
@@ -451,9 +464,10 @@ class AsyncClient:
         tools: Optional[Sequence[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
         parallel_tool_calls: Optional[bool] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> ChatResponse:
         args = _chat_args(
-            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls
+            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls, response_format
         )
         return _chat(await self._native.chat(*args))
 
@@ -470,9 +484,10 @@ class AsyncClient:
         tools: Optional[Sequence[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
         parallel_tool_calls: Optional[bool] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> AsyncChatStream:
         args = _chat_args(
-            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls
+            model, messages, max_tokens, temperature, top_p, stop, tags, tools, tool_choice, parallel_tool_calls, response_format
         )
         return AsyncChatStream(lambda: self._native.chat_stream(*args))
 

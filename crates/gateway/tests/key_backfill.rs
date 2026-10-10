@@ -10,7 +10,7 @@ use ultrafast_gateway::store::Store;
 
 /// The migrations up to and including `last`, in a directory of their own.
 fn migrations_up_to(last: u32, dir: &Path) {
-    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations/sqlite");
     for entry in std::fs::read_dir(from).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_str().unwrap().to_string();

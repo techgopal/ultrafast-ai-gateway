@@ -3,16 +3,19 @@
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+use super::prompt::{parse_prompt, PromptRef};
 use crate::error::TranslateError;
 use crate::types::{
-    image_source, ChatRequest, ChatResponse, Message, Part, Role, StreamEvent, Tool, ToolCall,
-    ToolChoice, Usage,
+    image_source, ChatRequest, ChatResponse, Message, Part, ResponseFormat, Role, StreamEvent,
+    Tool, ToolCall, ToolChoice, Usage,
 };
 
 #[derive(Deserialize)]
 struct WireRequest {
-    model: String,
-    messages: Vec<WireMessage>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    messages: Option<Vec<WireMessage>>,
     #[serde(default)]
     max_tokens: Option<u32>,
     #[serde(default)]
@@ -31,6 +34,10 @@ struct WireRequest {
     tool_choice: Option<Value>,
     #[serde(default)]
     parallel_tool_calls: Option<bool>,
+    #[serde(default)]
+    response_format: Option<Value>,
+    #[serde(default)]
+    reasoning_effort: Option<Value>,
     /// Every field that is not named above.
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -47,7 +54,10 @@ const IGNORED_REQUEST_FIELDS: &[&str] = &[
 ];
 
 /// Rejects the first field that is present, not null and not in `allowed`.
-fn reject_unknown(extra: &Map<String, Value>, allowed: &[&str]) -> Result<(), TranslateError> {
+pub(crate) fn reject_unknown(
+    extra: &Map<String, Value>,
+    allowed: &[&str],
+) -> Result<(), TranslateError> {
     match extra
         .iter()
         .find(|(k, v)| !v.is_null() && !allowed.contains(&k.as_str()))
@@ -330,7 +340,115 @@ fn convert_messages(wire: Vec<WireMessage>) -> Result<Vec<Message>, TranslateErr
     Ok(messages)
 }
 
+/// The values OpenAI's `reasoning_effort` takes.
+pub const REASONING_EFFORTS: &[&str] =
+    &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// A `reasoning_effort` (chat) or `reasoning.effort` (Responses) value.
+pub fn parse_reasoning_effort(v: &Value) -> Result<Option<String>, TranslateError> {
+    match v {
+        Value::Null => Ok(None),
+        Value::String(s) if REASONING_EFFORTS.contains(&s.as_str()) => Ok(Some(s.clone())),
+        _ => Err(TranslateError::InvalidRequest(format!(
+            "reasoning_effort must be one of {}",
+            REASONING_EFFORTS.join(", ")
+        ))),
+    }
+}
+
+/// An OpenAI-shaped `response_format`: `{type:"text"}`, `{type:"json_object"}`
+/// or `{type:"json_schema", json_schema:{name, schema, strict?, description?}}`.
+pub fn parse_response_format(v: &Value) -> Result<ResponseFormat, TranslateError> {
+    let invalid = |m: &str| TranslateError::InvalidRequest(m.to_string());
+    let fields = v
+        .as_object()
+        .ok_or_else(|| invalid("response_format must be an object"))?;
+    match v["type"].as_str() {
+        Some(kind @ ("text" | "json_object")) => {
+            if fields.keys().any(|k| k != "type") {
+                return Err(invalid(&format!(
+                    "response_format of type '{kind}' takes no other field"
+                )));
+            }
+            Ok(if kind == "text" {
+                ResponseFormat::Text
+            } else {
+                ResponseFormat::JsonObject
+            })
+        }
+        Some("json_schema") => {
+            if fields.keys().any(|k| k != "type" && k != "json_schema") {
+                return Err(invalid("response_format has an unknown field"));
+            }
+            let spec = v["json_schema"]
+                .as_object()
+                .ok_or_else(|| invalid("response_format 'json_schema' must be an object"))?;
+            if spec
+                .keys()
+                .any(|k| !["name", "schema", "strict", "description"].contains(&k.as_str()))
+            {
+                return Err(invalid(
+                    "response_format 'json_schema' has an unknown field",
+                ));
+            }
+            let name = spec
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|n| !n.is_empty())
+                .ok_or_else(|| invalid("response_format json_schema 'name' must be a string"))?;
+            let schema = match spec.get("schema") {
+                Some(s @ Value::Object(_)) => s.clone(),
+                _ => {
+                    return Err(invalid(
+                        "response_format json_schema 'schema' must be an object",
+                    ))
+                }
+            };
+            let strict = match spec.get("strict") {
+                None | Some(Value::Null) => None,
+                Some(Value::Bool(b)) => Some(*b),
+                _ => {
+                    return Err(invalid(
+                        "response_format json_schema 'strict' must be a boolean",
+                    ))
+                }
+            };
+            let description = match spec.get("description") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(d)) => Some(d.clone()),
+                _ => {
+                    return Err(invalid(
+                        "response_format json_schema 'description' must be a string",
+                    ))
+                }
+            };
+            Ok(ResponseFormat::JsonSchema {
+                name: name.to_string(),
+                schema,
+                strict,
+                description,
+            })
+        }
+        _ => Err(invalid(
+            "response_format 'type' must be text, json_object or json_schema",
+        )),
+    }
+}
+
+/// A request with no stored prompt in it.
 pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
+    match parse_prompted(body)? {
+        (request, None) => Ok(request),
+        (_, Some(_)) => Err(unsupported_field("prompt")),
+    }
+}
+
+/// A request that may name a stored prompt template (`prompt`, an extension
+/// of this endpoint). With one, `model` and `messages` may be left out: the
+/// request then has an empty model and no messages until the template is
+/// applied (the template's messages come first). Without one both are
+/// required, as in [`parse_request`].
+pub fn parse_prompted(body: &[u8]) -> Result<(ChatRequest, Option<PromptRef>), TranslateError> {
     let mut wire: WireRequest =
         serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
     // `n` is only accepted as the integer 1, which is also the default.
@@ -339,10 +457,23 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
             return Err(unsupported_field("n"));
         }
     }
+    let prompt = match wire.extra.remove("prompt") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(parse_prompt(&v)?),
+    };
     reject_unknown(&wire.extra, IGNORED_REQUEST_FIELDS)?;
-    let messages = convert_messages(wire.messages)?;
-    Ok(ChatRequest {
-        model: wire.model,
+    let model = match wire.model {
+        Some(m) => m,
+        None if prompt.is_some() => String::new(),
+        None => return Err(TranslateError::InvalidRequest("model is required".into())),
+    };
+    let messages = match (wire.messages, &prompt) {
+        (None, Some(_)) => Vec::new(),
+        (Some(m), Some(_)) if m.is_empty() => Vec::new(),
+        (m, _) => convert_messages(m.unwrap_or_default())?,
+    };
+    let request = ChatRequest {
+        model,
         messages,
         max_tokens: wire.max_completion_tokens.or(wire.max_tokens),
         temperature: wire.temperature,
@@ -358,7 +489,16 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
             Some(v) => Some(parse_tool_choice(v)?),
         },
         parallel_tool_calls: wire.parallel_tool_calls,
-    })
+        response_format: match wire.response_format {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(parse_response_format(&v)?),
+        },
+        reasoning_effort: match &wire.reasoning_effort {
+            None => None,
+            Some(v) => parse_reasoning_effort(v)?,
+        },
+    };
+    Ok((request, prompt))
 }
 
 /// The total is 64-bit: both counts may be saturated at `u32::MAX`.
@@ -468,6 +608,106 @@ mod tests {
     use super::*;
     use crate::error::TranslateError;
     use crate::types::*;
+
+    #[test]
+    fn a_prompt_reference_is_read_and_the_model_and_messages_may_then_be_left_out() {
+        let with = |extra: &str| format!(r#"{{"prompt":{extra}}}"#);
+        let (r, p) = parse_prompted(
+            with(r#"{"id":"greet","version":2,"variables":{"n":"Ada"}}"#).as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(r.model, "");
+        assert!(r.messages.is_empty());
+        let p = p.unwrap();
+        assert_eq!((p.id.as_str(), p.version.as_deref()), ("greet", Some("2")));
+        assert_eq!(p.variables["n"], "Ada");
+        // The version is a string of digits or an integer.
+        let (_, p) = parse_prompted(with(r#"{"id":"g","version":"12"}"#).as_bytes()).unwrap();
+        assert_eq!(p.unwrap().version.as_deref(), Some("12"));
+        let (_, p) = parse_prompted(with(r#"{"id":"g"}"#).as_bytes()).unwrap();
+        assert_eq!(p.unwrap().version, None);
+        for bad in [
+            r#"{"id":"g","version":"x"}"#,
+            r#"{"id":"g","version":1.5}"#,
+            r#"{"id":"g","version":-1}"#,
+            r#"{"id":"g","version":true}"#,
+            r#"{"id":"g","version":""}"#,
+            r#"{"id":"g","variables":{"n":3}}"#,
+            r#"{"id":"g","variables":[]}"#,
+            r#"{"version":1}"#,
+            r#"{"id":"g","other":1}"#,
+            r#""g""#,
+        ] {
+            assert!(
+                matches!(
+                    parse_prompted(with(bad).as_bytes()),
+                    Err(TranslateError::InvalidRequest(_) | TranslateError::Unsupported(_))
+                ),
+                "{bad}"
+            );
+        }
+        // Given, the request's own model and messages come through.
+        let (r, _) = parse_prompted(
+            br#"{"model":"p/m","prompt":{"id":"g"},"messages":[{"role":"user","content":"x"}],"temperature":0.5}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (r.model.as_str(), r.messages.len(), r.temperature),
+            ("p/m", 1, Some(0.5))
+        );
+        // Without a prompt nothing is left out.
+        for body in [
+            r#"{"messages":[{"role":"user","content":"x"}]}"#,
+            r#"{"model":"m"}"#,
+            r#"{"model":"m","messages":[]}"#,
+        ] {
+            assert!(
+                matches!(
+                    parse_prompted(body.as_bytes()),
+                    Err(TranslateError::InvalidRequest(_))
+                ),
+                "{body}"
+            );
+        }
+        // The plain parser still refuses the field.
+        assert!(matches!(
+            parse_request(
+                br#"{"model":"m","messages":[{"role":"user","content":"x"}],"prompt":{"id":"g"}}"#
+            ),
+            Err(TranslateError::Unsupported(_))
+        ));
+        // A null prompt is no prompt.
+        let (_, p) = parse_prompted(
+            br#"{"model":"m","messages":[{"role":"user","content":"x"}],"prompt":null}"#,
+        )
+        .unwrap();
+        assert!(p.is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_is_parsed_and_checked() {
+        let body = |v: &str| {
+            format!(
+                r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],"reasoning_effort":{v}}}"#
+            )
+        };
+        for e in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            let r = parse_request(body(&format!("\"{e}\"")).as_bytes()).unwrap();
+            assert_eq!(r.reasoning_effort.as_deref(), Some(e));
+        }
+        assert_eq!(
+            parse_request(body("null").as_bytes())
+                .unwrap()
+                .reasoning_effort,
+            None
+        );
+        for bad in ["\"loud\"", "3", "true"] {
+            assert!(
+                matches!(parse_request(body(bad).as_bytes()), Err(TranslateError::InvalidRequest(m)) if m.contains("reasoning_effort")),
+                "{bad}"
+            );
+        }
+    }
 
     #[test]
     fn parses_minimal_request() {
@@ -861,7 +1101,6 @@ mod tests {
         let cases = [
             ("functions", r#"[{"name":"f"}]"#),
             ("function_call", r#""auto""#),
-            ("response_format", r#"{"type":"json_object"}"#),
             ("logit_bias", r#"{"50256":-100}"#),
             ("logprobs", "true"),
             ("top_logprobs", "2"),
@@ -871,7 +1110,6 @@ mod tests {
             ("audio", r#"{"voice":"alloy","format":"wav"}"#),
             ("modalities", r#"["text","audio"]"#),
             ("prediction", r#"{"type":"content","content":"x"}"#),
-            ("reasoning_effort", r#""low""#),
         ];
         for (field, value) in cases {
             let body = format!(
@@ -1076,5 +1314,67 @@ mod tests {
         let part = r#"{"type":"text","text":"x","cache_control":null}"#;
         let req = parse_request(with_part(part).as_bytes()).unwrap();
         assert_eq!(req.messages[0].joined_text(), "x");
+    }
+    fn format_of(rf: &str) -> Result<Option<ResponseFormat>, TranslateError> {
+        let body = format!(
+            r#"{{"model":"m","messages":[{{"role":"user","content":"x"}}],"response_format":{rf}}}"#
+        );
+        parse_request(body.as_bytes()).map(|r| r.response_format)
+    }
+
+    #[test]
+    fn parses_response_format() {
+        assert_eq!(format_of("null").unwrap(), None);
+        assert_eq!(
+            format_of(r#"{"type":"text"}"#).unwrap(),
+            Some(ResponseFormat::Text)
+        );
+        assert_eq!(
+            format_of(r#"{"type":"json_object"}"#).unwrap(),
+            Some(ResponseFormat::JsonObject)
+        );
+        assert_eq!(
+            format_of(
+                r#"{"type":"json_schema","json_schema":{"name":"n","schema":{"type":"object"},"strict":true,"description":"d"}}"#
+            )
+            .unwrap(),
+            Some(ResponseFormat::JsonSchema {
+                name: "n".into(),
+                schema: json!({"type":"object"}),
+                strict: Some(true),
+                description: Some("d".into()),
+            })
+        );
+        assert_eq!(
+            format_of(r#"{"type":"json_schema","json_schema":{"name":"n","schema":{}}}"#).unwrap(),
+            Some(ResponseFormat::JsonSchema {
+                name: "n".into(),
+                schema: json!({}),
+                strict: None,
+                description: None,
+            })
+        );
+    }
+
+    #[test]
+    fn refuses_bad_response_format() {
+        for rf in [
+            r#""json""#,
+            r#"{}"#,
+            r#"{"type":"xml"}"#,
+            r#"{"type":"json_schema"}"#,
+            r#"{"type":"json_schema","json_schema":{"schema":{}}}"#,
+            r#"{"type":"json_schema","json_schema":{"name":"","schema":{}}}"#,
+            r#"{"type":"json_schema","json_schema":{"name":"n"}}"#,
+            r#"{"type":"json_schema","json_schema":{"name":"n","schema":[]}}"#,
+            r#"{"type":"json_schema","json_schema":{"name":"n","schema":{},"strict":"yes"}}"#,
+            r#"{"type":"json_schema","json_schema":{"name":"n","schema":{},"x":1}}"#,
+            r#"{"type":"json_object","json_schema":{"name":"n","schema":{}}}"#,
+        ] {
+            assert!(
+                matches!(format_of(rf), Err(TranslateError::InvalidRequest(_))),
+                "{rf}"
+            );
+        }
     }
 }

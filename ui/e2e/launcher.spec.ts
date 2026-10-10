@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { BINARY_VARIABLE, binaryPath, startGateway } from "./gateway";
+import { BINARY_VARIABLE, binaryPath, databaseUrl, startGateway } from "./gateway";
 
 /** Whether the process runs: it exists and is not a zombie. */
 function running(pid: number): boolean {
@@ -83,14 +83,21 @@ test("the gateway gets only its own environment, and leaves nothing when it stop
   const { pid, dataDir, port } = gateway;
   try {
     expect(port).not.toBe(3900);
-    expect(environmentNames(pid)).toEqual([
-      "NO_COLOR",
-      "RUST_LOG",
-      "UF_DATA_DIR",
-      "UF_HOST",
-      "UF_INSECURE_COOKIES",
-      "UF_PORT",
-    ]);
+    // On PostgreSQL (UF_E2E_DATABASE_URL) the gateway also gets its database and master key.
+    expect(environmentNames(pid)).toEqual(
+      databaseUrl() === null
+        ? ["NO_COLOR", "RUST_LOG", "UF_DATA_DIR", "UF_HOST", "UF_INSECURE_COOKIES", "UF_PORT"]
+        : [
+            "NO_COLOR",
+            "RUST_LOG",
+            "UF_DATABASE_URL",
+            "UF_DATA_DIR",
+            "UF_HOST",
+            "UF_INSECURE_COOKIES",
+            "UF_MASTER_KEY",
+            "UF_PORT",
+          ],
+    );
     expect(variable(pid, "UF_DATA_DIR")).toBe(dataDir);
     expect(variable(pid, "UF_HOST")).toBe("127.0.0.1");
     expect(variable(pid, "UF_PORT")).toBe(String(port));
@@ -105,6 +112,19 @@ test("the gateway gets only its own environment, and leaves nothing when it stop
     expect(processesWith(dataDir)).toEqual([]);
   } finally {
     cleanUp(pid, dataDir);
+  }
+});
+
+test("publicUrl sets UF_PUBLIC_URL to the gateway's own address, or to the text given, and is otherwise left out", async () => {
+  const own = await startGateway({ publicUrl: true });
+  const given = await startGateway({ publicUrl: "https://gateway.example.test" });
+  const none = await startGateway({ publicUrl: false });
+  try {
+    expect(variable(own.pid, "UF_PUBLIC_URL")).toBe(own.origin);
+    expect(variable(given.pid, "UF_PUBLIC_URL")).toBe("https://gateway.example.test");
+    expect(environmentNames(none.pid)).not.toContain("UF_PUBLIC_URL");
+  } finally {
+    await Promise.all([own.stop(), given.stop(), none.stop()]);
   }
 });
 

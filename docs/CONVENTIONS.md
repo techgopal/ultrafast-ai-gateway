@@ -59,22 +59,82 @@ and briefs add to these; they do not repeat them.
 
 ## Gateway (Rust)
 
-- axum 0.8, sqlx 0.9 SQLite (WAL), tokio. Rust 1.94 (`rust-toolchain.toml`).
+- axum 0.8, sqlx 0.9 (SQLite in WAL mode, and optionally PostgreSQL), tokio. Rust 1.94 (`rust-toolchain.toml`).
 - The database is the source of truth; `/v1` reads an in-memory `ArcSwap`
   snapshot and never waits on the database. Writes on the hot path go through a
   background writer.
 - Every admin route is declared once with utoipa; `openapi/admin.json` is
   generated from it and every operation has a unique `operationId`.
+- After any admin API change (a route, a request or response type, a doc
+  comment that reaches the spec): regenerate `openapi/admin.json`
+  (`cargo run -p ultrafast-gateway -- openapi > openapi/admin.json`), the console's
+  schema (`pnpm --dir ui gen:api`) and both admin SDKs (`pnpm --dir clients/admin-ts gen`,
+  `clients/admin-py/gen.sh`), and commit them with the change. CI fails when any
+  of them is out of date. A spec shape a generator cannot read is fixed in the
+  utoipa annotations, never by a script in an SDK.
 - Access to models and routes is decided only by the shared predicates in
   `crates/gateway/src/access.rs` (`model_callable`, `route_usable`); /v1 and the
   admin API's lists use the same functions. Every admin write that can change
   access (grants, enabled, routes, membership, role, status, key allowlist,
   provider delete) calls `refresh_snapshot` after commit.
+- Anything that talks to a third party (trace export, alert delivery) runs on a
+  background task fed by a bounded queue: the request path only does a
+  non-blocking send, a full queue drops and counts (a metric, and a record
+  where one exists), memory per destination is bounded, and shutdown waits for
+  the task for a fixed cap (5 s) before abandoning what is left. Nothing on
+  `/v1` ever waits for it.
 - Stateful features (rate limits, budgets, cache) sit behind traits so a shared
   store can replace the in-memory one.
 - A write transaction that reads before it writes starts with `BEGIN IMMEDIATE`
   (as the configuration import does); a deferred one fails at once with SQLite
   code 517 when another writer commits in between.
+  On PostgreSQL `begin_immediate` takes an advisory lock that is per database, not per
+  schema: it serializes these transactions across every gateway process (and every test
+  schema) sharing that database. Code that reads, decides and writes (a last-admin
+  check, a first-user check) must use it; a plain transaction is READ COMMITTED there.
+- The store speaks two databases (SQLite by default, PostgreSQL with
+  `UF_DATABASE_URL`):
+  - No SQLite-only (or Postgres-only) SQL outside `Dialect` (`store/dialect.rs`):
+    `last_insert_rowid`, `INSERT OR IGNORE`, `rowid`, `?` binds the database must
+    infer (cast or type them), integer booleans, `BLOB` columns are all
+    spelled through the dialect helpers.
+  - Every migration exists in both directories: `migrations/sqlite/` (next
+    number, today 0019) and `migrations/postgres/` (its own next number, today
+    0005: the Postgres baseline `0001_baseline.sql` folds SQLite 0001-0015 into
+    one, so the numbers differ). Pinned files never change. A schema change in
+    only one fails the baseline parity test in `store/mod.rs`, which runs only
+    with `UF_TEST_DATABASE_URL` set.
+  - Run the whole suite on Postgres before a store change is done: build with
+    `--features test-support` and set `UF_TEST_DATABASE_URL` to a throwaway
+    server; each test gets a schema of its own. The Rust suite and, once for a
+    release, the browser tests (`UF_E2E_DATABASE_URL`) pass on both.
+  - A transaction that reads several tables and must see one moment (the
+    snapshot, the configuration export) starts with `Store::begin_read`:
+    PostgreSQL would otherwise give each `SELECT` its own moment (READ COMMITTED).
+  - On Postgres a failed statement aborts the whole transaction (every later
+    statement fails until rollback): do not catch an error inside a transaction
+    and carry on; check first (`ON CONFLICT DO NOTHING`, a `SELECT`) or roll
+    back.
+  - State shared by several processes belongs in the database; anything kept
+    in memory (rate limits, cache, breaker health, alert error windows) is per
+    process and documented as such in the README's Known limits.
+- Sign-in methods other than the password sit behind the `SignInProvider` trait
+  (`identity/external.rs`): `begin(return_to)` returns the redirect and a flow
+  cookie value, `complete(&CallbackParams, flow_cookie)` returns
+  `Completed { identity, return_to }`. Both return boxed futures (`BoxFuture`)
+  so the trait stays object safe for `Arc<dyn SignInProvider>`;
+  `CallbackParams` is transport neutral (name/value pairs, from a query or a
+  form post; a name sent twice reads as absent). A provider only proves
+  who the person is: mapping to a user, roles, the session and audit are done
+  once in `api/sso.rs`, and the caller re-checks `return_to`. That mapping
+  reads `OidcSettings` and the callback is a GET today, so a SAML provider would
+  still need a provider-neutral mapping policy, an issuer or realm on the
+  identity, its own cookie attributes and a POST callback route. Nothing a
+  provider sent (claims, codes, tokens, error text) is logged or reflected;
+  failures are fixed codes.
+  The provider is rebuilt when the saved settings change, on every process:
+  the refresher calls `reload_sign_in_if_changed`, and start and callback also
+  refuse when the stored `enabled` is off.
 - Errors to clients use the gateway's error shape; never leak provider keys or
   internal paths.
 

@@ -12,14 +12,16 @@ use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState}
 use ultrafast_gateway::budgets::{self, FLUSH_INTERVAL};
 use ultrafast_gateway::catalog::{add_model, describe_model_add, validate_model_name};
 use ultrafast_gateway::config::{
-    db_path, load_master_key, parse_trusted_proxies, restrict_permissions, validate_api_version,
-    validate_base_url, validate_provider_name,
+    db_path, load_master_key, master_key_from_env_only, parse_database_url, parse_public_url,
+    parse_trusted_proxies, restrict_permissions, validate_api_version, validate_base_url,
+    validate_database_max_connections, validate_provider_name, DEFAULT_DATABASE_MAX_CONNECTIONS,
 };
 use ultrafast_gateway::identity::password;
 use ultrafast_gateway::logs::{self, LogSink, QUEUE_CAPACITY};
+use ultrafast_gateway::otel::{Exporter, OtelConfig};
 use ultrafast_gateway::portable;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
-use ultrafast_gateway::store::Store;
+use ultrafast_gateway::store::{Store, POSTGRES_BACKUP_TEXT};
 use ultrafast_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
 
 #[derive(Parser)]
@@ -33,6 +35,21 @@ struct Cli {
     /// in the process list and shell history.
     #[arg(long, env = "UF_MASTER_KEY", hide_env_values = true, global = true)]
     master_key: Option<String>,
+    /// Use this PostgreSQL database (postgres://user:password@host/db) instead
+    /// of the SQLite file in the data directory. Then UF_MASTER_KEY is
+    /// required, and several gateways may share the database. Prefer the
+    /// UF_DATABASE_URL environment variable: a flag value is visible in the
+    /// process list and shell history, and the URL holds the password.
+    #[arg(long, env = "UF_DATABASE_URL", hide_env_values = true, global = true)]
+    database_url: Option<String>,
+    /// The most connections one gateway opens to PostgreSQL.
+    #[arg(
+        long,
+        env = "UF_DATABASE_MAX_CONNECTIONS",
+        default_value_t = DEFAULT_DATABASE_MAX_CONNECTIONS,
+        global = true
+    )]
+    database_max_connections: u32,
     #[command(subcommand)]
     command: Command,
 }
@@ -63,12 +80,62 @@ enum Command {
             value_delimiter = ','
         )]
         trusted_proxies: Vec<String>,
+        /// The address people reach the gateway at, like
+        /// https://gateway.example.com. Single sign-on needs it: the
+        /// identity provider sends the browser back to
+        /// <URL>/api/auth/oidc/callback. Only the address: no path. Plain
+        /// http is accepted for localhost, or with --insecure-cookies.
+        /// Unset: single sign-on cannot be turned on.
+        #[arg(long, env = "UF_PUBLIC_URL", value_name = "URL")]
+        public_url: Option<String>,
         /// Serve Prometheus metrics at `GET /metrics` to callers that send
         /// this token as `Authorization: Bearer <token>`. Unset (or empty):
         /// `/metrics` does not exist. Prefer the UF_METRICS_TOKEN environment
         /// variable: a flag value is visible in the process list.
         #[arg(long, env = "UF_METRICS_TOKEN", hide_env_values = true)]
         metrics_token: Option<String>,
+        /// Export a trace of every `/v1` call over OTLP/HTTP (JSON) to the
+        /// collector at this base URL, like http://localhost:4318 (spans are
+        /// posted to <URL>/v1/traces; a URL that already ends with that is
+        /// used as it is). Unset: no traces are exported.
+        /// A span holds no prompt, answer or credential.
+        #[arg(long, env = "UF_OTEL_ENDPOINT")]
+        otel_endpoint: Option<String>,
+        /// Headers sent with each export, like `authorization=Bearer abc,x-team=a`
+        /// (name=value pairs separated by commas). Prefer the UF_OTEL_HEADERS
+        /// environment variable: a flag value is visible in the process list.
+        #[arg(long, env = "UF_OTEL_HEADERS", hide_env_values = true)]
+        otel_headers: Option<String>,
+        /// The `service.name` of the exported traces.
+        #[arg(long, env = "UF_OTEL_SERVICE_NAME", default_value = "ultrafast")]
+        otel_service_name: String,
+        /// The share of traces exported, 0.0 to 1.0, decided per trace. A
+        /// call whose `traceparent` says sampled is always exported, one that
+        /// says not sampled never.
+        #[arg(long, env = "UF_OTEL_SAMPLE_RATIO", default_value_t = 1.0)]
+        otel_sample_ratio: f64,
+        /// The largest audio file `/v1/audio/transcriptions` and
+        /// `/v1/audio/translations` take, in bytes. A larger upload is
+        /// refused with 413 while it is read, never held.
+        #[arg(
+            long,
+            env = "UF_MAX_AUDIO_BYTES",
+            default_value_t = ultrafast_gateway::app::DEFAULT_MAX_AUDIO_BYTES as u64,
+            value_parser = clap::value_parser!(u64).range(1..=1_073_741_824)
+        )]
+        max_audio_bytes: u64,
+        /// How many audio uploads are received at once, per process. Each
+        /// holds up to `--max-audio-bytes` in memory while it arrives; one
+        /// past the bound is refused with 503 before its body is read. A
+        /// place is given back once the body has arrived, not held while the
+        /// provider answers.
+        #[arg(
+            long,
+            env = "UF_MAX_CONCURRENT_UPLOADS",
+            default_value_t = ultrafast_gateway::app::DEFAULT_MAX_CONCURRENT_UPLOADS as u64,
+            value_parser = clap::value_parser!(u64).range(1..=1024)
+        )]
+        max_concurrent_uploads: u64,
     },
     /// Manage providers.
     Provider {
@@ -188,10 +255,25 @@ fn validate(command: &mut Command) -> Result<()> {
             host,
             port,
             trusted_proxies,
+            public_url,
+            insecure_cookies,
+            otel_endpoint,
+            otel_headers,
+            otel_service_name,
+            otel_sample_ratio,
             ..
         } => {
             serve_address(host, *port)?;
             parse_trusted_proxies(trusted_proxies)?;
+            if let Some(url) = public_url.as_deref().filter(|u| !u.trim().is_empty()) {
+                parse_public_url(url, *insecure_cookies)?;
+            }
+            validate_otel(
+                otel_endpoint.as_deref(),
+                otel_headers.as_deref(),
+                otel_service_name,
+                *otel_sample_ratio,
+            )?;
         }
         Command::Provider {
             command:
@@ -233,8 +315,64 @@ fn validate(command: &mut Command) -> Result<()> {
     Ok(())
 }
 
+/// Checks the trace export settings; the messages never show a header value.
+fn validate_otel(
+    endpoint: Option<&str>,
+    headers: Option<&str>,
+    service_name: &str,
+    ratio: f64,
+) -> Result<()> {
+    if let Some(endpoint) = endpoint.filter(|e| !e.trim().is_empty()) {
+        let parsed = reqwest::Url::parse(endpoint.trim())
+            .map_err(|_| anyhow::anyhow!("the OTLP endpoint is not a valid URL"))?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            bail!("the OTLP endpoint must be an http:// or https:// URL");
+        }
+    }
+    if let Some(headers) = headers {
+        ultrafast_gateway::otel::parse_headers(headers).map_err(anyhow::Error::msg)?;
+    }
+    if service_name.trim().is_empty() {
+        bail!("the OTLP service name must not be empty");
+    }
+    if !(0.0..=1.0).contains(&ratio) {
+        bail!("the OTLP sample ratio must be between 0.0 and 1.0");
+    }
+    Ok(())
+}
+
+/// Where the database is: the SQLite file in the data directory, or the
+/// PostgreSQL database `UF_DATABASE_URL` names.
+struct Database {
+    url: Option<String>,
+    max_connections: u32,
+}
+
+impl Database {
+    fn of(cli: &Cli) -> Result<Self> {
+        Ok(Self {
+            url: parse_database_url(cli.database_url.as_deref())?,
+            max_connections: validate_database_max_connections(cli.database_max_connections)?,
+        })
+    }
+
+    fn is_postgres(&self) -> bool {
+        self.url.is_some()
+    }
+
+    /// Opens PostgreSQL. The error never shows the URL (it holds the password).
+    async fn connect(url: &str, max: u32) -> Result<Store> {
+        Store::connect_url(url, max)
+            .await
+            .context("could not connect to the PostgreSQL database named by UF_DATABASE_URL")
+    }
+}
+
 /// `ultrafast backup <path>`.
-async fn backup_command(data_dir: &Path, path: &Path) -> Result<()> {
+async fn backup_command(data_dir: &Path, database: &Database, path: &Path) -> Result<()> {
+    if database.is_postgres() {
+        bail!("{POSTGRES_BACKUP_TEXT}");
+    }
     let db = db_path(data_dir);
     if !db.exists() {
         bail!("there is no database in {}", data_dir.display());
@@ -269,16 +407,24 @@ fn restrict_file(_path: &Path) -> Result<()> {
 
 /// `ultrafast config ...`. It needs no master key: the file holds no secret,
 /// and a key is neither read nor made.
-async fn config_command(data_dir: &Path, command: ConfigCommand) -> Result<()> {
+async fn config_command(
+    data_dir: &Path,
+    database: &Database,
+    command: ConfigCommand,
+) -> Result<()> {
     let db = db_path(data_dir);
     match command {
         ConfigCommand::Export { file } => {
-            if !db.exists() {
-                bail!("there is no database in {}", data_dir.display());
-            }
-            let store = Store::open(&db)
-                .await
-                .context("could not open the database")?;
+            let store = if let Some(url) = &database.url {
+                Database::connect(url, database.max_connections).await?
+            } else {
+                if !db.exists() {
+                    bail!("there is no database in {}", data_dir.display());
+                }
+                Store::open(&db)
+                    .await
+                    .context("could not open the database")?
+            };
             let exported = portable::export(&store).await?;
             let bytes = serde_json::to_vec_pretty(&exported)?;
             let mut out = std::fs::OpenOptions::new()
@@ -311,16 +457,22 @@ async fn config_command(data_dir: &Path, command: ConfigCommand) -> Result<()> {
                 Ok(parsed) => parsed,
                 Err(report) => bail!("{}", report.describe(dry_run)),
             };
-            // An import may start a data directory of its own.
-            std::fs::create_dir_all(data_dir)
-                .with_context(|| format!("could not create {}", data_dir.display()))?;
-            let store = Store::open(&db)
-                .await
-                .context("could not open the database")?;
-            restrict_permissions(data_dir)?;
+            let store = if let Some(url) = &database.url {
+                Database::connect(url, database.max_connections).await?
+            } else {
+                // An import may start a data directory of its own.
+                std::fs::create_dir_all(data_dir)
+                    .with_context(|| format!("could not create {}", data_dir.display()))?;
+                let store = Store::open(&db)
+                    .await
+                    .context("could not open the database")?;
+                restrict_permissions(data_dir)?;
+                store
+            };
             let actor = portable::Actor {
                 user_id: None,
                 email: "cli",
+                cipher: None,
             };
             let report = portable::import(&store, &parsed, &actor, dry_run).await?;
             println!("{}", report.describe(dry_run));
@@ -357,18 +509,32 @@ async fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&spec())?);
         return Ok(());
     }
+    let database = Database::of(&cli)?;
     // Neither needs the master key: it is not read, and not made.
     match cli.command {
-        Command::Config { command } => return config_command(&cli.data_dir, command).await,
-        Command::Backup { path } => return backup_command(&cli.data_dir, &path).await,
+        Command::Config { command } => {
+            return config_command(&cli.data_dir, &database, command).await
+        }
+        Command::Backup { path } => return backup_command(&cli.data_dir, &database, &path).await,
         _ => {}
     }
-    let master = load_master_key(&cli.data_dir, cli.master_key.as_deref())?;
-    let cipher = Cipher::from_hex(&master)?;
-    let store = Store::open(&db_path(&cli.data_dir))
-        .await
-        .context("could not open the database")?;
-    restrict_permissions(&cli.data_dir)?;
+    let (cipher, store) = if let Some(url) = &database.url {
+        // No data directory: nothing to keep a master key in, nothing created.
+        let master = master_key_from_env_only(cli.master_key.as_deref())?;
+        let cipher = Cipher::from_hex(&master)?;
+        (
+            cipher,
+            Database::connect(url, database.max_connections).await?,
+        )
+    } else {
+        let master = load_master_key(&cli.data_dir, cli.master_key.as_deref())?;
+        let cipher = Cipher::from_hex(&master)?;
+        let store = Store::open(&db_path(&cli.data_dir))
+            .await
+            .context("could not open the database")?;
+        restrict_permissions(&cli.data_dir)?;
+        (cipher, store)
+    };
 
     match cli.command {
         Command::Serve {
@@ -376,9 +542,25 @@ async fn main() -> Result<()> {
             port,
             insecure_cookies,
             trusted_proxies,
+            public_url,
             metrics_token,
+            otel_endpoint,
+            otel_headers,
+            otel_service_name,
+            otel_sample_ratio,
+            max_audio_bytes,
+            max_concurrent_uploads,
         } => {
             let addr = serve_address(&host, port)?;
+            // So a wrong image (one that ignores UF_DATABASE_URL) is visible.
+            // Never the URL: it holds the password.
+            tracing::info!(
+                "database: {}",
+                match store.dialect() {
+                    ultrafast_gateway::store::Dialect::Sqlite => "sqlite",
+                    ultrafast_gateway::store::Dialect::Postgres => "postgres",
+                }
+            );
             tokio::task::spawn_blocking(password::warm_up)
                 .await?
                 .context("password hashing does not work")?;
@@ -404,7 +586,16 @@ async fn main() -> Result<()> {
                 .map(|t| t.trim().to_string())
                 .filter(|t| !t.is_empty());
             state.cookie_secure = !insecure_cookies;
+            state.max_audio_bytes = usize::try_from(max_audio_bytes).unwrap_or(usize::MAX);
+            state.audio_uploads = Arc::new(tokio::sync::Semaphore::new(
+                usize::try_from(max_concurrent_uploads).unwrap_or(1024),
+            ));
             state.trusted_proxies = parse_trusted_proxies(&trusted_proxies)?;
+            state.public_url = public_url
+                .filter(|u| !u.trim().is_empty())
+                .map(|u| parse_public_url(&u, insecure_cookies))
+                .transpose()?;
+            state.reload_sign_in().await?;
             if !state.trusted_proxies.is_empty() {
                 tracing::info!(
                     count = state.trusted_proxies.len(),
@@ -414,6 +605,51 @@ async fn main() -> Result<()> {
             if insecure_cookies {
                 tracing::warn!("session cookies are sent without Secure");
             }
+            let (stop, stopped) = tokio::sync::watch::channel(false);
+            let mut otel_task = None;
+            if let Some(endpoint) = otel_endpoint.filter(|e| !e.trim().is_empty()) {
+                let headers = ultrafast_gateway::otel::parse_headers(
+                    otel_headers.as_deref().unwrap_or_default(),
+                )
+                .map_err(anyhow::Error::msg)?;
+                let (exporter, task) = Exporter::spawn(
+                    OtelConfig {
+                        endpoint: endpoint.trim().to_string(),
+                        headers,
+                        service_name: otel_service_name.trim().to_string(),
+                        sample_ratio: otel_sample_ratio,
+                    },
+                    // Its own client: no redirects, so a custom header is
+                    // never sent to another host.
+                    ultrafast_gateway::app::http_client(),
+                    state.metrics.clone(),
+                    stopped.clone(),
+                );
+                state.otel = Some(exporter);
+                otel_task = Some(task);
+                tracing::info!(
+                    sample_ratio = otel_sample_ratio,
+                    "exporting traces over OTLP"
+                );
+            }
+            let (deliverer, alert_task) = ultrafast_gateway::alerts::Deliverer::spawn(
+                state.store.clone(),
+                state.cipher.clone(),
+                state.http.clone(),
+                state.metrics.clone(),
+                ultrafast_gateway::alerts::DeliveryConfig::default(),
+                stopped.clone(),
+            );
+            let (engine, engine_task) = ultrafast_gateway::alerts::engine::spawn(
+                state.store.clone(),
+                Some(deliverer.clone()),
+                Some(state.health.clone()),
+                ultrafast_gateway::alerts::EngineConfig::default(),
+                stopped.clone(),
+            );
+            state.health.watch(engine.health_sender());
+            state.alerts = Some(deliverer);
+            state.alert_engine = Some(engine);
             let state = Arc::new(state);
             // Before the listener is bound, so the first call is already
             // counted against what was spent before the restart.
@@ -424,7 +660,6 @@ async fn main() -> Result<()> {
                 .await
                 .with_context(|| format!("could not listen on {addr}"))?;
             tracing::info!(%addr, "gateway listening");
-            let (stop, stopped) = tokio::sync::watch::channel(false);
             let refresher = spawn_refresher(state.clone(), stopped.clone());
             let log_writer = logs::writer::spawn_accounted(
                 state.store.clone(),
@@ -450,6 +685,13 @@ async fn main() -> Result<()> {
             let _ = refresher.await;
             // The writer writes what is still queued before the process ends.
             let _ = log_writer.await;
+            // Then the traces: the last of them are sent within 5 seconds.
+            if let Some(task) = otel_task {
+                let _ = task.await;
+            }
+            let _ = engine_task.await;
+            // Deliveries in progress get 5 seconds to finish.
+            let _ = alert_task.await;
             // After the writer: what it counted while draining is written too.
             let _ = budget_flush.await;
             budgets::flush(&state).await;
@@ -537,6 +779,41 @@ mod tests {
     }
 
     #[test]
+    fn serve_checks_the_public_url() {
+        let serve = |url: Option<&str>, insecure_cookies: bool| Command::Serve {
+            host: "127.0.0.1".into(),
+            port: 3000,
+            insecure_cookies,
+            trusted_proxies: vec![],
+            public_url: url.map(str::to_string),
+            metrics_token: None,
+            otel_endpoint: None,
+            otel_headers: None,
+            otel_service_name: "ultrafast".into(),
+            otel_sample_ratio: 1.0,
+            max_audio_bytes: 1,
+            max_concurrent_uploads: 1,
+        };
+        for (url, insecure, ok) in [
+            (None, false, true),
+            (Some(""), false, true),
+            (Some("https://gateway.example.com"), false, true),
+            (Some("gateway.example.com"), false, false),
+            (Some("https://u:p@gateway.example.com"), false, false),
+            (Some("https://gateway.example.com/gw"), false, false),
+            (Some("http://gateway.example.com"), false, false),
+            (Some("http://gateway.example.com"), true, true),
+            (Some("http://localhost:3000"), false, true),
+        ] {
+            assert_eq!(
+                validate(&mut serve(url, insecure)).is_ok(),
+                ok,
+                "{url:?} {insecure}"
+            );
+        }
+    }
+
+    #[test]
     fn provider_add_takes_the_new_kinds_and_an_azure_api_version() {
         for (kind, version, ok) in [
             ("gemini", None, true),
@@ -552,5 +829,45 @@ mod tests {
                 "{kind} {version:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_audio_cap_is_a_flag_with_bounds() {
+        let parse = |args: &[&str]| {
+            let mut all = vec!["ultrafast", "serve"];
+            all.extend_from_slice(args);
+            Cli::try_parse_from(all)
+        };
+        let cap = |args: &[&str]| match parse(args).unwrap().command {
+            Command::Serve {
+                max_audio_bytes, ..
+            } => max_audio_bytes,
+            _ => unreachable!(),
+        };
+        assert_eq!(cap(&[]), 25 * 1024 * 1024);
+        assert_eq!(cap(&["--max-audio-bytes", "1048576"]), 1_048_576);
+        assert!(parse(&["--max-audio-bytes", "0"]).is_err());
+        assert!(parse(&["--max-audio-bytes", "1073741825"]).is_err());
+    }
+
+    #[test]
+    fn the_upload_bound_is_a_flag_with_bounds() {
+        let parse = |args: &[&str]| {
+            let mut all = vec!["ultrafast", "serve"];
+            all.extend_from_slice(args);
+            Cli::try_parse_from(all)
+        };
+        let bound = |args: &[&str]| match parse(args).unwrap().command {
+            Command::Serve {
+                max_concurrent_uploads,
+                ..
+            } => max_concurrent_uploads,
+            _ => unreachable!(),
+        };
+        assert_eq!(bound(&[]), 8);
+        assert_eq!(bound(&["--max-concurrent-uploads", "64"]), 64);
+        assert_eq!(bound(&["--max-concurrent-uploads", "1024"]), 1024);
+        assert!(parse(&["--max-concurrent-uploads", "0"]).is_err());
+        assert!(parse(&["--max-concurrent-uploads", "1025"]).is_err());
     }
 }

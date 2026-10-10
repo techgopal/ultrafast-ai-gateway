@@ -23,14 +23,17 @@ import { ThemeSwitch } from "@/theme/theme";
 type Path =
   | "/"
   | "/logs"
+  | "/alerts"
   | "/playground"
   | "/providers"
   | "/models"
   | "/routes"
+  | "/prompts"
   | "/keys"
   | "/users"
   | "/teams"
   | "/limits"
+  | "/guardrails"
   | "/settings"
   | "/account";
 
@@ -40,6 +43,10 @@ interface NavItem {
   to?: Path;
   /** Shown only to who may change the settings. */
   settings?: boolean;
+  /** Shown only to who may manage alerts. */
+  alerts?: boolean;
+  /** Shown only to who may manage guardrails. */
+  guardrails?: boolean;
 }
 
 interface NavSection {
@@ -53,6 +60,7 @@ const sections: NavSection[] = [
     items: [
       { label: "Overview", to: "/" },
       { label: "Logs", to: "/logs" },
+      { label: "Alerts", to: "/alerts", alerts: true },
       { label: "Playground", to: "/playground" },
     ],
   },
@@ -62,6 +70,7 @@ const sections: NavSection[] = [
       { label: "Providers", to: "/providers" },
       { label: "Models", to: "/models" },
       { label: "Routing", to: "/routes" },
+      { label: "Prompts", to: "/prompts" },
       { label: "Virtual keys", to: "/keys" },
     ],
   },
@@ -71,7 +80,7 @@ const sections: NavSection[] = [
       { label: "Users", to: "/users" },
       { label: "Teams", to: "/teams" },
       { label: "Budgets and limits", to: "/limits" },
-      { label: "Guardrails" },
+      { label: "Guardrails", to: "/guardrails", guardrails: true },
       { label: "MCP tools" },
     ],
   },
@@ -142,9 +151,14 @@ export function AppSidebar({ user, onSignOut }: AppSidebarProps) {
               </SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
-                  {section.items.map((item) => (
-                    <NavEntry key={item.label} item={item} pathname={pathname} />
-                  ))}
+                  {section.items
+                    .filter((item) => item.alerts !== true || user?.mayManageAlerts === true)
+                    .filter(
+                      (item) => item.guardrails !== true || user?.mayManageGuardrails === true,
+                    )
+                    .map((item) => (
+                      <NavEntry key={item.label} item={item} pathname={pathname} />
+                    ))}
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>

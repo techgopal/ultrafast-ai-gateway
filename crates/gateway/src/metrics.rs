@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 
 use crate::app::AppState;
 use crate::errors::error_response;
+use crate::guardrails::external;
 use crate::logs::LogStats;
 use crate::routing::health::TargetHealth;
 use crate::routing::TargetState;
@@ -32,9 +33,32 @@ use crate::telemetry::{AttemptOutcome, RequestRecord, CALLER_GONE};
 /// The content type of the text format.
 pub const CONTENT_TYPE_TEXT: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-const ENDPOINTS: [&str; 4] = ["chat", "messages", "embeddings", "playground"];
+const ENDPOINTS: [&str; 9] = [
+    "chat",
+    "messages",
+    "responses",
+    "embeddings",
+    "images",
+    "transcriptions",
+    "translations",
+    "speech",
+    "playground",
+];
 /// `499` is a caller that went away: no answer was sent, so it is no 4xx.
 const CLASSES: [&str; 5] = ["2xx", "4xx", "499", "5xx", "other"];
+/// The results of a single sign-on callback: `ok`, then the reason codes of
+/// `sso_error` on the sign-in page.
+const OIDC_RESULTS: [&str; 9] = [
+    "ok",
+    "state",
+    "expired",
+    "idp",
+    "token",
+    "not_allowed",
+    "disabled",
+    "rate_limited",
+    "config",
+];
 const LIMITS: [&str; 3] = ["requests_per_minute", "tokens_per_minute", "concurrent"];
 /// Upper bounds of the upstream duration buckets, in milliseconds.
 const BUCKETS_MS: [u64; 12] = [
@@ -69,6 +93,16 @@ pub struct Metrics {
     cache_flight_waits: AtomicU64,
     rate_limited: [AtomicU64; LIMITS.len()],
     budget_blocked: AtomicU64,
+    /// By action (blocked, redacted, flagged), then direction (input, output).
+    guardrail_actions: [[AtomicU64; 2]; 3],
+    /// External guardrail checks that failed, by reason (see
+    /// `guardrails::external::REASONS`).
+    guardrail_external_errors: [AtomicU64; external::REASONS.len()],
+    otel_exported: AtomicU64,
+    otel_dropped: AtomicU64,
+    otel_failures: AtomicU64,
+    alert_deliveries: [AtomicU64; 3],
+    oidc_signins: [AtomicU64; OIDC_RESULTS.len()],
     /// Per provider.
     upstream: Mutex<BTreeMap<String, Histogram>>,
     /// The counters of the log pipeline, once it exists.
@@ -100,6 +134,29 @@ impl Metrics {
     pub fn record(&self, record: &RequestRecord) {
         if let Some(e) = ENDPOINTS.iter().position(|e| *e == record.endpoint) {
             self.requests[e][class_index(record.status)].fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(g) = &record.guardrails {
+            for (d, side) in [(0, &g.input), (1, &g.output)] {
+                let Some(side) = side else { continue };
+                let found = [
+                    side.blocked_by.is_some(),
+                    !side.redactions.is_empty(),
+                    !side.flags.is_empty(),
+                ];
+                for (a, found) in found.into_iter().enumerate() {
+                    if found {
+                        self.guardrail_actions[a][d].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                for flag in &side.flags {
+                    let reason = flag.rule_id.strip_prefix(external::ERROR_FLAG_PREFIX);
+                    if let Some(r) =
+                        reason.and_then(|r| external::REASONS.iter().position(|x| *x == r))
+                    {
+                        self.guardrail_external_errors[r].fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
         }
         // A cache hit used no provider tokens.
         if let (Some(u), false) = (record.usage, record.cached) {
@@ -159,6 +216,42 @@ impl Metrics {
 
     pub fn budget_blocked(&self) {
         self.budget_blocked.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `n` spans were accepted by the collector.
+    pub fn otel_exported(&self, n: u64) {
+        self.otel_exported.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// `n` spans were lost: the export queue was full, or a batch failed.
+    pub fn otel_dropped(&self, n: u64) {
+        self.otel_dropped.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// One export request failed (an error, or an answer other than 2xx).
+    pub fn otel_failure(&self) {
+        self.otel_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One alert delivery ended: `ok`, `failed` (after its tries) or
+    /// `dropped` (the queue was full).
+    pub fn alert_delivery(&self, result: &str, n: u64) {
+        let i = match result {
+            "ok" => 0,
+            "failed" => 1,
+            _ => 2,
+        };
+        self.alert_deliveries[i].fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// One single sign-on callback ended: `ok` or the reason code it was
+    /// refused with. An unknown result counts as `config`.
+    pub fn oidc_signin(&self, result: &str) {
+        let i = OIDC_RESULTS
+            .iter()
+            .position(|r| *r == result)
+            .unwrap_or(OIDC_RESULTS.len() - 1);
+        self.oidc_signins[i].fetch_add(1, Ordering::Relaxed);
     }
 
     /// The exposition text. `health` is what the circuit breakers show.
@@ -315,6 +408,94 @@ impl Metrics {
             "Calls refused because a budget was spent.",
         );
         let _ = writeln!(out, "uf_budget_blocked_total {}", n(&self.budget_blocked));
+
+        header(
+            &mut out,
+            "uf_guardrail_actions_total",
+            "counter",
+            "Calls a guardrail blocked, redacted or flagged, by direction. A call counts once per action and direction.",
+        );
+        for (a, action) in ["block", "redact", "flag"].into_iter().enumerate() {
+            for (d, direction) in ["input", "output"].into_iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    "uf_guardrail_actions_total{{action=\"{action}\",direction=\"{direction}\"}} {}",
+                    n(&self.guardrail_actions[a][d])
+                );
+            }
+        }
+
+        header(
+            &mut out,
+            "uf_guardrail_external_errors_total",
+            "counter",
+            "Checks by an external guardrail that failed, by reason: timeout, connect, status, too_large, invalid, buffer_full, busy or other.",
+        );
+        for (r, reason) in external::REASONS.into_iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "uf_guardrail_external_errors_total{{reason=\"{reason}\"}} {}",
+                n(&self.guardrail_external_errors[r])
+            );
+        }
+
+        header(
+            &mut out,
+            "uf_otel_spans_exported_total",
+            "counter",
+            "Spans the OTLP collector accepted.",
+        );
+        let _ = writeln!(
+            out,
+            "uf_otel_spans_exported_total {}",
+            n(&self.otel_exported)
+        );
+        header(
+            &mut out,
+            "uf_otel_spans_dropped_total",
+            "counter",
+            "Spans lost because the export queue was full or their batch failed.",
+        );
+        let _ = writeln!(out, "uf_otel_spans_dropped_total {}", n(&self.otel_dropped));
+        header(
+            &mut out,
+            "uf_otel_export_failures_total",
+            "counter",
+            "OTLP export requests that failed or were answered with a status other than 2xx.",
+        );
+        let _ = writeln!(
+            out,
+            "uf_otel_export_failures_total {}",
+            n(&self.otel_failures)
+        );
+
+        header(
+            &mut out,
+            "uf_alert_deliveries_total",
+            "counter",
+            "Alert notifications to channels, by result: delivered, failed after all tries, or dropped (the queue was full, or too many were waiting for one channel).",
+        );
+        for (i, result) in ["ok", "failed", "dropped"].iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "uf_alert_deliveries_total{{result=\"{result}\"}} {}",
+                n(&self.alert_deliveries[i])
+            );
+        }
+
+        header(
+            &mut out,
+            "uf_oidc_signins_total",
+            "counter",
+            "Single sign-on callbacks, by result: ok, or the reason the sign-in was refused.",
+        );
+        for (i, result) in OIDC_RESULTS.iter().enumerate() {
+            let _ = writeln!(
+                out,
+                "uf_oidc_signins_total{{result=\"{result}\"}} {}",
+                n(&self.oidc_signins[i])
+            );
+        }
 
         header(&mut out, "uf_circuit_open", "gauge", "1 while the circuit breaker of a target refuses calls, else 0. Targets that were never called are not listed.");
         for t in health {

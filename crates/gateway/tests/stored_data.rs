@@ -134,7 +134,12 @@ async fn a_database_written_by_the_earlier_build_opens_and_reads() {
             (10, "logs privacy estimated", true),
             (11, "tags", true),
             (12, "key creator", true),
-            (13, "key team only", true)
+            (13, "key team only", true),
+            (14, "alerts", true),
+            (15, "oidc", true),
+            (16, "alert owner", true),
+            (17, "guardrails", true),
+            (18, "prompts", true)
         ]
     );
 

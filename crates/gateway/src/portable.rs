@@ -15,20 +15,33 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use ultrafast_translate::provider::ProviderKind;
 
+use crate::alerts::rules as alert_rules;
+use crate::alerts::sign::new_secret;
 use crate::api::budgets::MAX_AMOUNT_MICROS;
+use crate::api::guardrails::{
+    check_description, check_fail_mode, check_rules_sync, check_timeout, rules_of,
+    DEFAULT_TIMEOUT_MS, KINDS as GUARDRAIL_KINDS, MAX_ATTACHED,
+};
 use crate::api::limits::{checked as checked_limit, MAX_COUNT, MAX_TOKENS};
+use crate::api::prompts::check_version;
 use crate::api::providers::{check_api_version, checked as checked_provider};
 use crate::api::routes::check_settings;
 use crate::api::teams::valid_team_name;
+use crate::api::trimmed_name;
 use crate::budgets::{BudgetAction, Period};
 use crate::cache::{CacheScope, RouteCache};
 use crate::catalog::validate_model_name;
 use crate::config::{same_host, validate_base_url, validate_provider_name};
+use crate::guardrails::{Directions, RuleSpec};
 use crate::limits::{LimitScope, RateLimit};
+use crate::prompts::{self, Params, TemplateMessage, MAX_TEMPLATES, MAX_VERSIONS};
+use crate::secrets::Cipher;
 use crate::store::{
-    AuditEntry, ConfigState, Grants, RouteSettings, Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
+    AuditEntry, ConfigState, Grants, GuardrailPatch, NewGuardrail, NewVersion, RouteSettings,
+    Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
 };
 
 /// The `format` of the file.
@@ -121,6 +134,11 @@ pub struct RouteEntry {
     pub cache_ttl_s: i64,
     #[serde(default = "default_cache_scope")]
     pub cache_scope: String,
+    /// Names of guardrails, in the order they apply. Left out of the file
+    /// for a route that has none; a file that leaves it out does not change
+    /// what is attached (`[]` takes them all off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardrails: Option<Vec<String>>,
 }
 
 fn default_cache_ttl() -> i64 {
@@ -180,6 +198,117 @@ pub struct SettingsEntry {
     pub session_hours: Option<i64>,
 }
 
+/// An alert channel: its name and kind only. Its URL and secret are never in
+/// a file; a channel an import creates is off until its URL is set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AlertChannelEntry {
+    pub name: String,
+    /// `webhook` or `slack`.
+    pub kind: String,
+}
+
+/// An alert rule. Its channels are named; a `budget` rule names its budget by
+/// `{scope, name, period}` (or `null`: every budget) instead of an id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AlertRuleEntry {
+    pub name: String,
+    /// `budget`, `error_rate` or `circuit_open`.
+    pub kind: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// As the API takes them, except that a `budget` rule has
+    /// `{"budget": {"scope", "name", "period"} or null, "percent"}`.
+    #[schema(value_type = Object)]
+    pub params: Value,
+    /// Names of channels.
+    #[serde(default)]
+    pub channels: Vec<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_timeout() -> i64 {
+    DEFAULT_TIMEOUT_MS
+}
+
+fn default_fail_mode() -> String {
+    "open".to_string()
+}
+
+fn both() -> Directions {
+    Directions::Both
+}
+
+/// How an external guardrail behaves. Its URL and signing secret are never
+/// in a file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalEntry {
+    /// 1 000 to 10 000. Not in the file: 3 000.
+    #[serde(default = "default_timeout")]
+    pub timeout_ms: i64,
+    /// `open` or `closed`. Not in the file: `open`.
+    #[serde(default = "default_fail_mode")]
+    pub fail_mode: String,
+    /// What it is asked about. Not in the file: `both`.
+    #[serde(default = "both")]
+    pub directions: Directions,
+}
+
+/// A guardrail. The URL and the signing secret of an external one are never
+/// in a file; one an import creates is off until its URL is set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GuardrailEntry {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// `rules` or `external`.
+    pub kind: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Applies to every call of the gateway.
+    #[serde(default)]
+    pub is_default: bool,
+    /// The rules of a `rules` guardrail; empty for an external one.
+    #[serde(default)]
+    pub rules: Vec<RuleSpec>,
+    /// An external guardrail's settings; left out for `rules`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<ExternalEntry>,
+}
+
+/// One version of a prompt template in a file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromptVersionEntry {
+    /// From 1, in order, without gaps.
+    pub version: i64,
+    pub messages: Vec<TemplateMessage>,
+    /// Used when a call names no model.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub params: Params,
+}
+
+/// A prompt template with all its versions. An import adds the versions a
+/// gateway lacks and never rewrites one it has: a version that differs is
+/// an error. Who made a template is not in a file; an import makes the
+/// templates it creates the importing admin's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromptEntry {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub versions: Vec<PromptVersionEntry>,
+}
+
 /// The configuration file. `format` and `version` come first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -202,12 +331,25 @@ pub struct ConfigFile {
     pub budgets: Vec<BudgetEntry>,
     #[serde(default)]
     pub settings: SettingsEntry,
+    /// Left out of the file when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alert_channels: Vec<AlertChannelEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alert_rules: Vec<AlertRuleEntry>,
+    /// Left out of the file when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guardrails: Vec<GuardrailEntry>,
+    /// Prompt templates with all their versions. Left out of the file when
+    /// there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<PromptEntry>,
 }
 
 /// Something the import did, or would do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct Item {
-    /// `provider`, `team`, `model`, `route`, `limit`, `budget` or `settings`.
+    /// `provider`, `team`, `model`, `guardrail`, `prompt`, `route`, `limit`,
+    /// `budget`, `alert_channel`, `alert_rule` or `settings`.
     pub kind: String,
     pub name: String,
     /// For an update: the fields that change. Empty for a creation.
@@ -358,6 +500,183 @@ fn grants_by_model(state: &ConfigState) -> HashMap<i64, GrantEntry> {
     out
 }
 
+/// How a rule's budget is named in a file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BudgetRef {
+    scope: String,
+    #[serde(default)]
+    name: Option<String>,
+    period: String,
+}
+
+/// The parameters of a `budget` rule in a file.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileBudgetParams {
+    #[serde(default)]
+    budget: Option<BudgetRef>,
+    percent: i64,
+}
+
+fn budget_ref_of(state: &ConfigState, id: i64) -> Option<BudgetRef> {
+    let b = state
+        .budgets
+        .iter()
+        .find(|b| b.id == id && b.scope != LimitScope::Key && b.has_subject())?;
+    Some(BudgetRef {
+        scope: b.scope.as_str().to_string(),
+        name: b.name.clone(),
+        period: b.period.as_str().to_string(),
+    })
+}
+
+/// The channels and rules of the file. A rule on a budget of a key, or on a
+/// budget that is gone, cannot be named in a file and is left out, as the
+/// budgets of keys are.
+fn alerts_of(state: &ConfigState) -> (Vec<AlertChannelEntry>, Vec<AlertRuleEntry>) {
+    let mut channels: Vec<AlertChannelEntry> = state
+        .alert_channels
+        .iter()
+        .map(|(_, name, kind)| AlertChannelEntry {
+            name: name.clone(),
+            kind: kind.clone(),
+        })
+        .collect();
+    channels.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut rules: Vec<AlertRuleEntry> = state
+        .alert_rules
+        .iter()
+        .filter_map(|r| {
+            let mut params: Value = serde_json::from_str(&r.params).ok()?;
+            if r.kind == "budget" {
+                let budget = match params.get("budget_id").and_then(Value::as_i64) {
+                    Some(id) => Some(budget_ref_of(state, id)?),
+                    None => None,
+                };
+                params = json!({ "budget": budget, "percent": params.get("percent") });
+            }
+            let mut names: Vec<String> = r
+                .channel_ids
+                .iter()
+                .filter_map(|id| state.alert_channels.iter().find(|(c, _, _)| c == id))
+                .map(|(_, name, _)| name.clone())
+                .collect();
+            names.sort();
+            Some(AlertRuleEntry {
+                name: r.name.clone(),
+                kind: r.kind.clone(),
+                enabled: r.enabled,
+                params,
+                channels: names,
+            })
+        })
+        .collect();
+    rules.sort_by(|a, b| a.name.cmp(&b.name));
+    (channels, rules)
+}
+
+/// The guardrails of the file, by name.
+fn guardrails_of(state: &ConfigState) -> Vec<GuardrailEntry> {
+    let mut entries: Vec<GuardrailEntry> = state
+        .guardrails
+        .iter()
+        .map(|g| {
+            let external = g.kind == "external";
+            GuardrailEntry {
+                name: g.name.clone(),
+                description: g.description.clone(),
+                kind: g.kind.clone(),
+                enabled: g.enabled,
+                is_default: g.is_default,
+                rules: if external { Vec::new() } else { rules_of(g) },
+                external: external.then(|| ExternalEntry {
+                    timeout_ms: g.timeout_ms,
+                    fail_mode: g.fail_mode.clone(),
+                    directions: Directions::parse(&g.directions).unwrap_or(Directions::Both),
+                }),
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+}
+
+/// The prompt templates of the file, by name, each with all its versions.
+/// A template with a version that cannot be read is left out here;
+/// [`export`] refuses to write such a file (see [`unreadable_prompts`]).
+fn prompts_of(state: &ConfigState) -> Vec<PromptEntry> {
+    let mut entries: Vec<PromptEntry> = state
+        .prompt_templates
+        .iter()
+        .filter_map(|t| {
+            let versions: Option<Vec<PromptVersionEntry>> = state
+                .prompt_versions
+                .iter()
+                .filter(|v| v.template_id == t.id)
+                .map(|v| {
+                    Some(PromptVersionEntry {
+                        version: v.version,
+                        messages: serde_json::from_str(&v.messages).ok()?,
+                        model: v.model.clone(),
+                        params: serde_json::from_str(&v.params).ok()?,
+                    })
+                })
+                .collect();
+            Some(PromptEntry {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                versions: versions?,
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+}
+
+/// The names of the templates that have a version which cannot be read, and
+/// so would be missing from an exported file.
+pub fn unreadable_prompts(state: &ConfigState) -> Vec<String> {
+    let mut names: Vec<String> = state
+        .prompt_templates
+        .iter()
+        .filter(|t| {
+            state
+                .prompt_versions
+                .iter()
+                .filter(|v| v.template_id == t.id)
+                .any(|v| {
+                    serde_json::from_str::<Vec<serde_json::Value>>(&v.messages).is_err()
+                        || serde_json::from_str::<serde_json::Value>(&v.params).is_err()
+                })
+        })
+        .map(|t| t.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+/// An export that would silently leave templates out is refused instead.
+#[derive(Debug)]
+pub struct UnreadablePrompts(pub Vec<String>);
+
+impl std::fmt::Display for UnreadablePrompts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "The export was not made: a version of the prompt template(s) {} cannot be read, \
+             so the file would leave them out. Fix or delete them first.",
+            self.0
+                .iter()
+                .map(|n| format!("'{n}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnreadablePrompts {}
+
 /// The file for the configuration as it is stored.
 pub fn file_of(state: &ConfigState) -> ConfigFile {
     let team_names: HashMap<i64, &str> =
@@ -411,6 +730,12 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
                 .filter_map(|(_, team)| team_names.get(team).map(|n| (*n).to_string()))
                 .collect();
             route_teams.sort();
+            let attached: Vec<String> = state
+                .route_guardrails
+                .iter()
+                .filter(|(route, _, _)| *route == r.id)
+                .map(|(_, _, name)| name.clone())
+                .collect();
             RouteEntry {
                 name: r.name.clone(),
                 primaries: targets
@@ -433,6 +758,7 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
                 cache_enabled: r.cache.enabled,
                 cache_ttl_s: r.cache.ttl_s,
                 cache_scope: r.cache.scope.as_str().to_string(),
+                guardrails: (!attached.is_empty()).then_some(attached),
             }
         })
         .collect();
@@ -479,9 +805,15 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
         .collect();
     budgets.sort_by(|a, b| (a.0, &a.2.name, a.1).cmp(&(b.0, &b.2.name, b.1)));
 
+    let (alert_channels, alert_rules) = alerts_of(state);
+
     ConfigFile {
         format: FORMAT.to_string(),
         version: VERSION,
+        alert_channels,
+        alert_rules,
+        guardrails: guardrails_of(state),
+        prompts: prompts_of(state),
         providers,
         models,
         teams,
@@ -497,7 +829,13 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
 
 /// The configuration of the gateway as a file.
 pub async fn export(store: &Store) -> Result<ConfigFile> {
-    Ok(file_of(&store.config_state().await?))
+    let state = store.config_state().await?;
+    let unreadable = unreadable_prompts(&state);
+    if !unreadable.is_empty() {
+        tracing::error!(templates = ?unreadable, "prompt templates with an unreadable version");
+        return Err(UnreadablePrompts(unreadable).into());
+    }
+    Ok(file_of(&state))
 }
 
 // ---------------------------------------------------------------- import
@@ -506,6 +844,10 @@ pub async fn export(store: &Store) -> Result<ConfigFile> {
 pub struct Actor<'a> {
     pub user_id: Option<i64>,
     pub email: &'a str,
+    /// Encrypts what an import makes that holds a secret (the signing secret
+    /// of an alert channel it creates). The command line has none: its import
+    /// cannot create a channel.
+    pub cipher: Option<&'a Cipher>,
 }
 
 /// What the import writes, in the order it writes it. Names, not ids: the
@@ -535,6 +877,21 @@ enum Op {
         output: Option<Option<i64>>,
         grants: Option<GrantEntry>,
     },
+    CreateGuardrail {
+        entry: GuardrailEntry,
+    },
+    UpdateGuardrail {
+        id: i64,
+        entry: GuardrailEntry,
+    },
+    /// A prompt template: made with all its versions (`id` none), or given
+    /// the versions after the first `have`.
+    UpsertPrompt {
+        id: Option<i64>,
+        entry: PromptEntry,
+        have: usize,
+        description: bool,
+    },
     UpsertRoute {
         id: Option<i64>,
         entry: RouteEntry,
@@ -550,6 +907,18 @@ enum Op {
         amount: u64,
         period: Period,
         action: BudgetAction,
+    },
+    CreateAlertChannel {
+        name: String,
+        kind: String,
+    },
+    UpsertAlertRule {
+        id: Option<i64>,
+        entry: AlertRuleEntry,
+        /// Its budget, if the rule names one; resolved when the rule is written.
+        budget: Option<BudgetRef>,
+        /// The parameters differ from those stored: its state is forgotten.
+        params_changed: bool,
     },
     SetRetention(i64),
     SetSessionHours(i64),
@@ -586,6 +955,13 @@ struct Planner<'a> {
     providers: HashSet<String>,
     teams: HashSet<String>,
     models: HashSet<String>,
+    /// Names of the guardrails the gateway has or the file creates.
+    guardrails: HashSet<String>,
+    /// The faults of the rules of each guardrail of the file, found before
+    /// the transaction (compiling is slow).
+    rule_checks: Vec<BTreeMap<String, String>>,
+    /// Whether the import can encrypt (the API can, the command line cannot).
+    can_encrypt: bool,
 }
 
 impl Planner<'_> {
@@ -862,6 +1238,271 @@ impl Planner<'_> {
         }
     }
 
+    fn guardrails(&mut self) {
+        let file = self.file;
+        let state = self.state;
+        let mut seen = HashSet::new();
+        for (i, entry) in file.guardrails.iter().enumerate() {
+            let at = format!("guardrails[{i}]");
+            let before = self.report.errors.len();
+            if let Err(message) = trimmed_name(&entry.name) {
+                self.error(format!("{at}.name"), message);
+            } else if entry.name.trim() != entry.name {
+                self.error(format!("{at}.name"), "must not start or end with a space");
+            }
+            if !seen.insert(entry.name.clone()) {
+                self.error(at.clone(), "this name appears more than once");
+            }
+            let mut fields = BTreeMap::new();
+            check_description(&entry.description, &mut fields);
+            self.fields(&at, fields);
+            let external = entry.kind == "external";
+            if !GUARDRAIL_KINDS.contains(&entry.kind.as_str()) {
+                self.error(format!("{at}.kind"), "kind must be rules or external");
+            } else if external {
+                if !entry.rules.is_empty() {
+                    self.error(format!("{at}.rules"), "only for rules guardrails");
+                }
+                let mut fields = BTreeMap::new();
+                if let Some(x) = &entry.external {
+                    check_timeout(x.timeout_ms, &mut fields);
+                    check_fail_mode(&x.fail_mode, &mut fields);
+                }
+                self.fields(&format!("{at}.external"), fields);
+            } else {
+                if entry.external.is_some() {
+                    self.error(format!("{at}.external"), "only for external guardrails");
+                }
+                let fields = self.rule_checks.get(i).cloned().unwrap_or_default();
+                self.fields(&at, fields);
+            }
+            let existing = state.guardrails.iter().find(|g| g.name == entry.name);
+            if let Some(g) = existing {
+                if g.kind != entry.kind {
+                    self.error(
+                        format!("{at}.kind"),
+                        format!("guardrail '{}' exists with another kind", entry.name),
+                    );
+                }
+            }
+            self.guardrails.insert(entry.name.clone());
+            if self.report.errors.len() > before {
+                continue;
+            }
+            let mut wanted = entry.clone();
+            if external && wanted.external.is_none() {
+                // Left out: the defaults.
+                wanted.external = Some(ExternalEntry {
+                    timeout_ms: DEFAULT_TIMEOUT_MS,
+                    fail_mode: default_fail_mode(),
+                    directions: Directions::Both,
+                });
+            }
+            let current = self
+                .current
+                .guardrails
+                .iter()
+                .find(|g| g.name == entry.name);
+            let Some((existing, current)) = existing.zip(current) else {
+                if external && !self.can_encrypt {
+                    self.error(
+                        at.clone(),
+                        format!(
+                            "guardrail '{}' does not exist; the command line cannot create an external one (import the file in the console)",
+                            entry.name
+                        ),
+                    );
+                    continue;
+                }
+                if external {
+                    // Off until it has a URL.
+                    wanted.enabled = false;
+                    self.report.warnings.push(Issue {
+                        at: at.clone(),
+                        message: format!("guardrail '{}' needs a URL", entry.name),
+                    });
+                }
+                self.push(
+                    Op::CreateGuardrail { entry: wanted },
+                    "guardrail",
+                    entry.name.clone(),
+                    Vec::new(),
+                    true,
+                );
+                continue;
+            };
+            // A file never turns on an external guardrail that has no URL.
+            if external && existing.url_host.as_deref().is_none_or(str::is_empty) {
+                wanted.enabled = false;
+            }
+            if wanted == *current {
+                self.report.unchanged += 1;
+                continue;
+            }
+            let mut changes = Vec::new();
+            let mut note = |changed: bool, name: &str| {
+                if changed {
+                    changes.push(name.to_string());
+                }
+            };
+            note(current.description != wanted.description, "description");
+            note(current.enabled != wanted.enabled, "enabled");
+            note(current.is_default != wanted.is_default, "is_default");
+            note(current.rules != wanted.rules, "rules");
+            note(current.external != wanted.external, "external");
+            self.push(
+                Op::UpdateGuardrail {
+                    id: existing.id,
+                    entry: wanted,
+                },
+                "guardrail",
+                entry.name.clone(),
+                changes,
+                false,
+            );
+        }
+    }
+
+    fn prompts(&mut self) {
+        let file = self.file;
+        let state = self.state;
+        let mut seen = HashSet::new();
+        let mut created_prompts = 0usize;
+        for (i, entry) in file.prompts.iter().enumerate() {
+            let at = format!("prompts[{i}]");
+            let before = self.report.errors.len();
+            if let Err(message) = trimmed_name(&entry.name) {
+                self.error(format!("{at}.name"), message);
+            } else if entry.name.trim() != entry.name {
+                self.error(format!("{at}.name"), "must not start or end with a space");
+            } else if entry.name.contains('@') {
+                self.error(
+                    format!("{at}.name"),
+                    "name must not contain @ (the log writes name@version)",
+                );
+            }
+            if !seen.insert(entry.name.clone()) {
+                self.error(at.clone(), "this name appears more than once");
+            }
+            let mut fields = BTreeMap::new();
+            check_description(&entry.description, &mut fields);
+            self.fields(&at, fields);
+            if entry.versions.is_empty() {
+                self.error(format!("{at}.versions"), "add at least one version");
+            } else if entry.versions.len() > MAX_VERSIONS {
+                self.error(
+                    format!("{at}.versions"),
+                    format!("a template has at most {MAX_VERSIONS} versions"),
+                );
+            }
+            for (j, v) in entry.versions.iter().enumerate().take(MAX_VERSIONS) {
+                let vat = format!("{at}.versions[{j}]");
+                if v.version != j as i64 + 1 {
+                    self.error(
+                        format!("{vat}.version"),
+                        format!(
+                            "expected version {}: versions are numbered from 1, in order, without gaps",
+                            j + 1
+                        ),
+                    );
+                }
+                let messages = v
+                    .messages
+                    .iter()
+                    .filter_map(|m| serde_json::to_value(m).ok())
+                    .collect();
+                let params = serde_json::to_value(&v.params).ok();
+                let mut fields = BTreeMap::new();
+                check_version(messages, v.model.clone(), params, &mut fields);
+                self.fields(&vat, fields);
+            }
+            if self.report.errors.len() > before {
+                continue;
+            }
+            let existing = state.prompt_templates.iter().find(|t| t.name == entry.name);
+            let current = self
+                .current
+                .prompts
+                .iter()
+                .find(|p| p.name == entry.name)
+                .cloned();
+            let (Some(existing), Some(current)) = (existing, current.as_ref()) else {
+                if existing.is_some() {
+                    // Stored, but not readable as a file entry.
+                    self.error(
+                        at.clone(),
+                        format!("prompt template '{}' cannot be read", entry.name),
+                    );
+                    continue;
+                }
+                if state.prompt_templates.len() + created_prompts >= MAX_TEMPLATES {
+                    self.error(
+                        at.clone(),
+                        format!("there would be more than {MAX_TEMPLATES} templates"),
+                    );
+                    continue;
+                }
+                created_prompts += 1;
+                self.push(
+                    Op::UpsertPrompt {
+                        id: None,
+                        entry: entry.clone(),
+                        have: 0,
+                        description: false,
+                    },
+                    "prompt",
+                    entry.name.clone(),
+                    Vec::new(),
+                    true,
+                );
+                continue;
+            };
+            let have = current.versions.len();
+            for (j, stored) in current.versions.iter().enumerate() {
+                if entry.versions.get(j).is_some_and(|v| v != stored) {
+                    self.error(
+                        format!("{at}.versions[{j}]"),
+                        format!(
+                            "version {} of '{}' exists and differs; versions never change (add a new version instead)",
+                            j + 1,
+                            entry.name
+                        ),
+                    );
+                }
+            }
+            if self.report.errors.len() > before {
+                continue;
+            }
+            let description = current.description != entry.description;
+            let added = entry.versions.len().saturating_sub(have);
+            if !description && added == 0 {
+                self.report.unchanged += 1;
+                continue;
+            }
+            let mut changes = Vec::new();
+            if description {
+                changes.push("description".to_string());
+            }
+            match added {
+                0 => {}
+                1 => changes.push(format!("version {}", have + 1)),
+                n => changes.push(format!("versions {}-{}", have + 1, have + n)),
+            }
+            self.push(
+                Op::UpsertPrompt {
+                    id: Some(existing.id),
+                    entry: entry.clone(),
+                    have,
+                    description,
+                },
+                "prompt",
+                entry.name.clone(),
+                changes,
+                false,
+            );
+        }
+    }
+
     fn routes(&mut self) {
         let file = self.file;
         let state = self.state;
@@ -939,12 +1580,33 @@ impl Planner<'_> {
                     );
                 }
             }
+            if let Some(names) = &entry.guardrails {
+                if names.len() > MAX_ATTACHED {
+                    self.error(
+                        format!("{at}.guardrails"),
+                        format!("at most {MAX_ATTACHED} guardrails"),
+                    );
+                }
+                for (j, guardrail) in names.iter().enumerate() {
+                    if !self.guardrails.contains(guardrail) {
+                        self.error(
+                            format!("{at}.guardrails[{j}]"),
+                            format!("guardrail '{guardrail}' does not exist"),
+                        );
+                    }
+                }
+            }
             if self.report.errors.len() > before {
                 continue;
             }
             let mut wanted = entry.clone();
             wanted.teams.sort();
             wanted.teams.dedup();
+            if let Some(names) = &mut wanted.guardrails {
+                // The order is kept; a repeat counts where it first is.
+                let mut seen = HashSet::new();
+                names.retain(|n| seen.insert(n.clone()));
+            }
             let Some(existing) = state.routes.iter().find(|r| r.name == entry.name) else {
                 self.push(
                     Op::UpsertRoute {
@@ -1001,6 +1663,14 @@ impl Planner<'_> {
             );
             note(current.cache_ttl_s != wanted.cache_ttl_s, "cache_ttl_s");
             note(current.cache_scope != wanted.cache_scope, "cache_scope");
+            // A file that does not say leaves the guardrails alone.
+            note(
+                wanted
+                    .guardrails
+                    .as_ref()
+                    .is_some_and(|w| *w != current.guardrails.clone().unwrap_or_default()),
+                "guardrails",
+            );
             if changes.is_empty() {
                 self.report.unchanged += 1;
             } else {
@@ -1221,6 +1891,221 @@ impl Planner<'_> {
         }
     }
 
+    fn alerts(&mut self) {
+        let file = self.file;
+        let state = self.state;
+        let mut channel_names: HashSet<String> = state
+            .alert_channels
+            .iter()
+            .map(|(_, n, _)| n.clone())
+            .collect();
+        let mut seen = HashSet::new();
+        for (i, entry) in file.alert_channels.iter().enumerate() {
+            let at = format!("alert_channels[{i}]");
+            let before = self.report.errors.len();
+            if let Err(message) = trimmed_name(&entry.name) {
+                self.error(format!("{at}.name"), message);
+            } else if entry.name.trim() != entry.name {
+                self.error(format!("{at}.name"), "must not start or end with a space");
+            }
+            if !["webhook", "slack"].contains(&entry.kind.as_str()) {
+                self.error(format!("{at}.kind"), "kind must be webhook or slack");
+            }
+            if !seen.insert(entry.name.clone()) {
+                self.error(at.clone(), "this name appears more than once");
+            }
+            let existing = state
+                .alert_channels
+                .iter()
+                .find(|(_, n, _)| *n == entry.name);
+            if let Some((_, _, kind)) = existing {
+                if *kind != entry.kind {
+                    self.error(
+                        format!("{at}.kind"),
+                        format!("channel '{}' exists with another kind", entry.name),
+                    );
+                }
+            }
+            channel_names.insert(entry.name.clone());
+            if self.report.errors.len() > before {
+                continue;
+            }
+            if existing.is_some() {
+                self.report.unchanged += 1;
+            } else if !self.can_encrypt {
+                self.error(
+                    at.clone(),
+                    format!(
+                        "channel '{}' does not exist; the command line cannot create one (import the file in the console)",
+                        entry.name
+                    ),
+                );
+            } else {
+                self.report.warnings.push(Issue {
+                    at: at.clone(),
+                    message: format!("channel '{}' needs a URL", entry.name),
+                });
+                self.push(
+                    Op::CreateAlertChannel {
+                        name: entry.name.clone(),
+                        kind: entry.kind.clone(),
+                    },
+                    "alert_channel",
+                    entry.name.clone(),
+                    Vec::new(),
+                    true,
+                );
+            }
+        }
+
+        let mut seen = HashSet::new();
+        for (i, entry) in file.alert_rules.iter().enumerate() {
+            let at = format!("alert_rules[{i}]");
+            let before = self.report.errors.len();
+            if let Err(message) = trimmed_name(&entry.name) {
+                self.error(format!("{at}.name"), message);
+            } else if entry.name.trim() != entry.name {
+                self.error(format!("{at}.name"), "must not start or end with a space");
+            }
+            if !seen.insert(entry.name.clone()) {
+                self.error(at.clone(), "this name appears more than once");
+            }
+            let existing = state.alert_rules.iter().find(|r| r.name == entry.name);
+            if let Some(row) = existing {
+                if row.kind != entry.kind {
+                    self.error(
+                        format!("{at}.kind"),
+                        format!("rule '{}' exists with another kind", entry.name),
+                    );
+                }
+            }
+            for (j, channel) in entry.channels.iter().enumerate() {
+                if !channel_names.contains(channel) {
+                    self.error(
+                        format!("{at}.channels[{j}]"),
+                        format!("channel '{channel}' does not exist"),
+                    );
+                }
+            }
+            // The parameters, in the form the file keeps them.
+            let mut budget = None;
+            let mut normal = None;
+            if entry.kind == "budget" {
+                match serde_json::from_value::<FileBudgetParams>(entry.params.clone()) {
+                    Err(e) => self.error(format!("{at}.params"), e.to_string()),
+                    Ok(p) => {
+                        let reference = match &p.budget {
+                            None => None,
+                            Some(r) => self.budget_ref(&at, r),
+                        };
+                        if p.budget.is_some() && reference.is_none() {
+                            // already reported
+                        } else if let Err(e) = alert_rules::parse(
+                            "budget",
+                            &json!({ "budget_id": null, "percent": p.percent }),
+                        ) {
+                            self.error(format!("{at}.{}", e.field), e.message);
+                        } else {
+                            normal = Some(json!({ "budget": p.budget, "percent": p.percent }));
+                            budget = reference;
+                        }
+                    }
+                }
+            } else {
+                match alert_rules::parse(&entry.kind, &entry.params) {
+                    Err(e) => self.error(format!("{at}.{}", e.field), e.message),
+                    Ok(p) => normal = Some(p.to_value()),
+                }
+            }
+            if self.report.errors.len() > before {
+                continue;
+            }
+            let Some(params) = normal else { continue };
+            let mut channels = entry.channels.clone();
+            channels.sort();
+            channels.dedup();
+            let wanted = AlertRuleEntry {
+                name: entry.name.clone(),
+                kind: entry.kind.clone(),
+                enabled: entry.enabled,
+                params,
+                channels,
+            };
+            let was = self
+                .current
+                .alert_rules
+                .iter()
+                .find(|r| r.name == entry.name);
+            let op = |id: Option<i64>, params_changed: bool| Op::UpsertAlertRule {
+                id,
+                entry: wanted.clone(),
+                budget: budget.clone(),
+                params_changed,
+            };
+            match (existing, was) {
+                (None, _) => self.push(
+                    op(None, false),
+                    "alert_rule",
+                    entry.name.clone(),
+                    Vec::new(),
+                    true,
+                ),
+                (Some(_), Some(was)) if *was == wanted => self.report.unchanged += 1,
+                (Some(row), was) => {
+                    let mut changes = Vec::new();
+                    let params_changed = was.is_none_or(|w| w.params != wanted.params);
+                    if params_changed {
+                        changes.push("params".to_string());
+                    }
+                    if was.is_none_or(|w| w.enabled != wanted.enabled) {
+                        changes.push("enabled".to_string());
+                    }
+                    if was.is_none_or(|w| w.channels != wanted.channels) {
+                        changes.push("channels".to_string());
+                    }
+                    self.push(
+                        op(Some(row.id), params_changed),
+                        "alert_rule",
+                        entry.name.clone(),
+                        changes,
+                        false,
+                    );
+                }
+            }
+        }
+    }
+
+    /// A budget a rule names exists on the gateway or in the file.
+    fn budget_ref(&mut self, at: &str, r: &BudgetRef) -> Option<BudgetRef> {
+        let (scope, name) =
+            self.subject(&format!("{at}.params.budget"), &r.scope, r.name.as_ref())?;
+        let Some(period) = Period::parse(&r.period) else {
+            self.error(
+                format!("{at}.params.budget.period"),
+                "must be daily, weekly or monthly",
+            );
+            return None;
+        };
+        let on_gateway =
+            self.state.budgets.iter().any(|b| {
+                b.scope == scope && b.name == name && b.period == period && b.has_subject()
+            });
+        let in_file = self
+            .file
+            .budgets
+            .iter()
+            .any(|b| b.scope == r.scope && b.name == name && b.period == r.period);
+        if on_gateway || in_file {
+            Some(r.clone())
+        } else {
+            self.error(
+                format!("{at}.params.budget"),
+                "no budget of this scope, name and period",
+            );
+            None
+        }
+    }
+
     fn settings(&mut self) {
         if let Some(days) = self.file.settings.log_retention_days {
             if !(1..=3650).contains(&days) {
@@ -1270,7 +2155,12 @@ fn subject_label(scope: LimitScope, name: Option<&str>) -> String {
 
 /// Checks the whole file against the configuration as it is, and works out
 /// what the import would write.
-fn plan(file: &ConfigFile, state: &ConfigState) -> Plan {
+fn plan(
+    file: &ConfigFile,
+    state: &ConfigState,
+    can_encrypt: bool,
+    rule_checks: Vec<BTreeMap<String, String>>,
+) -> Plan {
     let mut report = ImportReport::default();
     if file.format != FORMAT {
         report.errors.push(Issue {
@@ -1328,13 +2218,19 @@ fn plan(file: &ConfigFile, state: &ConfigState) -> Plan {
         providers,
         teams,
         models,
+        guardrails: state.guardrails.iter().map(|g| g.name.clone()).collect(),
+        rule_checks,
+        can_encrypt,
     };
     planner.providers();
     planner.teams();
     planner.models();
+    planner.guardrails();
+    planner.prompts();
     planner.routes();
     planner.limits();
     planner.budgets();
+    planner.alerts();
     planner.settings();
     let mut report = planner.report;
     let mut ops = planner.ops;
@@ -1354,6 +2250,8 @@ struct Ids {
     teams: HashMap<String, i64>,
     users: HashMap<String, i64>,
     models: HashMap<String, i64>,
+    alert_channels: HashMap<String, i64>,
+    guardrails: HashMap<String, i64>,
 }
 
 impl Ids {
@@ -1371,7 +2269,24 @@ impl Ids {
                 .iter()
                 .map(|m| (format!("{}/{}", m.provider_name, m.name), m.id))
                 .collect(),
+            alert_channels: state
+                .alert_channels
+                .iter()
+                .map(|(id, name, _)| (name.clone(), *id))
+                .collect(),
+            guardrails: state
+                .guardrails
+                .iter()
+                .map(|g| (g.name.clone(), g.id))
+                .collect(),
         }
+    }
+
+    fn guardrail(&self, name: &str) -> Result<i64> {
+        self.guardrails
+            .get(name)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("a guardrail of the plan is missing"))
     }
 
     /// Checked by the plan: every name the ops use is known.
@@ -1491,6 +2406,105 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                     tx.replace_grants(id, &ids.grants(&grants)?).await?;
                 }
             }
+            Op::CreateGuardrail { entry } => {
+                let rules = serde_json::to_string(&entry.rules)?;
+                let external = entry.external.as_ref();
+                // An external one is off, with no URL (the encrypted empty
+                // text); its signing secret is made now and shown by
+                // "rotate secret".
+                let cipher =
+                    if external.is_some() {
+                        Some(actor.cipher.ok_or_else(|| {
+                            anyhow::anyhow!("the import has no key to encrypt with")
+                        })?)
+                    } else {
+                        None
+                    };
+                let (url_enc, secret_enc) = match cipher {
+                    Some(c) => (
+                        Some(c.encrypt(b"")),
+                        Some(c.encrypt(new_secret().as_bytes())),
+                    ),
+                    None => (None, None),
+                };
+                let id = tx
+                    .insert_guardrail(NewGuardrail {
+                        name: &entry.name,
+                        description: &entry.description,
+                        kind: &entry.kind,
+                        rules: &rules,
+                        url: url_enc.as_deref().map(|enc| (enc, "")),
+                        secret_enc: secret_enc.as_deref(),
+                        timeout_ms: external.map_or(DEFAULT_TIMEOUT_MS, |x| x.timeout_ms),
+                        fail_mode: external.map_or("open", |x| x.fail_mode.as_str()),
+                        directions: external.map_or(Directions::Both, |x| x.directions).as_str(),
+                        enabled: entry.enabled,
+                        is_default: entry.is_default,
+                    })
+                    .await?;
+                ids.guardrails.insert(entry.name, id);
+            }
+            Op::UpdateGuardrail { id, entry } => {
+                let rules = (entry.kind == "rules")
+                    .then(|| serde_json::to_string(&entry.rules))
+                    .transpose()?;
+                let external = entry.external.as_ref();
+                tx.update_guardrail(
+                    id,
+                    GuardrailPatch {
+                        description: Some(&entry.description),
+                        rules: rules.as_deref(),
+                        timeout_ms: external.map(|x| x.timeout_ms),
+                        fail_mode: external.map(|x| x.fail_mode.as_str()),
+                        directions: external.map(|x| x.directions.as_str()),
+                        enabled: Some(entry.enabled),
+                        is_default: Some(entry.is_default),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            }
+            Op::UpsertPrompt {
+                id,
+                entry,
+                have,
+                description,
+            } => {
+                let id = match id {
+                    Some(id) => {
+                        if description {
+                            tx.set_prompt_description(id, &entry.description).await?;
+                        }
+                        id
+                    }
+                    None => {
+                        tx.insert_prompt_template(&entry.name, &entry.description, actor.user_id)
+                            .await?
+                    }
+                };
+                for (j, v) in entry.versions.iter().enumerate().skip(have) {
+                    let messages = serde_json::to_string(&v.messages)?;
+                    let variables = serde_json::to_string(&prompts::variables_in(
+                        v.messages.iter().map(|m| m.content.as_str()),
+                    ))?;
+                    let params = serde_json::to_string(&v.params)?;
+                    let number = tx
+                        .insert_prompt_version(
+                            id,
+                            NewVersion {
+                                messages: &messages,
+                                variables: &variables,
+                                model: v.model.as_deref(),
+                                params: &params,
+                            },
+                            actor.user_id,
+                        )
+                        .await?;
+                    if number != j as i64 + 1 {
+                        anyhow::bail!("a prompt version of the plan is out of order");
+                    }
+                }
+            }
             Op::UpsertRoute { id, entry } => {
                 let settings = RouteSettings {
                     retries: entry.retries,
@@ -1530,6 +2544,13 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                     .map(|t| ids.team(t))
                     .collect::<Result<Vec<_>>>()?;
                 tx.replace_route_grants(id, &team_ids).await?;
+                if let Some(names) = &entry.guardrails {
+                    let guardrail_ids = names
+                        .iter()
+                        .map(|n| ids.guardrail(n))
+                        .collect::<Result<Vec<_>>>()?;
+                    tx.replace_route_guardrails(id, &guardrail_ids).await?;
+                }
                 tx.set_route_cache(
                     id,
                     &RouteCache {
@@ -1554,6 +2575,85 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                 let subject = ids.subject(scope, name.as_deref())?;
                 tx.upsert_budget(scope, subject, amount, period, action)
                     .await?;
+            }
+            Op::CreateAlertChannel { name, kind } => {
+                // Off, with no URL: the encrypted empty text. The signing
+                // secret is made now and shown by "rotate secret".
+                let cipher = actor
+                    .cipher
+                    .ok_or_else(|| anyhow::anyhow!("the import has no key to encrypt with"))?;
+                let id = tx
+                    .insert_alert_channel(
+                        &name,
+                        &kind,
+                        &cipher.encrypt(b""),
+                        "",
+                        &cipher.encrypt(new_secret().as_bytes()),
+                        false,
+                    )
+                    .await?;
+                ids.alert_channels.insert(name, id);
+            }
+            Op::UpsertAlertRule {
+                id,
+                entry,
+                budget,
+                params_changed,
+            } => {
+                let params = match entry.kind.as_str() {
+                    "budget" => {
+                        let percent = entry.params.get("percent").and_then(Value::as_u64);
+                        let budget_id = match &budget {
+                            None => None,
+                            Some(r) => {
+                                let scope = LimitScope::parse(&r.scope);
+                                let period = Period::parse(&r.period);
+                                let found =
+                                    tx.config_state().await?.budgets.into_iter().find(|b| {
+                                        Some(b.scope) == scope
+                                            && b.name == r.name
+                                            && Some(b.period) == period
+                                            && b.has_subject()
+                                    });
+                                Some(
+                                    found
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!("a budget of the plan is missing")
+                                        })?
+                                        .id,
+                                )
+                            }
+                        };
+                        json!({ "budget_id": budget_id, "percent": percent })
+                    }
+                    _ => entry.params.clone(),
+                };
+                let text = params.to_string();
+                let rule_id = match id {
+                    Some(id) => {
+                        tx.update_alert_rule(id, None, Some(&text), Some(entry.enabled))
+                            .await?;
+                        if params_changed || !entry.enabled {
+                            tx.clear_alert_states(id).await?;
+                        }
+                        id
+                    }
+                    None => {
+                        tx.insert_alert_rule(&entry.name, &entry.kind, &text, entry.enabled)
+                            .await?
+                    }
+                };
+                let channel_ids = entry
+                    .channels
+                    .iter()
+                    .map(|n| {
+                        ids.alert_channels
+                            .get(n)
+                            .copied()
+                            .ok_or_else(|| anyhow::anyhow!("a channel of the plan is missing"))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                tx.set_alert_rule_channels(rule_id, &channel_ids).await?;
             }
             Op::SetRetention(days) => tx.set_log_retention_days(days).await?,
             Op::SetSessionHours(hours) => tx.set_session_hours(hours).await?,
@@ -1586,6 +2686,22 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
     Ok(())
 }
 
+/// The faults of the rules of every `rules` guardrail of the file, in file
+/// order (empty for the others). Compiling is slow, so the import does this
+/// off the async threads and before it takes the write lock.
+fn rule_checks_of(file: &ConfigFile) -> Vec<BTreeMap<String, String>> {
+    file.guardrails
+        .iter()
+        .map(|g| {
+            let mut fields = BTreeMap::new();
+            if g.kind == "rules" {
+                check_rules_sync(&g.rules, &mut fields);
+            }
+            fields
+        })
+        .collect()
+}
+
 /// Checks the file and, unless `dry_run` or it has errors, writes it, in
 /// one transaction with its audit rows. The report says what was done or,
 /// for a dry run, what would be. The caller refreshes the snapshot.
@@ -1595,9 +2711,13 @@ pub async fn import(
     actor: &Actor<'_>,
     dry_run: bool,
 ) -> Result<ImportReport> {
+    let owned = file.clone();
+    let rule_checks = tokio::task::spawn_blocking(move || rule_checks_of(&owned))
+        .await
+        .map_err(|e| anyhow::anyhow!("the rule check failed: {e}"))?;
     let mut tx = store.begin_immediate().await?;
     let state = tx.config_state().await?;
-    let planned = plan(file, &state);
+    let planned = plan(file, &state, actor.cipher.is_some(), rule_checks);
     let report = planned.report.clone();
     if dry_run || !report.is_clean() {
         // Nothing was written: the transaction is dropped, not committed.

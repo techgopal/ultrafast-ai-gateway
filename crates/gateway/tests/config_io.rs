@@ -227,6 +227,8 @@ async fn world() -> World {
             estimated: false,
             duration_ms: 1,
             attempts: "[]".into(),
+            guardrails: None,
+            prompt: None,
         }])
         .await
         .unwrap();
@@ -421,9 +423,17 @@ fn file_of(value: Value) -> ConfigFile {
 }
 
 fn actor() -> Actor<'static> {
+    static CIPHER: std::sync::OnceLock<ultrafast_gateway::secrets::Cipher> =
+        std::sync::OnceLock::new();
     Actor {
         user_id: None,
         email: "cli",
+        cipher: Some(CIPHER.get_or_init(|| {
+            ultrafast_gateway::secrets::Cipher::from_hex(
+                &ultrafast_gateway::secrets::Cipher::generate_master_hex(),
+            )
+            .unwrap()
+        })),
     }
 }
 
@@ -1066,7 +1076,7 @@ fn fresh_file(n: usize) -> ConfigFile {
 
 #[tokio::test]
 async fn an_import_survives_another_connection_writing_meanwhile() {
-    let org = common::org_on_disk().await;
+    let org = common::org_concurrent().await;
     let store = org.api.store.clone();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let writer = {
@@ -1109,7 +1119,7 @@ async fn an_import_survives_another_connection_writing_meanwhile() {
 
 #[tokio::test]
 async fn two_imports_at_once_both_succeed() {
-    let org = common::org_on_disk().await;
+    let org = common::org_concurrent().await;
     let store = org.api.store.clone();
     let mut tasks = Vec::new();
     for n in 0..8 {

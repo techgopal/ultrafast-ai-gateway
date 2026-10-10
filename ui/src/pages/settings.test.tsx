@@ -1,4 +1,5 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
+import { REVOKE_AFTER_MS } from "@/components/DownloadLink";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { errors, validationFailed } from "@/test/errors";
@@ -218,12 +219,19 @@ describe("the sections of the page", () => {
   test("the page has its sections, each with a heading, and a way to the audit log", async () => {
     await page();
     await days();
+    await screen.findByLabelText("Issuer");
     expectOneMain();
     expectOneH1("Settings");
     const headings = within(screen.getByRole("main"))
       .getAllByRole("heading", { level: 2 })
       .map((h) => h.textContent);
-    expect(headings).toEqual(["Retention", "Sign-in", "Backup", "Configuration"]);
+    expect(headings).toEqual([
+      "Retention",
+      "Sign-in",
+      "Single sign-on (OIDC)",
+      "Backup",
+      "Configuration",
+    ]);
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     expect(within(nav).getByRole("link", { name: "General" })).toHaveAttribute("aria-current", "page");
     expect(within(nav).getByRole("link", { name: "Audit log" })).toHaveAttribute(
@@ -418,6 +426,49 @@ describe("backup", () => {
     expect(link.className.split(/\s+/)).toContain("min-h-11");
   });
 
+  test("the database kind is shown read-only, SQLite with the download", async () => {
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Backup" });
+    expect(within(section).getByText("Database: SQLite")).toBeInTheDocument();
+    expect(within(section).getByRole("link", { name: "Download backup" })).toBeInTheDocument();
+    expect(within(section).queryByText("Use pg_dump to back up a Postgres database.")).toBeNull();
+  });
+
+  test("on Postgres the panel says to use pg_dump and offers no download", async () => {
+    override("get", "/api/settings", () =>
+      ok("get", "/api/settings", 200, { ...fixtures.settings, database: "postgres" }),
+    );
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Backup" });
+    expect(within(section).getByText("Database: PostgreSQL")).toBeInTheDocument();
+    expect(
+      within(section).getByText("Use pg_dump to back up a Postgres database."),
+    ).toBeInTheDocument();
+    expect(within(section).queryByRole("link", { name: "Download backup" })).toBeNull();
+    expect(within(section).queryByText(/useless without it/)).toBeNull();
+    // The master key is still the one thing a dump cannot carry.
+    expect(
+      within(section).getByText(
+        "Keep UF_MASTER_KEY apart from the dumps: without it the stored provider credentials cannot be read.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test("while the settings are not known the panel describes no download", async () => {
+    override("get", "/api/settings", () => refuse(errors.internal_error));
+    await page();
+    const section = await screen.findByRole("region", { name: "Backup" });
+    expect(
+      within(section).getByText("Backup options appear once the settings have loaded."),
+    ).toBeInTheDocument();
+    expect(within(section).queryByText(/Database:/)).toBeNull();
+    expect(within(section).queryByText(/A consistent copy/)).toBeNull();
+    expect(within(section).queryByText(/master key/)).toBeNull();
+    expect(within(section).queryByRole("link", { name: "Download backup" })).toBeNull();
+  });
+
   test("the session is checked first, then the download starts", async () => {
     const started = downloads();
     const check = counted("get", "/api/settings", () => ok("get", "/api/settings", 200, fixtures.settings));
@@ -490,7 +541,91 @@ function imports(
 
 const FILE = JSON.stringify(fixtures.configFile);
 
+const realSetTimeout = globalThis.setTimeout.bind(globalThis);
+
+/** Object URLs: what the console saves a fetched file as. */
+function savedFiles(): { made: Blob[]; names: string[]; revoked: string[]; later: (() => void)[] } {
+  const saved = { made: [] as Blob[], names: [] as string[], revoked: [] as string[], later: [] as (() => void)[] };
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    writable: true,
+    value: (blob: Blob) => {
+      saved.made.push(blob);
+      return `blob:test/${String(saved.made.length)}`;
+    },
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    writable: true,
+    value: (url: string) => {
+      saved.revoked.push(url);
+    },
+  });
+  // The download link's revoke timer: held back so the test can look before and after it.
+  vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, delay?: number) => {
+    if (delay === REVOKE_AFTER_MS) {
+      saved.later.push(handler);
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return realSetTimeout(handler, delay);
+  }));
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+    saved.names.push(this.download);
+  });
+  return saved;
+}
+
 describe("configuration: export", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(URL, "createObjectURL");
+    Reflect.deleteProperty(URL, "revokeObjectURL");
+  });
+
+  test("a 409 export_blocked names the template and saves no file", async () => {
+    const saved = savedFiles();
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Configuration" });
+    override("get", "/api/config/export", () => refuse(errors.export_blocked));
+    await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
+    expect(await within(section).findByRole("alert")).toHaveTextContent(/prompt template\(s\) 'welcome'/);
+    expect(saved.made).toEqual([]);
+    expect(saved.names).toEqual([]);
+  });
+
+  test("the file is fetched first and then saved as it was sent", async () => {
+    const saved = savedFiles();
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Configuration" });
+    await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
+    await waitFor(() => {
+      expect(saved.names).toHaveLength(1);
+    });
+    expect(saved.names[0]).toMatch(/^ultrafast-config-.*\.json$/);
+    const [file] = saved.made;
+    expect(JSON.parse((await file?.text()) ?? "null")).toEqual(fixtures.configFile);
+    expect(within(section).queryByRole("alert")).toBeNull();
+  });
+
+  test("the object URL is revoked later, not while the browser starts the download", async () => {
+    const saved = savedFiles();
+    await page();
+    await days();
+    const section = screen.getByRole("region", { name: "Configuration" });
+    await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
+    await waitFor(() => {
+      expect(saved.names).toHaveLength(1);
+    });
+    expect(saved.revoked).toEqual([]);
+    // Other timers of the same length may be held back too (the test library's own): run them all.
+    act(() => {
+      for (const run of saved.later) run();
+    });
+    expect(saved.revoked).toEqual(["blob:test/1"]);
+  });
+
   test("the download is a link to the gateway", async () => {
     await page();
     await days();
@@ -503,19 +638,19 @@ describe("configuration: export", () => {
     ).toBeInTheDocument();
   });
 
-  test("the session is checked first, a refusal is shown in place, then the download starts", async () => {
-    const started = downloads();
+  test("a refusal of the export is shown in place; the next try saves the file", async () => {
+    const saved = savedFiles();
     await page();
     await days();
     const section = screen.getByRole("region", { name: "Configuration" });
-    override("get", "/api/settings", () => refuse(errors.internal_error));
+    override("get", "/api/config/export", () => refuse(errors.internal_error));
     await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
     expect(await within(section).findByRole("alert")).toHaveTextContent("Something went wrong.");
-    expect(started).toEqual([]);
-    override("get", "/api/settings", () => ok("get", "/api/settings", 200, fixtures.settings));
+    expect(saved.names).toEqual([]);
+    override("get", "/api/config/export", () => ok("get", "/api/config/export", 200, fixtures.configFile));
     await userEvent.click(within(section).getByRole("link", { name: "Download configuration" }));
     await waitFor(() => {
-      expect(started).toEqual(["/api/config/export"]);
+      expect(saved.names).toHaveLength(1);
     });
     expect(within(section).queryByRole("alert")).toBeNull();
   });

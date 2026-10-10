@@ -8,10 +8,12 @@ const sections = ["Observe", "Configure", "Govern"];
 const items = [
   "Overview",
   "Logs",
+  "Alerts",
   "Playground",
   "Providers",
   "Models",
   "Routing",
+  "Prompts",
   "Virtual keys",
   "Users",
   "Teams",
@@ -48,11 +50,13 @@ describe("sidebar", () => {
       "Observe",
       "Overview",
       "Logs",
+      "Alerts",
       "Playground",
       "Configure",
       "Providers",
       "Models",
       "Routing",
+      "Prompts",
       "Virtual keys",
       "Govern",
       "Users",
@@ -77,14 +81,17 @@ describe("sidebar", () => {
     expect(hrefs).toEqual([
       ["Overview", "/"],
       ["Logs", "/logs"],
+      ["Alerts", "/alerts"],
       ["Playground", "/playground"],
       ["Providers", "/providers"],
       ["Models", "/models"],
       ["Routing", "/routes"],
+      ["Prompts", "/prompts"],
       ["Virtual keys", "/keys"],
       ["Users", "/users"],
       ["Teams", "/teams"],
       ["Budgets and limits", "/limits"],
+      ["Guardrails", "/guardrails"],
       ["Settings", "/settings"],
       ["Account", "/account"],
     ]);
@@ -93,10 +100,10 @@ describe("sidebar", () => {
   test("coming items are not links", async () => {
     await renderWithApp(null);
     const nav = sidebar();
-    expect(within(nav).queryByRole("link", { name: /Guardrails/ })).toBeNull();
+    expect(within(nav).queryByRole("link", { name: /MCP tools/ })).toBeNull();
     const logs = within(nav)
       .getAllByTestId("nav-item")
-      .find((el) => el.getAttribute("data-label") === "Guardrails");
+      .find((el) => el.getAttribute("data-label") === "MCP tools");
     expect(logs).toBeDefined();
     expect(logs).not.toHaveAttribute("href");
     expect(logs).toHaveAttribute("aria-disabled", "true");
@@ -128,6 +135,28 @@ describe("sidebar", () => {
     expect(within(sidebar()).getByRole("link", { name: "Settings" })).toHaveAttribute(
       "href",
       "/settings",
+    );
+  });
+
+  test("alerts is for admins", async () => {
+    const first = await renderWithApp(null, { user: memberUser });
+    expect(within(sidebar()).queryByRole("link", { name: "Alerts" })).toBeNull();
+    first.unmount();
+    await renderWithApp(null, { user: adminUser });
+    expect(within(sidebar()).getByRole("link", { name: "Alerts" })).toHaveAttribute(
+      "href",
+      "/alerts",
+    );
+  });
+
+  test("guardrails is for admins", async () => {
+    const first = await renderWithApp(null, { user: memberUser });
+    expect(within(sidebar()).queryByRole("link", { name: "Guardrails" })).toBeNull();
+    first.unmount();
+    await renderWithApp(null, { user: adminUser });
+    expect(within(sidebar()).getByRole("link", { name: "Guardrails" })).toHaveAttribute(
+      "href",
+      "/guardrails",
     );
   });
 

@@ -118,9 +118,10 @@ async fn setup_creates_the_first_admin_once() {
     assert!(body["created_at"].is_string());
     assert!(body["last_active_at"].is_null());
     let text = body.to_string();
-    assert!(!text.contains("password"));
+    assert!(!text.contains("password_hash"));
     assert!(!text.contains("argon2"));
-    assert_eq!(body.as_object().unwrap().len(), 8);
+    assert_eq!(body.as_object().unwrap().len(), 10);
+    assert_eq!(body["has_password"], true);
     assert_eq!(body["teams"], json!([]));
 
     let (_, _, body) = call(&api.app, "GET", "/api/setup", None, None).await;
@@ -138,6 +139,40 @@ async fn setup_creates_the_first_admin_once() {
     assert!(audit[0].summary.contains(EMAIL));
 
     sign_in(&api.app, EMAIL, PASSWORD).await;
+}
+
+/// Several people complete the setup at the same moment (two tabs, or
+/// processes started together with their own codes): one admin is made, the
+/// others are told the gateway is set up. On PostgreSQL a plain transaction
+/// would let more than one through.
+#[tokio::test]
+async fn simultaneous_setups_make_one_admin() {
+    for round in 0..3 {
+        let api = api().await;
+        let setup_code = api.state.setup_code.clone().unwrap();
+        let attempts = (0..6).map(|i| {
+            let (app, setup_code) = (api.app.clone(), setup_code.clone());
+            async move {
+                let request = json!({
+                    "email": format!("admin{i}@example.com"), "name": "Admin",
+                    "password": PASSWORD, "setup_code": setup_code,
+                });
+                let (status, _, body) = call(&app, "POST", "/api/setup", None, Some(request)).await;
+                (status, body)
+            }
+        });
+        let answers = futures::future::join_all(attempts).await;
+        let created = answers
+            .iter()
+            .filter(|(s, _)| *s == StatusCode::CREATED)
+            .count();
+        let refused = answers
+            .iter()
+            .filter(|(s, _)| *s == StatusCode::CONFLICT)
+            .count();
+        assert_eq!((created, refused), (1, 5), "round {round}: {answers:?}");
+        assert_eq!(api.store.count_users().await.unwrap(), 1, "round {round}");
+    }
 }
 
 #[tokio::test]

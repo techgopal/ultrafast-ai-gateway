@@ -2,10 +2,12 @@
 //! teams that may use them.
 
 use anyhow::Result;
-use sqlx::sqlite::SqliteRow;
+use sqlx::any::AnyRow;
+use sqlx::AnyConnection;
 use sqlx::Row;
 
-use super::{write_error, Store, Tx, DEFAULT_ORG};
+use super::dialect::{Dialect, Dialected};
+use super::{flag, write_error, Store, Tx, DEFAULT_ORG};
 use crate::cache::{CacheScope, RouteCache};
 
 /// The settings of a route, as stored and as written.
@@ -50,7 +52,7 @@ pub struct TargetsInput {
     pub fallbacks: Vec<i64>,
 }
 
-fn route_from(r: &SqliteRow) -> RouteRow {
+fn route_from(r: &AnyRow) -> RouteRow {
     RouteRow {
         id: r.get("id"),
         name: r.get("name"),
@@ -74,7 +76,7 @@ fn route_from(r: &SqliteRow) -> RouteRow {
     }
 }
 
-fn target_from(r: &SqliteRow) -> TargetRow {
+fn target_from(r: &AnyRow) -> TargetRow {
     TargetRow {
         route_id: r.get("route_id"),
         model_id: r.get("model_id"),
@@ -101,7 +103,7 @@ const TARGET_SELECT: &str = "SELECT t.route_id, t.model_id, t.tier, t.weight,
 pub fn is_missing_reference(e: &anyhow::Error) -> bool {
     matches!(
         e.downcast_ref::<sqlx::Error>(),
-        Some(sqlx::Error::Database(db)) if db.is_foreign_key_violation()
+        Some(sqlx::Error::Database(db)) if Dialect::is_foreign_key_violation(db.as_ref())
     )
 }
 
@@ -113,25 +115,26 @@ impl Tx<'_> {
         s: &RouteSettings,
         everyone: bool,
     ) -> Result<i64> {
-        let r = sqlx::query(
-            "INSERT INTO routes (org_id, name, retries, first_token_timeout_ms,
+        let id: i64 = self
+            .scalar(
+                "INSERT INTO routes (org_id, name, retries, first_token_timeout_ms,
                 total_timeout_ms, breaker_failures, breaker_window_s, breaker_open_s,
                 everyone)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(name)
-        .bind(s.retries)
-        .bind(s.first_token_timeout_ms)
-        .bind(s.total_timeout_ms)
-        .bind(s.breaker_failures)
-        .bind(s.breaker_window_s)
-        .bind(s.breaker_open_s)
-        .bind(everyone)
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
-        Ok(r.last_insert_rowid())
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            )
+            .bind(DEFAULT_ORG)
+            .bind(name)
+            .bind(s.retries)
+            .bind(s.first_token_timeout_ms)
+            .bind(s.total_timeout_ms)
+            .bind(s.breaker_failures)
+            .bind(s.breaker_window_s)
+            .bind(s.breaker_open_s)
+            .bind(flag(everyone))
+            .fetch_one(self.conn())
+            .await
+            .map_err(write_error)?;
+        Ok(id)
     }
 
     /// Returns `false` if there is no such route. A taken name is
@@ -143,49 +146,52 @@ impl Tx<'_> {
         s: &RouteSettings,
         everyone: bool,
     ) -> Result<bool> {
-        let r = sqlx::query(
-            "UPDATE routes SET name = ?, retries = ?, first_token_timeout_ms = ?,
+        let r = self
+            .q(
+                "UPDATE routes SET name = ?, retries = ?, first_token_timeout_ms = ?,
                 total_timeout_ms = ?, breaker_failures = ?, breaker_window_s = ?,
                 breaker_open_s = ?, everyone = ?
              WHERE id = ? AND org_id = ?",
-        )
-        .bind(name)
-        .bind(s.retries)
-        .bind(s.first_token_timeout_ms)
-        .bind(s.total_timeout_ms)
-        .bind(s.breaker_failures)
-        .bind(s.breaker_window_s)
-        .bind(s.breaker_open_s)
-        .bind(everyone)
-        .bind(id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
+            )
+            .bind(name)
+            .bind(s.retries)
+            .bind(s.first_token_timeout_ms)
+            .bind(s.total_timeout_ms)
+            .bind(s.breaker_failures)
+            .bind(s.breaker_window_s)
+            .bind(s.breaker_open_s)
+            .bind(flag(everyone))
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await
+            .map_err(write_error)?;
         Ok(r.rows_affected() == 1)
     }
 
     /// Sets the response cache of a route. Returns `false` if there is no
     /// such route.
     pub async fn set_route_cache(&mut self, id: i64, cache: &RouteCache) -> Result<bool> {
-        let r = sqlx::query(
-            "UPDATE routes SET cache_enabled = ?, cache_ttl_s = ?, cache_scope = ?
+        let r = self
+            .q(
+                "UPDATE routes SET cache_enabled = ?, cache_ttl_s = ?, cache_scope = ?
              WHERE id = ? AND org_id = ?",
-        )
-        .bind(cache.enabled)
-        .bind(cache.ttl_s)
-        .bind(cache.scope.as_str())
-        .bind(id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
+            )
+            .bind(flag(cache.enabled))
+            .bind(cache.ttl_s)
+            .bind(cache.scope.as_str())
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await
+            .map_err(write_error)?;
         Ok(r.rows_affected() == 1)
     }
 
     pub async fn route_by_id(&mut self, id: i64) -> Result<Option<RouteRow>> {
         let sql = format!("SELECT {ROUTE_COLUMNS} FROM routes WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())
@@ -196,7 +202,7 @@ impl Tx<'_> {
     /// Replaces every target. The models must exist and be distinct; the
     /// caller checks.
     pub async fn replace_targets(&mut self, route_id: i64, t: &TargetsInput) -> Result<()> {
-        sqlx::query("DELETE FROM route_targets WHERE route_id = ?")
+        self.q("DELETE FROM route_targets WHERE route_id = ?")
             .bind(route_id)
             .execute(self.conn())
             .await?;
@@ -206,7 +212,7 @@ impl Tx<'_> {
             .map(|(m, w)| (*m, "primary", *w))
             .chain(t.fallbacks.iter().map(|m| (*m, "fallback", 1)));
         for (position, (model_id, tier, weight)) in rows.enumerate() {
-            sqlx::query(
+            self.q(
                 "INSERT INTO route_targets (route_id, model_id, tier, weight, position)
                  VALUES (?, ?, ?, ?, ?)",
             )
@@ -223,12 +229,12 @@ impl Tx<'_> {
 
     /// Replaces the teams granted. The ids must be distinct and exist.
     pub async fn replace_route_grants(&mut self, route_id: i64, team_ids: &[i64]) -> Result<()> {
-        sqlx::query("DELETE FROM route_grants WHERE route_id = ?")
+        self.q("DELETE FROM route_grants WHERE route_id = ?")
             .bind(route_id)
             .execute(self.conn())
             .await?;
         for team_id in team_ids {
-            sqlx::query("INSERT INTO route_grants (route_id, team_id) VALUES (?, ?)")
+            self.q("INSERT INTO route_grants (route_id, team_id) VALUES (?, ?)")
                 .bind(route_id)
                 .bind(team_id)
                 .execute(self.conn())
@@ -240,7 +246,8 @@ impl Tx<'_> {
     /// Returns `false` if there is no such route. Targets and grants go
     /// with it.
     pub async fn delete_route(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM routes WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM routes WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -258,7 +265,8 @@ impl Store {
 
     pub async fn route_by_id(&self, id: i64) -> Result<Option<RouteRow>> {
         let sql = format!("SELECT {ROUTE_COLUMNS} FROM routes WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -275,7 +283,8 @@ impl Store {
 
     pub async fn route_targets_of(&self, route_id: i64) -> Result<Vec<TargetRow>> {
         let sql = format!("{TARGET_SELECT} WHERE t.route_id = ? ORDER BY t.position");
-        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let rows = self
+            .q_dyn(sql)
             .bind(route_id)
             .fetch_all(self.pool())
             .await?;
@@ -289,40 +298,39 @@ impl Store {
     }
 
     pub async fn route_team_ids(&self, route_id: i64) -> Result<Vec<i64>> {
-        Ok(
-            sqlx::query_scalar(
-                "SELECT team_id FROM route_grants WHERE route_id = ? ORDER BY rowid",
-            )
+        Ok(self
+            .scalar_dyn(format!(
+                "SELECT team_id FROM route_grants WHERE route_id = ? ORDER BY {}",
+                self.dialect().insertion_order()
+            ))
             .bind(route_id)
             .fetch_all(self.pool())
-            .await?,
-        )
+            .await?)
     }
 }
 
-pub(crate) async fn list_routes_in(conn: &mut sqlx::SqliteConnection) -> Result<Vec<RouteRow>> {
+pub(crate) async fn list_routes_in(conn: &mut AnyConnection) -> Result<Vec<RouteRow>> {
     let sql = format!("SELECT {ROUTE_COLUMNS} FROM routes WHERE org_id = ? ORDER BY name");
-    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+    let rows = conn
+        .q_dyn(sql)
         .bind(DEFAULT_ORG)
         .fetch_all(&mut *conn)
         .await?;
     Ok(rows.iter().map(route_from).collect())
 }
 
-pub(crate) async fn list_route_targets_in(
-    conn: &mut sqlx::SqliteConnection,
-) -> Result<Vec<TargetRow>> {
+pub(crate) async fn list_route_targets_in(conn: &mut AnyConnection) -> Result<Vec<TargetRow>> {
     let sql = format!("{TARGET_SELECT} ORDER BY t.route_id, t.position");
-    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .fetch_all(&mut *conn)
-        .await?;
+    let rows = conn.q_dyn(sql).fetch_all(&mut *conn).await?;
     Ok(rows.iter().map(target_from).collect())
 }
 
-pub(crate) async fn list_route_grants_in(
-    conn: &mut sqlx::SqliteConnection,
-) -> Result<Vec<(i64, i64)>> {
-    let rows = sqlx::query("SELECT route_id, team_id FROM route_grants ORDER BY rowid")
+pub(crate) async fn list_route_grants_in(conn: &mut AnyConnection) -> Result<Vec<(i64, i64)>> {
+    let order = conn.dialect().insertion_order();
+    let rows = conn
+        .q_dyn(format!(
+            "SELECT route_id, team_id FROM route_grants ORDER BY {order}"
+        ))
         .fetch_all(&mut *conn)
         .await?;
     Ok(rows
@@ -355,7 +363,7 @@ mod tests {
         tx.replace_route_grants(granted, &[team]).await.unwrap();
         tx.commit().await.unwrap();
         // The data statement of the migration, on rows as 0004 left them.
-        let sql = include_str!("../../migrations/0005_route_everyone.sql");
+        let sql = include_str!("../../migrations/sqlite/0005_route_everyone.sql");
         let update = sql
             .split(';')
             .find(|st| st.contains("UPDATE routes"))
@@ -373,6 +381,9 @@ mod tests {
         let s = Store::open_in_memory().await.unwrap();
         let mut tx = s.begin().await.unwrap();
         let r = tx.insert_route("r", &DEFAULTS, true).await.unwrap();
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction: one each.
+        let mut tx = s.begin().await.unwrap();
         let e = tx
             .replace_targets(
                 r,
@@ -384,6 +395,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(is_missing_reference(&e));
+        drop(tx);
+        let mut tx = s.begin().await.unwrap();
         let e = tx.replace_route_grants(r, &[999]).await.unwrap_err();
         assert!(is_missing_reference(&e));
     }
@@ -400,11 +413,16 @@ mod tests {
         let m2 = tx.insert_model(p, "m2").await.unwrap();
         let team = tx.insert_team("t").await.unwrap();
         let r = tx.insert_route("r", &DEFAULTS, true).await.unwrap();
-        let dup = tx.insert_route("r", &DEFAULTS, true).await.unwrap_err();
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction: it gets its own.
+        let mut dup_tx = s.begin().await.unwrap();
+        let dup = dup_tx.insert_route("r", &DEFAULTS, true).await.unwrap_err();
         assert!(matches!(
             dup.downcast_ref::<StoreError>(),
             Some(StoreError::Duplicate)
         ));
+        drop(dup_tx);
+        let mut tx = s.begin().await.unwrap();
         tx.replace_targets(
             r,
             &TargetsInput {

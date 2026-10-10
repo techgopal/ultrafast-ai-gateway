@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use super::guardrails::{self, GuardrailRef, MAX_ATTACHED};
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::access;
 use crate::app::AppState;
@@ -72,6 +73,11 @@ pub struct RouteRequest {
     /// teams. Not sent: `team`.
     #[serde(default = "default_cache_scope")]
     pub cache_scope: String,
+    /// The guardrails applied to calls of this route, in this order, after
+    /// the gateway-wide ones. At most 20. Left out, the route keeps the ones
+    /// it has; `[]` takes them all off.
+    #[serde(default)]
+    pub guardrail_ids: Option<Vec<i64>>,
 }
 
 fn default_cache_ttl_s() -> i64 {
@@ -128,6 +134,9 @@ pub struct RouteView {
     pub cache_ttl_s: i64,
     /// `team`, `key` or `user`. Hidden (`team`) for a non-admin.
     pub cache_scope: String,
+    /// The guardrails applied to calls of this route, in order. Hidden
+    /// (empty) for a non-admin.
+    pub guardrails: Vec<GuardrailRef>,
     /// No target of the route is enabled, so it cannot serve a request.
     pub broken: bool,
     pub created_at: String,
@@ -138,7 +147,13 @@ pub struct RouteList {
     pub routes: Vec<RouteView>,
 }
 
-fn view_of(row: RouteRow, targets: Vec<TargetRow>, team_ids: Vec<i64>, admin: bool) -> RouteView {
+fn view_of(
+    row: RouteRow,
+    targets: Vec<TargetRow>,
+    team_ids: Vec<i64>,
+    guardrails: Vec<GuardrailRef>,
+    admin: bool,
+) -> RouteView {
     let broken = !targets.iter().any(|t| t.enabled);
     let mut primaries = Vec::new();
     let mut fallbacks = Vec::new();
@@ -197,6 +212,7 @@ fn view_of(row: RouteRow, targets: Vec<TargetRow>, team_ids: Vec<i64>, admin: bo
         cache_enabled: cache.enabled,
         cache_ttl_s: cache.ttl_s,
         cache_scope: cache.scope.as_str().to_string(),
+        guardrails: if admin { guardrails } else { Vec::new() },
         broken,
         created_at: row.created_at,
     }
@@ -224,7 +240,25 @@ async fn load(state: &AppState, me: &Principal, id: i64) -> Result<Option<RouteV
         return Ok(None);
     }
     let targets = state.store.route_targets_of(id).await?;
-    Ok(Some(view_of(row, targets, team_ids, me.is_admin())))
+    let guardrails = if me.is_admin() {
+        state
+            .store
+            .route_guardrail_refs()
+            .await?
+            .into_iter()
+            .filter(|(route, _, _)| *route == id)
+            .map(|(_, id, name)| GuardrailRef { id, name })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(Some(view_of(
+        row,
+        targets,
+        team_ids,
+        guardrails,
+        me.is_admin(),
+    )))
 }
 
 pub(crate) fn valid_name(name: &str) -> bool {
@@ -356,6 +390,16 @@ fn check(req: &RouteRequest) -> BTreeMap<String, String> {
             "must not be combined with teams or users".to_string(),
         );
     }
+    if req
+        .guardrail_ids
+        .as_ref()
+        .is_some_and(|ids| ids.len() > MAX_ATTACHED * 2)
+    {
+        fields.insert(
+            "guardrail_ids".to_string(),
+            format!("at most {MAX_ATTACHED} guardrails"),
+        );
+    }
     fields
 }
 
@@ -402,6 +446,52 @@ fn settings_of(req: &RouteRequest) -> RouteSettings {
     }
 }
 
+/// The guardrails the request attaches: `None` when it does not say, or
+/// else each one that exists, in order. A fault is `fields.guardrail_ids`.
+async fn resolve_guardrails(
+    tx: &mut Tx<'_>,
+    req: &RouteRequest,
+    fields: &mut BTreeMap<String, String>,
+) -> Result<Option<Vec<GuardrailRef>>, ApiError> {
+    let Some(asked) = &req.guardrail_ids else {
+        return Ok(None);
+    };
+    // Already refused by `check`; no lookups for a list that is too long.
+    if fields.contains_key("guardrail_ids") {
+        return Ok(None);
+    }
+    match guardrails::resolve_ids(tx, asked).await? {
+        Ok(found) => Ok(Some(found)),
+        Err(message) => {
+            fields.insert("guardrail_ids".to_string(), message);
+            Ok(None)
+        }
+    }
+}
+
+async fn attach_guardrails(
+    tx: &mut Tx<'_>,
+    me: &Principal,
+    route_id: i64,
+    route_name: &str,
+    attach: &[GuardrailRef],
+) -> Result<(), ApiError> {
+    let ids: Vec<i64> = attach.iter().map(|g| g.id).collect();
+    tx.replace_route_guardrails(route_id, &ids)
+        .await
+        .map_err(guardrails::gone)?;
+    tx.audit(AuditEntry {
+        actor_user_id: Some(me.user_id),
+        actor_email: &me.email,
+        action: "guardrail.attach",
+        target_type: "route",
+        target_id: Some(route_id),
+        summary: &guardrails::attach_summary(&format!("route {route_name}"), attach),
+    })
+    .await?;
+    Ok(())
+}
+
 fn distinct(ids: &[i64]) -> Vec<i64> {
     let mut seen = HashSet::new();
     ids.iter().copied().filter(|i| seen.insert(*i)).collect()
@@ -446,6 +536,15 @@ pub async fn list(
     for (route, team) in state.store.list_route_grants().await? {
         grants.entry(route).or_default().push(team);
     }
+    let mut attached: HashMap<i64, Vec<GuardrailRef>> = HashMap::new();
+    if me.is_admin() {
+        for (route, id, name) in state.store.route_guardrail_refs().await? {
+            attached
+                .entry(route)
+                .or_default()
+                .push(GuardrailRef { id, name });
+        }
+    }
     let routes = rows
         .into_iter()
         .filter_map(|r| {
@@ -458,7 +557,8 @@ pub async fn list(
                 return None;
             }
             let t = targets.remove(&r.id).unwrap_or_default();
-            Some(view_of(r, t, teams, me.is_admin()))
+            let guardrails = attached.remove(&r.id).unwrap_or_default();
+            Some(view_of(r, t, teams, guardrails, me.is_admin()))
         })
         .collect();
     Ok(Json(RouteList { routes }).into_response())
@@ -522,8 +622,9 @@ pub async fn create(
     let mut fields = check(&req);
     let team_ids = distinct(&req.team_ids);
 
-    let mut tx = state.store.begin().await?;
+    let mut tx = state.store.begin_immediate().await?;
     check_ids(&mut tx, &req, &team_ids, &mut fields).await?;
+    let attach = resolve_guardrails(&mut tx, &req, &mut fields).await?;
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
@@ -549,6 +650,9 @@ pub async fn create(
         summary: &format!("Created route {}", req.name),
     })
     .await?;
+    if let Some(attach) = attach.filter(|a| !a.is_empty()) {
+        attach_guardrails(&mut tx, me, id, &req.name, &attach).await?;
+    }
     tx.commit().await?;
     refresh_snapshot(&state).await?;
     let view = load(&state, me, id)
@@ -636,12 +740,14 @@ pub async fn update(
     let mut fields = check(&req);
     let team_ids = distinct(&req.team_ids);
 
-    let mut tx = state.store.begin().await?;
+    let mut tx = state.store.begin_immediate().await?;
     tx.route_by_id(id).await?.ok_or_else(ApiError::not_found)?;
     check_ids(&mut tx, &req, &team_ids, &mut fields).await?;
+    let attach = resolve_guardrails(&mut tx, &req, &mut fields).await?;
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
+    let attached_before = tx.route_guardrail_ids(id).await?;
     match tx
         .update_route(id, &req.name, &settings_of(&req), req.everyone)
         .await
@@ -665,6 +771,11 @@ pub async fn update(
         summary: &format!("Updated route {}", req.name),
     })
     .await?;
+    if let Some(attach) =
+        attach.filter(|a| a.iter().map(|g| g.id).collect::<Vec<_>>() != attached_before)
+    {
+        attach_guardrails(&mut tx, me, id, &req.name, &attach).await?;
+    }
     tx.commit().await?;
     refresh_snapshot(&state).await?;
     let view = load(&state, me, id)
@@ -699,7 +810,7 @@ pub async fn delete(
     require(me, &Action::ManageRoutes)?;
     let id = path_id(&raw_id)?;
 
-    let mut tx = state.store.begin().await?;
+    let mut tx = state.store.begin_immediate().await?;
     let Some(route) = tx.route_by_id(id).await? else {
         drop(tx);
         // An earlier call may have deleted it and failed to refresh.

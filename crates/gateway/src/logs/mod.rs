@@ -188,6 +188,11 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
         duration_ms: i64::try_from(record.duration_ms).unwrap_or(i64::MAX),
         attempts: serde_json::Value::Array(attempts).to_string(),
         tags: crate::tags::to_stored(&record.tags),
+        guardrails: record
+            .guardrails
+            .as_ref()
+            .map(crate::guardrails::log::GuardrailLog::to_stored),
+        prompt: record.prompt.clone(),
     }
 }
 
@@ -256,15 +261,22 @@ mod tests {
                 outcome: AttemptOutcome::Retryable,
                 status: Some(200),
                 duration_ms: 1,
+                offset_ms: 0,
             }],
             cached: false,
             estimated: true,
             started_at: "2999-01-01 00:00:00".into(),
             duration_ms: 1,
             tags: Default::default(),
+            trace_parent: None,
+            provider_kinds: Vec::new(),
+            started_unix_ms: 0,
+            guardrails: None,
+            prompt: Some("greet@2".into()),
         };
         let prices: PriceLookup = Arc::new(|_, _| price(Some(2_000_000), Some(4_000_000)));
         let row = row_of(&record, &prices);
+        assert_eq!(row.prompt.as_deref(), Some("greet@2"));
         assert!(row.estimated);
         assert!(row.priced);
         assert_eq!(row.cost_micros, 4_000);

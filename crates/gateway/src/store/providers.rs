@@ -1,17 +1,19 @@
 //! Upstream providers.
 
+use sqlx::AnyConnection;
 use std::fmt;
 
 use anyhow::Result;
-use sqlx::sqlite::SqliteRow;
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::Row;
 
-use super::{write_error, Store, Tx, DEFAULT_ORG};
+use super::dialect::Dialected;
+use super::{flag, write_error, Store, Tx, DEFAULT_ORG};
 
 const PROVIDER_SELECT: &str =
     "SELECT id, name, kind, base_url, credential, api_version FROM providers";
 
-fn provider_from(r: &SqliteRow) -> ProviderRow {
+fn provider_from(r: &AnyRow) -> ProviderRow {
     ProviderRow {
         id: r.get("id"),
         name: r.get("name"),
@@ -57,7 +59,8 @@ impl Tx<'_> {
     /// For use inside a transaction; see `Store::provider_by_id`.
     pub async fn provider_by_id(&mut self, id: i64) -> Result<Option<ProviderRow>> {
         let sql = format!("{PROVIDER_SELECT} WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())
@@ -74,19 +77,18 @@ impl Tx<'_> {
         base_url: Option<&str>,
         credential: Option<Option<&[u8]>>,
     ) -> Result<bool> {
-        let r = sqlx::query(
-            "UPDATE providers
+        let r = self
+            .q("UPDATE providers
              SET base_url = COALESCE(?, base_url),
-                 credential = CASE WHEN ? THEN ? ELSE credential END
-             WHERE id = ? AND org_id = ?",
-        )
-        .bind(base_url)
-        .bind(credential.is_some())
-        .bind(credential.flatten())
-        .bind(id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await?;
+                 credential = CASE WHEN ? = 1 THEN ? ELSE credential END
+             WHERE id = ? AND org_id = ?")
+            .bind(base_url)
+            .bind(flag(credential.is_some()))
+            .bind(credential.flatten())
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
         Ok(r.rows_affected() == 1)
     }
 
@@ -96,7 +98,8 @@ impl Tx<'_> {
         id: i64,
         api_version: Option<&str>,
     ) -> Result<bool> {
-        let r = sqlx::query("UPDATE providers SET api_version = ? WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("UPDATE providers SET api_version = ? WHERE id = ? AND org_id = ?")
             .bind(api_version)
             .bind(id)
             .bind(DEFAULT_ORG)
@@ -107,7 +110,8 @@ impl Tx<'_> {
 
     /// Returns `false` if there is no such provider.
     pub async fn delete_provider(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM providers WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM providers WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -136,20 +140,21 @@ impl Tx<'_> {
         credential: Option<&[u8]>,
         api_version: Option<&str>,
     ) -> Result<i64> {
-        let r = sqlx::query(
-            "INSERT INTO providers (org_id, name, kind, base_url, credential, api_version)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(name)
-        .bind(kind)
-        .bind(base_url)
-        .bind(credential)
-        .bind(api_version)
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
-        Ok(r.last_insert_rowid())
+        let id: i64 = self
+            .scalar(
+                "INSERT INTO providers (org_id, name, kind, base_url, credential, api_version)
+             VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            )
+            .bind(DEFAULT_ORG)
+            .bind(name)
+            .bind(kind)
+            .bind(base_url)
+            .bind(credential)
+            .bind(api_version)
+            .fetch_one(self.conn())
+            .await
+            .map_err(write_error)?;
+        Ok(id)
     }
 }
 
@@ -169,7 +174,8 @@ impl Store {
 
     pub async fn provider_by_name(&self, name: &str) -> Result<Option<ProviderRow>> {
         let sql = format!("{PROVIDER_SELECT} WHERE name = ? AND org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(name)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -179,7 +185,8 @@ impl Store {
 
     pub async fn provider_by_id(&self, id: i64) -> Result<Option<ProviderRow>> {
         let sql = format!("{PROVIDER_SELECT} WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -194,11 +201,10 @@ impl Store {
     }
 }
 
-pub(crate) async fn list_providers_in(
-    conn: &mut sqlx::SqliteConnection,
-) -> Result<Vec<ProviderRow>> {
+pub(crate) async fn list_providers_in(conn: &mut AnyConnection) -> Result<Vec<ProviderRow>> {
     let sql = format!("{PROVIDER_SELECT} WHERE org_id = ? ORDER BY name");
-    let rows = sqlx::query(AssertSqlSafe(sql))
+    let rows = conn
+        .q_dyn(sql)
         .bind(DEFAULT_ORG)
         .fetch_all(&mut *conn)
         .await?;

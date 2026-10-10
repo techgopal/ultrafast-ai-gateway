@@ -1,10 +1,14 @@
 //! Request logs.
 
 use anyhow::Result;
-use sqlx::sqlite::SqliteRow;
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::Row;
 
-use super::{Store, DEFAULT_ORG};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+use super::dialect::{Dialect, Dialected};
+use super::{flag, next_day, Store, DEFAULT_ORG};
 
 /// A row to be written.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +36,12 @@ pub struct NewLog {
     pub attempts: String,
     /// A JSON object of strings; `None` for no tags.
     pub tags: Option<String>,
+    /// What the guardrails found (a JSON object: guardrail ids and names,
+    /// actions, counts; never matched text); `None` when they found nothing.
+    pub guardrails: Option<String>,
+    /// The prompt template the call used, as `name@version`; text, so it
+    /// outlives the template.
+    pub prompt: Option<String>,
 }
 
 /// A stored row.
@@ -60,6 +70,10 @@ pub struct LogRow {
     pub attempts: String,
     /// A JSON object of strings; `None` for no tags.
     pub tags: Option<String>,
+    /// See [`NewLog::guardrails`].
+    pub guardrails: Option<String>,
+    /// See [`NewLog::prompt`].
+    pub prompt: Option<String>,
 }
 
 /// A stored row with the names of its key, user and team, which are `None`
@@ -99,11 +113,16 @@ pub struct LogFilter {
     /// Matches the model that answered or the name that was asked for.
     pub model: Option<String>,
     pub status: Option<i64>,
+    /// Only calls on this endpoint (`chat`, `images`, ...), as logged.
+    pub endpoint: Option<String>,
     /// Only calls answered with status 400 or more.
     pub errors: bool,
     /// Only calls that carry every one of these tags (name, value). The
     /// names are checked by the caller.
     pub tags: Vec<(String, String)>,
+    /// Only calls whose worst guardrail action was this one (a block is worse
+    /// than a redaction, a redaction worse than a flag), in either direction.
+    pub guardrail: Option<crate::guardrails::log::LoggedAction>,
 }
 
 /// What `usage` groups by.
@@ -116,12 +135,6 @@ pub enum UsageGroup {
     Team,
     /// The value of the tag with this name; calls without it are `(none)`.
     Tag(String),
-}
-
-/// The JSON path of a tag, to bind: names are checked, and quoted here so
-/// a `.`, `:` or `-` in one is part of the name.
-fn tag_path(name: &str) -> String {
-    format!("$.\"{name}\"")
 }
 
 /// Sums over the rows of one group.
@@ -151,7 +164,7 @@ const DETAIL_SELECT: &str = "SELECT l.*, k.name AS key_name, u.email AS user_ema
      LEFT JOIN users u ON u.id = l.user_id AND u.org_id = l.org_id
      LEFT JOIN teams t ON t.id = l.team_id AND t.org_id = l.org_id";
 
-fn detail_from(r: &SqliteRow) -> LogDetail {
+fn detail_from(r: &AnyRow) -> LogDetail {
     LogDetail {
         row: log_from(r),
         key_name: r.get("key_name"),
@@ -186,7 +199,7 @@ fn scope_sql(scope: &LogScope) -> (String, Vec<i64>) {
     }
 }
 
-fn log_from(r: &SqliteRow) -> LogRow {
+fn log_from(r: &AnyRow) -> LogRow {
     LogRow {
         id: r.get("id"),
         at: r.get("at"),
@@ -208,43 +221,81 @@ fn log_from(r: &SqliteRow) -> LogRow {
         duration_ms: r.get("duration_ms"),
         attempts: r.get("attempts"),
         tags: r.get("tags"),
+        guardrails: r.get("guardrails"),
+        prompt: r.get("prompt"),
     }
 }
 
-impl Store {
-    /// Writes the rows in one transaction.
-    pub async fn insert_logs(&self, rows: &[NewLog]) -> Result<()> {
-        let mut tx = self.pool().begin().await?;
-        for r in rows {
-            sqlx::query(
+/// Rows per `INSERT`: 22 binds each, so a chunk stays far under the 32766
+/// (SQLite) and 65535 (PostgreSQL) parameter limits.
+const LOG_INSERT_CHUNK: usize = 1000;
+
+/// The `INSERT` for `rows` rows, as the driver takes it. Built once per
+/// dialect and size: a flush is mostly full chunks of one size.
+fn log_insert_sql(dialect: Dialect, rows: usize) -> String {
+    static CACHE: OnceLock<Mutex<HashMap<(Dialect, usize), String>>> = OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    cache
+        .entry((dialect, rows))
+        .or_insert_with(|| {
+            let mut sql = String::from(
                 "INSERT INTO request_logs
                  (org_id, at, key_id, user_id, team_id, requested, endpoint, stream, status,
                   provider, model, input_tokens, output_tokens, cost_micros, priced, cached,
-                  estimated, duration_ms, attempts, tags)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(DEFAULT_ORG)
-            .bind(&r.at)
-            .bind(r.key_id)
-            .bind(r.user_id)
-            .bind(r.team_id)
-            .bind(&r.requested)
-            .bind(&r.endpoint)
-            .bind(r.stream)
-            .bind(r.status)
-            .bind(&r.provider)
-            .bind(&r.model)
-            .bind(r.input_tokens)
-            .bind(r.output_tokens)
-            .bind(r.cost_micros)
-            .bind(r.priced)
-            .bind(r.cached)
-            .bind(r.estimated)
-            .bind(r.duration_ms)
-            .bind(&r.attempts)
-            .bind(&r.tags)
-            .execute(&mut *tx)
-            .await?;
+                  estimated, duration_ms, attempts, tags, guardrails, prompt) VALUES ",
+            );
+            for i in 0..rows {
+                if i > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push_str("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            }
+            dialect.sql(&sql).into_owned()
+        })
+        .clone()
+}
+
+impl Store {
+    /// Writes the rows in one transaction, a multi-row `INSERT` per chunk of
+    /// at most [`LOG_INSERT_CHUNK`] rows (one round trip each, which matters
+    /// when the database is a network away).
+    pub async fn insert_logs(&self, rows: &[NewLog]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool().begin().await?;
+        for chunk in rows.chunks(LOG_INSERT_CHUNK) {
+            let sql = log_insert_sql(self.dialect(), chunk.len());
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+            for r in chunk {
+                query = query
+                    .bind(DEFAULT_ORG)
+                    .bind(&r.at)
+                    .bind(r.key_id)
+                    .bind(r.user_id)
+                    .bind(r.team_id)
+                    .bind(&r.requested)
+                    .bind(&r.endpoint)
+                    .bind(flag(r.stream))
+                    .bind(r.status)
+                    .bind(&r.provider)
+                    .bind(&r.model)
+                    .bind(r.input_tokens)
+                    .bind(r.output_tokens)
+                    .bind(r.cost_micros)
+                    .bind(flag(r.priced))
+                    .bind(flag(r.cached))
+                    .bind(flag(r.estimated))
+                    .bind(r.duration_ms)
+                    .bind(&r.attempts)
+                    .bind(&r.tags)
+                    .bind(&r.guardrails)
+                    .bind(&r.prompt);
+            }
+            query.execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -252,12 +303,12 @@ impl Store {
 
     /// The newest rows first. `limit` is clamped to 1..=200.
     pub async fn recent_logs(&self, limit: i64) -> Result<Vec<LogRow>> {
-        let rows =
-            sqlx::query("SELECT * FROM request_logs WHERE org_id = ? ORDER BY id DESC LIMIT ?")
-                .bind(DEFAULT_ORG)
-                .bind(limit.clamp(1, 200))
-                .fetch_all(self.pool())
-                .await?;
+        let rows = self
+            .q("SELECT * FROM request_logs WHERE org_id = ? ORDER BY id DESC LIMIT ?")
+            .bind(DEFAULT_ORG)
+            .bind(limit.clamp(1, 200))
+            .fetch_all(self.pool())
+            .await?;
         Ok(rows.iter().map(log_from).collect())
     }
 
@@ -304,18 +355,34 @@ impl Store {
             text_values.push(v);
             text_values.push(v);
         }
+        if let Some(v) = &filter.endpoint {
+            clauses.push("l.endpoint = ?".into());
+            text_values.push(v);
+        }
         // The path is bound, never written into the statement.
-        let tag_paths: Vec<String> = filter.tags.iter().map(|(n, _)| tag_path(n)).collect();
+        let tag_paths: Vec<String> = filter
+            .tags
+            .iter()
+            .map(|(n, _)| self.dialect().tag_key(n))
+            .collect();
         for ((_, value), path) in filter.tags.iter().zip(&tag_paths) {
-            clauses.push("json_extract(l.tags, ?) = ?".into());
+            clauses.push(format!("{} = ?", self.dialect().json_text("l.tags")));
             text_values.push(path);
             text_values.push(value);
+        }
+        // The worst action is the `action` member of the stored object, one
+        // of three words this code wrote. The path is bound, as for tags.
+        let action_path = self.dialect().tag_key("action");
+        if let Some(action) = filter.guardrail {
+            clauses.push(format!("{} = ?", self.dialect().json_text("l.guardrails")));
+            text_values.push(&action_path);
+            text_values.push(action.as_str());
         }
         let sql = format!(
             "{DETAIL_SELECT} WHERE {} ORDER BY l.id DESC LIMIT ?",
             clauses.join(" AND ")
         );
-        let mut query = sqlx::query(AssertSqlSafe(sql));
+        let mut query = self.q_dyn(sql);
         for v in &ints {
             query = query.bind(*v);
         }
@@ -341,13 +408,14 @@ impl Store {
     ) -> Result<Vec<UsageSums>> {
         let (scope_clause, scope_ints) = scope_sql(scope);
         // (group expression, joined table with its name column)
+        let json_tag = self.dialect().json_text("l.tags");
         let (expr, names) = match group {
             UsageGroup::Day => ("substr(l.at, 1, 10)", None),
             UsageGroup::Model => ("coalesce(l.provider || '/' || l.model, l.requested)", None),
             UsageGroup::Key => ("l.key_id", Some(("virtual_keys", "name"))),
             UsageGroup::User => ("l.user_id", Some(("users", "email"))),
             UsageGroup::Team => ("l.team_id", Some(("teams", "name"))),
-            UsageGroup::Tag(_) => ("json_extract(l.tags, ?)", None),
+            UsageGroup::Tag(_) => (json_tag.as_str(), None),
         };
         let (label, join) = match names {
             None if matches!(group, UsageGroup::Tag(_)) => {
@@ -362,7 +430,9 @@ impl Store {
         let order = if group == UsageGroup::Day {
             "a.gid"
         } else {
-            "a.requests DESC, a.gid"
+            // The rows without a value first, as SQLite sorts a NULL (a
+            // NULL sorts last in PostgreSQL).
+            "a.requests DESC, (a.gid IS NOT NULL), a.gid"
         };
         // Both bounds are text over the `at` index; the day after `to`
         // is excluded, so a whole last day counts.
@@ -372,30 +442,34 @@ impl Store {
                     a.cost_micros, a.unpriced
              FROM (SELECT {expr} AS gid,
                           COUNT(*) AS requests,
-                          coalesce(SUM(l.status >= 400 AND l.status <> 499), 0) AS errors,
-                          coalesce(SUM(l.status = 499), 0) AS cancelled,
-                          coalesce(SUM(l.input_tokens), 0) AS input_tokens,
-                          coalesce(SUM(l.output_tokens), 0) AS output_tokens,
-                          coalesce(SUM(l.cost_micros), 0) AS cost_micros,
-                          coalesce(SUM(l.priced = 0 AND
-                              (l.input_tokens IS NOT NULL OR l.output_tokens IS NOT NULL)), 0)
-                              AS unpriced
+                          CAST(coalesce(SUM(CASE WHEN l.status >= 400 AND l.status <> 499 THEN 1 ELSE 0 END), 0) AS BIGINT) AS errors,
+                          CAST(coalesce(SUM(CASE WHEN l.status = 499 THEN 1 ELSE 0 END), 0) AS BIGINT) AS cancelled,
+                          CAST(coalesce(SUM(l.input_tokens), 0) AS BIGINT) AS input_tokens,
+                          CAST(coalesce(SUM(l.output_tokens), 0) AS BIGINT) AS output_tokens,
+                          CAST(coalesce(SUM(l.cost_micros), 0) AS BIGINT) AS cost_micros,
+                          CAST(coalesce(SUM(CASE WHEN l.priced = 0 AND
+                              (l.input_tokens IS NOT NULL OR l.output_tokens IS NOT NULL)
+                              THEN 1 ELSE 0 END), 0) AS BIGINT) AS unpriced
                    FROM request_logs l
-                   WHERE l.org_id = ? AND {scope_clause} AND l.at >= ? AND l.at < date(?, '+1 day')
+                   WHERE l.org_id = ? AND {scope_clause} AND l.at >= ? AND l.at < ?
                    GROUP BY gid) a
              {join}
              ORDER BY {order}"
         );
-        let mut query = sqlx::query(AssertSqlSafe(sql));
+        let mut query = self.q_dyn(sql);
         // The group expression comes first in the statement.
         if let UsageGroup::Tag(name) = &group {
-            query = query.bind(tag_path(name));
+            query = query.bind(self.dialect().tag_key(name));
         }
         let mut query = query.bind(DEFAULT_ORG);
         for v in &scope_ints {
             query = query.bind(*v);
         }
-        let rows = query.bind(from).bind(to).fetch_all(self.pool()).await?;
+        let rows = query
+            .bind(from)
+            .bind(next_day(to))
+            .fetch_all(self.pool())
+            .await?;
         Ok(rows
             .iter()
             .map(|r| UsageSums {
@@ -416,7 +490,8 @@ impl Store {
     /// whether the reader may see it.
     pub async fn log_by_id(&self, id: i64) -> Result<Option<LogDetail>> {
         let sql = format!("{DETAIL_SELECT} WHERE l.org_id = ? AND l.id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(DEFAULT_ORG)
             .bind(id)
             .fetch_optional(self.pool())
@@ -431,30 +506,28 @@ impl Store {
         }
         let marks = vec!["?"; team_ids.len()].join(", ");
         let sql = format!(
-            "SELECT EXISTS (SELECT 1 FROM team_members
-             WHERE org_id = ? AND user_id = ? AND team_id IN ({marks}))"
+            "SELECT CASE WHEN EXISTS (SELECT 1 FROM team_members
+             WHERE org_id = ? AND user_id = ? AND team_id IN ({marks})) THEN 1 ELSE 0 END"
         );
-        let mut query = sqlx::query_scalar(AssertSqlSafe(sql))
-            .bind(DEFAULT_ORG)
-            .bind(user_id);
+        let mut query = self.scalar_dyn(sql).bind(DEFAULT_ORG).bind(user_id);
         for t in team_ids {
             query = query.bind(*t);
         }
-        Ok(query.fetch_one(self.pool()).await?)
+        let found: i64 = query.fetch_one(self.pool()).await?;
+        Ok(found != 0)
     }
 
     /// Deletes up to `limit` rows older than `cutoff` (`at < cutoff`, in the
     /// form of `store::now`) and returns how many went.
     pub async fn delete_logs_before(&self, cutoff: &str, limit: i64) -> Result<u64> {
-        let r = sqlx::query(
-            "DELETE FROM request_logs WHERE id IN
-             (SELECT id FROM request_logs WHERE org_id = ? AND at < ? ORDER BY id LIMIT ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(cutoff)
-        .bind(limit)
-        .execute(self.pool())
-        .await?;
+        let r = self
+            .q("DELETE FROM request_logs WHERE id IN
+             (SELECT id FROM request_logs WHERE org_id = ? AND at < ? ORDER BY id LIMIT ?)")
+            .bind(DEFAULT_ORG)
+            .bind(cutoff)
+            .bind(limit)
+            .execute(self.pool())
+            .await?;
         Ok(r.rows_affected())
     }
 }
@@ -462,6 +535,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::AssertSqlSafe;
 
     fn row(i: i64) -> NewLog {
         NewLog {
@@ -484,12 +558,57 @@ mod tests {
             duration_ms: 1,
             attempts: "[]".into(),
             tags: None,
+            guardrails: None,
+            prompt: None,
         }
+    }
+
+    /// A batch bigger than one chunk lands complete and in order (ids follow
+    /// the order given), including the NULL columns, on both databases.
+    #[tokio::test]
+    async fn a_batch_of_2500_rows_lands_complete_and_in_order() {
+        let store = Store::open_in_memory().await.unwrap();
+        let rows: Vec<NewLog> = (0..2500)
+            .map(|i| {
+                let mut r = row(i);
+                r.requested = format!("m{i}");
+                if i % 2 == 0 {
+                    r.provider = Some("p".into());
+                    r.tags = Some("{\"a\":\"b\"}".into());
+                }
+                r
+            })
+            .collect();
+        store.insert_logs(&rows).await.unwrap();
+        store.insert_logs(&[]).await.unwrap();
+        let got: Vec<(i64, String, Option<String>)> =
+            sqlx::query_as("SELECT id, requested, provider FROM request_logs ORDER BY id")
+                .fetch_all(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(got.len(), 2500);
+        for (i, (_, requested, provider)) in got.iter().enumerate() {
+            assert_eq!(requested, &format!("m{i}"));
+            assert_eq!(provider.is_some(), i % 2 == 0, "row {i}");
+        }
+        assert!(got.windows(2).all(|w| w[0].0 < w[1].0));
+    }
+
+    #[test]
+    fn the_insert_statement_is_built_once_per_size() {
+        let a = log_insert_sql(Dialect::Postgres, 2);
+        assert!(a.contains("$44") && !a.contains("$45"));
+        assert_eq!(a, log_insert_sql(Dialect::Postgres, 2));
+        assert!(!log_insert_sql(Dialect::Sqlite, 2).contains('$'));
     }
 
     #[tokio::test]
     async fn the_lead_scope_has_no_correlated_subquery() {
         let store = Store::open_in_memory().await.unwrap();
+        if store.dialect() != Dialect::Sqlite {
+            eprintln!("SKIPPED on PostgreSQL: EXPLAIN QUERY PLAN is SQLite's planner output");
+            return;
+        }
         let scope = LogScope::Teams {
             team_ids: vec![1, 2],
             own_user_id: 3,
@@ -520,6 +639,10 @@ mod tests {
     #[tokio::test]
     async fn optimize_gives_the_planner_statistics_for_the_logs() {
         let store = Store::open_in_memory().await.unwrap();
+        if store.dialect() != Dialect::Sqlite {
+            eprintln!("SKIPPED on PostgreSQL: sqlite_stat1 and PRAGMA optimize are SQLite's");
+            return;
+        }
         let rows: Vec<NewLog> = (0..500).map(row).collect();
         store.insert_logs(&rows).await.unwrap();
         // A read through the indexes, as the API does, then the pragma.

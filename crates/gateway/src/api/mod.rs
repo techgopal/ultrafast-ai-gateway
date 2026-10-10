@@ -1,11 +1,13 @@
 //! The `/api` admin API: its router, its error type and the extractor that
 //! authenticates every request.
 
+pub mod alerts;
 pub mod audit;
 pub mod auth;
 pub mod backup;
 pub mod budgets;
 pub mod config;
+pub mod guardrails;
 pub mod health;
 pub mod keys;
 pub mod limits;
@@ -13,9 +15,11 @@ pub mod logs;
 pub mod models;
 pub mod openapi;
 pub mod playground;
+pub mod prompts;
 pub mod providers;
 pub mod routes;
 pub mod settings;
+pub mod sso;
 pub mod teams;
 pub mod tokens;
 pub mod usage;
@@ -50,6 +54,9 @@ pub const SESSION_COOKIE: &str = "uf_session";
 pub const CSRF_HEADER: &str = "x-csrf-token";
 /// The largest request body `/api` reads.
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
+
+/// The body limit of the two routes that write a prompt template.
+pub const PROMPT_BODY_BYTES: usize = 1024 * 1024;
 /// A user or token that was active this recently is not written again.
 const TOUCH_INTERVAL_SECONDS: i64 = 60;
 /// Longest accepted name of a user, a key or an access token, in characters.
@@ -67,6 +74,9 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(auth::setup_status, auth::setup))
         .routes(routes!(auth::login))
+        .routes(routes!(auth::methods))
+        .routes(routes!(sso::oidc_start))
+        .routes(routes!(sso::oidc_callback))
         .routes(routes!(auth::logout))
         .routes(routes!(auth::me))
         .routes(routes!(auth::accept_invite))
@@ -93,6 +103,8 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(audit::list))
         .routes(routes!(health::routing_health))
         .routes(routes!(settings::view, settings::update))
+        .routes(routes!(settings::oidc_view, settings::oidc_update))
+        .routes(routes!(settings::oidc_test))
         .routes(routes!(limits::list, limits::set))
         .routes(routes!(limits::delete))
         .routes(routes!(budgets::list, budgets::set))
@@ -100,10 +112,41 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(logs::list))
         .routes(routes!(logs::view))
         .routes(routes!(usage::usage_view))
+        .routes(routes!(playground::config))
         .routes(routes!(playground::chat))
+        .routes(routes!(playground::images))
+        .routes(routes!(playground::transcriptions))
+        .routes(routes!(playground::speech))
         .routes(routes!(config::export))
         .routes(routes!(config::import))
         .routes(routes!(backup::download))
+        .routes(routes!(alerts::list, alerts::create))
+        .routes(routes!(alerts::update, alerts::delete))
+        .routes(routes!(alerts::rotate_secret))
+        .routes(routes!(alerts::test))
+        .routes(routes!(alerts::rules_list, alerts::rules_create))
+        .routes(routes!(alerts::rules_update, alerts::rules_delete))
+        .routes(routes!(alerts::events_list))
+        .routes(routes!(guardrails::list, guardrails::create))
+        .routes(routes!(
+            guardrails::view,
+            guardrails::update,
+            guardrails::delete
+        ))
+        .routes(routes!(guardrails::rotate_secret))
+        .routes(routes!(guardrails::test))
+        // A template or a version holds up to 256 KiB of text, which JSON can
+        // spell in six times the bytes: these two take 1 MiB, the rest of
+        // `/api` 64 KiB.
+        .merge(
+            OpenApiRouter::new()
+                .routes(routes!(prompts::list, prompts::create))
+                .routes(routes!(prompts::add_version))
+                .layer(DefaultBodyLimit::max(PROMPT_BODY_BYTES)),
+        )
+        .routes(routes!(prompts::view, prompts::delete))
+        .routes(routes!(prompts::version))
+        .routes(routes!(prompts::render))
 }
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -463,16 +506,21 @@ pub struct Authed {
     pub via: AuthVia,
 }
 
-/// The value of the session cookie, if the request has one.
-fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+/// The value of the cookie `name`, if the request has one.
+pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get_all(COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(';'))
         .filter_map(|pair| pair.trim().split_once('='))
-        .find(|(name, _)| *name == SESSION_COOKIE)
+        .find(|(n, _)| *n == name)
         .map(|(_, value)| value)
+}
+
+/// The value of the session cookie, if the request has one.
+fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+    cookie_value(headers, SESSION_COOKIE)
 }
 
 /// The token of an `Authorization: Bearer <token>` header value.

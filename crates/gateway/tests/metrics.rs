@@ -279,6 +279,8 @@ async fn the_output_is_valid_exposition_text_with_every_metric() {
         ("uf_cache_flight_waits_total", "counter"),
         ("uf_rate_limited_total", "counter"),
         ("uf_budget_blocked_total", "counter"),
+        ("uf_guardrail_actions_total", "counter"),
+        ("uf_guardrail_external_errors_total", "counter"),
         ("uf_circuit_open", "gauge"),
     ] {
         assert!(text.contains(&format!("# TYPE {name} {kind}\n")), "{name}");
@@ -370,6 +372,7 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         outcome,
         status: None,
         duration_ms: 0,
+        offset_ms: 0,
     };
     let mut record = RequestRecord {
         tags: Default::default(),
@@ -392,6 +395,11 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         estimated: false,
         started_at: ultrafast_gateway::store::now(),
         duration_ms: 1,
+        trace_parent: None,
+        provider_kinds: Vec::new(),
+        started_unix_ms: 0,
+        guardrails: None,
+        prompt: None,
     };
     record.attempts[1].status = Some(400);
     metrics.record(&record);
@@ -588,6 +596,11 @@ async fn a_budget_refusal_is_counted() {
         estimated: false,
         started_at: ultrafast_gateway::store::now(),
         duration_ms: 1,
+        trace_parent: None,
+        provider_kinds: Vec::new(),
+        started_unix_ms: 0,
+        guardrails: None,
+        prompt: None,
     };
     account(&h.state, &record, 500, OffsetDateTime::now_utc());
     assert_eq!(
@@ -769,4 +782,59 @@ async fn no_key_name_email_or_secret_is_in_the_output() {
     ] {
         assert!(!text.contains(secret), "{secret} leaked");
     }
+}
+
+#[tokio::test]
+async fn guardrail_actions_are_counted_by_action_and_direction_with_no_names() {
+    let h = harness_with_metrics_token("openai", Some(TOKEN)).await;
+    mount_ok(&h).await;
+    let rules = json!([
+        { "id": "w", "matcher": { "keywords": { "words": ["swordfish"] } },
+          "action": "block", "directions": "input" },
+        { "id": "hello", "matcher": { "keywords": { "words": ["hello"] } },
+          "action": "redact", "directions": "output" }
+    ])
+    .to_string();
+    let mut tx = h.store.begin().await.unwrap();
+    tx.insert_guardrail(ultrafast_gateway::store::NewGuardrail {
+        name: "a-secret-name",
+        description: "",
+        kind: "rules",
+        rules: &rules,
+        url: None,
+        secret_enc: None,
+        timeout_ms: 3000,
+        fail_mode: "open",
+        directions: "both",
+        enabled: true,
+        is_default: true,
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    let blocked = BODY.replace("\"hi\"", "\"swordfish\"");
+    assert_eq!(
+        post_chat(&h.app, Some(&h.key), &blocked).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            post_chat(&h.app, Some(&h.key), BODY).await.0,
+            StatusCode::OK
+        );
+    }
+    let text = metrics(&h).await;
+    check_format(&text);
+    let series = |a: &str, d: &str| {
+        sample(
+            &text,
+            &format!("uf_guardrail_actions_total{{action=\"{a}\",direction=\"{d}\"}}"),
+        )
+    };
+    assert_eq!(series("block", "input"), 1.0);
+    assert_eq!(series("redact", "output"), 2.0);
+    assert_eq!(series("block", "output"), 0.0);
+    assert_eq!(series("flag", "input"), 0.0);
+    assert!(!text.contains("a-secret-name"));
 }

@@ -172,9 +172,15 @@ jobs:
         run: |
           pre=""
           case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          # Written notes when the repository has them for this tag, else generated ones.
+          notes="--generate-notes"
+          if [ -f "docs/release-notes/${GITHUB_REF_NAME}.md" ]; then
+            notes="--notes-file docs/release-notes/${GITHUB_REF_NAME}.md"
+          fi
+          # shellcheck disable=SC2086
           gh release create "$GITHUB_REF_NAME" dist/* \
             --draft --verify-tag $pre \
-            --title "$GITHUB_REF_NAME" --generate-notes
+            --title "$GITHUB_REF_NAME" $notes
 
   docker-publish:
     name: Image on ghcr.io

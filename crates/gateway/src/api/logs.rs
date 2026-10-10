@@ -15,7 +15,9 @@ use time::{Date, OffsetDateTime, Time};
 
 use super::{path_id, require, ApiError, Authed};
 use crate::app::AppState;
+use crate::guardrails::log::{GuardrailLog, LoggedAction};
 use crate::identity::policy::{list_scope, Action, Scope};
+use crate::identity::Principal;
 use crate::store::{LogDetail, LogFilter, LogScope};
 use crate::tags::{self, Tags};
 
@@ -34,7 +36,9 @@ pub struct LogsQuery {
     team_id: Option<String>,
     model: Option<String>,
     status: Option<String>,
+    endpoint: Option<String>,
     errors: Option<String>,
+    guardrail: Option<String>,
 }
 
 /// One logged call, as `/api` shows it.
@@ -88,6 +92,19 @@ pub struct LogView {
     /// key's. Empty when none.
     #[schema(value_type = std::collections::BTreeMap<String, String>)]
     pub tags: Tags,
+    /// What the guardrails found, when they found anything: the worst
+    /// action, and per direction the guardrails checked with (ids and names),
+    /// the one that blocked, the replacements made by PII type or rule id, and
+    /// the flag rules that matched. Never the text that matched. Only an
+    /// admin sees those details; everyone else gets the action of the call
+    /// and of each direction, with `checked_with` empty. `null` when nothing
+    /// was found.
+    #[schema(required)]
+    pub guardrails: Option<GuardrailLog>,
+    /// The prompt template the call used, as `name@version`, or `null`.
+    /// It is text: it stays when the template is deleted.
+    #[schema(required)]
+    pub prompt: Option<String>,
 }
 
 /// One target tried for a call.
@@ -155,6 +172,19 @@ pub struct LogDetailView {
     /// key's. Empty when none.
     #[schema(value_type = std::collections::BTreeMap<String, String>)]
     pub tags: Tags,
+    /// What the guardrails found, when they found anything: the worst
+    /// action, and per direction the guardrails checked with (ids and names),
+    /// the one that blocked, the replacements made by PII type or rule id, and
+    /// the flag rules that matched. Never the text that matched. Only an
+    /// admin sees those details; everyone else gets the action of the call
+    /// and of each direction, with `checked_with` empty. `null` when nothing
+    /// was found.
+    #[schema(required)]
+    pub guardrails: Option<GuardrailLog>,
+    /// The prompt template the call used, as `name@version`, or `null`.
+    /// It is text: it stays when the template is deleted.
+    #[schema(required)]
+    pub prompt: Option<String>,
     pub attempts: Vec<LogAttempt>,
 }
 
@@ -183,8 +213,21 @@ impl LogDetailView {
             estimated: l.estimated,
             duration_ms: l.duration_ms,
             tags: l.tags,
+            guardrails: l.guardrails,
+            prompt: l.prompt,
             attempts,
         }
+    }
+}
+
+impl LogView {
+    /// The row as `me` may see it: the details of the guardrails' work are
+    /// for admins.
+    fn shown_to(mut self, me: &Principal) -> Self {
+        if !me.is_admin() {
+            self.guardrails = self.guardrails.map(|g| g.action_only());
+        }
+        self
     }
 }
 
@@ -214,6 +257,8 @@ impl From<&LogDetail> for LogView {
             estimated: r.estimated,
             duration_ms: r.duration_ms,
             tags: tags::parse_stored(r.tags.as_deref()),
+            guardrails: r.guardrails.as_deref().and_then(GuardrailLog::from_stored),
+            prompt: r.prompt,
         }
     }
 }
@@ -294,7 +339,9 @@ pub(super) fn store_scope(scope: Scope) -> LogScope {
         ("team_id" = Option<i64>, Query, description = "Only calls of this team."),
         ("model" = Option<String>, Query, description = "Only calls answered by, or asking for, this model name."),
         ("status" = Option<i64>, Query, description = "Only calls answered with this HTTP status, 100 to 599."),
+        ("endpoint" = Option<String>, Query, description = "Only calls on this endpoint, as the row names it: `chat`, `messages`, `responses`, `embeddings`, `images`, `transcriptions`, `translations`, `speech` or `playground`. Combines with the other filters."),
         ("errors" = Option<bool>, Query, description = "`true`: only calls answered with a status of 400 or more. Combines with the other filters."),
+        ("guardrail" = Option<String>, Query, description = "Only calls whose worst guardrail action was this: `blocked`, `redacted` or `flagged` (a block is worse than a redaction, a redaction worse than a flag). Combines with the other filters."),
         ("tag" = Option<Vec<String>>, Query, description = "Only calls with this tag, written `name:value` (the name ends at the first colon). Repeat it to require several tags: all must match."),
     ),
     responses(
@@ -368,6 +415,34 @@ pub async fn list(
             false
         }
     };
+    let guardrail = match q.guardrail.as_deref() {
+        None => None,
+        Some(raw) => {
+            let parsed = LoggedAction::parse(raw);
+            if parsed.is_none() {
+                fields.insert(
+                    "guardrail".into(),
+                    "must be blocked, redacted or flagged".into(),
+                );
+            }
+            parsed
+        }
+    };
+    let endpoint = match q.endpoint.as_deref() {
+        None | Some("") => None,
+        Some(raw)
+            if raw.len() <= 32 && raw.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') =>
+        {
+            Some(raw.to_string())
+        }
+        Some(_) => {
+            fields.insert(
+                "endpoint".into(),
+                "must be an endpoint name: 1 to 32 characters of a-z and _".into(),
+            );
+            None
+        }
+    };
     // `tag` may be repeated, which a struct cannot take.
     let mut tag_filters = Vec::new();
     for (_, raw) in pairs.iter().filter(|(name, _)| name == "tag") {
@@ -386,6 +461,7 @@ pub async fn list(
     }
 
     let filter = LogFilter {
+        guardrail,
         tags: tag_filters,
         errors,
         before,
@@ -396,12 +472,13 @@ pub async fn list(
         team_id,
         model: q.model.filter(|m| !m.is_empty()),
         status,
+        endpoint,
     };
     let rows = state
         .store
         .list_logs(&store_scope(list_scope(me)), &filter, limit)
         .await?;
-    let logs: Vec<LogView> = rows.iter().map(LogView::from).collect();
+    let logs: Vec<LogView> = rows.iter().map(|r| LogView::from(r).shown_to(me)).collect();
     Ok(Json(json!({ "logs": logs })).into_response())
 }
 
@@ -445,7 +522,11 @@ pub async fn view(
         },
     )?;
     let attempts: Vec<LogAttempt> = serde_json::from_str(&detail.row.attempts).unwrap_or_default();
-    Ok(Json(LogDetailView::new(LogView::from(&detail), attempts)).into_response())
+    Ok(Json(LogDetailView::new(
+        LogView::from(&detail).shown_to(me),
+        attempts,
+    ))
+    .into_response())
 }
 
 #[cfg(test)]

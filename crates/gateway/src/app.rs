@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use axum::http::header::{CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::map_response;
@@ -20,6 +20,7 @@ use crate::api;
 use crate::budgets::{Budgets, MemoryBudgets};
 use crate::cache::{Flights, MemoryCache, ResponseCache};
 use crate::errors::error_response;
+use crate::identity::external::SignInProvider;
 use crate::identity::limiter::LoginLimiter;
 use crate::limits::{Limiter, MemoryLimiter};
 use crate::metrics::{self, Metrics};
@@ -35,8 +36,57 @@ use crate::web;
 pub const MAX_CONCURRENT_HASHES: usize = 4;
 /// How often a running gateway reads changes made outside it.
 pub const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+/// The default of [`AppState::stream_keepalive`].
+pub const DEFAULT_STREAM_KEEPALIVE: Duration = Duration::from_secs(10);
 pub const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 pub const DEFAULT_MAX_PROVIDER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+/// The largest image answer that is read: a few GPT image outputs of base64
+/// are many megabytes, and the provider has billed them by then.
+pub const DEFAULT_MAX_IMAGE_RESPONSE_BYTES: usize = 128 * 1024 * 1024;
+/// The largest audio file a transcription or translation takes.
+pub const DEFAULT_MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
+/// How many audio uploads are received at once, gateway-wide, by default.
+/// One past the bound is answered 503 before its body is read. A place is
+/// held only while the body arrives, not while the provider answers.
+pub const DEFAULT_MAX_CONCURRENT_UPLOADS: usize = 8;
+/// The longest `/v1` waits for the database to give an older prompt version.
+pub const DEFAULT_PROMPT_READ_TIMEOUT: Duration = Duration::from_secs(2);
+/// The longest an audio upload may take to arrive.
+pub const DEFAULT_UPLOAD_TOTAL: Duration = Duration::from_secs(60);
+/// The longest an audio upload may send nothing.
+pub const DEFAULT_UPLOAD_IDLE: Duration = Duration::from_secs(15);
+/// The most audio of one speech answer that is passed on. Speech is at most
+/// 4096 characters, a few minutes of audio, tens of megabytes as raw PCM.
+pub const DEFAULT_MAX_SPEECH_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
+/// The least time a slow, billed-once call (image generation, and the audio
+/// calls to come) is given, whatever the route allows: the first byte of the
+/// answer, and the whole request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlowCalls {
+    pub first_byte: Duration,
+    pub total: Duration,
+}
+
+impl Default for SlowCalls {
+    fn default() -> Self {
+        SlowCalls {
+            first_byte: Duration::from_secs(180),
+            total: Duration::from_secs(300),
+        }
+    }
+}
+
+impl SlowCalls {
+    /// `settings`, with timeouts that are at least these.
+    pub fn raise(&self, settings: crate::routing::Settings) -> crate::routing::Settings {
+        crate::routing::Settings {
+            first_token_timeout: settings.first_token_timeout.max(self.first_byte),
+            total_timeout: settings.total_timeout.max(self.total),
+            ..settings
+        }
+    }
+}
 
 pub struct AppState {
     pub store: Store,
@@ -45,6 +95,23 @@ pub struct AppState {
     pub max_body_bytes: usize,
     /// The largest non-streaming provider response that is read.
     pub max_provider_response_bytes: usize,
+    /// The largest image answer that is read.
+    pub max_image_response_bytes: usize,
+    /// The largest audio file an upload may hold.
+    pub max_audio_bytes: usize,
+    /// The most audio of a speech answer that is passed on.
+    pub max_speech_response_bytes: usize,
+    /// Audio uploads being received at once; each holds up to the audio cap.
+    pub audio_uploads: Arc<Semaphore>,
+    /// The longest a call waits for an older prompt version (read from the
+    /// database); past it the call is answered 503.
+    pub prompt_read_timeout: Duration,
+    /// The longest an upload may take to arrive, and the longest it may
+    /// stay silent.
+    pub upload_total: Duration,
+    pub upload_idle: Duration,
+    /// The timeouts image calls get at least.
+    pub slow_calls: SlowCalls,
     /// Failed sign-in attempts, kept in memory.
     pub limiter: LoginLimiter,
     /// Whether the session cookie is marked `Secure`.
@@ -59,6 +126,16 @@ pub struct AppState {
     /// Networks whose peers may name the client in `CF-Connecting-IP` or
     /// `X-Forwarded-For`. Empty: those headers are never read.
     pub trusted_proxies: Vec<IpNet>,
+    /// The address people reach the gateway at (`UF_PUBLIC_URL`). Needed
+    /// to turn single sign-on on: the identity provider returns the
+    /// browser to `<public_url>/api/auth/oidc/callback`.
+    pub public_url: Option<reqwest::Url>,
+    /// The provider of single sign-on, when it is on and set up. Rebuilt by
+    /// [`AppState::reload_sign_in`] whenever its settings change.
+    pub sign_in: ArcSwapOption<Arc<dyn SignInProvider>>,
+    /// The settings `sign_in` was last built from, to see whether another
+    /// process has changed them since.
+    sign_in_seen: std::sync::Mutex<Option<crate::store::OidcSettings>>,
     /// Receives one record per authenticated `/v1` call.
     pub sink: Arc<dyn RequestSink>,
     /// The rate limits of `/v1`: requests, tokens and concurrency.
@@ -69,10 +146,24 @@ pub struct AppState {
     pub flights: Flights,
     /// The spend counters of the budgets of `/v1`.
     pub budgets: Arc<dyn Budgets>,
+    /// The in-flight limit of each external guardrail.
+    pub hook_gates: Arc<crate::guardrails::external::HookGates>,
+    /// Older versions of prompt templates that calls asked for.
+    pub old_prompts: Arc<crate::prompts::OldVersions>,
+    /// How often a stream held for an external guardrail sends an SSE
+    /// comment so a proxy in front does not cut it for being idle.
+    pub stream_keepalive: Duration,
     /// The circuit breaker of every target that was called.
     pub health: Arc<dyn HealthStore>,
     /// The counters `/metrics` shows.
     pub metrics: Arc<Metrics>,
+    /// Exports a trace of every call over OTLP/HTTP. `None`: off.
+    pub otel: Option<crate::otel::Exporter>,
+    /// Delivers alert events to their channels. `None`: no delivery.
+    pub alerts: Option<crate::alerts::Deliverer>,
+    /// Decides when an alert fires; fed by calls, budgets and breakers.
+    /// `None`: no alert rule is evaluated.
+    pub alert_engine: Option<crate::alerts::EngineHandle>,
     /// The bearer token of `/metrics`. None: the path does not exist.
     pub metrics_token: Option<String>,
     /// The one-time code that `POST /api/setup` needs, made when the
@@ -85,6 +176,8 @@ pub struct AppState {
     /// Held while a snapshot is loaded and swapped in, so an older one
     /// can never replace a newer one.
     refreshing: Mutex<()>,
+    /// Held by a budget flush, so two never overlap.
+    pub flushing: Mutex<()>,
 }
 
 impl AppState {
@@ -99,33 +192,133 @@ impl AppState {
             snapshot: ArcSwap::from_pointee(snapshot),
             refresh_interval: DEFAULT_REFRESH_INTERVAL,
             trusted_proxies: Vec::new(),
+            public_url: None,
+            sign_in: ArcSwapOption::empty(),
+            sign_in_seen: std::sync::Mutex::new(None),
             sink: Arc::new(NoopSink),
             rate: Arc::new(MemoryLimiter::new()),
             cache: Arc::new(MemoryCache::new()),
             flights: Flights::new(),
+            hook_gates: Arc::default(),
+            old_prompts: Arc::default(),
+            stream_keepalive: DEFAULT_STREAM_KEEPALIVE,
             budgets: Arc::new(MemoryBudgets::new()),
             health: Arc::new(InMemoryHealth::new()),
             metrics: Arc::new(Metrics::new()),
+            otel: None,
+            alerts: None,
+            alert_engine: None,
             metrics_token: None,
             refreshes: AtomicU64::new(0),
             cache_fingerprint: std::sync::Mutex::new(snapshot_fingerprint),
             refreshing: Mutex::new(()),
+            flushing: Mutex::new(()),
             store,
             cipher,
             http: http_client(),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_provider_response_bytes: DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+            max_image_response_bytes: DEFAULT_MAX_IMAGE_RESPONSE_BYTES,
+            max_audio_bytes: DEFAULT_MAX_AUDIO_BYTES,
+            max_speech_response_bytes: DEFAULT_MAX_SPEECH_RESPONSE_BYTES,
+            audio_uploads: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_UPLOADS)),
+            prompt_read_timeout: DEFAULT_PROMPT_READ_TIMEOUT,
+            upload_total: DEFAULT_UPLOAD_TOTAL,
+            upload_idle: DEFAULT_UPLOAD_IDLE,
+            slow_calls: SlowCalls::default(),
             limiter: LoginLimiter::new(),
             cookie_secure: true,
             hashing: Arc::new(Semaphore::new(MAX_CONCURRENT_HASHES)),
         })
     }
 
+    /// The address to register at the identity provider: the public URL
+    /// followed by the callback path. `None` without a public URL.
+    pub fn oidc_redirect_uri(&self) -> Option<String> {
+        let base = self.public_url.as_ref()?.as_str().trim_end_matches('/');
+        Some(format!("{base}/api/auth/oidc/callback"))
+    }
+
+    /// The client secret stored in `settings`, decrypted. `None` when none
+    /// is stored, or when the stored value cannot be read (the master key
+    /// changed).
+    pub fn oidc_client_secret(&self, settings: &crate::store::OidcSettings) -> Option<String> {
+        settings
+            .client_secret_enc
+            .as_deref()
+            .and_then(|hex| hex::decode(hex).ok())
+            .and_then(|bytes| self.cipher.decrypt(&bytes).ok())
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+    }
+
+    /// Rebuilds the sign-in provider from the stored settings: none when
+    /// single sign-on is off or not complete (no public URL, issuer, client
+    /// id or readable secret). Call it after the settings change, and
+    /// never while a `Tx` is open.
+    pub async fn reload_sign_in(&self) -> anyhow::Result<()> {
+        let settings = self.store.oidc_settings().await?;
+        self.apply_sign_in(settings);
+        Ok(())
+    }
+
+    /// [`AppState::reload_sign_in`] only when the stored settings are not
+    /// the ones the provider was built from: what the refresher calls, so a
+    /// change another process saved reaches this one within a refresh
+    /// interval. One cheap read when nothing changed. Returns whether the
+    /// provider was rebuilt.
+    pub async fn reload_sign_in_if_changed(&self) -> anyhow::Result<bool> {
+        let settings = self.store.oidc_settings().await?;
+        let unchanged = self
+            .sign_in_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            == Some(&settings);
+        if unchanged {
+            return Ok(false);
+        }
+        self.apply_sign_in(settings);
+        Ok(true)
+    }
+
+    fn apply_sign_in(&self, settings: crate::store::OidcSettings) {
+        let secret = self.oidc_client_secret(&settings);
+        if settings.client_secret_enc.is_some() && secret.is_none() {
+            tracing::warn!(
+                "the stored single sign-on client secret cannot be decrypted \
+                 (the master key changed?): single sign-on stays off until a new secret is saved"
+            );
+        }
+        let provider = match (
+            settings.enabled,
+            self.oidc_redirect_uri(),
+            secret,
+            settings.issuer.is_empty() || settings.client_id.is_empty(),
+        ) {
+            (true, Some(redirect_uri), Some(secret), false) => {
+                crate::identity::external::build_oidc(
+                    &settings,
+                    &secret,
+                    &redirect_uri,
+                    &self.http,
+                    &self.cipher,
+                )
+            }
+            _ => None,
+        };
+        self.sign_in.store(provider.map(Arc::new));
+        *self
+            .sign_in_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(settings);
+    }
+
     /// Rebuilds the snapshot from the database and swaps it in. Do not call
     /// it while a `Tx` is open.
     pub async fn refresh(&self) -> anyhow::Result<()> {
         let _guard = self.refreshing.lock().await;
-        let snapshot = Snapshot::load(&self.store, &self.cipher).await?;
+        let snapshot =
+            Snapshot::load_after(&self.store, &self.cipher, Some(&self.snapshot.load())).await?;
         // What left the catalog is no longer worth a breaker.
         self.health
             .retain(&|provider, model| snapshot.model(provider, model).is_some());
@@ -133,6 +326,13 @@ impl AppState {
         let budget_ids: Vec<i64> = snapshot.all_budgets().iter().map(|b| b.id).collect();
         self.budgets.retain(&budget_ids);
         let fingerprint = snapshot.cache_fingerprint();
+        // An older version of a template that is gone, or made again, is not
+        // kept.
+        self.old_prompts.retain(|id, created| {
+            snapshot
+                .prompt_by_id(id)
+                .is_some_and(|t| t.created_at == created)
+        });
         self.snapshot.store(Arc::new(snapshot));
         // Answers kept under the old configuration are not given under a new
         // one: a team, user or key id may be another one now, a route or a
@@ -179,6 +379,12 @@ pub fn spawn_refresher(state: Arc<AppState>, mut stop: watch::Receiver<bool>) ->
             if let Err(e) = state.refresh().await {
                 tracing::error!(error = %e, "snapshot refresh failed");
             }
+            // Single sign-on settings saved on another process.
+            match state.reload_sign_in_if_changed().await {
+                Ok(true) => tracing::info!("single sign-on settings changed: provider rebuilt"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "could not check the single sign-on settings"),
+            }
             // The sign-in limiter forgets what left its window here, not
             // on every attempt.
             state.limiter.prune(std::time::Instant::now());
@@ -200,7 +406,12 @@ pub fn router(state: Arc<AppState>) -> Router {
     }
     app.route("/v1/chat/completions", post(proxy::chat_completions))
         .route("/v1/messages", post(proxy::messages))
+        .route("/v1/responses", post(proxy::responses))
         .route("/v1/embeddings", post(proxy::embeddings))
+        .route("/v1/images/generations", post(proxy::images))
+        .route("/v1/audio/transcriptions", post(proxy::transcriptions))
+        .route("/v1/audio/translations", post(proxy::translations))
+        .route("/v1/audio/speech", post(proxy::speech))
         .route("/v1/models", get(proxy::list_models))
         // Every other path under `/v1` is answered here, so the console's
         // pages never stand in for a model API that does not exist.

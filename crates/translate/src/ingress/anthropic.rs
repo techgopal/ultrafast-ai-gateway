@@ -8,7 +8,7 @@ use serde_json::{json, Map, Value};
 use crate::error::TranslateError;
 use crate::types::{
     base64_source, image_source, ChatRequest, ChatResponse, FinishReason, ImageSource, Message,
-    Part, Role, StreamEvent, Tool, ToolCall, ToolChoice, Usage,
+    Part, ResponseFormat, Role, StreamEvent, Tool, ToolCall, ToolChoice, Usage,
 };
 
 const ONLY_TEXT: &str = "Only text content is supported.";
@@ -32,6 +32,8 @@ struct WireRequest {
     tools: Option<Vec<Value>>,
     #[serde(default)]
     tool_choice: Option<Value>,
+    #[serde(default)]
+    output_config: Option<Value>,
     /// Accepted and not used.
     #[serde(default)]
     #[allow(dead_code)]
@@ -59,6 +61,11 @@ fn text_of(content: WireContent) -> Result<String, TranslateError> {
         WireContent::Blocks(blocks) => {
             let mut out = String::new();
             for b in &blocks {
+                // Blocks are separate texts: a newline keeps the end of one
+                // from running into the start of the next.
+                if !out.is_empty() {
+                    out.push('\n');
+                }
                 if b["type"] != "text" {
                     return Err(TranslateError::InvalidRequest(ONLY_TEXT.into()));
                 }
@@ -246,6 +253,40 @@ fn parse_message(
     Ok(())
 }
 
+/// Anthropic's `output_config.format` (`{type:"json_schema", schema}`) as a
+/// response format. Other `output_config` settings are not supported.
+fn parse_output_config(oc: Option<&Value>) -> Result<Option<ResponseFormat>, TranslateError> {
+    let Some(oc) = oc.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let fields = oc
+        .as_object()
+        .ok_or_else(|| invalid("output_config must be an object"))?;
+    if let Some(other) = fields.keys().find(|k| *k != "format") {
+        return Err(invalid(format!(
+            "output_config field '{other}' is not supported"
+        )));
+    }
+    let Some(format) = fields.get("format").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    if format["type"] != "json_schema" {
+        return Err(invalid("output_config format 'type' must be json_schema"));
+    }
+    match &format["schema"] {
+        s @ Value::Object(_) => Ok(Some(ResponseFormat::JsonSchema {
+            name: "response".into(),
+            schema: s.clone(),
+            // Anthropic always enforces the schema; OpenAI and Azure treat a
+            // schema without `strict` as best effort, so a caller of this
+            // format keeps its enforcement on any provider.
+            strict: Some(true),
+            description: None,
+        })),
+        _ => Err(invalid("output_config format 'schema' must be an object")),
+    }
+}
+
 pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
     let wire: WireRequest =
         serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
@@ -295,6 +336,8 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
         tools,
         tool_choice,
         parallel_tool_calls,
+        response_format: parse_output_config(wire.output_config.as_ref())?,
+        reasoning_effort: None,
     })
 }
 
@@ -581,7 +624,7 @@ mod tests {
         assert_eq!(r.max_tokens, Some(9));
         assert_eq!(r.messages.len(), 3);
         assert_eq!(r.messages[0].role, Role::System);
-        assert_eq!(r.messages[0].joined_text(), "ab");
+        assert_eq!(r.messages[0].joined_text(), "a\nb");
         assert_eq!(r.messages[2].role, Role::Assistant);
         assert_eq!(r.messages[2].joined_text(), "yo");
         assert_eq!(r.stop, Some(vec!["x".into()]));
@@ -1217,5 +1260,82 @@ mod tests {
         );
         assert_eq!(evs[1].1["index"], 0);
         assert_eq!(evs[1].1["content_block"]["type"], "tool_use");
+    }
+
+    // Anthropic always enforces the schema, so the caller keeps that on an
+    // OpenAI-shaped target too.
+    #[test]
+    fn an_output_schema_stays_strict_on_an_openai_target() {
+        use crate::provider::{build_request, ProviderKind, Target};
+        let r = parse_request(
+            br#"{"model":"m","max_tokens":5,"messages":[{"role":"user","content":"x"}],
+                "output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}}"#,
+        )
+        .unwrap();
+        for kind in [ProviderKind::OpenAi, ProviderKind::Azure] {
+            let target = Target {
+                kind,
+                base_url: "https://api.example.com/v1".into(),
+                api_key: Some("k".into()),
+                model: "gpt-4o".into(),
+                api_version: None,
+            };
+            let sent: Value =
+                serde_json::from_slice(&build_request(&target, &r).unwrap().body).unwrap();
+            assert_eq!(
+                sent["response_format"]["json_schema"]["strict"],
+                json!(true),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn output_config_format_is_a_json_schema_response_format() {
+        let body = |oc: &str| {
+            format!(
+                r#"{{"model":"m","max_tokens":5,"messages":[{{"role":"user","content":"x"}}],"output_config":{oc}}}"#
+            )
+        };
+        let r = parse_request(
+            body(r#"{"format":{"type":"json_schema","schema":{"type":"object"}}}"#).as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            r.response_format,
+            Some(ResponseFormat::JsonSchema {
+                name: "response".into(),
+                schema: json!({"type":"object"}),
+                strict: Some(true),
+                description: None,
+            })
+        );
+        assert_eq!(
+            parse_request(body("null").as_bytes())
+                .unwrap()
+                .response_format,
+            None
+        );
+        assert_eq!(
+            parse_request(body("{}").as_bytes())
+                .unwrap()
+                .response_format,
+            None
+        );
+        for bad in [
+            r#"{"format":{"type":"text"}}"#,
+            r#"{"format":{"type":"json_schema"}}"#,
+            r#"{"format":{"type":"json_schema","schema":[]}}"#,
+            r#"{"effort":"high"}"#,
+            r#"[]"#,
+        ] {
+            assert!(
+                matches!(
+                    parse_request(body(bad).as_bytes()),
+                    Err(TranslateError::InvalidRequest(_))
+                ),
+                "{bad}"
+            );
+        }
     }
 }

@@ -1,0 +1,58 @@
+# The gateway on PostgreSQL, with PostgreSQL in a container beside it.
+#
+#   printf 'UF_MASTER_KEY=%s\nPOSTGRES_PASSWORD=%s\nUF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' \
+#     "$(openssl rand -hex 32)" "$(openssl rand -hex 16)" > .env
+#   chmod 600 .env
+#   docker compose -f postgres.yml up -d      # reads .env beside this file
+#
+# The master key and the passwords come from the env file, never from this
+# file: keep the file out of version control, and keep the master key safe,
+# apart from the database backups (a backup is useless without it). Every
+# gateway on the same database must have the same UF_MASTER_KEY.
+#
+# Postgres is reached over the private network of this project, which nothing
+# outside can join, so TLS is switched off here (sslmode=disable). If the
+# database is on another host, use sslmode=require or verify-full instead (see
+# "Using PostgreSQL" in the README).
+#
+# The image is pinned: 2.0.0-beta.3 or later (the first release that can use
+# PostgreSQL; older images ignore UF_DATABASE_URL and would keep everything in
+# the container, which has no volume). `latest` is published for final
+# releases only. Change the tag deliberately, so that an upgrade is your
+# decision.
+#
+# The admin variables create the first admin only when no user exists; after
+# that, remove them from the env file.
+
+services:
+  gateway:
+    image: ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.3 # pin a version
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      # POSTGRES_PASSWORD is read from the env file when compose starts;
+      # the URL is not written out here.
+      UF_DATABASE_URL: postgres://ultrafast:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the env file}@postgres:5432/ultrafast?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ultrafast
+      POSTGRES_DB: ultrafast
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the env file}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ultrafast -d ultrafast"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

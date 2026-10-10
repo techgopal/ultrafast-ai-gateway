@@ -58,6 +58,16 @@ struct World {
     model: i64,
     /// A route over `model`, open to everyone.
     route: i64,
+    /// An alert channel that posts to `_upstream`.
+    channel: i64,
+    /// An alert rule with no channel.
+    rule: i64,
+    /// A guardrail of rules.
+    guardrail: i64,
+    /// An external guardrail.
+    external_guardrail: i64,
+    /// A template an admin made.
+    prompt: i64,
     /// Keeps `syncable` answering.
     _upstream: MockServer,
     /// Owned by lena, in Platform.
@@ -158,6 +168,75 @@ async fn world() -> World {
     )
     .await
     .unwrap();
+    let channel = tx
+        .insert_alert_channel(
+            "table",
+            "webhook",
+            &org.api
+                .state
+                .cipher
+                .encrypt(format!("{}/hook", upstream.uri()).as_bytes()),
+            &upstream.uri(),
+            &org.api.state.cipher.encrypt(b"whsec_table"),
+            true,
+        )
+        .await
+        .unwrap();
+    let rule = tx
+        .insert_alert_rule("table", "circuit_open", "{}", true)
+        .await
+        .unwrap();
+    let cipher = &org.api.state.cipher;
+    let (hook_url, hook_secret) = (
+        cipher.encrypt(b"https://guard.example.com/check"),
+        cipher.encrypt(b"whsec_table"),
+    );
+    let new_guardrail = |name, kind, rules| ultrafast_gateway::store::NewGuardrail {
+        name,
+        description: "",
+        kind,
+        rules,
+        url: None,
+        secret_enc: None,
+        timeout_ms: 3000,
+        fail_mode: "open",
+        directions: "both",
+        enabled: true,
+        is_default: false,
+    };
+    let guardrail = tx
+        .insert_guardrail(new_guardrail(
+            "table",
+            "rules",
+            r#"[{"id":"mail","matcher":{"pii":["EMAIL"]},"action":"redact","directions":"both"}]"#,
+        ))
+        .await
+        .unwrap();
+    let external_guardrail = tx
+        .insert_guardrail(ultrafast_gateway::store::NewGuardrail {
+            url: Some((&hook_url, "https://guard.example.com")),
+            secret_enc: Some(&hook_secret),
+            ..new_guardrail("external", "external", "[]")
+        })
+        .await
+        .unwrap();
+    // An admin's template, which a lead may read and use but not change.
+    let prompt = tx
+        .insert_prompt_template("table", "", Some(org.maya))
+        .await
+        .unwrap();
+    tx.insert_prompt_version(
+        prompt,
+        ultrafast_gateway::store::NewVersion {
+            messages: r#"[{"role":"user","content":"hi {{x}}"}]"#,
+            variables: r#"["x"]"#,
+            model: None,
+            params: "{}",
+        },
+        Some(org.maya),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     org.api.state.refresh().await.unwrap();
 
@@ -181,6 +260,8 @@ async fn world() -> World {
         estimated: false,
         duration_ms: 1,
         attempts: "[]".into(),
+        guardrails: None,
+        prompt: None,
     };
     org.api
         .store
@@ -222,6 +303,11 @@ async fn world() -> World {
         syncable,
         model,
         route,
+        channel,
+        rule,
+        guardrail,
+        external_guardrail,
+        prompt,
         _upstream: upstream,
         lena_key,
         tomas_key,
@@ -469,6 +555,97 @@ fn table() -> Vec<Row> {
         row(64, "PATCH", "/api/keys/{id}", "tomas's tags", |w, _| format!("/api/keys/{}", w.tomas_key),
             || Some(json!({ "tags": { "team": "research" } })),
             [200, 404, 404, 401]),
+        row(65, "GET", "/api/alerts/channels", "", |_, _| "/api/alerts/channels".into(), no_body,
+            [200, 403, 403, 401]),
+        row(66, "POST", "/api/alerts/channels", "", |_, _| "/api/alerts/channels".into(),
+            || Some(json!({ "name": "chat", "kind": "slack", "url": "https://hooks.example.com/T/x" })),
+            [201, 403, 403, 401]),
+        row(67, "PATCH", "/api/alerts/channels/{id}", "", |w, _| format!("/api/alerts/channels/{}", w.channel),
+            || Some(json!({ "enabled": false })),
+            [200, 403, 403, 401]),
+        row(68, "DELETE", "/api/alerts/channels/{id}", "", |w, _| format!("/api/alerts/channels/{}", w.channel), no_body,
+            [204, 403, 403, 401]),
+        row(69, "POST", "/api/alerts/channels/{id}/rotate-secret", "",
+            |w, _| format!("/api/alerts/channels/{}/rotate-secret", w.channel), no_body,
+            [200, 403, 403, 401]),
+        // The mock answers 404 to the post; the test still answers 200 with `ok: false`.
+        row(70, "POST", "/api/alerts/channels/{id}/test", "",
+            |w, _| format!("/api/alerts/channels/{}/test", w.channel), no_body,
+            [200, 403, 403, 401]),
+        row(71, "GET", "/api/alerts/rules", "", |_, _| "/api/alerts/rules".into(), no_body,
+            [200, 403, 403, 401]),
+        row(72, "POST", "/api/alerts/rules", "", |_, _| "/api/alerts/rules".into(),
+            || Some(json!({ "name": "errors", "kind": "error_rate",
+                            "params": { "scope": "gateway", "percent": 10 }, "channel_ids": [] })),
+            [201, 403, 403, 401]),
+        row(73, "PATCH", "/api/alerts/rules/{id}", "", |w, _| format!("/api/alerts/rules/{}", w.rule),
+            || Some(json!({ "enabled": false })),
+            [200, 403, 403, 401]),
+        row(74, "DELETE", "/api/alerts/rules/{id}", "", |w, _| format!("/api/alerts/rules/{}", w.rule), no_body,
+            [204, 403, 403, 401]),
+        row(75, "GET", "/api/alerts/events", "", |_, _| "/api/alerts/events".into(), no_body,
+            [200, 403, 403, 401]),
+        row(76, "GET", "/api/settings/oidc", "", |_, _| "/api/settings/oidc".into(), no_body,
+            [200, 403, 403, 401]),
+        row(77, "PUT", "/api/settings/oidc", "", |_, _| "/api/settings/oidc".into(),
+            || Some(json!({ "enabled": false, "label": "SSO" })),
+            [200, 403, 403, 401]),
+        // Nothing listens on port 1: the test answers 200 with `ok: false`.
+        row(78, "POST", "/api/settings/oidc/test", "an unreachable issuer", |_, _| "/api/settings/oidc/test".into(),
+            || Some(json!({ "issuer": "http://127.0.0.1:1" })),
+            [200, 403, 403, 401]),
+        row(79, "GET", "/api/guardrails", "", |_, _| "/api/guardrails".into(), no_body,
+            [200, 403, 403, 401]),
+        row(80, "POST", "/api/guardrails", "a rules guardrail", |_, _| "/api/guardrails".into(),
+            || Some(json!({ "name": "emails", "kind": "rules", "rules": [
+                { "id": "mail", "matcher": { "pii": ["EMAIL"] }, "action": "redact", "directions": "both" }] })),
+            [201, 403, 403, 401]),
+        row(81, "GET", "/api/guardrails/{id}", "", |w, _| format!("/api/guardrails/{}", w.guardrail), no_body,
+            [200, 403, 403, 401]),
+        row(82, "PATCH", "/api/guardrails/{id}", "", |w, _| format!("/api/guardrails/{}", w.guardrail),
+            || Some(json!({ "enabled": false })),
+            [200, 403, 403, 401]),
+        row(83, "DELETE", "/api/guardrails/{id}", "", |w, _| format!("/api/guardrails/{}", w.guardrail), no_body,
+            [204, 403, 403, 401]),
+        row(84, "POST", "/api/guardrails/{id}/rotate-secret", "an external guardrail",
+            |w, _| format!("/api/guardrails/{}/rotate-secret", w.external_guardrail), no_body,
+            [200, 403, 403, 401]),
+        row(85, "POST", "/api/guardrails/test", "rules sent with the request", |_, _| "/api/guardrails/test".into(),
+            || Some(json!({ "rules": [
+                { "id": "mail", "matcher": { "pii": ["EMAIL"] }, "action": "redact", "directions": "both" }],
+                "direction": "input", "text": "a@b.co" })),
+            [200, 403, 403, 401]),
+        row(86, "POST", "/api/playground/images", "an unknown model", |_, _| "/api/playground/images".into(),
+            || Some(json!({ "model": "nothing", "prompt": "a fox" })),
+            [404, 404, 404, 401]),
+        row(87, "POST", "/api/playground/transcriptions", "a body that is not a form", |_, _| "/api/playground/transcriptions".into(),
+            || Some(json!({ "model": "nothing" })),
+            [400, 400, 400, 401]),
+        row(88, "POST", "/api/playground/speech", "an unknown model", |_, _| "/api/playground/speech".into(),
+            || Some(json!({ "model": "nothing", "input": "hi", "voice": "alloy" })),
+            [404, 404, 404, 401]),
+        row(89, "GET", "/api/prompts", "", |_, _| "/api/prompts".into(), no_body,
+            [200, 200, 200, 401]),
+        row(90, "POST", "/api/prompts", "a template", |_, _| "/api/prompts".into(),
+            || Some(json!({ "name": "made", "messages": [{ "role": "user", "content": "hi {{x}}" }] })),
+            [201, 201, 403, 401]),
+        row(91, "GET", "/api/prompts/{id}", "an admin's", |w, _| format!("/api/prompts/{}", w.prompt), no_body,
+            [200, 200, 200, 401]),
+        row(92, "DELETE", "/api/prompts/{id}", "an admin's", |w, _| format!("/api/prompts/{}", w.prompt), no_body,
+            [204, 403, 403, 401]),
+        row(93, "POST", "/api/prompts/{id}/versions", "to an admin's",
+            |w, _| format!("/api/prompts/{}/versions", w.prompt),
+            || Some(json!({ "messages": [{ "role": "user", "content": "again {{y}}" }] })),
+            [201, 403, 403, 401]),
+        row(94, "GET", "/api/prompts/{id}/versions/{version}", "version 1",
+            |w, _| format!("/api/prompts/{}/versions/1", w.prompt), no_body,
+            [200, 200, 200, 401]),
+        row(95, "POST", "/api/prompts/{id}/render", "an admin's, version 1",
+            |w, _| format!("/api/prompts/{}/render", w.prompt),
+            || Some(json!({ "version": 1, "variables": { "x": "1" } })),
+            [200, 200, 200, 401]),
+        row(96, "GET", "/api/playground/config", "", |_, _| "/api/playground/config".into(), no_body,
+            [200, 200, 200, 401]),
     ]
 }
 
@@ -500,7 +677,9 @@ fn expected(row: &Row, caller: Caller) -> (u16, Option<&'static str>) {
         // A token carries the role of its owner. It cannot be signed out.
         Caller::MemberToken if row.number == 30 => return (400, Some("bad_request")),
         // The playground is for a browser session: a token is refused first.
-        Caller::MemberToken if row.number == 59 => return (403, Some("forbidden")),
+        Caller::MemberToken if matches!(row.number, 59 | 86 | 87 | 88) => {
+            return (403, Some("forbidden"))
+        }
         // Access tokens are made from a browser session only.
         Caller::MemberToken if row.number == 28 => return (403, Some("forbidden")),
         Caller::MemberToken => row.expect[2],
@@ -511,7 +690,7 @@ fn expected(row: &Row, caller: Caller) -> (u16, Option<&'static str>) {
         401 => Some("unauthenticated"),
         403 => Some("forbidden"),
         // The playground answers as `/v1` does: no `/api` error code.
-        404 if row.number == 59 => None,
+        404 if matches!(row.number, 59 | 86 | 87 | 88) => None,
         404 => Some("not_found"),
         _ => None,
     };
@@ -541,7 +720,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=64).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=96).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -594,10 +773,13 @@ async fn every_endpoint_for_every_role() {
 }
 
 /// The operations anyone may call. A new one is added here on purpose.
-const PUBLIC: [(&str, &str); 4] = [
+const PUBLIC: [(&str, &str); 7] = [
     ("GET", "/api/setup"),
     ("POST", "/api/setup"),
     ("POST", "/api/auth/login"),
+    ("GET", "/api/auth/methods"),
+    ("GET", "/api/auth/oidc/start"),
+    ("GET", "/api/auth/oidc/callback"),
     ("POST", "/api/auth/accept-invite"),
 ];
 
@@ -651,14 +833,20 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
     let spec = serde_json::to_value(spec()).unwrap();
     let mut operations = 0;
     for (template, item) in spec["paths"].as_object().expect("paths") {
-        let path = template.replace("{id}", "1").replace("{user_id}", "1");
+        let path = template
+            .replace("{id}", "1")
+            .replace("{user_id}", "1")
+            .replace("{version}", "1");
         assert!(!path.contains('{'), "{template}");
         for method in item.as_object().expect("a path item").keys() {
             let method = method.to_uppercase();
             // Without credentials no handler answers 404, so a 404 here
             // comes from the fallback.
             let (status, _, body) = send(app, &method, &path, &[], None).await;
-            assert_ne!(status, StatusCode::NOT_FOUND, "{method} {path}: {body}");
+            // Single sign-on is off here: its start answers with a code of its own.
+            if error_code(&body) != "oidc_disabled" {
+                assert_ne!(status, StatusCode::NOT_FOUND, "{method} {path}: {body}");
+            }
             assert_ne!(
                 status,
                 StatusCode::METHOD_NOT_ALLOWED,
@@ -667,7 +855,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 61);
+    assert_eq!(operations, 96);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

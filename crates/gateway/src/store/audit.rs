@@ -3,6 +3,7 @@
 use anyhow::Result;
 use sqlx::Row;
 
+use super::dialect::Dialected;
 use super::{Store, Tx, DEFAULT_ORG};
 
 /// Most rows one call to `list_audit` returns.
@@ -34,19 +35,20 @@ impl Store {
     /// Newest first. `limit` is clamped to 1..=200; `before_id` continues
     /// from the last id of the previous page.
     pub async fn list_audit(&self, limit: i64, before_id: Option<i64>) -> Result<Vec<AuditRow>> {
-        let rows = sqlx::query(
-            "SELECT id, at, actor_email, action, target_type, target_id, summary
+        let rows = self
+            .q(
+                "SELECT id, at, actor_email, action, target_type, target_id, summary
              FROM audit_log
              WHERE org_id = ? AND (? IS NULL OR id < ?)
              ORDER BY id DESC
              LIMIT ?",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(before_id)
-        .bind(before_id)
-        .bind(limit.clamp(1, MAX_PAGE))
-        .fetch_all(self.pool())
-        .await?;
+            )
+            .bind(DEFAULT_ORG)
+            .bind(before_id)
+            .bind(before_id)
+            .bind(limit.clamp(1, MAX_PAGE))
+            .fetch_all(self.pool())
+            .await?;
         Ok(rows
             .iter()
             .map(|r| AuditRow {
@@ -64,20 +66,18 @@ impl Store {
 
 impl Tx<'_> {
     pub async fn audit(&mut self, e: AuditEntry<'_>) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO audit_log
+        self.q("INSERT INTO audit_log
                  (org_id, actor_user_id, actor_email, action, target_type, target_id, summary)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(e.actor_user_id)
-        .bind(e.actor_email)
-        .bind(e.action)
-        .bind(e.target_type)
-        .bind(e.target_id)
-        .bind(e.summary)
-        .execute(self.conn())
-        .await?;
+             VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(DEFAULT_ORG)
+            .bind(e.actor_user_id)
+            .bind(e.actor_email)
+            .bind(e.action)
+            .bind(e.target_type)
+            .bind(e.target_id)
+            .bind(e.summary)
+            .execute(self.conn())
+            .await?;
         Ok(())
     }
 }

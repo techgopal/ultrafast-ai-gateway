@@ -94,6 +94,40 @@ async function content(api: GatewayApi) {
     owner_id: user.id,
     team_id: team,
   });
+  await api.send("POST", "/api/guardrails", {
+    name: "a-guardrail-with-a-name-that-is-rather-long-for-a-phone",
+    kind: "rules",
+    is_default: true,
+    rules: [
+      { id: "email", matcher: { pii: ["EMAIL"] }, action: "redact", directions: "output" },
+      {
+        id: "words",
+        matcher: { keywords: { words: ["a-keyword-that-is-rather-long-for-a-phone"] } },
+        action: "flag",
+        directions: "both",
+      },
+    ],
+  });
+  await api.send("POST", "/api/prompts", {
+    name: "a-prompt-template-with-a-name-that-is-rather-long-for-a-phone",
+    description: "A description that is long enough to need more than one line on a narrow screen.",
+    model: "a-provider-with-a-name-of-forty-letters/a-model-with-a-very-long-name-of-the-newest-generation-v2",
+    messages: [
+      { role: "system", content: "You answer in the voice of {{a_variable_with_a_rather_long_name_for_a_phone}}." },
+      { role: "user", content: "A line without a break that is rather long for a phone: " + "word ".repeat(40) },
+    ],
+  });
+  const channel = (await api.send("POST", "/api/alerts/channels", {
+    name: "a-channel-with-a-name-that-is-rather-long-for-a-phone",
+    kind: "webhook",
+    url: "https://a-rather-long-host-name.alerts.example.test/hooks/one",
+  })) as { channel: { id: number } };
+  await api.send("POST", "/api/alerts/rules", {
+    name: "a-rule-with-a-name-that-is-also-rather-long-for-a-phone",
+    kind: "error_rate",
+    params: { scope: "route", subject: "a-route-with-a-long-name-for-the-nightly-summaries", percent: 10 },
+    channel_ids: [channel.channel.id],
+  });
 }
 
 test("every page fits a phone; the drawer opens and closes; rows are cards; the dialog fits", async ({
@@ -131,6 +165,9 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     ["Providers", "a-rather-long-host-name"],
     ["Models", "a-model-with-a-very-long-name"],
     ["Routing", "a-route-with-a-long-name"],
+    ["Prompts", "a-prompt-template-with-a-name"],
+    ["Alerts", "a-rule-with-a-name-that-is-also-rather-long"],
+    ["Guardrails", "a-guardrail-with-a-name"],
     ["Playground", "Nothing has been said yet"],
     ["Account", "Access tokens"],
     ["Settings", "Session lifetime"],
@@ -141,6 +178,29 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     else await goTo(page, title);
     await expect(page.getByRole("main")).toContainText(shows);
     expect(await scrollsSideways(page), title).toBe(false);
+    if (title === "Prompts") {
+      await page.getByRole("link", { name: "Open", exact: true }).first().click();
+      await expect(page.getByRole("list", { name: "Messages of version 1" })).toBeVisible();
+      expect(await scrollsSideways(page), "a prompt template").toBe(false);
+      await goTo(page, "Prompts");
+    }
+    if (title === "Guardrails") {
+      // The form of a guardrail, with its rules and Try it.
+      await page.getByRole("link", { name: "Edit", exact: true }).first().click();
+      await expect(heading(page, "Edit guardrail")).toBeVisible();
+      await expect(page.getByRole("group", { name: "Rule 2" })).toBeVisible();
+      expect(await scrollsSideways(page), "guardrail form").toBe(false);
+      await goTo(page, "Guardrails");
+    }
+    if (title === "Alerts") {
+      const views = page.getByRole("navigation", { name: "Alerts sections" });
+      await views.getByRole("link", { name: "Channels" }).click();
+      await expect(page.getByRole("main")).toContainText("a-channel-with-a-name");
+      expect(await scrollsSideways(page), "alert channels").toBe(false);
+      await views.getByRole("link", { name: "History" }).click();
+      await expect(page.getByRole("table", { name: "Alert history" }).or(page.getByText("No alerts yet"))).toBeVisible();
+      expect(await scrollsSideways(page), "alert history").toBe(false);
+    }
   }
 
   // A row of a table is a card.
@@ -151,7 +211,7 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     .getByRole("listitem")
     .filter({ hasText: "nightly batch job" });
   await expect(card).toBeVisible();
-  await expect(card.getByRole("term")).toHaveText(["Name", "Key", "Owner", "Team", "Models", "Tags", "Expires", "Status"]);
+  await expect(card.getByRole("term")).toHaveText(["Name", "Key", "Owner", "Team", "Models", "Tags", "Guardrails", "Expires", "Status"]);
 
   // The create-key dialog fits the screen, and its submit button can be reached.
   await page.getByRole("button", { name: "Create key" }).click();
@@ -211,6 +271,9 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     ["Teams", "developer experience"],
     ["Virtual keys", "nightly batch job"],
     ["Providers", "a-rather-long-host-name"],
+    ["Prompts", "a-prompt-template-with-a-name"],
+    ["Alerts", "a-rule-with-a-name-that-is-also-rather-long"],
+    ["Guardrails", "a-guardrail-with-a-name"],
     ["Playground", "Nothing has been said yet"],
     ["Account", "Access tokens"],
     ["Settings", "Session lifetime"],
@@ -221,6 +284,35 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     else await goTo(page, title);
     await expect(page.getByRole("main")).toContainText(shows);
     await measure(page.locator("body"), title);
+    if (title === "Prompts") {
+      // One template, with its editor and a new one: a form of messages fits too.
+      await page.getByRole("link", { name: "Open", exact: true }).first().click();
+      await expect(page.getByRole("list", { name: "Messages of version 1" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Save as version 2" })).toBeVisible();
+      await measure(page.locator("body"), "a prompt template");
+      await goTo(page, "Prompts");
+      await page.getByRole("link", { name: "New template" }).click();
+      await expect(heading(page, "New template")).toBeVisible();
+      await measure(page.locator("body"), "a new prompt template");
+      await goTo(page, "Prompts");
+    }
+    if (title === "Guardrails") {
+      await page.getByRole("link", { name: "Edit", exact: true }).first().click();
+      await expect(heading(page, "Edit guardrail")).toBeVisible();
+      await expect(page.getByRole("group", { name: "Rule 2" })).toBeVisible();
+      await measure(page.locator("body"), "the guardrail form");
+      await goTo(page, "Guardrails");
+    }
+    if (title === "Alerts") {
+      await measureDialog("Add rule", "Add rule", "Name");
+      const views = page.getByRole("navigation", { name: "Alerts sections" });
+      await views.getByRole("link", { name: "Channels" }).click();
+      await expect(page.getByRole("main")).toContainText("a-channel-with-a-name");
+      await measure(page.locator("body"), "alert channels");
+      await measureDialog("Add channel", "Add channel", "Name");
+      await views.getByRole("link", { name: "History" }).click();
+      await measure(page.locator("body"), "alert history");
+    }
     if (title === "Users") await measureDialog("Invite user");
     if (title === "Teams") await measureDialog("New team");
     if (title === "Virtual keys") await measureDialog("Create key", "Create key", "Owner");

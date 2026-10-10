@@ -87,7 +87,7 @@ describe("the list", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Logs" })).toBeInTheDocument();
     const found = rows();
     expect(found).toHaveLength(5);
-    // time, key, user, model, status, tokens, cost, duration, tags
+    // time, key, user, model, status, tokens, cost, duration, tags, endpoint, prompt
     expect(found[0]?.slice(1)).toEqual([
       "platform-prod",
       "arjun@example.test",
@@ -97,6 +97,8 @@ describe("the list", () => {
       "$1.25",
       "850 ms",
       "No tags",
+      "Chat completions",
+      "—",
     ]);
     // The model that answered, or the name asked for when none did.
     expect(found[1]?.[3]).toBe("anthropic/claude-haiku");
@@ -270,6 +272,63 @@ describe("the filters", () => {
     });
   });
 
+  test("the endpoint narrows the request, and is never sent when not chosen", async () => {
+    const asked = logsAre(fixtures.logList);
+    await page();
+    await table();
+    expect(asked.asked[0]?.has("endpoint")).toBe(false);
+    expect(await optionsOf(control("Endpoint"))).toEqual([
+      "All endpoints",
+      "Chat completions",
+      "Messages",
+      "Responses",
+      "Embeddings",
+      "Images",
+      "Transcriptions",
+      "Translations",
+      "Speech",
+      "Playground",
+    ]);
+    await choose(control("Endpoint"), "Images");
+    await waitFor(() => {
+      expect(asked.asked.at(-1)?.get("endpoint")).toBe("images");
+    });
+    await choose(control("Endpoint"), "Responses");
+    await waitFor(() => {
+      expect(asked.asked.at(-1)?.get("endpoint")).toBe("responses");
+    });
+    await choose(control("Endpoint"), "All endpoints");
+    await waitFor(() => {
+      expect(asked.asked.at(-1)?.has("endpoint")).toBe(false);
+    });
+  });
+
+  test("the endpoint filter is there for a member too", async () => {
+    logsAre(fixtures.logList);
+    await page({ user: fixtures.me.tomas });
+    await table();
+    expect(control("Endpoint")).toBeInTheDocument();
+  });
+
+  test("an endpoint a call has is shown by its name; one this console does not know as it is", async () => {
+    logsAre([
+      { ...fixtures.logs.answered, id: 11, endpoint: "speech" },
+      { ...fixtures.logs.answered, id: 10, endpoint: "somethingnew" },
+    ]);
+    await page();
+    await table();
+    expect(rows().map((cells) => cells[9])).toEqual(["Speech", "somethingnew"]);
+  });
+
+  test("the prompt a call used is shown as name@version", async () => {
+    logsAre([fixtures.promptedLog, ...fixtures.logList]);
+    await page();
+    await table();
+    const found = rows();
+    expect(found[0]?.[10]).toBe("summarize@3");
+    expect(found[1]?.[10]).toBe("—");
+  });
+
   test("errors only asks the API for errors, and shows what it answers", async () => {
     const asked = logsAre(fixtures.logList);
     await page();
@@ -401,6 +460,8 @@ describe("states", () => {
       "Cost",
       "Duration",
       "Tags",
+      "Endpoint",
+      "Prompt",
     ]);
     const buttons = [
       screen.getByRole("button", { name: "Refresh" }),
@@ -422,7 +483,7 @@ describe("the detail", () => {
     const text = details.textContent;
     for (const part of [
       "chat-fast",
-      "/v1/chat/completions",
+      "Chat completions",
       "anthropic",
       "claude-haiku",
       "platform-prod",
@@ -453,6 +514,15 @@ describe("the detail", () => {
     expect(attempts).toHaveTextContent("Failed");
     expect(attempts).toHaveTextContent("Skipped");
     expect(within(attempts).getByText("Failed")).toHaveAttribute("data-slot", "badge");
+  });
+
+  test("the detail names the prompt template and version, or none", async () => {
+    override("get", "/api/logs/{id}", () =>
+      ok("get", "/api/logs/{id}", 200, { ...fixtures.promptedLog, attempts: [] }),
+    );
+    await page({ route: "/logs/12" });
+    const details = await screen.findByLabelText("Details");
+    expect(within(details).getByText("Prompt").nextElementSibling).toHaveTextContent("summarize@3");
   });
 
   test("a cached call says so", async () => {

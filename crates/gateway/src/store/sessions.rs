@@ -3,10 +3,11 @@
 use std::fmt;
 
 use anyhow::{Context, Result};
-use sqlx::sqlite::SqliteRow;
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::Row;
 
-use super::{after, check_timestamp, write_error, Store, Tx, DEFAULT_ORG};
+use super::dialect::Dialected;
+use super::{after, check_timestamp, now, write_error, Store, Tx, DEFAULT_ORG};
 use crate::secrets::{hash_key, TOKEN_PREFIX};
 
 /// How long a session lasts after sign-in.
@@ -18,8 +19,7 @@ const SESSION_VALUE_LEN: usize = 64;
 const TOKEN_COLUMNS: &str =
     "id, user_id, name, display, expires_at, revoked_at, last_used_at, created_at";
 
-const TOKEN_IS_LIVE: &str =
-    "revoked_at IS NULL AND (expires_at IS NULL OR expires_at > datetime('now'))";
+const TOKEN_IS_LIVE: &str = "revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)";
 
 /// A session that was just created. Both fields are secrets, so this type
 /// has no `Debug`.
@@ -64,7 +64,7 @@ pub struct TokenRow {
     pub created_at: String,
 }
 
-fn token_from(r: &SqliteRow) -> TokenRow {
+fn token_from(r: &AnyRow) -> TokenRow {
     TokenRow {
         id: r.get("id"),
         user_id: r.get("user_id"),
@@ -108,14 +108,14 @@ impl Store {
         if !is_session_value(cookie_value) {
             return Ok(None);
         }
-        let row = sqlx::query(
-            "SELECT id, user_id, csrf_token, expires_at FROM sessions
-             WHERE id_hash = ? AND org_id = ? AND expires_at > datetime('now')",
-        )
-        .bind(hash_key(cookie_value))
-        .bind(DEFAULT_ORG)
-        .fetch_optional(self.pool())
-        .await?;
+        let row = self
+            .q("SELECT id, user_id, csrf_token, expires_at FROM sessions
+             WHERE id_hash = ? AND org_id = ? AND expires_at > ?")
+            .bind(hash_key(cookie_value))
+            .bind(DEFAULT_ORG)
+            .bind(now())
+            .fetch_optional(self.pool())
+            .await?;
         Ok(row.map(|r| SessionRow {
             id: r.get("id"),
             user_id: r.get("user_id"),
@@ -129,7 +129,8 @@ impl Store {
         if !is_session_value(cookie_value) {
             return Ok(false);
         }
-        let r = sqlx::query("DELETE FROM sessions WHERE id_hash = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM sessions WHERE id_hash = ? AND org_id = ?")
             .bind(hash_key(cookie_value))
             .bind(DEFAULT_ORG)
             .execute(self.pool())
@@ -139,7 +140,8 @@ impl Store {
 
     /// Returns how many sessions were deleted.
     pub async fn delete_sessions_of(&self, user_id: i64) -> Result<u64> {
-        let r = sqlx::query("DELETE FROM sessions WHERE user_id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM sessions WHERE user_id = ? AND org_id = ?")
             .bind(user_id)
             .bind(DEFAULT_ORG)
             .execute(self.pool())
@@ -149,11 +151,12 @@ impl Store {
 
     /// Returns how many sessions were deleted.
     pub async fn delete_expired_sessions(&self) -> Result<u64> {
-        let r =
-            sqlx::query("DELETE FROM sessions WHERE org_id = ? AND expires_at <= datetime('now')")
-                .bind(DEFAULT_ORG)
-                .execute(self.pool())
-                .await?;
+        let r = self
+            .q("DELETE FROM sessions WHERE org_id = ? AND expires_at <= ?")
+            .bind(DEFAULT_ORG)
+            .bind(now())
+            .execute(self.pool())
+            .await?;
         Ok(r.rows_affected())
     }
 
@@ -167,9 +170,11 @@ impl Store {
             "SELECT {TOKEN_COLUMNS} FROM access_tokens
              WHERE token_hash = ? AND org_id = ? AND {TOKEN_IS_LIVE}"
         );
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(hash_key(token))
             .bind(DEFAULT_ORG)
+            .bind(now())
             .fetch_optional(self.pool())
             .await?;
         Ok(row.as_ref().map(token_from))
@@ -177,20 +182,20 @@ impl Store {
 
     /// Records that the token was used just now.
     pub async fn touch_token(&self, id: i64) -> Result<()> {
-        sqlx::query(
-            "UPDATE access_tokens SET last_used_at = datetime('now') WHERE id = ? AND org_id = ?",
-        )
-        .bind(id)
-        .bind(DEFAULT_ORG)
-        .execute(self.pool())
-        .await?;
+        self.q("UPDATE access_tokens SET last_used_at = ? WHERE id = ? AND org_id = ?")
+            .bind(now())
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.pool())
+            .await?;
         Ok(())
     }
 
     /// Finds a token whether or not it is live.
     pub async fn token_by_id(&self, id: i64) -> Result<Option<TokenRow>> {
         let sql = format!("SELECT {TOKEN_COLUMNS} FROM access_tokens WHERE id = ? AND org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -205,7 +210,8 @@ impl Store {
              WHERE user_id = ? AND org_id = ?
              ORDER BY created_at DESC, id DESC"
         );
-        let rows = sqlx::query(AssertSqlSafe(sql))
+        let rows = self
+            .q_dyn(sql)
             .bind(user_id)
             .bind(DEFAULT_ORG)
             .fetch_all(self.pool())
@@ -224,7 +230,7 @@ impl Tx<'_> {
             csrf_token: random_hex(),
             max_age_seconds,
         };
-        sqlx::query(
+        self.q(
             "INSERT INTO sessions (org_id, user_id, id_hash, csrf_token, expires_at)
              VALUES (?, ?, ?, ?, ?)",
         )
@@ -241,7 +247,8 @@ impl Tx<'_> {
     /// Deletes the session with this row id. Returns `false` if there was
     /// no such session.
     pub async fn delete_session_by_id(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM sessions WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM sessions WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -252,7 +259,8 @@ impl Tx<'_> {
     /// Deletes the user's sessions except the one with row id `keep`, and
     /// returns how many that was.
     pub async fn delete_other_sessions_of(&mut self, user_id: i64, keep: i64) -> Result<u64> {
-        let r = sqlx::query("DELETE FROM sessions WHERE user_id = ? AND org_id = ? AND id != ?")
+        let r = self
+            .q("DELETE FROM sessions WHERE user_id = ? AND org_id = ? AND id != ?")
             .bind(user_id)
             .bind(DEFAULT_ORG)
             .bind(keep)
@@ -274,38 +282,40 @@ impl Tx<'_> {
         if let Some(at) = expires_at {
             check_timestamp(at).context("expires_at is not valid")?;
         }
-        let r = sqlx::query(
-            "INSERT INTO access_tokens (org_id, user_id, name, token_hash, display, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(user_id)
-        .bind(name)
-        .bind(hash)
-        .bind(display)
-        .bind(expires_at)
-        .execute(self.conn())
-        .await
-        .map_err(write_error)?;
-        Ok(r.last_insert_rowid())
+        let id: i64 = self
+            .scalar(
+                "INSERT INTO access_tokens (org_id, user_id, name, token_hash, display, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+            )
+            .bind(DEFAULT_ORG)
+            .bind(user_id)
+            .bind(name)
+            .bind(hash)
+            .bind(display)
+            .bind(expires_at)
+            .fetch_one(self.conn())
+            .await
+            .map_err(write_error)?;
+        Ok(id)
     }
 
     /// Returns `false` if there is no such token or it was already revoked.
     pub async fn revoke_token(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query(
-            "UPDATE access_tokens SET revoked_at = datetime('now')
-             WHERE id = ? AND org_id = ? AND revoked_at IS NULL",
-        )
-        .bind(id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await?;
+        let r = self
+            .q("UPDATE access_tokens SET revoked_at = ?
+             WHERE id = ? AND org_id = ? AND revoked_at IS NULL")
+            .bind(now())
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
         Ok(r.rows_affected() == 1)
     }
 
     /// Returns how many sessions were deleted.
     pub async fn delete_sessions_of(&mut self, user_id: i64) -> Result<u64> {
-        let r = sqlx::query("DELETE FROM sessions WHERE user_id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM sessions WHERE user_id = ? AND org_id = ?")
             .bind(user_id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -316,14 +326,14 @@ impl Tx<'_> {
     /// Revokes every token of the user that is not yet revoked, and returns
     /// how many that was.
     pub async fn revoke_tokens_of(&mut self, user_id: i64) -> Result<u64> {
-        let r = sqlx::query(
-            "UPDATE access_tokens SET revoked_at = datetime('now')
-             WHERE user_id = ? AND org_id = ? AND revoked_at IS NULL",
-        )
-        .bind(user_id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await?;
+        let r = self
+            .q("UPDATE access_tokens SET revoked_at = ?
+             WHERE user_id = ? AND org_id = ? AND revoked_at IS NULL")
+            .bind(now())
+            .bind(user_id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
         Ok(r.rows_affected())
     }
 }
@@ -333,7 +343,9 @@ mod tests {
     use super::*;
     use crate::identity::{Role, UserStatus};
     use crate::secrets::{generate_secret, NewKey, KEY_PREFIX};
+    use crate::store::Dialect;
     use crate::store::{check_timestamp, NewUser, StoreError};
+    use sqlx::AssertSqlSafe;
 
     async fn add_user(s: &Store, email: &str) -> i64 {
         let mut tx = s.begin().await.unwrap();
@@ -420,10 +432,16 @@ mod tests {
         .fetch_one(s.pool())
         .await
         .unwrap();
-        let columns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('sessions')")
-            .fetch_one(s.pool())
-            .await
-            .unwrap();
+        let columns: i64 = match s.dialect() {
+            Dialect::Sqlite => s.scalar("SELECT COUNT(*) FROM pragma_table_info('sessions')"),
+            Dialect::Postgres => s.scalar(
+                "SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = 'sessions'",
+            ),
+        }
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
         assert_eq!(columns, 7, "a new column must be added to this test");
         for i in 0..7 {
             let value: String = row.get(i);
@@ -466,7 +484,7 @@ mod tests {
         let old = s.create_session(user).await.unwrap();
         let fresh = s.create_session(user).await.unwrap();
         assert_eq!(s.delete_expired_sessions().await.unwrap(), 0);
-        sqlx::query("UPDATE sessions SET expires_at = ? WHERE id_hash = ?")
+        s.q("UPDATE sessions SET expires_at = ? WHERE id_hash = ?")
             .bind(after(-1))
             .bind(hash_key(&old.id))
             .execute(s.pool())
@@ -507,7 +525,7 @@ mod tests {
     }
 
     async fn s_row_id(tx: &mut Tx<'_>, cookie_value: &str) -> i64 {
-        sqlx::query_scalar("SELECT id FROM sessions WHERE id_hash = ?")
+        tx.scalar("SELECT id FROM sessions WHERE id_hash = ?")
             .bind(hash_key(cookie_value))
             .fetch_one(tx.conn())
             .await
@@ -751,7 +769,7 @@ mod tests {
         let (two, _) = add_token(&s, maya, "two", None).await;
         let (three, _) = add_token(&s, maya, "three", None).await;
         add_token(&s, omar, "other", None).await;
-        sqlx::query("UPDATE access_tokens SET created_at = '2030-01-01 00:00:00' WHERE id = ?")
+        s.q("UPDATE access_tokens SET created_at = '2030-01-01 00:00:00' WHERE id = ?")
             .bind(one)
             .execute(s.pool())
             .await

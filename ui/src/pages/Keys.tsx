@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { allowedSummary, NO_TEAM } from "@/lib/keys";
 import { CreateDialog } from "@/pages/KeysCreate";
+import { GuardrailsDialog } from "@/pages/KeysGuardrails";
 import { TagsDialog } from "@/pages/KeysTags";
 import {
   ANY,
@@ -42,6 +43,8 @@ export const TEAM_KEY_HINT = "Calls only what everyone or the team may use.";
 export const REVOKE_CONSEQUENCE = "Apps using this key stop working at once. This cannot be undone.";
 export const KEY_REVOKED = "Key revoked.";
 export const TAGS_SAVED = "Tags saved.";
+export const GUARDRAILS_SAVED = "Guardrails saved.";
+export const NO_GUARDRAILS = "None";
 
 const NO_OWNER = "No owner";
 
@@ -124,6 +127,23 @@ const columns: Column<Key>[] = [
     cell: (key) => <TagChips tags={key.tags} />,
   },
   {
+    id: "guardrails",
+    header: "Guardrails",
+    // In the order they run. Anyone who sees the key sees them.
+    cell: (key) =>
+      key.guardrails.length === 0 ? (
+        <span className="text-muted-foreground">{NO_GUARDRAILS}</span>
+      ) : (
+        <span role="group" aria-label="Guardrails" className="flex flex-wrap gap-1">
+          {key.guardrails.map((one) => (
+            <Badge key={one.id} variant="outline" className="h-auto break-all whitespace-normal">
+              {one.name}
+            </Badge>
+          ))}
+        </span>
+      ),
+  },
+  {
     id: "expires_at",
     header: "Expires",
     cell: (key) => <Timestamp value={key.expires_at} />,
@@ -159,6 +179,9 @@ function KeyList({ me }: { me: Me }) {
   // The key whose tags are being changed; kept while the dialog closes.
   const [tagging, setTagging] = useState<Key | null>(null);
   const [editingTags, setEditingTags] = useState(false);
+  // The key whose guardrails are being changed; kept while the dialog closes.
+  const [guarding, setGuarding] = useState<Key | null>(null);
+  const [editingGuardrails, setEditingGuardrails] = useState(false);
   const [search, setSearch] = useState("");
   const [teamChosen, setTeam] = useState(ANY);
   const [statusChosen, setStatus] = useState(ANY);
@@ -190,7 +213,11 @@ function KeyList({ me }: { me: Me }) {
       can(me, { type: "editKeyTags", ownerId: key.owner_id, teamId: key.team_id })
     );
   }
-  const rowActions = all.some((key) => mayRevoke(key) || mayEditTags(key))
+  function mayEditGuardrails(key: Key): boolean {
+    // Guardrails of a revoked key check no call.
+    return key.status !== "revoked" && can(me, { type: "manageGuardrails" });
+  }
+  const rowActions = all.some((key) => mayRevoke(key) || mayEditTags(key) || mayEditGuardrails(key))
     ? (key: Key) => (
         <>
           {mayEditTags(key) ? (
@@ -204,6 +231,19 @@ function KeyList({ me }: { me: Me }) {
               }}
             >
               Edit tags
+            </Button>
+          ) : null}
+          {mayEditGuardrails(key) ? (
+            <Button
+              type="button"
+              variant="outline"
+              className={control}
+              onClick={() => {
+                setGuarding(key);
+                setEditingGuardrails(true);
+              }}
+            >
+              Edit guardrails
             </Button>
           ) : null}
           {mayRevoke(key) ? (
@@ -225,6 +265,11 @@ function KeyList({ me }: { me: Me }) {
 
   function closeTags() {
     setEditingTags(false);
+    update.reset();
+  }
+
+  function closeGuardrails() {
+    setEditingGuardrails(false);
     update.reset();
   }
 
@@ -343,6 +388,18 @@ function KeyList({ me }: { me: Me }) {
           onDone={() => {
             closeTags();
             toast(TAGS_SAVED);
+          }}
+        />
+      )}
+      {guarding === null ? null : (
+        <GuardrailsDialog
+          open={editingGuardrails}
+          keyOf={guarding}
+          update={update}
+          onCancel={closeGuardrails}
+          onDone={() => {
+            closeGuardrails();
+            toast(GUARDRAILS_SAVED);
           }}
         />
       )}

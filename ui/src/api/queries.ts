@@ -22,7 +22,8 @@ import {
   type Query,
   type QueryKey,
 } from "@tanstack/react-query";
-import { api, importConfig, type BodyOf } from "./client";
+import { useEffect, useState } from "react";
+import { api, importConfig, type BodyOf, type ResponseOf } from "./client";
 import { ApiError, NetworkError, type SessionOverError } from "./errors";
 
 declare module "@tanstack/react-query" {
@@ -109,7 +110,33 @@ export const queryKeys = {
     all: () => ["budgets"] as const,
     list: () => ["budgets", "list"] as const,
   },
+  alerts: {
+    all: () => ["alerts"] as const,
+    channels: () => ["alerts", "channels"] as const,
+    rules: () => ["alerts", "rules"] as const,
+    /** The events as they are read page by page, for one filter and one run. */
+    events: (filter: AlertEventsFilter, run: number) =>
+      ["alerts", "events", filter, run] as const,
+    /** Every way the events are read. */
+    allEvents: () => ["alerts", "events"] as const,
+  },
+  guardrails: {
+    all: () => ["guardrails"] as const,
+    list: () => ["guardrails", "list"] as const,
+  },
+  prompts: {
+    all: () => ["prompts"] as const,
+    list: () => ["prompts", "list"] as const,
+    detail: detailOf("prompts"),
+    /** One version of a template: below its detail, so what drops or marks the template stale does the same to it. */
+    version: (id: number, version: number) => ["prompts", DETAIL, id, "version", version] as const,
+  },
+  playground: {
+    config: () => ["playground", "config"] as const,
+  },
   settings: () => ["settings"] as const,
+  /** Admin only: the single sign-on settings. */
+  oidc: () => ["settings", "oidc"] as const,
   usage: {
     all: () => ["usage"] as const,
     sums: (group: UsageGroup) => ["usage", group] as const,
@@ -124,9 +151,20 @@ export interface LogsFilter {
   user_id?: number;
   team_id?: number;
   model?: string;
+  /** `chat`, `images`, ... as a call names its endpoint. */
+  endpoint?: string;
   errors?: boolean;
+  /** The worst thing the guardrails did to the call. */
+  guardrail?: "blocked" | "redacted" | "flagged";
   /** `name:value`, once for each tag the calls must carry. */
   tag?: string[];
+}
+
+/** What narrows the alert history. A part that is not there leaves nothing out. */
+export interface AlertEventsFilter {
+  rule_id?: number;
+  /** `firing`, `resolved` or `test`. */
+  state?: string;
 }
 
 export type UsageGroup = "day" | "model" | "key" | "user" | "team";
@@ -321,13 +359,84 @@ export const budgetsOptions = () =>
     queryFn: ({ signal }) => api.get("/api/budgets", { signal }),
   });
 
+export const alertChannelsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.alerts.channels(),
+    queryFn: ({ signal }) => api.get("/api/alerts/channels", { signal }),
+  });
+
+export const alertRulesOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.alerts.rules(),
+    queryFn: ({ signal }) => api.get("/api/alerts/rules", { signal }),
+  });
+
+export const guardrailsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.guardrails.list(),
+    queryFn: ({ signal }) => api.get("/api/guardrails", { signal }),
+  });
+
+export const promptsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.prompts.list(),
+    queryFn: ({ signal }) => api.get("/api/prompts", { signal }),
+  });
+
+export const playgroundConfigOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.playground.config(),
+    queryFn: ({ signal }) => api.get("/api/playground/config", { signal }),
+  });
+
+export const promptOptions = (id: number) =>
+  queryOptions({
+    queryKey: queryKeys.prompts.detail(id),
+    queryFn: ({ signal }) => api.get("/api/prompts/{id}", { params: { id }, signal }),
+  });
+
+export const promptVersionOptions = (id: number, version: number) =>
+  queryOptions({
+    queryKey: queryKeys.prompts.version(id, version),
+    queryFn: ({ signal }) =>
+      api.get("/api/prompts/{id}/versions/{version}", { params: { id, version }, signal }),
+    // A version never changes: what was read stays true until the template is gone.
+    staleTime: Infinity,
+  });
+
 export const settingsOptions = () =>
   queryOptions({
     queryKey: queryKeys.settings(),
     queryFn: ({ signal }) => api.get("/api/settings", { signal }),
   });
 
+export const oidcSettingsOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.oidc(),
+    queryFn: ({ signal }) => api.get("/api/settings/oidc", { signal }),
+  });
+
 export const useSetupStatus = () => useQuery(setupStatusOptions());
+/**
+ * Public: whether the sign-in page offers single sign-on, and under which
+ * name. `undefined` until the answer, and when there is none. It is the one
+ * read that is not a query of the cache: it belongs to no session, so it is
+ * not kept with what a session ends (the caches are empty then), and the
+ * sign-in page asks it afresh each time it opens.
+ */
+export function useSignInMethods(): ResponseOf<"/api/auth/methods", "get"> | undefined {
+  const [methods, setMethods] = useState<ResponseOf<"/api/auth/methods", "get">>();
+  useEffect(() => {
+    const control = new AbortController();
+    api.get("/api/auth/methods", { signal: control.signal }).then(setMethods, () => undefined);
+    return () => {
+      control.abort();
+    };
+  }, []);
+  return methods;
+}
+/** Admin only. */
+export const useOidcSettings = () => useQuery(oidcSettingsOptions());
 export const useUsers = () => useQuery(usersOptions());
 export const useUser = (id: number) => useQuery(userOptions(id));
 export const useTeams = () => useQuery(teamsOptions());
@@ -350,6 +459,22 @@ export const useLimits = () => useQuery(limitsOptions());
 export const useBudgets = () => useQuery(budgetsOptions());
 /** Admin only. */
 export const useSettings = () => useQuery(settingsOptions());
+/** Admin only. The channels alerts are sent to, with the rules that use each. */
+export const useAlertChannels = (enabled = true) =>
+  useQuery({ ...alertChannelsOptions(), enabled });
+/** Admin only. The alert rules, with what each is firing for. */
+export const useAlertRules = (enabled = true) => useQuery({ ...alertRulesOptions(), enabled });
+/** Admin only. Every guardrail, with the routes and the number of keys it is attached to. */
+export const useGuardrails = (enabled = true) => useQuery({ ...guardrailsOptions(), enabled });
+/** Every prompt template, by name, with its latest version's model and variables. Anyone signed in may read them. */
+export const usePrompts = (enabled = true) => useQuery({ ...promptsOptions(), enabled });
+/** What the playground needs to know of the gateway before it sends: the audio cap. Anyone signed in may read it. */
+export const usePlaygroundConfig = (enabled = true) => useQuery({ ...playgroundConfigOptions(), enabled });
+/** One template with the numbers of its versions. */
+export const usePrompt = (id: number, enabled = true) => useQuery({ ...promptOptions(id), enabled });
+/** The text of one version, read only when `enabled`. */
+export const usePromptVersion = (id: number, version: number, enabled = true) =>
+  useQuery({ ...promptVersionOptions(id, version), enabled });
 
 /** How many entries a page of the audit log has. A page with fewer is the last. */
 export const AUDIT_PAGE_SIZE = 50;
@@ -417,6 +542,35 @@ export const useLogsPages = (filter: LogsFilter, run: number) =>
     initialPageParam: null as number | null,
     getNextPageParam: (last) =>
       last.logs.length < LOGS_PAGE_SIZE ? undefined : last.logs.at(-1)?.id,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    gcTime: 0,
+  });
+
+/** How many events a page of the alert history has. A page with fewer is the last. */
+export const ALERT_EVENTS_PAGE_SIZE = 50;
+
+/**
+ * The alert events, newest first, read page by page with `before_id`, as the
+ * logs are. `run` is part of the key: Refresh starts a new run, which is one
+ * request for the newest page. Not read again by the focus or the network,
+ * and not kept when the page is left.
+ */
+export const useAlertEventsPages = (filter: AlertEventsFilter, run: number) =>
+  useInfiniteQuery({
+    queryKey: queryKeys.alerts.events(filter, run),
+    queryFn: ({ pageParam, signal }) =>
+      api.get("/api/alerts/events", {
+        query: {
+          limit: ALERT_EVENTS_PAGE_SIZE,
+          ...filter,
+          ...(pageParam === null ? {} : { before_id: pageParam }),
+        },
+        signal,
+      }),
+    initialPageParam: null as number | null,
+    getNextPageParam: (last) =>
+      last.events.length < ALERT_EVENTS_PAGE_SIZE ? undefined : last.events.at(-1)?.id,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     gcTime: 0,
@@ -681,7 +835,7 @@ export const useRemoveTeamMember = () =>
 export const useCreateKey = () =>
   useApiMutation(
     (body: BodyOf<"/api/keys", "post">) => api.post("/api/keys", { body }),
-    () => ({ stale: [queryKeys.keys.all(), audit] }),
+    () => ({ stale: [queryKeys.keys.all(), queryKeys.guardrails.all(), audit] }),
   );
 
 /** Replaces the tags of a key. */
@@ -689,7 +843,7 @@ export const useUpdateKey = () =>
   useApiMutation(
     ({ id, body }: { id: number; body: BodyOf<"/api/keys/{id}", "patch"> }) =>
       api.patch("/api/keys/{id}", { params: { id }, body }),
-    () => ({ stale: [queryKeys.keys.all(), audit] }),
+    () => ({ stale: [queryKeys.keys.all(), queryKeys.guardrails.all(), audit] }),
     // The key is not the caller's to see any more: the list shows what is not so.
     (error) => (isNotFound(error) ? [queryKeys.keys.all()] : []),
   );
@@ -785,7 +939,7 @@ const routeIsGone = (error: unknown) => (isNotFound(error) ? [queryKeys.routes.a
 export const useCreateRoute = () =>
   useApiMutation(
     (body: BodyOf<"/api/routes", "post">) => api.post("/api/routes", { body }),
-    () => ({ stale: [queryKeys.routes.all(), audit] }),
+    () => ({ stale: [queryKeys.routes.all(), queryKeys.guardrails.all(), audit] }),
   );
 
 /** Replaces the route: the body is the whole of it. */
@@ -793,7 +947,7 @@ export const useUpdateRoute = () =>
   useApiMutation(
     ({ id, body }: { id: number; body: BodyOf<"/api/routes/{id}", "put"> }) =>
       api.put("/api/routes/{id}", { params: { id }, body }),
-    () => ({ stale: [queryKeys.routes.all(), audit] }),
+    () => ({ stale: [queryKeys.routes.all(), queryKeys.guardrails.all(), audit] }),
     routeIsGone,
   );
 
@@ -845,6 +999,175 @@ export const useUpdateSettings = () =>
     () => ({ stale: [queryKeys.settings(), audit] }),
   );
 
+/** The answer never holds the client secret; the form keeps it in its field only. */
+export const useUpdateOidcSettings = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/settings/oidc", "put">) => api.put("/api/settings/oidc", { body }),
+    // Users show how they sign in.
+    () => ({ stale: [queryKeys.oidc(), queryKeys.users.all(), audit] }),
+  );
+
+/** Asks the provider and says what it found. Changes nothing. */
+export const useTestOidc = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/settings/oidc/test", "post">) =>
+      api.post("/api/settings/oidc/test", { body }),
+    () => ({ stale: [] }),
+  );
+
+// alerts
+
+// A channel shows in the rules that send to it, and a rule in the channels it sends to.
+const anAlertChanged = [queryKeys.alerts.channels(), queryKeys.alerts.rules(), audit];
+// The channel or the rule was deleted meanwhile: the list shows what is not so.
+const channelIsGone = (error: unknown) =>
+  isNotFound(error) ? [queryKeys.alerts.channels(), queryKeys.alerts.rules()] : [];
+const ruleIsGone = (error: unknown) =>
+  isNotFound(error) ? [queryKeys.alerts.rules(), queryKeys.alerts.channels()] : [];
+
+/** The answer holds the signing secret, which is shown once. */
+export const useCreateAlertChannel = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/alerts/channels", "post">) => api.post("/api/alerts/channels", { body }),
+    () => ({ stale: [queryKeys.alerts.channels(), audit] }),
+  );
+
+export const useUpdateAlertChannel = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/alerts/channels/{id}", "patch"> }) =>
+      api.patch("/api/alerts/channels/{id}", { params: { id }, body }),
+    () => ({ stale: anAlertChanged }),
+    channelIsGone,
+  );
+
+export const useDeleteAlertChannel = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/alerts/channels/{id}", { params: { id } }),
+    () => ({ stale: anAlertChanged }),
+    channelIsGone,
+  );
+
+/** The answer holds the new signing secret, which is shown once. */
+export const useRotateAlertChannelSecret = () =>
+  useApiMutation(
+    ({ id }: { id: number }) =>
+      api.post("/api/alerts/channels/{id}/rotate-secret", { params: { id } }),
+    () => ({ stale: [audit] }),
+    channelIsGone,
+  );
+
+/** Sends one test notification; it is stored in the history. */
+export const useTestAlertChannel = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.post("/api/alerts/channels/{id}/test", { params: { id } }),
+    () => ({ stale: [queryKeys.alerts.allEvents(), audit] }),
+    channelIsGone,
+  );
+
+export const useCreateAlertRule = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/alerts/rules", "post">) => api.post("/api/alerts/rules", { body }),
+    () => ({ stale: anAlertChanged }),
+  );
+
+export const useUpdateAlertRule = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/alerts/rules/{id}", "patch"> }) =>
+      api.patch("/api/alerts/rules/{id}", { params: { id }, body }),
+    () => ({ stale: anAlertChanged }),
+    ruleIsGone,
+  );
+
+export const useDeleteAlertRule = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/alerts/rules/{id}", { params: { id } }),
+    // Its events stay, without a rule to filter by.
+    () => ({ stale: [...anAlertChanged, queryKeys.alerts.allEvents()] }),
+    ruleIsGone,
+  );
+
+// guardrails
+
+// A guardrail shows in the routes and keys it is attached to, and they in it.
+const aGuardrailChanged = [
+  queryKeys.guardrails.all(),
+  queryKeys.routes.all(),
+  queryKeys.keys.all(),
+  audit,
+];
+const guardrailIsGone = (error: unknown) =>
+  isNotFound(error) ? [queryKeys.guardrails.all(), queryKeys.routes.all(), queryKeys.keys.all()] : [];
+
+// prompt templates
+
+const aPromptChanged = [queryKeys.prompts.all(), audit];
+const promptIsGone = (error: unknown) => (isNotFound(error) ? [queryKeys.prompts.all()] : []);
+
+export const useCreatePrompt = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/prompts", "post">) => api.post("/api/prompts", { body }),
+    () => ({ stale: aPromptChanged }),
+  );
+
+/** Adds the next version: a version stands alone and never changes afterwards. */
+export const useCreatePromptVersion = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/prompts/{id}/versions", "post"> }) =>
+      api.post("/api/prompts/{id}/versions", { params: { id }, body }),
+    () => ({ stale: aPromptChanged }),
+    promptIsGone,
+  );
+
+export const useDeletePrompt = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/prompts/{id}", { params: { id } }),
+    ({ id }) => ({ stale: aPromptChanged, gone: [queryKeys.prompts.detail(id)] }),
+    promptIsGone,
+  );
+
+/** The answer holds the signing secret of an external guardrail, which is shown once. */
+export const useCreateGuardrail = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/guardrails", "post">) => api.post("/api/guardrails", { body }),
+    () => ({ stale: [queryKeys.guardrails.all(), audit] }),
+  );
+
+/** The body may hold a new URL, which is never shown again. */
+export const useUpdateGuardrail = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/guardrails/{id}", "patch"> }) =>
+      api.patch("/api/guardrails/{id}", { params: { id }, body }),
+    () => ({ stale: aGuardrailChanged }),
+    guardrailIsGone,
+  );
+
+export const useDeleteGuardrail = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/guardrails/{id}", { params: { id } }),
+    () => ({ stale: aGuardrailChanged }),
+    guardrailIsGone,
+  );
+
+/** The answer holds the new signing secret, which is shown once. */
+export const useRotateGuardrailSecret = () =>
+  useApiMutation(
+    ({ id }: { id: number }) =>
+      api.post("/api/guardrails/{id}/rotate-secret", { params: { id } }),
+    () => ({ stale: [audit] }),
+    guardrailIsGone,
+  );
+
+/**
+ * Tries rules, or a stored guardrail, on a text. Changes and logs nothing; with
+ * `call_external` the text is sent to the external guardrail's URL.
+ */
+export const useTestGuardrail = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/guardrails/test", "post">) => api.post("/api/guardrails/test", { body }),
+    () => ({ stale: [] }),
+    guardrailIsGone,
+  );
+
 /**
  * Checks a configuration file (`dryRun`) or applies it. A dry run changes
  * nothing, so it marks nothing as stale. What an applied import changes
@@ -863,6 +1186,7 @@ export const useImportConfig = () =>
             queryKeys.routes.all(),
             queryKeys.limits.all(),
             queryKeys.budgets.all(),
+            queryKeys.alerts.all(),
             queryKeys.settings(),
             audit,
           ],

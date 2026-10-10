@@ -466,7 +466,7 @@ async fn a_team_key_stays_one_when_its_maker_is_gone() {
         ORG_PASSWORD,
     )
     .await;
-    assert_eq!(admin, lead, "the id is given out again");
+    common::assert_id_given_again(&org.api.store, lead, admin, "user");
     org.api.state.refresh().await.unwrap();
     assert_eq!(w.callable(&key, &ALL).await, team_only);
 }

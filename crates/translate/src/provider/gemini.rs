@@ -6,8 +6,8 @@ use super::{path_segment, saturate, with_calls, HttpRequest, StreamState, Target
 use crate::error::TranslateError;
 use crate::sse::SseEvent;
 use crate::types::{
-    ChatRequest, ChatResponse, FinishReason, ImageSource, Message, Part, Role, StreamEvent, Tool,
-    ToolCall, ToolChoice, Usage,
+    ChatRequest, ChatResponse, FinishReason, ImageSource, Message, Part, ResponseFormat, Role,
+    StreamEvent, Tool, ToolCall, ToolChoice, Usage,
 };
 
 fn finish(s: &str) -> Option<FinishReason> {
@@ -185,6 +185,11 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
             "parallel_tool_calls=false is not supported by this provider".into(),
         ));
     }
+    if req.reasoning_effort.is_some() {
+        return Err(TranslateError::Unsupported(
+            "reasoning effort is not supported by this provider".into(),
+        ));
+    }
     if req
         .messages
         .iter()
@@ -236,6 +241,18 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
     }
     if let Some(v) = &req.stop {
         config.insert("stopSequences".into(), json!(v));
+    }
+    match &req.response_format {
+        None | Some(ResponseFormat::Text) => {}
+        Some(ResponseFormat::JsonObject) => {
+            config.insert("responseMimeType".into(), json!("application/json"));
+        }
+        Some(ResponseFormat::JsonSchema { schema, .. }) => {
+            config.insert("responseMimeType".into(), json!("application/json"));
+            // `responseJsonSchema` takes a full JSON Schema (`responseSchema`
+            // is the OpenAPI subset).
+            config.insert("responseJsonSchema".into(), schema.clone());
+        }
     }
     if !config.is_empty() {
         body["generationConfig"] = Value::Object(config);
@@ -487,6 +504,8 @@ mod tests {
             tools: Vec::new(),
             tool_choice: None,
             parallel_tool_calls: None,
+            response_format: None,
+            reasoning_effort: None,
         }
     }
 
@@ -1283,5 +1302,65 @@ mod tests {
             build_request(&target(), &req),
             Err(TranslateError::InvalidRequest(_))
         ));
+    }
+
+    #[test]
+    fn response_format_sets_mime_type_and_json_schema() {
+        use crate::types::ResponseFormat;
+        let body = |rf: Option<ResponseFormat>| {
+            let mut req = request(false);
+            req.response_format = rf;
+            body_of(&build_request(&target(), &req).unwrap())
+        };
+        assert!(body(None)["generationConfig"]
+            .get("responseMimeType")
+            .is_none());
+        assert!(body(Some(ResponseFormat::Text))["generationConfig"]
+            .get("responseMimeType")
+            .is_none());
+        let g = &body(Some(ResponseFormat::JsonObject))["generationConfig"];
+        assert_eq!(g["responseMimeType"], "application/json");
+        assert!(g.get("responseJsonSchema").is_none());
+        assert_eq!(g["maxOutputTokens"], 5);
+        let v = body(Some(ResponseFormat::JsonSchema {
+            name: "person".into(),
+            schema: serde_json::json!({"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}),
+            strict: Some(true),
+            description: Some("a person".into()),
+        }));
+        let g = &v["generationConfig"];
+        assert_eq!(g["responseMimeType"], "application/json");
+        assert_eq!(
+            g["responseJsonSchema"],
+            serde_json::json!({"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false})
+        );
+        assert!(g.get("responseSchema").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_is_refused() {
+        let mut req = request(false);
+        assert!(build_request(&target(), &req).is_ok());
+        req.reasoning_effort = Some("low".into());
+        assert!(matches!(
+            build_request(&target(), &req),
+            Err(TranslateError::Unsupported(m)) if m.contains("reasoning")
+        ));
+    }
+
+    #[test]
+    fn response_format_alone_still_makes_a_generation_config() {
+        use crate::types::ResponseFormat;
+        let mut req = request(false);
+        req.max_tokens = None;
+        req.temperature = None;
+        req.top_p = None;
+        req.stop = None;
+        req.response_format = Some(ResponseFormat::JsonObject);
+        let v = body_of(&build_request(&target(), &req).unwrap());
+        assert_eq!(
+            v["generationConfig"],
+            serde_json::json!({"responseMimeType":"application/json"})
+        );
     }
 }

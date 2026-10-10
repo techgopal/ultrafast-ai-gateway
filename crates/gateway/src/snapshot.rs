@@ -16,11 +16,14 @@ use crate::budgets::Budget;
 use sha2::{Digest, Sha256};
 
 use crate::cache::RouteCache;
+use crate::guardrails::RuleSpec;
+use crate::guardrails::{Compiled, Directions};
 use crate::identity::{Role, UserStatus};
 use crate::limits::{LimitScope, Subject, Subjects};
+use crate::prompts::{Template, Version};
 use crate::routing::{BreakerSettings, TargetRef};
 use crate::secrets::Cipher;
-use crate::store::Store;
+use crate::store::{GuardrailRow, Store};
 
 #[derive(Debug, Clone)]
 pub struct SnapKey {
@@ -37,6 +40,9 @@ pub struct SnapKey {
     /// A non-admin made it for another user: it acts for its team only
     /// (see [`crate::access`]). Fixed when the key is made.
     pub team_only: bool,
+    /// The guardrails attached to the key, in order (ids; one that is
+    /// disabled or gone is not in [`Snapshot::guardrail`]).
+    pub guardrails: Vec<i64>,
 }
 
 /// A catalog model of a provider that is in the snapshot.
@@ -72,6 +78,9 @@ pub struct SnapRoute {
     pub breaker: BreakerSettings,
     /// Whether and how the route keeps answers.
     pub cache: RouteCache,
+    /// The guardrails attached to the route, in order (ids; one that is
+    /// disabled or gone is not in [`Snapshot::guardrail`]).
+    pub guardrails: Vec<i64>,
 }
 
 impl SnapRoute {
@@ -86,6 +95,53 @@ impl SnapRoute {
     pub fn has_targets(&self) -> bool {
         !self.primaries.is_empty() || !self.fallbacks.is_empty()
     }
+}
+
+/// How to call an external guardrail. It holds the URL and the signing
+/// secret in the clear, so it is never serialized and its `Debug` shows
+/// neither.
+#[derive(Clone)]
+pub struct SnapExternal {
+    pub url: String,
+    pub secret: String,
+    /// Scheme, host and port of the URL: what may be logged.
+    pub host: String,
+    pub timeout: Duration,
+    /// On a failure let the text through (and flag it) rather than block.
+    pub fail_open: bool,
+    /// What it is asked about.
+    pub directions: Directions,
+    /// The URL and secret could be read. When not (a changed master key, an
+    /// empty URL) the guardrail stays in the set and every check of it fails
+    /// by its fail mode: a closed one blocks rather than letting traffic by.
+    pub usable: bool,
+}
+
+impl fmt::Debug for SnapExternal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnapExternal")
+            .field("host", &self.host)
+            .field("timeout", &self.timeout)
+            .field("fail_open", &self.fail_open)
+            .field("directions", &self.directions)
+            .field("usable", &self.usable)
+            .field("url", &"<redacted>")
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+/// An enabled guardrail, ready to run.
+#[derive(Debug)]
+pub struct SnapGuardrail {
+    pub id: i64,
+    pub name: String,
+    /// The stored rules text the compiled rules were made from.
+    pub rules_text: String,
+    /// The compiled rules of a `rules` guardrail.
+    pub rules: Option<Arc<Compiled>>,
+    /// The endpoint of an `external` guardrail.
+    pub external: Option<SnapExternal>,
 }
 
 /// An active user, as far as access goes.
@@ -143,6 +199,14 @@ pub struct Snapshot {
     limits: HashMap<(LimitScope, i64), Arc<Subject>>,
     /// The budgets, by what they are set on (id 0 for the gateway).
     budgets: HashMap<(LimitScope, i64), Vec<Arc<Budget>>>,
+    /// The enabled guardrails, by id.
+    guardrails: HashMap<i64, Arc<SnapGuardrail>>,
+    /// The ids of the enabled guardrails that apply to every call, by name.
+    default_guardrails: Vec<i64>,
+    /// How many guardrails this load compiled (the rest were taken over).
+    guardrails_compiled: usize,
+    /// The prompt templates with all their versions, by name.
+    prompts: HashMap<String, Arc<Template>>,
     /// See [`Snapshot::cache_fingerprint`].
     cache_fingerprint: [u8; 32],
 }
@@ -178,12 +242,214 @@ fn push_new(ids: &mut Vec<i64>, id: i64) {
     }
 }
 
+/// Builds every enabled guardrail. A rules guardrail that does not compile
+/// (the API checks rules before it stores them, so this only happens to a row
+/// written some other way) keeps the compiled rules of the `previous`
+/// snapshot, if it had any, and is otherwise logged and left out; the view
+/// then shows it as not in force. An external one that cannot be called stays
+/// and fails by its mode. If compiling itself fails (its thread panicked) the
+/// whole load fails, so a refresh keeps the snapshot it has.
+///
+/// Compiling can take long for a large rule set, so it runs off the async
+/// threads, and a guardrail whose id, name and rules text are what the
+/// `previous` snapshot compiled is taken over as it is: a refresh that
+/// changed no guardrail compiles nothing. Returns how many were compiled.
+async fn load_guardrails(
+    rows: &[GuardrailRow],
+    cipher: &Cipher,
+    previous: Option<&Snapshot>,
+) -> Result<(HashMap<i64, Arc<SnapGuardrail>>, Vec<i64>, usize)> {
+    enum Slot {
+        Ready(Arc<SnapGuardrail>),
+        Compile(usize),
+    }
+    let mut slots = Vec::new();
+    let mut pending: Vec<GuardrailRow> = Vec::new();
+    for g in rows.iter().filter(|g| g.enabled) {
+        let slot = if g.kind == "external" {
+            // Always kept: one that cannot be called (see `SnapExternal::usable`)
+            // fails by its mode on every check instead of vanishing.
+            Slot::Ready(Arc::new(SnapGuardrail {
+                id: g.id,
+                name: g.name.clone(),
+                rules_text: String::new(),
+                rules: None,
+                external: Some(external_of(g, cipher)),
+            }))
+        } else {
+            let same = previous
+                .and_then(|p| p.guardrails.get(&g.id))
+                .filter(|old| {
+                    old.rules.is_some() && old.name == g.name && old.rules_text == g.rules
+                });
+            match same {
+                Some(old) => Slot::Ready(old.clone()),
+                None => {
+                    pending.push(g.clone());
+                    Slot::Compile(pending.len() - 1)
+                }
+            }
+        };
+        slots.push((g, slot));
+    }
+    let compiled_count = pending.len();
+    let mut compiled: Vec<Option<SnapGuardrail>> = if pending.is_empty() {
+        Vec::new()
+    } else {
+        tokio::task::spawn_blocking(move || pending.iter().map(rules_guardrail).collect())
+            .await
+            .map_err(|e| anyhow::anyhow!("compiling guardrails failed: {e}"))?
+    };
+    let mut guardrails = HashMap::new();
+    // By name (rows come by name): the order the defaults apply in.
+    let mut defaults = Vec::new();
+    for (g, slot) in slots {
+        let built = match slot {
+            Slot::Ready(built) => built,
+            Slot::Compile(i) => match compiled.get_mut(i).and_then(Option::take) {
+                Some(built) => Arc::new(built),
+                // It does not compile: what ran before keeps running
+                None => match previous
+                    .and_then(|p| p.guardrails.get(&g.id))
+                    .filter(|old| old.rules.is_some())
+                {
+                    Some(old) => {
+                        tracing::warn!(
+                            guardrail_id = g.id,
+                            guardrail = %g.name,
+                            "the stored rules of this guardrail no longer compile; the rules that ran before keep running"
+                        );
+                        old.clone()
+                    }
+                    None => {
+                        tracing::warn!(
+                            guardrail_id = g.id,
+                            guardrail = %g.name,
+                            "the stored rules of this guardrail no longer compile; it is not in force"
+                        );
+                        continue;
+                    }
+                },
+            },
+        };
+        if g.is_default {
+            defaults.push(g.id);
+        }
+        guardrails.insert(g.id, built);
+    }
+    Ok((guardrails, defaults, compiled_count))
+}
+
+/// The templates by name, each with its newest version. A template whose
+/// newest version cannot be read is left out (and logged): serving an older
+/// version in place of the latest would be worse than refusing the name.
+/// A template that is as `previous` held it (same id, creation time, name
+/// and newest version number) is taken over as it is: its version was not
+/// read again. Templates are not in the cache fingerprint: the cache key
+/// holds the rendered request, which already tells one rendering from
+/// another.
+fn load_prompts(
+    templates: &[crate::store::TemplateRow],
+    newest: &[(i64, i64)],
+    read: &[crate::store::VersionRow],
+    previous: Option<&Snapshot>,
+) -> HashMap<String, Arc<Template>> {
+    let mut by_template: HashMap<i64, &crate::store::VersionRow> = HashMap::new();
+    for v in read {
+        by_template.insert(v.template_id, v);
+    }
+    let numbers: HashMap<i64, i64> = newest.iter().copied().collect();
+    let mut out = HashMap::new();
+    for t in templates {
+        if let (Some(previous), Some(number)) = (previous, numbers.get(&t.id)) {
+            if previous.prompt_unchanged(t, *number) {
+                if let Some(kept) = previous.prompts.get(&t.name) {
+                    out.insert(t.name.clone(), kept.clone());
+                    continue;
+                }
+            }
+        }
+        match by_template.get(&t.id).and_then(|row| Version::of_row(row)) {
+            Some(v) => {
+                out.insert(t.name.clone(), Arc::new(Template::new(t, Arc::new(v))));
+            }
+            None => {
+                tracing::error!(prompt = %t.name, "prompt template left out: its newest version cannot be read, or it has none");
+            }
+        }
+    }
+    out
+}
+
+fn rules_guardrail(g: &GuardrailRow) -> Option<SnapGuardrail> {
+    let specs: Vec<RuleSpec> = match serde_json::from_str(&g.rules) {
+        Ok(specs) => specs,
+        Err(_) => {
+            tracing::error!(guardrail = %g.name, "guardrail left out: its rules cannot be read");
+            return None;
+        }
+    };
+    match Compiled::compile(g.id, &g.name, &specs) {
+        Ok(compiled) => Some(SnapGuardrail {
+            id: g.id,
+            name: g.name.clone(),
+            rules_text: g.rules.clone(),
+            rules: Some(Arc::new(compiled)),
+            external: None,
+        }),
+        Err(e) => {
+            tracing::error!(guardrail = %g.name, error = %e, "guardrail left out: its rules do not compile");
+            None
+        }
+    }
+}
+
+pub(crate) fn external_of(g: &GuardrailRow, cipher: &Cipher) -> SnapExternal {
+    let read = |bytes: Option<&[u8]>| {
+        cipher
+            .decrypt(bytes?)
+            .ok()
+            .and_then(|plain| String::from_utf8(plain).ok())
+            .filter(|text| !text.is_empty())
+    };
+    let url = read(g.url_enc.as_deref());
+    let secret = read(g.secret_enc.as_deref());
+    let directions = Directions::parse(&g.directions);
+    let usable = url.is_some() && secret.is_some() && directions.is_some();
+    if !usable {
+        tracing::error!(guardrail = %g.name, "an external guardrail cannot be called: its URL or secret cannot be read, or it has none; its fail mode applies");
+    }
+    SnapExternal {
+        url: url.unwrap_or_default(),
+        secret: secret.unwrap_or_default(),
+        host: g.url_host.clone().unwrap_or_default(),
+        timeout: Duration::from_millis(u64::try_from(g.timeout_ms).unwrap_or(0)),
+        fail_open: g.fail_mode != "closed",
+        directions: directions.unwrap_or(Directions::Both),
+        usable,
+    }
+}
+
 impl Snapshot {
     /// Reads the keys that can work and every usable provider. A provider
     /// that cannot be used is logged and left out; it does not fail the load.
     pub async fn load(store: &Store, cipher: &Cipher) -> Result<Snapshot> {
+        Self::load_after(store, cipher, None).await
+    }
+
+    /// [`Snapshot::load`], taking over the compiled guardrails of `previous`
+    /// that did not change.
+    pub async fn load_after(
+        store: &Store,
+        cipher: &Cipher,
+        previous: Option<&Snapshot>,
+    ) -> Result<Snapshot> {
         // One read transaction: the tables are never read at different moments.
-        let rows = store.snapshot_rows().await?;
+        let rows = store
+            .snapshot_rows_after(&|t, newest| {
+                previous.is_some_and(|p| p.prompt_unchanged(t, newest))
+            })
+            .await?;
         // Everything a cached answer depends on besides the call itself.
         let mut fp = Fingerprint(Sha256::new());
         fp.section("teams", rows.team_stamps.len());
@@ -234,11 +500,48 @@ impl Snapshot {
             fp.num(i64::from(t.primary));
             fp.num(t.weight);
         }
+        // Guardrails change what an answer says, so any edit clears the
+        // cache: each one with everything that decides what it does (the
+        // stored URL by a hash of its encrypted form; the secret changes
+        // nothing a cached answer holds), and where each is attached.
+        fp.section("guardrails", rows.guardrails.len());
+        for g in &rows.guardrails {
+            fp.num(g.id);
+            fp.text(&g.name);
+            fp.text(&g.kind);
+            fp.num(i64::from(g.enabled));
+            fp.num(i64::from(g.is_default));
+            fp.text(&g.rules);
+            fp.text(g.url_host.as_deref().unwrap_or(""));
+            fp.part(&Sha256::digest(g.url_enc.as_deref().unwrap_or_default()));
+            fp.num(g.timeout_ms);
+            fp.text(&g.fail_mode);
+            fp.text(&g.directions);
+        }
+        fp.section("route_guardrails", rows.route_guardrails.len());
+        for (route, guardrail, _) in &rows.route_guardrails {
+            fp.num(*route);
+            fp.num(*guardrail);
+        }
+        fp.section("key_guardrails", rows.key_guardrails.len());
+        for (key, guardrail, _) in &rows.key_guardrails {
+            fp.num(*key);
+            fp.num(*guardrail);
+        }
+        let mut key_guardrails: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (key, guardrail, _) in &rows.key_guardrails {
+            key_guardrails.entry(*key).or_default().push(*guardrail);
+        }
+        let mut route_guardrails: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (route, guardrail, _) in &rows.route_guardrails {
+            route_guardrails.entry(*route).or_default().push(*guardrail);
+        }
         let keys = rows
             .keys
             .into_iter()
             .map(|k| {
                 let key = SnapKey {
+                    guardrails: key_guardrails.remove(&k.id).unwrap_or_default(),
                     team_only: k.team_only,
                     id: k.id,
                     name: k.name,
@@ -359,6 +662,7 @@ impl Snapshot {
                     first_token_timeout: Duration::from_millis(secs(st.first_token_timeout_ms)),
                     total_timeout: Duration::from_millis(secs(st.total_timeout_ms)),
                     cache: r.cache,
+                    guardrails: route_guardrails.remove(&r.id).unwrap_or_default(),
                     breaker: BreakerSettings {
                         failures: u32::try_from(st.breaker_failures).unwrap_or(0).max(1),
                         window: Duration::from_secs(secs(st.breaker_window_s)),
@@ -450,6 +754,14 @@ impl Snapshot {
                     action: b.action,
                 }));
         }
+        let (guardrails, default_guardrails, guardrails_compiled) =
+            load_guardrails(&rows.guardrails, cipher, previous).await?;
+        let prompts = load_prompts(
+            &rows.prompt_templates,
+            &rows.prompt_latest,
+            &rows.prompt_versions,
+            previous,
+        );
         Ok(Snapshot {
             keys,
             providers,
@@ -458,6 +770,10 @@ impl Snapshot {
             users,
             limits,
             budgets,
+            guardrails,
+            default_guardrails,
+            guardrails_compiled,
+            prompts,
             cache_fingerprint,
         })
     }
@@ -469,6 +785,67 @@ impl Snapshot {
     /// changes the cache is cleared.
     pub fn cache_fingerprint(&self) -> [u8; 32] {
         self.cache_fingerprint
+    }
+
+    /// How many guardrails this load compiled; the others were taken over
+    /// from the snapshot it replaced.
+    pub fn guardrails_compiled(&self) -> usize {
+        self.guardrails_compiled
+    }
+
+    /// The prompt template with this name (exact), with its versions.
+    pub fn prompt(&self, name: &str) -> Option<&Arc<Template>> {
+        self.prompts.get(name)
+    }
+
+    /// Whether this snapshot already holds the template as it is stored:
+    /// same id, creation time and name, and `newest` is its newest version.
+    pub fn prompt_unchanged(&self, t: &crate::store::TemplateRow, newest: i64) -> bool {
+        self.prompts.get(&t.name).is_some_and(|held| {
+            held.id == t.id && held.created_at == t.created_at && held.latest.number == newest
+        })
+    }
+
+    /// `(template id, newest version number)` of every template served.
+    pub fn prompt_numbers(&self) -> impl Iterator<Item = (i64, i64)> + '_ {
+        self.prompts.values().map(|t| (t.id, t.latest.number))
+    }
+
+    /// The template with this id.
+    pub fn prompt_by_id(&self, id: i64) -> Option<&Arc<Template>> {
+        self.prompts.values().find(|t| t.id == id)
+    }
+
+    /// An enabled guardrail that is ready to run.
+    pub fn guardrail(&self, id: i64) -> Option<&Arc<SnapGuardrail>> {
+        self.guardrails.get(&id)
+    }
+
+    /// The enabled guardrails that apply to every call, by name.
+    pub fn default_guardrails(&self) -> &[i64] {
+        &self.default_guardrails
+    }
+
+    /// The guardrails a call is checked with: the gateway-wide defaults,
+    /// then the route's, then the key's, each in its configured order, each
+    /// guardrail once (where it first appears). A disabled or gone guardrail
+    /// is not in it.
+    pub fn effective_guardrails(
+        &self,
+        route: Option<&SnapRoute>,
+        key: Option<&SnapKey>,
+    ) -> Vec<Arc<SnapGuardrail>> {
+        let attached = route
+            .map(|r| r.guardrails.as_slice())
+            .into_iter()
+            .chain(key.map(|k| k.guardrails.as_slice()));
+        let mut seen = HashSet::new();
+        std::iter::once(self.default_guardrails.as_slice())
+            .chain(attached)
+            .flatten()
+            .filter(|id| seen.insert(**id))
+            .filter_map(|id| self.guardrails.get(id).cloned())
+            .collect()
     }
 
     /// The key for this hash, unless it has expired as of `now` (UTC,

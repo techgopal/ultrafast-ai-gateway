@@ -4,8 +4,8 @@ use super::{saturate, HttpRequest, StreamState, Target};
 use crate::error::TranslateError;
 use crate::sse::SseEvent;
 use crate::types::{
-    ChatRequest, ChatResponse, FinishReason, ImageSource, Message, Part, Role, StreamEvent, Tool,
-    ToolCall, ToolChoice, Usage,
+    ChatRequest, ChatResponse, FinishReason, ImageSource, Message, Part, ResponseFormat, Role,
+    StreamEvent, Tool, ToolCall, ToolChoice, Usage,
 };
 
 const API_VERSION: &str = "2023-06-01";
@@ -183,6 +183,11 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
     super::check_tool_choice(req)?;
     // A tool message's `name` (OpenAI's older form) is not needed: the id
     // names the call.
+    if req.reasoning_effort.is_some() {
+        return Err(TranslateError::Unsupported(
+            "reasoning effort is not supported by this provider".into(),
+        ));
+    }
     if req
         .messages
         .iter()
@@ -232,6 +237,19 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
         body["tools"] = req.tools.iter().map(tool_value).collect();
         if let Some(c) = tool_choice_value(req) {
             body["tool_choice"] = c;
+        }
+    }
+    // Structured outputs are `output_config.format` (generally available, no
+    // beta header). Text asks for nothing; a JSON object is the loosest schema.
+    match &req.response_format {
+        None | Some(ResponseFormat::Text) => {}
+        Some(ResponseFormat::JsonObject) => {
+            body["output_config"] =
+                json!({ "format": { "type": "json_schema", "schema": { "type": "object" } } });
+        }
+        Some(ResponseFormat::JsonSchema { schema, .. }) => {
+            body["output_config"] =
+                json!({ "format": { "type": "json_schema", "schema": schema } });
         }
     }
     if req.stream {
@@ -449,6 +467,8 @@ mod tests {
             tools: Vec::new(),
             tool_choice: None,
             parallel_tool_calls: None,
+            response_format: None,
+            reasoning_effort: None,
         }
     }
 
@@ -474,6 +494,17 @@ mod tests {
         assert_eq!(v["messages"].as_array().unwrap().len(), 2);
         assert_eq!(v["messages"][0]["role"], "assistant");
         assert_eq!(v["messages"][1]["role"], "user");
+    }
+
+    #[test]
+    fn reasoning_effort_is_refused() {
+        let mut req = request(vec![Message::text(Role::User, "hi")]);
+        assert!(build_request(&target(), &req).is_ok());
+        req.reasoning_effort = Some("low".into());
+        assert!(matches!(
+            build_request(&target(), &req),
+            Err(TranslateError::Unsupported(m)) if m.contains("reasoning")
+        ));
     }
 
     #[test]
@@ -1068,5 +1099,36 @@ mod tests {
         assert_eq!(stream_error_status("overloaded_error"), 502);
         assert_eq!(stream_error_status("api_error"), 502);
         assert_eq!(stream_error_status("invalid_request_error"), 502);
+    }
+
+    #[test]
+    fn response_format_uses_output_config() {
+        let msgs = || vec![msg(Role::User, "hi")];
+        let body = |rf: Option<ResponseFormat>| {
+            let mut req = request(msgs());
+            req.response_format = rf;
+            let r = build_request(&target(), &req).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&r.body).unwrap()
+        };
+        assert!(body(None).get("output_config").is_none());
+        assert!(body(Some(ResponseFormat::Text))
+            .get("output_config")
+            .is_none());
+        assert_eq!(
+            body(Some(ResponseFormat::JsonObject))["output_config"],
+            serde_json::json!({"format":{"type":"json_schema","schema":{"type":"object"}}})
+        );
+        let v = body(Some(ResponseFormat::JsonSchema {
+            name: "person".into(),
+            schema: serde_json::json!({"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}),
+            strict: Some(true),
+            description: Some("a person".into()),
+        }));
+        assert_eq!(
+            v["output_config"],
+            serde_json::json!({"format":{"type":"json_schema","schema":
+                {"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}})
+        );
+        assert!(v.get("response_format").is_none());
     }
 }

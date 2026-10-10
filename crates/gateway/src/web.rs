@@ -345,7 +345,7 @@ fn base64(bytes: &[u8]) -> String {
 fn security_headers(headers: &mut HeaderMap, nonce: &str) {
     let policy = format!(
         "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-{nonce}'; \
-         style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; \
+         style-src-attr 'unsafe-inline'; img-src 'self' data:; media-src blob:; font-src 'self'; \
          connect-src 'self'; form-action 'self'; base-uri 'none'; \
          frame-ancestors 'none'; manifest-src 'self'"
     );

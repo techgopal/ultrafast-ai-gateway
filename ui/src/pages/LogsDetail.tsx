@@ -12,8 +12,9 @@ import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { idOf } from "@/lib/id";
-import { formatDuration, outcomeLabel } from "@/lib/usage";
-import { costOf, modelOf, tokensOf } from "@/pages/Logs";
+import { sideLines } from "@/lib/guardrails";
+import { endpointLabel, formatDuration, outcomeLabel } from "@/lib/usage";
+import { costOf, GuardrailBadge, modelOf, tokensOf } from "@/pages/Logs";
 
 /** An attempt, with its place in the order: two attempts can be alike. */
 type Attempt = components["schemas"]["LogAttempt"] & { n: number };
@@ -91,11 +92,13 @@ function Details({ id }: { id: number }) {
         <Badge variant={log.status >= 400 ? "destructive" : "secondary"}>{log.status}</Badge>
         {log.cached ? <Badge variant="outline">Cached</Badge> : null}
         {log.estimated ? <Badge variant="outline">Estimated</Badge> : null}
+        <GuardrailBadge log={log} />
       </span>,
     ],
     ["Asked for", log.requested],
     ["Answered by", log.provider !== null && log.model !== null ? modelOf(log) : NONE],
-    ["Endpoint", log.endpoint],
+    ["Endpoint", endpointLabel(log.endpoint)],
+    ["Prompt", log.prompt ?? NONE],
     ["Streamed", log.stream ? "Yes" : "No"],
     ["Key", log.key_name ?? (log.key_id === null ? NONE : "(deleted)")],
     ["User", log.user_email ?? NONE],
@@ -105,6 +108,10 @@ function Details({ id }: { id: number }) {
     ["Duration", formatDuration(log.duration_ms)],
     ["Tags", <TagChips key="g" tags={log.tags} />],
   ];
+  const sides = [
+    ["Input", log.guardrails?.input],
+    ["Output", log.guardrails?.output],
+  ] as const;
   return (
     <>
       <Link
@@ -125,6 +132,31 @@ function Details({ id }: { id: number }) {
           </div>
         ))}
       </dl>
+      {log.guardrails === null ? null : (
+        <>
+          <h2 className="text-lg font-medium">Guardrails</h2>
+          <dl
+            aria-label="Guardrails"
+            className="grid max-w-xl grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-3 text-sm"
+          >
+            {sides.map(([name, side]) =>
+              side === undefined || side === null ? null : (
+                <div key={name} className="contents">
+                  <dt className="text-muted-foreground">{name}</dt>
+                  <dd className="flex min-w-0 flex-col gap-1 break-words">
+                    <span>
+                      <GuardrailBadge log={{ guardrails: { action: side.action } }} />
+                    </span>
+                    {sideLines(side).map((line) => (
+                      <span key={line}>{line}</span>
+                    ))}
+                  </dd>
+                </div>
+              ),
+            )}
+          </dl>
+        </>
+      )}
       <h2 className="text-lg font-medium">Routing attempts</h2>
       <DataTable
         caption="Routing attempts"

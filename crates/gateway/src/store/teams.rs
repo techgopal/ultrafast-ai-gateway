@@ -1,12 +1,14 @@
 //! Teams and their members.
 
+use sqlx::AnyConnection;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use anyhow::{anyhow, Result};
-use sqlx::sqlite::SqliteRow;
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::Row;
 
+use super::dialect::Dialected;
 use super::{write_error, Store, Tx, DEFAULT_ORG};
 use crate::identity::TeamRole;
 
@@ -55,7 +57,7 @@ const SUMMARY_SELECT: &str = "SELECT t.id, t.name, t.created_at,
              WHERE m.team_id = t.id AND m.org_id = t.org_id) AS member_count
      FROM teams t";
 
-fn summary_from(r: &SqliteRow) -> TeamSummary {
+fn summary_from(r: &AnyRow) -> TeamSummary {
     TeamSummary {
         id: r.get("id"),
         name: r.get("name"),
@@ -64,7 +66,7 @@ fn summary_from(r: &SqliteRow) -> TeamSummary {
     }
 }
 
-fn team_from(r: &SqliteRow) -> TeamRow {
+fn team_from(r: &AnyRow) -> TeamRow {
     TeamRow {
         id: r.get("id"),
         name: r.get("name"),
@@ -72,7 +74,7 @@ fn team_from(r: &SqliteRow) -> TeamRow {
     }
 }
 
-fn member_from(r: &SqliteRow) -> Result<MemberRow> {
+fn member_from(r: &AnyRow) -> Result<MemberRow> {
     let role: String = r.get("role");
     Ok(MemberRow {
         team_id: r.get("team_id"),
@@ -83,7 +85,8 @@ fn member_from(r: &SqliteRow) -> Result<MemberRow> {
 
 impl Store {
     pub async fn team_by_id(&self, id: i64) -> Result<Option<TeamRow>> {
-        let row = sqlx::query("SELECT id, name, created_at FROM teams WHERE id = ? AND org_id = ?")
+        let row = self
+            .q("SELECT id, name, created_at FROM teams WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -93,17 +96,18 @@ impl Store {
 
     /// Ordered by name.
     pub async fn list_teams(&self) -> Result<Vec<TeamRow>> {
-        let rows =
-            sqlx::query("SELECT id, name, created_at FROM teams WHERE org_id = ? ORDER BY name")
-                .bind(DEFAULT_ORG)
-                .fetch_all(self.pool())
-                .await?;
+        let rows = self
+            .q("SELECT id, name, created_at FROM teams WHERE org_id = ? ORDER BY name")
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.pool())
+            .await?;
         Ok(rows.iter().map(team_from).collect())
     }
 
     pub async fn team_summary(&self, id: i64) -> Result<Option<TeamSummary>> {
         let sql = format!("{SUMMARY_SELECT} WHERE t.id = ? AND t.org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.pool())
@@ -114,7 +118,8 @@ impl Store {
     /// Every team, ordered by name.
     pub async fn list_team_summaries(&self) -> Result<Vec<TeamSummary>> {
         let sql = format!("{SUMMARY_SELECT} WHERE t.org_id = ? ORDER BY t.name");
-        let rows = sqlx::query(AssertSqlSafe(sql))
+        let rows = self
+            .q_dyn(sql)
             .bind(DEFAULT_ORG)
             .fetch_all(self.pool())
             .await?;
@@ -129,7 +134,8 @@ impl Store {
              WHERE t.org_id = ? AND own.user_id = ?
              ORDER BY t.name"
         );
-        let rows = sqlx::query(AssertSqlSafe(sql))
+        let rows = self
+            .q_dyn(sql)
             .bind(DEFAULT_ORG)
             .bind(user_id)
             .fetch_all(self.pool())
@@ -147,17 +153,16 @@ impl Store {
 
     /// The members of a team with their email and name, ordered by email.
     pub async fn member_details(&self, team_id: i64) -> Result<Vec<MemberDetail>> {
-        let rows = sqlx::query(
-            "SELECT m.user_id, u.email, u.name, m.role
+        let rows = self
+            .q("SELECT m.user_id, u.email, u.name, m.role
              FROM team_members m
              JOIN users u ON u.id = m.user_id AND u.org_id = m.org_id
              WHERE m.team_id = ? AND m.org_id = ?
-             ORDER BY u.email",
-        )
-        .bind(team_id)
-        .bind(DEFAULT_ORG)
-        .fetch_all(self.pool())
-        .await?;
+             ORDER BY u.email")
+            .bind(team_id)
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.pool())
+            .await?;
         rows.iter()
             .map(|r| {
                 let role: String = r.get("role");
@@ -174,27 +179,25 @@ impl Store {
 
     /// Ordered by user id.
     pub async fn members_of(&self, team_id: i64) -> Result<Vec<MemberRow>> {
-        let rows = sqlx::query(
-            "SELECT team_id, user_id, role FROM team_members
-             WHERE team_id = ? AND org_id = ? ORDER BY user_id",
-        )
-        .bind(team_id)
-        .bind(DEFAULT_ORG)
-        .fetch_all(self.pool())
-        .await?;
+        let rows = self
+            .q("SELECT team_id, user_id, role FROM team_members
+             WHERE team_id = ? AND org_id = ? ORDER BY user_id")
+            .bind(team_id)
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.pool())
+            .await?;
         rows.iter().map(member_from).collect()
     }
 
     /// Ordered by team id.
     pub async fn memberships_of(&self, user_id: i64) -> Result<Vec<MemberRow>> {
-        let rows = sqlx::query(
-            "SELECT team_id, user_id, role FROM team_members
-             WHERE user_id = ? AND org_id = ? ORDER BY team_id",
-        )
-        .bind(user_id)
-        .bind(DEFAULT_ORG)
-        .fetch_all(self.pool())
-        .await?;
+        let rows = self
+            .q("SELECT team_id, user_id, role FROM team_members
+             WHERE user_id = ? AND org_id = ? ORDER BY team_id")
+            .bind(user_id)
+            .bind(DEFAULT_ORG)
+            .fetch_all(self.pool())
+            .await?;
         rows.iter().map(member_from).collect()
     }
 }
@@ -202,7 +205,8 @@ impl Store {
 impl Tx<'_> {
     /// The team as the transaction sees it.
     pub async fn team_by_id(&mut self, id: i64) -> Result<Option<TeamRow>> {
-        let row = sqlx::query("SELECT id, name, created_at FROM teams WHERE id = ? AND org_id = ?")
+        let row = self
+            .q("SELECT id, name, created_at FROM teams WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())
@@ -212,32 +216,35 @@ impl Tx<'_> {
 
     /// The user's role in the team, as the transaction sees it.
     pub async fn member_role(&mut self, team_id: i64, user_id: i64) -> Result<Option<TeamRole>> {
-        let role: Option<String> = sqlx::query_scalar(
-            "SELECT role FROM team_members WHERE team_id = ? AND user_id = ? AND org_id = ?",
-        )
-        .bind(team_id)
-        .bind(user_id)
-        .bind(DEFAULT_ORG)
-        .fetch_optional(self.conn())
-        .await?;
+        let role: Option<String> = self
+            .scalar(
+                "SELECT role FROM team_members WHERE team_id = ? AND user_id = ? AND org_id = ?",
+            )
+            .bind(team_id)
+            .bind(user_id)
+            .bind(DEFAULT_ORG)
+            .fetch_optional(self.conn())
+            .await?;
         role.map(|r| TeamRole::parse(&r).ok_or_else(|| anyhow!("stored team role is not known")))
             .transpose()
     }
 
     /// Fails with `StoreError::Duplicate` when the name is taken.
     pub async fn insert_team(&mut self, name: &str) -> Result<i64> {
-        let r = sqlx::query("INSERT INTO teams (org_id, name) VALUES (?, ?)")
+        let id: i64 = self
+            .scalar("INSERT INTO teams (org_id, name) VALUES (?, ?) RETURNING id")
             .bind(DEFAULT_ORG)
             .bind(name)
-            .execute(self.conn())
+            .fetch_one(self.conn())
             .await
             .map_err(write_error)?;
-        Ok(r.last_insert_rowid())
+        Ok(id)
     }
 
     /// Fails with `StoreError::Duplicate` when the name is taken.
     pub async fn rename_team(&mut self, id: i64, name: &str) -> Result<bool> {
-        let r = sqlx::query("UPDATE teams SET name = ? WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("UPDATE teams SET name = ? WHERE id = ? AND org_id = ?")
             .bind(name)
             .bind(id)
             .bind(DEFAULT_ORG)
@@ -249,7 +256,8 @@ impl Tx<'_> {
 
     /// Also removes the team's memberships and detaches its keys.
     pub async fn delete_team(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM teams WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM teams WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -259,7 +267,7 @@ impl Tx<'_> {
 
     /// Adds the user to the team, or changes their role if already a member.
     pub async fn put_member(&mut self, team_id: i64, user_id: i64, role: TeamRole) -> Result<()> {
-        sqlx::query(
+        self.q(
             "INSERT INTO team_members (org_id, team_id, user_id, role) VALUES (?, ?, ?, ?)
              ON CONFLICT (team_id, user_id) DO UPDATE SET role = excluded.role
              WHERE team_members.org_id = excluded.org_id",
@@ -274,22 +282,20 @@ impl Tx<'_> {
     }
 
     pub async fn remove_member(&mut self, team_id: i64, user_id: i64) -> Result<bool> {
-        let r = sqlx::query(
-            "DELETE FROM team_members WHERE team_id = ? AND user_id = ? AND org_id = ?",
-        )
-        .bind(team_id)
-        .bind(user_id)
-        .bind(DEFAULT_ORG)
-        .execute(self.conn())
-        .await?;
+        let r = self
+            .q("DELETE FROM team_members WHERE team_id = ? AND user_id = ? AND org_id = ?")
+            .bind(team_id)
+            .bind(user_id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
         Ok(r.rows_affected() == 1)
     }
 }
 
-pub(crate) async fn team_stamps_in(
-    conn: &mut sqlx::SqliteConnection,
-) -> Result<Vec<(i64, String)>> {
-    let rows = sqlx::query("SELECT id, created_at FROM teams WHERE org_id = ? ORDER BY id")
+pub(crate) async fn team_stamps_in(conn: &mut AnyConnection) -> Result<Vec<(i64, String)>> {
+    let rows = conn
+        .q("SELECT id, created_at FROM teams WHERE org_id = ? ORDER BY id")
         .bind(DEFAULT_ORG)
         .fetch_all(conn)
         .await?;
@@ -299,34 +305,60 @@ pub(crate) async fn team_stamps_in(
         .collect())
 }
 
-pub(crate) async fn teams_of_users_in(
-    conn: &mut sqlx::SqliteConnection,
-    user_ids: &[i64],
-) -> Result<HashMap<i64, Vec<UserTeam>>> {
-    if user_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let marks = vec!["?"; user_ids.len()].join(", ");
-    let sql = format!(
-        "SELECT m.user_id, m.team_id, t.name, m.role
+/// Ids per `IN` list: far under every database's parameter limit.
+const USER_CHUNK: usize = 500;
+
+const TEAMS_OF_USERS: &str = "SELECT m.user_id, m.team_id, t.name, m.role
          FROM team_members m
          JOIN teams t ON t.id = m.team_id AND t.org_id = m.org_id
-         WHERE m.org_id = ? AND m.user_id IN ({marks})
-         ORDER BY t.name, t.id"
-    );
-    let mut query = sqlx::query(AssertSqlSafe(sql)).bind(DEFAULT_ORG);
-    for id in user_ids {
-        query = query.bind(id);
-    }
-    let mut teams: HashMap<i64, Vec<UserTeam>> = HashMap::new();
-    for r in query.fetch_all(&mut *conn).await? {
+         WHERE m.org_id = ?";
+
+fn collect_teams(rows: &[sqlx::any::AnyRow], into: &mut HashMap<i64, Vec<UserTeam>>) -> Result<()> {
+    for r in rows {
         let role: String = r.get("role");
-        teams.entry(r.get("user_id")).or_default().push(UserTeam {
+        into.entry(r.get("user_id")).or_default().push(UserTeam {
             team_id: r.get("team_id"),
             name: r.get("name"),
             role: TeamRole::parse(&role).ok_or_else(|| anyhow!("stored team role is not known"))?,
         });
     }
+    Ok(())
+}
+
+/// The teams of the given users, in chunks of [`USER_CHUNK`] ids (so any
+/// number of ids works); each user's teams are ordered by name.
+pub(crate) async fn teams_of_users_in(
+    conn: &mut AnyConnection,
+    user_ids: &[i64],
+) -> Result<HashMap<i64, Vec<UserTeam>>> {
+    let mut teams: HashMap<i64, Vec<UserTeam>> = HashMap::new();
+    for chunk in user_ids.chunks(USER_CHUNK) {
+        let marks = vec!["?"; chunk.len()].join(", ");
+        let sql = format!("{TEAMS_OF_USERS} AND m.user_id IN ({marks}) ORDER BY t.name, t.id");
+        let mut query = conn.q_dyn(sql).bind(DEFAULT_ORG);
+        for id in chunk {
+            query = query.bind(id);
+        }
+        collect_teams(&query.fetch_all(&mut *conn).await?, &mut teams)?;
+    }
+    Ok(teams)
+}
+
+/// The teams of every user, without a list of ids (what the snapshot reads).
+pub(crate) async fn teams_of_all_users_in(
+    conn: &mut AnyConnection,
+) -> Result<HashMap<i64, Vec<UserTeam>>> {
+    let sql = format!(
+        "{TEAMS_OF_USERS} AND m.user_id IN (SELECT id FROM users WHERE org_id = m.org_id)
+         ORDER BY t.name, t.id"
+    );
+    let rows = conn
+        .q_dyn(sql)
+        .bind(DEFAULT_ORG)
+        .fetch_all(&mut *conn)
+        .await?;
+    let mut teams = HashMap::new();
+    collect_teams(&rows, &mut teams)?;
     Ok(teams)
 }
 
@@ -438,6 +470,9 @@ mod tests {
         let mut tx = s.begin().await.unwrap();
         let platform = tx.insert_team("platform").await.unwrap();
         let data = tx.insert_team("data").await.unwrap();
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction: it gets its own.
+        let mut tx = s.begin().await.unwrap();
         let err = tx
             .insert_team("platform")
             .await
@@ -446,7 +481,7 @@ mod tests {
             err.downcast_ref::<StoreError>(),
             Some(StoreError::Duplicate)
         ));
-        tx.commit().await.unwrap();
+        drop(tx);
 
         let t = s.team_by_id(platform).await.unwrap().unwrap();
         assert_eq!(t.id, platform);
@@ -472,13 +507,16 @@ mod tests {
         tx.insert_team("b").await.unwrap();
         assert!(tx.rename_team(a, "c").await.unwrap());
         assert!(!tx.rename_team(a + 1000, "d").await.unwrap());
+        assert!(!tx.delete_team(a + 1000).await.unwrap());
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction: it gets its own.
+        let mut tx = s.begin().await.unwrap();
         let err = tx.rename_team(a, "b").await.expect_err("name is taken");
         assert!(matches!(
             err.downcast_ref::<StoreError>(),
             Some(StoreError::Duplicate)
         ));
-        assert!(!tx.delete_team(a + 1000).await.unwrap());
-        tx.commit().await.unwrap();
+        drop(tx);
         assert_eq!(s.team_by_id(a).await.unwrap().unwrap().name, "c");
     }
 
@@ -494,11 +532,14 @@ mod tests {
         tx.put_member(team, noor, TeamRole::Member).await.unwrap();
         tx.put_member(other, maya, TeamRole::Member).await.unwrap();
         tx.put_member(team, maya, TeamRole::Lead).await.unwrap();
-        assert!(tx
+        tx.commit().await.unwrap();
+        // A failed statement ends a PostgreSQL transaction: it gets its own.
+        let mut refused = s.begin().await.unwrap();
+        assert!(refused
             .put_member(team, noor + 1000, TeamRole::Lead)
             .await
             .is_err());
-        tx.commit().await.unwrap();
+        drop(refused);
 
         let lead = MemberRow {
             team_id: team,
@@ -575,5 +616,43 @@ mod tests {
         let mut tx = s.begin().await.unwrap();
         assert!(!tx.rename_team(1, "x").await.unwrap());
         assert!(!tx.delete_team(1).await.unwrap());
+    }
+
+    /// Any number of ids is asked for: 40000 of them is more than SQLite
+    /// takes in one statement.
+    #[tokio::test]
+    async fn teams_of_users_takes_any_number_of_ids() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let a = tx.insert_user(member("a@example.com")).await.unwrap();
+        let team = tx.insert_team("Alpha").await.unwrap();
+        tx.put_member(team, a, TeamRole::Member).await.unwrap();
+        tx.commit().await.unwrap();
+        let mut ids: Vec<i64> = (1_000_000..1_040_000).collect();
+        ids.push(a);
+        let teams = s.teams_of_users(&ids).await.unwrap();
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[&a][0].team_id, team);
+    }
+
+    /// The snapshot reads every membership without a list of user ids.
+    #[tokio::test]
+    async fn the_snapshot_holds_every_members_teams() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut tx = s.begin().await.unwrap();
+        let a = tx.insert_user(member("a@example.com")).await.unwrap();
+        let b = tx.insert_user(member("b@example.com")).await.unwrap();
+        let _c = tx.insert_user(member("c@example.com")).await.unwrap();
+        let zed = tx.insert_team("Zed").await.unwrap();
+        let alpha = tx.insert_team("Alpha").await.unwrap();
+        tx.put_member(zed, a, TeamRole::Lead).await.unwrap();
+        tx.put_member(alpha, a, TeamRole::Member).await.unwrap();
+        tx.put_member(zed, b, TeamRole::Member).await.unwrap();
+        tx.commit().await.unwrap();
+        let rows = s.snapshot_rows().await.unwrap();
+        let names = |u| -> Vec<String> { rows.teams[&u].iter().map(|t| t.name.clone()).collect() };
+        assert_eq!(names(a), ["Alpha", "Zed"]);
+        assert_eq!(names(b), ["Zed"]);
+        assert_eq!(rows.teams.len(), 2);
     }
 }

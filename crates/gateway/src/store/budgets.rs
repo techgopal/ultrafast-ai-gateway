@@ -1,9 +1,11 @@
 //! Budgets, their cached usage, and the spend counted in the request logs.
 
 use anyhow::{anyhow, Result};
-use sqlx::sqlite::{SqliteConnection, SqliteRow};
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::any::AnyRow;
+use sqlx::AnyConnection;
+use sqlx::Row;
 
+use super::dialect::Dialected;
 use super::{AuditEntry, Store, Tx, DEFAULT_ORG};
 use crate::budgets::{BudgetAction, Period};
 use crate::limits::LimitScope;
@@ -48,6 +50,25 @@ pub struct UsageRow {
     pub spent_micros: u64,
 }
 
+/// What a process adds to a budget's stored spend for a period: the part of
+/// its counter that the database does not have yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageDelta {
+    pub budget_id: i64,
+    pub period_start: String,
+    pub delta_micros: u64,
+}
+
+/// What the database holds for a budget in a period, after every process's
+/// additions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageTotal {
+    pub budget_id: i64,
+    pub period_start: String,
+    pub spent_micros: u64,
+    pub alerted: bool,
+}
+
 const SELECT: &str = "SELECT b.id, b.scope, b.scope_id, b.amount_micros, b.period, b.action,
             CASE b.scope WHEN 'key' THEN k.name WHEN 'user' THEN u.email WHEN 'team' THEN t.name END AS name,
             k.user_id AS key_owner,
@@ -57,7 +78,7 @@ const SELECT: &str = "SELECT b.id, b.scope, b.scope_id, b.amount_micros, b.perio
      LEFT JOIN users u ON b.scope = 'user' AND u.id = b.scope_id AND u.org_id = b.org_id
      LEFT JOIN teams t ON b.scope = 'team' AND t.id = b.scope_id AND t.org_id = b.org_id";
 
-fn budget_from(r: &SqliteRow) -> Result<BudgetRow> {
+fn budget_from(r: &AnyRow) -> Result<BudgetRow> {
     let scope: String = r.get("scope");
     let period: String = r.get("period");
     let action: String = r.get("action");
@@ -79,17 +100,26 @@ fn budget_from(r: &SqliteRow) -> Result<BudgetRow> {
 }
 
 /// Every budget, oldest first, on the connection of a transaction.
-pub(super) async fn list_budgets_in(conn: &mut SqliteConnection) -> Result<Vec<BudgetRow>> {
+pub(super) async fn list_budgets_in(conn: &mut AnyConnection) -> Result<Vec<BudgetRow>> {
     let sql = format!("{SELECT} WHERE b.org_id = ? ORDER BY b.id");
-    let rows = sqlx::query(AssertSqlSafe(sql))
-        .bind(DEFAULT_ORG)
-        .fetch_all(conn)
-        .await?;
+    let rows = conn.q_dyn(sql).bind(DEFAULT_ORG).fetch_all(conn).await?;
     rows.iter().map(budget_from).collect()
 }
 
+/// Pairs per read-back query.
+const READ_BACK_CHUNK: usize = 500;
+
 fn to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// The deltas worth writing, in the order every process locks the rows in
+/// (budget, then period), so two processes adding to the same rows cannot
+/// wait on each other.
+pub(super) fn in_lock_order(deltas: &[UsageDelta]) -> Vec<&UsageDelta> {
+    let mut ordered: Vec<&UsageDelta> = deltas.iter().filter(|d| d.delta_micros > 0).collect();
+    ordered.sort_by(|a, b| (a.budget_id, &a.period_start).cmp(&(b.budget_id, &b.period_start)));
+    ordered
 }
 
 impl Store {
@@ -105,7 +135,7 @@ impl Store {
         budget_id: i64,
         period_start: &str,
     ) -> Result<Option<(u64, bool)>> {
-        let row: Option<(i64, i64)> = sqlx::query_as(
+        let row: Option<(i64, i64)> = self.query_as(
             "SELECT spent_micros, alerted FROM budget_usage WHERE budget_id = ? AND period_start = ?",
         )
         .bind(budget_id)
@@ -136,12 +166,10 @@ impl Store {
             ),
         };
         let sql = format!(
-            "SELECT COALESCE(SUM(cost_micros), 0) FROM request_logs
+            "SELECT CAST(COALESCE(SUM(cost_micros), 0) AS BIGINT) FROM request_logs
              WHERE org_id = ? AND at >= ? AND {filter}"
         );
-        let mut q = sqlx::query_scalar(AssertSqlSafe(sql))
-            .bind(DEFAULT_ORG)
-            .bind(since);
+        let mut q = self.scalar_dyn(sql).bind(DEFAULT_ORG).bind(since);
         for _ in 0..binds {
             q = q.bind(scope_id);
         }
@@ -162,6 +190,51 @@ impl Store {
         tx.commit().await
     }
 
+    /// Adds what this process has counted since its last flush to the stored
+    /// spend (`spent_micros = spent_micros + delta`, so processes sharing one
+    /// database add up instead of overwriting each other), then reads back
+    /// what is stored for `wanted` (budget, period start): the totals every
+    /// process converges on. One transaction. A budget that was deleted
+    /// meanwhile is skipped.
+    pub async fn add_budget_usage(
+        &self,
+        deltas: &[UsageDelta],
+        wanted: &[(i64, String)],
+    ) -> Result<Vec<UsageTotal>> {
+        let mut tx = self.begin().await?;
+        for d in in_lock_order(deltas) {
+            tx.add_usage(&d.period_start, d.budget_id, d.delta_micros)
+                .await?;
+        }
+        let mut totals = Vec::with_capacity(wanted.len());
+        // A few queries of at most READ_BACK_CHUNK pairs each, in the same
+        // transaction: one list of any size would break the driver's
+        // parameter limit (SQLite) or the parser's depth (PostgreSQL).
+        for chunk in wanted.chunks(READ_BACK_CHUNK) {
+            let pairs = vec!["(?, ?)"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT budget_id, period_start, spent_micros, alerted FROM budget_usage
+                 WHERE (budget_id, period_start) IN ({pairs})"
+            );
+            let mut q = tx.q_dyn(sql);
+            for (budget_id, period_start) in chunk {
+                q = q.bind(*budget_id).bind(period_start);
+            }
+            for r in q.fetch_all(tx.conn()).await? {
+                let spent: i64 = r.get("spent_micros");
+                let alerted: i64 = r.get("alerted");
+                totals.push(UsageTotal {
+                    budget_id: r.get("budget_id"),
+                    period_start: r.get("period_start"),
+                    spent_micros: u64::try_from(spent).unwrap_or(0),
+                    alerted: alerted != 0,
+                });
+            }
+        }
+        tx.commit().await?;
+        Ok(totals)
+    }
+
     /// Writes the alert of a budget for a period, once: the first call for
     /// the period writes the audit row (by `system`) and returns true; any
     /// later call, also after a restart, writes nothing. Nothing is written
@@ -176,15 +249,14 @@ impl Store {
         let mut tx = self.begin().await?;
         tx.write_usage(period_start, budget_id, spent_micros)
             .await?;
-        let marked = sqlx::query(
-            "UPDATE budget_usage SET alerted = 1
-             WHERE budget_id = ? AND period_start = ? AND alerted = 0",
-        )
-        .bind(budget_id)
-        .bind(period_start)
-        .execute(tx.conn())
-        .await?
-        .rows_affected();
+        let marked = self
+            .q("UPDATE budget_usage SET alerted = 1
+             WHERE budget_id = ? AND period_start = ? AND alerted = 0")
+            .bind(budget_id)
+            .bind(period_start)
+            .execute(tx.conn())
+            .await?
+            .rows_affected();
         if marked == 1 {
             tx.audit(AuditEntry {
                 actor_user_id: None,
@@ -206,11 +278,14 @@ impl Tx<'_> {
         // Within a period spend only grows, so a late or older write never
         // lowers what the row holds. The WHERE clause keeps a budget that was deleted meanwhile from
         // failing the foreign key.
-        sqlx::query(
+        let greatest = self
+            .dialect()
+            .greatest("budget_usage.spent_micros", "excluded.spent_micros");
+        self.q_dyn(format!(
             "INSERT INTO budget_usage (budget_id, period_start, spent_micros)
              SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM budgets WHERE id = ?)
-             ON CONFLICT (budget_id, period_start) DO UPDATE SET spent_micros = MAX(spent_micros, excluded.spent_micros)",
-        )
+             ON CONFLICT (budget_id, period_start) DO UPDATE SET spent_micros = {greatest}"
+        ))
         .bind(budget_id)
         .bind(period_start)
         .bind(to_i64(spent))
@@ -220,14 +295,55 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Adds `delta` to the spend of a budget in a period, creating the row.
+    /// Nothing is written for a budget that is gone.
+    async fn add_usage(&mut self, period_start: &str, budget_id: i64, delta: u64) -> Result<()> {
+        self.q(
+            "INSERT INTO budget_usage (budget_id, period_start, spent_micros)
+             SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM budgets WHERE id = ?)
+             ON CONFLICT (budget_id, period_start) DO UPDATE
+             SET spent_micros = budget_usage.spent_micros + excluded.spent_micros",
+        )
+        .bind(budget_id)
+        .bind(period_start)
+        .bind(to_i64(delta))
+        .bind(budget_id)
+        .execute(self.conn())
+        .await?;
+        Ok(())
+    }
+
     pub async fn budget_by_id(&mut self, id: i64) -> Result<Option<BudgetRow>> {
         let sql = format!("{SELECT} WHERE b.id = ? AND b.org_id = ?");
-        let row = sqlx::query(AssertSqlSafe(sql))
+        let row = self
+            .q_dyn(sql)
             .bind(id)
             .bind(DEFAULT_ORG)
             .fetch_optional(self.conn())
             .await?;
         row.as_ref().map(budget_from).transpose()
+    }
+
+    /// The id of the budget of a subject for a period, if there is one.
+    pub async fn budget_id_of(
+        &mut self,
+        scope: LimitScope,
+        scope_id: Option<i64>,
+        period: Period,
+    ) -> Result<Option<i64>> {
+        let id: Option<i64> = self
+            .scalar(
+                "SELECT id FROM budgets
+                 WHERE org_id = ? AND scope = ? AND COALESCE(scope_id, 0) = COALESCE(?, 0)
+                   AND period = ?",
+            )
+            .bind(DEFAULT_ORG)
+            .bind(scope.as_str())
+            .bind(scope_id)
+            .bind(period.as_str())
+            .fetch_optional(self.conn())
+            .await?;
+        Ok(id)
     }
 
     /// Sets the amount and action of the budget of a subject for a period,
@@ -242,31 +358,154 @@ impl Tx<'_> {
         action: BudgetAction,
     ) -> Result<i64> {
         let amount = i64::try_from(amount_micros).map_err(|_| anyhow!("budget is too large"))?;
-        let id: i64 = sqlx::query_scalar(
-            "INSERT INTO budgets (org_id, scope, scope_id, amount_micros, period, action)
+        let id: i64 = self
+            .scalar(
+                "INSERT INTO budgets (org_id, scope, scope_id, amount_micros, period, action)
              VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT (org_id, scope, COALESCE(scope_id, 0), period) DO UPDATE SET
                  amount_micros = excluded.amount_micros,
                  action = excluded.action
              RETURNING id",
-        )
-        .bind(DEFAULT_ORG)
-        .bind(scope.as_str())
-        .bind(scope_id)
-        .bind(amount)
-        .bind(period.as_str())
-        .bind(action.as_str())
-        .fetch_one(self.conn())
-        .await?;
+            )
+            .bind(DEFAULT_ORG)
+            .bind(scope.as_str())
+            .bind(scope_id)
+            .bind(amount)
+            .bind(period.as_str())
+            .bind(action.as_str())
+            .fetch_one(self.conn())
+            .await?;
         Ok(id)
     }
 
     pub async fn delete_budget(&mut self, id: i64) -> Result<bool> {
-        let r = sqlx::query("DELETE FROM budgets WHERE id = ? AND org_id = ?")
+        let r = self
+            .q("DELETE FROM budgets WHERE id = ? AND org_id = ?")
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
             .await?;
         Ok(r.rows_affected() == 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delta(budget_id: i64, period: &str, n: u64) -> UsageDelta {
+        UsageDelta {
+            budget_id,
+            period_start: period.to_string(),
+            delta_micros: n,
+        }
+    }
+
+    /// Every process locks the rows in this order; with another order two
+    /// processes adding to the same budgets can wait on each other.
+    #[test]
+    fn deltas_are_written_by_budget_then_period_and_empty_ones_are_skipped() {
+        let shuffled = [
+            delta(9, "2999-02-01", 1),
+            delta(3, "2999-02-01", 1),
+            delta(9, "2999-01-01", 1),
+            delta(5, "2999-01-01", 0),
+            delta(3, "2999-01-01", 1),
+        ];
+        let order: Vec<(i64, &str)> = in_lock_order(&shuffled)
+            .into_iter()
+            .map(|d| (d.budget_id, d.period_start.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (3, "2999-01-01"),
+                (3, "2999-02-01"),
+                (9, "2999-01-01"),
+                (9, "2999-02-01")
+            ]
+        );
+    }
+
+    /// Two processes adding to the same budgets, each given them in the
+    /// opposite order, neither fails and the sums are exact.
+    #[tokio::test]
+    async fn opposite_callers_do_not_deadlock_and_add_up() {
+        let store = Store::open_in_memory().await.unwrap();
+        let mut ids = Vec::new();
+        let mut tx = store.begin().await.unwrap();
+        for scope_id in 1..=4 {
+            ids.push(
+                tx.upsert_budget(
+                    LimitScope::Team,
+                    Some(scope_id),
+                    1_000_000,
+                    Period::Monthly,
+                    BudgetAction::Block,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        tx.commit().await.unwrap();
+        let deltas: Vec<UsageDelta> = ids.iter().map(|id| delta(*id, "2999-01-01", 1)).collect();
+        let reversed: Vec<UsageDelta> = deltas.iter().rev().cloned().collect();
+        let (a, b) = (store.clone(), store.clone());
+        let one = tokio::spawn(async move {
+            for _ in 0..25 {
+                a.add_budget_usage(&deltas, &[]).await.unwrap();
+            }
+        });
+        let two = tokio::spawn(async move {
+            for _ in 0..25 {
+                b.add_budget_usage(&reversed, &[]).await.unwrap();
+            }
+        });
+        one.await.unwrap();
+        two.await.unwrap();
+        for id in ids {
+            assert_eq!(
+                store.budget_usage(id, "2999-01-01").await.unwrap(),
+                Some((50, false))
+            );
+        }
+    }
+
+    /// The read-back after a flush has no size limit: 1500 budgets with
+    /// spend, and 17000 pairs asked for in all (more than SQLite takes in
+    /// one statement, and more than PostgreSQL's parser takes in one tuple
+    /// list).
+    #[tokio::test]
+    async fn the_read_back_handles_many_budgets() {
+        let store = Store::open_in_memory().await.unwrap();
+        let mut ids = Vec::new();
+        let mut tx = store.begin().await.unwrap();
+        for scope_id in 1..=1500 {
+            ids.push(
+                tx.upsert_budget(
+                    LimitScope::Team,
+                    Some(scope_id),
+                    1_000_000,
+                    Period::Monthly,
+                    BudgetAction::Block,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        tx.commit().await.unwrap();
+        let deltas: Vec<UsageDelta> = ids.iter().map(|id| delta(*id, "2999-01-01", 3)).collect();
+        let mut wanted: Vec<(i64, String)> = ids
+            .iter()
+            .map(|id| (*id, "2999-01-01".to_string()))
+            .collect();
+        // Pairs nobody has: they are asked for and absent.
+        wanted.extend((0..15_500).map(|i| (1_000_000 + i, "2999-01-01".to_string())));
+        let totals = store.add_budget_usage(&deltas, &wanted).await.unwrap();
+        assert_eq!(totals.len(), 1500);
+        assert!(totals.iter().all(|t| t.spent_micros == 3 && !t.alerted));
+        let mut got: Vec<i64> = totals.iter().map(|t| t.budget_id).collect();
+        got.sort();
+        assert_eq!(got, ids);
     }
 }

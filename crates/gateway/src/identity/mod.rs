@@ -1,6 +1,8 @@
 //! Identity types: roles, the request principal and email normalization.
 
+pub mod external;
 pub mod limiter;
+pub mod oidc;
 pub mod password;
 pub mod policy;
 

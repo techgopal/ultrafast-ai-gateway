@@ -64,6 +64,7 @@ mod tests {
             total_timeout: Duration::from_secs(300),
             breaker: BreakerSettings::DEFAULT,
             cache: crate::cache::RouteCache::default(),
+            guardrails: Vec::new(),
         }
     }
 

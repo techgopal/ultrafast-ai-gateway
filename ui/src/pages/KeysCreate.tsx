@@ -9,6 +9,7 @@ import { Field } from "@/components/Field";
 import { applyApiError, useFormFailure, useSubmit } from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
+import { GuardrailPicker, KEY_HINT } from "@/components/GuardrailPicker";
 import { TagsEditor } from "@/components/TagsEditor";
 import { Input } from "@/components/ui/input";
 import {
@@ -79,6 +80,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
     allow: "all",
     allowed: [],
     tags: [],
+    guardrail_ids: [],
   };
   const form = useForm({
     defaultValues: start,
@@ -301,6 +303,28 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
           />
         )}
       </form.Field>
+
+      {can(me, { type: "manageGuardrails" }) && !waiting ? (
+        <form.Field name="guardrail_ids">
+          {(field) => (
+            <Field
+              group
+              label="Guardrails"
+              name={field.name}
+              hint={KEY_HINT}
+              error={failure.fieldError(field.name)}
+            >
+              {(wiring) => (
+                <GuardrailPicker
+                  wiring={wiring}
+                  value={field.state.value ?? []}
+                  onChange={field.handleChange}
+                />
+              )}
+            </Field>
+          )}
+        </form.Field>
+      ) : null}
 
       <FormDialogFooter
         running={create.isPending}

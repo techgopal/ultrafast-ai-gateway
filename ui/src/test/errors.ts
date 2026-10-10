@@ -71,6 +71,17 @@ export const fieldMessages = {
   routeRetries: "must be 0 to 5",
   routeFirstToken: "must be 1000 to 300000",
   routeTotalBelowFirst: "must not be below the first token timeout",
+  // The alerts (`api/alerts.rs`, `config.rs`).
+  channelUrlScheme: "URL must start with http:// or https://",
+  channelUrlInvalid: "URL is not valid",
+  channelMissing: "No such channel.",
+  needsUrl: "Set a URL before enabling this channel.",
+  budgetMissing: "no such budget",
+  // The guardrails (`api/guardrails.rs`).
+  guardrailRulesNeeded: "add at least one rule",
+  guardrailMatcherKind: "matcher must be keywords, regex or pii",
+  guardrailPiiType:
+    "unknown PII type; use EMAIL, PHONE, CREDIT_CARD, IBAN, US_SSN, IPV4, IPV6 or SECRET",
 } as const;
 
 /** A 422 of the gateway for these fields. */
@@ -149,6 +160,19 @@ export const errors = {
     "This provider already has a model of this name.",
   ),
   route_exists: error(409, "route_exists", "A route of this name already exists."),
+  alert_channel_exists: error(
+    409,
+    "alert_channel_exists",
+    "An alert channel with this name already exists.",
+  ),
+  alert_rule_exists: error(409, "alert_rule_exists", "An alert rule with this name already exists."),
+  guardrail_exists: error(409, "guardrail_exists", "A guardrail with this name already exists."),
+  prompt_exists: error(409, "prompt_exists", "A prompt template with this name already exists."),
+  export_blocked: error(
+    409,
+    "export_blocked",
+    "The export was not made: a version of the prompt template(s) 'welcome' cannot be read, so the file would leave them out. Fix or delete them first.",
+  ),
   sync_unsupported: error(422, "sync_unsupported", "Add Azure deployments as models by name."),
   sync_failed: error(502, "sync_failed", "The provider did not return its models."),
 } as const satisfies Record<string, GatewayError>;
@@ -195,4 +219,8 @@ export const pipelineErrors = {
     { code: "budget_exceeded", retryAfter: 7200 },
   ),
   unavailable: pipelineError(503, "upstream_error", "No provider could serve this request."),
+  tooLarge: pipelineError(413, "invalid_request_error", "The audio file is too large."),
+  guardrail: pipelineError(400, "invalid_request_error", "Blocked by guardrail 'house-rules'.", {
+    code: "guardrail_blocked",
+  }),
 } as const satisfies Record<string, PipelineError>;

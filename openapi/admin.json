@@ -7,9 +7,1094 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "2.0.0-beta.2"
+    "version": "2.0.0-beta.3"
   },
   "paths": {
+    "/api/alerts/channels": {
+      "get": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_channels_list",
+        "responses": {
+          "200": {
+            "description": "Every channel, by name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_channels_create",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateChannelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new channel and its signing secret. The secret is shown once, here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedChannel"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`alert_channel_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/alerts/channels/{id}": {
+      "delete": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_channels_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the channel.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The channel is deleted; rules stop sending to it."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_channels_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the channel.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateChannelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The channel after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form, or changes nothing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`alert_channel_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/alerts/channels/{id}/rotate-secret": {
+      "post": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_channels_rotate_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the channel.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The new signing secret, shown once, here. The old one stops working at once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotatedSecret"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/alerts/channels/{id}/test": {
+      "post": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_channels_test",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the channel.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A test event was sent, once, and stored with the state `test`. `ok` says whether the receiver answered 2xx.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/alerts/events": {
+      "get": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_events_list",
+        "parameters": [
+          {
+            "name": "rule_id",
+            "in": "query",
+            "description": "Only the events of this rule.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "`firing`, `resolved` or `test`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "From 1 to 200; 50 when left out.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "before_id",
+            "in": "query",
+            "description": "Only events older than this id: the next page.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Events, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some query fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/alerts/rules": {
+      "get": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_rules_list",
+        "responses": {
+          "200": {
+            "description": "Every rule, by name, with what it is firing for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_rules_create",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRuleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new rule.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`alert_rule_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/alerts/rules/{id}": {
+      "delete": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_rules_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the rule.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The rule is deleted; its events stay."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "alerts"
+        ],
+        "operationId": "alerts_rules_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the rule.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRuleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The rule after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form, or changes nothing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`alert_rule_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/audit": {
       "get": {
         "tags": [
@@ -384,6 +1469,173 @@
         ]
       }
     },
+    "/api/auth/methods": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_methods",
+        "responses": {
+          "200": {
+            "description": "How people can sign in: always with a password, and with the configured single sign-on provider when it is on.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInMethods"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/oidc/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Finish signing in with the identity provider",
+        "description": "Where the identity provider sends the browser back: a GET that needs no session and no CSRF header, the flow cookie and `state` being what ties it to the start. Limited to 60 callbacks per client address in 15 minutes, counted apart from password sign-in failures (a callback can never lock anyone out of password sign-in); without a provider nothing is counted and the answer is `config`. Over the limit the browser is sent to `/sign-in?sso_error=rate_limited`.",
+        "operationId": "auth_oidc_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "description": "The authorization code the identity provider made.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "The `state` of the attempt.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "The error code when the identity provider refused.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error_description",
+            "in": "query",
+            "description": "Ignored.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Signed in: the session cookie is set and the browser is sent to the path given at the start (`/` when it was not a console path). Not signed in: the browser is sent to `/sign-in?sso_error=<code>` with code `state`, `expired`, `idp`, `token`, `not_allowed`, `disabled`, `rate_limited` or `config`. The flow cookie is cleared either way.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The console path, or the sign-in page with the reason."
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The cleared flow cookie, and the session cookie when signed in."
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/oidc/start": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Start signing in with the identity provider",
+        "description": "A browser navigation, not a call for a script: a GET that needs no session and no CSRF header. Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the limit the browser is sent to `/sign-in?sso_error=rate_limited` and a flow cookie already set is left alone.",
+        "operationId": "auth_oidc_start",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "Where to send the browser after sign-in: a path inside the console that starts with a single `/`. Anything else means `/`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "The browser is sent to the identity provider. The flow cookie `uf_oidc` (HttpOnly, SameSite=Lax, Path=/api/auth/oidc, 10 minutes) is set. Without a provider that can be reached, to `/sign-in?sso_error=config`; over the start limit, to `/sign-in?sso_error=rate_limited` (no cookie is set).",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The identity provider's authorization address."
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The flow cookie `uf_oidc`."
+              }
+            }
+          },
+          "404": {
+            "description": "`oidc_disabled`: single sign-on is not turned on.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/password": {
       "post": {
         "tags": [
@@ -501,20 +1753,22 @@
         "tags": [
           "backup"
         ],
-        "summary": "Downloads a consistent copy of the database: a SQLite file with every\ntable, taken of one moment while the gateway goes on. It holds\neverything the database holds (users with their password hashes,\nsessions, logs, provider credentials as they are stored) except the\nmaster key, which is not in it: the credentials are unreadable without\nthat key, and so the copy is of little use without it. Admin only; the\ndownload is audited.",
+        "summary": "Downloads a consistent copy of the database: a SQLite file with every\ntable, taken of one moment while the gateway goes on. It holds\neverything the database holds (users with their password hashes,\nsessions, logs, provider credentials as they are stored) except the\nmaster key, which is not in it: the credentials are unreadable without\nthat key, and so the copy is of little use without it. Admin only; the\ndownload is audited. On PostgreSQL there is no file to give: 409\n`backup_unsupported`, with the advice to use `pg_dump`.",
         "operationId": "backup_download",
         "responses": {
           "200": {
-            "description": "The database as a SQLite file.",
+            "description": "The database as a SQLite file (`application/vnd.sqlite3`; also declared as `application/octet-stream` so that generated clients return the bytes).",
             "content": {
               "application/vnd.sqlite3": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "integer",
-                    "format": "int32",
-                    "minimum": 0
-                  }
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
@@ -531,6 +1785,16 @@
           },
           "403": {
             "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The database is PostgreSQL, which is backed up with pg_dump (code backup_unsupported).",
             "content": {
               "application/json": {
                 "schema": {
@@ -838,6 +2102,16 @@
               }
             }
           },
+          "409": {
+            "description": "A prompt template has a version that cannot be read, so the file would leave it out; the message names it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Something went wrong.",
             "content": {
@@ -953,6 +2227,686 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ImportReport"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/guardrails": {
+      "get": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_list",
+        "responses": {
+          "200": {
+            "description": "Every guardrail, by name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardrailList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_create",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGuardrailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new guardrail and, for an external one, its signing secret. The secret is shown once, here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedGuardrail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`guardrail_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them. A rule that does not compile is `rules[0]`, `rules[1]`, ...",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/guardrails/test": {
+      "post": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_test",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuardrailTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the rules do to the text, or with `call_external` what an external guardrail decided. Nothing is stored or logged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardrailTestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/guardrails/{id}": {
+      "get": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the guardrail.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The guardrail.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardrailView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the guardrail.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The guardrail is deleted; routes and keys lose it."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the guardrail.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateGuardrailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The guardrail after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardrailView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form, or changes nothing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`guardrail_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/guardrails/{id}/rotate-secret": {
+      "post": {
+        "tags": [
+          "guardrails"
+        ],
+        "operationId": "guardrails_rotate_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the guardrail.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The new signing secret, shown once, here. The old one stops working at once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotatedSecret"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The guardrail is not an external one, so it has no secret.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
                 }
               }
             }
@@ -1286,7 +3240,7 @@
         "tags": [
           "keys"
         ],
-        "summary": "Replaces the tags of a key. Admins only: the key's tags win over a call's.",
+        "summary": "Replaces the tags or the guardrails of a key. Admins only: the key's tags\nwin over a call's, and guardrails are the admin's.",
         "operationId": "keys_update",
         "parameters": [
           {
@@ -1321,7 +3275,7 @@
         },
         "responses": {
           "200": {
-            "description": "The key with its new tags.",
+            "description": "The key after the change.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1748,12 +3702,30 @@
             }
           },
           {
+            "name": "endpoint",
+            "in": "query",
+            "description": "Only calls on this endpoint, as the row names it: `chat`, `messages`, `responses`, `embeddings`, `images`, `transcriptions`, `translations`, `speech` or `playground`. Combines with the other filters.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "errors",
             "in": "query",
             "description": "`true`: only calls answered with a status of 400 or more. Combines with the other filters.",
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "guardrail",
+            "in": "query",
+            "description": "Only calls whose worst guardrail action was this: `blocked`, `redacted` or `flagged` (a block is worse than a redaction, a redaction worse than a flag). Combines with the other filters.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -2564,6 +4536,1052 @@
         "security": [
           {
             "session": []
+          }
+        ]
+      }
+    },
+    "/api/playground/config": {
+      "get": {
+        "tags": [
+          "playground"
+        ],
+        "operationId": "playground_config",
+        "responses": {
+          "200": {
+            "description": "The limits of the playground. Any signed-in user may read them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundConfig"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/playground/images": {
+      "post": {
+        "tags": [
+          "playground"
+        ],
+        "operationId": "playground_images",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaygroundImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The answer, in the OpenAI shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundImageAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not an image request, or the model cannot generate images. The body is in the OpenAI error shape, as on `/v1`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such model or route, in the OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider failed; OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No provider could serve the call; OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/playground/speech": {
+      "post": {
+        "tags": [
+          "playground"
+        ],
+        "operationId": "playground_speech",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaygroundSpeechRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The audio, streamed as the provider makes it, with the provider's content type (`audio/mpeg` for `mp3`; also declared as `application/octet-stream` so that generated clients return the bytes).",
+            "content": {
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not a speech request, or the model cannot speak. The body is in the OpenAI error shape, as on `/v1`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such model or route, in the OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider failed; OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No provider could serve the call; OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The provider did not answer in time; the call was not repeated. OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/playground/transcriptions": {
+      "post": {
+        "tags": [
+          "playground"
+        ],
+        "operationId": "playground_transcriptions",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaygroundTranscriptionForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The transcript, in the format asked for (JSON, or text).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The form is not a transcription request, or the model cannot transcribe. The body is in the OpenAI error shape, as on `/v1`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not call this model or route, the call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. The body is in the OpenAI error shape when it is the model, as on `/v1`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such model or route, in the OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The file is larger than the audio cap.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A limit or a budget refuses the call; `Retry-After` says when to come back. OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The provider failed; OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No provider could serve the call; OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The provider did not answer in time; the call was not repeated. OpenAI error shape.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/prompts": {
+      "get": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_list",
+        "responses": {
+          "200": {
+            "description": "Every prompt template, by name. Any signed-in user may read them: anyone who can call may use any template.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_create",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePromptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new template, with its version 1.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only admins and team leads make templates, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`prompt_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 1 MiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them (`messages[0].role`, `params.temperature`, `name` for an `@` in the name, when there are already 1000 templates or when a team lead has already made 100, ...).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/prompts/{id}": {
+      "get": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_view",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the template.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The template with all its versions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the template.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The template and its versions are deleted. The request logs keep the `name@version` they recorded."
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admins delete any template, a team lead the ones they made; or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/prompts/{id}/render": {
+      "post": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_render",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the template.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The messages with the values put in, exactly as a call that names the template gets them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderedPrompt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A variable is missing or unknown, a value is longer than 32 KiB, or the rendered text is larger than 1 MiB; the message names the variable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The template or the version does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/prompts/{id}/versions": {
+      "post": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_add_version",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the template.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVersionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new version, numbered after the latest. The versions before it are as they were.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admins change any template, a team lead the ones they made; or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is larger than 1 MiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid, or the template has 200 versions; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/prompts/{id}/versions/{version}": {
+      "get": {
+        "tags": [
+          "prompts"
+        ],
+        "operationId": "prompts_version",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the template.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "The version, from 1.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The version, as it was written. A version never changes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The template or the version does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
           }
         ]
       }
@@ -3740,6 +6758,280 @@
           },
           "422": {
             "description": "A value is out of range; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/settings/oidc": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "settings_oidc_view",
+        "responses": {
+          "200": {
+            "description": "The single sign-on settings, without the secret.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "settings_oidc_update",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OidcUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value is not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/settings/oidc/test": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "operationId": "settings_oidc_test",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OidcTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the provider answered. A provider that cannot be used is `ok: false` with an `error`, not an HTTP error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcTestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "There is no issuer to test, or it is not valid; `fields` names it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5626,6 +8918,14 @@
         },
         "additionalProperties": false
       },
+      "Action": {
+        "type": "string",
+        "enum": [
+          "block",
+          "redact",
+          "flag"
+        ]
+      },
       "AddMemberRequest": {
         "type": "object",
         "required": [
@@ -5634,6 +8934,57 @@
         "properties": {
           "email": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AlertChannelEntry": {
+        "type": "object",
+        "description": "An alert channel: its name and kind only. Its URL and secret are never in\na file; a channel an import creates is off until its URL is set.",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`webhook` or `slack`."
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AlertRuleEntry": {
+        "type": "object",
+        "description": "An alert rule. Its channels are named; a `budget` rule names its budget by\n`{scope, name, period}` (or `null`: every budget) instead of an id.",
+        "required": [
+          "name",
+          "kind",
+          "params"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of channels."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`budget`, `error_rate` or `circuit_open`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object",
+            "description": "As the API takes them, except that a `budget` rule has\n`{\"budget\": {\"scope\", \"name\", \"period\"} or null, \"percent\"}`."
           }
         },
         "additionalProperties": false
@@ -5730,6 +9081,14 @@
             "type": "string"
           }
         }
+      },
+      "AuthProviderView": {
+        "type": "string",
+        "description": "How a user signs in, as `/api` shows it.",
+        "enum": [
+          "password",
+          "oidc"
+        ]
       },
       "BudgetEntry": {
         "type": "object",
@@ -5864,6 +9223,79 @@
         },
         "additionalProperties": false
       },
+      "ChannelList": {
+        "type": "object",
+        "required": [
+          "channels"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelView"
+            }
+          }
+        }
+      },
+      "ChannelRule": {
+        "type": "object",
+        "description": "A rule that sends to a channel.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "ChannelView": {
+        "type": "object",
+        "description": "A channel as `/api` shows it: the host of its URL, never the URL or the\nsecret.",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "url_host",
+          "enabled",
+          "created_at",
+          "rules"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelRule"
+            },
+            "description": "The rules that send to this channel."
+          },
+          "url_host": {
+            "type": "string",
+            "description": "Scheme, host and port of the URL, like `https://hooks.slack.com`."
+          }
+        }
+      },
       "ConfigFile": {
         "type": "object",
         "description": "The configuration file. `format` and `version` come first.",
@@ -5872,6 +9304,19 @@
           "version"
         ],
         "properties": {
+          "alert_channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertChannelEntry"
+            },
+            "description": "Left out of the file when there are none."
+          },
+          "alert_rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertRuleEntry"
+            }
+          },
           "budgets": {
             "type": "array",
             "items": {
@@ -5881,6 +9326,13 @@
           "format": {
             "type": "string",
             "description": "Always `ultrafast-config`."
+          },
+          "guardrails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailEntry"
+            },
+            "description": "Left out of the file when there are none."
           },
           "limits": {
             "type": "array",
@@ -5893,6 +9345,13 @@
             "items": {
               "$ref": "#/components/schemas/ModelEntry"
             }
+          },
+          "prompts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PromptEntry"
+            },
+            "description": "Prompt templates with all their versions. Left out of the file when\nthere are none."
           },
           "providers": {
             "type": "array",
@@ -5924,6 +9383,119 @@
         },
         "additionalProperties": false
       },
+      "CreateChannelRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "url"
+        ],
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "On when left out."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`webhook` (the gateway's own JSON) or `slack` (`{\"text\": ...}`, which\nSlack and compatible incoming webhooks read)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "description": "Where to post. A query string is allowed. Kept encrypted and never\nshown again; only its scheme, host and port are.",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateGuardrailRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Up to 500 characters. Left out: none."
+          },
+          "directions": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Directions",
+                "description": "`external` only: what it is asked about. Left out: `both`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "On when left out."
+          },
+          "fail_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`external` only: what to do when the call fails, `open` (let the text\nthrough and flag it) or `closed` (block). Left out: `open`."
+          },
+          "is_default": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Applies to every call of the gateway. Off when left out."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`rules` (keywords, regular expressions and PII detectors, run in the\ngateway) or `external` (a signed webhook that decides)."
+          },
+          "name": {
+            "type": "string",
+            "description": "Unique, 1 to 100 characters."
+          },
+          "rules": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RuleSpec"
+            },
+            "description": "`rules` only: 1 to 50 rules."
+          },
+          "timeout_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`external` only: how long to wait, 1 000 to 10 000. Left out: 3 000."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`external` only, required: where to post the text. Kept encrypted and\nnever shown again; only its scheme, host and port are.",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateKeyRequest": {
         "type": "object",
         "required": [
@@ -5945,6 +9517,17 @@
               "string",
               "null"
             ]
+          },
+          "guardrail_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The guardrails applied to every call of the key, in this order, after\nthe gateway-wide ones and the route's. Admins only: sending the field\nat all, even `[]`, is refused for anyone else. At most 20."
           },
           "name": {
             "type": "string"
@@ -5997,6 +9580,52 @@
         },
         "additionalProperties": false
       },
+      "CreatePromptRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "messages"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Up to 500 characters. Left out: none."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateMessage"
+            },
+            "description": "Version 1: 1 to 64 messages. A variable is `{{name}}` with a name of\nletters, digits and `_` that does not start with a digit, up to 64\ncharacters; other braces are text. At most 64 variables."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Used when a call names no model: `provider/model` or a route."
+          },
+          "name": {
+            "type": "string",
+            "description": "Unique, 1 to 100 characters. This is the `id` a call names. Case\nsensitive."
+          },
+          "params": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Params",
+                "description": "Settings used where a call sets none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateProviderRequest": {
         "type": "object",
         "required": [
@@ -6031,6 +9660,48 @@
         },
         "additionalProperties": false
       },
+      "CreateRuleRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "params",
+          "channel_ids"
+        ],
+        "properties": {
+          "channel_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The channels that are told, by id."
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "On when left out."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`budget`, `error_rate` or `circuit_open`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object",
+            "description": "By kind. `budget`: `{\"budget_id\": id or null, \"percent\": 1-100}`.\n`error_rate`: `{\"scope\": \"gateway\"|\"route\"|\"provider\"|\"key\",\n\"subject\": name or null, \"percent\": 1-100, \"window_minutes\": 5-60\n(5), \"min_requests\": 1-100000 (20)}`. `circuit_open`:\n`{\"provider\": name or null, \"model\": name or null}`. Unknown fields\nare refused.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateTokenRequest": {
         "type": "object",
         "required": [
@@ -6048,6 +9719,74 @@
           }
         },
         "additionalProperties": false
+      },
+      "CreateVersionRequest": {
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateMessage"
+            },
+            "description": "As for a new template. A version stands alone: it keeps nothing of\nthe one before."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "params": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Params"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreatedChannel": {
+        "type": "object",
+        "required": [
+          "channel",
+          "secret"
+        ],
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/ChannelView"
+          },
+          "secret": {
+            "type": "string",
+            "description": "The signing secret of the channel. It is shown once, in this answer,\nand cannot be read again."
+          }
+        }
+      },
+      "CreatedGuardrail": {
+        "type": "object",
+        "description": "A created guardrail and, for an external one, its signing secret.",
+        "required": [
+          "guardrail",
+          "secret"
+        ],
+        "properties": {
+          "guardrail": {
+            "$ref": "#/components/schemas/GuardrailView"
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The signing secret of an `external` guardrail. It is shown once, in\nthis answer, and cannot be read again. `null` for `rules`."
+          }
+        }
       },
       "CreatedKey": {
         "type": "object",
@@ -6081,6 +9820,125 @@
           }
         }
       },
+      "DatabaseKind": {
+        "type": "string",
+        "description": "Which database the gateway runs on.",
+        "enum": [
+          "sqlite",
+          "postgres"
+        ]
+      },
+      "Direction": {
+        "type": "string",
+        "enum": [
+          "input",
+          "output"
+        ]
+      },
+      "Directions": {
+        "type": "string",
+        "description": "The directions a rule applies to.",
+        "enum": [
+          "input",
+          "output",
+          "both"
+        ]
+      },
+      "EventList": {
+        "type": "object",
+        "required": [
+          "events"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EventView"
+            }
+          }
+        }
+      },
+      "EventView": {
+        "type": "object",
+        "description": "One notification, as `/api` shows it. Metadata only.",
+        "required": [
+          "id",
+          "rule_id",
+          "rule_name",
+          "kind",
+          "subject",
+          "state",
+          "summary",
+          "details",
+          "at",
+          "deliveries"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "UTC, `YYYY-MM-DD HH:MM:SS`."
+          },
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "One entry per channel once every delivery finished:\n`{channel_id, channel_name, ok, status, tries, error}`. Empty before."
+          },
+          "details": {
+            "type": "object",
+            "description": "What the alert is about, by kind."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "rule_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`null` once the rule is deleted."
+          },
+          "rule_name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`firing`, `resolved` or `test`."
+          },
+          "subject": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      },
+      "ExternalEntry": {
+        "type": "object",
+        "description": "How an external guardrail behaves. Its URL and signing secret are never\nin a file.",
+        "properties": {
+          "directions": {
+            "$ref": "#/components/schemas/Directions",
+            "description": "What it is asked about. Not in the file: `both`."
+          },
+          "fail_mode": {
+            "type": "string",
+            "description": "`open` or `closed`. Not in the file: `open`."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "1 000 to 10 000. Not in the file: 3 000."
+          }
+        },
+        "additionalProperties": false
+      },
       "FallbackView": {
         "type": "object",
         "required": [
@@ -6100,6 +9958,63 @@
             "type": "integer",
             "format": "int64",
             "description": "Zero for a caller who is not an admin."
+          }
+        }
+      },
+      "Firing": {
+        "type": "object",
+        "description": "A subject a rule is firing for.",
+        "required": [
+          "subject",
+          "since"
+        ],
+        "properties": {
+          "since": {
+            "type": "string",
+            "description": "UTC, `YYYY-MM-DD HH:MM:SS`."
+          },
+          "subject": {
+            "type": "string",
+            "description": "`budget:<id>:<period start>`, `route:<name>`, `provider:<name>`,\n`key:<id>`, `gateway` or `target:<provider>/<model>`."
+          }
+        }
+      },
+      "FlagLog": {
+        "type": "object",
+        "description": "A flag rule that matched.",
+        "required": [
+          "guardrail_id",
+          "rule_id"
+        ],
+        "properties": {
+          "guardrail_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rule_id": {
+            "type": "string"
+          }
+        }
+      },
+      "FlagView": {
+        "type": "object",
+        "description": "A rule that flagged the text.",
+        "required": [
+          "guardrail_id",
+          "guardrail_name",
+          "rule_id"
+        ],
+        "properties": {
+          "guardrail_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "0 for rules sent with the request."
+          },
+          "guardrail_name": {
+            "type": "string"
+          },
+          "rule_id": {
+            "type": "string"
           }
         }
       },
@@ -6155,6 +10070,276 @@
           }
         },
         "additionalProperties": false
+      },
+      "GuardrailEntry": {
+        "type": "object",
+        "description": "A guardrail. The URL and the signing secret of an external one are never\nin a file; one an import creates is off until its URL is set.",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "external": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExternalEntry",
+                "description": "An external guardrail's settings; left out for `rules`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "Applies to every call of the gateway."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`rules` or `external`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleSpec"
+            },
+            "description": "The rules of a `rules` guardrail; empty for an external one."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GuardrailList": {
+        "type": "object",
+        "required": [
+          "guardrails"
+        ],
+        "properties": {
+          "guardrails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailView"
+            }
+          }
+        }
+      },
+      "GuardrailLog": {
+        "type": "object",
+        "description": "The guardrail record of a call: `None` for a direction that found nothing.",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/LoggedAction",
+            "description": "The worst action of either direction."
+          },
+          "input": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SideLog"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SideLog"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "GuardrailRef": {
+        "type": "object",
+        "description": "A guardrail by id and name.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GuardrailTestRequest": {
+        "type": "object",
+        "description": "What a test sends: rules, or the id of a stored guardrail.",
+        "required": [
+          "direction",
+          "text"
+        ],
+        "properties": {
+          "call_external": {
+            "type": "boolean",
+            "description": "Call the external guardrail `guardrail_id` for real, as a call would\n(signed, with its timeout and fail mode): the text is sent to its\nURL, and the outcome says what it decided or, in `flags`, why it\ncould not (`external_error:<reason>`). The hook is asked only when\nthe guardrail covers `direction`. Without this, an external guardrail\nis never called by a test, and sending its id is refused (422).\nNot for `rules`."
+          },
+          "direction": {
+            "$ref": "#/components/schemas/Direction",
+            "description": "`input` or `output`: which rules apply."
+          },
+          "guardrail_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "A stored guardrail, enabled or not."
+          },
+          "rules": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RuleSpec"
+            },
+            "description": "Rules to try, as for a new guardrail. Send these or `guardrail_id`."
+          },
+          "text": {
+            "type": "string",
+            "description": "Up to 20 000 characters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "GuardrailTestResult": {
+        "type": "object",
+        "required": [
+          "outcome",
+          "redacted_text"
+        ],
+        "properties": {
+          "outcome": {
+            "$ref": "#/components/schemas/OutcomeView"
+          },
+          "redacted_text": {
+            "type": "string",
+            "description": "The text as the guardrail leaves it: redacted, or unchanged when it\nis blocked or only flagged."
+          }
+        }
+      },
+      "GuardrailView": {
+        "type": "object",
+        "description": "A guardrail as `/api` shows it: the host of an external one's URL, never\nthe URL or the secret.",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "kind",
+          "enabled",
+          "is_default",
+          "rules",
+          "url_host",
+          "timeout_ms",
+          "fail_mode",
+          "directions",
+          "created_at",
+          "routes",
+          "key_count",
+          "usable"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "directions": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Directions",
+                "description": "What an external guardrail is asked about; `null` for `rules`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "fail_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`open` or `closed`; `external` only."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "Applies to every call of the gateway."
+          },
+          "key_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many keys it is attached to."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`rules` or `external`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailRef"
+            },
+            "description": "The routes it is attached to."
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleSpec"
+            },
+            "description": "The rules of a `rules` guardrail; empty for an `external` one."
+          },
+          "timeout_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`external` only; `null` for `rules`."
+          },
+          "url_host": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`external`: scheme, host and port of the URL, like\n`https://guard.example.com`; empty until a URL is set (a guardrail an\nimport made). `null` for `rules`."
+          },
+          "usable": {
+            "type": "boolean",
+            "description": "Whether the gateway can use it as stored. `false` for an external\nguardrail whose URL or secret cannot be read (it fails by its mode on\nevery check), and for an enabled rules guardrail whose rules the\ngateway is not running (they do not compile). A disabled one is `true`."
+          }
+        }
       },
       "ImportReport": {
         "type": "object",
@@ -6271,7 +10456,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`provider`, `team`, `model`, `route`, `limit`, `budget` or `settings`."
+            "description": "`provider`, `team`, `model`, `guardrail`, `prompt`, `route`, `limit`,\n`budget`, `alert_channel`, `alert_rule` or `settings`."
           },
           "name": {
             "type": "string"
@@ -6309,6 +10494,7 @@
           "allowed",
           "tags",
           "team_only",
+          "guardrails",
           "status"
         ],
         "properties": {
@@ -6333,6 +10519,13 @@
               "string",
               "null"
             ]
+          },
+          "guardrails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailRef"
+            },
+            "description": "The guardrails applied to every call of the key, in order. Anyone who\nmay see the key sees them; only an admin changes them."
           },
           "id": {
             "type": "integer",
@@ -6392,6 +10585,27 @@
             "description": "A non-admin made it for another user: it calls only what everyone\nor its team may use, and is revoked when its owner is deleted."
           }
         }
+      },
+      "KeywordsMatcher": {
+        "type": "object",
+        "description": "The words of a keyword rule (a named type so that generated clients get a\nname for it).",
+        "required": [
+          "words"
+        ],
+        "properties": {
+          "whole_word": {
+            "type": "boolean",
+            "description": "Match whole words only (the default); `false` matches substrings."
+          },
+          "words": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Up to 1 000, each 1 to 256 characters. Case-insensitive."
+          }
+        },
+        "additionalProperties": false
       },
       "LimitEntry": {
         "type": "object",
@@ -6575,6 +10789,8 @@
           "estimated",
           "duration_ms",
           "tags",
+          "guardrails",
+          "prompt",
           "attempts"
         ],
         "properties": {
@@ -6607,6 +10823,17 @@
           "estimated": {
             "type": "boolean",
             "description": "The tokens and cost are an estimate: a stream that ended without the\nprovider's report (the caller went away, or an error came after\ncontent was sent) is charged the input of the call and the streamed\ncharacters / 4, and `priced` stays true when the model has a price."
+          },
+          "guardrails": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GuardrailLog",
+                "description": "What the guardrails found, when they found anything: the worst\naction, and per direction the guardrails checked with (ids and names),\nthe one that blocked, the replacements made by PII type or rule id, and\nthe flag rules that matched. Never the text that matched. Only an\nadmin sees those details; everyone else gets the action of the call\nand of each direction, with `checked_with` empty. `null` when nothing\nwas found."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "type": "integer",
@@ -6648,6 +10875,13 @@
           },
           "priced": {
             "type": "boolean"
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The prompt template the call used, as `name@version`, or `null`.\nIt is text: it stays when the template is deleted."
           },
           "provider": {
             "type": [
@@ -6745,7 +10979,9 @@
           "cached",
           "estimated",
           "duration_ms",
-          "tags"
+          "tags",
+          "guardrails",
+          "prompt"
         ],
         "properties": {
           "at": {
@@ -6771,6 +11007,17 @@
           "estimated": {
             "type": "boolean",
             "description": "The tokens and cost are an estimate: a stream that ended without the\nprovider's report (the caller went away, or an error came after\ncontent was sent) is charged the input of the call and the streamed\ncharacters / 4, and `priced` stays true when the model has a price."
+          },
+          "guardrails": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GuardrailLog",
+                "description": "What the guardrails found, when they found anything: the worst\naction, and per direction the guardrails checked with (ids and names),\nthe one that blocked, the replacements made by PII type or rule id, and\nthe flag rules that matched. Never the text that matched. Only an\nadmin sees those details; everyone else gets the action of the call\nand of each direction, with `checked_with` empty. `null` when nothing\nwas found."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "type": "integer",
@@ -6812,6 +11059,13 @@
           },
           "priced": {
             "type": "boolean"
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The prompt template the call used, as `name@version`, or `null`.\nIt is text: it stays when the template is deleted."
           },
           "provider": {
             "type": [
@@ -6869,6 +11123,15 @@
             "format": "int64"
           }
         }
+      },
+      "LoggedAction": {
+        "type": "string",
+        "description": "What the checks of a call did, worst first: a block, else a redaction,\nelse a flag. The order is the order of severity.",
+        "enum": [
+          "flagged",
+          "redacted",
+          "blocked"
+        ]
       },
       "LoginLimits": {
         "type": "object",
@@ -6931,6 +11194,47 @@
             "$ref": "#/components/schemas/UserView"
           }
         }
+      },
+      "Matcher": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "keywords"
+            ],
+            "properties": {
+              "keywords": {
+                "$ref": "#/components/schemas/KeywordsMatcher"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "regex"
+            ],
+            "properties": {
+              "regex": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "pii"
+            ],
+            "properties": {
+              "pii": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PiiType"
+                }
+              }
+            }
+          }
+        ],
+        "description": "What a rule looks for. Written as `{\"keywords\": {\"words\": [...],\n\"whole_word\": true}}`, `{\"regex\": \"...\"}` or `{\"pii\": [\"EMAIL\", ...]}`."
       },
       "MeResponse": {
         "type": "object",
@@ -7106,6 +11410,289 @@
           }
         }
       },
+      "OidcTestRequest": {
+        "type": "object",
+        "properties": {
+          "issuer": {
+            "type": "string",
+            "description": "The issuer to test. Left out or empty: the saved one."
+          }
+        },
+        "additionalProperties": false
+      },
+      "OidcTestResult": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "authorization_endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What is wrong, when `ok` is false. It never repeats a URL."
+          },
+          "issuer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The issuer the provider named, when its discovery document was read."
+          },
+          "jwks_keys": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many keys the provider publishes to verify ID tokens.",
+            "minimum": 0
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Whether the discovery document and the key set could be used."
+          },
+          "token_endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "OidcUpdateRequest": {
+        "type": "object",
+        "description": "Every setting. A field left out takes its default, except\n`client_secret`: left out, the stored secret is kept.",
+        "properties": {
+          "admin_group": {
+            "type": "string"
+          },
+          "allowed_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "At most 100 domains; stored in lower case."
+          },
+          "auto_create": {
+            "type": "boolean",
+            "description": "Needs at least one allowed domain. Default false."
+          },
+          "client_id": {
+            "type": "string",
+            "description": "At most 512 bytes. May be empty while single sign-on is off."
+          },
+          "client_secret": {
+            "type": "string",
+            "description": "Write only: replaces the stored secret. Left out: the stored secret\nstays. At most 4096 bytes."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Needs `UF_PUBLIC_URL`, an issuer, a client id and a client secret."
+          },
+          "groups_claim": {
+            "type": "string",
+            "description": "Default \"groups\"."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "An `https` URL (`http` only for localhost, 127.0.0.1 and [::1]),\nwithout credentials, query or fragment. May be empty while single\nsign-on is off."
+          },
+          "label": {
+            "type": "string",
+            "description": "1 to 40 characters. Default \"SSO\"."
+          },
+          "link_by_email": {
+            "type": "boolean",
+            "description": "Default true."
+          },
+          "scopes": {
+            "type": "string",
+            "description": "Extra scopes, space separated."
+          }
+        },
+        "additionalProperties": false
+      },
+      "OidcView": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "label",
+          "issuer",
+          "client_id",
+          "client_secret_set",
+          "client_secret_unreadable",
+          "scopes",
+          "groups_claim",
+          "admin_group",
+          "link_by_email",
+          "auto_create",
+          "allowed_domains",
+          "public_url_set"
+        ],
+        "properties": {
+          "admin_group": {
+            "type": "string",
+            "description": "Members of this group become admins on sign-in; empty: roles are\nnever changed by sign-in."
+          },
+          "allowed_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Lower case domains, like `example.com`."
+          },
+          "auto_create": {
+            "type": "boolean",
+            "description": "Whether a person from an allowed domain gets a Member account on\nfirst sign-in."
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret_set": {
+            "type": "boolean",
+            "description": "Whether a client secret is stored. The secret itself is never\nreturned."
+          },
+          "client_secret_unreadable": {
+            "type": "boolean",
+            "description": "True when a secret is stored but cannot be decrypted (the master key\nchanged). Single sign-on stays off until a new secret is saved."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the sign-in button is offered."
+          },
+          "groups_claim": {
+            "type": "string",
+            "description": "The ID token claim that lists the user's groups."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The issuer URL of the identity provider; empty until set."
+          },
+          "label": {
+            "type": "string",
+            "description": "The name on the button: \"Sign in with <label>\"."
+          },
+          "link_by_email": {
+            "type": "boolean",
+            "description": "Whether a person who signs in is matched to an existing user by a\nverified email address."
+          },
+          "public_url_set": {
+            "type": "boolean",
+            "description": "Whether the gateway was started with `UF_PUBLIC_URL`. Single\nsign-on cannot be turned on without it."
+          },
+          "redirect_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The address to register at the identity provider; null without a\npublic URL."
+          },
+          "scopes": {
+            "type": "string",
+            "description": "Scopes asked for besides `openid email profile`, space separated."
+          }
+        }
+      },
+      "OutcomeView": {
+        "type": "object",
+        "description": "What a check found. Holds counts and ids only, never matched text.",
+        "required": [
+          "blocked_by",
+          "redactions",
+          "flags"
+        ],
+        "properties": {
+          "blocked_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GuardrailRef",
+                "description": "The first guardrail that blocks the text; `id` is 0 for rules sent\nwith the request."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlagView"
+            }
+          },
+          "redactions": {
+            "type": "object",
+            "description": "Replacements made, by PII type (`EMAIL`) or by rule id.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Params": {
+        "type": "object",
+        "description": "The settings a version carries for the call. All optional; what the call\nitself sets wins.",
+        "properties": {
+          "max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "At least 1.",
+            "minimum": 0
+          },
+          "response_format": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "As in `/v1/chat/completions`: `{\"type\":\"text\"}`, `{\"type\":\"json_object\"}`\nor `{\"type\":\"json_schema\",\"json_schema\":{...}}`."
+          },
+          "temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "0 to 2."
+          },
+          "top_p": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "0 to 1."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PiiType": {
+        "type": "string",
+        "enum": [
+          "EMAIL",
+          "PHONE",
+          "CREDIT_CARD",
+          "IBAN",
+          "US_SSN",
+          "IPV4",
+          "IPV6",
+          "SECRET"
+        ]
+      },
       "PlaygroundChatAnswer": {
         "type": "object",
         "description": "The answer of `/v1/chat/completions`, in the OpenAI shape.",
@@ -7146,10 +11733,6 @@
       "PlaygroundChatRequest": {
         "type": "object",
         "description": "A chat request, as `/v1/chat/completions` takes it. The body is read by\nthe same parser as that call's, so any field it accepts is accepted here.",
-        "required": [
-          "model",
-          "messages"
-        ],
         "properties": {
           "max_tokens": {
             "type": "integer",
@@ -7160,15 +11743,43 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PlaygroundMessage"
-            }
+            },
+            "description": "Required unless `prompt` is set; with a template these come after its\nmessages."
           },
           "model": {
             "type": "string",
-            "description": "A model as `provider/name`, or a route name."
+            "description": "A model as `provider/name`, or a route name. Required unless `prompt`\nis set and its template names a model."
           },
           "parallel_tool_calls": {
             "type": "boolean",
             "description": "As in `/v1/chat/completions`; ignored without `tools`."
+          },
+          "prompt": {
+            "type": "object",
+            "description": "`id` is the template's name; `version` a positive integer, as a number or a string of digits (left out: the latest); `variables` maps each variable name to its text.",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "variables": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "version": {
+                "type": "integer",
+                "description": "A positive integer. A string of digits is read as the same number."
+              }
+            }
+          },
+          "response_format": {
+            "type": "object",
+            "description": "As in `/v1/chat/completions`: `{\"type\":\"text\"}`, `{\"type\":\"json_object\"}` or `{\"type\":\"json_schema\",\"json_schema\":{\"name\",\"schema\",\"strict\"?,\"description\"?}}`.",
+            "additionalProperties": true
           },
           "stop": {
             "type": "array",
@@ -7215,6 +11826,21 @@
           }
         }
       },
+      "PlaygroundConfig": {
+        "type": "object",
+        "description": "What the console's playground needs to know before it sends a call.",
+        "required": [
+          "max_audio_bytes"
+        ],
+        "properties": {
+          "max_audio_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The largest audio file a transcription takes, in bytes\n(`--max-audio-bytes`). A larger upload is refused with 413.",
+            "minimum": 0
+          }
+        }
+      },
       "PlaygroundErrorBody": {
         "type": "object",
         "description": "An error of this call: the CSRF and sign-in errors have the `/api` shape\n(`code`, `message`); the pipeline's own have the OpenAI shape (`message`,\n`type`, and sometimes `code`).",
@@ -7246,6 +11872,70 @@
           "type": {
             "type": "string",
             "description": "Only in the OpenAI shape, such as `permission_error`."
+          }
+        }
+      },
+      "PlaygroundImageAnswer": {
+        "type": "object",
+        "description": "The answer of `/v1/images/generations`, in the OpenAI shape.",
+        "required": [
+          "created",
+          "data"
+        ],
+        "properties": {
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Each image as `b64_json` or `url`, with `revised_prompt` when the\nmodel gave one."
+          },
+          "usage": {
+            "type": "object",
+            "description": "Only when the provider reports token usage."
+          }
+        }
+      },
+      "PlaygroundImageRequest": {
+        "type": "object",
+        "description": "An image generation request, as `/v1/images/generations` takes it. The body\nis read by the same parser as that call's, so any field it accepts is\naccepted here.",
+        "required": [
+          "model",
+          "prompt"
+        ],
+        "properties": {
+          "background": {
+            "type": "string",
+            "description": "`transparent`, `opaque` or `auto`."
+          },
+          "model": {
+            "type": "string",
+            "description": "A model as `provider/name`, or a route name."
+          },
+          "n": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The number of images, 1 to 10.",
+            "minimum": 0
+          },
+          "output_format": {
+            "type": "string",
+            "description": "`png`, `jpeg` or `webp`."
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "quality": {
+            "type": "string"
+          },
+          "size": {
+            "type": "string",
+            "description": "For example `1024x1024`."
           }
         }
       },
@@ -7288,6 +11978,78 @@
               "additionalProperties": true
             },
             "description": "The calls of an assistant message, as in `/v1/chat/completions`."
+          }
+        }
+      },
+      "PlaygroundSpeechRequest": {
+        "type": "object",
+        "description": "A speech request, as `/v1/audio/speech` takes it.",
+        "required": [
+          "model",
+          "input",
+          "voice"
+        ],
+        "properties": {
+          "input": {
+            "type": "string",
+            "description": "The text to speak, at most 4096 characters."
+          },
+          "instructions": {
+            "type": "string",
+            "description": "How the text should be spoken (not for `tts-1` models)."
+          },
+          "model": {
+            "type": "string",
+            "description": "A model as `provider/name`, or a route name."
+          },
+          "response_format": {
+            "type": "string",
+            "description": "`mp3`, `opus`, `aac`, `flac`, `wav` or `pcm`."
+          },
+          "speed": {
+            "type": "number",
+            "format": "double",
+            "description": "From 0.25 to 4.0."
+          },
+          "voice": {
+            "type": "string",
+            "description": "A voice name such as `alloy`."
+          }
+        }
+      },
+      "PlaygroundTranscriptionForm": {
+        "type": "object",
+        "description": "The form of a transcription, as `/v1/audio/transcriptions` takes it\n(`multipart/form-data`). The form is read by the same reader as that\ncall's: the file may not be larger than the gateway's audio cap\n(`UF_MAX_AUDIO_BYTES`, 25 MiB by default).",
+        "required": [
+          "file",
+          "model"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "The audio file."
+          },
+          "language": {
+            "type": "string",
+            "description": "The language spoken, as an ISO-639-1 code."
+          },
+          "model": {
+            "type": "string",
+            "description": "A model as `provider/name`, or a route name."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Text to guide the style of the transcript."
+          },
+          "response_format": {
+            "type": "string",
+            "description": "`json`, `text`, `verbose_json`, `srt` or `vtt`."
+          },
+          "temperature": {
+            "type": "number",
+            "format": "double",
+            "description": "From 0 to 1."
           }
         }
       },
@@ -7354,6 +12116,218 @@
             "type": "integer",
             "format": "int64",
             "description": "Zero for a caller who is not an admin."
+          }
+        }
+      },
+      "PromptEntry": {
+        "type": "object",
+        "description": "A prompt template with all its versions. An import adds the versions a\ngateway lacks and never rewrites one it has: a version that differs is\nan error. Who made a template is not in a file; an import makes the\ntemplates it creates the importing admin's.",
+        "required": [
+          "name",
+          "versions"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PromptVersionEntry"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "PromptList": {
+        "type": "object",
+        "required": [
+          "prompts"
+        ],
+        "properties": {
+          "prompts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PromptSummary"
+            },
+            "description": "By name."
+          }
+        }
+      },
+      "PromptSummary": {
+        "type": "object",
+        "description": "A template in a list.",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "created_by",
+          "created_at",
+          "latest_version",
+          "version_count",
+          "updated_at",
+          "model",
+          "variables",
+          "unreadable"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The user who made it; `null` when they are gone. Admins manage\nevery template, a lead the ones they made."
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "latest_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The version a call without `version` gets."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model and variables of the latest version."
+          },
+          "name": {
+            "type": "string"
+          },
+          "unreadable": {
+            "type": "boolean",
+            "description": "The latest version cannot be read, so `model` and `variables` are\nempty and a call by this name is refused. An admin can add a version."
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "When the latest version was written."
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "version_count": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PromptVersionEntry": {
+        "type": "object",
+        "description": "One version of a prompt template in a file.",
+        "required": [
+          "version",
+          "messages"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateMessage"
+            }
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Used when a call names no model."
+          },
+          "params": {
+            "$ref": "#/components/schemas/Params"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "From 1, in order, without gaps."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PromptView": {
+        "type": "object",
+        "description": "A template with the numbers of its versions, oldest first. The model and\nvariables are those of the latest version; the text of any version is\nread from the version endpoint.",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "created_by",
+          "created_at",
+          "latest_version",
+          "version_count",
+          "updated_at",
+          "model",
+          "variables",
+          "unreadable",
+          "versions"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "latest_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "unreadable": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "version_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VersionStubView"
+            }
           }
         }
       },
@@ -7452,6 +12426,64 @@
           }
         }
       },
+      "RenderRequest": {
+        "type": "object",
+        "properties": {
+          "variables": {
+            "type": "object",
+            "description": "A value for every variable of the version, and for no other: a text\nof at most 32 KiB each. Put in as it is, once.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Left out: the latest version.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "RenderedPrompt": {
+        "type": "object",
+        "description": "What a version renders to.",
+        "required": [
+          "version",
+          "messages",
+          "model",
+          "params"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateMessage"
+            },
+            "description": "The messages with the values put in, as a call would get them."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The model the template names, used when a call names none."
+          },
+          "params": {
+            "$ref": "#/components/schemas/Params"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "Role": {
         "type": "string",
         "description": "A user's role in the organization.",
@@ -7459,6 +12491,18 @@
           "admin",
           "member"
         ]
+      },
+      "RotatedSecret": {
+        "type": "object",
+        "required": [
+          "secret"
+        ],
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "The new signing secret. It is shown once, in this answer, and cannot\nbe read again."
+          }
+        }
       },
       "RouteEntry": {
         "type": "object",
@@ -7508,6 +12552,16 @@
           "first_token_timeout_ms": {
             "type": "integer",
             "format": "int64"
+          },
+          "guardrails": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of guardrails, in the order they apply. Left out of the file\nfor a route that has none; a file that leaves it out does not change\nwhat is attached (`[]` takes them all off)."
           },
           "name": {
             "type": "string"
@@ -7611,6 +12665,17 @@
             "format": "int64",
             "description": "1 000 to 300 000."
           },
+          "guardrail_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The guardrails applied to calls of this route, in this order, after\nthe gateway-wide ones. At most 20. Left out, the route keeps the ones\nit has; `[]` takes them all off."
+          },
           "name": {
             "type": "string",
             "description": "1 to 64 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting with a\nletter or digit. No `/`, so a route never reads as `provider/model`."
@@ -7662,6 +12727,7 @@
           "cache_enabled",
           "cache_ttl_s",
           "cache_scope",
+          "guardrails",
           "broken",
           "created_at"
         ],
@@ -7712,6 +12778,13 @@
             "type": "integer",
             "format": "int64"
           },
+          "guardrails": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailRef"
+            },
+            "description": "The guardrails applied to calls of this route, in order. Hidden\n(empty) for a non-admin."
+          },
           "id": {
             "type": "integer",
             "format": "int64"
@@ -7753,6 +12826,101 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/TargetHealth"
+            }
+          }
+        }
+      },
+      "RuleList": {
+        "type": "object",
+        "required": [
+          "rules"
+        ],
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuleView"
+            }
+          }
+        }
+      },
+      "RuleSpec": {
+        "type": "object",
+        "description": "One rule of a guardrail.",
+        "required": [
+          "id",
+          "matcher",
+          "action",
+          "directions"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "directions": {
+            "$ref": "#/components/schemas/Directions",
+            "description": "The directions the rule applies to."
+          },
+          "id": {
+            "type": "string",
+            "description": "Stable within a guardrail; the label of keyword/regex redaction counts."
+          },
+          "matcher": {
+            "$ref": "#/components/schemas/Matcher"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RuleView": {
+        "type": "object",
+        "description": "A rule as `/api` shows it.",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "params",
+          "enabled",
+          "created_at",
+          "channels",
+          "firing"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelRule"
+            },
+            "description": "The channels it sends to."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "firing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Firing"
+            },
+            "description": "What it is firing for now."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object",
+            "description": "The parameters with every default written out.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
             }
           }
         }
@@ -7871,9 +13039,14 @@
           "log_retention_days",
           "session_hours",
           "trusted_proxies",
-          "login_limits"
+          "login_limits",
+          "database"
         ],
         "properties": {
+          "database": {
+            "$ref": "#/components/schemas/DatabaseKind",
+            "description": "The database the gateway runs on. Read only: `UF_DATABASE_URL` set\nmeans `postgres`. A PostgreSQL database is not backed up from here\n(use `pg_dump`)."
+          },
           "log_retention_days": {
             "type": "integer",
             "format": "int64",
@@ -7935,6 +13108,93 @@
           "needs_setup": {
             "type": "boolean",
             "description": "True while no user exists."
+          }
+        }
+      },
+      "SideLog": {
+        "type": "object",
+        "description": "The checks of one direction (the input of a call, or its output).",
+        "required": [
+          "action",
+          "checked_with"
+        ],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/LoggedAction",
+            "description": "The worst thing that happened in this direction."
+          },
+          "blocked_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GuardrailRef",
+                "description": "The guardrail that blocked, when one did."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checked_with": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardrailRef"
+            },
+            "description": "The guardrails this direction was checked with."
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlagLog"
+            },
+            "description": "Flag rules that matched."
+          },
+          "redactions": {
+            "type": "object",
+            "description": "Replacements made, by PII type or rule id.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SignInMethodOidc": {
+        "type": "object",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "The name for the sign-in button."
+          }
+        }
+      },
+      "SignInMethods": {
+        "type": "object",
+        "required": [
+          "password",
+          "oidc"
+        ],
+        "properties": {
+          "oidc": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SignInMethodOidc",
+                "description": "The single sign-on provider, when it is on; `null` otherwise."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "password": {
+            "type": "boolean",
+            "description": "Always true: passwords are never turned off."
           }
         }
       },
@@ -8110,6 +13370,55 @@
           }
         }
       },
+      "TemplateMessage": {
+        "type": "object",
+        "description": "A message of a version, as stored.",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Text, with `{{name}}` where a value goes."
+          },
+          "role": {
+            "type": "string",
+            "description": "`system`, `developer`, `user` or `assistant`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TestResult": {
+        "type": "object",
+        "description": "What a test delivery came to.",
+        "required": [
+          "ok",
+          "status",
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed. Never holds the URL."
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The HTTP status the receiver answered with, if it answered.",
+            "minimum": 0
+          }
+        }
+      },
       "TokenList": {
         "type": "object",
         "required": [
@@ -8184,16 +13493,123 @@
           }
         }
       },
+      "UpdateChannelRequest": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpdateGuardrailRequest": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "directions": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Directions"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "fail_mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_default": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rules": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RuleSpec"
+            },
+            "description": "`rules` only: replaces all the rules."
+          },
+          "timeout_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`external` only: a new URL.",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
       "UpdateKeyRequest": {
         "type": "object",
-        "description": "The new tags of a key.",
-        "required": [
-          "tags"
-        ],
+        "description": "What to change on a key. Admins only; send at least one field.",
         "properties": {
+          "guardrail_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Replaces the guardrails of the key; `[]` takes them all off. Left\nout, they stay."
+          },
           "tags": {
-            "type": "object",
-            "description": "Replaces all the tags of the key; `{}` removes them. The same limits\nas when the key is created.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Replaces all the tags of the key; `{}` removes them. The same limits\nas when the key is created. Left out, the tags stay.",
             "additionalProperties": {
               "type": "string"
             },
@@ -8282,6 +13698,52 @@
               "string",
               "null"
             ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpdateRuleRequest": {
+        "type": "object",
+        "properties": {
+          "channel_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Only the kind the rule has; it cannot change."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "params": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Replaces the parameters. What the rule is firing for is forgotten.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false
@@ -8448,16 +13910,26 @@
           "name",
           "role",
           "status",
+          "auth_provider",
+          "has_password",
           "created_at",
           "last_active_at",
           "teams"
         ],
         "properties": {
+          "auth_provider": {
+            "$ref": "#/components/schemas/AuthProviderView",
+            "description": "How the user signs in: with a `password`, or through the single\nsign-on provider (`oidc`) they are linked to. Read only."
+          },
           "created_at": {
             "type": "string"
           },
           "email": {
             "type": "string"
+          },
+          "has_password": {
+            "type": "boolean",
+            "description": "Whether the user has a password. A user made by single sign-on has\nnone and can sign in only while single sign-on works. Read only."
           },
           "id": {
             "type": "integer",
@@ -8484,6 +13956,84 @@
               "$ref": "#/components/schemas/UserTeamView"
             },
             "description": "The user's teams, ordered by name."
+          }
+        }
+      },
+      "VersionStubView": {
+        "type": "object",
+        "description": "A version in a list: its number and when and by whom it was written. Its\ntext is `GET /api/prompts/{id}/versions/{version}`.",
+        "required": [
+          "version",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "VersionView": {
+        "type": "object",
+        "description": "One version of a template.",
+        "required": [
+          "version",
+          "messages",
+          "variables",
+          "model",
+          "params",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`null` when the user is gone."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateMessage"
+            }
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "params": {
+            "$ref": "#/components/schemas/Params"
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names the messages use, sorted."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "From 1."
           }
         }
       }
@@ -8574,6 +14124,18 @@
     {
       "name": "backup",
       "description": "A copy of the database."
+    },
+    {
+      "name": "alerts",
+      "description": "Alert channels, rules and the events they raised."
+    },
+    {
+      "name": "guardrails",
+      "description": "Guardrails: rules and external hooks that block, redact or flag the text of calls."
+    },
+    {
+      "name": "prompts",
+      "description": "Prompt templates: versioned messages with {{variables}}, used by name on /v1/chat/completions and /v1/responses."
     }
   ]
 }

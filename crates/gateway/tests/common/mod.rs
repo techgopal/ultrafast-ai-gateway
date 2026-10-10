@@ -14,9 +14,41 @@ use ultrafast_gateway::identity::password::{hash_password, warm_up};
 use ultrafast_gateway::identity::{Role, TeamRole, UserStatus};
 use ultrafast_gateway::limits::Limiter;
 use ultrafast_gateway::secrets::{generate_key, Cipher};
-use ultrafast_gateway::store::{Grants, NewUser, Store};
+use ultrafast_gateway::store::{Dialect, Grants, NewUser, Store};
 use ultrafast_gateway::telemetry::{RequestRecord, RequestSink};
 use wiremock::MockServer;
+
+/// A row id that was deleted and then asked for again. SQLite gives the id of
+/// a deleted row out again, which is the case the protections against
+/// inheriting what it left behind exist for; PostgreSQL never does, so there
+/// the new id must differ and the protections have nothing to do.
+pub fn assert_id_given_again(store: &Store, old: i64, new: i64, what: &str) {
+    match store.dialect() {
+        Dialect::Sqlite => assert_eq!(new, old, "{what}: the id is given out again"),
+        Dialect::Postgres => assert_ne!(new, old, "{what}: PostgreSQL never reuses an id"),
+    }
+}
+
+/// Ends the test early, with the reason on stderr, when the store is not
+/// SQLite: for what only a SQLite file has (its pragmas, its file, its backup).
+/// Returns whether the caller should stop.
+pub fn skipped_on_postgres(store: &Store, reason: &str) -> bool {
+    if store.dialect() == Dialect::Postgres {
+        eprintln!("SKIPPED on PostgreSQL: {reason}");
+        return true;
+    }
+    false
+}
+
+/// A store whose writers really run side by side: the SQLite file
+/// `gateway.db` in `dir`, or, when `UF_TEST_DATABASE_URL` is set, a fresh
+/// schema in that PostgreSQL database (`dir` is then not used).
+pub async fn concurrent_store(dir: &std::path::Path) -> Store {
+    match std::env::var("UF_TEST_DATABASE_URL") {
+        Ok(url) if !url.trim().is_empty() => Store::open_in_memory().await.unwrap(),
+        _ => Store::open(&dir.join("gateway.db")).await.unwrap(),
+    }
+}
 
 /// A sink that keeps every record, for tests.
 #[derive(Default)]
@@ -82,6 +114,7 @@ pub async fn harness_with_sink(kind: &str, sink: Arc<dyn RequestSink>) -> Harnes
         Some(sink),
         None,
         None,
+        None,
     )
     .await
 }
@@ -95,6 +128,7 @@ pub async fn harness_with_metrics_token(kind: &str, token: Option<&str>) -> Harn
         None,
         None,
         token,
+        None,
     )
     .await
 }
@@ -107,6 +141,7 @@ pub async fn harness_with_rate(kind: &str, rate: Arc<dyn Limiter>) -> Harness {
         DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
         None,
         Some(rate),
+        None,
         None,
     )
     .await
@@ -124,9 +159,13 @@ async fn harness_with_limits(
         None,
         None,
         None,
+        None,
     )
     .await
 }
+
+/// Changes the state before it is shared.
+type Tweak = Box<dyn FnOnce(&mut AppState)>;
 
 async fn build_harness(
     kind: &str,
@@ -135,6 +174,7 @@ async fn build_harness(
     own_sink: Option<Arc<dyn RequestSink>>,
     rate: Option<Arc<dyn Limiter>>,
     metrics_token: Option<&str>,
+    tweak: Option<Tweak>,
 ) -> Harness {
     let upstream = MockServer::start().await;
     let store = Store::open_in_memory().await.unwrap();
@@ -163,6 +203,9 @@ async fn build_harness(
         state.rate = rate;
     }
     state.metrics_token = metrics_token.map(str::to_string);
+    if let Some(tweak) = tweak {
+        tweak(&mut state);
+    }
     let state = Arc::new(state);
     Harness {
         sink,
@@ -297,6 +340,21 @@ pub async fn api_full(
     }
     state.cookie_secure = cookie_secure;
     state.trusted_proxies = trusted.iter().map(|c| c.parse().unwrap()).collect();
+    let state = Arc::new(state);
+    Api {
+        app: router(state.clone()),
+        store,
+        state,
+    }
+}
+
+/// A gateway whose state is changed by `tweak` before it is shared.
+pub async fn api_tweaked(store: Store, tweak: impl FnOnce(&mut AppState)) -> Api {
+    warm_up().unwrap();
+    let cipher = Cipher::from_hex(&Cipher::generate_master_hex()).unwrap();
+    let mut state = AppState::new(store.clone(), cipher).await.unwrap();
+    state.cookie_secure = false;
+    tweak(&mut state);
     let state = Arc::new(state);
     Api {
         app: router(state.clone()),
@@ -492,11 +550,47 @@ pub async fn org_with_sink(sink: Option<Arc<dyn RequestSink>>) -> Org {
     build_org(api_full(Store::open_in_memory().await.unwrap(), false, &[], sink).await).await
 }
 
+/// [`org`], with `sink` receiving the request records and `tweak` run on the
+/// state before it is shared.
+pub async fn org_tweaked(
+    sink: Option<Arc<dyn RequestSink>>,
+    tweak: impl FnOnce(&mut AppState),
+) -> Org {
+    let api = api_tweaked(Store::open_in_memory().await.unwrap(), |s| {
+        if let Some(sink) = sink {
+            s.sink = sink;
+        }
+        tweak(s);
+    })
+    .await;
+    build_org(api).await
+}
+
+/// [`org`], started with `UF_PUBLIC_URL` set to this URL.
+pub async fn org_with_public_url(url: &str) -> Org {
+    let url = url.parse().unwrap();
+    let api = api_tweaked(Store::open_in_memory().await.unwrap(), |s| {
+        s.public_url = Some(url);
+    })
+    .await;
+    build_org(api).await
+}
+
 /// [`org`], with its database in a file of a directory of its own, as a
 /// backup needs.
 pub async fn org_on_disk() -> Org {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("gateway.db")).await.unwrap();
+    let mut org = build_org(api_full(store, false, &[], None).await).await;
+    org.dir = Some(dir);
+    org
+}
+
+/// [`org`] on a store whose writers really run side by side (see
+/// [`concurrent_store`]).
+pub async fn org_concurrent() -> Org {
+    let dir = tempfile::tempdir().unwrap();
+    let store = concurrent_store(dir.path()).await;
     let mut org = build_org(api_full(store, false, &[], None).await).await;
     org.dir = Some(dir);
     org
@@ -679,4 +773,21 @@ pub async fn hanging_upstream() -> (String, tokio::sync::oneshot::Receiver<()>) 
 /// How many requests the mock upstream has received.
 pub async fn upstream_calls(upstream: &MockServer) -> usize {
     upstream.received_requests().await.unwrap().len()
+}
+
+/// Like [`harness`], with `tweak` run on the state before it is shared.
+pub async fn harness_with_state(
+    kind: &str,
+    tweak: impl FnOnce(&mut AppState) + 'static,
+) -> Harness {
+    build_harness(
+        kind,
+        DEFAULT_MAX_BODY_BYTES,
+        DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+        None,
+        None,
+        None,
+        Some(Box::new(tweak)),
+    )
+    .await
 }

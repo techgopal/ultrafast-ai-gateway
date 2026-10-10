@@ -15,7 +15,8 @@ import { TagChips } from "@/components/TagChips";
 import { Timestamp } from "@/components/Timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { formatDuration, formatMoney, formatTokens, sinceFor } from "@/lib/usage";
+import { LOGGED_ACTIONS, loggedLabel } from "@/lib/guardrails";
+import { endpointLabel, ENDPOINTS, formatDuration, formatMoney, formatTokens, sinceFor } from "@/lib/usage";
 import {
   ANY,
   chosen,
@@ -65,9 +66,24 @@ function queryOf(filters: Filters, now: number, offered: ReturnType<typeof useOf
   if (user !== ANY) query.user_id = Number(user);
   if (team !== ANY) query.team_id = Number(team);
   if (filters.model !== "") query.model = filters.model;
+  const endpoint = ENDPOINTS.find(([value]) => value === filters.endpoint)?.[0];
+  if (endpoint !== undefined) query.endpoint = endpoint;
   if (filters.errorsOnly) query.errors = true;
+  const guardrail = LOGGED_ACTIONS.find(([value]) => value === filters.guardrail)?.[0];
+  if (guardrail !== undefined) query.guardrail = guardrail;
   if (filters.tag !== "") query.tag = [filters.tag];
   return query;
+}
+
+/** What the guardrails did to the call at worst: a block, a redaction or a flag. */
+export function GuardrailBadge({ log }: { log: Pick<Log, "guardrails"> }) {
+  if (log.guardrails === null) return null;
+  const { action } = log.guardrails;
+  return (
+    <Badge variant={action === "blocked" ? "destructive" : action === "redacted" ? "secondary" : "outline"}>
+      {loggedLabel(action)}
+    </Badge>
+  );
 }
 
 const columns: Column<Log>[] = [
@@ -103,6 +119,7 @@ const columns: Column<Log>[] = [
         <Badge variant={log.status >= 400 ? "destructive" : "secondary"}>{log.status}</Badge>
         {log.cached ? <Badge variant="outline">Cached</Badge> : null}
         {log.estimated ? <Badge variant="outline">Estimated</Badge> : null}
+        <GuardrailBadge log={log} />
       </span>
     ),
   },
@@ -114,6 +131,8 @@ const columns: Column<Log>[] = [
     cell: (log) => <span className="tabular-nums">{formatDuration(log.duration_ms)}</span>,
   },
   { id: "tags", header: "Tags", cell: (log) => <TagChips tags={log.tags} /> },
+  { id: "endpoint", header: "Endpoint", cell: (log) => <span>{endpointLabel(log.endpoint)}</span> },
+  { id: "prompt", header: "Prompt", cell: (log) => <span className="break-all">{log.prompt ?? NONE}</span> },
 ];
 
 function LogsOf({ others }: { others: boolean }) {

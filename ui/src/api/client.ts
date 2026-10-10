@@ -274,23 +274,66 @@ export async function playgroundChat(
   body: BodyOf<"/api/playground/chat", "post">,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const headers: Record<string, string> = {
-    Accept: "text/event-stream, application/json",
-    "Content-Type": "application/json",
-  };
+  return playgroundCall("/api/playground/chat", "text/event-stream, application/json", body, signal);
+}
+
+/** An image generation of the playground: the answer is JSON, in the OpenAI shape; refusals as for `playgroundChat`. */
+export async function playgroundImages(
+  body: BodyOf<"/api/playground/images", "post">,
+  signal?: AbortSignal,
+): Promise<ResponseOf<"/api/playground/images", "post">> {
+  const response = await playgroundCall("/api/playground/images", "application/json", body, signal);
+  return (await response.json()) as ResponseOf<"/api/playground/images", "post">;
+}
+
+/**
+ * A transcription of the playground: the file and its fields as a form, the
+ * answer the JSON of `/v1/audio/transcriptions`; refusals as for `playgroundChat`.
+ */
+export async function playgroundTranscribe(
+  form: FormData,
+  signal?: AbortSignal,
+): Promise<{ text?: unknown }> {
+  const response = await playgroundCall("/api/playground/transcriptions", "application/json", form, signal);
+  return (await response.json()) as { text?: unknown };
+}
+
+/** A speech of the playground: the audio the provider made, as a blob; refusals as for `playgroundChat`. */
+export async function playgroundSpeech(
+  body: BodyOf<"/api/playground/speech", "post">,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await playgroundCall("/api/playground/speech", "audio/*, application/json", body, signal);
+  return response.blob();
+}
+
+async function playgroundCall(
+  path:
+    | "/api/playground/chat"
+    | "/api/playground/images"
+    | "/api/playground/transcriptions"
+    | "/api/playground/speech",
+  accept: string,
+  body: object,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const headers: Record<string, string> = { Accept: accept };
+  // A form sets its own content type, with the boundary.
+  const form = body instanceof FormData;
+  if (!form) headers["Content-Type"] = "application/json";
   if (csrfToken !== null) headers["x-csrf-token"] = csrfToken;
   const init: RequestInit = {
     method: "POST",
     credentials: "same-origin",
     headers,
-    body: JSON.stringify(body),
+    body: form ? body : JSON.stringify(body),
   };
   if (signal !== undefined) init.signal = signal;
 
   const madeUnder = sessionsOver;
   let response: Response;
   try {
-    response = await fetch("/api/playground/chat", init);
+    response = await fetch(path, init);
   } catch (error) {
     if (signal?.aborted === true) throw error;
     if (madeUnder !== sessionsOver) throw new SessionOverError();

@@ -106,6 +106,8 @@ export interface KeyValues {
   allowed: readonly string[];
   /** The tags as the editor holds them: rows that may still be wrong. */
   tags: readonly TagRow[];
+  /** The ids of the guardrails, in order. Only an admin chooses them; left out, none are sent. */
+  guardrail_ids?: readonly number[];
 }
 
 /** The teams a key of one owner can belong to, and whether it can have none. */
@@ -273,5 +275,9 @@ export function requestOf(
   if (allowed !== undefined) body.allowed = allowed;
   const tags = tagsOf(values.tags);
   if (Object.keys(tags).length > 0) body.tags = tags;
+  // Sending the field at all is refused for who is not an admin: only a chosen one is sent.
+  if (values.guardrail_ids !== undefined && values.guardrail_ids.length > 0) {
+    body.guardrail_ids = [...values.guardrail_ids];
+  }
   return body;
 }

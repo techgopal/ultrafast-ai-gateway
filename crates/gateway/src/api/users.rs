@@ -369,7 +369,9 @@ pub async fn update(
         return Err(ApiError::validation(fields));
     }
 
-    let mut tx = store.begin().await?;
+    // The last-admin check reads after the write: take the write lock first, so two
+    // changes at once cannot each see the other admin still there.
+    let mut tx = store.begin_immediate().await?;
     // What is compared, checked and recorded is what the transaction sees.
     let was = tx
         .user_by_id(target.id)
@@ -378,7 +380,12 @@ pub async fn update(
     let name = name.filter(|name| *name != was.name);
     let role = role.filter(|role| *role != was.role);
     let status = status.filter(|status| *status != was.status);
-    if status == Some(UserStatus::Active) && was.password_hash.is_none() {
+    // Only a user who signs in with a password needs one to be active: a
+    // user of the identity provider never has one.
+    if status == Some(UserStatus::Active)
+        && was.password_hash.is_none()
+        && was.external_id.is_none()
+    {
         return Err(ApiError::conflict(
             "no_password",
             "This user has no password yet. Send them an invite instead.",
@@ -529,7 +536,9 @@ pub async fn delete(
         ));
     }
 
-    let mut tx = store.begin().await?;
+    // The last-admin check reads after the write: take the write lock first, so two
+    // changes at once cannot each see the other admin still there.
+    let mut tx = store.begin_immediate().await?;
     let was = tx
         .user_by_id(target.id)
         .await?
