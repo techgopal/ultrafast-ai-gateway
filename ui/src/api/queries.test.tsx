@@ -1336,6 +1336,7 @@ describe("every mutation calls its operation", () => {
       ["useUpdateUser", "PATCH /api/users/3", q.useUpdateUser, { id: 3, body: { name: "L" } }],
       ["useDeleteUser", "DELETE /api/users/3", q.useDeleteUser, { id: 3 }],
       ["useReinviteUser", "POST /api/users/6/invite", q.useReinviteUser, { id: 6 }],
+      ["usePasswordLink", "POST /api/users/6/password-link", q.usePasswordLink, { id: 6 }],
       ["useCreateTeam", "POST /api/teams", q.useCreateTeam, { name: "Growth" }],
       ["useRenameTeam", "PATCH /api/teams/2", q.useRenameTeam, { id: 2, body: { name: "R" } }],
       ["useDeleteTeam", "DELETE /api/teams/3", q.useDeleteTeam, { id: 3 }],
@@ -1388,10 +1389,10 @@ describe("every mutation calls its operation", () => {
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 56 of them, 27 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(56);
+  test("there are 57 of them, 27 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(57);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(86);
+    expect(hooks).toHaveLength(87);
     // The alerts: three queries (channels, rules, events by page), and their eight mutations.
     for (const name of ["useAlertChannels", "useAlertRules", "useAlertEventsPages"]) {
       expect(hooks).toContain(name);
@@ -1447,6 +1448,7 @@ describe("secrets stay out of the caches", () => {
       ["useRotateGuardrailSecret", q.useRotateGuardrailSecret, { id: 3 }, [fixtures.rotatedGuardrailSecret]],
       ["useInviteUser", q.useInviteUser, { email: "s@example.test", name: "S", role: "member" }, [fixtures.newInviteLink]],
       ["useReinviteUser", q.useReinviteUser, { id: 6 }, [fixtures.newInviteLink]],
+      ["usePasswordLink", q.usePasswordLink, { id: 6 }, [fixtures.newPasswordLinkToken]],
       ["useLogin", q.useLogin, { email: "m@example.test", password }, [password]],
       ["useSetup", q.useSetup, { email: "m@example.test", name: "M", password }, [password]],
       ["useAcceptInvite", q.useAcceptInvite, { token: "invite-token-that-is-secret", password }, [password, "invite-token-that-is-secret"]],

@@ -148,6 +148,13 @@ export const errors = {
     "not_invited",
     "Only a user who has not accepted an invite can get a new one.",
   ),
+  not_sso_user: error(
+    409,
+    "not_sso_user",
+    "This user signs in with a password. They can change it in their account.",
+  ),
+  has_password: error(409, "has_password", "This user has a password already."),
+  not_active: error(409, "not_active", "Only an active user can get a password link."),
   user_exists: error(409, "user_exists", "A user with this email already exists."),
   user_not_found: error(404, "user_not_found", "No active user with that email."),
   already_member: error(409, "already_member", "Already in this team."),

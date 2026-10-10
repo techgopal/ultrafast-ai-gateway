@@ -719,6 +719,13 @@ export const useReinviteUser = () =>
     () => ({ stale: [queryKeys.users.all(), audit] }),
   );
 
+/** The answer holds the link, which is shown once. */
+export const usePasswordLink = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.post("/api/users/{id}/password-link", { params: { id } }),
+    () => ({ stale: [audit] }),
+  );
+
 // A user's name, role and status show in teams (members), in keys (owner,
 // `suspended`) and, for the caller, in `me`.
 const aUserChanged = [

@@ -141,6 +141,15 @@ pub trait SignInProvider: Send + Sync {
     /// caller has already checked; the provider keeps it in the flow cookie.
     fn begin<'a>(&'a self, return_to: &'a str) -> BoxFuture<'a, Result<Begin, ExternalError>>;
 
+    /// Where the visitor was going when the attempt that made `flow_cookie`
+    /// began, for the page to send them back to when the attempt fails. `None`
+    /// when the cookie is not one this provider made, or holds no such page.
+    /// Reads nothing but the cookie, and only what the provider itself
+    /// sealed into it: no state is compared and no age is checked.
+    fn return_to_of(&self, _flow_cookie: &str) -> Option<String> {
+        None
+    }
+
     /// Finishes a sign-in from the parameters of the browser's return and the flow cookie
     /// value that `begin` made.
     fn complete<'a>(

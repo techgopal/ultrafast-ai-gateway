@@ -51,6 +51,8 @@ struct World {
     org: Org,
     /// Invited, in no team.
     sam: i64,
+    /// Made by single sign-on: active, linked, no password.
+    sso: i64,
     provider: i64,
     /// A provider that lists one model, on a mock server.
     syncable: i64,
@@ -122,6 +124,19 @@ async fn world() -> World {
         .unwrap();
     let invite = generate_secret(INVITE_PREFIX);
     tx.insert_invite(sam, &invite.hash, &after(3600))
+        .await
+        .unwrap();
+    let sso = tx
+        .insert_user(NewUser {
+            email: "sso@example.com",
+            name: "Sso",
+            role: Role::Member,
+            status: UserStatus::Active,
+            password_hash: None,
+        })
+        .await
+        .unwrap();
+    tx.link_external(sso, "oidc", "https://idp.example.com|sub-sso")
         .await
         .unwrap();
     let provider = tx
@@ -299,6 +314,7 @@ async fn world() -> World {
     World {
         org,
         sam,
+        sso,
         provider,
         syncable,
         model,
@@ -654,6 +670,9 @@ fn table() -> Vec<Row> {
             |w, _| format!("/api/users/{}/guardrails", w.org.lena),
             || Some(json!({ "guardrail_ids": [] })),
             [200, 403, 403, 401]),
+        row(99, "POST", "/api/users/{id}/password-link", "sso, who signs in through the provider",
+            |w, _| format!("/api/users/{}/password-link", w.sso), no_body,
+            [201, 403, 403, 401]),
     ]
 }
 
@@ -728,7 +747,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=98).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=99).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -863,7 +882,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 98);
+    assert_eq!(operations, 99);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

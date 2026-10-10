@@ -72,6 +72,24 @@ impl FlowState {
     /// (missing, altered, made under another key) is `BadState`; one that is
     /// older than ten minutes, counted from `issued_at`, is `Expired`.
     pub fn open(cipher: &Cipher, cookie: &str, now: i64) -> Result<Self, ExternalError> {
+        let flow = Self::read(cipher, cookie)?;
+        if flow.issued_at > now + CLOCK_SKEW_SECS {
+            return Err(ExternalError::BadState);
+        }
+        if now - flow.issued_at > FLOW_MAX_AGE_SECS {
+            return Err(ExternalError::Expired);
+        }
+        Ok(flow)
+    }
+
+    /// The page an attempt was for, whatever its age: the cookie is
+    /// encrypted and authenticated, so only this gateway can have made it.
+    pub fn return_to_of(cipher: &Cipher, cookie: &str) -> Option<String> {
+        Self::read(cipher, cookie).ok().map(|flow| flow.return_to)
+    }
+
+    /// Decrypts and parses; the age is not judged.
+    fn read(cipher: &Cipher, cookie: &str) -> Result<Self, ExternalError> {
         if cookie.is_empty() || cookie.len() > MAX_COOKIE_BYTES {
             return Err(ExternalError::BadState);
         }
@@ -82,14 +100,7 @@ impl FlowState {
             .decrypt(&bytes)
             .map_err(|_| ExternalError::BadState)?;
         let json = plain.strip_prefix(LABEL).ok_or(ExternalError::BadState)?;
-        let flow: Self = serde_json::from_slice(json).map_err(|_| ExternalError::BadState)?;
-        if flow.issued_at > now + CLOCK_SKEW_SECS {
-            return Err(ExternalError::BadState);
-        }
-        if now - flow.issued_at > FLOW_MAX_AGE_SECS {
-            return Err(ExternalError::Expired);
-        }
-        Ok(flow)
+        serde_json::from_slice(json).map_err(|_| ExternalError::BadState)
     }
 
     /// Whether the `state` the browser brought back is this attempt's.

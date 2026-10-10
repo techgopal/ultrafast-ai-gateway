@@ -18,6 +18,14 @@ import { Button } from "@/components/ui/button";
 
 export const INVITE_ACCEPTED_NOTICE = "Your password is set. Sign in to continue.";
 const INVALID_INVITE = "This invite link is not valid or has expired. Ask an admin for a new one.";
+const INVALID_PASSWORD_LINK = "This link is not valid or has expired. Ask an admin for a new one.";
+
+/**
+ * The gateway gives a link that sets the password of a user of single sign-on
+ * a prefix of its own, so that the page can say what the link is for. What
+ * the link does is decided by the gateway, not by this prefix.
+ */
+const PASSWORD_LINK_PREFIX = "uf-pwl-";
 
 /**
  * Sets the password of an invited user. The token of the link is held by the
@@ -39,6 +47,8 @@ export function AcceptInvite() {
   const error = useRef<HTMLDivElement>(null);
   const failed = useFocusOnFailure(form, error);
   const [message, setMessage] = useState<string | null>(null);
+  const sets = token?.startsWith(PASSWORD_LINK_PREFIX) === true;
+  const title = sets ? "Set your password" : "Accept your invite";
   const [passwordError, setPasswordError] = useState<string | undefined>(undefined);
   const [confirmError, setConfirmError] = useState<string | undefined>(undefined);
 
@@ -63,7 +73,7 @@ export function AcceptInvite() {
       if (error instanceof ApiError && error.status === 404) {
         // The token is of no use any more.
         dropInvite();
-        setMessage(INVALID_INVITE);
+        setMessage(sets ? INVALID_PASSWORD_LINK : INVALID_INVITE);
       } else if (error instanceof ApiError && error.fields.password !== undefined) {
         setPasswordError(error.fields.password);
       } else {
@@ -102,10 +112,10 @@ export function AcceptInvite() {
 
   if (session.status === "signedIn") {
     return (
-      <AuthPage title="Accept your invite">
+      <AuthPage title={title}>
         <p className="text-sm">
-          You are signed in as {session.me.user.email}. To accept the invite, you are signed out
-          first.
+          You are signed in as {session.me.user.email}.{" "}
+          {sets ? "To set your password" : "To accept the invite"}, you are signed out first.
         </p>
         <div className="flex flex-col gap-2">
           <Button
@@ -137,9 +147,9 @@ export function AcceptInvite() {
   }
 
   return (
-    <AuthPage title="Accept your invite" description="Choose the password of your account.">
+    <AuthPage title={title} description="Choose the password of your account.">
       {message === null ? null : <FormError ref={error}>{message}</FormError>}
-      <form ref={form} aria-label="Accept your invite" className={formColumn} onSubmit={submit}>
+      <form ref={form} aria-label={title} className={formColumn} onSubmit={submit}>
         <Field
           ref={password}
           label="Password"

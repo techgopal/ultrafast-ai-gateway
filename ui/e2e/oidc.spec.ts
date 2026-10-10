@@ -67,6 +67,7 @@ test("an admin sets up single sign-on in Settings; an invited user then signs in
   gateway,
   rules,
   context,
+  browserName,
 }) => {
   const mia: Account = newAccount("mia");
   idp = await startMockIdp({ sub: "mia-at-idp", email: mia.email, name: "Mia Idp" });
@@ -84,9 +85,12 @@ test("an admin sets up single sign-on in Settings; an invited user then signs in
   const section = page.getByRole("region", { name: "Single sign-on (OIDC)" });
   await expect(section.getByText(`${gateway.origin}/api/auth/oidc/callback`)).toBeVisible();
   await section.getByRole("button", { name: "Copy address" }).click();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
-    `${gateway.origin}/api/auth/oidc/callback`,
-  );
+  // Only Chromium lets a test read the clipboard.
+  if (browserName === "chromium") {
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+      `${gateway.origin}/api/auth/oidc/callback`,
+    );
+  }
 
   await section.getByLabel("Label on the sign-in button").fill(LABEL);
   await section.getByLabel("Issuer").fill(idp.issuer);

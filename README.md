@@ -735,7 +735,9 @@ Team membership is not synchronized.
 
 **Sign-in errors.** A failed sign-in returns to the sign-in page with
 `?sso_error=<code>`; the page shows this message (the code itself is never
-shown):
+shown). When the visitor was going to a page other than the front page, the
+address also has `&next=<that page>`: the sign-in page keeps it, so the retry
+button and the password form both end on that page after sign-in.
 
 | Code | Console message | Usual cause |
 | --- | --- | --- |
@@ -778,7 +780,18 @@ by SSO and check the "SSO only" ones. To recover, turn single sign-on back on;
 an admin can also delete the user and invite them again (which loses their keys
 and ownership), and a user who had a password keeps signing in with it. A
 disabled user made by single sign-on can be enabled again without a password.
-Setting a password for an active user who has none is not available yet.
+
+**Password links.** An admin can give an active user made by single sign-on a
+password too: on the user's page, "Send password link" (`POST
+/api/users/{id}/password-link`, admin only) shows a link once, for the admin
+to send (the gateway sends no mail). The link works once and for 24 hours; a
+new one ends the earlier one. Opened, it asks for the new password ("Set your
+password"). The user keeps their single sign-on link, their role and their
+sessions, and can then sign in either way. It is refused for a user who has a
+password already, who is not active, or who signs in only with a password. The
+audit log records who made a link and when the user used it, never the link.
+A user without a password sees "Ask an admin for a password link" under
+Account.
 
 **Test configuration.** The Test button (`POST /api/settings/oidc/test`, admin
 only) makes the gateway fetch the issuer's discovery document and then the key

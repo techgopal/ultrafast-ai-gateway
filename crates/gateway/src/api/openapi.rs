@@ -109,6 +109,16 @@ pub struct ReinviteResponse {
 }
 
 #[derive(ToSchema)]
+pub struct PasswordLinkResponse {
+    /// The console path that lets the user set a password: open it on the
+    /// gateway's address. It is shown once, in this answer, and cannot be
+    /// read again. Single use.
+    pub url: String,
+    /// When the link stops working, UTC, `YYYY-MM-DD HH:MM:SS`.
+    pub expires_at: String,
+}
+
+#[derive(ToSchema)]
 pub struct TeamList {
     pub teams: Vec<TeamSummary>,
 }
@@ -317,7 +327,7 @@ mod tests {
 
     /// Every route of `api::router`, which has 88. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 98] = [
+    const ROUTES: [(&str, &str); 99] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -335,6 +345,7 @@ mod tests {
         ("PATCH", "/api/users/{id}"),
         ("DELETE", "/api/users/{id}"),
         ("POST", "/api/users/{id}/invite"),
+        ("POST", "/api/users/{id}/password-link"),
         ("GET", "/api/teams"),
         ("POST", "/api/teams"),
         ("GET", "/api/teams/{id}"),
@@ -569,7 +580,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 98);
+        assert_eq!(routes.len(), 99);
         assert_eq!(documented, routes);
     }
 
@@ -591,7 +602,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 98);
+        assert_eq!(ids.len(), 99);
     }
 
     #[test]

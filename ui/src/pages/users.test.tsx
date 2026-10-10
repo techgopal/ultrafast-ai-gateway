@@ -1702,6 +1702,106 @@ describe("a new invite", () => {
   });
 });
 
+describe("a password link", () => {
+  const PASSWORD_LINK = window.location.origin + fixtures.passwordLink.url;
+  const PASSWORD_LINK_TOKEN = fixtures.newPasswordLinkToken;
+  const DESCRIPTION = "Send this link to the user. It works once and expires in 24 hours.";
+  const UNUSABLE = "The gateway returned a password link that cannot be used.";
+
+  function made() {
+    override("get", "/api/users/{id}", () => ok("get", "/api/users/{id}", 200, sso));
+  }
+
+  test("an admin gets the control for a user of single sign-on who has no password", async () => {
+    made();
+    await detail(sso);
+    await screen.findByRole("heading", { level: 1, name: sso.name });
+    expect(actions()).toEqual([
+      "Edit name",
+      "Make admin",
+      "Disable",
+      "Send password link",
+      "Edit guardrails",
+      "Delete",
+    ]);
+  });
+
+  test.each([
+    ["signs in with a password", lena],
+    ["keeps a password beside single sign-on", linked],
+    ["has not accepted an invite", sam],
+    ["is disabled", { ...sso, status: "disabled" } as const],
+  ])("nobody is offered it for a user who %s", async (_, user) => {
+    override("get", "/api/users/{id}", () => ok("get", "/api/users/{id}", 200, user));
+    await detail(user);
+    await screen.findByRole("heading", { level: 1, name: user.name });
+    expect(screen.queryByRole("button", { name: "Send password link" })).toBeNull();
+  });
+
+  test("a lead is not offered it: the gateway would refuse", async () => {
+    made();
+    await detail(sso, { user: fixtures.me.arjun });
+    await screen.findByRole("heading", { level: 1, name: sso.name });
+    expect(screen.queryByRole("button", { name: "Send password link" })).toBeNull();
+  });
+
+  test("the link is shown once, to copy, and is nowhere afterwards", async () => {
+    made();
+    const asked = counted("post", "/api/users/{id}/password-link", () =>
+      ok("post", "/api/users/{id}/password-link", 201, fixtures.passwordLink),
+    );
+    const app = await detail(sso);
+    const dialog = await ask("Send password link", "Create a password link?");
+    expect(dialog).toHaveTextContent("Earlier links stop working.");
+    await confirm(dialog, "Create link");
+    const secret = await screen.findByRole("dialog", { name: "Password link" });
+    expect(secret).toHaveTextContent(DESCRIPTION);
+    expect(within(secret).getByLabelText("Password link")).toHaveValue(PASSWORD_LINK);
+    expect(asked.calls).toBe(1);
+    expect(JSON.stringify(app.queryClient.getMutationCache().getAll().map((m) => m.state))).not
+      .toContain(PASSWORD_LINK_TOKEN);
+    expect(JSON.stringify(app.queryClient.getQueryCache().getAll().map((q) => q.state))).not
+      .toContain(PASSWORD_LINK_TOKEN);
+    expect(JSON.stringify(app.router.state)).not.toContain(PASSWORD_LINK_TOKEN);
+
+    await closeSecret();
+    expectNoSecret(app, PASSWORD_LINK_TOKEN);
+    expect(toasts().join()).not.toContain(PASSWORD_LINK_TOKEN);
+    await waitFor(() => {
+      expect(app.queryClient.getMutationCache().getAll()).toEqual([]);
+    });
+  });
+
+  test("a refusal stays in the dialog", async () => {
+    made();
+    override("post", "/api/users/{id}/password-link", () => refuse(errors.has_password));
+    await detail(sso);
+    const dialog = await ask("Send password link", "Create a password link?");
+    await confirm(dialog, "Create link");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      errors.has_password.body.error.message,
+    );
+    expect(screen.queryByRole("dialog", { name: "Password link" })).toBeNull();
+    expect(toasts()).toEqual([]);
+  });
+
+  test("a link that is not a path of the console is refused by the console", async () => {
+    made();
+    override("post", "/api/users/{id}/password-link", () =>
+      ok("post", "/api/users/{id}/password-link", 201, {
+        ...fixtures.passwordLink,
+        url: "https://other.example.test/accept-invite#token=x",
+      }),
+    );
+    await detail(sso);
+    const dialog = await ask("Send password link", "Create a password link?");
+    await confirm(dialog, "Create link");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(UNUSABLE);
+    expect(screen.queryByRole("dialog", { name: "Password link" })).toBeNull();
+    expect(shown()).not.toContain("other.example.test");
+  });
+});
+
 describe("deleting a user", () => {
   test("delete texts differ by status", async () => {
     for (const [user, text, other] of [

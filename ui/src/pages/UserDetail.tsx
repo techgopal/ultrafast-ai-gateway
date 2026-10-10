@@ -2,6 +2,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import {
   useDeleteUser,
+  usePasswordLink,
   useReinviteUser,
   useSetUserGuardrails,
   useUpdateUser,
@@ -28,7 +29,15 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { YouBadge } from "@/components/YouBadge";
 import { idOf } from "@/lib/id";
-import { INVITE_LINK_DESCRIPTION, INVITE_LINK_TITLE, inviteUrl, signInName } from "@/pages/Users";
+import {
+  INVITE_LINK_DESCRIPTION,
+  INVITE_LINK_TITLE,
+  inviteUrl,
+  PASSWORD_LINK_DESCRIPTION,
+  PASSWORD_LINK_TITLE,
+  PASSWORD_LINK_UNUSABLE,
+  signInName,
+} from "@/pages/Users";
 
 type User = components["schemas"]["UserView"];
 
@@ -38,6 +47,8 @@ export const CONSEQUENCES = {
     "They are signed out, their access tokens are revoked, and their virtual keys stop working until they are enabled again.",
   enable: "They can sign in again, and their virtual keys work again.",
   reinvite: "Earlier links stop working.",
+  passwordLink:
+    "The user can then sign in with a password as well as through single sign-on. Earlier links stop working.",
   deleteActive:
     "Their virtual keys keep working without an owner. Revoke the keys first if they should stop.",
   deleteNotActive: "Their virtual keys are revoked.",
@@ -60,7 +71,15 @@ export const DONE = {
   delete: "User deleted.",
 } as const;
 
-type Asking = "name" | "role" | "disable" | "enable" | "reinvite" | "delete" | "guardrails";
+type Asking =
+  | "name"
+  | "role"
+  | "disable"
+  | "enable"
+  | "reinvite"
+  | "passwordLink"
+  | "delete"
+  | "guardrails";
 
 function Controls({ me, user }: { me: Me; user: User }) {
   const navigate = useNavigate();
@@ -70,6 +89,8 @@ function Controls({ me, user }: { me: Me; user: User }) {
   const reinvite = useReinviteUser();
   const setGuardrails = useSetUserGuardrails();
   const once = useSecretOnce(reinvite);
+  const passwordLink = usePasswordLink();
+  const linkOnce = useSecretOnce(passwordLink);
   const { end } = useSessionControl();
   const [asking, setAsking] = useState<Asking | null>(null);
 
@@ -79,6 +100,13 @@ function Controls({ me, user }: { me: Me; user: User }) {
   const mayDelete = !own && can(me, { type: "deleteUser" });
   const mayRename = can(me, { type: "renameUser", userId: user.id });
   const mayGuard = can(me, { type: "manageGuardrails" });
+  // For an active user of single sign-on who has no password: the gateway
+  // refuses anyone else.
+  const mayLink =
+    can(me, { type: "inviteUser" }) &&
+    user.auth_provider === "oidc" &&
+    !user.has_password &&
+    user.status === "active";
   if (!mayRename && !mayDelete && !mayGuard) return null;
 
   const { id } = user;
@@ -129,6 +157,16 @@ function Controls({ me, user }: { me: Me; user: User }) {
                 Disable
               </Button>
             )}
+            {mayLink ? (
+              <Button
+                type="button"
+                variant="outline"
+                className={control}
+                onClick={ask("passwordLink")}
+              >
+                Send password link
+              </Button>
+            ) : null}
             {user.status === "invited" ? (
               <Button
                 type="button"
@@ -250,6 +288,40 @@ function Controls({ me, user }: { me: Me; user: User }) {
             secret={once.secret}
             onClose={once.clear}
           />
+          {mayLink ? (
+            <>
+              <ConfirmDialog
+                open={asking === "passwordLink"}
+                onOpenChange={(open) => {
+                  if (open) return;
+                  setAsking(null);
+                  passwordLink.reset();
+                }}
+                title="Create a password link?"
+                body={CONSEQUENCES.passwordLink}
+                confirmLabel="Create link"
+                onConfirm={async () => {
+                  const made = await passwordLink.mutateAsync({ id });
+                  let link: string;
+                  try {
+                    link = inviteUrl(made.url, PASSWORD_LINK_UNUSABLE);
+                  } catch (error) {
+                    // The mutation does not keep the link that is not shown.
+                    passwordLink.reset();
+                    throw error;
+                  }
+                  // Shows the link, and makes the mutation forget its answer.
+                  linkOnce.show(link);
+                }}
+              />
+              <SecretDialog
+                title={PASSWORD_LINK_TITLE}
+                description={PASSWORD_LINK_DESCRIPTION}
+                secret={linkOnce.secret}
+                onClose={linkOnce.clear}
+              />
+            </>
+          ) : null}
         </>
       ) : null}
       {mayDelete ? (

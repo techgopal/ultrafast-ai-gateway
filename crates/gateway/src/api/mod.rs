@@ -84,6 +84,7 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(users::list, users::invite))
         .routes(routes!(users::view, users::update, users::delete))
         .routes(routes!(users::reinvite))
+        .routes(routes!(users::password_link))
         .routes(routes!(users::set_guardrails))
         .routes(routes!(teams::list, teams::create))
         .routes(routes!(teams::view, teams::rename, teams::delete))

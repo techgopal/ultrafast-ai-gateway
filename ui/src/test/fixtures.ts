@@ -60,6 +60,13 @@ export const newKeySecret = `uf-sk-${"0123456789abcdef".repeat(4)}`;
 export const newTokenSecret = `uf-at-${"fedcba9876543210".repeat(4)}`;
 export const newInviteToken = `uf-inv-${"00ff".repeat(16)}`;
 export const newInviteLink = `/accept-invite#token=${newInviteToken}`;
+// crates/gateway/src/api/users.rs, password_link: a prefix of its own, so that the page says what the link is for.
+export const newPasswordLinkToken = `uf-pwl-${"00ff".repeat(16)}`;
+/** `POST /api/users/{id}/password-link` */
+export const passwordLink = {
+  url: `/accept-invite#token=${newPasswordLinkToken}`,
+  expires_at: "2999-01-01 00:00:00",
+};
 
 // crates/gateway/src/alerts/sign.rs, new_secret: `whsec_` and 32 random bytes as hex.
 export const newChannelSecret = `whsec_${"0123456789abcdef".repeat(4)}`;

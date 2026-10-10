@@ -22,7 +22,10 @@ export function Account() {
         </Part>
       ) : (
         <Part title="Password">
-          <p className="text-sm text-muted-foreground">You sign in with single sign-on.</p>
+          <p className="text-sm text-muted-foreground">
+            You sign in with single sign-on. Ask an admin for a password link if you want a
+            password too.
+          </p>
         </Part>
       )}
       <Tokens />

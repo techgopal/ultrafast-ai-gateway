@@ -71,6 +71,9 @@ pub struct InviteRow {
     pub id: i64,
     pub user_id: i64,
     pub expires_at: String,
+    /// `invite` (a new user chooses a password) or `set_password` (a user
+    /// of the identity provider gets one).
+    pub kind: String,
 }
 
 fn user_from(r: &AnyRow) -> Result<UserRow> {
@@ -219,7 +222,7 @@ impl Store {
     /// Finds an invite that is unused and has not expired.
     pub async fn invite_by_hash(&self, hash: &str) -> Result<Option<InviteRow>> {
         let row = self
-            .q("SELECT id, user_id, expires_at FROM invites
+            .q("SELECT id, user_id, expires_at, kind FROM invites
              WHERE token_hash = ?
                AND org_id = ?
                AND used_at IS NULL
@@ -233,6 +236,7 @@ impl Store {
             id: r.get("id"),
             user_id: r.get("user_id"),
             expires_at: r.get("expires_at"),
+            kind: r.get("kind"),
         }))
     }
 }
@@ -410,14 +414,27 @@ impl Tx<'_> {
         token_hash: &str,
         expires_at: &str,
     ) -> Result<i64> {
+        self.insert_invite_of_kind(user_id, token_hash, expires_at, "invite")
+            .await
+    }
+
+    /// `kind` is `invite` or `set_password`; the database refuses any other.
+    pub async fn insert_invite_of_kind(
+        &mut self,
+        user_id: i64,
+        token_hash: &str,
+        expires_at: &str,
+        kind: &str,
+    ) -> Result<i64> {
         check_timestamp(expires_at).context("expires_at is not valid")?;
         let id: i64 = self.scalar(
-            "INSERT INTO invites (org_id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?) RETURNING id",
+            "INSERT INTO invites (org_id, user_id, token_hash, expires_at, kind) VALUES (?, ?, ?, ?, ?) RETURNING id",
         )
         .bind(DEFAULT_ORG)
         .bind(user_id)
         .bind(token_hash)
         .bind(expires_at)
+        .bind(kind)
         .fetch_one(self.conn())
         .await?;
         Ok(id)

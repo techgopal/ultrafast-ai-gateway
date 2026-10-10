@@ -220,6 +220,10 @@ impl SignInProvider for OidcProvider {
         })
     }
 
+    fn return_to_of(&self, flow_cookie: &str) -> Option<String> {
+        FlowState::return_to_of(&self.cipher, flow_cookie)
+    }
+
     fn complete<'a>(
         &'a self,
         params: &'a CallbackParams,

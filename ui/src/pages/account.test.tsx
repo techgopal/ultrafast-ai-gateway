@@ -37,13 +37,13 @@ describe("the account page", () => {
     expect(toasts()).toEqual([]);
   });
 
-  test("someone without a password is told so, and gets no password form", async () => {
+  test("someone without a password is told to ask an admin for a link, and gets no password form", async () => {
     const sso = { ...maya, auth_provider: "oidc", has_password: false } as const;
     startGateway({ signedIn: true, me: { ...fixtures.me.maya, user: sso } });
     await page();
     await table();
     const password = part("Password");
-    expect(password).toHaveTextContent("You sign in with single sign-on.");
+    expect(password).toHaveTextContent("Ask an admin for a password link");
     expect(screen.queryByRole("form", { name: "Change password" })).toBeNull();
     expect(screen.queryByLabelText("Current password")).toBeNull();
     expect(screen.queryByRole("button", { name: "Change password" })).toBeNull();
