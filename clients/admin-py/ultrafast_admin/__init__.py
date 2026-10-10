@@ -429,7 +429,7 @@ class AdminClient:
         A failed call has already raised an ``AdminApiError`` (see ``_Guard``);
         this raises one for any other status that is not a success.
         """
-        if not response.status_code.is_success:
+        if not 200 <= int(response.status_code) < 300:
             raise _error_of(int(response.status_code), response.content, self._token)
         return response.parsed
 
