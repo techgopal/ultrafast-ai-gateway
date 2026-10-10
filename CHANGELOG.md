@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0-beta.3] - 2026-10-10
+
+Phase 2: tracing and alerts, single sign-on, optional PostgreSQL, guardrails,
+the Responses API, structured outputs, images, audio and prompt templates, and
+admin SDKs for TypeScript and Python.
+
 ### Added
+- **Admin SDKs.** `@ultrafast/admin` (`clients/admin-ts`, TypeScript) and
+  `ultrafast-admin` (`clients/admin-py`, Python 3.11 or newer, sync and async)
+  for the admin API (`/api`), generated from `openapi/admin.json`, with an
+  access-token wrapper, a total timeout per call and a typed `AdminApiError`
+  (`status`, `code`, `message`, `fields`). Build from source; not published to
+  npm or PyPI. CI regenerates both and fails when the committed copy differs,
+  and runs their tests against the real gateway (Python 3.11 and the newest
+  3.x).
 - **Structured outputs.** `response_format` (`text`, `json_object`, `json_schema`)
   on `/v1/chat/completions`, `text.format` on `/v1/responses`, and
   `output_config.format` on `/v1/messages`. OpenAI and Azure get it as it
@@ -127,6 +141,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tells a user without a password so. Migration 0015.
 
 ### Changed
+- The admin API description (`openapi/admin.json`) names the keywords variant of
+  a guardrail matcher (`KeywordsMatcher`), declares alert rule `params` as an
+  open object, and types the backup and playground speech downloads as binary
+  (`string`, `format: binary`, also under `application/octet-stream`).
+- The console's Settings configuration export is fetched first: a refusal
+  (409 `export_blocked`, with the name of the prompt template that cannot be
+  read) is shown in place, and a file is saved only when there is one.
 - OpenAI (base URL host `api.openai.com`) and Azure targets are sent
   `max_completion_tokens` in place of `max_tokens`, which the o-series and
   GPT-5 models require; chat completions accept `max_completion_tokens`. Other

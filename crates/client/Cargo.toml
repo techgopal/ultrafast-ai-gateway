@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Rust client for the Ultrafast gateway and for LLM providers directly."
 
 [dependencies]
-ultrafast-translate = { version = "2.0.0-beta.2", path = "../translate" }
+ultrafast-translate = { version = "2.0.0-beta.3", path = "../translate" }
 async-stream.workspace = true
 bytes.workspace = true
 futures.workspace = true
