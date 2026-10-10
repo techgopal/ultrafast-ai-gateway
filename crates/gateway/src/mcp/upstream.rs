@@ -1,21 +1,31 @@
 //! Talking to an upstream MCP server: tool discovery.
+//!
+//! The `reqwest::Client` passed in MUST NOT follow redirects (the secret would
+//! go to the redirect target); the gateway's provider client does not. A
+//! redirect answer is treated as a protocol error here.
+//!
+//! Discovery speaks JSON-RPC over streamable HTTP itself rather than through a
+//! library client so every response body is read with a size limit. It is
+//! stateless: a best-effort `initialize` is sent, no session id is kept, and
+//! each `tools/list` page is a request of its own.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
-use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
-use rmcp::model::PaginatedRequestParams;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
-use rmcp::transport::StreamableHttpClientTransport;
-use rmcp::ServiceExt;
+use futures::StreamExt;
+use reqwest::header::{HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use serde_json::{json, Value};
+use zeroize::Zeroizing;
 
 use crate::store::{DiscoveredTool, McpServerRow};
 
 pub const MAX_TOOLS: usize = 2000;
 pub const MAX_PAGES: usize = 20;
 pub const MAX_NAME_BYTES: usize = 128;
+/// A tool whose input or output schema serialises larger than this is skipped.
+pub const MAX_SCHEMA_BYTES: usize = 256 * 1024;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+pub const DEFAULT_MAX_DISCOVERY_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpstreamError {
@@ -24,6 +34,7 @@ pub enum UpstreamError {
     Protocol,
     TooMany,
     Timeout,
+    TooLarge,
 }
 
 impl fmt::Display for UpstreamError {
@@ -34,6 +45,7 @@ impl fmt::Display for UpstreamError {
             Self::Protocol => "the MCP server sent an unexpected response",
             Self::TooMany => "the MCP server lists too many tools",
             Self::Timeout => "the MCP server did not answer in time",
+            Self::TooLarge => "the MCP server sent a response that is too large",
         })
     }
 }
@@ -44,10 +56,36 @@ impl std::error::Error for UpstreamError {}
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Discovered {
     pub tools: Vec<DiscoveredTool>,
-    /// Tools skipped because their name is longer than `MAX_NAME_BYTES`.
+    /// Tools skipped: a name over `MAX_NAME_BYTES` or a schema over `MAX_SCHEMA_BYTES`.
     pub skipped: usize,
     /// `ttlMs` of the first list page, when the server sent one.
     pub ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    /// Per request, body included.
+    pub timeout: Duration,
+    /// Per response body.
+    pub max_body_bytes: usize,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            timeout: REQUEST_TIMEOUT,
+            max_body_bytes: max_discovery_bytes(),
+        }
+    }
+}
+
+/// `UF_MCP_MAX_DISCOVERY_BYTES`, default 4 MiB; an unusable value reads as the default.
+pub fn max_discovery_bytes() -> usize {
+    std::env::var("UF_MCP_MAX_DISCOVERY_BYTES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_MAX_DISCOVERY_BYTES)
 }
 
 pub async fn discover_tools(
@@ -55,69 +93,62 @@ pub async fn discover_tools(
     server: &McpServerRow,
     secret: Option<&str>,
 ) -> Result<Discovered, UpstreamError> {
-    discover_tools_with(http, server, secret, REQUEST_TIMEOUT).await
+    discover_tools_with(http, server, secret, Options::default()).await
 }
 
-/// As `discover_tools` with a chosen per-request timeout (tests use a short one).
 pub async fn discover_tools_with(
     http: &reqwest::Client,
     server: &McpServerRow,
     secret: Option<&str>,
-    timeout: Duration,
+    opts: Options,
 ) -> Result<Discovered, UpstreamError> {
-    let mut headers = HashMap::new();
-    if let Some(secret) = secret {
-        let (name, value) = match server.auth_kind.as_str() {
-            "bearer" => (AUTHORIZATION, format!("Bearer {secret}")),
-            "header" => {
-                let name = server
-                    .auth_header
-                    .as_deref()
-                    .and_then(|n| HeaderName::from_bytes(n.as_bytes()).ok())
-                    .ok_or(UpstreamError::Protocol)?;
-                (name, secret.to_string())
-            }
-            _ => (AUTHORIZATION, String::new()),
-        };
-        if !value.is_empty() {
-            let mut value = HeaderValue::from_str(&value).map_err(|_| UpstreamError::Auth)?;
-            value.set_sensitive(true);
-            headers.insert(name, value);
-        }
-    }
-    let config =
-        StreamableHttpClientTransportConfig::with_uri(server.url.as_str()).custom_headers(headers);
-    let transport = StreamableHttpClientTransport::with_client(http.clone(), config);
-    // The client handshake is part of the first request.
-    let client = tokio::time::timeout(timeout, ().serve(transport))
-        .await
-        .map_err(|_| UpstreamError::Timeout)?
-        .map_err(|e| classify(&e.to_string()))?;
-    let out = list_all(&client, timeout).await;
-    let _ = client.cancel().await;
-    out
-}
+    let auth = auth_header(server, secret)?;
+    let call = |id: u64, method: &str, params: Value| {
+        let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        rpc(http, &server.url, auth.as_ref(), body, Some(id), opts)
+    };
 
-async fn list_all(
-    client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,
-    timeout: Duration,
-) -> Result<Discovered, UpstreamError> {
+    // Best effort: a stateless server may not know `initialize`.
+    match call(
+        0,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {},
+               "clientInfo": {"name": "ultrafast-gateway", "version": env!("CARGO_PKG_VERSION")}}),
+    )
+    .await
+    {
+        Ok(_) | Err(UpstreamError::Protocol) => {}
+        Err(e) => return Err(e),
+    }
+    let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    let _ = rpc(http, &server.url, auth.as_ref(), note, None, opts).await;
+
     let mut out = Discovered::default();
     let mut cursor: Option<String> = None;
     for page in 0.. {
         if page == MAX_PAGES {
             return Err(UpstreamError::TooMany);
         }
-        let params = PaginatedRequestParams::default().with_cursor(cursor.take());
-        let result = tokio::time::timeout(timeout, client.list_tools(Some(params)))
-            .await
-            .map_err(|_| UpstreamError::Timeout)?
-            .map_err(|e| classify(&e.to_string()))?;
+        let params = match &cursor {
+            Some(c) => json!({"cursor": c}),
+            None => json!({}),
+        };
+        let result = call(page as u64 + 1, "tools/list", params).await?;
         if page == 0 {
-            out.ttl_ms = result.ttl_ms;
+            out.ttl_ms = result["ttlMs"].as_i64().map(|t| t.max(0) as u64);
         }
-        for t in result.tools {
-            if t.name.len() > MAX_NAME_BYTES {
+        for t in result["tools"].as_array().ok_or(UpstreamError::Protocol)? {
+            let name = t["name"].as_str().ok_or(UpstreamError::Protocol)?;
+            let input = &t["inputSchema"];
+            let output = t.get("outputSchema").filter(|v| !v.is_null());
+            if !input.is_object() {
+                return Err(UpstreamError::Protocol);
+            }
+            let (input, output) = (input.to_string(), output.map(Value::to_string));
+            if name.len() > MAX_NAME_BYTES
+                || input.len() > MAX_SCHEMA_BYTES
+                || output.as_ref().is_some_and(|o| o.len() > MAX_SCHEMA_BYTES)
+            {
                 out.skipped += 1;
                 continue;
             }
@@ -125,15 +156,18 @@ async fn list_all(
                 return Err(UpstreamError::TooMany);
             }
             out.tools.push(DiscoveredTool {
-                name: t.name.to_string(),
-                title: t.title,
-                description: t.description.map(|d| d.to_string()).unwrap_or_default(),
-                input_schema: json(&*t.input_schema)?,
-                output_schema: t.output_schema.map(|s| json(&*s)).transpose()?,
-                annotations: t.annotations.map(|a| json(&a)).transpose()?,
+                name: name.to_string(),
+                title: t["title"].as_str().map(String::from),
+                description: t["description"].as_str().unwrap_or_default().to_string(),
+                input_schema: input,
+                output_schema: output,
+                annotations: t
+                    .get("annotations")
+                    .filter(|v| !v.is_null())
+                    .map(Value::to_string),
             });
         }
-        cursor = result.next_cursor;
+        cursor = result["nextCursor"].as_str().map(String::from);
         if cursor.is_none() {
             break;
         }
@@ -141,26 +175,114 @@ async fn list_all(
     Ok(out)
 }
 
-fn json<T: serde::Serialize>(v: &T) -> Result<String, UpstreamError> {
-    serde_json::to_string(v).map_err(|_| UpstreamError::Protocol)
+fn auth_header(
+    server: &McpServerRow,
+    secret: Option<&str>,
+) -> Result<Option<(HeaderName, HeaderValue)>, UpstreamError> {
+    let Some(secret) = secret else {
+        return Ok(None);
+    };
+    let (name, value) = match server.auth_kind.as_str() {
+        "bearer" => (AUTHORIZATION, Zeroizing::new(format!("Bearer {secret}"))),
+        "header" => {
+            let name = server
+                .auth_header
+                .as_deref()
+                .and_then(|n| HeaderName::from_bytes(n.as_bytes()).ok())
+                .ok_or(UpstreamError::Protocol)?;
+            (name, Zeroizing::new(secret.to_string()))
+        }
+        _ => return Ok(None),
+    };
+    let mut value = HeaderValue::from_str(&value).map_err(|_| UpstreamError::Auth)?;
+    value.set_sensitive(true);
+    Ok(Some((name, value)))
 }
 
-/// Sorts an rmcp error into one of our fixed kinds. The text is read, never kept.
-fn classify(text: &str) -> UpstreamError {
-    let t = text.to_ascii_lowercase();
-    if t.contains("401")
-        || t.contains("403")
-        || t.contains("unauthorized")
-        || t.contains("forbidden")
+/// One JSON-RPC POST. With `want_id` the reply must carry that id and a
+/// `result`, which is returned; without it (a notification) nothing is read.
+async fn rpc(
+    http: &reqwest::Client,
+    url: &str,
+    auth: Option<&(HeaderName, HeaderValue)>,
+    body: Value,
+    want_id: Option<u64>,
+    opts: Options,
+) -> Result<Value, UpstreamError> {
+    let mut req = http
+        .post(url)
+        .timeout(opts.timeout)
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream")
+        .json(&body);
+    if let Some((n, v)) = auth {
+        req = req.header(n.clone(), v.clone());
+    }
+    let resp = req.send().await.map_err(map_reqwest)?;
+    let status = resp.status();
+    if status == 401 || status == 403 {
+        return Err(UpstreamError::Auth);
+    }
+    if !status.is_success() {
+        return Err(UpstreamError::Protocol);
+    }
+    let Some(id) = want_id else {
+        return Ok(Value::Null);
+    };
+    if resp
+        .content_length()
+        .is_some_and(|n| n > opts.max_body_bytes as u64)
     {
-        UpstreamError::Auth
-    } else if t.contains("timeout") || t.contains("timed out") {
+        return Err(UpstreamError::TooLarge);
+    }
+    let sse = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/event-stream"));
+    let mut buf = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(map_reqwest)?;
+        if buf.len() + chunk.len() > opts.max_body_bytes {
+            return Err(UpstreamError::TooLarge);
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    let messages: Vec<Value> = if sse {
+        let text = std::str::from_utf8(&buf).map_err(|_| UpstreamError::Protocol)?;
+        let mut events = Vec::new();
+        let mut data = String::new();
+        for line in text.lines().chain(std::iter::once("")) {
+            if let Some(d) = line.strip_prefix("data:") {
+                data.push_str(d.strip_prefix(' ').unwrap_or(d));
+            } else if line.is_empty() && !data.is_empty() {
+                events.extend(serde_json::from_str(&data).ok());
+                data.clear();
+            }
+        }
+        events
+    } else {
+        vec![serde_json::from_slice(&buf).map_err(|_| UpstreamError::Protocol)?]
+    };
+    let mut reply = messages
+        .into_iter()
+        .find(|m| m["id"] == id)
+        .ok_or(UpstreamError::Protocol)?;
+    if reply.get("error").is_some() {
+        return Err(UpstreamError::Protocol);
+    }
+    match reply.get_mut("result") {
+        Some(r) if r.is_object() => Ok(r.take()),
+        _ => Err(UpstreamError::Protocol),
+    }
+}
+
+/// Sorted by the error's kind, never by its text.
+fn map_reqwest(e: reqwest::Error) -> UpstreamError {
+    if e.is_timeout() {
         UpstreamError::Timeout
-    } else if t.contains("connect")
-        || t.contains("error sending request")
-        || t.contains("dns")
-        || t.contains("refused")
-    {
+    } else if e.is_connect() || e.is_request() {
         UpstreamError::Connect
     } else {
         UpstreamError::Protocol

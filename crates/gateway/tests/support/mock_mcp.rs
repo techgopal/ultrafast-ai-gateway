@@ -16,17 +16,40 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Failure {
     None,
     /// Every request answers 500.
     Status500,
+    /// Every request answers 500 with this body.
+    Status500Text(&'static str),
+    /// Every request answers 302 to this URL.
+    Redirect(String),
     /// Every request answers 200 with a body that is not JSON.
     Malformed,
     /// Every request waits far longer than any test timeout.
     Hang,
     /// `tools/list` always returns a next cursor.
     EndlessPages,
+}
+
+/// How `tools/call` goes wrong (listing is unaffected).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallMode {
+    /// Echo the arguments as text content.
+    Echo,
+    /// A JSON-RPC error.
+    RpcError,
+    /// A result with `isError: true`.
+    IsError,
+    /// HTTP 401 on calls only.
+    Http401,
+    /// HTTP 500 on calls only.
+    Http500,
+    /// A text result of this many bytes.
+    Oversize(usize),
+    /// Text, image and resource content plus `structuredContent`.
+    Rich,
 }
 
 /// One received request: its headers (name lowercased) and JSON body.
@@ -52,10 +75,14 @@ pub struct MockMcpBuilder {
     required: Option<(String, String)>,
     failure: Failure,
     ttl_ms: Option<u64>,
+    call_mode: CallMode,
+    call_delay: Duration,
 }
 
 struct Inner {
-    tools: Vec<Value>,
+    tools: Mutex<Vec<Value>>,
+    call_mode: CallMode,
+    call_delay: Duration,
     page_size: usize,
     required: Option<(String, String)>,
     failure: Failure,
@@ -86,7 +113,14 @@ impl MockMcp {
             required: None,
             failure: Failure::None,
             ttl_ms: None,
+            call_mode: CallMode::Echo,
+            call_delay: Duration::ZERO,
         }
+    }
+
+    /// Replaces the tool set; the next `tools/list` shows it (a changed upstream).
+    pub fn set_tools(&self, tools: Vec<Value>) {
+        *self.inner.tools.lock().unwrap() = tools;
     }
 
     /// Every request received so far, in order.
@@ -126,6 +160,15 @@ impl MockMcpBuilder {
         self.failure = f;
         self
     }
+    pub fn call_mode(mut self, m: CallMode) -> Self {
+        self.call_mode = m;
+        self
+    }
+    /// Each `tools/call` waits this long before answering.
+    pub fn call_delay(mut self, d: Duration) -> Self {
+        self.call_delay = d;
+        self
+    }
     pub fn ttl_ms(mut self, ttl: u64) -> Self {
         self.ttl_ms = Some(ttl);
         self
@@ -133,7 +176,9 @@ impl MockMcpBuilder {
 
     pub async fn start(self) -> MockMcp {
         let inner = Arc::new(Inner {
-            tools: self.tools,
+            tools: Mutex::new(self.tools),
+            call_mode: self.call_mode,
+            call_delay: self.call_delay,
             page_size: self.page_size,
             required: self.required,
             failure: self.failure,
@@ -161,8 +206,14 @@ async fn handle(State(s): State<Arc<Inner>>, headers: HeaderMap, body: String) -
             .collect(),
         body: parsed.clone(),
     });
-    match s.failure {
+    match &s.failure {
         Failure::Status500 => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Failure::Status500Text(t) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, *t).into_response()
+        }
+        Failure::Redirect(to) => {
+            return (StatusCode::FOUND, [("location", to.as_str())]).into_response()
+        }
         Failure::Malformed => return (StatusCode::OK, "<<not json").into_response(),
         Failure::Hang => {
             tokio::time::sleep(Duration::from_secs(3600)).await;
@@ -186,7 +237,21 @@ async fn handle(State(s): State<Arc<Inner>>, headers: HeaderMap, body: String) -
             "serverInfo": {"name": "mock-mcp", "version": "0"},
         }),
         "tools/list" => list(&s, &parsed),
-        "tools/call" => call(&parsed),
+        "tools/call" => {
+            if !s.call_delay.is_zero() {
+                tokio::time::sleep(s.call_delay).await;
+            }
+            match &s.call_mode {
+                CallMode::Http401 => return StatusCode::UNAUTHORIZED.into_response(),
+                CallMode::Http500 => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                CallMode::RpcError => {
+                    return Json(json!({"jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32000, "message": "tool exploded"}}))
+                    .into_response()
+                }
+                m => call(&parsed, m),
+            }
+        }
         "ping" => json!({}),
         _ => {
             return Json(json!({"jsonrpc": "2.0", "id": id,
@@ -207,9 +272,10 @@ fn list(s: &Inner, req: &Value) -> Value {
         out["tools"] = json!([tool(&format!("t{start}"), "page tool")]);
         out["nextCursor"] = json!((start + 1).to_string());
     } else {
-        let end = (start + s.page_size).min(s.tools.len());
-        out["tools"] = Value::Array(s.tools[start.min(end)..end].to_vec());
-        if end < s.tools.len() {
+        let tools = s.tools.lock().unwrap().clone();
+        let end = (start + s.page_size).min(tools.len());
+        out["tools"] = Value::Array(tools[start.min(end)..end].to_vec());
+        if end < tools.len() {
             out["nextCursor"] = json!(end.to_string());
         }
     }
@@ -219,10 +285,24 @@ fn list(s: &Inner, req: &Value) -> Value {
     out
 }
 
-/// Echoes the arguments back as text content.
-fn call(req: &Value) -> Value {
-    json!({
-        "content": [{"type": "text", "text": req["params"]["arguments"].to_string()}],
-        "isError": false,
-    })
+fn call(req: &Value, mode: &CallMode) -> Value {
+    let echo = req["params"]["arguments"].to_string();
+    match mode {
+        CallMode::IsError => {
+            json!({"content": [{"type": "text", "text": "tool failed"}], "isError": true})
+        }
+        CallMode::Oversize(n) => {
+            json!({"content": [{"type": "text", "text": "x".repeat(*n)}], "isError": false})
+        }
+        CallMode::Rich => json!({
+            "content": [
+                {"type": "text", "text": echo},
+                {"type": "image", "data": "aGVsbG8=", "mimeType": "image/png"},
+                {"type": "resource", "resource": {"uri": "file:///x", "text": "r"}},
+            ],
+            "structuredContent": {"echo": req["params"]["arguments"]},
+            "isError": false,
+        }),
+        _ => json!({"content": [{"type": "text", "text": echo}], "isError": false}),
+    }
 }

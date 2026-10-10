@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use mock_mcp::{tool, Failure, MockMcp};
 use ultrafast_gateway::mcp::upstream::{
-    discover_tools, discover_tools_with, UpstreamError, MAX_PAGES,
+    discover_tools, discover_tools_with, Options, UpstreamError, MAX_PAGES,
 };
 use ultrafast_gateway::store::McpServerRow;
 
@@ -205,7 +205,10 @@ async fn a_hanging_server_times_out() {
         &reqwest::Client::new(),
         &server(&mock.url, "none", None),
         None,
-        Duration::from_millis(300),
+        Options {
+            timeout: Duration::from_millis(300),
+            ..Options::default()
+        },
     )
     .await
     .unwrap_err();
@@ -244,4 +247,75 @@ async fn a_tool_with_a_200_byte_name_is_skipped_and_counted() {
     .unwrap();
     assert_eq!(found.tools.len(), 2);
     assert_eq!(found.skipped, 1);
+}
+
+#[tokio::test]
+async fn a_page_over_the_body_cap_is_too_large() {
+    let mock = MockMcp::builder().tools(names(200)).start().await;
+    let err = discover_tools_with(
+        &reqwest::Client::new(),
+        &server(&mock.url, "none", None),
+        None,
+        Options {
+            max_body_bytes: 2000,
+            ..Options::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, UpstreamError::TooLarge);
+}
+
+#[tokio::test]
+async fn a_huge_schema_skips_the_tool() {
+    let mut big = tool("big", "d");
+    big["inputSchema"] =
+        serde_json::json!({"type": "object", "description": "x".repeat(300 * 1024)});
+    let mut tools = names(1);
+    tools.push(big);
+    let mock = MockMcp::builder().tools(tools).start().await;
+    let found = discover_tools(
+        &reqwest::Client::new(),
+        &server(&mock.url, "none", None),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(found.tools.len(), 1);
+    assert_eq!(found.skipped, 1);
+}
+
+#[tokio::test]
+async fn upstream_text_does_not_choose_the_error_kind() {
+    // A 500 whose body says "unauthorized" and "timeout" stays a protocol error.
+    let mock = MockMcp::builder()
+        .failure(Failure::Status500Text("401 unauthorized timeout"))
+        .start()
+        .await;
+    let err = discover_tools(
+        &reqwest::Client::new(),
+        &server(&mock.url, "none", None),
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, UpstreamError::Protocol);
+}
+
+#[tokio::test]
+async fn a_redirect_is_not_followed_and_not_sent_the_secret() {
+    let target = MockMcp::builder().tools(names(1)).start().await;
+    let mock = MockMcp::builder()
+        .failure(Failure::Redirect(target.url.clone()))
+        .start()
+        .await;
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let err = discover_tools(&http, &server(&mock.url, "bearer", None), Some(SECRET))
+        .await
+        .unwrap_err();
+    assert_eq!(err, UpstreamError::Protocol);
+    assert!(target.received().is_empty());
 }

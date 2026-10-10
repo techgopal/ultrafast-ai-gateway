@@ -3106,6 +3106,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]
