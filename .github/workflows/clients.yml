@@ -173,6 +173,8 @@ jobs:
         working-directory: clients/admin-ts
         run: |
           pnpm gen
+          # Untracked files count: a new operation is a new file.
+          git add -N .
           git diff --exit-code -- .
       - name: Lint, typecheck, test and build
         working-directory: clients/admin-ts
@@ -189,8 +191,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The oldest the package supports, and the newest 3.x.
-        python: ["3.11", "3.x"]
+        # The oldest the package supports, and 3.14, which constraints.txt is pinned for
+        # (the regeneration check runs there; a newer minor is a deliberate change).
+        python: ["3.11", "3.14"]
     env:
       UF_E2E_BINARY: ${{ github.workspace }}/target/debug/ultrafast
     steps:
@@ -211,10 +214,12 @@ jobs:
       # gen.sh pins the generator, the formatter and their dependencies; its
       # output is the same on every Python, so it is checked once.
       - name: The generated client is current
-        if: matrix.python == '3.x'
+        if: matrix.python == '3.14'
         working-directory: clients/admin-py
         run: |
           ./gen.sh
+          # Untracked files count: every operation is a module of its own.
+          git add -N .
           git diff --exit-code -- .
       - name: Tests
         working-directory: clients/admin-py
