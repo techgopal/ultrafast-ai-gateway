@@ -11,16 +11,18 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::auth::{teams_visible_to, user_view_for, UserView};
+use super::auth::{guardrail_ids_of_users, teams_visible_to, user_view_for, UserView};
 use super::{path_id, refresh_snapshot, require, trimmed_name, ApiError, ApiJson, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action, Scope};
 use crate::identity::{normalize_email, Role, UserStatus};
-use crate::secrets::{generate_secret, INVITE_PREFIX};
+use crate::secrets::{generate_secret, INVITE_PREFIX, PASSWORD_LINK_PREFIX};
 use crate::store::{after, AuditEntry, NewUser, Store, StoreError, Tx, UserRow};
 
 /// How long an invite link works.
 const INVITE_SECONDS: i64 = 7 * 24 * 60 * 60;
+/// How long a password link works.
+const PASSWORD_LINK_SECONDS: i64 = 24 * 60 * 60;
 /// The page that takes an invite token.
 /// The token goes in the fragment, which a browser never sends to a server.
 const INVITE_PAGE: &str = "/accept-invite#token=";
@@ -101,11 +103,13 @@ pub async fn list(
     // One query for the teams of everyone listed.
     let ids: Vec<i64> = users.iter().map(|u| u.id).collect();
     let mut teams = store.teams_of_users(&ids).await?;
+    let mut attached = guardrail_ids_of_users(store).await?;
     let users: Vec<UserView> = users
         .into_iter()
         .map(|u| {
             let teams = teams_visible_to(me, u.id, teams.remove(&u.id).unwrap_or_default());
-            UserView::new(u, teams)
+            let guardrail_ids = attached.remove(&u.id).unwrap_or_default();
+            UserView::new(u, teams).with_guardrail_ids(guardrail_ids)
         })
         .collect();
     Ok(Json(json!({ "users": users })).into_response())
@@ -260,6 +264,89 @@ pub async fn reinvite(
 }
 
 #[utoipa::path(
+    post,
+    path = "/users/{id}/password-link",
+    tag = "users",
+    operation_id = "users_password_link",
+    summary = "Make a link that lets a user of single sign-on set a password",
+    description = "For an active user who signs in through the identity provider and has no password. The link works once and for 24 hours; a new one ends the earlier one. Setting the password keeps the user's single sign-on link and role. Admins only.",
+    params(
+        ("id" = i64, Path, description = "The id of the user."),
+    ),
+    responses(
+        (status = 201, description = "The link, shown once.", body = super::openapi::PasswordLinkResponse),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`admin_target`: the user is an admin other than the caller. `not_sso_user`: the user signs in with a password. `has_password`: the user has one. `not_active`: the user is not active.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+pub async fn password_link(
+    State(state): State<Arc<AppState>>,
+    Path(raw_id): Path<String>,
+    authed: Authed,
+) -> Result<Response, ApiError> {
+    let me = &authed.principal;
+    let store = &state.store;
+    // As for a new invite: settled before anything is said about the id.
+    require(me, &Action::InviteUser { role: Role::Member })?;
+    let target = user_of(store, &raw_id).await?;
+    require(me, &Action::InviteUser { role: target.role })?;
+
+    let mut tx = store.begin_immediate().await?;
+    // Read again: the user may have changed in the meantime.
+    let user = tx
+        .user_by_id(target.id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if user.role == Role::Admin && user.id != me.user_id {
+        return Err(ApiError::conflict(
+            "admin_target",
+            "Admins get a password through their own account, not a link.",
+        ));
+    }
+    if user.external_id.is_none() {
+        return Err(ApiError::conflict(
+            "not_sso_user",
+            "This user signs in with a password. They can change it in their account.",
+        ));
+    }
+    if user.password_hash.is_some() {
+        return Err(ApiError::conflict(
+            "has_password",
+            "This user has a password already.",
+        ));
+    }
+    if user.status != UserStatus::Active {
+        return Err(ApiError::conflict(
+            "not_active",
+            "Only an active user can get a password link.",
+        ));
+    }
+    // One link at a time: a new one ends the earlier.
+    tx.delete_invites_of(user.id).await?;
+    let token = generate_secret(PASSWORD_LINK_PREFIX);
+    let expires_at = after(PASSWORD_LINK_SECONDS);
+    tx.insert_invite_of_kind(user.id, &token.hash, &expires_at, "set_password")
+        .await?;
+    // The issuance is recorded, never the token or the link.
+    tx.audit(AuditEntry {
+        actor_user_id: Some(me.user_id),
+        actor_email: &me.email,
+        action: "user.password_link",
+        target_type: "user",
+        target_id: Some(user.id),
+        summary: &format!("Made a password link for {}", user.email),
+    })
+    .await?;
+    tx.commit().await?;
+    let body = json!({ "url": format!("{INVITE_PAGE}{}", token.full), "expires_at": expires_at });
+    Ok((StatusCode::CREATED, Json(body)).into_response())
+}
+
+#[utoipa::path(
     get,
     path = "/users/{id}",
     tag = "users",
@@ -292,6 +379,47 @@ pub async fn view(
         },
     )?;
     Ok(Json(user_view_for(store, me, target).await?).into_response())
+}
+
+#[utoipa::path(
+    put,
+    path = "/users/{id}/guardrails",
+    tag = "users",
+    operation_id = "users_set_guardrails",
+    params(
+        ("id" = i64, Path, description = "The id of the user."),
+    ),
+    request_body = super::guardrails::AttachRequest,
+    responses(
+        (status = 200, description = "The guardrails of the user after the change.", body = super::guardrails::Attached),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+/// Replaces the guardrails applied to every key the user owns. Admins only.
+pub async fn set_guardrails(
+    State(state): State<Arc<AppState>>,
+    Path(raw_id): Path<String>,
+    authed: Authed,
+    ApiJson(req): ApiJson<super::guardrails::AttachRequest>,
+) -> Result<Response, ApiError> {
+    let me = &authed.principal;
+    require(me, &Action::ManageGuardrails)?;
+    let id = path_id(&raw_id)?;
+    super::guardrails::set_attached(
+        &state,
+        me,
+        super::guardrails::Holder::User,
+        id,
+        &req.guardrail_ids,
+    )
+    .await
 }
 
 #[utoipa::path(
@@ -634,5 +762,10 @@ mod tests {
     #[test]
     fn invites_last_seven_days() {
         assert_eq!(INVITE_SECONDS, 604_800);
+    }
+
+    #[test]
+    fn password_links_last_a_day() {
+        assert_eq!(PASSWORD_LINK_SECONDS, 86_400);
     }
 }

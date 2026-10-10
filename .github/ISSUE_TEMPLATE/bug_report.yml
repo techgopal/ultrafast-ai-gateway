@@ -11,7 +11,7 @@ body:
     attributes:
       label: Version
       description: Output of `ultrafast --version`, or the image tag.
-      placeholder: 2.0.0-beta.3
+      placeholder: 2.0.0-beta.4
     validations:
       required: true
   - type: dropdown

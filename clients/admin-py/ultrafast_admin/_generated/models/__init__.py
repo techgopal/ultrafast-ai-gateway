@@ -9,6 +9,8 @@ from .alert_rule_entry_params import AlertRuleEntryParams
 from .api_error_body import ApiErrorBody
 from .api_error_detail import ApiErrorDetail
 from .api_error_detail_fields import ApiErrorDetailFields
+from .attach_request import AttachRequest
+from .attached import Attached
 from .audit_page import AuditPage
 from .audit_row import AuditRow
 from .auth_provider_view import AuthProviderView
@@ -95,6 +97,7 @@ from .outcome_view import OutcomeView
 from .outcome_view_redactions import OutcomeViewRedactions
 from .params import Params
 from .params_response_format_type_0 import ParamsResponseFormatType0
+from .password_link_response import PasswordLinkResponse
 from .pii_type import PiiType
 from .playground_chat_answer import PlaygroundChatAnswer
 from .playground_chat_answer_choices_item import PlaygroundChatAnswerChoicesItem
@@ -203,6 +206,8 @@ __all__ = (
     "ApiErrorBody",
     "ApiErrorDetail",
     "ApiErrorDetailFields",
+    "AttachRequest",
+    "Attached",
     "AuditPage",
     "AuditRow",
     "AuthProviderView",
@@ -289,6 +294,7 @@ __all__ = (
     "OutcomeViewRedactions",
     "Params",
     "ParamsResponseFormatType0",
+    "PasswordLinkResponse",
     "PiiType",
     "PlaygroundChatAnswer",
     "PlaygroundChatAnswerChoicesItem",

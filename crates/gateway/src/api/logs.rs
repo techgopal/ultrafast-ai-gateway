@@ -118,6 +118,10 @@ pub struct LogAttempt {
     #[schema(required)]
     pub status: Option<i64>,
     pub duration_ms: i64,
+    /// Why the target was passed over without a call, when the request could
+    /// not be expressed for it: `unsupported:<feature>`. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<String>,
 }
 
 /// A call with the targets it tried, in order. The fields of a
@@ -532,6 +536,17 @@ pub async fn view(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attempt_shows_why_it_was_skipped() {
+        let stored = r#"[{"provider":"p","model":"m","outcome":"skipped","status":null,
+            "duration_ms":0,"skipped":"unsupported:audio"},
+            {"provider":"q","model":"m","outcome":"ok","status":200,"duration_ms":3}]"#;
+        let a: Vec<LogAttempt> = serde_json::from_str(stored).unwrap();
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v[0]["skipped"], "unsupported:audio");
+        assert!(v[1].get("skipped").is_none());
+    }
 
     #[test]
     fn bounds_are_utc_text() {

@@ -51,6 +51,8 @@ struct World {
     org: Org,
     /// Invited, in no team.
     sam: i64,
+    /// Made by single sign-on: active, linked, no password.
+    sso: i64,
     provider: i64,
     /// A provider that lists one model, on a mock server.
     syncable: i64,
@@ -122,6 +124,19 @@ async fn world() -> World {
         .unwrap();
     let invite = generate_secret(INVITE_PREFIX);
     tx.insert_invite(sam, &invite.hash, &after(3600))
+        .await
+        .unwrap();
+    let sso = tx
+        .insert_user(NewUser {
+            email: "sso@example.com",
+            name: "Sso",
+            role: Role::Member,
+            status: UserStatus::Active,
+            password_hash: None,
+        })
+        .await
+        .unwrap();
+    tx.link_external(sso, "oidc", "https://idp.example.com|sub-sso")
         .await
         .unwrap();
     let provider = tx
@@ -299,6 +314,7 @@ async fn world() -> World {
     World {
         org,
         sam,
+        sso,
         provider,
         syncable,
         model,
@@ -573,7 +589,7 @@ fn table() -> Vec<Row> {
             |w, _| format!("/api/alerts/channels/{}/test", w.channel), no_body,
             [200, 403, 403, 401]),
         row(71, "GET", "/api/alerts/rules", "", |_, _| "/api/alerts/rules".into(), no_body,
-            [200, 403, 403, 401]),
+            [200, 200, 403, 401]),
         row(72, "POST", "/api/alerts/rules", "", |_, _| "/api/alerts/rules".into(),
             || Some(json!({ "name": "errors", "kind": "error_rate",
                             "params": { "scope": "gateway", "percent": 10 }, "channel_ids": [] })),
@@ -584,7 +600,7 @@ fn table() -> Vec<Row> {
         row(74, "DELETE", "/api/alerts/rules/{id}", "", |w, _| format!("/api/alerts/rules/{}", w.rule), no_body,
             [204, 403, 403, 401]),
         row(75, "GET", "/api/alerts/events", "", |_, _| "/api/alerts/events".into(), no_body,
-            [200, 403, 403, 401]),
+            [200, 200, 403, 401]),
         row(76, "GET", "/api/settings/oidc", "", |_, _| "/api/settings/oidc".into(), no_body,
             [200, 403, 403, 401]),
         row(77, "PUT", "/api/settings/oidc", "", |_, _| "/api/settings/oidc".into(),
@@ -646,6 +662,17 @@ fn table() -> Vec<Row> {
             [200, 200, 200, 401]),
         row(96, "GET", "/api/playground/config", "", |_, _| "/api/playground/config".into(), no_body,
             [200, 200, 200, 401]),
+        row(97, "PUT", "/api/teams/{id}/guardrails", "platform, none",
+            |w, _| format!("/api/teams/{}/guardrails", w.org.platform),
+            || Some(json!({ "guardrail_ids": [] })),
+            [200, 403, 403, 401]),
+        row(98, "PUT", "/api/users/{id}/guardrails", "lena, none",
+            |w, _| format!("/api/users/{}/guardrails", w.org.lena),
+            || Some(json!({ "guardrail_ids": [] })),
+            [200, 403, 403, 401]),
+        row(99, "POST", "/api/users/{id}/password-link", "sso, who signs in through the provider",
+            |w, _| format!("/api/users/{}/password-link", w.sso), no_body,
+            [201, 403, 403, 401]),
     ]
 }
 
@@ -720,7 +747,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=96).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=99).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -855,7 +882,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 96);
+    assert_eq!(operations, 99);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

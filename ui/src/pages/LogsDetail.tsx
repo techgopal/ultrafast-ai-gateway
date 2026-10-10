@@ -38,7 +38,10 @@ const columns: Column<Attempt>[] = [
     id: "outcome",
     header: "Outcome",
     cell: (attempt) => (
-      <Badge variant={outcomeVariant(attempt.outcome)}>{outcomeLabel(attempt.outcome)}</Badge>
+      <span className="flex flex-wrap items-center gap-1">
+        <Badge variant={outcomeVariant(attempt.outcome)}>{outcomeLabel(attempt.outcome)}</Badge>
+        {attempt.skipped ? <Badge variant="outline">{`skipped: ${attempt.skipped}`}</Badge> : null}
+      </span>
     ),
   },
   {

@@ -14,7 +14,7 @@ class AcceptInviteRequest:
     """
     Attributes:
         password (str):
-        token (str): The token of the invite link.
+        token (str): The token of the invite link or of the password link.
     """
 
     password: str

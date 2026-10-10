@@ -381,14 +381,15 @@ impl Tx<'_> {
     /// get a state back. Only the first writer wins: with several gateway
     /// processes on one database, the one that finds the state already
     /// there records nothing, so an episode is announced once. `owner` is the
-    /// process that holds the episode from now on (`since` is also its first
-    /// sign of life). `false`: nothing was written.
+    /// process that holds the episode from now on (`seen_at` is its first sign
+    /// of life, by the database's clock). `false`: nothing was written.
     pub async fn upsert_alert_state(
         &mut self,
         rule_id: i64,
         subject: &str,
         since: &str,
         owner: &str,
+        seen_at: &str,
     ) -> Result<bool> {
         let r = self
             .q("INSERT INTO alert_state (rule_id, subject, firing, since, owner, seen_at)
@@ -400,7 +401,7 @@ impl Tx<'_> {
             .bind(subject)
             .bind(since)
             .bind(owner)
-            .bind(since)
+            .bind(seen_at)
             .bind(rule_id)
             .execute(self.conn())
             .await?;
@@ -923,15 +924,33 @@ mod tests {
             .await
             .unwrap();
         tx.set_alert_rule_channels(rule, &[b, a, a]).await.unwrap();
-        tx.upsert_alert_state(rule, "budget:1:2999-01-01", "2999-01-01 00:00:00", "p")
-            .await
-            .unwrap();
-        tx.upsert_alert_state(rule, "budget:1:2999-02-01", "2999-02-01 00:00:00", "p")
-            .await
-            .unwrap();
-        tx.upsert_alert_state(rule, "budget:2:2999-01-01", "2999-01-01 00:00:00", "p")
-            .await
-            .unwrap();
+        tx.upsert_alert_state(
+            rule,
+            "budget:1:2999-01-01",
+            "2999-01-01 00:00:00",
+            "p",
+            "2999-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        tx.upsert_alert_state(
+            rule,
+            "budget:1:2999-02-01",
+            "2999-02-01 00:00:00",
+            "p",
+            "2999-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        tx.upsert_alert_state(
+            rule,
+            "budget:2:2999-01-01",
+            "2999-01-01 00:00:00",
+            "p",
+            "2999-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
         tx.delete_alert_states_except(rule, "budget:1:", "budget:1:2999-02-01")
             .await
             .unwrap();

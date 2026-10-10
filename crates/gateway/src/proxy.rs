@@ -1978,6 +1978,27 @@ async fn try_target(
     }
 }
 
+/// Which feature of a chat request a translator's `Unsupported` message is
+/// about, for the log.
+fn unsupported_feature(message: &str) -> &'static str {
+    let m = message.to_ascii_lowercase();
+    if m.contains("reasoning") {
+        "reasoning_effort"
+    } else if m.contains("image") {
+        "images"
+    } else if m.contains("audio") {
+        "audio"
+    } else if m.contains("tool") {
+        "tools"
+    } else if m.contains("response_format") || m.contains("json") || m.contains("schema") {
+        "structured_output"
+    } else if m.contains("'name'") {
+        "message_name"
+    } else {
+        "request"
+    }
+}
+
 async fn try_target_once(
     http: &reqwest::Client,
     call: &Call,
@@ -2008,9 +2029,15 @@ async fn try_target_once(
         Call::Transcribe(req, chunks) => audio::build_upload(&wire, req)
             .map(|upload| Outgoing::Upload(upload, req.file.clone(), chunks.clone())),
     };
-    let out = built.map_err(|e| Failure::Fatal {
-        error: CallError::Translate(e),
-        status: None,
+    let out = built.map_err(|e| match (&e, call) {
+        (TranslateError::Unsupported(m), Call::Chat(_)) => Failure::Unsupported {
+            feature: unsupported_feature(m).to_string(),
+            error: CallError::Translate(e),
+        },
+        _ => Failure::Fatal {
+            error: CallError::Translate(e),
+            status: None,
+        },
     })?;
     // From here a request may reach the provider.
     sent.store(true, AtomicOrdering::Relaxed);

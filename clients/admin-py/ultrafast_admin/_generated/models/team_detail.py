@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -19,15 +19,19 @@ T = TypeVar("T", bound="TeamDetail")
 class TeamDetail:
     """
     Attributes:
+        guardrail_ids (list[int]): The guardrails applied to every key of the team, in order.
         members (list[MemberDetail]):
         team (TeamSummary): A team with the number of its members.
     """
 
+    guardrail_ids: list[int]
     members: list[MemberDetail]
     team: TeamSummary
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        guardrail_ids = self.guardrail_ids
+
         members = []
         for members_item_data in self.members:
             members_item = members_item_data.to_dict()
@@ -39,6 +43,7 @@ class TeamDetail:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "guardrail_ids": guardrail_ids,
                 "members": members,
                 "team": team,
             }
@@ -52,6 +57,8 @@ class TeamDetail:
         from ..models.team_summary import TeamSummary
 
         d = dict(src_dict)
+        guardrail_ids = cast(list[int], d.pop("guardrail_ids"))
+
         members = []
         _members = d.pop("members")
         for members_item_data in _members:
@@ -62,6 +69,7 @@ class TeamDetail:
         team = TeamSummary.from_dict(d.pop("team"))
 
         team_detail = cls(
+            guardrail_ids=guardrail_ids,
             members=members,
             team=team,
         )

@@ -15,11 +15,13 @@ afterEach(() => {
 });
 
 // crates/gateway/src/secrets.rs, generate_secret: prefix + 32 random bytes as hex.
-const SECRET = /^uf-(sk|at|inv)-[0-9a-f]{64}$/;
+const SECRET = /^uf-(sk|at|inv|pwl)-[0-9a-f]{64}$/;
 // The same function: prefix + U+2026 + the last 4 characters of the secret.
 const DISPLAY = /^uf-(sk|at)-…[0-9a-f]{4}$/;
 // crates/gateway/src/api/users.rs, INVITE_PAGE and new_invite.
 const INVITE_LINK = /^\/accept-invite#token=uf-inv-[0-9a-f]{64}$/;
+// crates/gateway/src/api/users.rs, password_link and PASSWORD_LINK_PREFIX.
+const PASSWORD_LINK = /^\/accept-invite#token=uf-pwl-[0-9a-f]{64}$/;
 // crates/gateway/src/store/mod.rs, TIMESTAMP: UTC, compared as text.
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 // crates/gateway/src/store/sessions.rs, random_hex.
@@ -130,6 +132,10 @@ describe("the fixtures have the forms of the gateway", () => {
     expect(fixtures.newInviteToken.startsWith("uf-inv-")).toBe(true);
     expect(fixtures.newInviteLink).toMatch(INVITE_LINK);
     expect(fixtures.newInviteLink.endsWith(fixtures.newInviteToken)).toBe(true);
+    expect(fixtures.newPasswordLinkToken).toMatch(SECRET);
+    expect(fixtures.passwordLink.url).toMatch(PASSWORD_LINK);
+    expect(fixtures.passwordLink.url.endsWith(fixtures.newPasswordLinkToken)).toBe(true);
+    expect(fixtures.passwordLink.expires_at).toMatch(TIMESTAMP);
     expect(fixtures.csrfToken).toMatch(CSRF_TOKEN);
     // The signing secret of a guardrail is made like that of an alert channel.
     for (const secret of [fixtures.newGuardrailSecret, fixtures.rotatedGuardrailSecret]) {

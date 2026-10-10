@@ -225,6 +225,7 @@ mod tests {
             status,
             duration_ms: dur,
             offset_ms: off,
+            skipped: None,
         }
     }
 

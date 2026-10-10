@@ -1767,3 +1767,140 @@ async fn a_disabled_sso_user_can_be_enabled_again() {
         .await
         .assert_signed_in("/");
 }
+
+// ----------------------------------------------------- deep link, password
+
+#[tokio::test]
+async fn a_failed_callback_keeps_the_page_the_visitor_came_for() {
+    let (org, idp) = world().await;
+    let (_, flow) = begin(&org, Some("/keys?tab=1")).await;
+    let flow = flow.unwrap();
+    let wanted = "/sign-in?sso_error=idp&next=%2Fkeys%3Ftab%3D1";
+    let refused = callback(
+        &org,
+        &format!("error=access_denied&state={}", flow.state),
+        Some(&flow.cookie),
+    )
+    .await;
+    assert_eq!(refused.location, wanted, "{refused:?}");
+    assert!(refused.clears_flow_cookie());
+    assert!(refused.session().is_none());
+
+    // A state that does not match is refused with the page kept too: the
+    // cookie is the gateway's own and says where the visitor was going.
+    let (_, flow) = begin(&org, Some("/keys?tab=1")).await;
+    let flow = flow.unwrap();
+    let refused = callback(&org, "code=x&state=other", Some(&flow.cookie)).await;
+    assert_eq!(
+        refused.location,
+        "/sign-in?sso_error=state&next=%2Fkeys%3Ftab%3D1"
+    );
+
+    // A refusal by the token step (a nonce that is not the attempt's).
+    let (_, flow) = begin(&org, Some("/logs")).await;
+    let flow = flow.unwrap();
+    idp.token_for(&claims(
+        &idp,
+        "not-the-nonce",
+        "sub-priya",
+        &email_of("priya"),
+        json!({}),
+    ))
+    .await;
+    let refused = callback(
+        &org,
+        &format!("code={CODE}&state={}", flow.state),
+        Some(&flow.cookie),
+    )
+    .await;
+    assert_eq!(refused.location, "/sign-in?sso_error=token&next=%2Flogs");
+
+    // No cookie, an altered one, or the default page: nothing to keep.
+    callback(&org, "code=x&state=y", None)
+        .await
+        .assert_refused("state");
+    let altered = format!("{}x", flow.cookie);
+    callback(&org, "code=x&state=y", Some(&altered))
+        .await
+        .assert_refused("state");
+    let (_, flow) = begin(&org, None).await;
+    let flow = flow.unwrap();
+    callback(&org, "error=access_denied&state=y", Some(&flow.cookie))
+        .await
+        .assert_refused("idp");
+}
+
+#[tokio::test]
+async fn a_refused_start_keeps_the_page_too() {
+    let (org, _idp) = world().await;
+    for _ in 0..60 {
+        let (answer, flow) = begin(&org, None).await;
+        assert!(flow.is_some(), "{answer:?}");
+    }
+    let (answer, flow) = begin(&org, Some("/keys")).await;
+    assert!(flow.is_none());
+    assert_eq!(
+        answer.location,
+        "/sign-in?sso_error=rate_limited&next=%2Fkeys"
+    );
+}
+
+#[tokio::test]
+async fn single_sign_on_still_works_after_a_password_is_set() {
+    let (org, idp) = world().await;
+    configure(
+        &org,
+        &idp,
+        json!({ "auto_create": true, "allowed_domains": ["corp.example.org"] }),
+    )
+    .await;
+    let nia = "nia@corp.example.org";
+    sign_in_as(&org, &idp, None, "sub-nia", nia, json!({}))
+        .await
+        .assert_signed_in("/");
+    // The user made by single sign-on has no password.
+    let made = org.api.store.user_by_email(nia).await.unwrap().unwrap();
+    assert!(made.password_hash.is_none());
+    let before = made.external_id.clone();
+    let users = count_users(&org).await;
+
+    let maya = org.sign_in("maya").await;
+    let (status, made) = org
+        .call(
+            Some(&maya),
+            "POST",
+            &format!("/api/users/{}/password-link", made.id),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let url = made["url"].as_str().unwrap();
+    let token = url
+        .strip_prefix("/accept-invite#token=")
+        .expect("a console path")
+        .to_string();
+    let (status, _) = org
+        .call(
+            None,
+            "POST",
+            "/api/auth/accept-invite",
+            Some(json!({ "token": token, "password": "a long enough phrase 7" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let after = org.api.store.user_by_email(nia).await.unwrap().unwrap();
+    assert!(after.password_hash.is_some());
+    assert_eq!(after.external_id, before);
+    assert_eq!(after.auth_provider, "oidc");
+    assert_eq!(after.role, Role::Member);
+    assert_eq!(after.status, UserStatus::Active);
+    assert_eq!(count_users(&org).await, users);
+
+    // Both ways in.
+    common::sign_in(&org.api.app, nia, "a long enough phrase 7").await;
+    sign_in_as(&org, &idp, Some("/keys"), "sub-nia", nia, json!({}))
+        .await
+        .assert_signed_in("/keys");
+    assert_eq!(count_users(&org).await, users);
+}

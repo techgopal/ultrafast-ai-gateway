@@ -86,14 +86,14 @@ variations, and realtime audio.
 printf 'UF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' > admin.env
 chmod 600 admin.env
 docker run -d --name ultrafast -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast \
-  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.3
+  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.4
 ```
 
 **Or a binary** from the [latest release](https://github.com/techgopal/ultrafast-ai-gateway/releases)
 (Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x64). For Linux x86_64:
 
 ```bash
-V=2.0.0-beta.3; T=x86_64-unknown-linux-musl
+V=2.0.0-beta.4; T=x86_64-unknown-linux-musl
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/ultrafast-v$V-$T.tar.gz
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c
@@ -328,10 +328,10 @@ has the images, audio or reasoning API is up to it (its error comes back to
 the caller). A model that cannot serve images or audio answers 400 "This model
 does not support image generation." (or "audio."), without a provider being
 called; on a route, targets that cannot serve a call are skipped and the first
-that can serves it. For features of chat calls the rule is different: a feature
-the first target lacks (`reasoning_effort` on Anthropic or Gemini, `tool_choice`
-with no tools, ...) is a 400, and the call does not move on to a fallback that
-has it.
+that can serves it. A target that cannot express a feature of the request
+(reasoning effort, tools, images, structured output) is skipped and the next
+target is tried; the log shows the skipped attempt. When no target can express
+it, the call is a 400 with the first target's message.
 
 ### Structured outputs
 
@@ -735,7 +735,9 @@ Team membership is not synchronized.
 
 **Sign-in errors.** A failed sign-in returns to the sign-in page with
 `?sso_error=<code>`; the page shows this message (the code itself is never
-shown):
+shown). When the visitor was going to a page other than the front page, the
+address also has `&next=<that page>`: the sign-in page keeps it, so the retry
+button and the password form both end on that page after sign-in.
 
 | Code | Console message | Usual cause |
 | --- | --- | --- |
@@ -778,7 +780,20 @@ by SSO and check the "SSO only" ones. To recover, turn single sign-on back on;
 an admin can also delete the user and invite them again (which loses their keys
 and ownership), and a user who had a password keeps signing in with it. A
 disabled user made by single sign-on can be enabled again without a password.
-Setting a password for an active user who has none is not available yet.
+
+**Password links.** An admin can give an active user made by single sign-on a
+password too: on the user's page, "Send password link" (`POST
+/api/users/{id}/password-link`, admin only) shows a link once, for the admin
+to send (the gateway sends no mail). The link works once and for 24 hours; a
+new one ends the earlier one. Opened, it asks for the new password ("Set your
+password"). The user keeps their single sign-on link, their role and their
+sessions, and can then sign in either way. It is refused for a user who has a
+password already, who is not active, who signs in only with a password, or
+who is an admin other than the caller ("Admins get a password through their
+own account, not a link.", `admin_target`). The
+audit log records who made a link and when the user used it, never the link.
+A user without a password sees "Ask an admin for a password link" under
+Account.
 
 **Test configuration.** The Test button (`POST /api/settings/oidc/test`, admin
 only) makes the gateway fetch the issuer's discovery document and then the key
@@ -841,11 +856,13 @@ stream, or a separate `[REDACTED:EMAIL]`, so the stream is then not exactly the
 whole-text redaction (no key material is involved).
 
 **Which guardrails apply, and in which order.** For every call: the guardrails
-marked *applies to every call* (by name), then those of the route (in the order
-set on the route), then those of the key (in the order set on the key), each
-guardrail once, at its first place. A disabled guardrail is not part of it.
-Attach them in the console (route form, key form) or with `guardrail_ids` on
-`POST/PUT /api/routes`, `POST /api/keys` and `PATCH /api/keys/{id}` (admins
+marked *applies to every call* (by name), then those of the key's team (if it
+has one) and the other teams of the key's owner, then those of the key's owner, then those of the route, then those of
+the key, each in the order set on it, each guardrail once, at its first place.
+A disabled guardrail is not part of it. Attach them in the console (route form,
+key form, the team and user pages) or with `guardrail_ids` on
+`POST/PUT /api/routes`, `POST /api/keys`, `PATCH /api/keys/{id}`,
+`PUT /api/teams/{id}/guardrails` and `PUT /api/users/{id}/guardrails` (admins
 only; on a route `PUT`, leaving the field out keeps the attachment and `[]`
 takes them all off; at most 20 each). All **built-in rules run before any
 external guardrail**, whatever the order; the external ones then run in order,
@@ -854,11 +871,12 @@ over the text the rules left. A rule block means no external guardrail is asked.
 *What attaching does not do.* A guardrail on a key checks the calls made with
 that key, and one on a route checks the calls that go through that route.
 Neither follows a person or a model: a member can make a new key, which has no
-guardrails, and a key that may also call `openai/gpt-4o` directly skips the
-guardrail on the route `support` that serves it. A policy that must hold for
-everyone is a guardrail marked *applies to every call*. To make a route's
-guardrails certain, give people keys whose models list names only the route.
-Attaching guardrails to teams and users is not available yet.
+guardrails of its own, and a key that may also call `openai/gpt-4o` directly
+skips the guardrail on the route `support` that serves it. A guardrail on a
+team or a user follows every key of that team or owned by that user, also a key
+made afterwards. A policy that must hold for everyone is a guardrail marked
+*applies to every call*. To make a route's guardrails certain, give people keys
+whose models list names only the route.
 
 **What is checked.**
 
@@ -1038,6 +1056,7 @@ could not check is not cached. A webhook cannot redact an answer, or the texts o
 an input, so that they exceed 1 MiB.
 
 *Configuration files.* Export and import carry guardrails and their attachments
+(to routes and teams; user attachments are not in the file, as users are not)
 by name, never a URL or secret: an imported external guardrail is created off,
 with a warning, until an admin sets its URL in the console.
 
@@ -1385,8 +1404,14 @@ trusted network use `--insecure-cookies`. `/v1` with a key works over HTTP.
 Rust, Python and TypeScript clients for the gateway (or a provider directly),
 built on one Rust core, `ultrafast-translate`, and tested with shared fixtures
 (`clients/fixtures/`). They do not retry, route or cache; an error says
-whether to retry and when. Wheels and an npm package are not published yet,
-and the crates are not on crates.io: build from source as each README says.
+whether to retry and when. Install them (the packages appear from v2.0.0-beta.4,
+as pre-releases; before that, build from source as each README says):
+
+```sh
+cargo add ultrafast-client
+pip install --pre ultrafast ultrafast-admin
+npm i @ultrafast/client@beta @ultrafast/admin@beta
+```
 
 Rust ([`crates/client`](crates/client/README.md)):
 
@@ -1436,15 +1461,16 @@ admin API (`/api`: providers, models, routes, keys, users, teams, limits,
 budgets, alerts, guardrails, prompts, settings, usage, logs, audit, backup and
 configuration). Both are generated from `openapi/admin.json`, authenticate with an
 access token (Account, Access tokens in the console), and raise a typed error
-with the gateway's `status`, `code` and field messages. They are not published
-to npm or PyPI: build from source. CI regenerates both and fails when the
+with the gateway's `status`, `code` and field messages. They are meant for
+npm and PyPI from v2.0.0-beta.4 (install commands above), once publishing is
+live (see Known limits); until then, build from source. CI regenerates both and fails when the
 committed copy differs.
 
 TypeScript ([`clients/admin-ts`](clients/admin-ts/README.md)):
 
 ```sh
-pnpm --dir clients/admin-ts install && pnpm --dir clients/admin-ts build
-# then depend on the folder: "@ultrafast/admin": "file:../ultrafast-ai-gateway/clients/admin-ts"
+npm i @ultrafast/admin@beta
+# from a checkout: pnpm --dir clients/admin-ts install && pnpm --dir clients/admin-ts build
 ```
 
 ```ts
@@ -1462,7 +1488,7 @@ console.log("created channel", channel.id);
 Python 3.11 or newer ([`clients/admin-py`](clients/admin-py/README.md)):
 
 ```sh
-pip install ./clients/admin-py
+pip install --pre ultrafast-admin   # from a checkout: pip install ./clients/admin-py
 ```
 
 ```python
@@ -1515,7 +1541,8 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   Webhooks only (generic and Slack-compatible): no email, no PagerDuty format.
   Delivery is at most three tries and a delivery cut off at shutdown is not
   retried. Webhook URLs are not restricted to public addresses (admins already
-  set provider URLs). Only admins see alerts; leads cannot. A circuit alert
+  set provider URLs). Admins see all alerts; team leads read those of their teams through the API
+  (the console's Alerts page is for admins). A circuit alert
   resolves only after its breaker has stayed closed for 5 minutes. Alert
   history (events) is deleted with the request logs, after the log retention
   period.
@@ -1528,8 +1555,8 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   it is: no Unicode normalisation, JSON escapes count as word edges, and the
   PII detectors have known misses (a bare 10-digit phone number, an IBAN not
   checked against a length table, IPv6 without a digit or three colons).
-  Guardrails on a route or a key can be stepped around with a new key or a
-  direct model call (see Which guardrails apply).
+  A guardrail on a route can be stepped around with a direct model call, and
+  one on a single key with another key (see Which guardrails apply).
   A private-key block in a stream swallows everything up to its `END` line;
   an address glued to an `END` line may show its domain. External output
   checks hold the whole stream (and a stream over 32 MiB is not checked when
@@ -1546,6 +1573,9 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   authorization code only once, as the standard requires. The
   provider's groups claim can be missing (Entra ID overage), in which case
   the role stays as it is.
+- Registry publishing (crates.io, PyPI, npm) is a dry run until the owner has
+  registered the trusted publishers and set `PUBLISH_LIVE` (`docs/RELEASING.md`):
+  until then, build the clients and SDKs from source.
 - A backup restore is manual, and a configuration import never deletes. There
   is no online migration between SQLite and Postgres (see Using PostgreSQL).
 - On Postgres the console and `ultrafast backup` do not back up: use `pg_dump`.
@@ -1565,9 +1595,6 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   and `json_object` on Anthropic is the schema `{"type":"object"}`, which the
   model may satisfy with `{}`. A schema a provider does not accept is that
   provider's 400.
-- A feature a provider lacks (`reasoning_effort`, `tool_choice` on a model that
-  has no tools, ...) is a 400 when the first target a route tries lacks it: the
-  gateway does not move on to a fallback that has it.
 - Prompt templates: a version never changes, and there is no API to delete one
   version (the database does not block a raw delete of a row, and the
   numbering is checked in code); a template is deleted with all its versions.

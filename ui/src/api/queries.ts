@@ -719,6 +719,13 @@ export const useReinviteUser = () =>
     () => ({ stale: [queryKeys.users.all(), audit] }),
   );
 
+/** The answer holds the link, which is shown once. */
+export const usePasswordLink = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.post("/api/users/{id}/password-link", { params: { id } }),
+    () => ({ stale: [audit] }),
+  );
+
 // A user's name, role and status show in teams (members), in keys (owner,
 // `suspended`) and, for the caller, in `me`.
 const aUserChanged = [
@@ -736,6 +743,16 @@ export const useUpdateUser = () =>
     ({ id, body }: { id: number; body: BodyOf<"/api/users/{id}", "patch"> }) =>
       api.patch("/api/users/{id}", { params: { id }, body }),
     () => ({ stale: aUserChanged }),
+  );
+
+/** Replaces the guardrails of a user: they check every key the user owns. */
+export const useSetUserGuardrails = () =>
+  useApiMutation(
+    ({ id, ids }: { id: number; ids: readonly number[] }) =>
+      api.put("/api/users/{id}/guardrails", { params: { id }, body: { guardrail_ids: [...ids] } }),
+    () => ({ stale: [queryKeys.users.all(), queryKeys.guardrails.all(), audit] }),
+    // The user is gone: the list shows what is not so.
+    (error) => (isNotFound(error) ? [queryKeys.users.all()] : []),
   );
 
 export const useDeleteUser = () =>
@@ -776,6 +793,16 @@ export const useRenameTeam = () =>
     ({ id, body }: { id: number; body: BodyOf<"/api/teams/{id}", "patch"> }) =>
       api.patch("/api/teams/{id}", { params: { id }, body }),
     () => ({ stale: aTeamChanged }),
+  );
+
+/** Replaces the guardrails of a team: they check every key of the team. */
+export const useSetTeamGuardrails = () =>
+  useApiMutation(
+    ({ id, ids }: { id: number; ids: readonly number[] }) =>
+      api.put("/api/teams/{id}/guardrails", { params: { id }, body: { guardrail_ids: [...ids] } }),
+    () => ({ stale: [queryKeys.teams.all(), queryKeys.guardrails.all(), audit] }),
+    // The team is gone: the list shows what is not so.
+    (error) => (isNotFound(error) ? [queryKeys.teams.all()] : []),
   );
 
 export const useDeleteTeam = () =>

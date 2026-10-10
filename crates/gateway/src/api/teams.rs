@@ -176,7 +176,58 @@ pub async fn view(
         .await?
         .ok_or_else(ApiError::not_found)?;
     let members = store.member_details(team.id).await?;
-    Ok(Json(json!({ "team": summary, "members": members })).into_response())
+    let guardrail_ids: Vec<i64> = store
+        .team_guardrail_refs()
+        .await?
+        .into_iter()
+        .filter(|(t, _, _)| *t == team.id)
+        .map(|(_, g, _)| g)
+        .collect();
+    Ok(
+        Json(json!({ "team": summary, "members": members, "guardrail_ids": guardrail_ids }))
+            .into_response(),
+    )
+}
+
+#[utoipa::path(
+    put,
+    path = "/teams/{id}/guardrails",
+    tag = "teams",
+    operation_id = "teams_set_guardrails",
+    params(
+        ("id" = i64, Path, description = "The id of the team."),
+    ),
+    request_body = super::guardrails::AttachRequest,
+    responses(
+        (status = 200, description = "The guardrails of the team after the change.", body = super::guardrails::Attached),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+/// Replaces the guardrails applied to every key of the team. Admins only.
+pub async fn set_guardrails(
+    State(state): State<Arc<AppState>>,
+    Path(raw_id): Path<String>,
+    authed: Authed,
+    ApiJson(req): ApiJson<super::guardrails::AttachRequest>,
+) -> Result<Response, ApiError> {
+    let me = &authed.principal;
+    require(me, &Action::ManageGuardrails)?;
+    let id = path_id(&raw_id)?;
+    super::guardrails::set_attached(
+        &state,
+        me,
+        super::guardrails::Holder::Team,
+        id,
+        &req.guardrail_ids,
+    )
+    .await
 }
 
 #[utoipa::path(

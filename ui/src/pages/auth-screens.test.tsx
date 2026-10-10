@@ -9,6 +9,7 @@ import { createQueryClient } from "@/api/queries";
 import { gate, PASSWORD, startGateway } from "@/test/gateway";
 import { errors, fieldMessages, validationFailed } from "@/test/errors";
 import { networkFailure, noContent, ok, override, refuse } from "@/test/handlers";
+import { expectOneH1, expectOneMain } from "@/test/pages";
 import { renderWithApp, type AppRenderResult } from "@/test/render";
 
 const INVITE_TOKEN = "invite-token-0000-of-the-test";
@@ -547,6 +548,62 @@ describe("accept invite", () => {
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Password")).toBeNull();
     expect(sent).toEqual([]);
+  });
+
+  describe("a password link", () => {
+    const LINK_TOKEN = `uf-pwl-${"ab12".repeat(16)}`;
+
+    test("the page says what the link is for, and sends the token like an invite", async () => {
+      startGateway();
+      const sent = record("post", "/api/auth/accept-invite", noContent);
+      const app = await renderWithApp(null, {
+        history: openInBrowser(`/accept-invite#token=${LINK_TOKEN}`),
+      });
+      await waitFor(() => {
+        expect(window.location.hash).toBe("");
+      });
+      expect(heading("Set your password")).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Accept your invite" })).toBeNull();
+      expect(screen.getByRole("form", { name: "Set your password" })).toBeInTheDocument();
+      expectOneMain();
+      expectOneH1();
+      await fillInvite();
+      await waitFor(() => {
+        expect(href(app)).toBe("/sign-in");
+      });
+      expect(sent).toEqual([{ token: LINK_TOKEN, password: PASSWORD }]);
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Your password is set. Sign in to continue.",
+      );
+      expect(shown()).not.toContain(LINK_TOKEN);
+      expect(cached(app.queryClient)).not.toContain(LINK_TOKEN);
+      expect(stored()).not.toContain(LINK_TOKEN);
+    });
+
+    test("a link that is no good is said so in its own words", async () => {
+      startGateway();
+      override("post", "/api/auth/accept-invite", () => refuse(errors.not_found));
+      await renderWithApp(null, { history: openInBrowser(`/accept-invite#token=${LINK_TOKEN}`) });
+      await fillInvite();
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "This link is not valid or has expired. Ask an admin for a new one.",
+      );
+      expect(screen.queryByLabelText("Password")).toBeNull();
+    });
+
+    test("someone signed in is signed out first, in the words of this page", async () => {
+      startGateway({ signedIn: true });
+      await renderWithApp(null, { history: openInBrowser(`/accept-invite#token=${LINK_TOKEN}`) });
+      expect(await screen.findByRole("heading", { level: 1, name: "Set your password" })).toBeInTheDocument();
+      expect(screen.getByText(/To set your password, you are signed out first\./)).toBeInTheDocument();
+    });
+
+    test("without the token the page asks to open the link again", async () => {
+      startGateway();
+      await renderWithApp(null, { route: "/accept-invite" });
+      expect(heading("Accept your invite")).toBeInTheDocument();
+      expect(screen.getByText(OPEN_AGAIN)).toBeInTheDocument();
+    });
   });
 
   describe("the ways the flow ends", () => {

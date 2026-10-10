@@ -594,6 +594,84 @@ mod tests {
         assert!(got.windows(2).all(|w| w[0].0 < w[1].0));
     }
 
+    /// Every column of a row that sits at the edge of a chunk (the last of
+    /// one, the first of the next) comes back as it went in, so no bind is
+    /// shifted where a statement ends.
+    #[tokio::test]
+    async fn rows_at_the_chunk_edges_keep_every_column() {
+        let store = Store::open_in_memory().await.unwrap();
+        let total = LOG_INSERT_CHUNK * 2 + 1;
+        let full = |i: usize| {
+            let n = i as i64;
+            NewLog {
+                at: format!("2026-02-03 04:05:{:02}", i % 60),
+                key_id: Some(n + 1),
+                user_id: Some(n + 2),
+                team_id: Some(n + 3),
+                requested: format!("req{i}"),
+                endpoint: format!("endpoint{i}"),
+                stream: i % 2 == 1,
+                status: 200 + n,
+                provider: Some(format!("prov{i}")),
+                model: Some(format!("model{i}")),
+                input_tokens: Some(n + 4),
+                output_tokens: Some(n + 5),
+                cost_micros: n + 6,
+                priced: i.is_multiple_of(3),
+                cached: i % 3 == 1,
+                estimated: i.is_multiple_of(2),
+                duration_ms: n + 7,
+                attempts: format!("[{i}]"),
+                tags: Some(format!("{{\"t\":\"{i}\"}}")),
+                guardrails: Some(format!("{{\"g\":{i}}}")),
+                prompt: Some(format!("tmpl{i}@{i}")),
+            }
+        };
+        let rows: Vec<NewLog> = (0..total).map(full).collect();
+        store.insert_logs(&rows).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM request_logs")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(count as usize, total);
+        let first_id: i64 = sqlx::query_scalar("SELECT MIN(id) FROM request_logs")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        let c = LOG_INSERT_CHUNK;
+        for i in [0, 1, c - 1, c, c + 1, 2 * c - 1, 2 * c] {
+            let want = full(i);
+            let got = store
+                .log_by_id(first_id + i as i64)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("row {i} is missing"))
+                .row;
+            let ctx = format!("row {i}");
+            assert_eq!(got.at, want.at, "{ctx}");
+            assert_eq!(got.key_id, want.key_id, "{ctx}");
+            assert_eq!(got.user_id, want.user_id, "{ctx}");
+            assert_eq!(got.team_id, want.team_id, "{ctx}");
+            assert_eq!(got.requested, want.requested, "{ctx}");
+            assert_eq!(got.endpoint, want.endpoint, "{ctx}");
+            assert_eq!(got.stream, want.stream, "{ctx}");
+            assert_eq!(got.status, want.status, "{ctx}");
+            assert_eq!(got.provider, want.provider, "{ctx}");
+            assert_eq!(got.model, want.model, "{ctx}");
+            assert_eq!(got.input_tokens, want.input_tokens, "{ctx}");
+            assert_eq!(got.output_tokens, want.output_tokens, "{ctx}");
+            assert_eq!(got.cost_micros, want.cost_micros, "{ctx}");
+            assert_eq!(got.priced, want.priced, "{ctx}");
+            assert_eq!(got.cached, want.cached, "{ctx}");
+            assert_eq!(got.estimated, want.estimated, "{ctx}");
+            assert_eq!(got.duration_ms, want.duration_ms, "{ctx}");
+            assert_eq!(got.attempts, want.attempts, "{ctx}");
+            assert_eq!(got.tags, want.tags, "{ctx}");
+            assert_eq!(got.guardrails, want.guardrails, "{ctx}");
+            assert_eq!(got.prompt, want.prompt, "{ctx}");
+        }
+    }
+
     #[test]
     fn the_insert_statement_is_built_once_per_size() {
         let a = log_insert_sql(Dialect::Postgres, 2);

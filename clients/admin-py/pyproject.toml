@@ -4,14 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ultrafast-admin"
-version = "2.0.0b3"
+version = "2.0.0b4"
 description = "Typed Python client for the UltraFast AI Gateway admin API (/api), with sync and async calls."
 readme = "README.md"
 # The generator (openapi-python-client 0.29) emits Python 3.11 code (typing.Self).
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
+keywords = ["llm", "gateway", "admin", "openapi"]
+classifiers = ["Programming Language :: Python :: 3", "Typing :: Typed"]
 dependencies = ["httpx>=0.27,<1", "attrs>=23.2", "typing_extensions>=4.5"]
+
+[project.urls]
+Homepage = "https://github.com/techgopal/ultrafast-ai-gateway"
+Repository = "https://github.com/techgopal/ultrafast-ai-gateway"
+Issues = "https://github.com/techgopal/ultrafast-ai-gateway/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-asyncio>=0.23"]

@@ -6,7 +6,9 @@
 //! Both endpoints are plain browser navigations: GET, no CSRF header, no
 //! JSON. A failure is never shown as an error body but as a redirect to
 //! `/sign-in?sso_error=<code>`, which the console words; the codes are fixed
-//! words and carry nothing the provider sent.
+//! words and carry nothing the provider sent. When the visitor was going to a
+//! page other than the front page, `&next=<that page>` follows, taken from the
+//! flow cookie, so that a retry or a password sign-in ends there.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -69,15 +71,32 @@ fn redirect(location: &str, cookies: Vec<HeaderValue>) -> anyhow::Result<Respons
     Ok(response)
 }
 
-/// Back to the sign-in page with the reason. The flow cookie is cleared
-/// when `clear_flow` is set, which every end of a callback does.
-fn refused(state: &AppState, code: &'static str, clear_flow: bool) -> Response {
+/// The address of the sign-in page for a failure: the reason, and the page
+/// the visitor was going to when it is not the front page, so that a retry or
+/// a password sign-in still ends there. `next` is checked again here; the
+/// query is encoded by the URL type, never by hand.
+fn sign_in_location(code: &str, next: Option<&str>) -> String {
+    let mut url = reqwest::Url::parse("http://console.invalid/sign-in").expect("a constant URL");
+    url.query_pairs_mut().append_pair("sso_error", code);
+    if let Some(next) = next.map(safe_return_to).filter(|n| n != "/") {
+        url.query_pairs_mut().append_pair("next", &next);
+    }
+    match url.query() {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    }
+}
+
+/// Back to the sign-in page with the reason (and the page the visitor
+/// wanted, as `next`). The flow cookie is cleared when `clear_flow` is set,
+/// which every end of a callback does.
+fn refused(state: &AppState, code: &'static str, next: Option<&str>, clear_flow: bool) -> Response {
     let cookies = if clear_flow {
         flow_cookie_header("", 0, state.cookie_secure).map(|cleared| vec![cleared])
     } else {
         Ok(Vec::new())
     };
-    let sent = cookies.and_then(|c| redirect(&format!("/sign-in?sso_error={code}"), c));
+    let sent = cookies.and_then(|c| redirect(&sign_in_location(code, next), c));
     sent.unwrap_or_else(|e| {
         tracing::error!(error = %e, "single sign-on redirect failed");
         ApiError::internal().into_response()
@@ -101,7 +120,7 @@ fn code_of(error: &ExternalError) -> &'static str {
     tag = "auth",
     operation_id = "auth_oidc_start",
     summary = "Start signing in with the identity provider",
-    description = "A browser navigation, not a call for a script: a GET that needs no session and no CSRF header. Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the limit the browser is sent to `/sign-in?sso_error=rate_limited` and a flow cookie already set is left alone.",
+    description = "A browser navigation, not a call for a script: a GET that needs no session and no CSRF header. Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the limit the browser is sent to `/sign-in?sso_error=rate_limited` (with `&next=<return_to>` when that is not `/`) and a flow cookie already set is left alone.",
     params(
         ("return_to" = Option<String>, Query, description = "Where to send the browser after sign-in: a path inside the console that starts with a single `/`. Anything else means `/`."),
     ),
@@ -132,6 +151,10 @@ pub async fn oidc_start(
     if !state.store.oidc_settings().await?.enabled {
         return Err(off());
     }
+    let asked_for = query_pairs(raw.as_deref())
+        .into_iter()
+        .find(|(name, _)| name == "return_to")
+        .map(|(_, value)| safe_return_to(&value));
     // A start may make the gateway fetch the provider's discovery document:
     // limited per client address, in a bucket of its own. Any web page can
     // make a browser start one, so it must not use up the failures that
@@ -142,13 +165,9 @@ pub async fn oidc_start(
             "single sign-on could not be started"
         );
         // The cookie of an attempt that is under way is left alone.
-        return Ok(refused(&state, "rate_limited", false));
+        return Ok(refused(&state, "rate_limited", asked_for.as_deref(), false));
     }
-    let return_to = query_pairs(raw.as_deref())
-        .into_iter()
-        .find(|(name, _)| name == "return_to")
-        .map(|(_, value)| safe_return_to(&value))
-        .unwrap_or_else(|| "/".to_string());
+    let return_to = asked_for.unwrap_or_else(|| "/".to_string());
     match provider.begin(&return_to).await {
         Ok(begin) => {
             let cookie = flow_cookie_header(&begin.flow_cookie, FLOW_MAX_AGE, state.cookie_secure)?;
@@ -157,7 +176,7 @@ pub async fn oidc_start(
         Err(e) => {
             let code = code_of(&e);
             tracing::info!(reason = code, "single sign-on could not be started");
-            Ok(refused(&state, code, false))
+            Ok(refused(&state, code, Some(&return_to), false))
         }
     }
 }
@@ -178,7 +197,7 @@ pub async fn oidc_start(
     responses(
         (
             status = 302,
-            description = "Signed in: the session cookie is set and the browser is sent to the path given at the start (`/` when it was not a console path). Not signed in: the browser is sent to `/sign-in?sso_error=<code>` with code `state`, `expired`, `idp`, `token`, `not_allowed`, `disabled`, `rate_limited` or `config`. The flow cookie is cleared either way.",
+            description = "Signed in: the session cookie is set and the browser is sent to the path given at the start (`/` when it was not a console path). Not signed in: the browser is sent to `/sign-in?sso_error=<code>` (and `&next=<the page given at the start>` when that was not `/`) with code `state`, `expired`, `idp`, `token`, `not_allowed`, `disabled`, `rate_limited` or `config`. The flow cookie is cleared either way.",
             headers(
                 ("Location" = String, description = "The console path, or the sign-in page with the reason."),
                 ("Set-Cookie" = String, description = "The cleared flow cookie, and the session cookie when signed in."),
@@ -193,6 +212,11 @@ pub async fn oidc_callback(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> Response {
+    // Where the visitor was going, for a failure to send them back to: read
+    // from the cookie before anything can fail.
+    let next = state.sign_in.load_full().and_then(|provider| {
+        cookie_value(&headers, FLOW_COOKIE).and_then(|cookie| provider.return_to_of(cookie))
+    });
     match finish_sign_in(&state, addr, &headers, raw.as_deref()).await {
         Ok(done) => {
             state.metrics.oidc_signin("ok");
@@ -210,7 +234,7 @@ pub async fn oidc_callback(
         Err(code) => {
             state.metrics.oidc_signin(code);
             tracing::info!(reason = code, "single sign-on callback refused");
-            refused(&state, code, true)
+            refused(&state, code, next.as_deref(), true)
         }
     }
 }

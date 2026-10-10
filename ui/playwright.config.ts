@@ -16,6 +16,12 @@ process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1";
 
 const CI = process.env.CI !== undefined && process.env.CI !== "";
 
+// `UF_E2E_BROWSER=firefox` or `webkit` runs the tests in that browser (use
+// `--project=desktop`: the phone project emulates a touch device Firefox lacks).
+const BROWSERS = ["chromium", "firefox", "webkit"] as const;
+const asked = process.env.UF_E2E_BROWSER;
+const browserName = BROWSERS.find((name) => name === asked) ?? "chromium";
+
 export default defineConfig({
   testDir: "./e2e",
   outputDir: "./test-results",
@@ -28,12 +34,13 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   reporter: [["list"]],
   use: {
-    browserName: "chromium",
+    browserName,
     trace: "off",
     screenshot: "off",
     video: "off",
     // The Copy buttons of the dialogs write to the clipboard; the tests read it.
-    permissions: ["clipboard-read", "clipboard-write"],
+    // Only Chromium knows these permissions; another browser refuses to start with them.
+    permissions: browserName === "chromium" ? ["clipboard-read", "clipboard-write"] : [],
   },
   projects: [
     {

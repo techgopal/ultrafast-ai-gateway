@@ -129,6 +129,12 @@ export const handlers = [
       : ok("post", "/api/users/{id}/invite", 201, { invite_link: fixtures.newInviteLink }),
   ),
 
+  handler("post", "/api/users/{id}/password-link", (call) =>
+    byId(fixtures.userList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/users/{id}/password-link", 201, fixtures.passwordLink),
+  ),
+
   // teams
   handler("get", "/api/teams", () => ok("get", "/api/teams", 200, { teams: fixtures.teamList })),
   handler("post", "/api/teams", () => ok("post", "/api/teams", 201, fixtures.teams.growth)),
@@ -157,6 +163,16 @@ export const handlers = [
       role: "member",
     });
   }),
+  handler("put", "/api/teams/{id}/guardrails", (call) =>
+    byId(fixtures.teamList, call) === undefined
+      ? notFound()
+      : ok("put", "/api/teams/{id}/guardrails", 200, { guardrail_ids: [] }),
+  ),
+  handler("put", "/api/users/{id}/guardrails", (call) =>
+    byId(fixtures.userList, call) === undefined
+      ? notFound()
+      : ok("put", "/api/users/{id}/guardrails", 200, { guardrail_ids: [] }),
+  ),
   handler("put", "/api/teams/{id}/members/{user_id}", (call) =>
     byId(fixtures.teamList, call) === undefined ? notFound() : noContent(),
   ),

@@ -72,8 +72,8 @@ def sync_detailed(
 
      A browser navigation, not a call for a script: a GET that needs no session and no CSRF header.
     Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the
-    limit the browser is sent to `/sign-in?sso_error=rate_limited` and a flow cookie already set is left
-    alone.
+    limit the browser is sent to `/sign-in?sso_error=rate_limited` (with `&next=<return_to>` when that
+    is not `/`) and a flow cookie already set is left alone.
 
     Args:
         return_to (str | Unset):
@@ -106,8 +106,8 @@ def sync(
 
      A browser navigation, not a call for a script: a GET that needs no session and no CSRF header.
     Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the
-    limit the browser is sent to `/sign-in?sso_error=rate_limited` and a flow cookie already set is left
-    alone.
+    limit the browser is sent to `/sign-in?sso_error=rate_limited` (with `&next=<return_to>` when that
+    is not `/`) and a flow cookie already set is left alone.
 
     Args:
         return_to (str | Unset):
@@ -135,8 +135,8 @@ async def asyncio_detailed(
 
      A browser navigation, not a call for a script: a GET that needs no session and no CSRF header.
     Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the
-    limit the browser is sent to `/sign-in?sso_error=rate_limited` and a flow cookie already set is left
-    alone.
+    limit the browser is sent to `/sign-in?sso_error=rate_limited` (with `&next=<return_to>` when that
+    is not `/`) and a flow cookie already set is left alone.
 
     Args:
         return_to (str | Unset):
@@ -167,8 +167,8 @@ async def asyncio(
 
      A browser navigation, not a call for a script: a GET that needs no session and no CSRF header.
     Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the
-    limit the browser is sent to `/sign-in?sso_error=rate_limited` and a flow cookie already set is left
-    alone.
+    limit the browser is sent to `/sign-in?sso_error=rate_limited` (with `&next=<return_to>` when that
+    is not `/`) and a flow cookie already set is left alone.
 
     Args:
         return_to (str | Unset):

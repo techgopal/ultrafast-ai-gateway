@@ -514,6 +514,85 @@ pub(super) fn attach_summary(subject: &str, names: &[GuardrailRef]) -> String {
     format!("Set the guardrails of {subject} to {list}")
 }
 
+/// The body that sets the guardrails of a team or a user.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttachRequest {
+    /// The guardrails to apply, in this order, to every key of the team, or
+    /// every key the user owns. `[]` takes them all off. At most 20, each
+    /// one an existing guardrail.
+    pub guardrail_ids: Vec<i64>,
+}
+
+/// The guardrails attached to a team or a user, in order.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct Attached {
+    pub guardrail_ids: Vec<i64>,
+}
+
+/// What guardrails are attached to.
+#[derive(Clone, Copy)]
+pub(super) enum Holder {
+    Team,
+    User,
+}
+
+/// Replaces the guardrails of a team or a user. Admins only; the caller has
+/// been checked.
+pub(super) async fn set_attached(
+    state: &Arc<AppState>,
+    me: &crate::identity::Principal,
+    holder: Holder,
+    id: i64,
+    asked: &[i64],
+) -> Result<Response, ApiError> {
+    let mut tx = state.store.begin_immediate().await?;
+    let (kind, name) = match holder {
+        Holder::Team => (
+            "team",
+            tx.team_by_id(id)
+                .await?
+                .map(|t| t.name)
+                .ok_or_else(ApiError::not_found)?,
+        ),
+        Holder::User => (
+            "user",
+            tx.user_by_id(id)
+                .await?
+                .map(|u| u.email)
+                .ok_or_else(ApiError::not_found)?,
+        ),
+    };
+    let attach = match resolve_ids(&mut tx, asked).await? {
+        Ok(found) => found,
+        Err(message) => return Err(ApiError::invalid_field("guardrail_ids", &message)),
+    };
+    let ids: Vec<i64> = attach.iter().map(|g| g.id).collect();
+    let before = match holder {
+        Holder::Team => tx.team_guardrail_ids(id).await?,
+        Holder::User => tx.user_guardrail_ids(id).await?,
+    };
+    if before != ids {
+        match holder {
+            Holder::Team => tx.replace_team_guardrails(id, &ids).await,
+            Holder::User => tx.replace_user_guardrails(id, &ids).await,
+        }
+        .map_err(gone)?;
+        tx.audit(AuditEntry {
+            actor_user_id: Some(me.user_id),
+            actor_email: &me.email,
+            action: "guardrail.attach",
+            target_type: kind,
+            target_id: Some(id),
+            summary: &attach_summary(&format!("{kind} {name}"), &attach),
+        })
+        .await?;
+    }
+    tx.commit().await?;
+    refresh_snapshot(state).await?;
+    Ok(Json(Attached { guardrail_ids: ids }).into_response())
+}
+
 /// A guardrail deleted since it was checked is the caller's mistake, not ours.
 pub(super) fn gone(e: anyhow::Error) -> ApiError {
     if crate::store::is_missing_reference(&e) {

@@ -516,6 +516,14 @@ describe("the detail", () => {
     expect(within(attempts).getByText("Failed")).toHaveAttribute("data-slot", "badge");
   });
 
+  test("a skipped attempt shows why it was passed over", async () => {
+    await page({ route: "/logs/2" });
+    const attempts = await screen.findByRole("table", { name: "Routing attempts" });
+    const reason = within(attempts).getByText("skipped: unsupported:audio");
+    expect(reason).toHaveAttribute("data-slot", "badge");
+    expect(within(attempts).getAllByText(/^skipped:/)).toHaveLength(1);
+  });
+
   test("the detail names the prompt template and version, or none", async () => {
     override("get", "/api/logs/{id}", () =>
       ok("get", "/api/logs/{id}", 200, { ...fixtures.promptedLog, attempts: [] }),

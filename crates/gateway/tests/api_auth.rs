@@ -120,7 +120,7 @@ async fn setup_creates_the_first_admin_once() {
     let text = body.to_string();
     assert!(!text.contains("password_hash"));
     assert!(!text.contains("argon2"));
-    assert_eq!(body.as_object().unwrap().len(), 10);
+    assert_eq!(body.as_object().unwrap().len(), 11);
     assert_eq!(body["has_password"], true);
     assert_eq!(body["teams"], json!([]));
 

@@ -87,6 +87,10 @@ pub enum Failure<E> {
     Failover { error: E, status: Option<u16> },
     /// The request itself or the answer cannot be helped by trying again.
     Fatal { error: E, status: Option<u16> },
+    /// This target cannot express a feature of the request (`feature` names
+    /// it): it is recorded as skipped and the next target is tried. Nothing
+    /// was sent, so it is not retried and not the breaker's business.
+    Unsupported { error: E, feature: String },
 }
 
 /// Why no target served the call.
@@ -141,6 +145,7 @@ where
     let (mut attempts, mut rate_limited, mut refusals) = (0u32, 0u32, 0u32);
     let mut retry_after_max: Option<StdDuration> = None;
     let mut last_refusal: Option<E> = None;
+    let mut first_unsupported: Option<E> = None;
     for candidate in plan {
         let t = &candidate.target;
         if !candidate.callable {
@@ -198,6 +203,13 @@ where
                     health.report(t, false, false, status, Instant::now(), &settings.breaker);
                     return Err(Stop::Fatal(error));
                 }
+                Ok(Err(Failure::Unsupported { error, feature })) => {
+                    scope.settle_attempt(AttemptOutcome::Skipped, None, started);
+                    scope.skipped_for(&format!("unsupported:{feature}"));
+                    attempts -= 1;
+                    first_unsupported.get_or_insert(error);
+                    break;
+                }
                 Ok(Err(Failure::Failover { error, status })) => {
                     scope.settle_attempt(AttemptOutcome::Retryable, status, started);
                     health.report(t, false, true, status, Instant::now(), &settings.breaker);
@@ -236,6 +248,13 @@ where
             }
             sleep(wait).await;
             retry += 1;
+        }
+    }
+    // Every target that was reached could not express the request: the
+    // caller is told what the first one said.
+    if attempts == 0 {
+        if let Some(error) = first_unsupported {
+            return Err(Stop::Fatal(error));
         }
     }
     Err(Stop::Exhausted(Exhausted {

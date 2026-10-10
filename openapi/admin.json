@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "2.0.0-beta.3"
+    "version": "2.0.0-beta.4"
   },
   "paths": {
     "/api/alerts/channels": {
@@ -1214,7 +1214,7 @@
         },
         "responses": {
           "204": {
-            "description": "The password is set and the user is active."
+            "description": "The password is set. For an invite the user is active now; for a password link the user's single sign-on link, role and sessions are unchanged."
           },
           "400": {
             "description": "The request is not of the expected form.",
@@ -1227,7 +1227,7 @@
             }
           },
           "404": {
-            "description": "The invite does not exist, has expired or was used.",
+            "description": "The link does not exist, has expired or was used, or its user can no longer use it.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1547,7 +1547,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Signed in: the session cookie is set and the browser is sent to the path given at the start (`/` when it was not a console path). Not signed in: the browser is sent to `/sign-in?sso_error=<code>` with code `state`, `expired`, `idp`, `token`, `not_allowed`, `disabled`, `rate_limited` or `config`. The flow cookie is cleared either way.",
+            "description": "Signed in: the session cookie is set and the browser is sent to the path given at the start (`/` when it was not a console path). Not signed in: the browser is sent to `/sign-in?sso_error=<code>` (and `&next=<the page given at the start>` when that was not `/`) with code `state`, `expired`, `idp`, `token`, `not_allowed`, `disabled`, `rate_limited` or `config`. The flow cookie is cleared either way.",
             "headers": {
               "Location": {
                 "schema": {
@@ -1582,7 +1582,7 @@
           "auth"
         ],
         "summary": "Start signing in with the identity provider",
-        "description": "A browser navigation, not a call for a script: a GET that needs no session and no CSRF header. Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the limit the browser is sent to `/sign-in?sso_error=rate_limited` and a flow cookie already set is left alone.",
+        "description": "A browser navigation, not a call for a script: a GET that needs no session and no CSRF header. Limited to 60 starts per client address in 15 minutes, counted apart from sign-in failures; over the limit the browser is sent to `/sign-in?sso_error=rate_limited` (with `&next=<return_to>` when that is not `/`) and a flow cookie already set is left alone.",
         "operationId": "auth_oidc_start",
         "parameters": [
           {
@@ -7631,6 +7631,136 @@
         ]
       }
     },
+    "/api/teams/{id}/guardrails": {
+      "put": {
+        "tags": [
+          "teams"
+        ],
+        "summary": "Replaces the guardrails applied to every key of the team. Admins only.",
+        "operationId": "teams_set_guardrails",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the team.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The guardrails of the team after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Attached"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/teams/{id}/members": {
       "post": {
         "tags": [
@@ -8797,6 +8927,136 @@
         ]
       }
     },
+    "/api/users/{id}/guardrails": {
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Replaces the guardrails applied to every key the user owns. Admins only.",
+        "operationId": "users_set_guardrails",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the user.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The guardrails of the user after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Attached"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/users/{id}/invite": {
       "post": {
         "tags": [
@@ -8895,6 +9155,107 @@
           }
         ]
       }
+    },
+    "/api/users/{id}/password-link": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Make a link that lets a user of single sign-on set a password",
+        "description": "For an active user who signs in through the identity provider and has no password. The link works once and for 24 hours; a new one ends the earlier one. Setting the password keeps the user's single sign-on link and role. Admins only.",
+        "operationId": "users_password_link",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the user.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "The link, shown once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordLinkResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`admin_target`: the user is an admin other than the caller. `not_sso_user`: the user signs in with a password. `has_password`: the user has one. `not_active`: the user is not active.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -8912,7 +9273,7 @@
           },
           "token": {
             "type": "string",
-            "description": "The token of the invite link.",
+            "description": "The token of the invite link or of the password link.",
             "writeOnly": true
           }
         },
@@ -9025,6 +9386,40 @@
           "message": {
             "type": "string",
             "description": "Text for a person. It may change."
+          }
+        }
+      },
+      "AttachRequest": {
+        "type": "object",
+        "description": "The body that sets the guardrails of a team or a user.",
+        "required": [
+          "guardrail_ids"
+        ],
+        "properties": {
+          "guardrail_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The guardrails to apply, in this order, to every key of the team, or\nevery key the user owns. `[]` takes them all off. At most 20, each\none an existing guardrail."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Attached": {
+        "type": "object",
+        "description": "The guardrails attached to a team or a user, in order.",
+        "required": [
+          "guardrail_ids"
+        ],
+        "properties": {
+          "guardrail_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         }
       },
@@ -10753,6 +11148,13 @@
           "provider": {
             "type": "string"
           },
+          "skipped": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the target was passed over without a call, when the request could\nnot be expressed for it: `unsupported:<feature>`. Absent otherwise."
+          },
           "status": {
             "type": [
               "integer",
@@ -11679,6 +12081,23 @@
           }
         },
         "additionalProperties": false
+      },
+      "PasswordLinkResponse": {
+        "type": "object",
+        "required": [
+          "url",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "description": "When the link stops working, UTC, `YYYY-MM-DD HH:MM:SS`."
+          },
+          "url": {
+            "type": "string",
+            "description": "The console path that lets the user set a password: open it on the\ngateway's address. It is shown once, in this answer, and cannot be\nread again. Single use."
+          }
+        }
       },
       "PiiType": {
         "type": "string",
@@ -13284,9 +13703,18 @@
         "type": "object",
         "required": [
           "team",
-          "members"
+          "members",
+          "guardrail_ids"
         ],
         "properties": {
+          "guardrail_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The guardrails applied to every key of the team, in order."
+          },
           "members": {
             "type": "array",
             "items": {
@@ -13304,6 +13732,16 @@
           "name"
         ],
         "properties": {
+          "guardrails": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of guardrails, in the order they apply to every key of the\nteam. Left out of the file for a team that has none; a file that\nleaves it out does not change what is attached (`[]` takes them all\noff)."
+          },
           "name": {
             "type": "string"
           }
@@ -13914,7 +14352,8 @@
           "has_password",
           "created_at",
           "last_active_at",
-          "teams"
+          "teams",
+          "guardrail_ids"
         ],
         "properties": {
           "auth_provider": {
@@ -13926,6 +14365,14 @@
           },
           "email": {
             "type": "string"
+          },
+          "guardrail_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "The guardrails applied to every key the user owns, in order."
           },
           "has_password": {
             "type": "boolean",

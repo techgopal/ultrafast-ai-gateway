@@ -26,7 +26,7 @@ use crate::identity::password::{
 };
 use crate::identity::policy::Action;
 use crate::identity::{normalize_email, Principal, Role, TeamRole, UserStatus};
-use crate::secrets::{hash_key, setup_code_matches, INVITE_PREFIX};
+use crate::secrets::{hash_key, setup_code_matches, INVITE_PREFIX, PASSWORD_LINK_PREFIX};
 use crate::store::{AuditEntry, NewSession, NewUser, Store, Tx, UserRow, UserTeam};
 
 /// The name of an admin created from the environment at startup.
@@ -51,6 +51,8 @@ pub struct UserView {
     pub last_active_at: Option<String>,
     /// The user's teams, ordered by name.
     pub teams: Vec<UserTeamView>,
+    /// The guardrails applied to every key the user owns, in order.
+    pub guardrail_ids: Vec<i64>,
 }
 
 /// How a user signs in, as `/api` shows it.
@@ -83,8 +85,25 @@ impl UserView {
             created_at: u.created_at,
             last_active_at: u.last_active_at,
             teams: teams.into_iter().map(UserTeamView::from).collect(),
+            guardrail_ids: Vec::new(),
         }
     }
+
+    pub fn with_guardrail_ids(mut self, ids: Vec<i64>) -> Self {
+        self.guardrail_ids = ids;
+        self
+    }
+}
+
+/// The guardrails of every user that has some, in each user's order.
+pub async fn guardrail_ids_of_users(
+    store: &Store,
+) -> anyhow::Result<std::collections::HashMap<i64, Vec<i64>>> {
+    let mut out: std::collections::HashMap<i64, Vec<i64>> = Default::default();
+    for (user, id, _) in store.user_guardrail_refs().await? {
+        out.entry(user).or_default().push(id);
+    }
+    Ok(out)
 }
 
 /// The teams of `user_id` that `viewer` may see: all of them for an admin
@@ -108,7 +127,11 @@ pub async fn user_view_for(
 ) -> anyhow::Result<UserView> {
     let mut teams = store.teams_of_users(&[user.id]).await?;
     let teams = teams_visible_to(viewer, user.id, teams.remove(&user.id).unwrap_or_default());
-    Ok(UserView::new(user, teams))
+    let ids = guardrail_ids_of_users(store)
+        .await?
+        .remove(&user.id)
+        .unwrap_or_default();
+    Ok(UserView::new(user, teams).with_guardrail_ids(ids))
 }
 
 /// The view of a single user, with all their teams: for the user
@@ -116,7 +139,11 @@ pub async fn user_view_for(
 pub async fn user_view(store: &Store, user: UserRow) -> anyhow::Result<UserView> {
     let mut teams = store.teams_of_users(&[user.id]).await?;
     let teams = teams.remove(&user.id).unwrap_or_default();
-    Ok(UserView::new(user, teams))
+    let ids = guardrail_ids_of_users(store)
+        .await?
+        .remove(&user.id)
+        .unwrap_or_default();
+    Ok(UserView::new(user, teams).with_guardrail_ids(ids))
 }
 
 // Request types have no `Debug`: most of them hold a password or a token.
@@ -145,7 +172,7 @@ pub struct LoginRequest {
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AcceptInviteRequest {
-    /// The token of the invite link.
+    /// The token of the invite link or of the password link.
     #[schema(write_only)]
     token: String,
     #[schema(write_only)]
@@ -641,9 +668,9 @@ pub async fn me(State(state): State<Arc<AppState>>, authed: Authed) -> Result<Re
     operation_id = "auth_accept_invite",
     request_body = AcceptInviteRequest,
     responses(
-        (status = 204, description = "The password is set and the user is active."),
+        (status = 204, description = "The password is set. For an invite the user is active now; for a password link the user's single sign-on link, role and sessions are unchanged."),
         (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
-        (status = 404, description = "The invite does not exist, has expired or was used.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "The link does not exist, has expired or was used, or its user can no longer use it.", body = super::openapi::ApiErrorBody),
         (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
         (status = 422, description = "Some fields are not valid; `fields` names each of them.", body = super::openapi::ApiErrorBody),
         (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
@@ -654,19 +681,28 @@ pub async fn accept_invite(
     ApiJson(req): ApiJson<AcceptInviteRequest>,
 ) -> Result<Response, ApiError> {
     let store = &state.store;
-    if !req.token.starts_with(INVITE_PREFIX) {
+    if !req.token.starts_with(INVITE_PREFIX) && !req.token.starts_with(PASSWORD_LINK_PREFIX) {
         return Err(ApiError::not_found());
     }
     let invite = store
         .invite_by_hash(&hash_key(&req.token))
         .await?
         .ok_or_else(ApiError::not_found)?;
+    let sets_password = invite.kind == "set_password";
     let user = store
         .user_by_id(invite.user_id)
         .await?
-        // Only a user who has not signed up yet. For an active user this
-        // would be a password reset that ends no session.
-        .filter(|u| u.status == UserStatus::Invited)
+        // An invite is for a user who has not signed up yet. For an active
+        // user it would be a password reset that ends no session. A
+        // password link is the opposite: for an active user of the identity
+        // provider who has no password.
+        .filter(|u| {
+            if sets_password {
+                u.status == UserStatus::Active && u.password_hash.is_none()
+            } else {
+                u.status == UserStatus::Invited
+            }
+        })
         .ok_or_else(ApiError::not_found)?;
     check_password_policy(&req.password).map_err(|m| ApiError::invalid_field("password", m))?;
     let hash = hash_blocking(&state.hashing, req.password).await?;
@@ -679,14 +715,27 @@ pub async fn accept_invite(
     if !tx.set_user_password(user.id, &hash).await? {
         return Err(ApiError::not_found());
     }
-    tx.set_user_status(user.id, UserStatus::Active).await?;
+    // The identity link, the role and the sessions of a user who gets a
+    // password through a link stay as they are.
+    let (action, summary) = if sets_password {
+        (
+            "user.set_password",
+            format!("{} set a password with a link from an admin", user.email),
+        )
+    } else {
+        tx.set_user_status(user.id, UserStatus::Active).await?;
+        (
+            "user.accept_invite",
+            format!("{} accepted their invite", user.email),
+        )
+    };
     tx.audit(AuditEntry {
         actor_user_id: Some(user.id),
         actor_email: &user.email,
-        action: "user.accept_invite",
+        action,
         target_type: "user",
         target_id: Some(user.id),
-        summary: &format!("{} accepted their invite", user.email),
+        summary: &summary,
     })
     .await?;
     tx.commit().await?;

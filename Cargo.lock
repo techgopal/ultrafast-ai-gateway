@@ -2862,7 +2862,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "ultrafast-client"
-version = "2.0.0-beta.3"
+version = "2.0.0-beta.4"
 dependencies = [
  "async-stream",
  "bytes",
@@ -2876,7 +2876,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-client-py"
-version = "2.0.0-beta.3"
+version = "2.0.0-beta.4"
 dependencies = [
  "futures",
  "pyo3",
@@ -2889,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-client-wasm"
-version = "2.0.0-beta.3"
+version = "2.0.0-beta.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -2899,7 +2899,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-gateway"
-version = "2.0.0-beta.3"
+version = "2.0.0-beta.4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2945,7 +2945,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-translate"
-version = "2.0.0-beta.3"
+version = "2.0.0-beta.4"
 dependencies = [
  "serde",
  "serde_json",

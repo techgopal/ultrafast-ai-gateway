@@ -34,15 +34,20 @@ export const INVITE_LINK_DESCRIPTION =
 
 export const INVITE_LINK_UNUSABLE = "The gateway returned an invite link that cannot be used.";
 
+export const PASSWORD_LINK_TITLE = "Password link";
+export const PASSWORD_LINK_DESCRIPTION =
+  "Send this link to the user. It works once and expires in 24 hours.";
+export const PASSWORD_LINK_UNUSABLE = "The gateway returned a password link that cannot be used.";
+
 /**
  * The invite link as the user can open it. The API gives a path of the
  * console, which starts with one `/`; anything else could name another
  * host, and is refused by the console itself: the dialog shows the message
  * where it shows a refusal of the gateway, which this is not.
  */
-export function inviteUrl(path: string): string {
+export function inviteUrl(path: string, refusal: string = INVITE_LINK_UNUSABLE): string {
   const { origin } = window.location;
-  const unusable = new ConsoleRefusal(INVITE_LINK_UNUSABLE);
+  const unusable = new ConsoleRefusal(refusal);
   // A browser reads a backslash as a slash.
   if (!/^\/[^/\\]/.test(path)) throw unusable;
   let url: URL;

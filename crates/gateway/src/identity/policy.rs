@@ -87,6 +87,9 @@ pub enum Action {
     ViewRoutingHealth,
     // alerts: channels, rules and events. Admins only.
     ManageAlerts,
+    /// Reading rules and events. Admins, and team leads (cut to the rules on
+    /// their teams' budgets by the caller).
+    ViewAlerts,
     // guardrails: defining them and attaching them to routes and keys.
     // Admins only; a lead sees the ones on their keys through the key.
     ManageGuardrails,
@@ -220,6 +223,14 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
                 Forbidden
             } else {
                 Hidden
+            }
+        }
+
+        Action::ViewAlerts => {
+            if p.led_teams().is_empty() {
+                Forbidden
+            } else {
+                Allow
             }
         }
 
@@ -1165,6 +1176,9 @@ mod tests {
                 Action::ViewRoutingHealth,
                 Forbidden,
             ),
+            ("view_alerts: lead", lead, Action::ViewAlerts, Allow),
+            ("view_alerts: member", member, Action::ViewAlerts, Forbidden),
+            ("view_alerts: loner", loner, Action::ViewAlerts, Forbidden),
             ("manage_alerts: lead", lead, Action::ManageAlerts, Forbidden),
             (
                 "manage_alerts: member",

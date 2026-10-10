@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 pub const KEY_PREFIX: &str = "uf-sk-";
 pub const TOKEN_PREFIX: &str = "uf-at-";
 pub const INVITE_PREFIX: &str = "uf-inv-";
+/// The prefix of a password link: an invite of kind `set_password`. The console
+/// words its page by the prefix; the stored kind decides what the link does.
+pub const PASSWORD_LINK_PREFIX: &str = "uf-pwl-";
 const NONCE_LEN: usize = 12;
 
 pub struct NewKey {
@@ -186,7 +189,12 @@ mod tests {
 
     #[test]
     fn generate_secret_uses_prefix() {
-        for prefix in [TOKEN_PREFIX, INVITE_PREFIX, KEY_PREFIX] {
+        for prefix in [
+            TOKEN_PREFIX,
+            INVITE_PREFIX,
+            PASSWORD_LINK_PREFIX,
+            KEY_PREFIX,
+        ] {
             let a = generate_secret(prefix);
             let b = generate_secret(prefix);
             assert_ne!(a.full, b.full);
@@ -202,6 +210,7 @@ mod tests {
         }
         assert_eq!(TOKEN_PREFIX, "uf-at-");
         assert_eq!(INVITE_PREFIX, "uf-inv-");
+        assert_eq!(PASSWORD_LINK_PREFIX, "uf-pwl-");
         assert_eq!(generate_secret(TOKEN_PREFIX).full.len(), 6 + 64);
     }
 

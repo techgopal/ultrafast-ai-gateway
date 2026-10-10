@@ -1,11 +1,21 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { useDeleteUser, useReinviteUser, useUpdateUser, useUser } from "@/api/queries";
+import {
+  useDeleteUser,
+  usePasswordLink,
+  useReinviteUser,
+  useSetUserGuardrails,
+  useUpdateUser,
+  useUser,
+} from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can, type Me } from "@/auth/guards";
 import { useSession, useSessionControl } from "@/auth/session";
+import { AttachedGuardrails } from "@/components/AttachedGuardrails";
 import { control } from "@/components/classes";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { USER_HINT } from "@/components/GuardrailPicker";
+import { GuardrailsHolderDialog, HOLDER_SAVED } from "@/components/GuardrailsHolderDialog";
 import { NameDialog } from "@/components/NameDialog";
 import { NotFoundContent } from "@/components/NotFoundContent";
 import { PageHeader } from "@/components/PageHeader";
@@ -19,7 +29,15 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { YouBadge } from "@/components/YouBadge";
 import { idOf } from "@/lib/id";
-import { INVITE_LINK_DESCRIPTION, INVITE_LINK_TITLE, inviteUrl, signInName } from "@/pages/Users";
+import {
+  INVITE_LINK_DESCRIPTION,
+  INVITE_LINK_TITLE,
+  inviteUrl,
+  PASSWORD_LINK_DESCRIPTION,
+  PASSWORD_LINK_TITLE,
+  PASSWORD_LINK_UNUSABLE,
+  signInName,
+} from "@/pages/Users";
 
 type User = components["schemas"]["UserView"];
 
@@ -29,6 +47,8 @@ export const CONSEQUENCES = {
     "They are signed out, their access tokens are revoked, and their virtual keys stop working until they are enabled again.",
   enable: "They can sign in again, and their virtual keys work again.",
   reinvite: "Earlier links stop working.",
+  passwordLink:
+    "The user can then sign in with a password as well as through single sign-on. Earlier links stop working.",
   deleteActive:
     "Their virtual keys keep working without an owner. Revoke the keys first if they should stop.",
   deleteNotActive: "Their virtual keys are revoked.",
@@ -51,7 +71,15 @@ export const DONE = {
   delete: "User deleted.",
 } as const;
 
-type Asking = "name" | "role" | "disable" | "enable" | "reinvite" | "delete";
+type Asking =
+  | "name"
+  | "role"
+  | "disable"
+  | "enable"
+  | "reinvite"
+  | "passwordLink"
+  | "delete"
+  | "guardrails";
 
 function Controls({ me, user }: { me: Me; user: User }) {
   const navigate = useNavigate();
@@ -59,7 +87,10 @@ function Controls({ me, user }: { me: Me; user: User }) {
   const update = useUpdateUser();
   const remove = useDeleteUser();
   const reinvite = useReinviteUser();
+  const setGuardrails = useSetUserGuardrails();
   const once = useSecretOnce(reinvite);
+  const passwordLink = usePasswordLink();
+  const linkOnce = useSecretOnce(passwordLink);
   const { end } = useSessionControl();
   const [asking, setAsking] = useState<Asking | null>(null);
 
@@ -68,7 +99,15 @@ function Controls({ me, user }: { me: Me; user: User }) {
   // Nobody can delete their own account: the API refuses it to everybody.
   const mayDelete = !own && can(me, { type: "deleteUser" });
   const mayRename = can(me, { type: "renameUser", userId: user.id });
-  if (!mayRename && !mayDelete) return null;
+  const mayGuard = can(me, { type: "manageGuardrails" });
+  // For an active user of single sign-on who has no password: the gateway
+  // refuses anyone else.
+  const mayLink =
+    can(me, { type: "inviteUser" }) &&
+    user.auth_provider === "oidc" &&
+    !user.has_password &&
+    user.status === "active";
+  if (!mayRename && !mayDelete && !mayGuard) return null;
 
   const { id } = user;
   const otherRole = user.role === "admin" ? "member" : "admin";
@@ -118,6 +157,16 @@ function Controls({ me, user }: { me: Me; user: User }) {
                 Disable
               </Button>
             )}
+            {mayLink ? (
+              <Button
+                type="button"
+                variant="outline"
+                className={control}
+                onClick={ask("passwordLink")}
+              >
+                Send password link
+              </Button>
+            ) : null}
             {user.status === "invited" ? (
               <Button
                 type="button"
@@ -130,6 +179,11 @@ function Controls({ me, user }: { me: Me; user: User }) {
             ) : null}
           </>
         ) : null}
+        {mayGuard ? (
+          <Button type="button" variant="outline" className={control} onClick={ask("guardrails")}>
+            Edit guardrails
+          </Button>
+        ) : null}
         {mayDelete ? (
           <Button type="button" variant="destructive" className={control} onClick={ask("delete")}>
             Delete
@@ -137,6 +191,25 @@ function Controls({ me, user }: { me: Me; user: User }) {
         ) : null}
       </div>
 
+      {mayGuard ? (
+        <GuardrailsHolderDialog
+          open={asking === "guardrails"}
+          description="The user's guardrails check every call of every key the user owns, after the guardrails of the gateway and of the team."
+          hint={USER_HINT}
+          start={user.guardrail_ids}
+          pending={setGuardrails.isPending}
+          send={(ids) => setGuardrails.mutateAsync({ id, ids })}
+          onCancel={() => {
+            closeUpdate(false);
+            setGuardrails.reset();
+          }}
+          onDone={() => {
+            closeUpdate(false);
+            setGuardrails.reset();
+            toast(HOLDER_SAVED);
+          }}
+        />
+      ) : null}
       <NameDialog
         open={asking === "name"}
         user={user}
@@ -215,6 +288,40 @@ function Controls({ me, user }: { me: Me; user: User }) {
             secret={once.secret}
             onClose={once.clear}
           />
+          {mayLink ? (
+            <>
+              <ConfirmDialog
+                open={asking === "passwordLink"}
+                onOpenChange={(open) => {
+                  if (open) return;
+                  setAsking(null);
+                  passwordLink.reset();
+                }}
+                title="Create a password link?"
+                body={CONSEQUENCES.passwordLink}
+                confirmLabel="Create link"
+                onConfirm={async () => {
+                  const made = await passwordLink.mutateAsync({ id });
+                  let link: string;
+                  try {
+                    link = inviteUrl(made.url, PASSWORD_LINK_UNUSABLE);
+                  } catch (error) {
+                    // The mutation does not keep the link that is not shown.
+                    passwordLink.reset();
+                    throw error;
+                  }
+                  // Shows the link, and makes the mutation forget its answer.
+                  linkOnce.show(link);
+                }}
+              />
+              <SecretDialog
+                title={PASSWORD_LINK_TITLE}
+                description={PASSWORD_LINK_DESCRIPTION}
+                secret={linkOnce.secret}
+                onClose={linkOnce.clear}
+              />
+            </>
+          ) : null}
         </>
       ) : null}
       {mayDelete ? (
@@ -328,6 +435,14 @@ function Details({ id }: { id: number }) {
         <dd>
           <Timestamp value={shown.last_active_at} />
         </dd>
+        {can(session.me, { type: "manageGuardrails" }) ? (
+          <>
+            <dt className="text-muted-foreground">Guardrails</dt>
+            <dd className="min-w-0">
+              <AttachedGuardrails ids={shown.guardrail_ids} />
+            </dd>
+          </>
+        ) : null}
       </dl>
       <Controls me={session.me} user={shown} />
     </>
