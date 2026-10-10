@@ -851,8 +851,8 @@ impl Snapshot {
     }
 
     /// The guardrails a call is checked with: the gateway-wide defaults,
-    /// then those of the key's team, of the key's owner, of the route and
-    /// of the key, each in its configured order, each guardrail once (where
+    /// then those of the key's team and the other teams of its owner, of
+    /// the owner, of the route and of the key, each in its configured order, each guardrail once (where
     /// it first appears). A disabled or gone guardrail is not in it.
     pub fn effective_guardrails<'a>(
         &'a self,
@@ -862,8 +862,19 @@ impl Snapshot {
         let of = |map: &'a HashMap<i64, Vec<i64>>, id: Option<i64>| {
             id.and_then(|id| map.get(&id)).map(Vec::as_slice)
         };
+        // The key's own team first, then the other teams of its owner: a
+        // personal key (no team) is covered by the teams its owner is in.
+        let owner_teams = key
+            .and_then(|k| k.user_id)
+            .and_then(|u| self.users.get(&u))
+            .map_or(&[][..], |u| u.team_ids.as_slice());
         let attached = of(&self.team_guardrails, key.and_then(|k| k.team_id))
             .into_iter()
+            .chain(
+                owner_teams
+                    .iter()
+                    .filter_map(|t| of(&self.team_guardrails, Some(*t))),
+            )
             .chain(of(&self.user_guardrails, key.and_then(|k| k.user_id)))
             .chain(route.map(|r| r.guardrails.as_slice()))
             .chain(key.map(|k| k.guardrails.as_slice()));

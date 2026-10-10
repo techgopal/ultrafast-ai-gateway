@@ -855,7 +855,7 @@ whole-text redaction (no key material is involved).
 
 **Which guardrails apply, and in which order.** For every call: the guardrails
 marked *applies to every call* (by name), then those of the key's team (if it
-has one), then those of the key's owner, then those of the route, then those of
+has one) and the other teams of the key's owner, then those of the key's owner, then those of the route, then those of
 the key, each in the order set on it, each guardrail once, at its first place.
 A disabled guardrail is not part of it. Attach them in the console (route form,
 key form, the team and user pages) or with `guardrail_ids` on
