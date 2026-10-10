@@ -14,7 +14,7 @@ STALL_FOR_S = 5.0
 
 @contextmanager
 def slow_server(mode: str, status: int = 200) -> Iterator[str]:
-    """`mode`: "silent" (no answer), "stall" (headers, then nothing), "drip" (a byte every 0.1 s)."""
+    """`mode`: "silent" (no answer), "stall" (headers, then nothing), "drip" (a byte every 0.1 s), "headers_drip" (a byte of the headers every 0.1 s)."""
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(16)
@@ -28,6 +28,13 @@ def slow_server(mode: str, status: int = 200) -> Iterator[str]:
                 connection.recv(65536)
                 if mode == "silent":
                     stop.wait(STALL_FOR_S)
+                    return
+                if mode == "headers_drip":
+                    connection.sendall(b"HTTP/1.1 200 X\r\nx-pad: ")
+                    end = time.monotonic() + STALL_FOR_S
+                    while time.monotonic() < end and not stop.is_set():
+                        connection.sendall(b"a")
+                        time.sleep(0.1)
                     return
                 connection.sendall(
                     f"HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: 100000\r\n\r\n{{".encode()

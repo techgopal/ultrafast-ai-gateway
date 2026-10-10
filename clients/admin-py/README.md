@@ -9,12 +9,14 @@ asynchronous calls, generated from `openapi/admin.json`.
 pip install ./clients/admin-py   # Python 3.11 or newer; not published to PyPI, build from source
 ```
 
-Create an access token in the console (Account, Access tokens), then:
+Create an access token in the console (Account, Access tokens). The playground
+operations (`api.playground`) and `tokens_create` refuse access tokens by
+design: they answer 403 `forbidden` and need a signed-in browser session. Then:
 
 ```python
 from ultrafast_admin import AdminClient, AdminApiError
-from ultrafast_admin._generated.api.providers import providers_list, providers_create
-from ultrafast_admin._generated.models import CreateProviderRequest
+from ultrafast_admin.api.providers import providers_list, providers_create
+from ultrafast_admin.models import CreateProviderRequest
 
 api = AdminClient("https://gateway.example.com", token)  # timeout=30.0 seconds
 
@@ -31,7 +33,9 @@ except AdminApiError as error:
     print(error.status, error.code, error.message, error.fields)
 ```
 
-Calls live in `ultrafast_admin._generated.api.<tag>.<operation_id>`; each module
+Calls live in `ultrafast_admin.api.<tag>.<operation_id>` and the types in
+`ultrafast_admin.models` (the generated packages, also reachable as
+`ultrafast_admin._generated`); each module
 has `sync`, `sync_detailed`, `asyncio` and `asyncio_detailed`. The async form:
 
 ```python
@@ -59,8 +63,8 @@ be pickled. It is readable by code you run (`api.client.token`, the httpx
 client's headers), as with any HTTP client.
 
 `timeout` (seconds, default 30) is a total for one call: connecting, sending and
-receiving the whole answer. A call that runs out, or whose answer stalls or
-drips, raises `AdminApiError` with status 0 and code `timeout`. Use after
+receiving the whole answer, headers included. A call that runs out, or whose answer stalls or
+drips, raises `AdminApiError` with status 0 and code `timeout`. `aclose()` closes both the async and the sync client, `close()` the sync one. Use after
 `close()` raises `AdminApiError` (status 0, `network_error`).
 `api.client.with_timeout(httpx.Timeout(5))`, `.with_headers(...)` and
 `.with_cookies(...)` return copies that keep the bearer header and the same

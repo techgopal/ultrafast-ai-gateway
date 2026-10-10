@@ -58,6 +58,25 @@ def test_the_timeout_is_a_total_deadline_not_per_read() -> None:
     assert took < 2
 
 
+def test_the_total_deadline_also_bounds_the_header_phase() -> None:
+    with slow_server("headers_drip") as url:
+        api = AdminClient(url, TOKEN, timeout=0.6)
+        error, took = timeout_error(lambda: providers_list.sync_detailed(client=api.client))
+    assert (error.status, error.code) == (0, "timeout")
+    assert took < 2
+
+
+async def test_the_total_deadline_also_bounds_the_header_phase_for_async_calls() -> None:
+    with slow_server("headers_drip") as url:
+        api = AdminClient(url, TOKEN, timeout=0.6)
+        started = time.monotonic()
+        with pytest.raises(AdminApiError) as raised:
+            await providers_list.asyncio_detailed(client=api.client)
+        await api.aclose()
+    assert raised.value.code == "timeout"
+    assert time.monotonic() - started < 2
+
+
 async def test_the_total_deadline_for_async_calls() -> None:
     with slow_server("drip") as url:
         api = AdminClient(url, TOKEN, timeout=0.6)
@@ -133,3 +152,13 @@ def test_a_download_can_take_its_own_timeout() -> None:
         error, took = timeout_error(lambda: api.export_config(timeout=0.4))
         assert error.code == "timeout"
     assert took < 3
+
+
+async def test_aclose_closes_both_clients_and_close_the_sync_one() -> None:
+    api = AdminClient("http://127.0.0.1:1", TOKEN)
+    await api.aclose()
+    assert api.client.get_httpx_client().is_closed
+    assert api.client.get_async_httpx_client().is_closed
+    other = AdminClient("http://127.0.0.1:1", TOKEN)
+    other.close()
+    assert other.client.get_httpx_client().is_closed

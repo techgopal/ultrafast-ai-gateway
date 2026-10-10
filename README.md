@@ -1468,9 +1468,9 @@ pip install ./clients/admin-py
 ```python
 import os
 from ultrafast_admin import AdminClient
-from ultrafast_admin._generated.api.providers import providers_list
-from ultrafast_admin._generated.api.alerts import alerts_channels_create
-from ultrafast_admin._generated.models import CreateChannelRequest
+from ultrafast_admin.api.providers import providers_list
+from ultrafast_admin.api.alerts import alerts_channels_create
+from ultrafast_admin.models import CreateChannelRequest
 
 with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
     print([p.name for p in api.call(providers_list.sync_detailed(client=api.client)).providers])

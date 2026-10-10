@@ -2,12 +2,12 @@
 
 A call that fails raises ``AdminApiError``, whichever generated function made it.
 The calls are generated from ``openapi/admin.json`` (see ``gen.sh``) and live in
-``ultrafast_admin._generated.api.<tag>.<operation_id>``; each module has
-``sync``, ``sync_detailed``, ``asyncio`` and ``asyncio_detailed``. This module
-adds the client, the error type, and the two downloads::
+``ultrafast_admin.api.<tag>.<operation_id>`` (the types in ``ultrafast_admin.models``);
+each module has ``sync``, ``sync_detailed``, ``asyncio`` and ``asyncio_detailed``.
+This module adds the client, the error type, and the two downloads::
 
     from ultrafast_admin import AdminClient
-    from ultrafast_admin._generated.api.providers import providers_list
+    from ultrafast_admin.api.providers import providers_list
 
     api = AdminClient("https://gateway.example.com", token)
     providers = api.call(providers_list.sync_detailed(client=api.client)).providers
@@ -15,17 +15,59 @@ adds the client, the error type, and the two downloads::
 
 from __future__ import annotations
 
+import asyncio
+import importlib
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import json
+import sys
+import threading
 import time
 from collections.abc import Callable, Mapping
 from typing import Any, NoReturn, Self
 
 import httpx
 
+from ._generated import api, models
 from ._generated.client import AuthenticatedClient
 from ._generated.types import Response
 
-__all__ = ["AdminApiError", "AdminClient"]
+__all__ = ["AdminApiError", "AdminClient", "api", "models"]
+
+# ``ultrafast_admin.api`` and ``ultrafast_admin.models`` are the generated packages
+# themselves (one module object each), so ``from ultrafast_admin.api.providers import
+# providers_list`` works and ``_generated`` stays importable.
+_ALIASES = {
+    "ultrafast_admin.api": "ultrafast_admin._generated.api",
+    "ultrafast_admin.models": "ultrafast_admin._generated.models",
+}
+for _alias, _real in _ALIASES.items():
+    sys.modules[_alias] = importlib.import_module(_real)
+
+
+class _AliasLoader(importlib.abc.Loader):
+    def __init__(self, real: str) -> None:
+        self._real = real
+
+    def create_module(self, spec: importlib.machinery.ModuleSpec) -> Any:
+        return importlib.import_module(self._real)
+
+    def exec_module(self, module: Any) -> None:
+        return None
+
+
+class _AliasFinder(importlib.abc.MetaPathFinder):
+    """Maps ``ultrafast_admin.api.x`` / ``ultrafast_admin.models.x`` onto the generated module of the same path."""
+
+    def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> importlib.machinery.ModuleSpec | None:
+        for alias, real in _ALIASES.items():
+            if fullname.startswith(alias + "."):
+                return importlib.util.spec_from_loader(fullname, _AliasLoader(real + fullname[len(alias) :]))
+        return None
+
+
+sys.meta_path.insert(0, _AliasFinder())
 
 DEFAULT_TIMEOUT = 30.0
 _REDACTED = "[redacted]"
@@ -96,8 +138,9 @@ class _Deadline:
     """A total time limit over the phases of one request, on top of httpx's per-phase timeouts.
 
     httpx times each connect, write and read on its own, so a server that sends a
-    byte now and then never trips it. The limit is checked as the body arrives, and
-    the read timeout of the chunk to come is cut to what is left.
+    byte now and then never trips it. The limit bounds the wait for the headers
+    (``run`` / ``arun``), is checked as the body arrives, and the read timeout of
+    the chunk to come is cut to what is left.
     """
 
     def __init__(self, request: httpx.Request) -> None:
@@ -105,11 +148,54 @@ class _Deadline:
         self._budget = _budget(request)
         self._started = time.monotonic()
 
+    def _left(self) -> float | None:
+        return None if self._budget is None else self._budget - (time.monotonic() - self._started)
+
+    def run(self, call: Callable[[], httpx.Response]) -> httpx.Response:
+        """Runs the sync send; gives up when the time is used up before the headers are in.
+
+        With a limit the send runs on a helper thread, which ends by itself when
+        httpx's own per-phase timeout or the peer ends it (a daemon thread, so it
+        never holds the process).
+        """
+        left = self._left()
+        if left is None:
+            return call()
+        outcome: list[Any] = []
+
+        def work() -> None:
+            try:
+                outcome.append((True, call()))
+            except BaseException as error:  # noqa: BLE001 - handed back to the caller's thread
+                outcome.append((False, error))
+
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        worker.join(max(left, 0))
+        if not outcome:
+            raise AdminApiError(0, "timeout", "No answer within the timeout.")
+        ok, value = outcome[0]
+        if not ok:
+            raise value
+        return value  # type: ignore[no-any-return]
+
+    async def arun(self, call: Callable[[], Any]) -> httpx.Response:
+        """Awaits the async send under what is left of the time."""
+        left = self._left()
+        if left is None:
+            return await call()  # type: ignore[no-any-return]
+        try:
+            async with asyncio.timeout(max(left, 0)):
+                return await call()  # type: ignore[no-any-return]
+        except TimeoutError:
+            raise AdminApiError(0, "timeout", "No answer within the timeout.") from None
+
     def check(self) -> None:
         """Raises the timeout error when the time is used up; else shortens the next read."""
         if self._budget is None:
             return
-        left = self._budget - (time.monotonic() - self._started)
+        left = self._left()
+        assert left is not None
         if left <= 0:
             raise AdminApiError(0, "timeout", "No answer within the timeout.")
         phases = self._request.extensions.get("timeout")
@@ -145,7 +231,7 @@ class _Guard(httpx.BaseTransport):
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         deadline = _Deadline(request)
         try:
-            response = self._inner.handle_request(request)
+            response = deadline.run(lambda: self._inner.handle_request(request))
             try:
                 body = bytearray()
                 deadline.check()
@@ -169,7 +255,7 @@ class _AsyncGuard(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         deadline = _Deadline(request)
         try:
-            response = await self._inner.handle_async_request(request)
+            response = await deadline.arun(lambda: self._inner.handle_async_request(request))
             try:
                 body = bytearray()
                 deadline.check()
@@ -329,10 +415,13 @@ class AdminClient:
         await self.aclose()
 
     def close(self) -> None:
+        """Closes the sync client. (``aclose`` closes both.)"""
         self.client.get_httpx_client().close()
 
     async def aclose(self) -> None:
+        """Closes the async client and the sync one."""
         await self.client.get_async_httpx_client().aclose()
+        self.client.get_httpx_client().close()
 
     def call(self, response: Response[Any]) -> Any:
         """Returns the parsed body of a ``sync_detailed``/``asyncio_detailed`` result; a 204 gives ``None``.
@@ -357,13 +446,24 @@ class AdminClient:
     def export_config(self, timeout: float | None = None) -> dict[str, Any]:
         """The configuration file (``GET /api/config/export``), parsed."""
         response = self.client.get_httpx_client().get("/api/config/export", timeout=_per_call(timeout))
-        data: dict[str, Any] = response.json()
-        return data
+        return _config_file(response)
 
     async def aexport_config(self, timeout: float | None = None) -> dict[str, Any]:
         response = await self.client.get_async_httpx_client().get("/api/config/export", timeout=_per_call(timeout))
-        data: dict[str, Any] = response.json()
-        return data
+        return _config_file(response)
+
+
+def _config_file(response: httpx.Response) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except ValueError:
+        # A proxy's page, say: say what happened, never echo the body.
+        raise AdminApiError(
+            response.status_code, "invalid_response", "The answer was not a configuration file (not JSON)."
+        ) from None
+    if not isinstance(data, dict):
+        raise AdminApiError(response.status_code, "invalid_response", "The answer was not a configuration file.")
+    return data
 
 
 def _per_call(timeout: float | None) -> Any:

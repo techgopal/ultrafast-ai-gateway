@@ -20,8 +20,9 @@ admin SDKs for TypeScript and Python.
   access-token wrapper, a total timeout per call and a typed `AdminApiError`
   (`status`, `code`, `message`, `fields`). Build from source; not published to
   npm or PyPI. CI regenerates both and fails when the committed copy differs,
-  and runs their tests against the real gateway (Python 3.11 and the newest
-  3.x).
+  and runs their tests against the real gateway (Python 3.11 and 3.14). The
+  Python calls are imported from `ultrafast_admin.api` and
+  `ultrafast_admin.models`.
 - **Structured outputs.** `response_format` (`text`, `json_object`, `json_schema`)
   on `/v1/chat/completions`, `text.format` on `/v1/responses`, and
   `output_config.format` on `/v1/messages`. OpenAI and Azure get it as it
@@ -79,7 +80,9 @@ admin SDKs for TypeScript and Python.
   `docs/compose/postgres.yml`; README section "Using PostgreSQL", including
   what a configuration export and import moves from SQLite. The browser tests
   run on PostgreSQL with `UF_E2E_DATABASE_URL`. No online migration from
-  SQLite. Tested on PostgreSQL 14 and 17; the gateway logs `database: sqlite`
+  SQLite. Tested on PostgreSQL 14 and 17 (the Rust suite, and for this release
+  the whole browser suite on 14.24 and 17: 111 passed, the 7 SQLite-only tests
+  skipped); the gateway logs `database: sqlite`
   or `database: postgres` at start. Revocations (keys, users, grants) and
   single sign-on settings reach the other processes within about 30 s. An
   error-rate or circuit alert episode belongs to the process that opened it
