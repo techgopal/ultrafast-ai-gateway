@@ -309,13 +309,222 @@ async fn a_redirect_is_not_followed_and_not_sent_the_secret() {
         .failure(Failure::Redirect(target.url.clone()))
         .start()
         .await;
+    // reqwest strips Authorization across origins but not custom headers.
+    let srv = server(&mock.url, "header", Some("X-Api-Key"));
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let err = discover_tools(&http, &server(&mock.url, "bearer", None), Some(SECRET))
-        .await
-        .unwrap_err();
+    let err = discover_tools(&http, &srv, Some(SECRET)).await.unwrap_err();
     assert_eq!(err, UpstreamError::Protocol);
     assert!(target.received().is_empty());
+    // Control: with redirects on, the target does see the request.
+    let _ = discover_tools(&reqwest::Client::new(), &srv, Some(SECRET)).await;
+    assert!(
+        !target.received().is_empty(),
+        "the test cannot see a followed redirect"
+    );
+}
+
+// ------------------------------------------------------- a raw HTTP server
+
+struct Reply {
+    head: String,
+    /// Body pieces, each sent after its delay.
+    parts: Vec<(Duration, Vec<u8>)>,
+}
+
+fn json_reply(v: serde_json::Value) -> Reply {
+    let b = v.to_string().into_bytes();
+    Reply {
+        head: format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n",
+            b.len()
+        ),
+        parts: vec![(Duration::ZERO, b)],
+    }
+}
+
+fn status_reply(line: &str) -> Reply {
+    Reply {
+        head: format!("HTTP/1.1 {line}\r\ncontent-length: 0\r\n"),
+        parts: vec![],
+    }
+}
+
+fn chunked(content_type: &str, parts: Vec<(Duration, Vec<u8>)>) -> Reply {
+    Reply {
+        head: format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ntransfer-encoding: chunked\r\n"
+        ),
+        parts,
+    }
+}
+
+/// Serves `script(request body)` on 127.0.0.1:0, one request per connection.
+async fn raw_server(script: fn(&serde_json::Value) -> Reply) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        loop {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                let (head_end, len) = loop {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..p]).to_ascii_lowercase();
+                        let len = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length: "))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        break (p + 4, len);
+                    }
+                };
+                while buf.len() < head_end + len {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+                let req: serde_json::Value =
+                    serde_json::from_slice(&buf[head_end..head_end + len]).unwrap_or_default();
+                let reply = script(&req);
+                let chunked = reply.head.contains("chunked");
+                let _ = sock
+                    .write_all(format!("{}connection: close\r\n\r\n", reply.head).as_bytes())
+                    .await;
+                for (delay, part) in reply.parts {
+                    tokio::time::sleep(delay).await;
+                    let out = if chunked {
+                        let mut c = format!("{:x}\r\n", part.len()).into_bytes();
+                        c.extend_from_slice(&part);
+                        c.extend_from_slice(b"\r\n");
+                        c
+                    } else {
+                        part
+                    };
+                    if sock.write_all(&out).await.is_err() {
+                        return;
+                    }
+                }
+                if chunked {
+                    let _ = sock.write_all(b"0\r\n\r\n").await;
+                }
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+    url
+}
+
+fn init_ok(req: &serde_json::Value) -> Option<Reply> {
+    match req["method"].as_str() {
+        Some("initialize") => Some(json_reply(
+            serde_json::json!({"jsonrpc":"2.0","id":req["id"],
+            "result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"r","version":"0"}}}),
+        )),
+        None | Some("notifications/initialized") => Some(status_reply("202 Accepted")),
+        _ => None,
+    }
+}
+
+fn one_tool_page(id: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"tools":[tool("only","d")]}})
+}
+
+async fn discover_raw(url: &str, opts: Options) -> Result<usize, UpstreamError> {
+    discover_tools_with(
+        &reqwest::Client::new(),
+        &server(url, "none", None),
+        None,
+        opts,
+    )
+    .await
+    .map(|d| d.tools.len())
+}
+
+#[tokio::test]
+async fn a_chunked_page_without_content_length_over_the_cap_is_too_large() {
+    let url = raw_server(|req| {
+        init_ok(req).unwrap_or_else(|| {
+            chunked(
+                "application/json",
+                (0..5).map(|_| (Duration::ZERO, vec![b' '; 1000])).collect(),
+            )
+        })
+    })
+    .await;
+    let opts = Options {
+        max_body_bytes: 2000,
+        ..Options::default()
+    };
+    assert_eq!(discover_raw(&url, opts).await, Err(UpstreamError::TooLarge));
+}
+
+#[tokio::test]
+async fn a_slow_drip_body_times_out() {
+    let url = raw_server(|req| {
+        init_ok(req).unwrap_or_else(|| {
+            chunked(
+                "application/json",
+                (0..20)
+                    .map(|_| (Duration::from_millis(200), vec![b' ']))
+                    .collect(),
+            )
+        })
+    })
+    .await;
+    let opts = Options {
+        timeout: Duration::from_millis(500),
+        ..Options::default()
+    };
+    assert_eq!(discover_raw(&url, opts).await, Err(UpstreamError::Timeout));
+}
+
+#[tokio::test]
+async fn an_sse_framed_page_is_parsed_with_multiline_data_and_other_ids_skipped() {
+    let url = raw_server(|req| {
+        init_ok(req).unwrap_or_else(|| {
+            // A server-to-client request with our id comes first and is skipped;
+            // the reply's data is two lines, joined with a newline (JSON whitespace).
+            let good = one_tool_page(&req["id"]).to_string().replacen("{\"tools\"", "{\n\"tools\"", 1);
+            let (x, y) = good.split_at(good.find('\n').unwrap());
+            let body = format!(
+                "data: {{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"ping\"}}\n\nevent: message\ndata: {x}\ndata: {}\n\n",
+                req["id"],
+                y.trim_start_matches('\n')
+            );
+            chunked("text/event-stream", vec![(Duration::ZERO, body.into_bytes())])
+        })
+    })
+    .await;
+    assert_eq!(discover_raw(&url, Options::default()).await, Ok(1));
+}
+
+#[tokio::test]
+async fn discovery_continues_when_initialize_is_405_or_method_not_found() {
+    let a = raw_server(|req| match req["method"].as_str() {
+        Some("initialize") => status_reply("405 Method Not Allowed"),
+        None | Some("notifications/initialized") => status_reply("202 Accepted"),
+        _ => json_reply(one_tool_page(&req["id"])),
+    })
+    .await;
+    assert_eq!(discover_raw(&a, Options::default()).await, Ok(1));
+    let b = raw_server(|req| match req["method"].as_str() {
+        Some("initialize") => json_reply(serde_json::json!({"jsonrpc":"2.0","id":req["id"],
+            "error":{"code":-32601,"message":"method not found"}})),
+        None | Some("notifications/initialized") => status_reply("202 Accepted"),
+        _ => json_reply(one_tool_page(&req["id"])),
+    })
+    .await;
+    assert_eq!(discover_raw(&b, Options::default()).await, Ok(1));
 }

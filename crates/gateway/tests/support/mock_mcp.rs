@@ -186,7 +186,8 @@ impl MockMcpBuilder {
             log: Mutex::new(Vec::new()),
         });
         let app = Router::new()
-            .route("/mcp", post(handle))
+            .route("/mcp", post(handle).fallback(record_any))
+            .fallback(record_any)
             .with_state(inner.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
@@ -195,6 +196,18 @@ impl MockMcpBuilder {
         });
         MockMcp { url, inner, task }
     }
+}
+
+/// Any request that is not `POST /mcp` (a followed redirect, say) is recorded and refused.
+async fn record_any(State(s): State<Arc<Inner>>, headers: HeaderMap) -> StatusCode {
+    s.log.lock().unwrap().push(Received {
+        headers: headers
+            .iter()
+            .map(|(n, v)| (n.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect(),
+        body: Value::Null,
+    });
+    StatusCode::NOT_FOUND
 }
 
 async fn handle(State(s): State<Arc<Inner>>, headers: HeaderMap, body: String) -> Response {

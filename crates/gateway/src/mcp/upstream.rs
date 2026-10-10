@@ -194,6 +194,7 @@ fn auth_header(
         }
         _ => return Ok(None),
     };
+    // Note: the HeaderValue and reqwest's copies of the secret are not zeroized.
     let mut value = HeaderValue::from_str(&value).map_err(|_| UpstreamError::Auth)?;
     value.set_sensitive(true);
     Ok(Some((name, value)))
@@ -255,6 +256,9 @@ async fn rpc(
         let mut data = String::new();
         for line in text.lines().chain(std::iter::once("")) {
             if let Some(d) = line.strip_prefix("data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
                 data.push_str(d.strip_prefix(' ').unwrap_or(d));
             } else if line.is_empty() && !data.is_empty() {
                 events.extend(serde_json::from_str(&data).ok());
@@ -267,7 +271,7 @@ async fn rpc(
     };
     let mut reply = messages
         .into_iter()
-        .find(|m| m["id"] == id)
+        .find(|m| m["id"] == id && m.get("method").is_none())
         .ok_or(UpstreamError::Protocol)?;
     if reply.get("error").is_some() {
         return Err(UpstreamError::Protocol);
