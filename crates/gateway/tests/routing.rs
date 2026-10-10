@@ -759,7 +759,8 @@ async fn a_request_the_translator_refuses_is_recorded_as_an_attempt() {
     let (s, _) = post_chat(&h.app, Some(&h.key), &body).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
     let r = &h.sink.records()[0];
-    assert_eq!(seen(r), [("anth".into(), AttemptOutcome::Fatal, None)]);
+    // Skipped, not failed: no target could express it, so the call is a 400.
+    assert_eq!(seen(r), [("anth".into(), AttemptOutcome::Skipped, None)]);
 }
 
 #[tokio::test]
@@ -1203,4 +1204,146 @@ mod final_wave {
         assert!(body.contains("The provider does not know this model."));
         assert!(!body.contains("gone-detail"));
     }
+}
+
+// An Anthropic provider that is never reached: it cannot express some
+// features, and a request it refuses is not sent.
+async fn anthropic(h: &Harness, name: &str) -> i64 {
+    h.store
+        .insert_provider(name, "anthropic", "http://127.0.0.1:1", None)
+        .await
+        .unwrap();
+    allow_model(&h.store, name, "m").await
+}
+
+fn effort(model: &str, stream: bool) -> String {
+    json!({
+        "model": model, "stream": stream, "reasoning_effort": "high",
+        "messages": [{ "role": "user", "content": "hi" }]
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn a_target_that_lacks_a_feature_is_skipped_for_the_next() {
+    for stream in [false, true] {
+        let h = harness("openai").await;
+        let first = anthropic(&h, "anth").await;
+        let (b, mb) = provider(&h, "b").await;
+        let answer = if stream {
+            sse("fine", true)
+        } else {
+            ok("fine")
+        };
+        Mock::given(method("POST"))
+            .respond_with(answer)
+            .mount(&b)
+            .await;
+        route(&h, "r", &[first], &[mb], DEFAULTS).await;
+        let (s, body) = post_chat(&h.app, Some(&h.key), &effort("r", stream)).await;
+        assert_eq!(s, StatusCode::OK, "stream={stream}: {body}");
+        assert_eq!(hits(&b).await, 1);
+        let r = &h.sink.wait_for(1).await[0];
+        assert_eq!(
+            seen(r),
+            [
+                ("anth".into(), AttemptOutcome::Skipped, None),
+                ("b".into(), AttemptOutcome::Ok, Some(200)),
+            ]
+        );
+        assert_eq!(
+            r.attempts[0].skipped.as_deref(),
+            Some("unsupported:reasoning_effort")
+        );
+        assert_eq!(r.attempts[1].skipped, None);
+        // Not a failure of the provider: its breaker is untouched.
+        assert!(
+            state_of(&h, "anth").is_none_or(|s| s == TargetState::Closed),
+            "{:?}",
+            state_of(&h, "anth")
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_call_no_target_can_express_is_400_with_the_first_message() {
+    for stream in [false, true] {
+        let h = harness("openai").await;
+        let a = anthropic(&h, "a1").await;
+        let b = anthropic(&h, "a2").await;
+        route(&h, "r", &[a], &[b], DEFAULTS).await;
+        let (s, body) = post_chat(&h.app, Some(&h.key), &effort("r", stream)).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            message(&body),
+            "reasoning effort is not supported by this provider"
+        );
+        let r = &h.sink.wait_for(1).await[0];
+        assert_eq!(
+            seen(r),
+            [
+                ("a1".into(), AttemptOutcome::Skipped, None),
+                ("a2".into(), AttemptOutcome::Skipped, None),
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_primary_that_has_the_feature_is_not_skipped() {
+    let h = harness("openai").await;
+    let (a, ma) = provider(&h, "a").await;
+    let fb = anthropic(&h, "anth").await;
+    Mock::given(method("POST"))
+        .respond_with(ok("a"))
+        .mount(&a)
+        .await;
+    route(&h, "r", &[ma], &[fb], DEFAULTS).await;
+    let (s, _) = post_chat(&h.app, Some(&h.key), &effort("r", false)).await;
+    assert_eq!(s, StatusCode::OK);
+    let r = &h.sink.wait_for(1).await[0];
+    assert!(r.attempts.iter().all(|a| a.skipped.is_none()));
+}
+
+#[tokio::test]
+async fn a_skip_leaves_the_cache_key_of_the_request_alone() {
+    use ultrafast_gateway::cache::{CacheScope, RouteCache};
+    let h = harness("openai").await;
+    let first = anthropic(&h, "anth").await;
+    let (b, mb) = provider(&h, "b").await;
+    Mock::given(method("POST"))
+        .respond_with(ok("fine"))
+        .mount(&b)
+        .await;
+    let mut tx = h.store.begin().await.unwrap();
+    let id = tx.insert_route("r", &DEFAULTS, true).await.unwrap();
+    tx.replace_targets(
+        id,
+        &TargetsInput {
+            primaries: vec![(first, 1)],
+            fallbacks: vec![mb],
+        },
+    )
+    .await
+    .unwrap();
+    tx.set_route_cache(
+        id,
+        &RouteCache {
+            enabled: true,
+            ttl_s: 300,
+            scope: CacheScope::Key,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    for _ in 0..2 {
+        let (s, body) = post_chat(&h.app, Some(&h.key), &effort("r", false)).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+    }
+    // The second call is a hit on the key the first one stored.
+    assert_eq!(hits(&b).await, 1);
+    let rs = h.sink.wait_for(2).await;
+    assert!(rs[1].cached);
 }

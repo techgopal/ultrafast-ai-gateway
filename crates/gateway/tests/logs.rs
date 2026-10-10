@@ -41,6 +41,7 @@ fn record(requested: &str) -> RequestRecord {
             status: Some(200),
             duration_ms: 12,
             offset_ms: 0,
+            skipped: None,
         }],
         cached: false,
         estimated: false,
@@ -302,6 +303,7 @@ async fn the_answering_attempt_names_the_provider_and_model() {
         status: Some(200),
         duration_ms: 1,
         offset_ms: 0,
+        skipped: None,
     };
     let mut fell_back = record("fell back");
     fell_back.attempts = vec![
