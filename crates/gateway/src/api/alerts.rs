@@ -21,6 +21,7 @@ use crate::alerts::{payload, send_once, TRY_TIMEOUT};
 use crate::app::AppState;
 use crate::config::{url_origin, validate_webhook_url};
 use crate::identity::policy::Action;
+use crate::limits::LimitScope;
 use crate::store::{
     now, AlertEventRow, AuditEntry, ChannelRow, NewAlertEvent, RuleRow, StateRow, Store, StoreError,
 };
@@ -738,9 +739,15 @@ pub async fn rules_list(
     State(state): State<Arc<AppState>>,
     authed: Authed,
 ) -> Result<Response, ApiError> {
-    require(&authed.principal, &Action::ManageAlerts)?;
-    let rows = state.store.list_alert_rules().await?;
-    let channels = state.store.list_alert_channels().await?;
+    require(&authed.principal, &Action::ViewAlerts)?;
+    let visible = visible_rules(&state.store, &authed.principal).await?;
+    let mut rows = state.store.list_alert_rules().await?;
+    let mut channels = state.store.list_alert_channels().await?;
+    if let Some(ids) = &visible {
+        rows.retain(|r| ids.contains(&r.id));
+        // Where alerts go is the admin's business.
+        channels.clear();
+    }
     let states = state.store.alert_states().await?;
     let rules: Vec<RuleView> = rows
         .iter()
@@ -1011,6 +1018,48 @@ pub async fn rules_delete(
 
 // ----------------------------------------------------------------- events
 
+/// The rules the caller may read: `None` for an admin (all of them). A lead
+/// reads the budget rules on one budget whose subject is one of their teams,
+/// or a key of one of their teams.
+async fn visible_rules(
+    store: &Store,
+    me: &crate::identity::Principal,
+) -> Result<Option<std::collections::HashSet<i64>>, ApiError> {
+    if me.is_admin() {
+        return Ok(None);
+    }
+    let led = me.led_teams();
+    let budgets = store.list_budgets().await?;
+    let mine: std::collections::HashSet<i64> = budgets
+        .iter()
+        .filter(|b| match (b.scope, b.scope_id) {
+            (LimitScope::Team, Some(t)) => led.contains(&t),
+            (LimitScope::Key, _) => b.key_team.is_some_and(|t| led.contains(&t)),
+            _ => false,
+        })
+        .map(|b| b.id)
+        .collect();
+    let mut out = std::collections::HashSet::new();
+    for rule in store.list_alert_rules().await? {
+        if rule.kind != "budget" {
+            continue;
+        }
+        let Ok(Params::Budget {
+            budget_id: Some(b), ..
+        }) = rules::parse(
+            &rule.kind,
+            &serde_json::from_str(&rule.params).unwrap_or_default(),
+        )
+        else {
+            continue;
+        };
+        if mine.contains(&b) {
+            out.insert(rule.id);
+        }
+    }
+    Ok(Some(out))
+}
+
 const DEFAULT_EVENTS: i64 = 50;
 const MAX_EVENTS: i64 = 200;
 
@@ -1094,7 +1143,8 @@ pub async fn events_list(
     authed: Authed,
     query: Result<Query<EventsQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
-    require(&authed.principal, &Action::ManageAlerts)?;
+    require(&authed.principal, &Action::ViewAlerts)?;
+    let visible = visible_rules(&state.store, &authed.principal).await?;
     let Ok(Query(q)) = query else {
         return Err(ApiError::bad_request("The query is not valid."));
     };
@@ -1131,10 +1181,37 @@ pub async fn events_list(
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
-    let rows = state
-        .store
-        .alert_events_page(rule_id, event_state, before_id, limit)
-        .await?;
-    let events: Vec<EventView> = rows.iter().map(event_view).collect();
+    let Some(visible) = visible else {
+        let rows = state
+            .store
+            .alert_events_page(rule_id, event_state, before_id, limit)
+            .await?;
+        let events: Vec<EventView> = rows.iter().map(event_view).collect();
+        return Ok(Json(json!({ "events": events })).into_response());
+    };
+    // A lead: page through the events and keep the ones of visible rules,
+    // until the page is full or there are no more.
+    let mut events: Vec<EventView> = Vec::new();
+    let mut before = before_id;
+    while (events.len() as i64) < limit && rule_id.is_none_or(|r| visible.contains(&r)) {
+        let rows = state
+            .store
+            .alert_events_page(rule_id, event_state, before, MAX_EVENTS)
+            .await?;
+        let Some(last) = rows.last() else { break };
+        before = Some(last.id);
+        let more = rows.len() as i64 == MAX_EVENTS;
+        for row in &rows {
+            if row.rule_id.is_some_and(|r| visible.contains(&r)) && (events.len() as i64) < limit {
+                events.push(event_view(row));
+            }
+        }
+        if !more {
+            break;
+        }
+        if (events.len() as i64) >= limit {
+            break;
+        }
+    }
     Ok(Json(json!({ "events": events })).into_response())
 }

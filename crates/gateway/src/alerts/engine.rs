@@ -23,7 +23,7 @@ use super::rules::{self, rate_subject, ErrorRate, Params};
 use super::Deliverer;
 use crate::budgets::{usd, Budget};
 use crate::routing::{HealthEvent, HealthStore, TargetState};
-use crate::store::{format_timestamp, now, NewAlertEvent, Store};
+use crate::store::{format_timestamp, now, parse_timestamp, NewAlertEvent, Store};
 
 pub const INPUT_CAPACITY: usize = 1024;
 pub const HEALTH_CAPACITY: usize = 256;
@@ -346,6 +346,9 @@ pub struct Engine {
     /// How long an owner may be silent (three ticks) before another process
     /// takes its episodes over.
     adopt_after: Duration,
+    /// Tests move the database clock forward to let time pass.
+    #[cfg(test)]
+    db_shift: time::Duration,
 }
 
 impl Engine {
@@ -367,6 +370,8 @@ impl Engine {
             wall: OffsetDateTime::now_utc,
             instance,
             adopt_after: Duration::from_secs(30) * 3,
+            #[cfg(test)]
+            db_shift: time::Duration::ZERO,
         }
     }
 
@@ -405,13 +410,36 @@ impl Engine {
         Ok(())
     }
 
+    /// The database's clock (the one every process sharing it agrees on),
+    /// as the stamp for a heartbeat.
+    async fn heartbeat_stamp(&self) -> Result<String> {
+        Ok(self.heartbeat_times().await?.0)
+    }
+
+    /// The heartbeat stamp and the cutoff before which an owner counts as
+    /// silent, both by the database's clock.
+    async fn heartbeat_times(&self) -> Result<(String, String)> {
+        let db = parse_timestamp(&self.store.db_now().await?)
+            .ok_or_else(|| anyhow::anyhow!("the database clock is not a timestamp"))?;
+        #[cfg(test)]
+        let db = db + self.db_shift;
+        Ok((
+            format_timestamp(db),
+            format_timestamp(db - self.adopt_after),
+        ))
+    }
+
     /// Says this process is alive (so the episodes it holds are not taken
     /// over), and takes over the episodes of owners that have been silent for
     /// [`Engine::adopt_after`], to resolve or go on with them. Once per tick.
     async fn keep_alive(&mut self) {
-        let wall = (self.wall)();
-        let at = format_timestamp(wall);
-        let cutoff = format_timestamp(wall - self.adopt_after);
+        let (at, cutoff) = match self.heartbeat_times().await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the database clock");
+                return;
+            }
+        };
         if let Err(e) = self.store.touch_alert_states(&self.instance, &at).await {
             tracing::warn!(error = %e, "could not record that this process is alive");
             return;
@@ -448,12 +476,13 @@ impl Engine {
             (r.id, r.name.clone(), r.kind.clone())
         };
         let at = now();
+        let seen_at = self.heartbeat_stamp().await?;
         let details_text = details.to_string();
         let mut tx = self.store.begin().await?;
         match change {
             Change::Fire => {
                 if !tx
-                    .upsert_alert_state(id, subject, &at, &self.instance)
+                    .upsert_alert_state(id, subject, &at, &self.instance, &seen_at)
                     .await?
                 {
                     // The rule was disabled or deleted since the engine read
@@ -1424,6 +1453,7 @@ mod tests {
         // two fixed offsets.
         static A: AtomicI64 = AtomicI64::new(0);
         A.store(seconds, Ordering::Relaxed);
+        e.db_shift = time::Duration::seconds(seconds);
         fn clock() -> OffsetDateTime {
             OffsetDateTime::now_utc() + time::Duration::seconds(A.load(Ordering::Relaxed))
         }
@@ -1554,6 +1584,42 @@ mod tests {
         assert!(store.alert_states().await.unwrap().is_empty());
     }
 
+    /// The heartbeat is stamped with the database's clock, so two processes
+    /// whose own clocks disagree by ten minutes still agree on who is alive.
+    #[tokio::test]
+    async fn processes_with_skewed_local_clocks_do_not_steal_episodes() {
+        let store = Store::open_in_memory().await.unwrap();
+        rule(
+            &store,
+            "errs",
+            "error_rate",
+            serde_json::from_str(ERRORS).unwrap(),
+        )
+        .await;
+        let mut a = engine(&store).await;
+        a.wall = || OffsetDateTime::now_utc() - time::Duration::seconds(600);
+        let mut b = engine(&store).await;
+        b.wall = || OffsetDateTime::now_utc() + time::Duration::seconds(600);
+        for _ in 0..5 {
+            a.windows.record_at(10, &failing());
+        }
+        a.on_tick(10).await;
+        let held = store.alert_states().await.unwrap();
+        assert_eq!(held[0].owner.as_deref(), Some(a.instance.as_str()));
+        let seen = held[0].seen_at.clone().unwrap();
+        let db = store.db_now().await.unwrap();
+        assert!(seen <= db, "{seen} is stamped by the database clock ({db})");
+        // B's clock is 20 minutes ahead of A's, but A ticked a moment ago.
+        b.on_tick(11).await;
+        let held = store.alert_states().await.unwrap();
+        assert_eq!(
+            held[0].owner.as_deref(),
+            Some(a.instance.as_str()),
+            "not adopted"
+        );
+        assert!(events(&store).await.len() == 1);
+    }
+
     /// An owner that ticks on time keeps its episode however long it lasts.
     #[tokio::test]
     async fn an_owner_that_ticks_keeps_its_episode() {
@@ -1571,7 +1637,7 @@ mod tests {
         }
         a.on_tick(10).await;
         let before = store.alert_states().await.unwrap()[0].seen_at.clone();
-        a.wall = || OffsetDateTime::now_utc() + time::Duration::seconds(45);
+        a.db_shift = time::Duration::seconds(45);
         a.on_tick(11).await;
         let after = store.alert_states().await.unwrap()[0].seen_at.clone();
         assert!(after > before, "{before:?} {after:?}");

@@ -96,6 +96,38 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-postgres-${{ hashFiles('Cargo.lock') }}
+      # A second server with TLS, for tests/postgres_tls.rs. A service
+      # container starts before any step, so it cannot use a certificate made
+      # here; this one is started as a container named postgres-ssl, after the
+      # self-signed certificate for localhost exists.
+      - name: Start postgres-ssl (TLS)
+        run: |
+          certs="$RUNNER_TEMP/postgres-ssl"
+          mkdir -p "$certs"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+            -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" \
+            -keyout "$certs/server.key" -out "$certs/server.crt"
+          # The server refuses a key that is not its own and private.
+          sudo chown 999:999 "$certs/server.key" "$certs/server.crt"
+          sudo chmod 600 "$certs/server.key"
+          docker run -d --name postgres-ssl -p 5433:5432 \
+            -e POSTGRES_PASSWORD=postgres \
+            -v "$certs:/certs:ro" \
+            --health-cmd "pg_isready -U postgres" --health-interval 5s \
+            --health-timeout 5s --health-retries 10 \
+            postgres:17 \
+            -c ssl=on -c ssl_cert_file=/certs/server.crt -c ssl_key_file=/certs/server.key
+          for _ in $(seq 1 30); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' postgres-ssl)" = healthy ] && break
+            sleep 2
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' postgres-ssl)" = healthy ] \
+            || { docker logs postgres-ssl; exit 1; }
+          {
+            echo "UF_TEST_DATABASE_URL_TLS=postgres://postgres:postgres@localhost:5433/postgres"
+            echo "UF_TEST_TLS_DATABASE_URL=postgres://postgres:postgres@localhost:5433/postgres"
+            echo "UF_TEST_TLS_CA=$certs/server.crt"
+          } >> "$GITHUB_ENV"
       - name: Tests on PostgreSQL
         run: cargo test --locked --workspace --exclude ultrafast-client-py --no-fail-fast
 

@@ -930,7 +930,13 @@ async fn an_import_that_disables_a_firing_rule_forgets_its_episodes() {
         .await;
     let mut tx = w.h.store.begin().await.unwrap();
     assert!(tx
-        .upsert_alert_state(rule, "route:r", "2999-01-01 00:00:00", "p")
+        .upsert_alert_state(
+            rule,
+            "route:r",
+            "2999-01-01 00:00:00",
+            "p",
+            "2999-01-01 00:00:00"
+        )
         .await
         .unwrap());
     tx.commit().await.unwrap();
