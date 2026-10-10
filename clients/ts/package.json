@@ -1,6 +1,6 @@
 {
   "name": "@ultrafast/client",
-  "version": "2.0.0-beta.3",
+  "version": "2.0.0-beta.4",
   "description": "TypeScript client for the Ultrafast gateway or a provider directly. Request building, parsing and stream decoding run in WebAssembly shared with the Rust client; networking uses the runtime's fetch.",
   "type": "module",
   "license": "MIT",

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ultrafast-admin"
-version = "2.0.0b3"
+version = "2.0.0b4"
 description = "Typed Python client for the UltraFast AI Gateway admin API (/api), with sync and async calls."
 readme = "README.md"
 # The generator (openapi-python-client 0.29) emits Python 3.11 code (typing.Self).

@@ -1,6 +1,6 @@
 {
   "name": "@ultrafast/admin",
-  "version": "2.0.0-beta.3",
+  "version": "2.0.0-beta.4",
   "description": "TypeScript SDK for the Ultrafast gateway admin API (/api): a typed openapi-fetch client generated from openapi/admin.json, with an access-token wrapper and a typed error.",
   "type": "module",
   "license": "MIT",

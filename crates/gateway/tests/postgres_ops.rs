@@ -119,7 +119,7 @@ fn the_compose_example_pins_a_release_with_postgres() {
         })
         .expect("the gateway service has an image");
     assert!(
-        image.contains("ultrafast-ai-gateway:2.0.0-beta.3") && !image.contains(":latest"),
+        image.contains("ultrafast-ai-gateway:2.0.0-beta.4") && !image.contains(":latest"),
         "{image}"
     );
     assert!(
