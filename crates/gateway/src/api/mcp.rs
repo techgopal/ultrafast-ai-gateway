@@ -554,7 +554,14 @@ pub async fn update(
     } else {
         match &req.secret {
             Some(Some(s)) => Some(encrypt_secret(&state.cipher, s)),
-            Some(None) => None,
+            Some(None) => {
+                // Removing the secret is allowed only with `auth_kind` `none`.
+                fields.insert(
+                    "secret".to_string(),
+                    "A secret is needed for this auth kind.".to_string(),
+                );
+                None
+            }
             None => {
                 if was.auth_secret_enc.is_some() && host_changed {
                     // The stored secret goes only to the host it was given for.

@@ -308,23 +308,21 @@ async fn changing_the_host_needs_the_secret_again() {
     );
     drop(snapshot);
 
-    // Another host with the secret removed.
-    let (status, body) = patch(json!({
-        "url": "https://third.example.com/mcp", "secret": null,
-    }))
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["has_secret"], false);
-    assert_eq!(body["usable"], false);
-    assert!(
-        !org.api
-            .state
-            .snapshot
-            .load()
-            .mcp_server("s")
-            .unwrap()
-            .usable
-    );
+    // A secret cannot be removed while the kind needs one.
+    for body in [
+        json!({ "url": "https://third.example.com/mcp", "secret": null }),
+        json!({ "secret": null }),
+        json!({ "auth_kind": "header", "auth_header": "x-api-key", "secret": null }),
+    ] {
+        let (status, reply) = patch(body.clone()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {reply}");
+        assert_eq!(
+            reply["error"]["fields"]["secret"],
+            "A secret is needed for this auth kind."
+        );
+    }
+    let row = org.api.store.server_by_id(id).await.unwrap().unwrap();
+    assert!(row.auth_secret_enc.is_some());
 
     // Turning authentication off drops the secret; nothing to send is a 400.
     let (status, _) = patch(json!({})).await;
@@ -875,4 +873,75 @@ async fn importing_a_server_to_another_host_drops_its_secret_and_checks_the_file
         assert!(at.iter().any(|a| a.starts_with(want)), "{want} in {at:?}");
     }
     assert!(report.created.is_empty());
+}
+
+#[tokio::test]
+async fn callable_tools_of_key_follows_the_owner_the_server_and_removal() {
+    use ultrafast_gateway::access::callable_tools_of_key;
+    use ultrafast_gateway::snapshot::SnapKey;
+
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let (id, tools) = seed_server(&org, "s", &["a", "b"]).await;
+    for t in &tools {
+        assert_eq!(enable(&org, &maya, *t, true).await.0, StatusCode::OK);
+        let g = grants(false, &[org.platform], &[]);
+        assert_eq!(put_grants(&org, &maya, *t, g).await.0, StatusCode::OK);
+    }
+    let key = |user: Option<i64>| SnapKey {
+        id: 1,
+        name: String::new(),
+        user_id: user,
+        team_id: Some(org.platform),
+        expires_at: None,
+        allowed: None,
+        tags: Default::default(),
+        team_only: true,
+        guardrails: Vec::new(),
+    };
+    let count = |user: Option<i64>| {
+        let snapshot = org.api.state.snapshot.load();
+        callable_tools_of_key(&snapshot, &key(user)).len()
+    };
+    assert_eq!(count(Some(org.lena)), 2);
+
+    // A tool the server no longer lists is absent.
+    let mut tx = org.api.store.begin().await.unwrap();
+    tx.upsert_tools(id, vec![tool("a")]).await.unwrap();
+    tx.commit().await.unwrap();
+    org.api.state.refresh().await.unwrap();
+    assert_eq!(count(Some(org.lena)), 1);
+
+    // An owner who is not there acts for no one.
+    assert_eq!(count(Some(9_999)), 0);
+    assert_eq!(count(None), 0);
+
+    // An owner who left the team.
+    let mut tx = org.api.store.begin().await.unwrap();
+    tx.remove_member(org.platform, org.lena).await.unwrap();
+    tx.commit().await.unwrap();
+    org.api.state.refresh().await.unwrap();
+    assert_eq!(count(Some(org.lena)), 0);
+    assert_eq!(count(Some(org.arjun)), 1);
+
+    // A disabled server.
+    let enc = encrypt_secret(&org.api.state.cipher, SECRET);
+    let mut tx = org.api.store.begin().await.unwrap();
+    tx.update_server(
+        id,
+        NewMcpServer {
+            name: "s",
+            url: "https://mcp.example.com/mcp",
+            auth_kind: "bearer",
+            auth_header: None,
+            auth_secret_enc: Some(&enc),
+            enabled: false,
+            description: "d",
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    org.api.state.refresh().await.unwrap();
+    assert_eq!(count(Some(org.arjun)), 0);
 }

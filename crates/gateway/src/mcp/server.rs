@@ -9,10 +9,11 @@
 //! them is not part of this release.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
-use axum::http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, WWW_AUTHENTICATE};
+use axum::http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use http_body_util::LengthLimitError;
@@ -116,12 +117,9 @@ pub async fn serve(
         .filter(|t| access::key_may_call_tool(&snapshot, &key, server, t))
         .collect();
     if tools.is_empty() {
-        return reply_error(
-            StatusCode::FORBIDDEN,
-            &null,
-            CODE_REFUSED,
-            "This key may not call any tool of this MCP server.",
-        );
+        // The same answer as an unknown server: a key learns nothing about
+        // servers it may not use.
+        return not_found().await;
     }
     let bytes = match axum::body::to_bytes(Body::new(body), state.mcp.limits.max_args_bytes).await {
         Ok(b) => b,
@@ -185,6 +183,25 @@ pub async fn serve(
         }
         "ping" => reply(ok, id, json!({})),
         "tools/list" => {
+            // Listing counts as a request; nothing is upstream, so a permit
+            // is never given back.
+            let subjects = snapshot.subjects_of(Some(key.id), key.user_id, key.team_id);
+            let _permit = match state.rate.acquire(&subjects, 0, Instant::now()) {
+                Ok(permit) => permit,
+                Err(refusal) => {
+                    state.metrics.rate_limited(refusal.limit_name);
+                    let mut response = reply_error(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        id,
+                        CODE_REFUSED,
+                        &refusal.message(),
+                    );
+                    response
+                        .headers_mut()
+                        .insert(RETRY_AFTER, refusal.retry_after_seconds().into());
+                    return response;
+                }
+            };
             let listed: Vec<Value> = tools
                 .iter()
                 .map(|t| {

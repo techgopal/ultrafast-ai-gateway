@@ -728,10 +728,4 @@ mod tests {
             .await;
         assert!(r.is_err());
     }
-
-    /// The MCP library builds with the features the gateway needs.
-    #[test]
-    fn rmcp_links() {
-        assert!(std::any::type_name::<rmcp::model::Tool>().contains("Tool"));
-    }
 }

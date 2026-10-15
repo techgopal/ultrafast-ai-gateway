@@ -12,6 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
+use futures::StreamExt;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -40,6 +41,11 @@ pub enum CallMode {
     Echo,
     /// A JSON-RPC error.
     RpcError,
+    /// A JSON-RPC error with code -32602 (invalid params).
+    InvalidParams,
+    /// The reply as an event stream: the matching reply, then the stream
+    /// stays open for a long time.
+    SseOpen,
     /// A result with `isError: true`.
     IsError,
     /// HTTP 401 on calls only.
@@ -261,6 +267,28 @@ async fn handle(State(s): State<Arc<Inner>>, headers: HeaderMap, body: String) -
                     return Json(json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32000, "message": "tool exploded"}}))
                     .into_response()
+                }
+                CallMode::InvalidParams => {
+                    return Json(json!({"jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32602, "message": "bad arg secret-detail"}}))
+                    .into_response()
+                }
+                CallMode::SseOpen => {
+                    let event = format!(
+                        "data: {}\n\n",
+                        json!({"jsonrpc": "2.0", "id": id, "result": call(&parsed, &CallMode::Echo)})
+                    );
+                    let stream = futures::stream::once(async move {
+                        Ok::<_, std::convert::Infallible>(event.into_bytes())
+                    })
+                    .chain(futures::stream::once(async {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        Ok(Vec::new())
+                    }));
+                    return Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from_stream(stream))
+                        .unwrap();
                 }
                 m => call(&parsed, m),
             }

@@ -35,6 +35,8 @@ pub enum UpstreamError {
     TooMany,
     Timeout,
     TooLarge,
+    /// The upstream answered JSON-RPC -32602 to a tool call.
+    InvalidParams,
 }
 
 impl fmt::Display for UpstreamError {
@@ -46,6 +48,7 @@ impl fmt::Display for UpstreamError {
             Self::TooMany => "the MCP server lists too many tools",
             Self::Timeout => "the MCP server did not answer in time",
             Self::TooLarge => "the MCP server sent a response that is too large",
+            Self::InvalidParams => "the MCP server rejected the arguments",
         })
     }
 }
@@ -210,8 +213,9 @@ pub struct Target<'a> {
 /// `tools/call` on an upstream: one stateless request (no handshake, no
 /// session), its answer read up to `opts.max_body_bytes` within
 /// `opts.timeout`. Returns the `result` object as the upstream sent it.
-/// `traceparent` is forwarded as it is. Any JSON-RPC error of the upstream
-/// is `Protocol`: its text is not the caller's to read.
+/// `traceparent` is forwarded as it is. A JSON-RPC error -32602 is
+/// `InvalidParams`, any other is `Protocol`: the upstream's text is not the
+/// caller's to read.
 pub async fn call_tool(
     http: &reqwest::Client,
     target: &Target<'_>,
@@ -293,40 +297,66 @@ async fn rpc(
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/event-stream"));
-    let mut buf = Vec::new();
+    let mut seen = 0usize;
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(map_reqwest)?;
-        if buf.len() + chunk.len() > opts.max_body_bytes {
-            return Err(UpstreamError::TooLarge);
-        }
-        buf.extend_from_slice(&chunk);
-    }
-    let messages: Vec<Value> = if sse {
-        let text = std::str::from_utf8(&buf).map_err(|_| UpstreamError::Protocol)?;
-        let mut events = Vec::new();
+    let mut reply = if sse {
+        // Events are parsed as they arrive; the matching reply ends the read.
+        let mut pending: Vec<u8> = Vec::new();
         let mut data = String::new();
-        for line in text.lines().chain(std::iter::once("")) {
-            if let Some(d) = line.strip_prefix("data:") {
-                if !data.is_empty() {
-                    data.push('\n');
+        let mut found = None;
+        'read: while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(map_reqwest)?;
+            seen += chunk.len();
+            if seen > opts.max_body_bytes {
+                return Err(UpstreamError::TooLarge);
+            }
+            pending.extend_from_slice(&chunk);
+            while let Some(end) = pending.iter().position(|b| *b == b'\n') {
+                let raw: Vec<u8> = pending.drain(..=end).collect();
+                let line = std::str::from_utf8(&raw).map_err(|_| UpstreamError::Protocol)?;
+                let line = line.trim_end_matches(['\n', '\r']);
+                if let Some(d) = line.strip_prefix("data:") {
+                    if !data.is_empty() {
+                        data.push('\n');
+                    }
+                    data.push_str(d.strip_prefix(' ').unwrap_or(d));
+                } else if line.is_empty() && !data.is_empty() {
+                    let event = serde_json::from_str::<Value>(&data).ok();
+                    data.clear();
+                    if let Some(m) = event.filter(|m| m["id"] == id && m.get("method").is_none()) {
+                        found = Some(m);
+                        break 'read;
+                    }
                 }
-                data.push_str(d.strip_prefix(' ').unwrap_or(d));
-            } else if line.is_empty() && !data.is_empty() {
-                events.extend(serde_json::from_str(&data).ok());
-                data.clear();
             }
         }
-        events
+        if found.is_none() && !data.is_empty() {
+            found = serde_json::from_str::<Value>(&data)
+                .ok()
+                .filter(|m| m["id"] == id && m.get("method").is_none());
+        }
+        found.ok_or(UpstreamError::Protocol)?
     } else {
-        vec![serde_json::from_slice(&buf).map_err(|_| UpstreamError::Protocol)?]
+        let mut buf = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(map_reqwest)?;
+            if buf.len() + chunk.len() > opts.max_body_bytes {
+                return Err(UpstreamError::TooLarge);
+            }
+            buf.extend_from_slice(&chunk);
+        }
+        let message: Value = serde_json::from_slice(&buf).map_err(|_| UpstreamError::Protocol)?;
+        if message["id"] != id || message.get("method").is_some() {
+            return Err(UpstreamError::Protocol);
+        }
+        message
     };
-    let mut reply = messages
-        .into_iter()
-        .find(|m| m["id"] == id && m.get("method").is_none())
-        .ok_or(UpstreamError::Protocol)?;
-    if reply.get("error").is_some() {
-        return Err(UpstreamError::Protocol);
+    if let Some(error) = reply.get("error") {
+        return Err(if error["code"] == -32602 {
+            UpstreamError::InvalidParams
+        } else {
+            UpstreamError::Protocol
+        });
     }
     match reply.get_mut("result") {
         Some(r) if r.is_object() => Ok(r.take()),

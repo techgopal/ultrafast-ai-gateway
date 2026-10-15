@@ -160,6 +160,7 @@ fn upstream_failure(e: UpstreamError) -> (Ending, &'static str) {
             "upstream_error",
             "Could not connect to the MCP server.",
         ),
+        UpstreamError::InvalidParams => (400, "tool_error", "The server rejected the arguments."),
         UpstreamError::Protocol | UpstreamError::TooMany => (
             502,
             "upstream_error",
@@ -396,12 +397,14 @@ pub async fn run(call: ToolCall<'_>) -> Response {
             }),
         });
     let guard = Active::of(&effective, hooks);
+    let limits = state.mcp.limits;
+    let deadline = tokio::time::Instant::now() + limits.call_timeout;
     let mut arguments = arguments;
     if guard.covers(Direction::Input) {
         let mut text = arguments.to_string();
         let sent = text.clone();
         let mut outcome = match guard
-            .check_rules(Direction::Input, &mut [&mut text], None)
+            .check_rules(Direction::Input, &mut [&mut text], Some(deadline))
             .await
         {
             Ok(o) => o,
@@ -415,7 +418,7 @@ pub async fn run(call: ToolCall<'_>) -> Response {
         scope.guardrails_found(Direction::Input, SideLog::of(guard.refs(), &outcome));
         if outcome.blocked_by.is_none() && guard.has_hooks(Direction::Input) {
             let asked = guard
-                .check_hooks(Direction::Input, &mut [&mut text], None)
+                .check_hooks(Direction::Input, &mut [&mut text], Some(deadline))
                 .await;
             outcome.merge(&asked);
             scope.guardrails_found(Direction::Input, SideLog::of(guard.refs(), &outcome));
@@ -455,7 +458,6 @@ pub async fn run(call: ToolCall<'_>) -> Response {
     };
 
     // 6. The upstream call.
-    let limits = state.mcp.limits;
     scope.begin_attempt(&format!("mcp:{}", server.name), tool_name);
     let started = Instant::now();
     let target = Target {

@@ -346,9 +346,11 @@ async fn a_removed_grant_refuses_the_next_call_after_the_refresh() {
         .unwrap();
     tx.commit().await.unwrap();
     w.h.state.refresh().await.unwrap();
-    // A key with nothing to call on the server is refused outright.
+    // A key with nothing to call on the server gets the unknown-server answer.
     let (status, _, reply) = rpc(&w, "tools/list", json!({})).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert_eq!(status, StatusCode::NOT_FOUND, "{reply}");
+    let (_, _, unknown) = post_raw(&w, "nope", Some(&w.h.key), &[], "{}").await;
+    assert_eq!(reply, unknown, "no oracle for which servers exist");
     assert_eq!(upstream_calls(&w), 2);
 }
 
@@ -511,6 +513,47 @@ async fn a_rate_limited_call_is_429_and_reaches_no_upstream() {
     assert!(headers.contains_key("retry-after"));
     assert_eq!(reply["error"]["code"], -32000);
     assert_eq!(upstream_calls(&w), 1);
+}
+
+#[tokio::test]
+async fn a_rate_limited_list_is_429() {
+    let w = world().await;
+    limit_requests(&w, 1).await;
+    assert_eq!(rpc(&w, "tools/list", json!({})).await.0, StatusCode::OK);
+    let (status, headers, reply) = rpc(&w, "tools/list", json!({})).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{reply}");
+    assert!(headers.contains_key("retry-after"));
+    assert_eq!(reply["error"]["code"], -32000);
+}
+
+#[tokio::test]
+async fn a_reply_on_a_stream_that_stays_open_is_returned_at_once() {
+    let w = world_with(CallMode::SseOpen, Duration::ZERO, Failure::None, |s| {
+        s.mcp.limits.call_timeout = Duration::from_secs(20)
+    })
+    .await;
+    let started = std::time::Instant::now();
+    let (http, _, reply) = call(&w, "echo", json!({"q": "x"})).await;
+    assert_eq!(http, StatusCode::OK);
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[tokio::test]
+async fn an_upstream_invalid_params_error_is_a_tool_error_with_fixed_text() {
+    let w = world_with(
+        CallMode::InvalidParams,
+        Duration::ZERO,
+        Failure::None,
+        |_| {},
+    )
+    .await;
+    let (http, _, reply) = call(&w, "echo", json!({})).await;
+    assert_eq!(http, StatusCode::OK);
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    assert_eq!(text_of(&reply), "The server rejected the arguments.");
+    let rec = w.h.sink.wait_for(1).await.remove(0);
+    assert_eq!(rec.status, 400);
 }
 
 #[tokio::test]
@@ -855,7 +898,7 @@ async fn a_keys_allowlist_cuts_what_it_may_list_and_call() {
         .unwrap();
     tx.commit().await.unwrap();
     w.h.state.refresh().await.unwrap();
-    assert_eq!(send(list.clone()).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(send(list.clone()).await.0, StatusCode::NOT_FOUND);
     let mut tx = w.h.store.begin().await.unwrap();
     tx.set_key_allowed(id, Some(&["mcp:mock/echo".to_string()]))
         .await
