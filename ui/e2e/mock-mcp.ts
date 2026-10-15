@@ -4,6 +4,7 @@
 // gateway calls it: the browser tests fail on any request of the browser to
 // another origin.
 import { createServer, type IncomingMessage } from "node:http";
+import type { GatewayApi } from "./fixtures";
 
 export interface MockMcpTool {
   name: string;
@@ -102,4 +103,25 @@ export async function startMockMcp(
       });
     });
   return mock;
+}
+
+/**
+ * Registers the mock as server "mock" through the API, syncs it, and turns
+ * its `echo` tool on for everyone: the MCP page and the key dialog then have
+ * something to show.
+ */
+export async function seedMcp(api: GatewayApi, url: string): Promise<void> {
+  const server = (await api.send("POST", "/api/mcp/servers", { name: "mock", url })) as { id: number };
+  await api.send("POST", `/api/mcp/servers/${String(server.id)}/sync`);
+  const listed = (await api.get(`/api/mcp/servers/${String(server.id)}/tools`)) as {
+    tools: { id: number; name: string }[];
+  };
+  const echo = listed.tools.find((tool) => tool.name === "echo");
+  if (echo === undefined) throw new Error("the mock did not offer echo");
+  await api.send("PATCH", `/api/mcp/tools/${String(echo.id)}`, { enabled: true });
+  await api.send("PUT", `/api/mcp/tools/${String(echo.id)}/grants`, {
+    everyone: true,
+    team_ids: [],
+    user_ids: [],
+  });
 }
