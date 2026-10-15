@@ -159,6 +159,20 @@ pub fn callable_tools<'a>(
     out
 }
 
+/// Whether the key may call this tool of the snapshot: its owner's reach,
+/// cut by its allowlist. One tool, no scan of the registry.
+pub fn key_may_call_tool(
+    snapshot: &Snapshot,
+    key: &SnapKey,
+    server: &SnapMcpServer,
+    tool: &SnapMcpTool,
+) -> bool {
+    key.allowed
+        .as_ref()
+        .is_none_or(|names| names.contains(&crate::mcp::allow_entry(&server.name, &tool.name)))
+        && may_call_tool(viewer(snapshot, key), server, tool)
+}
+
 /// [`callable_tools`] for a virtual key: its owner's reach, cut by its allowlist.
 pub fn callable_tools_of_key<'a>(
     snapshot: &'a Snapshot,

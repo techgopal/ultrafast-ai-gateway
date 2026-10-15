@@ -132,14 +132,14 @@ pub fn spans_of(
             }
             AttemptOutcome::Cached => {}
             AttemptOutcome::Ok | AttemptOutcome::Retryable | AttemptOutcome::Fatal => {
-                children.push(attempt_span(
-                    a,
-                    &trace,
-                    &hex::encode(server_id),
-                    ids(),
-                    start,
-                    kind_of(&a.provider),
-                ));
+                let parent = hex::encode(server_id);
+                children.push(match a.provider.strip_prefix("mcp:") {
+                    // A tool call: the attempt is the call of an MCP server.
+                    Some(server) if record.endpoint == "mcp" => {
+                        mcp_span(a, &trace, &parent, ids(), start, server)
+                    }
+                    _ => attempt_span(a, &trace, &parent, ids(), start, kind_of(&a.provider)),
+                });
             }
         }
     }
@@ -200,6 +200,36 @@ fn attempt_span(
         "attributes": attributes,
     });
     if a.outcome != AttemptOutcome::Ok {
+        span["status"] = json!({ "code": STATUS_ERROR });
+    }
+    span
+}
+
+/// The span of a tool call to an MCP server: no model, no provider kind.
+fn mcp_span(
+    a: &Attempt,
+    trace: &str,
+    parent: &str,
+    id: [u8; 8],
+    start: u128,
+    server: &str,
+) -> Value {
+    let mut attributes = vec![string("mcp.server", server), string("mcp.tool", &a.model)];
+    if let Some(status) = a.status {
+        attributes.push(int("http.response.status_code", status));
+    }
+    attributes.push(string("uf.outcome", outcome_name(a.outcome)));
+    let mut span = json!({
+        "traceId": trace,
+        "spanId": hex::encode(id),
+        "parentSpanId": parent,
+        "name": "mcp.call",
+        "kind": KIND_CLIENT,
+        "startTimeUnixNano": at(start, a.offset_ms),
+        "endTimeUnixNano": at(start, a.offset_ms.saturating_add(a.duration_ms)),
+        "attributes": attributes,
+    });
+    if matches!(a.outcome, AttemptOutcome::Fatal | AttemptOutcome::Retryable) {
         span["status"] = json!({ "code": STATUS_ERROR });
     }
     span

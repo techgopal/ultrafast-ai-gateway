@@ -9,6 +9,8 @@ use base64::Engine;
 use crate::secrets::Cipher;
 use crate::store::McpServerRow;
 
+pub mod call;
+pub mod server;
 pub mod sync;
 pub mod upstream;
 

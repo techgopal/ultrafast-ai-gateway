@@ -594,6 +594,50 @@ out.
   export is refused (409, or an error on the command line) while a template has a
   version that cannot be read, naming it, rather than leaving it out of the file.
 
+## MCP gateway
+
+Agents reach the MCP servers an admin registered through one endpoint per
+server, `POST /mcp/{server}`, with a virtual key as the bearer token. The
+gateway is the MCP server toward the agent and the MCP client toward the
+upstream: the agent's key never leaves the gateway, and the upstream's
+credential never reaches the agent. The endpoint is stateless (no
+`Mcp-Session-Id`, no handshake needed) and answers `initialize`, `ping`,
+`tools/list` and `tools/call`. `tools/list` shows only the tools the key may
+call; a tool that is off, not granted, or not on the key's allowlist
+(`mcp:<server>/<tool>`) is "Unknown tool" (`-32602`), the same as one that does
+not exist. A key with no callable tool on a server gets 403, an unknown or
+disabled server 404. `resources/*` and `prompts/*` are answered "method not
+found"; proxying them is not part of this release. `GET` and `DELETE` answer
+405.
+
+Connect an agent (Claude Code, Cursor and others take the same shape):
+
+```json
+{ "mcpServers": { "github": { "url": "https://gw.example.com/mcp/github",
+    "headers": { "Authorization": "Bearer uf_..." } } } }
+```
+
+Every tool call goes through the pipeline of `/v1`: the rate limits of the key,
+its owner, their teams and the gateway; the budgets (a call costs nothing, but
+a spent `block` budget refuses it with 402); the guardrails over the
+arguments (a block is a tool result with `isError`, and the upstream is not
+called); the upstream call; and the guardrails over the text blocks of the
+result. Calls are logged under the endpoint `mcp` (`requested` is
+`mcp:<server>/<tool>`; the arguments and the result are not stored), counted in
+`uf_mcp_calls_total{server,tool,status}` and `uf_mcp_call_duration_seconds`, and
+exported as an `mcp.call` span with `mcp.server` and `mcp.tool` when trace
+export is on. A `traceparent` the agent sent is passed to the upstream. Images
+and embedded resources in a result are passed on unread.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `UF_MCP_CALL_TIMEOUT` | `60` | Seconds an upstream call may take. Past it the agent gets a tool error. |
+| `UF_MCP_MAX_RESULT_BYTES` | `4194304` | The largest upstream answer read; a larger one is a tool error. |
+| `UF_MCP_MAX_ARGS_BYTES` | `262144` | The largest request body `/mcp/{server}` takes; larger is 413. |
+
+At most 32 calls to one server run at once per process; the next is refused
+with 503 and `Retry-After`.
+
 ## Console
 
 Served at `/`. What each role sees is decided by the API.

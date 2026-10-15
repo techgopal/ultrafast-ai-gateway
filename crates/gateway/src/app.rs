@@ -164,6 +164,8 @@ pub struct AppState {
     /// Decides when an alert fires; fed by calls, budgets and breakers.
     /// `None`: no alert rule is evaluated.
     pub alert_engine: Option<crate::alerts::EngineHandle>,
+    /// The caps and gates of MCP tool calls.
+    pub mcp: crate::mcp::call::Runtime,
     /// The bearer token of `/metrics`. None: the path does not exist.
     pub metrics_token: Option<String>,
     /// The one-time code that `POST /api/setup` needs, made when the
@@ -209,6 +211,7 @@ impl AppState {
             alerts: None,
             alert_engine: None,
             metrics_token: None,
+            mcp: crate::mcp::call::Runtime::from_env(),
             refreshes: AtomicU64::new(0),
             cache_fingerprint: std::sync::Mutex::new(snapshot_fingerprint),
             refreshing: Mutex::new(()),
@@ -415,6 +418,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/models", get(proxy::list_models))
         // Every other path under `/v1` is answered here, so the console's
         // pages never stand in for a model API that does not exist.
+        .route("/mcp/{server}", any(crate::mcp::server::serve))
+        .route("/mcp", any(crate::mcp::server::not_found))
+        .route("/mcp/", any(crate::mcp::server::not_found))
+        .route("/mcp/{server}/{*rest}", any(crate::mcp::server::not_found))
         .route("/v1", any(v1_not_found))
         .route("/v1/", any(v1_not_found))
         .route("/v1/{*rest}", any(v1_not_found))

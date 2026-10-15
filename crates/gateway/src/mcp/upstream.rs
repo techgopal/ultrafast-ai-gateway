@@ -102,10 +102,10 @@ pub async fn discover_tools_with(
     secret: Option<&str>,
     opts: Options,
 ) -> Result<Discovered, UpstreamError> {
-    let auth = auth_header(server, secret)?;
+    let auth = auth_header(&server.auth_kind, server.auth_header.as_deref(), secret)?;
     let call = |id: u64, method: &str, params: Value| {
         let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        rpc(http, &server.url, auth.as_ref(), body, Some(id), opts)
+        rpc(http, &server.url, auth.as_ref(), body, Some(id), None, opts)
     };
 
     // Best effort: a stateless server may not know `initialize`.
@@ -121,7 +121,7 @@ pub async fn discover_tools_with(
         Err(e) => return Err(e),
     }
     let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
-    let _ = rpc(http, &server.url, auth.as_ref(), note, None, opts).await;
+    let _ = rpc(http, &server.url, auth.as_ref(), note, None, None, opts).await;
 
     let mut out = Discovered::default();
     let mut cursor: Option<String> = None;
@@ -176,18 +176,17 @@ pub async fn discover_tools_with(
 }
 
 fn auth_header(
-    server: &McpServerRow,
+    kind: &str,
+    header: Option<&str>,
     secret: Option<&str>,
 ) -> Result<Option<(HeaderName, HeaderValue)>, UpstreamError> {
     let Some(secret) = secret else {
         return Ok(None);
     };
-    let (name, value) = match server.auth_kind.as_str() {
+    let (name, value) = match kind {
         "bearer" => (AUTHORIZATION, Zeroizing::new(format!("Bearer {secret}"))),
         "header" => {
-            let name = server
-                .auth_header
-                .as_deref()
+            let name = header
                 .and_then(|n| HeaderName::from_bytes(n.as_bytes()).ok())
                 .ok_or(UpstreamError::Protocol)?;
             (name, Zeroizing::new(secret.to_string()))
@@ -200,22 +199,75 @@ fn auth_header(
     Ok(Some((name, value)))
 }
 
+/// Where a tool call goes and how it signs in.
+pub struct Target<'a> {
+    pub url: &'a str,
+    pub auth_kind: &'a str,
+    pub auth_header: Option<&'a str>,
+    pub secret: Option<&'a str>,
+}
+
+/// `tools/call` on an upstream: one stateless request (no handshake, no
+/// session), its answer read up to `opts.max_body_bytes` within
+/// `opts.timeout`. Returns the `result` object as the upstream sent it.
+/// `traceparent` is forwarded as it is. Any JSON-RPC error of the upstream
+/// is `Protocol`: its text is not the caller's to read.
+pub async fn call_tool(
+    http: &reqwest::Client,
+    target: &Target<'_>,
+    tool: &str,
+    arguments: &Value,
+    traceparent: Option<&str>,
+    opts: Options,
+) -> Result<Value, UpstreamError> {
+    let auth = auth_header(target.auth_kind, target.auth_header, target.secret)?;
+    let trace = traceparent.and_then(|t| HeaderValue::from_str(t).ok());
+    let body = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                      "params": {"name": tool, "arguments": arguments}});
+    rpc(
+        http,
+        target.url,
+        auth.as_ref(),
+        body,
+        Some(1),
+        trace.as_ref(),
+        opts,
+    )
+    .await
+}
+
 /// One JSON-RPC POST. With `want_id` the reply must carry that id and a
 /// `result`, which is returned; without it (a notification) nothing is read.
+/// `Mcp-Method` and `Mcp-Name` name the request in its headers.
 async fn rpc(
     http: &reqwest::Client,
     url: &str,
     auth: Option<&(HeaderName, HeaderValue)>,
     body: Value,
     want_id: Option<u64>,
+    trace: Option<&HeaderValue>,
     opts: Options,
 ) -> Result<Value, UpstreamError> {
     let mut req = http
         .post(url)
         .timeout(opts.timeout)
         .header(CONTENT_TYPE, "application/json")
-        .header(ACCEPT, "application/json, text/event-stream")
-        .json(&body);
+        .header(ACCEPT, "application/json, text/event-stream");
+    if let Some(m) = body["method"].as_str() {
+        req = req.header("mcp-method", m);
+        if m == "tools/call" {
+            if let Some(n) = body["params"]["name"]
+                .as_str()
+                .and_then(|n| HeaderValue::from_str(n).ok())
+            {
+                req = req.header("mcp-name", n);
+            }
+        }
+    }
+    if let Some(t) = trace {
+        req = req.header("traceparent", t.clone());
+    }
+    let mut req = req.json(&body);
     if let Some((n, v)) = auth {
         req = req.header(n.clone(), v.clone());
     }

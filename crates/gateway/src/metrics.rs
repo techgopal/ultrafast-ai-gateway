@@ -105,9 +105,17 @@ pub struct Metrics {
     oidc_signins: [AtomicU64; OIDC_RESULTS.len()],
     /// Per provider.
     upstream: Mutex<BTreeMap<String, Histogram>>,
+    /// MCP tool calls by server, tool and outcome. Only tools of the
+    /// registry are labels, and the series are capped.
+    mcp_calls: Mutex<BTreeMap<(String, String, &'static str), u64>>,
+    /// MCP tool call time, per server.
+    mcp_durations: Mutex<BTreeMap<String, Histogram>>,
     /// The counters of the log pipeline, once it exists.
     logs: OnceLock<Arc<LogStats>>,
 }
+
+/// The most series `uf_mcp_calls_total` keeps.
+const MAX_MCP_SERIES: usize = 5_000;
 
 fn class_index(status: u16) -> usize {
     match status {
@@ -183,6 +191,31 @@ impl Metrics {
                     .or_default()
                     .observe(a.duration_ms);
             }
+        }
+    }
+
+    /// One MCP tool call of the registry ended: `status` is one of `ok`,
+    /// `tool_error`, `upstream_error`, `timeout`, `too_large`, `blocked`,
+    /// `rate_limited`, `budget_exceeded`, `busy` or `scan_failed`. `ms` is the time at the
+    /// server, for a call that reached it.
+    pub fn mcp_call(&self, server: &str, tool: &str, status: &'static str, ms: Option<u64>) {
+        {
+            let mut calls = self
+                .mcp_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = (server.to_string(), tool.to_string(), status);
+            if calls.contains_key(&key) || calls.len() < MAX_MCP_SERIES {
+                *calls.entry(key).or_default() += 1;
+            }
+        }
+        let Some(ms) = ms else { return };
+        let mut durations = self
+            .mcp_durations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if durations.contains_key(server) || durations.len() < MAX_MCP_SERIES {
+            durations.entry(server.to_string()).or_default().observe(ms);
         }
     }
 
@@ -437,6 +470,67 @@ impl Metrics {
                 "uf_guardrail_external_errors_total{{reason=\"{reason}\"}} {}",
                 n(&self.guardrail_external_errors[r])
             );
+        }
+
+        header(
+            &mut out,
+            "uf_mcp_calls_total",
+            "counter",
+            "MCP tool calls of the registry, by server, tool and how they ended.",
+        );
+        {
+            let calls = self
+                .mcp_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            for ((server, tool, status), count) in &calls {
+                let (server, tool) = (escape_label(server), escape_label(tool));
+                let _ = writeln!(
+                    out,
+                    "uf_mcp_calls_total{{server=\"{server}\",tool=\"{tool}\",status=\"{status}\"}} {count}"
+                );
+            }
+        }
+        header(
+            &mut out,
+            "uf_mcp_call_duration_seconds",
+            "histogram",
+            "Time of MCP tool calls that reached a server, by server.",
+        );
+        {
+            let durations = self
+                .mcp_durations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            for (server, h) in &durations {
+                let server = escape_label(server);
+                let mut cumulative = 0;
+                for (i, le) in BUCKETS_MS.iter().enumerate() {
+                    cumulative += h.buckets[i];
+                    let _ = writeln!(
+                        out,
+                        "uf_mcp_call_duration_seconds_bucket{{server=\"{server}\",le=\"{}\"}} {cumulative}",
+                        seconds(*le)
+                    );
+                }
+                let _ = writeln!(
+                    out,
+                    "uf_mcp_call_duration_seconds_bucket{{server=\"{server}\",le=\"+Inf\"}} {}",
+                    h.count
+                );
+                let _ = writeln!(
+                    out,
+                    "uf_mcp_call_duration_seconds_sum{{server=\"{server}\"}} {}",
+                    seconds(h.sum_ms)
+                );
+                let _ = writeln!(
+                    out,
+                    "uf_mcp_call_duration_seconds_count{{server=\"{server}\"}} {}",
+                    h.count
+                );
+            }
         }
 
         header(
