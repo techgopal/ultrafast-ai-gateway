@@ -62,7 +62,7 @@ tracing-subscriber.workspace = true
 utoipa.workspace = true
 utoipa-axum.workspace = true
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_lc_rs"] }
-base64 = "0.22"
+base64 = "0.23"
 serde_json_path = "0.7.2"
 tower.workspace = true
 
