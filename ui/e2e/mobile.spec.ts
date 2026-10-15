@@ -26,7 +26,9 @@ test.use({ viewport: { width: 390, height: 844 } });
 
 async function scrollsSideways(page: Page): Promise<boolean> {
   return page.evaluate(
-    () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    () =>
+      document.documentElement.scrollWidth >
+      document.documentElement.clientWidth,
   );
 }
 
@@ -35,8 +37,13 @@ async function settled(page: Page): Promise<void> {
   await page.evaluate(async () => {
     const ending = document
       .getAnimations()
-      .filter((animation) => animation.effect?.getComputedTiming().endTime !== Infinity);
-    await Promise.all(ending.map((animation) => animation.finished.catch(() => undefined)));
+      .filter(
+        (animation) =>
+          animation.effect?.getComputedTiming().endTime !== Infinity,
+      );
+    await Promise.all(
+      ending.map((animation) => animation.finished.catch(() => undefined)),
+    );
   });
 }
 
@@ -54,17 +61,29 @@ async function smallTargets(scope: Locator): Promise<string[]> {
     const small: string[] = [];
     for (const control of controls) {
       // Not for the user: hidden, or a copy for the form of the browser.
-      if (!control.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
+      if (
+        !control.checkVisibility({
+          visibilityProperty: true,
+          opacityProperty: true,
+        })
+      )
+        continue;
       if (control.closest('[aria-hidden="true"]') !== null) continue;
       const target = control.closest("label") ?? control;
       const { width, height } = target.getBoundingClientRect();
       const text = target.textContent.trim();
       if (height >= 44 && width >= 44) continue;
-      const role = control.getAttribute("role") ?? control.tagName.toLowerCase();
-      const labels = control instanceof HTMLButtonElement ? [...control.labels] : [];
+      const role =
+        control.getAttribute("role") ?? control.tagName.toLowerCase();
+      const labels =
+        control instanceof HTMLButtonElement ? [...control.labels] : [];
       const label = labels.map((one) => one.textContent.trim()).join(" ");
-      const name = control.getAttribute("aria-label") ?? (label === "" ? text : label).slice(0, 40);
-      small.push(`${role} "${name}": ${String(Math.round(width))} x ${String(Math.round(height))}`);
+      const name =
+        control.getAttribute("aria-label") ??
+        (label === "" ? text : label).slice(0, 40);
+      small.push(
+        `${role} "${name}": ${String(Math.round(width))} x ${String(Math.round(height))}`,
+      );
     }
     return small;
   });
@@ -83,12 +102,15 @@ async function touchEdge(target: Locator): Promise<void> {
 /** Long texts, which a narrow screen must wrap: a page is no wider for them. */
 async function content(api: GatewayApi) {
   const user = await api.activeUser("Christina-Alexandra Montgomery-Weatherby");
-  const team = await api.createTeam("Platform infrastructure and developer experience");
+  const team = await api.createTeam(
+    "Platform infrastructure and developer experience",
+  );
   await api.putMember(team, user.id, "lead");
   const provider = (await api.send("POST", "/api/providers", {
     name: "a-provider-with-a-name-of-forty-letters",
     kind: "openai",
-    base_url: "https://a-rather-long-host-name.inference.example.test/api/openai/compatible/v1",
+    base_url:
+      "https://a-rather-long-host-name.inference.example.test/api/openai/compatible/v1",
   })) as { id: number };
   const model = (await api.send("POST", "/api/models", {
     provider_id: provider.id,
@@ -110,10 +132,17 @@ async function content(api: GatewayApi) {
     kind: "rules",
     is_default: true,
     rules: [
-      { id: "email", matcher: { pii: ["EMAIL"] }, action: "redact", directions: "output" },
+      {
+        id: "email",
+        matcher: { pii: ["EMAIL"] },
+        action: "redact",
+        directions: "output",
+      },
       {
         id: "words",
-        matcher: { keywords: { words: ["a-keyword-that-is-rather-long-for-a-phone"] } },
+        matcher: {
+          keywords: { words: ["a-keyword-that-is-rather-long-for-a-phone"] },
+        },
         action: "flag",
         directions: "both",
       },
@@ -121,11 +150,22 @@ async function content(api: GatewayApi) {
   });
   await api.send("POST", "/api/prompts", {
     name: "a-prompt-template-with-a-name-that-is-rather-long-for-a-phone",
-    description: "A description that is long enough to need more than one line on a narrow screen.",
-    model: "a-provider-with-a-name-of-forty-letters/a-model-with-a-very-long-name-of-the-newest-generation-v2",
+    description:
+      "A description that is long enough to need more than one line on a narrow screen.",
+    model:
+      "a-provider-with-a-name-of-forty-letters/a-model-with-a-very-long-name-of-the-newest-generation-v2",
     messages: [
-      { role: "system", content: "You answer in the voice of {{a_variable_with_a_rather_long_name_for_a_phone}}." },
-      { role: "user", content: "A line without a break that is rather long for a phone: " + "word ".repeat(40) },
+      {
+        role: "system",
+        content:
+          "You answer in the voice of {{a_variable_with_a_rather_long_name_for_a_phone}}.",
+      },
+      {
+        role: "user",
+        content:
+          "A line without a break that is rather long for a phone: " +
+          "word ".repeat(40),
+      },
     ],
   });
   const channel = (await api.send("POST", "/api/alerts/channels", {
@@ -136,7 +176,11 @@ async function content(api: GatewayApi) {
   await api.send("POST", "/api/alerts/rules", {
     name: "a-rule-with-a-name-that-is-also-rather-long-for-a-phone",
     kind: "error_rate",
-    params: { scope: "route", subject: "a-route-with-a-long-name-for-the-nightly-summaries", percent: 10 },
+    params: {
+      scope: "route",
+      subject: "a-route-with-a-long-name-for-the-nightly-summaries",
+      percent: 10,
+    },
     channel_ids: [channel.channel.id],
   });
 }
@@ -194,24 +238,43 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     expect(await scrollsSideways(page), title).toBe(false);
     if (title === "MCP tools") {
       await page.getByRole("link", { name: "Add from catalog" }).click();
-      await expect(page.getByRole("list", { name: "Catalog entries" })).toBeVisible();
+      await expect(
+        page.getByRole("list", { name: "Catalog entries" }),
+      ).toBeVisible();
       expect(await scrollsSideways(page), "the MCP catalog").toBe(false);
       await goTo(page, "MCP tools");
     }
     if (title === "Playground") {
       await page.getByRole("button", { name: "MCP tools" }).click();
       await expect(page.getByRole("form", { name: "MCP call" })).toBeVisible();
-      expect(await scrollsSideways(page), "the playground's MCP tab").toBe(false);
+      expect(await scrollsSideways(page), "the playground MCP tools").toBe(
+        false,
+      );
+    }
+    if (title === "Playground") {
+      await page.getByRole("button", { name: "MCP tools" }).click();
+      await expect(page.getByRole("form", { name: "MCP call" })).toBeVisible();
+      expect(await scrollsSideways(page), "the playground's MCP tab").toBe(
+        false,
+      );
     }
     if (title === "Prompts") {
-      await page.getByRole("link", { name: "Open", exact: true }).first().click();
-      await expect(page.getByRole("list", { name: "Messages of version 1" })).toBeVisible();
+      await page
+        .getByRole("link", { name: "Open", exact: true })
+        .first()
+        .click();
+      await expect(
+        page.getByRole("list", { name: "Messages of version 1" }),
+      ).toBeVisible();
       expect(await scrollsSideways(page), "a prompt template").toBe(false);
       await goTo(page, "Prompts");
     }
     if (title === "Guardrails") {
       // The form of a guardrail, with its rules and Try it.
-      await page.getByRole("link", { name: "Edit", exact: true }).first().click();
+      await page
+        .getByRole("link", { name: "Edit", exact: true })
+        .first()
+        .click();
       await expect(heading(page, "Edit guardrail")).toBeVisible();
       await expect(page.getByRole("group", { name: "Rule 2" })).toBeVisible();
       expect(await scrollsSideways(page), "guardrail form").toBe(false);
@@ -220,10 +283,16 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     if (title === "Alerts") {
       const views = page.getByRole("navigation", { name: "Alerts sections" });
       await views.getByRole("link", { name: "Channels" }).click();
-      await expect(page.getByRole("main")).toContainText("a-channel-with-a-name");
+      await expect(page.getByRole("main")).toContainText(
+        "a-channel-with-a-name",
+      );
       expect(await scrollsSideways(page), "alert channels").toBe(false);
       await views.getByRole("link", { name: "History" }).click();
-      await expect(page.getByRole("table", { name: "Alert history" }).or(page.getByText("No alerts yet"))).toBeVisible();
+      await expect(
+        page
+          .getByRole("table", { name: "Alert history" })
+          .or(page.getByText("No alerts yet")),
+      ).toBeVisible();
       expect(await scrollsSideways(page), "alert history").toBe(false);
     }
   }
@@ -236,7 +305,17 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     .getByRole("listitem")
     .filter({ hasText: "nightly batch job" });
   await expect(card).toBeVisible();
-  await expect(card.getByRole("term")).toHaveText(["Name", "Key", "Owner", "Team", "Models", "Tags", "Guardrails", "Expires", "Status"]);
+  await expect(card.getByRole("term")).toHaveText([
+    "Name",
+    "Key",
+    "Owner",
+    "Team",
+    "Models",
+    "Tags",
+    "Guardrails",
+    "Expires",
+    "Status",
+  ]);
 
   // The create-key dialog fits the screen, and its submit button can be reached.
   await page.getByRole("button", { name: "Create key" }).click();
@@ -271,7 +350,8 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
   // What is too small, everywhere: one list, so that a failure names every place.
   const found: string[] = [];
   const measure = async (scope: Locator, where: string) => {
-    for (const small of await smallTargets(scope)) found.push(`${where}: ${small}`);
+    for (const small of await smallTargets(scope))
+      found.push(`${where}: ${small}`);
   };
   await page.goto("/sign-in");
   await expect(heading(page, "Sign in")).toBeVisible();
@@ -286,14 +366,24 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
   await expect(drawer).toBeHidden();
 
   /** Opens a dialog with a button of the page, measures it, and closes it with Escape. */
-  async function measureDialog(opener: string, name: string = opener, waitFor?: string) {
-    await page.getByRole("button", { name: opener, exact: true }).first().click();
+  async function measureDialog(
+    opener: string,
+    name: string = opener,
+    waitFor?: string,
+  ) {
+    await page
+      .getByRole("button", { name: opener, exact: true })
+      .first()
+      .click();
     const dialog = page.getByRole("dialog", { name });
     await expect(dialog).toBeVisible();
-    if (waitFor !== undefined) await expect(dialog.getByLabel(waitFor, { exact: true })).toBeVisible();
+    if (waitFor !== undefined)
+      await expect(dialog.getByLabel(waitFor, { exact: true })).toBeVisible();
     if (name === "Create key") {
       await dialog.getByRole("radio", { name: "Only these" }).check();
-      await expect(dialog.getByRole("group", { name: "MCP tools" })).toBeVisible();
+      await expect(
+        dialog.getByRole("group", { name: "MCP tools" }),
+      ).toBeVisible();
     }
     await measure(dialog, `the dialog ${name}`);
     await page.keyboard.press("Escape");
@@ -321,9 +411,16 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     await measure(page.locator("body"), title);
     if (title === "Prompts") {
       // One template, with its editor and a new one: a form of messages fits too.
-      await page.getByRole("link", { name: "Open", exact: true }).first().click();
-      await expect(page.getByRole("list", { name: "Messages of version 1" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Save as version 2" })).toBeVisible();
+      await page
+        .getByRole("link", { name: "Open", exact: true })
+        .first()
+        .click();
+      await expect(
+        page.getByRole("list", { name: "Messages of version 1" }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Save as version 2" }),
+      ).toBeVisible();
       await measure(page.locator("body"), "a prompt template");
       await goTo(page, "Prompts");
       await page.getByRole("link", { name: "New template" }).click();
@@ -332,7 +429,10 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
       await goTo(page, "Prompts");
     }
     if (title === "Guardrails") {
-      await page.getByRole("link", { name: "Edit", exact: true }).first().click();
+      await page
+        .getByRole("link", { name: "Edit", exact: true })
+        .first()
+        .click();
       await expect(heading(page, "Edit guardrail")).toBeVisible();
       await expect(page.getByRole("group", { name: "Rule 2" })).toBeVisible();
       await measure(page.locator("body"), "the guardrail form");
@@ -342,7 +442,9 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
       await measureDialog("Add rule", "Add rule", "Name");
       const views = page.getByRole("navigation", { name: "Alerts sections" });
       await views.getByRole("link", { name: "Channels" }).click();
-      await expect(page.getByRole("main")).toContainText("a-channel-with-a-name");
+      await expect(page.getByRole("main")).toContainText(
+        "a-channel-with-a-name",
+      );
       await measure(page.locator("body"), "alert channels");
       await measureDialog("Add channel", "Add channel", "Name");
       await views.getByRole("link", { name: "History" }).click();
@@ -350,18 +452,48 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     }
     if (title === "Users") await measureDialog("Invite user");
     if (title === "Teams") await measureDialog("New team");
-    if (title === "Virtual keys") await measureDialog("Create key", "Create key", "Owner");
+    if (title === "Virtual keys")
+      await measureDialog("Create key", "Create key", "Owner");
     if (title === "Providers") {
       await measureDialog("Add provider");
       await measureDialog("Edit", "Edit provider");
     }
     if (title === "Account") await measureDialog("Create token");
+    if (title === "MCP tools") {
+      await page.getByRole("button", { name: "Add server" }).click();
+      const addServer = page.getByRole("dialog", { name: "Add MCP server" });
+      await addServer
+        .getByRole("radio", { name: "OAuth (the gateway gets a token)" })
+        .check();
+      await expect(addServer.getByLabel("Token URL")).toBeVisible();
+      await measure(addServer, "the server dialog with OAuth");
+      await page.keyboard.press("Escape");
+      await expect(addServer).toBeHidden();
+      await measureDialog("Edit projection");
+      await page.getByRole("link", { name: "Add from catalog" }).click();
+      await expect(
+        page.getByRole("list", { name: "Catalog entries" }),
+      ).toBeVisible();
+      await measure(page.locator("body"), "the MCP catalog");
+      await goTo(page, "MCP tools");
+    }
+    if (title === "Playground") {
+      await page.getByRole("button", { name: "MCP tools" }).click();
+      await expect(page.getByRole("form", { name: "MCP call" })).toBeVisible();
+      await measure(page.locator("body"), "the playground MCP tools");
+    }
   }
 
   // The page of a team, with the dialog that adds a member from the list of users.
   await goTo(page, "Teams");
-  await page.getByRole("link", { name: "Platform infrastructure and developer experience" }).click();
-  await expect(heading(page, "Platform infrastructure and developer experience")).toBeVisible();
+  await page
+    .getByRole("link", {
+      name: "Platform infrastructure and developer experience",
+    })
+    .click();
+  await expect(
+    heading(page, "Platform infrastructure and developer experience"),
+  ).toBeVisible();
   await measure(page.locator("body"), "a team");
   await measureDialog("Add member");
 
@@ -372,7 +504,9 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
   await goTo(page, "Virtual keys");
   const showRevoked = page.locator("label").filter({ hasText: "Show revoked" });
   await touchEdge(showRevoked);
-  await expect(page.getByRole("checkbox", { name: "Show revoked" })).toBeChecked();
+  await expect(
+    page.getByRole("checkbox", { name: "Show revoked" }),
+  ).toBeChecked();
   await page.getByRole("button", { name: "Create key", exact: true }).click();
   const create = page.getByRole("dialog", { name: "Create key" });
   await expect(create.getByLabel("Owner", { exact: true })).toBeVisible();

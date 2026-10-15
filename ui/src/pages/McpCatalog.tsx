@@ -1,13 +1,25 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useForm } from "@tanstack/react-form";
 import { useMemo, useRef, useState } from "react";
+import { can } from "@/auth/guards";
+import { useSession } from "@/auth/session";
+import { NotAvailableContent } from "@/components/NotAvailableContent";
 import { messageOfError } from "@/api/errors";
-import { useAddMcpFromCatalog, useMcpCatalog, useRefreshMcpCatalog } from "@/api/queries";
+import {
+  useAddMcpFromCatalog,
+  useMcpCatalog,
+  useRefreshMcpCatalog,
+} from "@/api/queries";
 import type { components } from "@/api/schema";
 import { control } from "@/components/classes";
 import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
-import { applyApiError, onField, useFormFailure, useSubmit } from "@/components/form";
+import {
+  applyApiError,
+  onField,
+  useFormFailure,
+  useSubmit,
+} from "@/components/form";
 import { FormDialog, FormDialogFooter } from "@/components/FormDialog";
 import { FormError } from "@/components/FormError";
 import { PageHeader } from "@/components/PageHeader";
@@ -34,7 +46,8 @@ export const DONE = {
   add: "Server added from the catalog. Its tools start off.",
   refresh: "Catalog refreshed.",
 } as const;
-export const NAME_HINT = "Letters a to z, digits and dashes. It is part of the endpoint and cannot be changed.";
+export const NAME_HINT =
+  "Letters a to z, digits and dashes. It is part of the endpoint and cannot be changed.";
 
 interface FormProps {
   entry: Entry;
@@ -56,7 +69,10 @@ function AddForm({ entry, add, onDone, onCancel }: FormProps) {
         await add.mutateAsync(catalogRequest(entry, value));
         onDone();
       } catch (error) {
-        applyApiError(form, catalogFailure(onField(error, "mcp_server_exists", "name")));
+        applyApiError(
+          form,
+          catalogFailure(onField(error, "mcp_server_exists", "name")),
+        );
       }
     },
   });
@@ -76,7 +92,13 @@ function AddForm({ entry, add, onDone, onCancel }: FormProps) {
       <FormError ref={errorRef} messages={failure.messages} />
       <form.Field name="name">
         {(field) => (
-          <Field label="Name" name={field.name} required hint={NAME_HINT} error={failure.fieldError(field.name)}>
+          <Field
+            label="Name"
+            name={field.name}
+            required
+            hint={NAME_HINT}
+            error={failure.fieldError(field.name)}
+          >
             <Input
               autoComplete="off"
               autoCapitalize="none"
@@ -141,7 +163,9 @@ function EntryCard({
     <li className="flex flex-col gap-2 rounded-lg border bg-card p-4">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-base font-medium break-words">{entry.name}</h2>
-        <Badge variant="outline">{entry.transport === "stdio" ? "Runs on the gateway host" : "Remote"}</Badge>
+        <Badge variant="outline">
+          {entry.transport === "stdio" ? "Runs on the gateway host" : "Remote"}
+        </Badge>
       </div>
       <p className="text-sm">{entry.description}</p>
       <ul aria-label={`Tags of ${entry.name}`} className="flex flex-wrap gap-1">
@@ -168,14 +192,16 @@ function EntryCard({
         >
           Add
         </Button>
-        {block === null ? null : <span className="text-sm text-muted-foreground">{block}</span>}
+        {block === null ? null : (
+          <span className="text-sm text-muted-foreground">{block}</span>
+        )}
       </div>
     </li>
   );
 }
 
 /** The catalog of MCP servers the project publishes; an admin adds one with its secrets. */
-export function McpCatalog() {
+function McpCatalogOf() {
   const catalog = useMcpCatalog();
   const refresh = useRefreshMcpCatalog();
   const add = useAddMcpFromCatalog();
@@ -240,7 +266,10 @@ export function McpCatalog() {
       {view?.fetch_enabled === false ? (
         <Alert>
           <AlertDescription>
-            <p>Fetching the catalog is switched off (UF_MCP_CATALOG=off). This is the copy that ships with the gateway.</p>
+            <p>
+              Fetching the catalog is switched off (UF_MCP_CATALOG=off). This is
+              the copy that ships with the gateway.
+            </p>
           </AlertDescription>
         </Alert>
       ) : null}
@@ -272,11 +301,19 @@ export function McpCatalog() {
         </Field>
       </div>
       {view === undefined ? null : shown.length === 0 ? (
-        <EmptyState title="No entries" description="Nothing in the catalog matches the search." />
+        <EmptyState
+          title="No entries"
+          description="Nothing in the catalog matches the search."
+        />
       ) : (
         <ul aria-label="Catalog entries" className="grid gap-3 md:grid-cols-2">
           {shown.map((entry) => (
-            <EntryCard key={entry.id} entry={entry} view={view} onAdd={setAsking} />
+            <EntryCard
+              key={entry.id}
+              entry={entry}
+              view={view}
+              onAdd={setAsking}
+            />
           ))}
         </ul>
       )}
@@ -309,4 +346,13 @@ export function McpCatalog() {
       </FormDialog>
     </>
   );
+}
+
+/** The catalog page: only an admin adds servers, so a member gets the notice and no requests. */
+export function McpCatalog() {
+  const session = useSession();
+  if (session.status !== "signedIn") return null;
+  if (!can(session.me, { type: "manageModels" }))
+    return <NotAvailableContent />;
+  return <McpCatalogOf />;
 }
