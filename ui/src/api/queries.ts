@@ -17,6 +17,7 @@ import {
   queryOptions,
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
   type Query,
@@ -85,6 +86,15 @@ export const queryKeys = {
     /** What a key the viewer makes for another member of a team they lead may use. */
     ofTeamKey: (teamId: number) => ["routes", "list", { keyTeamId: teamId }] as const,
     detail: detailOf("routes"),
+  },
+  mcp: {
+    all: () => ["mcp"] as const,
+    servers: (keyTeamId: number | null = null) =>
+      (keyTeamId === null ? ["mcp", "servers"] : ["mcp", "servers", { keyTeamId }]) as QueryKey,
+    tools: (serverId: number, keyTeamId: number | null = null) =>
+      (keyTeamId === null
+        ? ["mcp", "tools", serverId]
+        : ["mcp", "tools", serverId, { keyTeamId }]) as QueryKey,
   },
   routingHealth: () => ["routing", "health"] as const,
   tokens: {
@@ -371,6 +381,28 @@ export const alertRulesOptions = () =>
     queryFn: ({ signal }) => api.get("/api/alerts/rules", { signal }),
   });
 
+/** `keyTeamId` as for `modelsOptions`. */
+export const mcpServersOptions = (keyTeamId: number | null = null) =>
+  queryOptions({
+    queryKey: queryKeys.mcp.servers(keyTeamId),
+    queryFn: ({ signal }) =>
+      api.get("/api/mcp/servers", {
+        ...(keyTeamId === null ? {} : { query: { key_team_id: keyTeamId } }),
+        signal,
+      }),
+  });
+
+export const mcpToolsOptions = (serverId: number, keyTeamId: number | null = null) =>
+  queryOptions({
+    queryKey: queryKeys.mcp.tools(serverId, keyTeamId),
+    queryFn: ({ signal }) =>
+      api.get("/api/mcp/servers/{id}/tools", {
+        params: { id: serverId },
+        ...(keyTeamId === null ? {} : { query: { key_team_id: keyTeamId } }),
+        signal,
+      }),
+  });
+
 export const guardrailsOptions = () =>
   queryOptions({
     queryKey: queryKeys.guardrails.list(),
@@ -464,6 +496,21 @@ export const useAlertChannels = (enabled = true) =>
   useQuery({ ...alertChannelsOptions(), enabled });
 /** Admin only. The alert rules, with what each is firing for. */
 export const useAlertRules = (enabled = true) => useQuery({ ...alertRulesOptions(), enabled });
+/** An admin gets every MCP server; anybody else the servers with a tool they may call. */
+export const useMcpServers = (enabled = true, keyTeamId: number | null = null) =>
+  useQuery({ ...mcpServersOptions(keyTeamId), enabled });
+/** The tools of one MCP server, as for `useMcpServers`. */
+export const useMcpTools = (serverId: number, enabled = true, keyTeamId: number | null = null) =>
+  useQuery({ ...mcpToolsOptions(serverId, keyTeamId), enabled });
+/** The tools of each of the servers, one query for each. */
+export const useMcpToolsOf = (
+  servers: readonly { id: number }[],
+  enabled = true,
+  keyTeamId: number | null = null,
+) =>
+  useQueries({
+    queries: servers.map((server) => ({ ...mcpToolsOptions(server.id, keyTeamId), enabled })),
+  });
 /** Admin only. Every guardrail, with the routes and the number of keys it is attached to. */
 export const useGuardrails = (enabled = true) => useQuery({ ...guardrailsOptions(), enabled });
 /** Every prompt template, by name, with its latest version's model and variables. Anyone signed in may read them. */
@@ -956,6 +1003,56 @@ export const useDeleteModel = () =>
     // A deleted model leaves its targets with it.
     () => ({ stale: [queryKeys.models.all(), queryKeys.routes.all(), audit] }),
     modelIsGone,
+  );
+
+// mcp
+
+const mcpServerIsGone = (error: unknown) => (isNotFound(error) ? [queryKeys.mcp.all()] : []);
+
+export const useCreateMcpServer = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/mcp/servers", "post">) => api.post("/api/mcp/servers", { body }),
+    () => ({ stale: [queryKeys.mcp.all(), audit] }),
+  );
+
+export const useUpdateMcpServer = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/mcp/servers/{id}", "patch"> }) =>
+      api.patch("/api/mcp/servers/{id}", { params: { id }, body }),
+    () => ({ stale: [queryKeys.mcp.all(), audit] }),
+    mcpServerIsGone,
+  );
+
+export const useDeleteMcpServer = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.delete("/api/mcp/servers/{id}", { params: { id } }),
+    () => ({ stale: [queryKeys.mcp.all(), audit] }),
+    mcpServerIsGone,
+  );
+
+/** Reads the tools the server offers; the answer says what changed. */
+export const useSyncMcpServer = () =>
+  useApiMutation(
+    ({ id }: { id: number }) => api.post("/api/mcp/servers/{id}/sync", { params: { id } }),
+    () => ({ stale: [queryKeys.mcp.all(), audit] }),
+    mcpServerIsGone,
+  );
+
+export const useUpdateMcpTool = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/mcp/tools/{id}", "patch"> }) =>
+      api.patch("/api/mcp/tools/{id}", { params: { id }, body }),
+    () => ({ stale: [queryKeys.mcp.all(), audit] }),
+    mcpServerIsGone,
+  );
+
+/** Replaces the grants of the tool: who may call it. */
+export const usePutMcpToolGrants = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/mcp/tools/{id}/grants", "put"> }) =>
+      api.put("/api/mcp/tools/{id}/grants", { params: { id }, body }),
+    () => ({ stale: [queryKeys.mcp.all(), audit] }),
+    mcpServerIsGone,
   );
 
 // routes

@@ -456,6 +456,39 @@ export const handlers = [
     return version === undefined ? notFound() : ok("get", "/api/prompts/{id}/versions/{version}", 200, version);
   }),
 
+  // mcp
+  handler("get", "/api/mcp/servers", () => ok("get", "/api/mcp/servers", 200, { servers: [] })),
+  handler("post", "/api/mcp/servers", () =>
+    ok("post", "/api/mcp/servers", 201, fixtures.mcpServers.github),
+  ),
+  handler("get", "/api/mcp/servers/{id}", (call) => {
+    const server = byId(fixtures.mcpServerList, call);
+    return server === undefined ? notFound() : ok("get", "/api/mcp/servers/{id}", 200, server);
+  }),
+  handler("patch", "/api/mcp/servers/{id}", (call) => {
+    const server = byId(fixtures.mcpServerList, call);
+    return server === undefined ? notFound() : ok("patch", "/api/mcp/servers/{id}", 200, server);
+  }),
+  handler("delete", "/api/mcp/servers/{id}", (call) =>
+    byId(fixtures.mcpServerList, call) === undefined ? notFound() : noContent(),
+  ),
+  handler("post", "/api/mcp/servers/{id}/sync", (call) =>
+    byId(fixtures.mcpServerList, call) === undefined
+      ? notFound()
+      : ok("post", "/api/mcp/servers/{id}/sync", 200, fixtures.mcpSyncResult),
+  ),
+  handler("get", "/api/mcp/servers/{id}/tools", () =>
+    ok("get", "/api/mcp/servers/{id}/tools", 200, { tools: [] }),
+  ),
+  handler("patch", "/api/mcp/tools/{id}", (call) => {
+    const tool = byId(fixtures.mcpToolList, call);
+    return tool === undefined ? notFound() : ok("patch", "/api/mcp/tools/{id}", 200, tool);
+  }),
+  handler("put", "/api/mcp/tools/{id}/grants", (call) => {
+    const tool = byId(fixtures.mcpToolList, call);
+    return tool === undefined ? notFound() : ok("put", "/api/mcp/tools/{id}/grants", 200, tool);
+  }),
+
   // audit
   handler("get", "/api/audit", () =>
     ok("get", "/api/audit", 200, { entries: fixtures.auditEntries }),

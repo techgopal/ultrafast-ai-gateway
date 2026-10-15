@@ -225,8 +225,10 @@ test("the messages of team members, key allowlists and the API version are in th
   ]) {
     expect(source).toContain(`"${message}`);
   }
-  // The message about a name is made with the name: `'{name}' is not a model or route you can use`.
-  expect(source).toContain("'{name}' is not a model or route you can use");
+  // The message about a name is made with the name: `'{name}' is not a model or route you can use`
+  // (or `a tool`, for an MCP tool).
+  expect(source).toContain("'{name}' is not a {what} you can use");
+  expect(source).toContain('"model or route"');
   expect(fieldMessages.allowedHidden).toBe("'gpt-secret' is not a model or route you can use");
 });
 
