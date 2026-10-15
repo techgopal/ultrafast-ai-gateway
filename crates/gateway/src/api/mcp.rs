@@ -143,6 +143,23 @@ pub struct McpServerView {
     /// How the program of a `stdio` server stands.
     #[schema(required)]
     pub local: Option<McpLocalView>,
+    /// What the last health probe of this gateway process found; `null`
+    /// before the first probe, and for a server that is switched off.
+    #[schema(required)]
+    pub health: Option<McpHealthView>,
+}
+
+/// The finding of a health probe: one `tools/list` outside any key, with a
+/// 5 second limit, every `UF_MCP_HEALTH_INTERVAL` seconds (60).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct McpHealthView {
+    /// `ok`, `degraded` (slow, or one failed probe), `down` (two failed probes
+    /// in a row) or `crashlooping` (a local program that keeps dying).
+    pub status: String,
+    /// How long the answer took, when there was one.
+    #[schema(required)]
+    pub latency_ms: Option<u64>,
+    pub checked_at: String,
 }
 
 /// How the program of a local server stands.
@@ -161,6 +178,7 @@ impl McpServerView {
         tool_count: i64,
         usable: bool,
         local: Option<McpLocalView>,
+        health: Option<McpHealthView>,
     ) -> Self {
         Self {
             id: row.id,
@@ -184,6 +202,7 @@ impl McpServerView {
                 .then(|| row.env_enc.keys().cloned().collect()),
             catalog_id: row.catalog_id.clone(),
             local,
+            health,
         }
     }
 }
@@ -333,6 +352,14 @@ async fn admin_view(state: &AppState, row: &McpServerRow) -> Result<McpServerVie
         count,
         server_usable(row, &state.cipher),
         local_view(state, row),
+        row.enabled
+            .then(|| state.mcp_health.get(row.id))
+            .flatten()
+            .map(|p| McpHealthView {
+                status: p.status.as_str().to_string(),
+                latency_ms: p.latency_ms,
+                checked_at: p.checked_at,
+            }),
     ))
 }
 
@@ -423,6 +450,7 @@ pub async fn list(
                 env_names: None,
                 catalog_id: None,
                 local: None,
+                health: None,
             });
         }
     }

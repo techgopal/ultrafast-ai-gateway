@@ -11,6 +11,7 @@ use crate::store::McpServerRow;
 
 pub mod call;
 pub mod catalog;
+pub mod health;
 pub mod local;
 pub mod server;
 pub mod sync;

@@ -12,6 +12,7 @@ export const KINDS = [
   ["budget", "Budget"],
   ["error_rate", "Error rate"],
   ["circuit_open", "Circuit"],
+  ["mcp_down", "MCP server down"],
 ] as const;
 
 export function kindText(kind: string): string {
@@ -42,7 +43,8 @@ export type Params =
       window_minutes: number;
       min_requests: number;
     }
-  | { kind: "circuit_open"; provider: string | null; model: string | null };
+  | { kind: "circuit_open"; provider: string | null; model: string | null }
+  | { kind: "mcp_down"; server: string | null };
 
 function field(params: unknown, name: string): unknown {
   return typeof params === "object" && params !== null ? Reflect.get(params, name) : undefined;
@@ -92,6 +94,10 @@ export function paramsOf(rule: { kind: string; params: unknown }): Params | null
     if (isNameOrNull(provider) && isNameOrNull(model)) {
       return { kind: "circuit_open", provider, model };
     }
+  }
+  if (rule.kind === "mcp_down") {
+    const server = field(params, "server") ?? null;
+    if (isNameOrNull(server)) return { kind: "mcp_down", server };
   }
   return null;
 }
@@ -146,6 +152,10 @@ export function conditionText(rule: { kind: string; params: unknown }, lookups: 
       if (params.provider !== null) return `Circuit opens on any model of ${params.provider}`;
       if (params.model !== null) return `Circuit opens on model ${params.model} of any provider`;
       return "Circuit opens on any target";
+    case "mcp_down":
+      return params.server === null
+        ? "Any MCP server is found down"
+        : `MCP server ${params.server} is found down`;
   }
 }
 
@@ -157,6 +167,7 @@ export function subjectText(subject: string, lookups: Lookups): string {
   if (subject === "gateway") return "the gateway";
   if (subject.startsWith("channel:")) return "a channel test";
   if (subject.startsWith("target:")) return subject.slice("target:".length);
+  if (subject.startsWith("mcp:")) return `MCP server ${subject.slice("mcp:".length)}`;
   if (subject.startsWith("key:")) return `key ${keyText(subject.slice("key:".length), lookups)}`;
   if (subject.startsWith("route:") || subject.startsWith("provider:")) {
     return subject.replace(":", " ");
@@ -229,6 +240,7 @@ export interface RuleForm {
   min_requests: string;
   provider: string;
   model: string;
+  server: string;
   channel_ids: string[];
 }
 
@@ -239,6 +251,7 @@ export interface Offered {
   providers: readonly string[];
   keys: readonly number[];
   models: readonly { provider: string; name: string }[];
+  servers: readonly string[];
   channels: readonly number[];
 }
 
@@ -249,6 +262,7 @@ export interface Lists {
   providers: components["schemas"]["ProviderView"][];
   keys: components["schemas"]["KeyView"][];
   models: components["schemas"]["ModelView"][];
+  servers: components["schemas"]["McpServerView"][];
   channels: components["schemas"]["ChannelView"][];
 }
 
@@ -260,6 +274,7 @@ export function offeredOf(lists: Lists): Offered {
     providers: lists.providers.map((one) => one.name),
     keys: lists.keys.filter((one) => one.status !== "revoked").map((one) => one.id),
     models: lists.models.map((one) => ({ provider: one.provider_name, name: one.name })),
+    servers: lists.servers.map((one) => one.name),
     channels: lists.channels.map((one) => one.id),
   };
 }
@@ -285,6 +300,7 @@ export function emptyRuleForm(): RuleForm {
     min_requests: DEFAULT_MIN_REQUESTS,
     provider: ANY,
     model: ANY,
+    server: ANY,
     channel_ids: [],
   };
 }
@@ -311,6 +327,8 @@ export function ruleFormOf(rule: Rule): RuleForm {
   } else if (params?.kind === "circuit_open") {
     form.provider = orAny(params.provider);
     form.model = orAny(params.model);
+  } else if (params?.kind === "mcp_down") {
+    form.server = orAny(params.server);
   }
   return form;
 }
@@ -346,7 +364,7 @@ function paramsRequest(
   untouched: (field: keyof RuleForm) => boolean,
 ): CreateRuleRequest["params"] {
   // A choice the rule already had is kept as it is, offered or not; a choice made now must be offered.
-  const pick = (field: "budget_id" | "subject" | "provider", choices: readonly (string | number)[]) =>
+  const pick = (field: "budget_id" | "subject" | "provider" | "server", choices: readonly (string | number)[]) =>
     untouched(field) ? form[field] : chosen(form[field], choices);
   switch (form.kind) {
     case "budget": {
@@ -368,6 +386,10 @@ function paramsRequest(
         window_minutes: whole(form.window_minutes, 5, 60, "window_minutes"),
         min_requests: whole(form.min_requests, 1, 100_000, "min_requests"),
       });
+    }
+    case "mcp_down": {
+      const server = pick("server", offered.servers);
+      return free({ server: server === ANY ? null : server });
     }
     default: {
       const provider = pick("provider", offered.providers);

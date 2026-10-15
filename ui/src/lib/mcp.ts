@@ -45,6 +45,10 @@ export function statusOf(server: Server): string {
     if (phase === "starting") return "Starting";
     if (phase === "stopped") return "Stopped";
   }
+  const health = server.health?.status;
+  if (health === "down") return "Down";
+  if (health === "degraded") return "Degraded";
+  if (health === "crashlooping") return "Crash-looping";
   if (server.usable === false) return "Secret needed";
   if (server.last_sync_error !== null) return "Sync failed";
   if (server.last_sync_at === null) return "Not synced yet";

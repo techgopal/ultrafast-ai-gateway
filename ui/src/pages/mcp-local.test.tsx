@@ -51,6 +51,23 @@ describe("local MCP servers in the console", () => {
     expect(within(rowOf(table, "github")).queryByRole("button", { name: "Output" })).toBeNull();
   });
 
+  test("what the health check found shows in the status", async () => {
+    const up = { ...github, health: { status: "ok", latency_ms: 42, checked_at: "2026-10-02T10:00:00Z" } };
+    const down = {
+      ...fixtures.mcpServers.docs,
+      last_sync_at: "2026-10-02 10:00:00",
+      last_sync_error: null,
+      health: { status: "down", latency_ms: null, checked_at: "2026-10-02T10:00:00Z" },
+    };
+    serve({ servers: [up, down] });
+    await renderWithApp(null, { route: "/mcp" });
+    const table = await serversTable();
+    expect(rowOf(table, "github")).toHaveTextContent("Answered in 42 ms");
+    expect(rowOf(table, "github")).toHaveTextContent("Synced");
+    expect(rowOf(table, "docs")).toHaveTextContent("Down");
+    expect(rowOf(table, "docs")).not.toHaveTextContent("Answered in");
+  });
+
   test("the output of a program is read from the gateway", async () => {
     serve({ stderr: "starting up\nlistening" });
     await renderWithApp(null, { route: "/mcp" });

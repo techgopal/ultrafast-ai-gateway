@@ -1493,6 +1493,7 @@ export const mcpServers = {
     env_names: null,
     catalog_id: null,
     local: null,
+    health: null,
   },
   /** No authentication, never synced. */
   docs: {
@@ -1515,6 +1516,7 @@ export const mcpServers = {
     env_names: null,
     catalog_id: null,
     local: null,
+    health: null,
   },
 } satisfies Record<string, McpServer>;
 
@@ -1540,6 +1542,7 @@ export const mcpLocalServer: McpServer = {
   env_names: ["API_TOKEN"],
   catalog_id: "filesystem",
   local: { phase: "running", restarts: 0 },
+  health: null,
 };
 
 export const mcpServerList: McpServer[] = Object.values(mcpServers);
@@ -1667,6 +1670,7 @@ export const mcpServersForMember: McpServer[] = [
     env_names: null,
     catalog_id: null,
     local: null,
+    health: null,
   },
 ];
 
@@ -1681,3 +1685,14 @@ export const mcpSyncResult: Schemas["McpSyncResult"] = {
   removed: [],
   skipped: 0,
 };
+
+/** What `/api/playground/mcp/{server}` answers to a call of `create_issue`. */
+export const playgroundMcpReply = {
+  jsonrpc: "2.0",
+  id: 1,
+  // The description types a free object as `Record<string, never>`.
+  result: {
+    content: [{ type: "text", text: "Opened issue 42." }],
+    isError: false,
+  } as unknown as Record<string, never>,
+} satisfies Schemas["PlaygroundMcpReply"];

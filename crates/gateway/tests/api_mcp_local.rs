@@ -399,3 +399,69 @@ async fn a_local_server_is_not_part_of_a_configuration_file() {
         .to_string()
         .contains("local servers are not part of a configuration file"));
 }
+
+#[tokio::test]
+async fn health_shows_in_the_server_list_and_a_crash_loop_is_found_without_asking() {
+    let (org, maya, _dir) = local_org().await;
+    // A program that runs, and one that dies at once.
+    let (_, good) = create(
+        &org,
+        &maya,
+        json!({"name": "good", "transport": "stdio", "command": MOCK}),
+    )
+    .await;
+    let (_, bad) = create(
+        &org,
+        &maya,
+        json!({"name": "bad", "transport": "stdio", "command": MOCK, "args": ["--crash"]}),
+    )
+    .await;
+    let (good, bad) = (good["id"].as_i64().unwrap(), bad["id"].as_i64().unwrap());
+    // Before the first probe there is nothing to show.
+    let (_, list) = org.call(Some(&maya), "GET", "/api/mcp/servers", None).await;
+    assert!(list["servers"][0]["health"].is_null(), "{list}");
+    until("the good program and the crash loop", || {
+        use ultrafast_gateway::mcp::local::Phase;
+        let s = &org.api.state.local;
+        s.health(good).is_some_and(|h| h.phase == Phase::Running)
+            && s.health(bad)
+                .is_some_and(|h| h.phase == Phase::CrashLooping)
+    })
+    .await;
+    ultrafast_gateway::mcp::health::probe_once(&org.api.state).await;
+    let (_, list) = org.call(Some(&maya), "GET", "/api/mcp/servers", None).await;
+    let of = |id: i64| {
+        list["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(of(good)["health"]["status"], "ok");
+    assert!(of(good)["health"]["latency_ms"].is_u64());
+    assert_eq!(of(bad)["health"]["status"], "crashlooping");
+    assert!(of(bad)["health"]["latency_ms"].is_null());
+    assert_eq!(of(bad)["local"]["phase"], "crashlooping");
+    assert!(of(bad)["local"]["restarts"].as_u64().unwrap() >= 3);
+    // A disabled server is not probed and shows nothing.
+    let (status, _) = org
+        .call(
+            Some(&maya),
+            "PATCH",
+            &format!("/api/mcp/servers/{good}"),
+            Some(json!({"enabled": false})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, view) = org
+        .call(
+            Some(&maya),
+            "GET",
+            &format!("/api/mcp/servers/{good}"),
+            None,
+        )
+        .await;
+    assert!(view["health"].is_null());
+}

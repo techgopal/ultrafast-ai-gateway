@@ -443,3 +443,79 @@ pub async fn speech(
     require(&authed.principal, &Action::UsePlayground)?;
     Ok(proxy::playground_speech(state, authed.principal.user_id, body).await)
 }
+
+/// A JSON-RPC request for `/mcp/{server}`, as the console's playground sends
+/// it: `tools/list` or `tools/call`. The body is read by the same dispatcher
+/// as that endpoint's.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PlaygroundMcpRequest {
+    /// `2.0`.
+    pub jsonrpc: String,
+    pub id: i64,
+    /// For example `tools/list`, or `tools/call` with `params`
+    /// `{"name": "<tool>", "arguments": {...}}`.
+    pub method: String,
+    #[schema(value_type = Object, nullable = false, required = false)]
+    pub params: Option<serde_json::Value>,
+}
+
+/// The JSON-RPC answer of `/mcp/{server}` to a call that was carried out.
+/// (A call the tool could not do is an `isError` result; a call the gateway
+/// would not let through, such as one to a tool the user may not call, is a
+/// JSON-RPC `error` in the place of `result`, see `PlaygroundMcpError`.)
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PlaygroundMcpReply {
+    pub jsonrpc: String,
+    /// The `id` of the request.
+    #[schema(value_type = Option<i64>)]
+    pub id: serde_json::Value,
+    #[schema(value_type = Object)]
+    pub result: serde_json::Value,
+}
+
+/// The JSON-RPC answer of `/mcp/{server}` to a request it refused.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PlaygroundMcpError {
+    pub jsonrpc: String,
+    /// The `id` of the request; `null` when it could not be read.
+    #[schema(value_type = Option<i64>)]
+    pub id: serde_json::Value,
+    /// `{"code": <number>, "message": <text>}`.
+    #[schema(value_type = Object)]
+    pub error: serde_json::Value,
+}
+
+#[utoipa::path(
+    post,
+    path = "/playground/mcp/{server}",
+    tag = "playground",
+    operation_id = "playground_mcp",
+    params(
+        ("server" = String, Path, description = "The name of the MCP server."),
+    ),
+    request_body = PlaygroundMcpRequest,
+    responses(
+        (status = 200, description = "The JSON-RPC answer. A tool the user may not call or a refused argument is an `error` in place of `result` (see `PlaygroundMcpError`), a failing tool an `isError` result, as on `/mcp/{server}`.", body = PlaygroundMcpReply),
+        (status = 400, description = "The body is not a JSON-RPC request.", body = PlaygroundMcpError),
+        (status = 401, description = "No valid session.", body = PlaygroundErrorBody),
+        (status = 403, description = "The call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match.", body = PlaygroundErrorBody),
+        (status = 404, description = "No such server, or the user may call none of its tools.", body = PlaygroundMcpError),
+        (status = 413, description = "The request body is too large.", body = PlaygroundMcpError),
+        (status = 429, description = "A limit refuses the call; `Retry-After` says when to come back.", body = PlaygroundMcpError),
+        (status = 402, description = "A spent budget refuses the call.", body = PlaygroundMcpError),
+        (status = 503, description = "The server is busy or not running.", body = PlaygroundMcpError),
+    ),
+    security(("session" = [])),
+)]
+pub async fn mcp(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(server): axum::extract::Path<String>,
+    authed: Authed,
+    body: Body,
+) -> Result<Response, ApiError> {
+    if !matches!(authed.via, AuthVia::Session { .. }) {
+        return Err(ApiError::forbidden());
+    }
+    require(&authed.principal, &Action::UsePlayground)?;
+    Ok(crate::mcp::server::playground(&state, authed.principal.user_id, &server, body).await)
+}

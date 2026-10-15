@@ -317,6 +317,9 @@ export const handlers = [
 
   // playground
   handler("post", "/api/playground/chat", () => eventStream(fixtures.playgroundChunks)),
+  handler("post", "/api/playground/mcp/{server}", () =>
+    ok("post", "/api/playground/mcp/{server}", 200, fixtures.playgroundMcpReply),
+  ),
   handler("post", "/api/playground/images", () =>
     ok("post", "/api/playground/images", 200, fixtures.playgroundImages),
   ),

@@ -31,6 +31,8 @@ interface Fixtures {
   withAdmin: boolean;
   /** Whether the gateway starts with `UF_PUBLIC_URL` set to its own address (single sign-on needs it). Default false. */
   publicUrl: boolean;
+  /** More environment variables for the gateway (`test.use({ extraEnv })`). Default none. */
+  extraEnv: Record<string, string>;
   /** The first admin: the gateway's when `withAdmin`, else the one the test creates. */
   admin: Account;
   gateway: Gateway;
@@ -46,14 +48,15 @@ interface Fixtures {
 export const test = base.extend<Fixtures>({
   withAdmin: [true, { option: true }],
   publicUrl: [false, { option: true }],
+  extraEnv: [{}, { option: true }],
 
   // eslint-disable-next-line no-empty-pattern -- Playwright reads the dependencies from this pattern.
   admin: async ({}, provide) => {
     await provide(newAccount("admin"));
   },
 
-  gateway: async ({ withAdmin, admin, publicUrl }, provide, testInfo) => {
-    const gateway = await startGateway({ ...(withAdmin ? { admin } : {}), publicUrl });
+  gateway: async ({ withAdmin, admin, publicUrl, extraEnv }, provide, testInfo) => {
+    const gateway = await startGateway({ ...(withAdmin ? { admin } : {}), publicUrl, env: extraEnv });
     try {
       await provide(gateway);
     } finally {

@@ -675,6 +675,11 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("could not listen on {addr}"))?;
             tracing::info!(%addr, "gateway listening");
             let refresher = spawn_refresher(state.clone(), stopped.clone());
+            let mcp_health = ultrafast_gateway::mcp::health::spawn(
+                state.clone(),
+                ultrafast_gateway::mcp::health::interval_from_env(),
+                stopped.clone(),
+            );
             let log_writer = logs::writer::spawn_accounted(
                 state.store.clone(),
                 log_queue,
@@ -697,6 +702,7 @@ async fn main() -> Result<()> {
             // Also when serving failed, so the task never outlives the server.
             let _ = stop.send(true);
             let _ = refresher.await;
+            let _ = mcp_health.await;
             // The programs of local MCP servers stop before the writer, so a
             // call that was in flight is still recorded.
             state.local.shutdown().await;

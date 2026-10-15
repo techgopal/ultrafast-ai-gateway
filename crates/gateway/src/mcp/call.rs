@@ -290,9 +290,11 @@ pub async fn run(call: ToolCall<'_>) -> Response {
         id,
         headers,
     } = call;
+    // The console's playground makes calls as a user with no key (id 0): they
+    // are recorded and counted for the user, under no key.
     let mut scope = Scope::begin(
         state.sink.clone(),
-        Some(key.id),
+        (key.id != 0).then_some(key.id),
         key.user_id,
         key.team_id,
         ENDPOINT,

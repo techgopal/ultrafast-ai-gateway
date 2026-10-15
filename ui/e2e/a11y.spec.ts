@@ -254,6 +254,24 @@ for (const scheme of ["light", "dark"] as const) {
     await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
 
+    // The catalog page, and its dialog.
+    await page.getByRole("link", { name: "Add from catalog" }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "MCP catalog" })).toBeVisible();
+    await expect(page.getByRole("list", { name: "Catalog entries" })).toBeVisible();
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+    await page.getByRole("button", { name: "Add Sentry" }).click();
+    await expect(page.getByRole("dialog", { name: "Add Sentry" })).toBeVisible();
+    expect(await axeProblems(page)).toEqual([]);
+    await page.getByRole("button", { name: "Cancel" }).click();
+
+    // The MCP tools tab of the playground.
+    await goTo(page, "Playground");
+    await page.getByRole("button", { name: "MCP tools" }).click();
+    await expect(page.getByRole("form", { name: "MCP call" })).toBeVisible();
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+
     await goTo(page, "Virtual keys");
     await expect(page.getByRole("main")).toContainText("a first key");
 

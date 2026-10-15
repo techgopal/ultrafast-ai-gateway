@@ -5981,6 +5981,141 @@
         ]
       }
     },
+    "/api/playground/mcp/{server}": {
+      "post": {
+        "tags": [
+          "playground"
+        ],
+        "operationId": "playground_mcp",
+        "parameters": [
+          {
+            "name": "server",
+            "in": "path",
+            "description": "The name of the MCP server.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaygroundMcpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The JSON-RPC answer. A tool the user may not call or a refused argument is an `error` in place of `result` (see `PlaygroundMcpError`), a failing tool an `isError` result, as on `/mcp/{server}`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpReply"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not a JSON-RPC request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "A spent budget refuses the call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such server, or the user may call none of its tools.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A limit refuses the call; `Retry-After` says when to come back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is busy or not running.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/playground/speech": {
       "post": {
         "tags": [
@@ -13198,6 +13333,33 @@
           }
         }
       },
+      "McpHealthView": {
+        "type": "object",
+        "description": "The finding of a health probe: one `tools/list` outside any key, with a\n5 second limit, every `UF_MCP_HEALTH_INTERVAL` seconds (60).",
+        "required": [
+          "status",
+          "latency_ms",
+          "checked_at"
+        ],
+        "properties": {
+          "checked_at": {
+            "type": "string"
+          },
+          "latency_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the answer took, when there was one.",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "description": "`ok`, `degraded` (slow, or one failed probe), `down` (two failed probes\nin a row) or `crashlooping` (a local program that keeps dying)."
+          }
+        }
+      },
       "McpLocalView": {
         "type": "object",
         "description": "How the program of a local server stands.",
@@ -13296,7 +13458,8 @@
           "args",
           "env_names",
           "catalog_id",
-          "local"
+          "local",
+          "health"
         ],
         "properties": {
           "args": {
@@ -13358,6 +13521,17 @@
             "type": [
               "boolean",
               "null"
+            ]
+          },
+          "health": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpHealthView",
+                "description": "What the last health probe of this gateway process found; `null`\nbefore the first probe, and for a server that is switched off."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "id": {
@@ -14286,6 +14460,81 @@
           "size": {
             "type": "string",
             "description": "For example `1024x1024`."
+          }
+        }
+      },
+      "PlaygroundMcpError": {
+        "type": "object",
+        "description": "The JSON-RPC answer of `/mcp/{server}` to a request it refused.",
+        "required": [
+          "jsonrpc",
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "description": "`{\"code\": <number>, \"message\": <text>}`."
+          },
+          "id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The `id` of the request; `null` when it could not be read."
+          },
+          "jsonrpc": {
+            "type": "string"
+          }
+        }
+      },
+      "PlaygroundMcpReply": {
+        "type": "object",
+        "description": "The JSON-RPC answer of `/mcp/{server}` to a call that was carried out.\n(A call the tool could not do is an `isError` result; a call the gateway\nwould not let through, such as one to a tool the user may not call, is a\nJSON-RPC `error` in the place of `result`, see `PlaygroundMcpError`.)",
+        "required": [
+          "jsonrpc",
+          "result"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The `id` of the request."
+          },
+          "jsonrpc": {
+            "type": "string"
+          },
+          "result": {
+            "type": "object"
+          }
+        }
+      },
+      "PlaygroundMcpRequest": {
+        "type": "object",
+        "description": "A JSON-RPC request for `/mcp/{server}`, as the console's playground sends\nit: `tools/list` or `tools/call`. The body is read by the same dispatcher\nas that endpoint's.",
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "jsonrpc": {
+            "type": "string",
+            "description": "`2.0`."
+          },
+          "method": {
+            "type": "string",
+            "description": "For example `tools/list`, or `tools/call` with `params`\n`{\"name\": \"<tool>\", \"arguments\": {...}}`."
+          },
+          "params": {
+            "type": "object"
           }
         }
       },

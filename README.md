@@ -609,9 +609,16 @@ call; a tool that is off, not granted, or not on the key's allowlist
 (`mcp:<server>/<tool>`) is "Unknown tool" (`-32602`), the same as one that does
 not exist. A key with no callable tool on a server gets the same 404 as an unknown or
 disabled server, so a key learns nothing about servers it may not use. `tools/list` counts against the
-rate limits like a call. `resources/*` and `prompts/*` are answered "method not
-found"; proxying them is not part of this release. `GET` and `DELETE` answer
-405.
+rate limits like a call. `resources/list`, `resources/read`, `prompts/list` and
+`prompts/get` are passed to the upstream as they are (the key's rate limit, the
+server's gate and the same time and size caps apply, nothing in the answer is
+filtered); a key that may call at least one tool of the server may use them.
+Everything else is "method not found". `GET` and `DELETE` answer 405.
+
+Toward the agent the endpoint is stateless. An upstream that insists on a session
+(`Mcp-Session-Id`) is handled by the gateway alone: a request it refuses with 400
+or 404 is repeated once after an `initialize` of the gateway's own, with the
+session id it was given for that one call; the id is never stored.
 
 Connect an agent (Claude Code, Cursor and others take the same shape):
 
@@ -638,9 +645,80 @@ and embedded resources in a result are passed on unread.
 | `UF_MCP_MAX_RESULT_BYTES` | `4194304` | The largest upstream answer read; a larger one is a tool error. |
 | `UF_MCP_MAX_ARGS_BYTES` | `262144` | The largest request body `/mcp/{server}` takes; larger is 413. |
 | `UF_MCP_MAX_DISCOVERY_BYTES` | `4194304` | The largest response read while syncing a server's tool list (one request); larger fails the sync. |
+| `UF_MCP_ALLOW_PRIVATE_UPSTREAMS` | off | `on` lets an admin register a server at a loopback, private or link-local address (and the cloud metadata address). Off, such an address is refused when a server is added or its address is changed. A name is judged by its spelling, not by what it resolves to. |
+| `UF_MCP_CATALOG` | on | `off`: the gateway makes no request for the catalog at all (see Catalog). |
+| `UF_MCP_CATALOG_URL` | `https://ultrafast-ai.dev/mcp-catalog/v1.json` | Where the catalog is fetched from (the signature is at the same address plus `.sig`). |
+| `UF_MCP_CATALOG_REFRESH` | `86400` | Seconds between fetches when the server names no `max-age` (never more often than hourly). |
+| `UF_MCP_LOCAL` | off | `on` lets admins add servers that run as a program on the gateway host (see Local servers). Refused when the gateway runs as root. |
+| `UF_MCP_LOCAL_MEMORY_MIB` | unset | Address-space limit of each local program, in MiB (`RLIMIT_AS`). Off by default: runtimes such as Node reserve far more address space than they use. |
+| `UF_MCP_HEALTH_INTERVAL` | `60` | Seconds between health checks of the servers (at least 5). |
 
 At most 32 calls to one server run at once per process (fixed, not set by an
 environment variable); the next is refused with 503 and `Retry-After`.
+
+### Catalog
+
+The MCP tools page has **Add from catalog**: a short, curated list of servers
+(GitHub, Linear, Sentry, Notion, Slack, Brave Search, Fetch, Filesystem,
+Postgres) that this project publishes, signed with an Ed25519 key. It is a list,
+not a marketplace: an entry never registers itself. Adding one pre-fills the
+address (or the command and arguments) and asks only for the secrets the entry
+names; the tools start off like any server's.
+
+The gateway fetches the catalog every 24 hours (or as the response's `max-age`
+says, never more often than hourly), checks the signature against the public key
+compiled into the binary, keeps the last copy that verified in its database, and
+falls back to the copy built into the binary. A copy whose signature does not
+match is thrown away, and the console says "catalog signature invalid, showing
+the copy from <date>". The files, their schema and how they are signed are in
+[`docs/mcp-catalog/`](docs/mcp-catalog/README.md); proposing an entry is a pull
+request. An entry that runs a program needs local servers; one that signs in with
+OAuth is added by hand.
+
+**Air-gapped installs.** With `UF_MCP_CATALOG=off` the gateway never makes a
+request for the catalog; the console shows the copy built into the binary. Nothing
+else in the catalog code reaches the network.
+
+### Local servers
+
+`UF_MCP_LOCAL=on` lets an admin add a server as a **program the gateway runs**
+(`npx`, `uvx`, a binary), talking MCP over stdio. This runs arbitrary programs on
+the host, so it is off by default and refused when the gateway runs as root
+(the log says so). What the gateway does, and does not:
+
+- The program is started from the registry row exactly as written: `command`
+  and `args`, no shell. A configuration file can never add one (local servers are
+  left out of the export and cannot be created by an import).
+- Its environment is the names the admin lists (values are stored encrypted and
+  never shown again) plus `PATH`, `HOME` and `LANG`. Nothing else of the gateway's
+  environment reaches it; `PATH`, `HOME`, `LANG`, `LD_*`, `DYLD_*` and `UF_*`
+  cannot be listed.
+- Its working directory is its own, `<data dir>/mcp/<name>`, mode 0700.
+- It runs in its own process group; stopping it (switching it off, deleting it,
+  shutting the gateway down) sends SIGTERM and then SIGKILL to the whole group,
+  so what it started goes too. Core dumps are off for it; `UF_MCP_LOCAL_MEMORY_MIB`
+  can cap its address space (Linux cannot cap resident memory per process).
+- If it dies it is started again after 1 second, then 2, 4 ... up to 60; three
+  short runs in a row make it `crashlooping (n restarts)`, and calls to it fail at
+  once with "The MCP server is not running." instead of waiting.
+- What it writes to stderr is kept (the last 64 KiB) without ever blocking it;
+  the console's **Output** button shows it, with the values of its environment
+  replaced by `***`.
+
+It is supervised, not sandboxed: no namespaces, no seccomp. Add only programs you
+would run yourself. The binary a release ships for Windows does not run local
+servers.
+
+### Health
+
+Every `UF_MCP_HEALTH_INTERVAL` seconds (60) the gateway asks each enabled server
+for its tool list (one `tools/list`, 5 seconds) outside any key: a probe takes no
+rate-limit permit, costs no budget and writes no row to the logs. The result is
+`ok`, `degraded` (slower than 2 s, or one failed probe), `down` (two failed probes
+in a row) or `crashlooping`; it shows on the MCP tools page, in the gauge
+`uf_mcp_server_up{server}` (1 while it answers) and in the alert rules of kind
+**MCP server down**, which use the channels and the payload of the other rules
+(`"kind": "mcp_down"`, subject `mcp:<server>`). Health is per gateway process.
 
 ## Console
 
@@ -661,14 +739,17 @@ Served at `/`. What each role sees is decided by the API.
 | Settings (retention, sign-in, backup, config, audit log) | yes | no | no |
 | Account (name, password, access tokens) | yes | yes | yes |
 
-The playground has three modes. **Chat** sends images (5 MB each, 9 MiB per
+The playground has four modes. **Chat** sends images (5 MB each, 9 MiB per
 request including the history), tools as JSON with a tool choice, a response
 format (text, JSON or a JSON schema), and a prompt template: pick one, a
 version, and a value for each variable (a template that names a model can be
 called with "Template's model", and with no message of your own). The Prompts
 page has an *Open in Playground* link for each template and version
-(`/playground?prompt=<name>&version=<n>`). **Images** generates images and
-**Audio** transcribes, translates and speaks. The audio file check in the
+(`/playground?prompt=<name>&version=<n>`). **Images** generates images,
+**Audio** transcribes, translates and speaks, and **MCP tools** calls a tool you
+may call (pick a server and a tool, write the arguments as JSON, see the hints from
+the tool's schema): the call goes through the real `/mcp/{server}` pipeline as
+you, so it is rate limited, guarded and logged like an agent's. The audio file check in the
 playground checks a file against the gateway's own `UF_MAX_AUDIO_BYTES` (it asks
 `GET /api/playground/config`). The Logs page filters by endpoint and shows the
 endpoint and the prompt (`name@version`) of each call.

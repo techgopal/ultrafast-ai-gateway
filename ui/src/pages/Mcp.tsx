@@ -293,6 +293,11 @@ function AdminMcp() {
               {server.last_sync_error}
             </span>
           )}
+          {server.health?.latency_ms == null ? null : (
+            <span className="text-xs text-muted-foreground">
+              {`Answered in ${String(server.health.latency_ms)} ms`}
+            </span>
+          )}
         </span>
       ),
     },

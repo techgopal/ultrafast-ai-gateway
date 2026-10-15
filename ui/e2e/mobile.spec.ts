@@ -192,6 +192,17 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     else await goTo(page, title);
     await expect(page.getByRole("main")).toContainText(shows);
     expect(await scrollsSideways(page), title).toBe(false);
+    if (title === "MCP tools") {
+      await page.getByRole("link", { name: "Add from catalog" }).click();
+      await expect(page.getByRole("list", { name: "Catalog entries" })).toBeVisible();
+      expect(await scrollsSideways(page), "the MCP catalog").toBe(false);
+      await goTo(page, "MCP tools");
+    }
+    if (title === "Playground") {
+      await page.getByRole("button", { name: "MCP tools" }).click();
+      await expect(page.getByRole("form", { name: "MCP call" })).toBeVisible();
+      expect(await scrollsSideways(page), "the playground's MCP tab").toBe(false);
+    }
     if (title === "Prompts") {
       await page.getByRole("link", { name: "Open", exact: true }).first().click();
       await expect(page.getByRole("list", { name: "Messages of version 1" })).toBeVisible();

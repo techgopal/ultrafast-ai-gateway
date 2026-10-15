@@ -171,6 +171,8 @@ pub struct AppState {
     /// The programs that local MCP servers run as. Starts nothing unless the
     /// operator asked for it (`UF_MCP_LOCAL=on`).
     pub local: Arc<crate::mcp::local::Supervisor>,
+    /// What the last health probe found about each MCP server.
+    pub mcp_health: Arc<crate::mcp::health::Board>,
     /// The bearer token of `/metrics`. None: the path does not exist.
     pub metrics_token: Option<String>,
     /// The one-time code that `POST /api/setup` needs, made when the
@@ -218,6 +220,7 @@ impl AppState {
             metrics_token: None,
             mcp: crate::mcp::call::Runtime::from_env(),
             local: Arc::new(crate::mcp::local::Supervisor::disabled()),
+            mcp_health: Arc::default(),
             catalog: Arc::new(crate::mcp::catalog::Catalog::from_env(
                 store.clone(),
                 catalog_client(),

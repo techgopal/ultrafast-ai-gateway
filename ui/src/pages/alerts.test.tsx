@@ -553,6 +553,29 @@ describe("rules", () => {
     });
   });
 
+  test("adds a rule about an MCP server that is found down", async () => {
+    const state = keeps();
+    override("get", "/api/mcp/servers", () =>
+      ok("get", "/api/mcp/servers", 200, { servers: fixtures.mcpServerList }),
+    );
+    await page();
+    const dialog = await openAddRule();
+    await userEvent.click(within(dialog).getByRole("radio", { name: "MCP server down" }));
+    await paste(within(dialog).getByLabelText("Name"), "GitHub down");
+    expect(await optionsOf(combo(dialog, "MCP server"))).toEqual(["Any MCP server", "github", "docs"]);
+    await choose(combo(dialog, "MCP server"), "github");
+    await submit(dialog, "Add rule");
+    await waitFor(() => {
+      expect(state.createdRules).toHaveLength(1);
+    });
+    expect(state.createdRules[0]).toEqual({
+      name: "GitHub down",
+      kind: "mcp_down",
+      params: { server: "github" },
+      channel_ids: [],
+    });
+  });
+
   test("a percent that cannot be right is said on its field and sends nothing", async () => {
     const state = keeps();
     await page();

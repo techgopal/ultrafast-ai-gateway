@@ -287,6 +287,26 @@ export async function playgroundImages(
 }
 
 /**
+ * One JSON-RPC request of the playground to an MCP server (`tools/call`); the
+ * answer is the JSON-RPC reply. A tool that fails, or one the user may not
+ * call, is an `error` or an `isError` result in a 200; what the gateway
+ * refuses (a limit, a budget, an unknown server) rejects as for `playgroundChat`.
+ */
+export async function playgroundMcp(
+  server: string,
+  body: BodyOf<"/api/playground/mcp/{server}", "post">,
+  signal?: AbortSignal,
+): Promise<ResponseOf<"/api/playground/mcp/{server}", "post">> {
+  const response = await playgroundCall(
+    `/api/playground/mcp/${encodeURIComponent(server)}`,
+    "application/json",
+    body,
+    signal,
+  );
+  return (await response.json()) as ResponseOf<"/api/playground/mcp/{server}", "post">;
+}
+
+/**
  * A transcription of the playground: the file and its fields as a form, the
  * answer the JSON of `/v1/audio/transcriptions`; refusals as for `playgroundChat`.
  */
@@ -312,7 +332,8 @@ async function playgroundCall(
     | "/api/playground/chat"
     | "/api/playground/images"
     | "/api/playground/transcriptions"
-    | "/api/playground/speech",
+    | "/api/playground/speech"
+    | `/api/playground/mcp/${string}`,
   accept: string,
   body: object,
   signal?: AbortSignal,

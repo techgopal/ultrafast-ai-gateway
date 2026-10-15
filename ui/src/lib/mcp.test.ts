@@ -174,5 +174,11 @@ describe("local servers", () => {
     expect(at("off")).toBe("Local servers are off");
     expect(at("running")).toBe("Not synced yet");
     expect(statusOf({ ...files, enabled: false })).toBe("Disabled");
+    const found = (status: string) =>
+      statusOf({ ...fixtures.mcpServers.github, health: { status, latency_ms: null, checked_at: "" } });
+    expect(found("down")).toBe("Down");
+    expect(found("degraded")).toBe("Degraded");
+    expect(found("crashlooping")).toBe("Crash-looping");
+    expect(found("ok")).toBe("Synced");
   });
 });

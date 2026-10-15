@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+MCP catalog and local servers.
+
+### Added
+- **Signed MCP catalog.** A curated list of servers (`docs/mcp-catalog/`), signed
+  with Ed25519, fetched at runtime, cached in the database, with a copy built
+  into the binary. `UF_MCP_CATALOG=off` makes no request at all (air-gapped).
+  `GET /api/mcp/catalog`, `POST /api/mcp/catalog/refresh`,
+  `POST /api/mcp/servers/from-catalog`, and an **Add from catalog** page. The
+  release workflow signs and publishes the catalog on GitHub Pages
+  (`tools/mcp-catalog-sign`, `pages.yml`).
+- **Local servers.** `UF_MCP_LOCAL=on`: servers that run as a program the gateway
+  supervises (own process group, listed environment only, working directory of its
+  own, restart backoff 1 s to 60 s, stderr kept, 64 KiB), never as root and never
+  from a configuration file. `GET /api/mcp/servers/{id}/stderr`.
+- **Health.** A probe of every enabled server (`UF_MCP_HEALTH_INTERVAL`), shown on
+  the MCP tools page, as `uf_mcp_server_up{server}` and by the new alert kind
+  `mcp_down`. Probes skip the key pipeline.
+- **Playground MCP tools tab** (`POST /api/playground/mcp/{server}`), logged like an
+  agent's call.
+- **Private upstream guard.** Registering or moving a server to a loopback,
+  private or link-local address is refused unless `UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on`.
+- **`resources/list`, `resources/read`, `prompts/list` and `prompts/get`** are
+  passed to the upstream; an upstream that insists on `Mcp-Session-Id` is handled
+  per call, never stored.
+- Migrations SQLite 0022 and PostgreSQL 0008 (also lets alert rules have the kind
+  `mcp_down`).
+
 ## [2.0.0-beta.5] - 2026-10-15
 
 MCP gateway core: agents call the tools of registered MCP servers through the

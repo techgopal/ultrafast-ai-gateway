@@ -32,6 +32,7 @@ const offered: Offered = {
   providers: fixtures.providerList.map((one) => one.name),
   keys: fixtures.keyList.map((one) => one.id),
   models: fixtures.modelList.map((one) => ({ provider: one.provider_name, name: one.name })),
+  servers: fixtures.mcpServerList.map((one) => one.name),
   channels: fixtures.alertChannelList.map((one) => one.id),
 };
 
@@ -275,6 +276,7 @@ describe("the form of a rule", () => {
       providers: fixtures.providerList,
       keys: fixtures.keyList,
       models: fixtures.modelList,
+      servers: fixtures.mcpServerList,
       channels: fixtures.alertChannelList,
     };
     const result = offeredOf(lists);
@@ -360,5 +362,36 @@ describe("what changed in a rule", () => {
 
   test("the kind is never among them", () => {
     expect(ruleChangesOf(rule, ruleRequestOf({ ...ruleFormOf(rule), name: "x" }, offered))).not.toHaveProperty("kind");
+  });
+});
+
+describe("the rule about MCP servers", () => {
+  const rule = (server: unknown) => ({ kind: "mcp_down", params: { server } });
+  const lookups = { budgets: [], keys: [] };
+
+  test("its parameters are read, and the words say what it watches", () => {
+    expect(paramsOf(rule(null))).toEqual({ kind: "mcp_down", server: null });
+    expect(paramsOf(rule("github"))).toEqual({ kind: "mcp_down", server: "github" });
+    expect(paramsOf(rule(3))).toBeNull();
+    expect(conditionText(rule(null), lookups)).toBe("Any MCP server is found down");
+    expect(conditionText(rule("github"), lookups)).toBe("MCP server github is found down");
+    expect(subjectText("mcp:github", lookups)).toBe("MCP server github");
+  });
+
+  test("the form offers the servers there are, and sends any one as null", () => {
+    expect(ruleRequestOf(form({ kind: "mcp_down" }), offered).params).toEqual({ server: null });
+    const name = fixtures.mcpServerList[0]?.name ?? "";
+    expect(ruleRequestOf(form({ kind: "mcp_down", server: name }), offered).params).toEqual({
+      server: name,
+    });
+    // A server that is not offered is not sent.
+    expect(ruleRequestOf(form({ kind: "mcp_down", server: "gone" }), offered).params).toEqual({
+      server: null,
+    });
+  });
+
+  test("a rule is read back into the form", () => {
+    const stored = { ...fixtures.alertRules.circuit, kind: "mcp_down", params: { server: "github" } };
+    expect(ruleFormOf(stored).server).toBe("github");
   });
 });

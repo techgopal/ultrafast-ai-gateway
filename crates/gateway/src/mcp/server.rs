@@ -15,7 +15,7 @@ use std::time::Instant;
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::header::{ALLOW, CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER, WWW_AUTHENTICATE};
-use axum::http::{HeaderValue, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use http_body_util::LengthLimitError;
 use serde_json::{json, Value};
@@ -25,6 +25,7 @@ use crate::access;
 use crate::app::AppState;
 use crate::auth::authenticate;
 use crate::errors::Shape;
+use crate::snapshot::{SnapKey, Snapshot};
 
 /// JSON-RPC and MCP error codes.
 pub const CODE_PARSE: i64 = -32700;
@@ -110,19 +111,34 @@ pub async fn serve(
             return response;
         }
     };
-    let Some(server) = snapshot.mcp_server(&name).filter(|s| s.enabled && s.usable) else {
+    dispatch(&state, &snapshot, &key, &name, &parts.headers, body).await
+}
+
+/// The part of a request after the caller is known: the server, the tools
+/// the caller may use, the body, and the method. The console's playground
+/// comes here with the signed-in user in place of a key.
+pub(crate) async fn dispatch(
+    state: &Arc<AppState>,
+    snapshot: &Arc<Snapshot>,
+    key: &SnapKey,
+    name: &str,
+    headers: &HeaderMap,
+    body: Body,
+) -> Response {
+    let null = Value::Null;
+    let Some(server) = snapshot.mcp_server(name).filter(|s| s.enabled && s.usable) else {
         return not_found().await;
     };
     let tools: Vec<_> = snapshot
         .mcp_tools_of(server.id)
-        .filter(|t| access::key_may_call_tool(&snapshot, &key, server, t))
+        .filter(|t| access::key_may_call_tool(snapshot, key, server, t))
         .collect();
     if tools.is_empty() {
         // The same answer as an unknown server: a key learns nothing about
         // servers it may not use.
         return not_found().await;
     }
-    let bytes = match axum::body::to_bytes(Body::new(body), state.mcp.limits.max_args_bytes).await {
+    let bytes = match axum::body::to_bytes(body, state.mcp.limits.max_args_bytes).await {
         Ok(b) => b,
         Err(e) => {
             return if e.into_inner().is::<LengthLimitError>() {
@@ -248,14 +264,14 @@ pub async fn serve(
                 }
             };
             call::run(ToolCall {
-                state: &state,
-                snapshot: &snapshot,
-                key: &key,
+                state,
+                snapshot,
+                key,
                 server,
                 tool,
                 arguments,
                 id: id.clone(),
-                headers: &parts.headers,
+                headers,
             })
             .await
         }
@@ -268,17 +284,32 @@ pub async fn serve(
                     return reply_error(ok, id, CODE_INVALID_PARAMS, "params must be an object.");
                 }
             };
-            call::proxy(
-                &state,
-                &snapshot,
-                &key,
-                server,
-                (method, &params),
-                id,
-                &parts.headers,
-            )
-            .await
+            call::proxy(state, snapshot, key, server, (method, &params), id, headers).await
         }
         _ => reply_error(ok, id, CODE_METHOD_NOT_FOUND, "Method not found."),
     }
+}
+
+/// A call of the console's playground for a signed-in user: the same
+/// pipeline as `POST /mcp/{server}`, for the user as a key they own would
+/// make it (no team, no allowlist), recorded under no key.
+pub(crate) async fn playground(
+    state: &Arc<AppState>,
+    user_id: i64,
+    name: &str,
+    body: Body,
+) -> Response {
+    let key = SnapKey {
+        id: 0,
+        name: "playground".to_string(),
+        user_id: Some(user_id),
+        team_id: None,
+        expires_at: None,
+        allowed: None,
+        tags: crate::tags::Tags::new(),
+        team_only: false,
+        guardrails: Vec::new(),
+    };
+    let snapshot = state.snapshot.load_full();
+    dispatch(state, &snapshot, &key, name, &HeaderMap::new(), body).await
 }

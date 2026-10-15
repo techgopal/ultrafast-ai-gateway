@@ -17,6 +17,7 @@ use ultrafast_gateway::app::AppState;
 use ultrafast_gateway::budgets::{account, BudgetAction, Period};
 use ultrafast_gateway::limits::{LimitScope, RateLimit};
 use ultrafast_gateway::mcp::encrypt_secret;
+use ultrafast_gateway::mcp::health::{probe_once, Status};
 use ultrafast_gateway::otel::{Exporter, OtelConfig};
 use ultrafast_gateway::store::{DiscoveredTool, Grants, NewGuardrail, NewMcpServer};
 use ultrafast_gateway::telemetry::{AttemptOutcome, RequestRecord};
@@ -1043,4 +1044,118 @@ async fn a_tool_call_through_the_gateway_to_a_stateful_upstream_works() {
     // Toward the agent the endpoint stays stateless.
     assert!(headers.get("mcp-session-id").is_none());
     assert_eq!(mock.received_method("initialize").len(), 1);
+}
+
+// ---------------------------------------------------------------- health
+
+async fn probe(w: &World) -> ultrafast_gateway::mcp::health::Probe {
+    probe_once(&w.h.state).await;
+    w.h.state.mcp_health.get(w.server_id).expect("a probe")
+}
+
+#[tokio::test]
+async fn probes_tell_ok_degraded_down_and_back() {
+    let w = world().await;
+    let first = probe(&w).await;
+    assert_eq!(first.status, Status::Ok);
+    assert!(first.latency_ms.is_some());
+    assert!(first.checked_at.starts_with("20"));
+    // The probe asks for a tool list, outside any key.
+    assert!(!w.mock.received_method("tools/list").is_empty());
+    w.mock.set_failure(Failure::Status500);
+    // One failure is a warning, two in a row are down.
+    assert_eq!(probe(&w).await.status, Status::Degraded);
+    let down = probe(&w).await;
+    assert_eq!(down.status, Status::Down);
+    assert_eq!(down.latency_ms, None);
+    assert_eq!(probe(&w).await.status, Status::Down);
+    w.mock.set_failure(Failure::None);
+    assert_eq!(probe(&w).await.status, Status::Ok);
+}
+
+#[tokio::test]
+async fn a_slow_answer_is_degraded() {
+    let w = world_with(CallMode::Echo, Duration::ZERO, Failure::None, |_| {}).await;
+    w.mock.set_failure(Failure::SlowList(2_300));
+    assert_eq!(probe(&w).await.status, Status::Degraded);
+}
+
+#[tokio::test]
+async fn probes_take_no_permit_cost_no_budget_and_leave_no_log_row() {
+    let w = world().await;
+    limit_requests(&w, 1).await;
+    for _ in 0..5 {
+        probe_once(&w.h.state).await;
+    }
+    // The one request the limit allows is still there for a key.
+    let (_, _, reply) = call(&w, "echo", json!({})).await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    // And the only record is that call's.
+    let records = w.h.sink.records();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].endpoint, "mcp");
+}
+
+#[tokio::test]
+async fn the_gauge_follows_the_probes() {
+    let w = world_with(CallMode::Echo, Duration::ZERO, Failure::None, |s| {
+        s.metrics_token = Some(METRICS_TOKEN.into());
+    })
+    .await;
+    async fn text(w: &World) -> String {
+        let req = axum::http::Request::builder()
+            .uri("/metrics")
+            .header("authorization", format!("Bearer {METRICS_TOKEN}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = tower::ServiceExt::oneshot(w.h.app.clone(), req)
+            .await
+            .unwrap();
+        String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+    assert!(!text(&w).await.contains("uf_mcp_server_up{"));
+    probe_once(&w.h.state).await;
+    assert!(text(&w)
+        .await
+        .contains("uf_mcp_server_up{server=\"mock\"} 1"));
+    w.mock.set_failure(Failure::Status500);
+    probe_once(&w.h.state).await;
+    probe_once(&w.h.state).await;
+    assert!(text(&w)
+        .await
+        .contains("uf_mcp_server_up{server=\"mock\"} 0"));
+}
+
+#[tokio::test]
+async fn a_server_that_is_off_or_gone_is_not_probed() {
+    let w = world().await;
+    probe_once(&w.h.state).await;
+    let before = w.mock.received_method("tools/list").len();
+    let mut tx = w.h.store.begin().await.unwrap();
+    let row = tx.server_by_id(w.server_id).await.unwrap().unwrap();
+    tx.update_server(
+        w.server_id,
+        NewMcpServer {
+            name: "mock",
+            url: &row.url,
+            auth_kind: &row.auth_kind,
+            auth_header: row.auth_header.as_deref(),
+            auth_secret_enc: row.auth_secret_enc.as_deref(),
+            enabled: false,
+            description: "d",
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    probe_once(&w.h.state).await;
+    assert_eq!(w.mock.received_method("tools/list").len(), before);
 }

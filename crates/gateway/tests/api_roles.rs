@@ -757,6 +757,10 @@ fn table() -> Vec<Row> {
         row(112, "GET", "/api/mcp/servers/{id}/stderr", "a server that runs no program",
             |w, _| format!("/api/mcp/servers/{}/stderr", w.mcp_server), no_body,
             [404, 403, 403, 401]),
+        row(113, "POST", "/api/playground/mcp/{server}", "a tool list of a server with a tool granted to everyone",
+            |_, _| "/api/playground/mcp/table-mcp".into(),
+            || Some(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })),
+            [200, 200, 200, 401]),
     ]
 }
 
@@ -788,7 +792,7 @@ fn expected(row: &Row, caller: Caller) -> (u16, Option<&'static str>) {
         // A token carries the role of its owner. It cannot be signed out.
         Caller::MemberToken if row.number == 30 => return (400, Some("bad_request")),
         // The playground is for a browser session: a token is refused first.
-        Caller::MemberToken if matches!(row.number, 59 | 86 | 87 | 88) => {
+        Caller::MemberToken if matches!(row.number, 59 | 86 | 87 | 88 | 113) => {
             return (403, Some("forbidden"))
         }
         // Access tokens are made from a browser session only.
@@ -801,7 +805,7 @@ fn expected(row: &Row, caller: Caller) -> (u16, Option<&'static str>) {
         401 => Some("unauthenticated"),
         403 => Some("forbidden"),
         // The playground answers as `/v1` does: no `/api` error code.
-        404 if matches!(row.number, 59 | 86 | 87 | 88) => None,
+        404 if matches!(row.number, 59 | 86 | 87 | 88 | 113) => None,
         404 => Some("not_found"),
         _ => None,
     };
@@ -831,7 +835,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=112).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=113).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -947,7 +951,8 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
         let path = template
             .replace("{id}", "1")
             .replace("{user_id}", "1")
-            .replace("{version}", "1");
+            .replace("{version}", "1")
+            .replace("{server}", "table-mcp");
         assert!(!path.contains('{'), "{template}");
         for method in item.as_object().expect("a path item").keys() {
             let method = method.to_uppercase();
@@ -966,7 +971,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 112);
+    assert_eq!(operations, 113);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

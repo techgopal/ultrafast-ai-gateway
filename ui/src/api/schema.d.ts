@@ -838,6 +838,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/playground/mcp/{server}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["playground_mcp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/playground/speech": {
         parameters: {
             query?: never;
@@ -2386,6 +2402,23 @@ export interface components {
              */
             source: components["schemas"]["Source"];
         };
+        /**
+         * @description The finding of a health probe: one `tools/list` outside any key, with a
+         *     5 second limit, every `UF_MCP_HEALTH_INTERVAL` seconds (60).
+         */
+        McpHealthView: {
+            checked_at: string;
+            /**
+             * Format: int64
+             * @description How long the answer took, when there was one.
+             */
+            latency_ms: number | null;
+            /**
+             * @description `ok`, `degraded` (slow, or one failed probe), `down` (two failed probes
+             *     in a row) or `crashlooping` (a local program that keeps dying).
+             */
+            status: string;
+        };
         /** @description How the program of a local server stands. */
         McpLocalView: {
             /**
@@ -2441,6 +2474,7 @@ export interface components {
             /** @description The names of the environment variables of a `stdio` server; never the values. */
             env_names: string[] | null;
             has_secret: boolean | null;
+            health: components["schemas"]["McpHealthView"] | null;
             /** Format: int64 */
             id: number;
             last_sync_at: string | null;
@@ -2841,6 +2875,49 @@ export interface components {
             quality?: string;
             /** @description For example `1024x1024`. */
             size?: string;
+        };
+        /** @description The JSON-RPC answer of `/mcp/{server}` to a request it refused. */
+        PlaygroundMcpError: {
+            /** @description `{"code": <number>, "message": <text>}`. */
+            error: Record<string, never>;
+            /**
+             * Format: int64
+             * @description The `id` of the request; `null` when it could not be read.
+             */
+            id?: number | null;
+            jsonrpc: string;
+        };
+        /**
+         * @description The JSON-RPC answer of `/mcp/{server}` to a call that was carried out.
+         *     (A call the tool could not do is an `isError` result; a call the gateway
+         *     would not let through, such as one to a tool the user may not call, is a
+         *     JSON-RPC `error` in the place of `result`, see `PlaygroundMcpError`.)
+         */
+        PlaygroundMcpReply: {
+            /**
+             * Format: int64
+             * @description The `id` of the request.
+             */
+            id?: number | null;
+            jsonrpc: string;
+            result: Record<string, never>;
+        };
+        /**
+         * @description A JSON-RPC request for `/mcp/{server}`, as the console's playground sends
+         *     it: `tools/list` or `tools/call`. The body is read by the same dispatcher
+         *     as that endpoint's.
+         */
+        PlaygroundMcpRequest: {
+            /** Format: int64 */
+            id: number;
+            /** @description `2.0`. */
+            jsonrpc: string;
+            /**
+             * @description For example `tools/list`, or `tools/call` with `params`
+             *     `{"name": "<tool>", "arguments": {...}}`.
+             */
+            method: string;
+            params?: Record<string, never>;
         };
         PlaygroundMessage: {
             /** @description Text, or a list of parts (`text` and `image_url`) as in `/v1/chat/completions`. Null is allowed on an assistant message that has `tool_calls`. Images are `data:` URLs or, except for Gemini, `http(s)` URLs, and count toward the request body limit (10 MiB). */
@@ -8120,6 +8197,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+        };
+    };
+    playground_mcp: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The name of the MCP server. */
+                server: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaygroundMcpRequest"];
+            };
+        };
+        responses: {
+            /** @description The JSON-RPC answer. A tool the user may not call or a refused argument is an `error` in place of `result` (see `PlaygroundMcpError`), a failing tool an `isError` result, as on `/mcp/{server}`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpReply"];
+                };
+            };
+            /** @description The body is not a JSON-RPC request. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
+                };
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description A spent budget refuses the call. */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
+                };
+            };
+            /** @description The call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No such server, or the user may call none of its tools. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
+                };
+            };
+            /** @description A limit refuses the call; `Retry-After` says when to come back. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
+                };
+            };
+            /** @description The server is busy or not running. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
                 };
             };
         };
