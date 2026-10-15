@@ -1154,6 +1154,7 @@ pub async fn delete(
     })
     .await?;
     tx.commit().await?;
+    state.oauth.drop_server(target.id).await;
     refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }

@@ -465,3 +465,33 @@ async fn health_shows_in_the_server_list_and_a_crash_loop_is_found_without_askin
         .await;
     assert!(view["health"].is_null());
 }
+
+#[tokio::test]
+async fn loader_variables_are_refused_when_a_local_server_is_created_and_edited() {
+    let (org, maya, _dir) = local_org().await;
+    let (status, body) = create(
+        &org,
+        &maya,
+        json!({"name": "ld", "transport": "stdio", "command": MOCK, "env": {"LD_LIBRARY_PATH": "/x"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["fields"]["env.LD_LIBRARY_PATH"].is_string());
+    let (_, body) = create(
+        &org,
+        &maya,
+        json!({"name": "ld", "transport": "stdio", "command": MOCK, "env": {"A": "one"}}),
+    )
+    .await;
+    let id = body["id"].as_i64().unwrap();
+    let (status, body) = org
+        .call(
+            Some(&maya),
+            "PATCH",
+            &format!("/api/mcp/servers/{id}"),
+            Some(json!({"env": {"DYLD_INSERT_LIBRARIES": "/x"}})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["fields"]["env.DYLD_INSERT_LIBRARIES"].is_string());
+}

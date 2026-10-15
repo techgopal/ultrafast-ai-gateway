@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.1.0] - 2026-10-15
 
+Known limit: `is_private_host` judges hostnames by spelling; a public name that
+resolves to a private address (DNS rebinding) is not caught. The later fix is a
+resolved-address check at connect time.
+
 MCP at scale: a signed catalog, local servers, health, one endpoint for every tool,
 tool search, result projection and OAuth toward servers.
 

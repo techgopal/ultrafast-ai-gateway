@@ -775,7 +775,9 @@ the host, so it is off by default and refused when the gateway runs as root
 - Its environment is the names the admin lists (values are stored encrypted and
   never shown again) plus `PATH`, `HOME` and `LANG`. Nothing else of the gateway's
   environment reaches it; `PATH`, `HOME`, `LANG`, `LD_*`, `DYLD_*` and `UF_*`
-  cannot be listed.
+  cannot be listed. The values are trusted as the admin wrote them: apart from
+  the loader variables (`LD_*`, `DYLD_*`), nothing checks what an environment
+  variable does to the program.
 - Its working directory is its own, `<data dir>/mcp/<name>`, mode 0700.
 - It runs in its own process group; stopping it (switching it off, deleting it,
   shutting the gateway down) sends SIGTERM and then SIGKILL to the whole group,
@@ -1725,7 +1727,9 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   ratings, versions or submissions); local servers are supervised, not sandboxed (trusted
   programs only; no namespaces or seccomp; Linux cannot cap their resident memory), and
   do not run in the Windows build; health, tokens in memory and the catalog's freshness
-  are per process.
+  are per process. `is_private_host` judges a hostname by its spelling: a public
+  name that resolves to a private address (DNS rebinding) is not caught; the later
+  fix is a check of the resolved address at connect time.
 - SQLite: one gateway per database. Postgres: several processes may share one
   database, with per-process rate limits, response cache, single-flight,
   routing and breaker health, setup code and alert error windows (a limit of

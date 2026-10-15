@@ -100,12 +100,17 @@ pub struct Runtime {
     gates: Mutex<HashMap<i64, Arc<Semaphore>>>,
 }
 
+/// `UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on`, read from the environment.
+pub fn allow_private_upstreams_from_env() -> bool {
+    std::env::var("UF_MCP_ALLOW_PRIVATE_UPSTREAMS")
+        .is_ok_and(|v| v.trim().eq_ignore_ascii_case("on"))
+}
+
 impl Runtime {
     pub fn from_env() -> Self {
         Self {
             limits: Limits::from_env(),
-            allow_private_upstreams: std::env::var("UF_MCP_ALLOW_PRIVATE_UPSTREAMS")
-                .is_ok_and(|v| v.trim().eq_ignore_ascii_case("on")),
+            allow_private_upstreams: allow_private_upstreams_from_env(),
             gates: Mutex::default(),
         }
     }

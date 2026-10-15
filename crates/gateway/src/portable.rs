@@ -34,7 +34,7 @@ use crate::api::trimmed_name;
 use crate::budgets::{BudgetAction, Period};
 use crate::cache::{CacheScope, RouteCache};
 use crate::catalog::validate_model_name;
-use crate::config::{same_host, validate_base_url, validate_provider_name};
+use crate::config::{is_private_host, same_host, validate_base_url, validate_provider_name};
 use crate::guardrails::{Directions, RuleSpec};
 use crate::limits::{LimitScope, RateLimit};
 use crate::mcp::{check_auth, validate_server_name, MAX_TOOL_NAME_BYTES};
@@ -1482,6 +1482,11 @@ impl Planner<'_> {
             let mut fields = BTreeMap::new();
             checked_provider("name", validate_server_name(&entry.name), &mut fields);
             checked_provider("url", validate_base_url(&entry.url), &mut fields);
+            let allow_private = crate::mcp::call::allow_private_upstreams_from_env();
+            let private_msg = "The address is on this machine or a private network. Set UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on to allow it.";
+            if !fields.contains_key("url") && !allow_private && is_private_host(&entry.url) {
+                fields.insert("url".to_string(), private_msg.to_string());
+            }
             if entry.auth_kind == "oauth" {
                 match &entry.oauth {
                     None => {
@@ -1496,6 +1501,18 @@ impl Planner<'_> {
                             validate_base_url(&o.token_url),
                             &mut fields,
                         );
+                        if !fields.contains_key("oauth.token_url") && !allow_private {
+                            if is_private_host(&o.token_url) {
+                                fields
+                                    .insert("oauth.token_url".to_string(), private_msg.to_string());
+                            } else if !o.token_url.starts_with("https://") {
+                                fields.insert(
+                                    "oauth.token_url".to_string(),
+                                    "The token URL must be https: the secret is sent to it."
+                                        .to_string(),
+                                );
+                            }
+                        }
                         if o.client_id.is_empty() || o.client_id.len() > 200 {
                             fields.insert(
                                 "oauth.client_id".to_string(),

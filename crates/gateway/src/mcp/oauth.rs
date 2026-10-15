@@ -165,10 +165,7 @@ impl TokenService {
         if let Some(t) = self.remembered(cfg, &fingerprint) {
             return Ok(t);
         }
-        let gate = Self::lock(&self.gates)
-            .entry(cfg.server_id)
-            .or_default()
-            .clone();
+        let gate = self.gate(cfg.server_id);
         let _one_at_a_time = gate.lock().await;
         if let Some(t) = self.remembered(cfg, &fingerprint) {
             return Ok(t);
@@ -228,6 +225,43 @@ impl TokenService {
         }
     }
 
+    /// Drops the token of a server that was refused, but only if it is still
+    /// the one that was refused: another call may already have renewed it, and
+    /// that new token must not be thrown away. Done under the server's gate,
+    /// so it cannot cut into a renewal in progress.
+    async fn forget_if(&self, cfg: &Config, refused: &str) {
+        let gate = self.gate(cfg.server_id);
+        let _one_at_a_time = gate.lock().await;
+        let held = Self::lock(&self.memory)
+            .get(&cfg.server_id)
+            .map(|c| c.token.clone());
+        let same = match held {
+            Some(t) => t == refused,
+            None => match self.store.mcp_token(cfg.server_id).await {
+                Ok(Some((enc, _))) => decrypt_secret(&self.cipher, &enc)
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                    .is_some_and(|v| v["t"] == refused),
+                _ => false,
+            },
+        };
+        if same {
+            self.forget(cfg.server_id).await;
+        }
+    }
+
+    fn gate(&self, server_id: i64) -> Arc<AsyncMutex<()>> {
+        Self::lock(&self.gates)
+            .entry(server_id)
+            .or_default()
+            .clone()
+    }
+
+    /// Forgets everything about a deleted server, the token and its gate.
+    pub async fn drop_server(&self, server_id: i64) {
+        self.forget(server_id).await;
+        Self::lock(&self.gates).remove(&server_id);
+    }
+
     /// Runs `call` with a bearer token. A refusal (401) gets one new token and
     /// one more try, then it is the answer.
     pub async fn with_bearer<T, F, Fut>(
@@ -242,15 +276,15 @@ impl TokenService {
         let mut refreshed = false;
         loop {
             let token = self.token(cfg).await?;
-            match call(token).await {
+            match call(token.clone()).await {
                 Err(UpstreamError::Auth) if !refreshed => {
                     refreshed = true;
-                    self.forget(cfg.server_id).await;
+                    self.forget_if(cfg, &token).await;
                 }
                 other => {
                     if matches!(other, Err(UpstreamError::Auth)) {
                         // Refused again: a token that does not work is not kept.
-                        self.forget(cfg.server_id).await;
+                        self.forget_if(cfg, &token).await;
                     }
                     return other;
                 }

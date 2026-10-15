@@ -212,6 +212,47 @@ async fn many_calls_at_once_make_one_request_to_the_token_endpoint() {
 }
 
 #[tokio::test]
+async fn many_calls_refused_at_once_renew_the_token_once() {
+    use ultrafast_gateway::mcp::upstream::UpstreamError;
+    let idp = token_endpoint(Tokens {
+        delay: Duration::from_millis(150),
+        ..tokens()
+    })
+    .await;
+    let h = harness_with_state("openai", |_| {}).await;
+    let cfg = Arc::new(config(
+        &format!("{}/token", idp.uri()),
+        "https://mcp.example/mcp",
+        Grant::ClientCredentials,
+    ));
+    // The refusals arrive one after another, some after the renewal is done.
+    let calls: Vec<_> = (0..5u64)
+        .map(|i| {
+            let (state, cfg) = (h.state.clone(), cfg.clone());
+            tokio::spawn(async move {
+                state
+                    .oauth
+                    .with_bearer(&cfg, |token| async move {
+                        let wait = if token == "tok-1" { 100 + i * 150 } else { 0 };
+                        tokio::time::sleep(Duration::from_millis(wait)).await;
+                        if token == "tok-1" {
+                            Err(UpstreamError::Auth)
+                        } else {
+                            Ok(token)
+                        }
+                    })
+                    .await
+            })
+        })
+        .collect();
+    for call in calls {
+        assert_eq!(call.await.unwrap().unwrap(), "tok-2");
+    }
+    // The first token, and one renewal for all five refusals.
+    assert_eq!(requests(&idp).await.len(), 2);
+}
+
+#[tokio::test]
 async fn a_second_process_on_the_same_database_uses_the_token_the_first_got() {
     let idp = token_endpoint(tokens()).await;
     let h = harness_with_state("openai", |_| {}).await;
