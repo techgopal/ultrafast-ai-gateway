@@ -691,6 +691,30 @@ page or `PATCH /api/keys/{id}` with `pinned_tools: ["mcp:<server>/<tool>"]` (at 
 100, each one the key can call). With fewer tools than the limit the list is
 unchanged, and the per-server endpoints always list everything.
 
+### OAuth toward a server
+
+A server that needs an OAuth token gets one from the gateway: choose **OAuth** as its
+authentication, give the token endpoint, a client id, the scopes and a secret, and pick
+the grant. `client_credentials` sends the client id and secret; `token_exchange`
+(RFC 8693) sends the stored secret as the token to exchange. Either way the token
+is asked for **the server's own address** as the resource (RFC 8707), kept until a
+minute before it ends (in memory and, encrypted, in the database, so gateways that
+share it do not each ask), and asked for once at a time per server. A server that
+answers 401 gets one new token and one more try; if that is refused too the call
+fails with "The MCP server did not accept the gateway's credentials." and the token is
+dropped. Health probes and syncs use the token like calls do. If the MCP server
+publishes `/.well-known/oauth-protected-resource` (RFC 9728) naming authorization
+servers, the token URL you give must be on one of them (checked when you save, nothing
+secret is sent); the token URL must be https unless private addresses are allowed.
+
+**Why there is no passthrough.** The MCP authorization spec forbids a server from
+accepting a token that was not issued for it, and a gateway that forwarded the
+agent's key would hand its credential to every server and tell servers who the caller
+is. So the agent's virtual key never leaves the gateway, a token the gateway holds
+never goes to an agent, and the gateway is one client per server, not the person
+behind the agent. The client secret is stored encrypted, never shown again, kept out of
+the configuration export, and asked for again when the token endpoint moves to another host.
+
 ### Trimming results (projection)
 
 A tool that answers with a whole API response costs an agent tokens it does not

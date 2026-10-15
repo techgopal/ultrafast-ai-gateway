@@ -1495,6 +1495,10 @@ export const mcpServers = {
     catalog_id: null,
     local: null,
     health: null,
+    oauth_token_url: null,
+    oauth_client_id: null,
+    oauth_scopes: null,
+    oauth_grant: null,
   },
   /** No authentication, never synced. */
   docs: {
@@ -1518,6 +1522,10 @@ export const mcpServers = {
     catalog_id: null,
     local: null,
     health: null,
+    oauth_token_url: null,
+    oauth_client_id: null,
+    oauth_scopes: null,
+    oauth_grant: null,
   },
 } satisfies Record<string, McpServer>;
 
@@ -1544,6 +1552,10 @@ export const mcpLocalServer: McpServer = {
   catalog_id: "filesystem",
   local: { phase: "running", restarts: 0 },
   health: null,
+  oauth_token_url: null,
+  oauth_client_id: null,
+  oauth_scopes: null,
+  oauth_grant: null,
 };
 
 export const mcpServerList: McpServer[] = Object.values(mcpServers);
@@ -1684,6 +1696,10 @@ export const mcpServersForMember: McpServer[] = [
     catalog_id: null,
     local: null,
     health: null,
+    oauth_token_url: null,
+    oauth_client_id: null,
+    oauth_scopes: null,
+    oauth_grant: null,
   },
 ];
 

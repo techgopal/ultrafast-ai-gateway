@@ -69,6 +69,11 @@ fn server(url: &str, kind: &str, header: Option<&str>) -> McpServerRow {
         args: Vec::new(),
         env_enc: Default::default(),
         catalog_id: None,
+        oauth_token_url: None,
+        oauth_client_id: None,
+        oauth_client_secret_enc: None,
+        oauth_scopes: None,
+        oauth_grant: None,
     }
 }
 

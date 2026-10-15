@@ -16,6 +16,9 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   AUTH_KINDS,
+  ENTER_A_CLIENT,
+  ENTER_A_TOKEN_URL,
+  OAUTH_GRANTS,
   PROGRAM_KINDS,
   isLocal,
   localCreateOf,
@@ -33,6 +36,10 @@ export const ENTER_AN_ADDRESS = "Enter the address of the server.";
 export const ENTER_A_SECRET = "Enter the secret.";
 export const ENTER_A_HEADER = "Enter the name of the header.";
 export const NAME_HINT = "Letters a to z, digits and dashes. It is part of the endpoint and cannot be changed.";
+export const TOKEN_URL_HINT =
+  "The gateway gets a token here for this server and uses it as its bearer token. The secret is sent here, so it must be https.";
+export const GRANT_HINT =
+  "Token exchange sends the secret as the token to exchange. The token is made for this server's address.";
 export const SECRET_KEPT = "Leave empty to keep the secret that is stored.";
 
 interface Values extends ServerValues {
@@ -70,6 +77,14 @@ function createOf(values: Values): CreateRequest {
     if (values.auth_header.trim() === "") throw refuse(ENTER_A_HEADER, "auth_header");
     body.auth_header = values.auth_header.trim();
   }
+  if (values.auth_kind === "oauth") {
+    if (values.oauth_token_url.trim() === "") throw refuse(ENTER_A_TOKEN_URL, "oauth_token_url");
+    if (values.oauth_client_id.trim() === "") throw refuse(ENTER_A_CLIENT, "oauth_client_id");
+    body.oauth_token_url = values.oauth_token_url.trim();
+    body.oauth_client_id = values.oauth_client_id.trim();
+    if (values.oauth_scopes.trim() !== "") body.oauth_scopes = values.oauth_scopes.trim();
+    body.oauth_grant = values.oauth_grant;
+  }
   if (values.auth_kind !== "none") {
     if (values.secret === "") throw refuse(ENTER_A_SECRET, "secret");
     body.secret = values.secret;
@@ -100,6 +115,10 @@ function ServerForm({ server, localEnabled, create, update, onDone, onCancel }: 
       auth_kind: server?.auth_kind ?? "none",
       auth_header: server?.auth_header ?? "",
       secret: "",
+      oauth_token_url: server?.oauth_token_url ?? "",
+      oauth_client_id: server?.oauth_client_id ?? "",
+      oauth_scopes: server?.oauth_scopes ?? "",
+      oauth_grant: server?.oauth_grant ?? "client_credentials",
       command: server?.command ?? "",
       args: (server?.args ?? []).join("\n"),
       env: (server?.env_names ?? []).map(
@@ -345,11 +364,89 @@ function ServerForm({ server, localEnabled, create, update, onDone, onCancel }: 
                 )}
               </form.Field>
             ) : null}
+            {kind === "oauth" ? (
+              <>
+                <form.Field name="oauth_token_url">
+                  {(field) => (
+                    <Field
+                      label="Token URL"
+                      name={field.name}
+                      required
+                      hint={TOKEN_URL_HINT}
+                      error={failure.fieldError(field.name)}
+                    >
+                      <Input
+                        type="url"
+                        autoComplete="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        className={control}
+                        value={field.state.value}
+                        onBlur={field.handleBlur}
+                        onChange={(event) => {
+                          field.handleChange(event.target.value);
+                        }}
+                      />
+                    </Field>
+                  )}
+                </form.Field>
+                <form.Field name="oauth_client_id">
+                  {(field) => (
+                    <Field label="Client id" name={field.name} required error={failure.fieldError(field.name)}>
+                      <Input
+                        autoComplete="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        className={control}
+                        value={field.state.value}
+                        onBlur={field.handleBlur}
+                        onChange={(event) => {
+                          field.handleChange(event.target.value);
+                        }}
+                      />
+                    </Field>
+                  )}
+                </form.Field>
+                <form.Field name="oauth_scopes">
+                  {(field) => (
+                    <Field label="Scopes" name={field.name} hint="Separated by spaces. Optional." error={failure.fieldError(field.name)}>
+                      <Input
+                        autoComplete="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        className={control}
+                        value={field.state.value}
+                        onBlur={field.handleBlur}
+                        onChange={(event) => {
+                          field.handleChange(event.target.value);
+                        }}
+                      />
+                    </Field>
+                  )}
+                </form.Field>
+                <form.Field name="oauth_grant">
+                  {(field) => (
+                    <Field group label="Grant" name={field.name} hint={GRANT_HINT} error={failure.fieldError(field.name)}>
+                      {({ id, name, ...described }) => (
+                        <RadioGroup {...described} id={id} name={name} value={field.state.value} onValueChange={field.handleChange}>
+                          {OAUTH_GRANTS.map(([value, label]) => (
+                            <Label key={value} htmlFor={`${id}-${value}`} className={control}>
+                              <RadioGroupItem id={`${id}-${value}`} value={value} />
+                              {label}
+                            </Label>
+                          ))}
+                        </RadioGroup>
+                      )}
+                    </Field>
+                  )}
+                </form.Field>
+              </>
+            ) : null}
             {kind === "none" ? null : (
               <form.Field name="secret">
                 {(field) => (
                   <Field
-                    label="Secret"
+                    label={kind === "oauth" ? "Client secret" : "Secret"}
                     name={field.name}
                     required={adding || server.has_secret !== true}
                     hint={adding || server.has_secret !== true ? undefined : SECRET_KEPT}

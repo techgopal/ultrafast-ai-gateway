@@ -13,7 +13,16 @@ export const AUTH_KINDS = [
   ["none", "No authentication"],
   ["bearer", "Bearer token"],
   ["header", "Custom header"],
+  ["oauth", "OAuth (the gateway gets a token)"],
 ] as const;
+
+export const OAUTH_GRANTS = [
+  ["client_credentials", "Client credentials"],
+  ["token_exchange", "Token exchange (RFC 8693)"],
+] as const;
+
+export const ENTER_A_TOKEN_URL = "Enter the address of the token endpoint.";
+export const ENTER_A_CLIENT = "Enter the client id.";
 
 /** How a call and a key's allowlist name a tool. */
 export function toolRef(server: string, tool: string): string {
@@ -61,6 +70,10 @@ export interface ServerValues {
   auth_kind: string;
   auth_header: string;
   secret: string;
+  oauth_token_url: string;
+  oauth_client_id: string;
+  oauth_scopes: string;
+  oauth_grant: string;
 }
 
 /**
@@ -76,11 +89,29 @@ export function updateOf(was: Server, values: ServerValues): UpdateRequest {
   if (values.auth_kind !== (was.auth_kind ?? "none")) body.auth_kind = values.auth_kind;
   const header = values.auth_header.trim();
   if (values.auth_kind === "header" && header !== (was.auth_header ?? "")) body.auth_header = header;
+  if (values.auth_kind === "oauth") {
+    const tokenUrl = values.oauth_token_url.trim();
+    const client = values.oauth_client_id.trim();
+    if (tokenUrl === "") throw new ConsoleRefusal(ENTER_A_TOKEN_URL, "oauth_token_url");
+    if (client === "") throw new ConsoleRefusal(ENTER_A_CLIENT, "oauth_client_id");
+    if (tokenUrl !== (was.oauth_token_url ?? "")) body.oauth_token_url = tokenUrl;
+    if (client !== (was.oauth_client_id ?? "")) body.oauth_client_id = client;
+    if (values.oauth_scopes.trim() !== (was.oauth_scopes ?? "")) body.oauth_scopes = values.oauth_scopes.trim();
+    if (values.oauth_grant !== (was.oauth_grant ?? "client_credentials")) body.oauth_grant = values.oauth_grant;
+    // The secret goes to the token endpoint, and only to the host it was given for.
+    if (
+      values.secret === "" &&
+      (was.auth_kind !== "oauth" || hostChanged(was.oauth_token_url ?? "", tokenUrl))
+    ) {
+      throw new ConsoleRefusal(was.auth_kind === "oauth" ? HOST_CHANGED : "Enter the secret.", "secret");
+    }
+  }
   if (values.secret !== "") body.secret = values.secret;
   else if (
     body.url !== undefined &&
     was.has_secret === true &&
     values.auth_kind !== "none" &&
+    values.auth_kind !== "oauth" &&
     hostChanged(was.url ?? "", url)
   ) {
     throw new ConsoleRefusal(HOST_CHANGED, "secret");

@@ -1671,7 +1671,7 @@ export interface components {
             args?: string[] | null;
             /** @description The header that carries the secret, for `auth_kind` `header`. */
             auth_header?: string | null;
-            /** @description `none` (the default), `bearer` or `header`. Only for `http`. */
+            /** @description `none` (the default), `bearer`, `header` or `oauth`. Only for `http`. */
             auth_kind?: string | null;
             /**
              * @description The program of a `stdio` server. It is run as it is, with `args`:
@@ -1695,7 +1695,27 @@ export interface components {
              *     allowlist (`mcp:{name}/{tool}`), and cannot be changed.
              */
             name: string;
-            /** @description Required with `bearer` or `header`. */
+            /** @description For `oauth`: the client the gateway is at the token endpoint. */
+            oauth_client_id?: string | null;
+            /**
+             * @description For `oauth`: `client_credentials` (the default) or `token_exchange`
+             *     (RFC 8693, with `secret` as the token to exchange). The token is made
+             *     for this server's URL (RFC 8707). The gateway never passes an agent's
+             *     key on, nor a token to an agent.
+             */
+            oauth_grant?: string | null;
+            /** @description For `oauth`: the scopes to ask for, space separated. */
+            oauth_scopes?: string | null;
+            /**
+             * @description For `auth_kind` `oauth`: where the gateway gets a token for this
+             *     server. HTTPS (unless private addresses are allowed), on an
+             *     authorization server the MCP server names, if it names any.
+             */
+            oauth_token_url?: string | null;
+            /**
+             * @description Required with `bearer`, `header` or `oauth` (the client secret, or for
+             *     `token_exchange` the token to exchange).
+             */
             secret?: string | null;
             /**
              * @description `http` (the default), or `stdio` for a program the gateway runs on its
@@ -2476,11 +2496,12 @@ export interface components {
         McpServerEntry: {
             /** @description The header name, for `auth_kind` `header`. */
             auth_header: string | null;
-            /** @description `none`, `bearer` or `header`. */
+            /** @description `none`, `bearer`, `header` or `oauth` (then `oauth` says how). */
             auth_kind?: string;
             description?: string;
             enabled?: boolean;
             name: string;
+            oauth: components["schemas"]["OauthEntry"] | null;
             /**
              * @description The tools the server offers that have settings. A tool the server
              *     does not offer yet is reported, not created.
@@ -2499,7 +2520,7 @@ export interface components {
         McpServerView: {
             args: string[] | null;
             auth_header: string | null;
-            /** @description `none`, `bearer` or `header`. */
+            /** @description `none`, `bearer`, `header` or `oauth`. */
             auth_kind: string | null;
             /** @description The catalog entry the server was made from. */
             catalog_id: string | null;
@@ -2519,6 +2540,11 @@ export interface components {
             last_sync_error: string | null;
             local: components["schemas"]["McpLocalView"] | null;
             name: string;
+            oauth_client_id: string | null;
+            oauth_grant: string | null;
+            oauth_scopes: string | null;
+            /** @description For `oauth`: the token endpoint, the client, the scopes and the grant. */
+            oauth_token_url: string | null;
             /**
              * Format: int64
              * @description How many tools: for an admin those the server offers, for anybody
@@ -2648,6 +2674,14 @@ export interface components {
             /** Format: int64 */
             provider_id: number;
             provider_name: string;
+        };
+        /** @description How the gateway signs in to an MCP server with OAuth (see `mcp::oauth`). */
+        OauthEntry: {
+            client_id: string;
+            /** @description `client_credentials` or `token_exchange`. */
+            grant: string;
+            scopes: string | null;
+            token_url: string;
         };
         OidcTestRequest: {
             /** @description The issuer to test. Left out or empty: the saved one. */
@@ -3727,6 +3761,15 @@ export interface components {
             env?: {
                 [key: string]: string;
             } | null;
+            oauth_client_id?: string | null;
+            oauth_grant?: string | null;
+            /** @description Empty removes the scopes. */
+            oauth_scopes?: string | null;
+            /**
+             * @description For `oauth`, as when the server is made. Changing the host of the
+             *     token URL needs the secret again.
+             */
+            oauth_token_url?: string | null;
             /**
              * @description Absent leaves the secret, `null` removes it, a string replaces it.
              *     Changing the host of a server that has a secret needs it again.

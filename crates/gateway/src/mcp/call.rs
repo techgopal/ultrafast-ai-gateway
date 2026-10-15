@@ -474,33 +474,12 @@ pub async fn run(call: ToolCall<'_>) -> Response {
     // 6. The upstream call.
     scope.begin_attempt(&format!("mcp:{}", server.name), tool_name);
     let started = Instant::now();
-    let target = Target {
-        url: &server.url,
-        auth_kind: &server.auth_kind,
-        auth_header: server.auth_header.as_deref(),
-        secret: server.secret.as_deref(),
-    };
     let opts = Options {
         timeout: limits.call_timeout,
         max_body_bytes: limits.max_result_bytes,
     };
-    let answered = if server.local.is_some() {
-        let params = json!({"name": tool_name, "arguments": arguments});
-        state
-            .local
-            .call(server.id, "tools/call", &params, opts)
-            .await
-    } else {
-        upstream::call_tool(
-            &state.http,
-            &target,
-            tool_name,
-            &arguments,
-            traceparent,
-            opts,
-        )
-        .await
-    };
+    let params = json!({"name": tool_name, "arguments": arguments});
+    let answered = request(state, server, "tools/call", &params, traceparent, opts).await;
     let upstream_ms = elapsed_ms(started);
     let raw = match answered {
         Ok(raw) => raw,
@@ -574,6 +553,44 @@ fn scan_message(failed: ScanFailed) -> (u16, &'static str) {
     }
 }
 
+/// One request to the upstream of a registry server: its program, or its
+/// address with the credentials it signs in with (a token the gateway got
+/// for it, for a server that uses OAuth). The credentials of the caller are
+/// never part of it.
+pub(crate) async fn request(
+    state: &AppState,
+    server: &SnapMcpServer,
+    method: &str,
+    params: &Value,
+    traceparent: Option<&str>,
+    opts: Options,
+) -> Result<Value, UpstreamError> {
+    if server.local.is_some() {
+        return state.local.call(server.id, method, params, opts).await;
+    }
+    if let Some(cfg) = &server.oauth {
+        return state
+            .oauth
+            .with_bearer(cfg, |token| async move {
+                let target = Target {
+                    url: &server.url,
+                    auth_kind: "bearer",
+                    auth_header: None,
+                    secret: Some(&token),
+                };
+                upstream::call_method(&state.http, &target, method, params, traceparent, opts).await
+            })
+            .await;
+    }
+    let target = Target {
+        url: &server.url,
+        auth_kind: &server.auth_kind,
+        auth_header: server.auth_header.as_deref(),
+        secret: server.secret.as_deref(),
+    };
+    upstream::call_method(&state.http, &target, method, params, traceparent, opts).await
+}
+
 /// The methods besides tools that are passed to the upstream as they are:
 /// what a server offers to read and to start from. They are not tools, so a
 /// key's tool grants do not cut them; a key that may call at least one tool
@@ -628,22 +645,12 @@ pub async fn proxy(
         .get("traceparent")
         .and_then(|v| v.to_str().ok())
         .filter(|t| TraceParent::parse(t).is_some());
-    let target = Target {
-        url: &server.url,
-        auth_kind: &server.auth_kind,
-        auth_header: server.auth_header.as_deref(),
-        secret: server.secret.as_deref(),
-    };
     let opts = Options {
         timeout: limits.call_timeout,
         max_body_bytes: limits.max_result_bytes,
     };
     let started = Instant::now();
-    let answered = if server.local.is_some() {
-        state.local.call(server.id, method, params, opts).await
-    } else {
-        upstream::call_method(&state.http, &target, method, params, traceparent, opts).await
-    };
+    let answered = request(state, server, method, params, traceparent, opts).await;
     let ms = elapsed_ms(started);
     match answered {
         Ok(result) => {

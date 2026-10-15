@@ -15,6 +15,7 @@ pub mod combined;
 pub mod discover;
 pub mod health;
 pub mod local;
+pub mod oauth;
 pub mod project;
 pub mod server;
 pub mod sync;
@@ -85,6 +86,9 @@ pub fn decrypt_secret(cipher: &Cipher, stored: &str) -> Option<String> {
 /// Whether the server can be called: it needs no secret, or its secret is
 /// stored and can be read.
 pub fn server_usable(row: &McpServerRow, cipher: &Cipher) -> bool {
+    if row.is_oauth() {
+        return oauth::Config::of_row(row, cipher).is_some();
+    }
     row.auth_kind == "none"
         || row
             .auth_secret_enc

@@ -168,6 +168,8 @@ pub struct SnapMcpServer {
     pub transport: String,
     /// What a stdio server is run with, its environment in the clear.
     pub local: Option<Arc<crate::mcp::local::Spec>>,
+    /// How the gateway gets a token for a server that signs in with OAuth.
+    pub oauth: Option<Arc<crate::mcp::oauth::Config>>,
 }
 
 impl fmt::Debug for SnapMcpServer {
@@ -475,7 +477,17 @@ fn load_mcp(
             .auth_secret_enc
             .as_deref()
             .and_then(|enc| crate::mcp::decrypt_secret(cipher, enc));
-        let mut usable = s.auth_kind == "none" || secret.is_some();
+        // A server that signs in with OAuth is usable when its client secret can be read.
+        let oauth = s
+            .is_oauth()
+            .then(|| crate::mcp::oauth::Config::of_row(&s, cipher))
+            .flatten()
+            .map(Arc::new);
+        let mut usable = if s.is_oauth() {
+            oauth.is_some()
+        } else {
+            s.auth_kind == "none" || secret.is_some()
+        };
         // A program is run with its command, arguments and every environment
         // value read; one that cannot be read leaves the server unusable.
         let local = if s.is_local() {
@@ -515,6 +527,7 @@ fn load_mcp(
                 usable,
                 transport: s.transport,
                 local,
+                oauth,
             },
         );
     }

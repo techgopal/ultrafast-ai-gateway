@@ -726,6 +726,7 @@ async fn the_export_has_servers_and_tool_settings_but_no_secret_and_round_trips(
             "name": "s",
             "url": "https://mcp.example.com/mcp",
             "auth_kind": "bearer",
+            "oauth": null,
             "auth_header": null,
             "description": "d",
             "enabled": true,

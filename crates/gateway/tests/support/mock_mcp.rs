@@ -95,7 +95,7 @@ struct Inner {
     call_mode: CallMode,
     call_delay: Duration,
     page_size: usize,
-    required: Option<(String, String)>,
+    required: Mutex<Option<(String, String)>>,
     failure: Mutex<Failure>,
     ttl_ms: Option<u64>,
     session: bool,
@@ -134,6 +134,11 @@ impl MockMcp {
             resources: true,
             resource_bytes: 5,
         }
+    }
+
+    /// Requests without exactly this header value answer 401 from now on.
+    pub fn set_required(&self, name: &str, value: &str) {
+        *self.inner.required.lock().unwrap() = Some((name.to_ascii_lowercase(), value.to_string()));
     }
 
     /// Changes how every request fails (or stops failing) from now on.
@@ -219,7 +224,7 @@ impl MockMcpBuilder {
             call_mode: self.call_mode,
             call_delay: self.call_delay,
             page_size: self.page_size,
-            required: self.required,
+            required: Mutex::new(self.required),
             failure: Mutex::new(self.failure),
             ttl_ms: self.ttl_ms,
             session: self.session,
@@ -278,7 +283,8 @@ async fn handle(State(s): State<Arc<Inner>>, headers: HeaderMap, body: String) -
         }
         _ => {}
     }
-    if let Some((name, value)) = &s.required {
+    let required = s.required.lock().unwrap().clone();
+    if let Some((name, value)) = &required {
         if headers.get(name).and_then(|v| v.to_str().ok()) != Some(value.as_str()) {
             return StatusCode::UNAUTHORIZED.into_response();
         }

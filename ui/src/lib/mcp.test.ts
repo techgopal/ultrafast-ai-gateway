@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import {
+  HOST_CHANGED,
   linesOf,
   projectionOf,
   projectionValues,
@@ -60,6 +61,10 @@ const same: ServerValues = {
   auth_kind: "bearer",
   auth_header: "",
   secret: "",
+  oauth_token_url: "",
+  oauth_client_id: "",
+  oauth_scopes: "",
+  oauth_grant: "client_credentials",
 };
 
 describe("updateOf", () => {
@@ -216,5 +221,52 @@ describe("the projection form", () => {
     expect(sampleOf('{"content": []}')).toEqual({ value: { content: [] } });
     expect("error" in sampleOf("[1]")).toBe(true);
     expect("error" in sampleOf("{")).toBe(true);
+  });
+});
+
+describe("OAuth in the server form", () => {
+  const was = { ...fixtures.mcpServers.github, auth_kind: "oauth", has_secret: true,
+    oauth_token_url: "https://idp.example.test/token", oauth_client_id: "gw", oauth_scopes: "a", oauth_grant: "client_credentials" };
+  const values: ServerValues = {
+    url: was.url,
+    description: was.description,
+    auth_kind: "oauth",
+    auth_header: "",
+    secret: "",
+    oauth_token_url: "https://idp.example.test/token",
+    oauth_client_id: "gw",
+    oauth_scopes: "a",
+    oauth_grant: "client_credentials",
+  };
+
+  test("an edit sends only what changed and keeps the secret", () => {
+    expect(updateOf(was, values)).toEqual({});
+    expect(updateOf(was, { ...values, oauth_scopes: "a b", oauth_grant: "token_exchange" })).toEqual({
+      oauth_scopes: "a b",
+      oauth_grant: "token_exchange",
+    });
+    expect(updateOf(was, { ...values, oauth_scopes: "" })).toEqual({ oauth_scopes: "" });
+  });
+
+  test("another host for the token endpoint needs the secret again, before any request", () => {
+    expect(() => updateOf(was, { ...values, oauth_token_url: "https://other.example.test/token" })).toThrow(
+      HOST_CHANGED,
+    );
+    expect(
+      updateOf(was, { ...values, oauth_token_url: "https://other.example.test/token", secret: "s" }),
+    ).toEqual({ oauth_token_url: "https://other.example.test/token", secret: "s" });
+  });
+
+  test("a server that did not use OAuth needs everything, secret included", () => {
+    const plain = fixtures.mcpServers.github;
+    expect(() => updateOf(plain, { ...values, oauth_token_url: "" })).toThrow("Enter the address of the token endpoint.");
+    expect(() => updateOf(plain, { ...values, oauth_client_id: " " })).toThrow("Enter the client id.");
+    expect(() => updateOf(plain, values)).toThrow("Enter the secret.");
+    expect(updateOf(plain, { ...values, secret: "s" })).toMatchObject({
+      auth_kind: "oauth",
+      oauth_token_url: "https://idp.example.test/token",
+      oauth_client_id: "gw",
+      secret: "s",
+    });
   });
 });

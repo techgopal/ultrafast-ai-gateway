@@ -25,7 +25,8 @@ use crate::mcp::sync::{sync_server, Actor, SyncError};
 use crate::mcp::{check_auth, encrypt_secret, server_usable, validate_server_name};
 use crate::snapshot::{SnapMcpServer, SnapMcpTool};
 use crate::store::{
-    AuditEntry, Grants, McpServerRow, McpToolRow, NewMcpServer, ProjectionRow, Store, StoreError,
+    AuditEntry, Grants, McpServerRow, McpToolRow, NewMcpServer, NewOauth, ProjectionRow, Store,
+    StoreError,
 };
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -50,13 +51,27 @@ pub struct CreateMcpServerRequest {
     /// `HOME` and `LANG`). The values are stored encrypted and never shown.
     #[schema(write_only)]
     env: Option<BTreeMap<String, String>>,
-    /// `none` (the default), `bearer` or `header`. Only for `http`.
+    /// `none` (the default), `bearer`, `header` or `oauth`. Only for `http`.
     auth_kind: Option<String>,
     /// The header that carries the secret, for `auth_kind` `header`.
     auth_header: Option<String>,
-    /// Required with `bearer` or `header`.
+    /// Required with `bearer`, `header` or `oauth` (the client secret, or for
+    /// `token_exchange` the token to exchange).
     #[schema(write_only)]
     secret: Option<String>,
+    /// For `auth_kind` `oauth`: where the gateway gets a token for this
+    /// server. HTTPS (unless private addresses are allowed), on an
+    /// authorization server the MCP server names, if it names any.
+    oauth_token_url: Option<String>,
+    /// For `oauth`: the client the gateway is at the token endpoint.
+    oauth_client_id: Option<String>,
+    /// For `oauth`: the scopes to ask for, space separated.
+    oauth_scopes: Option<String>,
+    /// For `oauth`: `client_credentials` (the default) or `token_exchange`
+    /// (RFC 8693, with `secret` as the token to exchange). The token is made
+    /// for this server's URL (RFC 8707). The gateway never passes an agent's
+    /// key on, nor a token to an agent.
+    oauth_grant: Option<String>,
     description: Option<String>,
     /// On by default.
     enabled: Option<bool>,
@@ -81,6 +96,13 @@ pub struct UpdateMcpServerRequest {
     #[serde(default, deserialize_with = "present")]
     #[schema(value_type = Option<String>, write_only)]
     secret: Option<Option<String>>,
+    /// For `oauth`, as when the server is made. Changing the host of the
+    /// token URL needs the secret again.
+    oauth_token_url: Option<String>,
+    oauth_client_id: Option<String>,
+    /// Empty removes the scopes.
+    oauth_scopes: Option<String>,
+    oauth_grant: Option<String>,
     description: Option<String>,
     enabled: Option<bool>,
 }
@@ -114,7 +136,7 @@ pub struct McpServerView {
     pub created_at: String,
     #[schema(required)]
     pub url: Option<String>,
-    /// `none`, `bearer` or `header`.
+    /// `none`, `bearer`, `header` or `oauth`.
     #[schema(required)]
     pub auth_kind: Option<String>,
     #[schema(required)]
@@ -145,6 +167,15 @@ pub struct McpServerView {
     /// How the program of a `stdio` server stands.
     #[schema(required)]
     pub local: Option<McpLocalView>,
+    /// For `oauth`: the token endpoint, the client, the scopes and the grant.
+    #[schema(required)]
+    pub oauth_token_url: Option<String>,
+    #[schema(required)]
+    pub oauth_client_id: Option<String>,
+    #[schema(required)]
+    pub oauth_scopes: Option<String>,
+    #[schema(required)]
+    pub oauth_grant: Option<String>,
     /// What the last health probe of this gateway process found; `null`
     /// before the first probe, and for a server that is switched off.
     #[schema(required)]
@@ -190,9 +221,15 @@ impl McpServerView {
             tool_count,
             created_at: row.created_at.clone(),
             url: Some(row.url.clone()),
-            auth_kind: Some(row.auth_kind.clone()),
+            auth_kind: Some(row.auth_kind_shown().to_string()),
             auth_header: row.auth_header.clone(),
-            has_secret: Some(row.auth_secret_enc.is_some()),
+            has_secret: Some(
+                row.auth_secret_enc.is_some() || row.oauth_client_secret_enc.is_some(),
+            ),
+            oauth_token_url: row.oauth_token_url.clone(),
+            oauth_client_id: row.oauth_client_id.clone(),
+            oauth_scopes: row.oauth_scopes.clone(),
+            oauth_grant: row.oauth_grant.clone(),
             usable: Some(usable),
             last_sync_at: row.last_sync_at.clone(),
             last_sync_error: row.last_sync_error.clone(),
@@ -452,6 +489,10 @@ pub async fn list(
                 last_sync_at: None,
                 last_sync_error: None,
                 transport: row.transport,
+                oauth_token_url: None,
+                oauth_client_id: None,
+                oauth_scopes: None,
+                oauth_grant: None,
                 command: None,
                 args: None,
                 env_names: None,
@@ -473,6 +514,59 @@ fn check_url(state: &AppState, url: &str, field: &str, fields: &mut BTreeMap<Str
         fields.insert(
             field.to_string(),
             "The address is on this machine or a private network. Set UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on to allow it.".to_string(),
+        );
+    }
+}
+
+/// What an OAuth server needs, checked: the token URL (HTTPS, not private
+/// unless allowed), the client, the scopes and the grant.
+fn check_oauth(
+    state: &AppState,
+    token_url: Option<&str>,
+    client_id: Option<&str>,
+    scopes: Option<&str>,
+    grant: &str,
+    fields: &mut BTreeMap<String, String>,
+) {
+    match token_url {
+        None => {
+            fields.insert(
+                "oauth_token_url".into(),
+                "oauth_token_url is required".into(),
+            );
+        }
+        Some(url) => {
+            check_url(state, url, "oauth_token_url", fields);
+            if !fields.contains_key("oauth_token_url")
+                && !url.starts_with("https://")
+                && !state.mcp.allow_private_upstreams
+            {
+                fields.insert(
+                    "oauth_token_url".into(),
+                    "The token URL must be https: the secret is sent to it.".into(),
+                );
+            }
+        }
+    }
+    match client_id {
+        Some(id) if !id.is_empty() && id.len() <= 200 && !id.chars().any(char::is_control) => {}
+        _ => {
+            fields.insert(
+                "oauth_client_id".into(),
+                "oauth_client_id is required, at most 200 characters".into(),
+            );
+        }
+    }
+    if scopes.is_some_and(|s| s.len() > 500 || s.chars().any(char::is_control)) {
+        fields.insert(
+            "oauth_scopes".into(),
+            "at most 500 characters, on one line".into(),
+        );
+    }
+    if crate::mcp::oauth::Grant::parse(grant).is_none() {
+        fields.insert(
+            "oauth_grant".into(),
+            "oauth_grant must be client_credentials or token_exchange".into(),
         );
     }
 }
@@ -603,20 +697,63 @@ pub async fn create(
                     "command, args and env are only for transport stdio".to_string(),
                 );
             }
-            check_auth(kind, req.auth_header.as_deref(), &mut fields);
+            let has_oauth_fields = req.oauth_token_url.is_some()
+                || req.oauth_client_id.is_some()
+                || req.oauth_scopes.is_some()
+                || req.oauth_grant.is_some();
+            if kind == "oauth" {
+                if req.auth_header.is_some() {
+                    fields.insert(
+                        "auth_header".to_string(),
+                        "auth_header is only for auth_kind header".to_string(),
+                    );
+                }
+                check_oauth(
+                    &state,
+                    req.oauth_token_url.as_deref(),
+                    req.oauth_client_id.as_deref(),
+                    req.oauth_scopes.as_deref(),
+                    req.oauth_grant.as_deref().unwrap_or("client_credentials"),
+                    &mut fields,
+                );
+                if req.secret.is_none() {
+                    fields.insert(
+                        "secret".to_string(),
+                        "secret is required with auth_kind oauth".to_string(),
+                    );
+                }
+                if fields.is_empty() {
+                    if let (Some(u), Some(t)) = (req.url.as_deref(), req.oauth_token_url.as_deref())
+                    {
+                        if let Err(message) =
+                            crate::mcp::oauth::check_token_url(&state.http, u, t).await
+                        {
+                            fields.insert("oauth_token_url".to_string(), message);
+                        }
+                    }
+                }
+            } else {
+                check_auth(kind, req.auth_header.as_deref(), &mut fields);
+                if has_oauth_fields {
+                    fields.insert(
+                        "auth_kind".to_string(),
+                        "oauth_* fields are only for auth_kind oauth".to_string(),
+                    );
+                }
+                if kind == "none" && req.secret.is_some() {
+                    fields.insert(
+                        "secret".to_string(),
+                        "secret is only for auth_kind bearer, header or oauth".to_string(),
+                    );
+                }
+                if kind != "none" && req.secret.is_none() {
+                    fields.insert(
+                        "secret".to_string(),
+                        "secret is required with auth_kind bearer, header or oauth".to_string(),
+                    );
+                }
+            }
             check_secret(req.secret.as_deref(), &mut fields);
-            if kind == "none" && req.secret.is_some() {
-                fields.insert(
-                    "secret".to_string(),
-                    "secret is only for auth_kind bearer or header".to_string(),
-                );
-            }
-            if kind != "none" && req.secret.is_none() {
-                fields.insert(
-                    "secret".to_string(),
-                    "secret is required with auth_kind bearer or header".to_string(),
-                );
-            }
             // From here on only the encrypted form exists.
             secret_enc = req
                 .secret
@@ -665,9 +802,14 @@ pub async fn create(
         .insert_server(NewMcpServer {
             name: &req.name,
             url,
-            auth_kind: kind,
+            // A server that signs in with OAuth is stored with `none` and its grant.
+            auth_kind: if kind == "oauth" { "none" } else { kind },
             auth_header: req.auth_header.as_deref(),
-            auth_secret_enc: secret_enc.as_deref(),
+            auth_secret_enc: if kind == "oauth" {
+                None
+            } else {
+                secret_enc.as_deref()
+            },
             enabled: req.enabled.unwrap_or(true),
             description,
             transport,
@@ -675,6 +817,13 @@ pub async fn create(
             args: &local.args,
             env_enc: &local.env_enc,
             catalog_id: None,
+            oauth: (kind == "oauth").then(|| NewOauth {
+                token_url: req.oauth_token_url.as_deref().unwrap_or_default(),
+                client_id: req.oauth_client_id.as_deref().unwrap_or_default(),
+                client_secret_enc: secret_enc.as_deref(),
+                scopes: req.oauth_scopes.as_deref().filter(|s| !s.is_empty()),
+                grant: req.oauth_grant.as_deref().unwrap_or("client_credentials"),
+            }),
         })
         .await;
     let id = match inserted {
@@ -779,15 +928,34 @@ pub async fn update(
         && req.command.is_none()
         && req.args.is_none()
         && req.env.is_none()
+        && req.oauth_token_url.is_none()
+        && req.oauth_client_id.is_none()
+        && req.oauth_scopes.is_none()
+        && req.oauth_grant.is_none()
     {
         return Err(ApiError::bad_request(
-            "Send at least one of url, auth_kind, auth_header, secret, command, args, env, description and enabled.",
+            "Send at least one of url, auth_kind, auth_header, secret, oauth_token_url, oauth_client_id, oauth_scopes, oauth_grant, command, args, env, description and enabled.",
         ));
     }
     if target.is_local() {
         return update_local(&state, me, &target, req).await;
     }
+    let oauth_fields = req.oauth_token_url.is_some()
+        || req.oauth_client_id.is_some()
+        || req.oauth_scopes.is_some()
+        || req.oauth_grant.is_some();
+    if req.auth_kind.as_deref() == Some("oauth")
+        || (target.is_oauth() && req.auth_kind.is_none() && req.auth_header.is_none())
+    {
+        return update_oauth(&state, me, &target, req).await;
+    }
     let mut fields = BTreeMap::new();
+    if oauth_fields {
+        fields.insert(
+            "auth_kind".to_string(),
+            "oauth_* fields are only for auth_kind oauth".to_string(),
+        );
+    }
     if req.command.is_some() || req.args.is_some() || req.env.is_some() {
         fields.insert(
             "command".to_string(),
@@ -868,7 +1036,7 @@ pub async fn update(
     if url.is_some() {
         changes.push("URL changed");
     }
-    if kind != was.auth_kind || header != was.auth_header {
+    if kind != was.auth_kind_shown() || header != was.auth_header {
         changes.push("authentication changed");
     }
     match (&secret_enc, &was.auth_secret_enc) {
@@ -924,6 +1092,10 @@ pub async fn update(
     })
     .await?;
     tx.commit().await?;
+    if was.is_oauth() {
+        // It signs in another way now.
+        state.oauth.forget(was.id).await;
+    }
     refresh_snapshot(&state).await?;
     let row = state
         .store
@@ -984,6 +1156,187 @@ pub async fn delete(
     tx.commit().await?;
     refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The edit of a server that signs in with OAuth, or the change of one to it.
+async fn update_oauth(
+    state: &Arc<AppState>,
+    me: &Principal,
+    target: &McpServerRow,
+    req: UpdateMcpServerRequest,
+) -> Result<Response, ApiError> {
+    let mut fields = BTreeMap::new();
+    if req.auth_header.is_some() {
+        fields.insert(
+            "auth_header".to_string(),
+            "auth_header is only for auth_kind header".to_string(),
+        );
+    }
+    check_secret(req.secret.as_ref().and_then(|s| s.as_deref()), &mut fields);
+    if let Some(description) = &req.description {
+        super::guardrails::check_description(description, &mut fields);
+    }
+    let url = req.url.clone().unwrap_or_else(|| target.url.clone());
+    if req.url.as_deref().is_some_and(|u| *u != target.url) {
+        check_url(state, &url, "url", &mut fields);
+    }
+    let token_url = req
+        .oauth_token_url
+        .clone()
+        .or_else(|| target.oauth_token_url.clone());
+    let client_id = req
+        .oauth_client_id
+        .clone()
+        .or_else(|| target.oauth_client_id.clone());
+    let scopes = match &req.oauth_scopes {
+        Some(s) => Some(s.clone()).filter(|s| !s.is_empty()),
+        None => target.oauth_scopes.clone(),
+    };
+    let grant = req
+        .oauth_grant
+        .clone()
+        .or_else(|| target.oauth_grant.clone())
+        .unwrap_or_else(|| "client_credentials".to_string());
+    check_oauth(
+        state,
+        token_url.as_deref(),
+        client_id.as_deref(),
+        scopes.as_deref(),
+        &grant,
+        &mut fields,
+    );
+    // The secret goes to the token endpoint, and only to the host it was given for.
+    let token_host_changed = target
+        .oauth_token_url
+        .as_deref()
+        .is_none_or(|was| token_url.as_deref().is_some_and(|now| !same_host(was, now)));
+    let secret_enc: Option<String> = match &req.secret {
+        Some(Some(s)) => Some(encrypt_secret(&state.cipher, s)),
+        Some(None) => {
+            fields.insert(
+                "secret".to_string(),
+                "A secret is needed for this auth kind.".to_string(),
+            );
+            None
+        }
+        None if !target.is_oauth() => {
+            fields.insert(
+                "secret".to_string(),
+                "secret is required with auth_kind oauth".to_string(),
+            );
+            None
+        }
+        None if token_host_changed => {
+            fields.insert(
+                "secret".to_string(),
+                "Enter the secret again: the host of the token URL changed.".to_string(),
+            );
+            None
+        }
+        None => target.oauth_client_secret_enc.clone(),
+    };
+    let moved = !target.is_oauth()
+        || token_url != target.oauth_token_url
+        || (req.url.is_some() && url != target.url);
+    if fields.is_empty() && moved {
+        if let Some(token_url) = &token_url {
+            if let Err(message) =
+                crate::mcp::oauth::check_token_url(&state.http, &url, token_url).await
+            {
+                fields.insert("oauth_token_url".to_string(), message);
+            }
+        }
+    }
+    if !fields.is_empty() {
+        return Err(ApiError::validation(fields));
+    }
+
+    let mut tx = state.store.begin_immediate().await?;
+    let was = tx
+        .server_by_id(target.id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let mut changes = Vec::new();
+    if !was.is_oauth() {
+        changes.push("authentication changed");
+    }
+    if url != was.url {
+        changes.push("URL changed");
+    }
+    if token_url != was.oauth_token_url {
+        changes.push("token URL changed");
+    }
+    if client_id != was.oauth_client_id {
+        changes.push("client changed");
+    }
+    if scopes != was.oauth_scopes {
+        changes.push("scopes changed");
+    }
+    if Some(grant.as_str()) != was.oauth_grant.as_deref() {
+        changes.push("grant changed");
+    }
+    if secret_enc != was.oauth_client_secret_enc {
+        changes.push("secret replaced");
+    }
+    let description = req.description.clone().filter(|d| *d != was.description);
+    if description.is_some() {
+        changes.push("description changed");
+    }
+    let enabled = req.enabled.filter(|e| *e != was.enabled);
+    match enabled {
+        Some(true) => changes.push("enabled"),
+        Some(false) => changes.push("disabled"),
+        None => {}
+    }
+    if changes.is_empty() {
+        drop(tx);
+        refresh_snapshot(state).await?;
+        return Ok(Json(admin_view(state, &was).await?).into_response());
+    }
+    let updated = tx
+        .update_server(
+            was.id,
+            NewMcpServer {
+                name: &was.name,
+                url: &url,
+                auth_kind: "none",
+                auth_header: None,
+                auth_secret_enc: None,
+                enabled: enabled.unwrap_or(was.enabled),
+                description: description.as_deref().unwrap_or(&was.description),
+                oauth: Some(NewOauth {
+                    token_url: token_url.as_deref().unwrap_or_default(),
+                    client_id: client_id.as_deref().unwrap_or_default(),
+                    client_secret_enc: secret_enc.as_deref(),
+                    scopes: scopes.as_deref(),
+                    grant: &grant,
+                }),
+                ..Default::default()
+            },
+        )
+        .await?;
+    if !updated {
+        return Err(ApiError::not_found());
+    }
+    tx.audit(AuditEntry {
+        actor_user_id: Some(me.user_id),
+        actor_email: &me.email,
+        action: "mcp.update",
+        target_type: "mcp_server",
+        target_id: Some(was.id),
+        summary: &format!("Updated MCP server {}: {}", was.name, changes.join(", ")),
+    })
+    .await?;
+    tx.commit().await?;
+    // A token made for what it was is not kept for what it is.
+    state.oauth.forget(was.id).await;
+    refresh_snapshot(state).await?;
+    let row = state
+        .store
+        .server_by_id(was.id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    Ok(Json(admin_view(state, &row).await?).into_response())
 }
 
 /// The edit of a local server: its program, arguments, environment,
@@ -1078,6 +1431,7 @@ async fn update_local(
                 args: &local.args,
                 env_enc: &local.env_enc,
                 catalog_id: None,
+                oauth: None,
             },
         )
         .await?;
@@ -1620,6 +1974,7 @@ pub async fn from_catalog(
             args: &local.args,
             env_enc: &local.env_enc,
             catalog_id: Some(&entry.id),
+            oauth: None,
         })
         .await;
     let id = match inserted {

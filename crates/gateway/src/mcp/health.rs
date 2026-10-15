@@ -17,7 +17,7 @@ use time::OffsetDateTime;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use super::upstream::{self, Options, Target, UpstreamError};
+use super::upstream::{self, Options, UpstreamError};
 use crate::app::AppState;
 use crate::snapshot::SnapMcpServer;
 
@@ -114,20 +114,8 @@ async fn ask(state: &AppState, server: &SnapMcpServer) -> Found {
         max_body_bytes: upstream::max_discovery_bytes(),
     };
     let started = Instant::now();
-    let answered: Result<_, UpstreamError> = if server.local.is_some() {
-        state
-            .local
-            .call(server.id, "tools/list", &json!({}), opts)
-            .await
-    } else {
-        let target = Target {
-            url: &server.url,
-            auth_kind: &server.auth_kind,
-            auth_header: server.auth_header.as_deref(),
-            secret: server.secret.as_deref(),
-        };
-        upstream::call_method(&state.http, &target, "tools/list", &json!({}), None, opts).await
-    };
+    let answered: Result<_, UpstreamError> =
+        super::call::request(state, server, "tools/list", &json!({}), None, opts).await;
     Found {
         ok: answered.is_ok(),
         latency: started.elapsed(),

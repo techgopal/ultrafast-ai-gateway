@@ -34,6 +34,12 @@ MCP catalog and local servers.
 - **Many tools.** Past `UF_MCP_LIST_INLINE_MAX` (40) tools a key gets `find_tools`
   (BM25 search over what it may call) and `describe_tools` from `POST /mcp`, plus
   the tools pinned to it (`PATCH /api/keys/{id}` `pinned_tools`, lead or admin).
+- **OAuth toward a server.** `auth_kind` `oauth` (client credentials or RFC 8693 token
+  exchange, with the server's URL as the RFC 8707 resource): tokens are cached
+  encrypted until a minute before they end, asked for once at a time per server, renewed
+  once when a server answers 401. The agent's key is never forwarded. The token URL is
+  checked against the server's protected-resource metadata (RFC 9728) when it names
+  authorization servers. Migrations SQLite 0024 and PostgreSQL 0010.
 - **Projection.** Per-tool `keep`/`drop` JSONPath lists, `max_items` and `max_bytes`
   trim a result before the guardrails read it (`PUT /api/mcp/tools/{id}/projection`,
   a preview endpoint, a console dialog, export and import); `_meta.ultrafast.projected`
@@ -41,7 +47,7 @@ MCP catalog and local servers.
   `serde_json_path` (MIT).
 - **`POST /mcp`**, one endpoint for every tool a key may call, named
   `server__tool`; a **Connect an agent** panel on the MCP tools page.
-- Migrations SQLite 0022-0023 and PostgreSQL 0008-0009 (0022/0008 also let alert
+- Migrations SQLite 0022-0024 and PostgreSQL 0008-0010 (0022/0008 also let alert
   rules have the kind `mcp_down`).
 
 ## [2.0.0-beta.5] - 2026-10-15

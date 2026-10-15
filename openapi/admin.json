@@ -11671,7 +11671,7 @@
               "string",
               "null"
             ],
-            "description": "`none` (the default), `bearer` or `header`. Only for `http`."
+            "description": "`none` (the default), `bearer`, `header` or `oauth`. Only for `http`."
           },
           "command": {
             "type": [
@@ -11712,12 +11712,40 @@
             "type": "string",
             "description": "1 to 63 characters of `a-z`, `0-9` and `-`, starting with a letter or\na digit. It is the name in the endpoint `/mcp/{name}` and in a key's\nallowlist (`mcp:{name}/{tool}`), and cannot be changed."
           },
+          "oauth_client_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `oauth`: the client the gateway is at the token endpoint."
+          },
+          "oauth_grant": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `oauth`: `client_credentials` (the default) or `token_exchange`\n(RFC 8693, with `secret` as the token to exchange). The token is made\nfor this server's URL (RFC 8707). The gateway never passes an agent's\nkey on, nor a token to an agent."
+          },
+          "oauth_scopes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `oauth`: the scopes to ask for, space separated."
+          },
+          "oauth_token_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `auth_kind` `oauth`: where the gateway gets a token for this\nserver. HTTPS (unless private addresses are allowed), on an\nauthorization server the MCP server names, if it names any."
+          },
           "secret": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Required with `bearer` or `header`.",
+            "description": "Required with `bearer`, `header` or `oauth` (the client secret, or for\n`token_exchange` the token to exchange).",
             "writeOnly": true
           },
           "transport": {
@@ -13652,6 +13680,7 @@
         "required": [
           "name",
           "url",
+          "oauth",
           "auth_header"
         ],
         "properties": {
@@ -13664,7 +13693,7 @@
           },
           "auth_kind": {
             "type": "string",
-            "description": "`none`, `bearer` or `header`."
+            "description": "`none`, `bearer`, `header` or `oauth` (then `oauth` says how)."
           },
           "description": {
             "type": "string"
@@ -13674,6 +13703,17 @@
           },
           "name": {
             "type": "string"
+          },
+          "oauth": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OauthEntry",
+                "description": "For `auth_kind` `oauth`: where the gateway gets a token. The client\nsecret is never in a file."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "tools": {
             "type": "array",
@@ -13725,6 +13765,10 @@
           "env_names",
           "catalog_id",
           "local",
+          "oauth_token_url",
+          "oauth_client_id",
+          "oauth_scopes",
+          "oauth_grant",
           "health"
         ],
         "properties": {
@@ -13748,7 +13792,7 @@
               "string",
               "null"
             ],
-            "description": "`none`, `bearer` or `header`."
+            "description": "`none`, `bearer`, `header` or `oauth`."
           },
           "catalog_id": {
             "type": [
@@ -13830,6 +13874,31 @@
           },
           "name": {
             "type": "string"
+          },
+          "oauth_client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_grant": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_scopes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_token_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `oauth`: the token endpoint, the client, the scopes and the grant."
           },
           "tool_count": {
             "type": "integer",
@@ -14206,6 +14275,35 @@
             "type": "string"
           }
         }
+      },
+      "OauthEntry": {
+        "type": "object",
+        "description": "How the gateway signs in to an MCP server with OAuth (see `mcp::oauth`).",
+        "required": [
+          "token_url",
+          "client_id",
+          "scopes",
+          "grant"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "grant": {
+            "type": "string",
+            "description": "`client_credentials` or `token_exchange`."
+          },
+          "scopes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_url": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "OidcTestRequest": {
         "type": "object",
@@ -16747,6 +16845,32 @@
               "type": "string",
               "writeOnly": true
             }
+          },
+          "oauth_client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_grant": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_scopes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Empty removes the scopes."
+          },
+          "oauth_token_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `oauth`, as when the server is made. Changing the host of the\ntoken URL needs the secret again."
           },
           "secret": {
             "type": [

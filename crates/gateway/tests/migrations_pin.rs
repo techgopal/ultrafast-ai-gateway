@@ -7,7 +7,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-const PINNED: [(&str, &str); 23] = [
+const PINNED: [(&str, &str); 24] = [
     (
         "0001_init.sql",
         "f5adcd9d9a503c65a85cc59cc69a07379bfde9c8c3ea08933428b9f7f7716896",
@@ -100,11 +100,15 @@ const PINNED: [(&str, &str); 23] = [
         "0023_mcp_scale.sql",
         "57638183c6187f8a6e8860c9044af2d80b1cd1e1677589708ddf8cc609ddfa0d",
     ),
+    (
+        "0024_mcp_oauth.sql",
+        "10f2008027580c05362864b5526ee9a633c643af2b3170661a058291420a0854",
+    ),
 ];
 
 /// The PostgreSQL migrations: the baseline folds SQLite 0001-0015 into one,
 /// so the numbers differ from there on. Pinned the same way.
-const PINNED_POSTGRES: [(&str, &str); 9] = [
+const PINNED_POSTGRES: [(&str, &str); 10] = [
     (
         "0001_baseline.sql",
         "6459fe201768aee81e11533403a897f94d0070f7bbe8164ee1ed1ad608bfbbcd",
@@ -140,6 +144,10 @@ const PINNED_POSTGRES: [(&str, &str); 9] = [
     (
         "0009_mcp_scale.sql",
         "790930e4c225db833f9db2fd11d97e1412d78190c1c5112dcc029e609a87ef24",
+    ),
+    (
+        "0010_mcp_oauth.sql",
+        "d353a799be43f6da1b69290c04cbf1dc99d0438254d2214839a012f5ee9f106d",
     ),
 ];
 

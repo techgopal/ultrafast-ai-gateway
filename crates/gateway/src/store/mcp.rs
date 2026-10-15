@@ -17,7 +17,8 @@ use super::{flag, now, write_error, Store, Tx, DEFAULT_ORG};
 
 const SERVER_SELECT: &str = "SELECT id, name, url, auth_kind, auth_header, auth_secret_enc,
         enabled, description, created_at, updated_at, last_sync_at, last_sync_error,
-        transport, command, args, env_enc, catalog_id
+        transport, command, args, env_enc, catalog_id,
+        oauth_token_url, oauth_client_id, oauth_client_secret_enc, oauth_scopes, oauth_grant
      FROM mcp_servers";
 
 const TOOL_SELECT: &str = "SELECT id, server_id, name, title, description, input_schema,
@@ -53,9 +54,32 @@ pub struct McpServerRow {
     pub env_enc: std::collections::BTreeMap<String, String>,
     /// The catalog entry the server was made from.
     pub catalog_id: Option<String>,
+    /// OAuth toward the server (the gateway is the client): the token
+    /// endpoint, the client, its secret (encrypted by the caller), the scopes
+    /// and `client_credentials` or `token_exchange`. Such a server has
+    /// `auth_kind` `none`.
+    pub oauth_token_url: Option<String>,
+    pub oauth_client_id: Option<String>,
+    pub oauth_client_secret_enc: Option<String>,
+    pub oauth_scopes: Option<String>,
+    pub oauth_grant: Option<String>,
 }
 
 impl McpServerRow {
+    /// The server signs in with OAuth.
+    pub fn is_oauth(&self) -> bool {
+        self.oauth_grant.is_some()
+    }
+
+    /// The kind of authentication as the API says it.
+    pub fn auth_kind_shown(&self) -> &str {
+        if self.is_oauth() {
+            "oauth"
+        } else {
+            &self.auth_kind
+        }
+    }
+
     pub fn is_local(&self) -> bool {
         self.transport == "stdio"
     }
@@ -92,6 +116,19 @@ pub struct NewMcpServer<'a> {
     /// Name to encrypted value.
     pub env_enc: &'a std::collections::BTreeMap<String, String>,
     pub catalog_id: Option<&'a str>,
+    pub oauth: Option<NewOauth<'a>>,
+}
+
+/// OAuth settings of a server that signs in that way.
+#[derive(Clone)]
+pub struct NewOauth<'a> {
+    pub token_url: &'a str,
+    pub client_id: &'a str,
+    /// Already encrypted.
+    pub client_secret_enc: Option<&'a str>,
+    pub scopes: Option<&'a str>,
+    /// `client_credentials` or `token_exchange`.
+    pub grant: &'a str,
 }
 
 static NO_ENV: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
@@ -111,6 +148,7 @@ impl Default for NewMcpServer<'_> {
             args: &[],
             env_enc: &NO_ENV,
             catalog_id: None,
+            oauth: None,
         }
     }
 }
@@ -203,6 +241,11 @@ fn server_from(r: &AnyRow) -> McpServerRow {
         args: serde_json::from_str(&r.get::<String, _>("args")).unwrap_or_default(),
         env_enc: serde_json::from_str(&r.get::<String, _>("env_enc")).unwrap_or_default(),
         catalog_id: r.get("catalog_id"),
+        oauth_token_url: r.get("oauth_token_url"),
+        oauth_client_id: r.get("oauth_client_id"),
+        oauth_client_secret_enc: r.get("oauth_client_secret_enc"),
+        oauth_scopes: r.get("oauth_scopes"),
+        oauth_grant: r.get("oauth_grant"),
     }
 }
 
@@ -293,8 +336,9 @@ impl Tx<'_> {
             .scalar(
                 "INSERT INTO mcp_servers (org_id, name, url, auth_kind, auth_header,
                     auth_secret_enc, enabled, description, created_at, updated_at,
-                    transport, command, args, env_enc, catalog_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                    transport, command, args, env_enc, catalog_id,
+                    oauth_token_url, oauth_client_id, oauth_client_secret_enc, oauth_scopes, oauth_grant)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
             )
             .bind(DEFAULT_ORG)
             .bind(s.name)
@@ -311,6 +355,11 @@ impl Tx<'_> {
             .bind(serde_json::to_string(s.args)?)
             .bind(serde_json::to_string(s.env_enc)?)
             .bind(s.catalog_id)
+            .bind(s.oauth.as_ref().map(|o| o.token_url))
+            .bind(s.oauth.as_ref().map(|o| o.client_id))
+            .bind(s.oauth.as_ref().and_then(|o| o.client_secret_enc))
+            .bind(s.oauth.as_ref().and_then(|o| o.scopes))
+            .bind(s.oauth.as_ref().map(|o| o.grant))
             .fetch_one(self.conn())
             .await
             .map_err(write_error)?;
@@ -324,7 +373,9 @@ impl Tx<'_> {
             .q(
                 "UPDATE mcp_servers SET name = ?, url = ?, auth_kind = ?, auth_header = ?,
                     auth_secret_enc = ?, enabled = ?, description = ?, updated_at = ?,
-                    transport = ?, command = ?, args = ?, env_enc = ?
+                    transport = ?, command = ?, args = ?, env_enc = ?,
+                    oauth_token_url = ?, oauth_client_id = ?, oauth_client_secret_enc = ?,
+                    oauth_scopes = ?, oauth_grant = ?
                  WHERE id = ? AND org_id = ?",
             )
             .bind(s.name)
@@ -339,6 +390,11 @@ impl Tx<'_> {
             .bind(s.command)
             .bind(serde_json::to_string(s.args)?)
             .bind(serde_json::to_string(s.env_enc)?)
+            .bind(s.oauth.as_ref().map(|o| o.token_url))
+            .bind(s.oauth.as_ref().map(|o| o.client_id))
+            .bind(s.oauth.as_ref().and_then(|o| o.client_secret_enc))
+            .bind(s.oauth.as_ref().and_then(|o| o.scopes))
+            .bind(s.oauth.as_ref().map(|o| o.grant))
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -635,6 +691,51 @@ pub(crate) async fn list_offered_mcp_grants_in(
         .fetch_all(&mut *conn)
         .await?;
     Ok(rows.iter().map(grant_from).collect())
+}
+
+impl Store {
+    /// The cached token of a server (encrypted) and when it ends.
+    pub async fn mcp_token(&self, server_id: i64) -> Result<Option<(String, String)>> {
+        let row = self
+            .q("SELECT token_enc, expires_at FROM mcp_tokens WHERE server_id = ?")
+            .bind(server_id)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.map(|r| (r.get("token_enc"), r.get("expires_at"))))
+    }
+
+    /// Keeps a token (encrypted by the caller) until `expires_at`
+    /// (`YYYY-MM-DD HH:MM:SS`, UTC). A server deleted meanwhile keeps nothing.
+    pub async fn put_mcp_token(
+        &self,
+        server_id: i64,
+        token_enc: &str,
+        expires_at: &str,
+    ) -> Result<()> {
+        let mut tx = self.begin().await?;
+        if tx.server_by_id(server_id).await?.is_some() {
+            tx.q(
+                "INSERT INTO mcp_tokens (server_id, token_enc, expires_at) VALUES (?, ?, ?)
+                 ON CONFLICT (server_id) DO UPDATE SET token_enc = excluded.token_enc,
+                    expires_at = excluded.expires_at",
+            )
+            .bind(server_id)
+            .bind(token_enc)
+            .bind(expires_at)
+            .execute(tx.conn())
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    /// Forgets the token of a server.
+    pub async fn delete_mcp_token(&self, server_id: i64) -> Result<()> {
+        self.q("DELETE FROM mcp_tokens WHERE server_id = ?")
+            .bind(server_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
 }
 
 /// The projections of the tools [`list_offered_mcp_tools_in`] reads.

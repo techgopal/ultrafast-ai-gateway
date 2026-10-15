@@ -46,7 +46,8 @@ pub use keys::{parse_allowed, KeyRow, LiveKey};
 pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
 pub use mcp::{
-    DiscoveredTool, McpGrantRow, McpServerRow, McpToolRow, NewMcpServer, ProjectionRow, SyncDelta,
+    DiscoveredTool, McpGrantRow, McpServerRow, McpToolRow, NewMcpServer, NewOauth, ProjectionRow,
+    SyncDelta,
 };
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use portable::ConfigState;

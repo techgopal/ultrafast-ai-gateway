@@ -171,6 +171,8 @@ pub struct AppState {
     /// The programs that local MCP servers run as. Starts nothing unless the
     /// operator asked for it (`UF_MCP_LOCAL=on`).
     pub local: Arc<crate::mcp::local::Supervisor>,
+    /// Gets and keeps the OAuth tokens of the MCP servers that need one.
+    pub oauth: Arc<crate::mcp::oauth::TokenService>,
     /// What the last health probe found about each MCP server.
     pub mcp_health: Arc<crate::mcp::health::Board>,
     /// The bearer token of `/metrics`. None: the path does not exist.
@@ -221,6 +223,11 @@ impl AppState {
             mcp: crate::mcp::call::Runtime::from_env(),
             local: Arc::new(crate::mcp::local::Supervisor::disabled()),
             mcp_health: Arc::default(),
+            oauth: Arc::new(crate::mcp::oauth::TokenService::new(
+                http_client(),
+                store.clone(),
+                cipher.clone(),
+            )),
             catalog: Arc::new(crate::mcp::catalog::Catalog::from_env(
                 store.clone(),
                 catalog_client(),
