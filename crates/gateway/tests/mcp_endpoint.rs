@@ -410,7 +410,7 @@ async fn authentication_and_methods() {
         assert_eq!(resp.headers()["allow"], "POST", "{verb}");
     }
     // Other paths under /mcp are JSON 404s, not the console.
-    let (status, _, text) = post_to(&w.h.app, "/mcp", &[], "{}").await;
+    let (status, _, text) = post_to(&w.h.app, "/mcp/", &[], "{}").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(!text.contains("<html"), "{text}");
 }
@@ -1158,4 +1158,210 @@ async fn a_server_that_is_off_or_gone_is_not_probed() {
     w.h.state.refresh().await.unwrap();
     probe_once(&w.h.state).await;
     assert_eq!(w.mock.received_method("tools/list").len(), before);
+}
+
+// ------------------------------------------------------------- combined
+
+/// A second server "other-srv" with `echo` and `b__c`, both on and granted to everyone.
+async fn second_server(w: &World) -> MockMcp {
+    let mock = MockMcp::builder()
+        .tools(vec![tool("echo", "other echo"), tool("b__c", "odd name")])
+        .start()
+        .await;
+    let mut tx = w.h.store.begin().await.unwrap();
+    let id = tx
+        .insert_server(NewMcpServer {
+            name: "other-srv",
+            url: &mock.url,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    tx.upsert_tools(id, vec![discovered("echo"), discovered("b__c")])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    for t in w.h.store.list_tools(id).await.unwrap() {
+        let mut tx = w.h.store.begin().await.unwrap();
+        tx.set_tool_enabled(t.id, true).await.unwrap();
+        tx.replace_tool_grants(
+            t.id,
+            &Grants {
+                everyone: true,
+                ..Grants::default()
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+    w.h.state.refresh().await.unwrap();
+    mock
+}
+
+async fn combined(
+    w: &World,
+    key: Option<&str>,
+    method: &str,
+    params: Value,
+) -> (StatusCode, Value) {
+    let bearer = key.map(|k| format!("Bearer {k}"));
+    let mut headers = Vec::new();
+    if let Some(b) = &bearer {
+        headers.push(("authorization", b.as_str()));
+    }
+    let body = json!({"jsonrpc": "2.0", "id": 3, "method": method, "params": params});
+    let (status, _, text) = post_to(&w.h.app, "/mcp", &headers, &body.to_string()).await;
+    (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn the_combined_endpoint_lists_every_callable_tool_by_namespaced_name_and_routes_calls() {
+    let w = world().await;
+    let other = second_server(&w).await;
+    let key = Some(w.h.key.as_str());
+    let (status, list) = combined(&w, key, "tools/list", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    // `mock/secret` is off, so it is not there.
+    assert_eq!(names, ["mock__echo", "other-srv__b__c", "other-srv__echo"]);
+    assert_eq!(
+        list["result"]["tools"][0]["_meta"]["ultrafast"]["server"],
+        "mock"
+    );
+
+    // A call goes to the server in the name, with the tool as that server knows it.
+    let (_, reply) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "other-srv__b__c", "arguments": {"q": "x"}}),
+    )
+    .await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    let calls = other.received_method("tools/call");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].body["params"]["name"], "b__c");
+    assert!(w.mock.received_method("tools/call").is_empty());
+    let (_, reply) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "mock__echo", "arguments": {}}),
+    )
+    .await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert_eq!(w.mock.received_method("tools/call").len(), 1);
+    // The record names the server and the tool as before.
+    let recs = w.h.sink.wait_for(2).await;
+    assert_eq!(recs[0].requested, "mcp:other-srv/b__c");
+    assert_eq!(recs[1].requested, "mcp:mock/echo");
+
+    // Names that lead nowhere are the same Unknown tool.
+    for name in [
+        "echo",
+        "nope__x",
+        "mock__secret",
+        "mock__",
+        "__echo",
+        "mock__nope",
+    ] {
+        let (status, reply) = combined(&w, key, "tools/call", json!({"name": name})).await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+        assert_eq!(reply["error"]["message"], "Unknown tool", "{name}: {reply}");
+    }
+    assert_eq!(w.mock.received_method("tools/call").len(), 1);
+}
+
+#[tokio::test]
+async fn the_per_server_endpoints_are_unchanged_beside_the_combined_one() {
+    let w = world().await;
+    let _other = second_server(&w).await;
+    let (_, _, reply) = rpc(&w, "tools/list", json!({})).await;
+    let names: Vec<&str> = reply["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["echo"]);
+    let (_, _, reply) = call(&w, "echo", json!({})).await;
+    assert_eq!(reply["result"]["isError"], false);
+    // A namespaced name is not a tool of a single server.
+    let (_, _, reply) = call(&w, "mock__echo", json!({})).await;
+    assert_eq!(reply["error"]["message"], "Unknown tool");
+}
+
+#[tokio::test]
+async fn the_combined_endpoint_checks_the_key_the_method_and_the_verb() {
+    let w = world().await;
+    let (status, _) = combined(&w, None, "ping", json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, reply) = combined(&w, Some("uf-sk-wrong"), "ping", json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{reply}");
+    let key = Some(w.h.key.as_str());
+    let (status, reply) = combined(
+        &w,
+        key,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply["result"]["serverInfo"]["name"], "ultrafast-gateway");
+    // Resources and prompts are per server.
+    let (_, reply) = combined(&w, key, "resources/list", json!({})).await;
+    assert_eq!(reply["error"]["code"], -32601);
+    for verb in ["GET", "DELETE"] {
+        let req = axum::http::Request::builder()
+            .method(verb)
+            .uri("/mcp")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = tower::ServiceExt::oneshot(w.h.app.clone(), req)
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED, "{verb}");
+    }
+}
+
+#[tokio::test]
+async fn a_key_limited_to_one_tool_sees_only_it_on_the_combined_endpoint() {
+    let w = world().await;
+    let _other = second_server(&w).await;
+    // A key allowed `mcp:other-srv/echo` only.
+    let key = ultrafast_gateway::secrets::generate_key();
+    let id =
+        w.h.store
+            .insert_key("narrow", &key.hash, &key.display, None)
+            .await
+            .unwrap();
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.set_key_allowed(id, Some(&["mcp:other-srv/echo".to_string()]))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let made = key.full.clone();
+    w.h.state.refresh().await.unwrap();
+    let (_, list) = combined(&w, Some(made.as_str()), "tools/list", json!({})).await;
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["other-srv__echo"]);
+    let (_, reply) = combined(
+        &w,
+        Some(made.as_str()),
+        "tools/call",
+        json!({"name": "mock__echo"}),
+    )
+    .await;
+    assert_eq!(reply["error"]["message"], "Unknown tool");
 }

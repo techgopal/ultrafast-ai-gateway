@@ -439,7 +439,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // Every other path under `/v1` is answered here, so the console's
         // pages never stand in for a model API that does not exist.
         .route("/mcp/{server}", any(crate::mcp::server::serve))
-        .route("/mcp", any(crate::mcp::server::not_found))
+        .route("/mcp", any(crate::mcp::server::serve_combined))
         .route("/mcp/", any(crate::mcp::server::not_found))
         .route("/mcp/{server}/{*rest}", any(crate::mcp::server::not_found))
         .route("/v1", any(v1_not_found))

@@ -81,6 +81,15 @@ pub async fn serve(
     Path(name): Path<String>,
     request: Request,
 ) -> Response {
+    entry(state, Some(name), request).await
+}
+
+/// `POST /mcp`: every tool the key may call, as `server__tool`.
+pub async fn serve_combined(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    entry(state, None, request).await
+}
+
+async fn entry(state: Arc<AppState>, name: Option<String>, request: Request) -> Response {
     if request.method() != Method::POST {
         let mut response = reply_error(
             StatusCode::METHOD_NOT_ALLOWED,
@@ -111,33 +120,50 @@ pub async fn serve(
             return response;
         }
     };
-    dispatch(&state, &snapshot, &key, &name, &parts.headers, body).await
+    dispatch(
+        &state,
+        &snapshot,
+        &key,
+        name.as_deref(),
+        &parts.headers,
+        body,
+    )
+    .await
 }
 
-/// The part of a request after the caller is known: the server, the tools
-/// the caller may use, the body, and the method. The console's playground
-/// comes here with the signed-in user in place of a key.
+/// The part of a request after the caller is known: the server (`None`: all
+/// of them, namespaced), the tools the caller may use, the body, and the
+/// method. The console's playground comes here with the signed-in user in
+/// place of a key.
 pub(crate) async fn dispatch(
     state: &Arc<AppState>,
     snapshot: &Arc<Snapshot>,
     key: &SnapKey,
-    name: &str,
+    name: Option<&str>,
     headers: &HeaderMap,
     body: Body,
 ) -> Response {
     let null = Value::Null;
-    let Some(server) = snapshot.mcp_server(name).filter(|s| s.enabled && s.usable) else {
-        return not_found().await;
+    // One server, with the tools of it the key may call; or none, for the
+    // combined endpoint.
+    let single = match name {
+        Some(name) => {
+            let Some(server) = snapshot.mcp_server(name).filter(|s| s.enabled && s.usable) else {
+                return not_found().await;
+            };
+            let tools: Vec<_> = snapshot
+                .mcp_tools_of(server.id)
+                .filter(|t| access::key_may_call_tool(snapshot, key, server, t))
+                .collect();
+            if tools.is_empty() {
+                // The same answer as an unknown server: a key learns nothing
+                // about servers it may not use.
+                return not_found().await;
+            }
+            Some((server, tools))
+        }
+        None => None,
     };
-    let tools: Vec<_> = snapshot
-        .mcp_tools_of(server.id)
-        .filter(|t| access::key_may_call_tool(snapshot, key, server, t))
-        .collect();
-    if tools.is_empty() {
-        // The same answer as an unknown server: a key learns nothing about
-        // servers it may not use.
-        return not_found().await;
-    }
     let bytes = match axum::body::to_bytes(body, state.mcp.limits.max_args_bytes).await {
         Ok(b) => b,
         Err(e) => {
@@ -223,27 +249,13 @@ pub(crate) async fn dispatch(
                     return response;
                 }
             };
-            let listed: Vec<Value> = tools
-                .iter()
-                .map(|t| {
-                    let mut out = json!({
-                        "name": t.name,
-                        "description": t.description,
-                        "inputSchema": t.input_schema,
-                        "_meta": {"ultrafast": {"server": server.name}},
-                    });
-                    if let Some(title) = &t.title {
-                        out["title"] = json!(title);
-                    }
-                    if let Some(schema) = &t.output_schema {
-                        out["outputSchema"] = schema.clone();
-                    }
-                    if let Some(annotations) = &t.annotations {
-                        out["annotations"] = annotations.clone();
-                    }
-                    out
-                })
-                .collect();
+            let listed: Vec<Value> = match &single {
+                Some((server, tools)) => tools
+                    .iter()
+                    .map(|t| tool_json(&server.name, t, t.name.clone()))
+                    .collect(),
+                None => super::combined::list(snapshot, key),
+            };
             reply(ok, id, json!({"tools": listed}))
         }
         "tools/call" => {
@@ -263,6 +275,13 @@ pub(crate) async fn dispatch(
                     );
                 }
             };
+            let (server, tool) = match &single {
+                Some((server, _)) => (*server, tool),
+                None => match super::combined::resolve(snapshot, tool) {
+                    Some(found) => found,
+                    None => return reply_error(ok, id, CODE_INVALID_PARAMS, "Unknown tool"),
+                },
+            };
             call::run(ToolCall {
                 state,
                 snapshot,
@@ -275,7 +294,10 @@ pub(crate) async fn dispatch(
             })
             .await
         }
-        m if call::PASSED_METHODS.contains(&m) => {
+        m if single.is_some() && call::PASSED_METHODS.contains(&m) => {
+            let Some((server, _)) = &single else {
+                return reply_error(ok, id, CODE_METHOD_NOT_FOUND, "Method not found.");
+            };
             let method = call::PASSED_METHODS.iter().find(|p| **p == m).unwrap();
             let params = match message.get("params") {
                 None | Some(Value::Null) => json!({}),
@@ -288,6 +310,26 @@ pub(crate) async fn dispatch(
         }
         _ => reply_error(ok, id, CODE_METHOD_NOT_FOUND, "Method not found."),
     }
+}
+
+/// A tool as `tools/list` shows it, under `exposed` as its name.
+pub(crate) fn tool_json(server: &str, t: &crate::snapshot::SnapMcpTool, exposed: String) -> Value {
+    let mut out = json!({
+        "name": exposed,
+        "description": t.description,
+        "inputSchema": t.input_schema,
+        "_meta": {"ultrafast": {"server": server}},
+    });
+    if let Some(title) = &t.title {
+        out["title"] = json!(title);
+    }
+    if let Some(schema) = &t.output_schema {
+        out["outputSchema"] = schema.clone();
+    }
+    if let Some(annotations) = &t.annotations {
+        out["annotations"] = annotations.clone();
+    }
+    out
 }
 
 /// A call of the console's playground for a signed-in user: the same
@@ -311,5 +353,5 @@ pub(crate) async fn playground(
         guardrails: Vec::new(),
     };
     let snapshot = state.snapshot.load_full();
-    dispatch(state, &snapshot, &key, name, &HeaderMap::new(), body).await
+    dispatch(state, &snapshot, &key, Some(name), &HeaderMap::new(), body).await
 }

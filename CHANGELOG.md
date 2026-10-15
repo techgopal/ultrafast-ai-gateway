@@ -31,6 +31,8 @@ MCP catalog and local servers.
 - **`resources/list`, `resources/read`, `prompts/list` and `prompts/get`** are
   passed to the upstream; an upstream that insists on `Mcp-Session-Id` is handled
   per call, never stored.
+- **`POST /mcp`**, one endpoint for every tool a key may call, named
+  `server__tool`; a **Connect an agent** panel on the MCP tools page.
 - Migrations SQLite 0022 and PostgreSQL 0008 (also lets alert rules have the kind
   `mcp_down`).
 

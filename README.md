@@ -656,6 +656,18 @@ and embedded resources in a result are passed on unread.
 At most 32 calls to one server run at once per process (fixed, not set by an
 environment variable); the next is refused with 503 and `Retry-After`.
 
+### One endpoint for every tool
+
+`POST /mcp` is the same MCP server for **every tool the key may call**, each named
+`server__tool` (the separator is `__` because MCP clients mangle `/`). A server
+name cannot contain `_`, so a name splits at its first `__`: tool `b__c` of server
+`a` is `a__b__c`, and no two tools collide. `tools/call` goes to the server in the
+name with the tool as that server knows it; the logs, metrics and spans still say
+`mcp:<server>/<tool>`. Access, limits, budgets and guardrails are those of
+`/mcp/{server}`, which keeps working unchanged. `resources/*` and `prompts/*` are
+per server. The MCP tools page has a **Connect an agent** panel with both kinds of
+address.
+
 ### Catalog
 
 The MCP tools page has **Add from catalog**: a short, curated list of servers

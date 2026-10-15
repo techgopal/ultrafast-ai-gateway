@@ -34,6 +34,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { isLocal, liveTools, statusOf, syncText, toolRef } from "@/lib/mcp";
 import { accessSummary, hasNoAccess } from "@/lib/models";
 import { AccessDialog } from "@/pages/McpAccess";
+import { ConnectPanel } from "@/pages/McpConnect";
 import { ServerDialog } from "@/pages/McpServer";
 
 type Server = components["schemas"]["McpServerView"];
@@ -354,6 +355,7 @@ function AdminMcp() {
           </Alert>
         )}
       </div>
+      <ConnectPanel servers={all.map((server) => server.name)} />
       <DataTable
         caption="MCP servers"
         columns={columns}
@@ -528,6 +530,7 @@ function MemberMcp() {
   return (
     <>
       <PageHeader title="MCP tools" />
+      {waiting ? null : <ConnectPanel servers={groups.map((group) => group.server.name)} />}
       {waiting ? null : groups.length === 0 ? (
         <EmptyState title="No MCP tools" description={EMPTY_FOR_MEMBER} />
       ) : (

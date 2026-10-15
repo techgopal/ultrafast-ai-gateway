@@ -182,4 +182,18 @@ describe("local MCP servers in the console", () => {
       expect(patch.bodies).toEqual([{ env: { API_TOKEN: "new-value" } }]);
     });
   });
+
+  test("the connect panel gives the address of every tool and of each server", async () => {
+    serve();
+    await renderWithApp(null, { route: "/mcp" });
+    await serversTable();
+    expect(screen.queryByRole("region", { name: "Connect an agent" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Connect an agent" }));
+    const panel = screen.getByRole("region", { name: "Connect an agent" });
+    expect(panel).toHaveTextContent(`${window.location.origin}/mcp`);
+    expect(panel).toHaveTextContent("server__tool");
+    const list = within(panel).getByRole("list", { name: "Addresses of the servers" });
+    expect(list).toHaveTextContent(`${window.location.origin}/mcp/github`);
+    expect(list).toHaveTextContent(`${window.location.origin}/mcp/files`);
+  });
 });
