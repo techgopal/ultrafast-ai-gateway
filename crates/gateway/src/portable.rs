@@ -41,8 +41,8 @@ use crate::mcp::{check_auth, validate_server_name, MAX_TOOL_NAME_BYTES};
 use crate::prompts::{self, Params, TemplateMessage, MAX_TEMPLATES, MAX_VERSIONS};
 use crate::secrets::Cipher;
 use crate::store::{
-    AuditEntry, ConfigState, Grants, GuardrailPatch, NewGuardrail, NewMcpServer, NewVersion,
-    RouteSettings, Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
+    AuditEntry, ConfigState, Grants, GuardrailPatch, McpServerRow, NewGuardrail, NewMcpServer,
+    NewVersion, RouteSettings, Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
 };
 
 /// The `format` of the file.
@@ -261,7 +261,7 @@ pub struct AlertChannelEntry {
 #[serde(deny_unknown_fields)]
 pub struct AlertRuleEntry {
     pub name: String,
-    /// `budget`, `error_rate` or `circuit_open`.
+    /// `budget`, `error_rate`, `circuit_open` or `mcp_down`.
     pub kind: String,
     #[serde(default = "yes")]
     pub enabled: bool,
@@ -896,9 +896,12 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
 
     let (alert_channels, alert_rules) = alerts_of(state);
     let mut tool_grants = grants_by_tool(state);
+    // A program to run on a host is not configuration to carry between
+    // gateways: local servers are not in the file, and a file cannot make one.
     let mut mcp_servers: Vec<McpServerEntry> = state
         .mcp_servers
         .iter()
+        .filter(|server| !server.is_local())
         .map(|server| {
             let mut tools: Vec<McpToolEntry> = state
                 .mcp_tools
@@ -1414,6 +1417,16 @@ impl Planner<'_> {
                 continue;
             }
             let existing = state.mcp_servers.iter().find(|s| s.name == entry.name);
+            if existing.is_some_and(McpServerRow::is_local) {
+                self.error(
+                    at.clone(),
+                    format!(
+                        "'{}' is a local MCP server; local servers are not part of a configuration file",
+                        entry.name
+                    ),
+                );
+                continue;
+            }
             let Some(existing) = existing else {
                 if entry.auth_kind != "none" {
                     self.report.warnings.push(Issue {
@@ -3053,6 +3066,7 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                     auth_secret_enc: None,
                     enabled: entry.enabled,
                     description: &entry.description,
+                    ..Default::default()
                 })
                 .await?;
             }
@@ -3072,6 +3086,7 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                             auth_secret_enc: secret_enc.as_deref(),
                             enabled: entry.enabled,
                             description: &entry.description,
+                            ..Default::default()
                         },
                     )
                     .await?;

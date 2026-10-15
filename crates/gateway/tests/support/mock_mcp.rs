@@ -32,6 +32,8 @@ pub enum Failure {
     Hang,
     /// `tools/list` always returns a next cursor.
     EndlessPages,
+    /// `tools/list` answers after this many milliseconds.
+    SlowList(u64),
 }
 
 /// How `tools/call` goes wrong (listing is unaffected).
@@ -94,7 +96,7 @@ struct Inner {
     call_delay: Duration,
     page_size: usize,
     required: Option<(String, String)>,
-    failure: Failure,
+    failure: Mutex<Failure>,
     ttl_ms: Option<u64>,
     session: bool,
     resources: bool,
@@ -132,6 +134,11 @@ impl MockMcp {
             resources: true,
             resource_bytes: 5,
         }
+    }
+
+    /// Changes how every request fails (or stops failing) from now on.
+    pub fn set_failure(&self, failure: Failure) {
+        *self.inner.failure.lock().unwrap() = failure;
     }
 
     /// Replaces the tool set; the next `tools/list` shows it (a changed upstream).
@@ -213,7 +220,7 @@ impl MockMcpBuilder {
             call_delay: self.call_delay,
             page_size: self.page_size,
             required: self.required,
-            failure: self.failure,
+            failure: Mutex::new(self.failure),
             ttl_ms: self.ttl_ms,
             session: self.session,
             resources: self.resources,
@@ -255,7 +262,8 @@ async fn handle(State(s): State<Arc<Inner>>, headers: HeaderMap, body: String) -
             .collect(),
         body: parsed.clone(),
     });
-    match &s.failure {
+    let failure = s.failure.lock().unwrap().clone();
+    match &failure {
         Failure::Status500 => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         Failure::Status500Text(t) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, *t).into_response()
@@ -306,7 +314,12 @@ async fn handle(State(s): State<Arc<Inner>>, headers: HeaderMap, body: String) -
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "mock-mcp", "version": "0"},
         }),
-        "tools/list" => list(&s, &parsed),
+        "tools/list" => {
+            if let Failure::SlowList(ms) = failure {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+            list(&s, &parsed)
+        }
         "tools/call" => {
             if !s.call_delay.is_zero() {
                 tokio::time::sleep(s.call_delay).await;
@@ -374,7 +387,7 @@ fn list(s: &Inner, req: &Value) -> Value {
         .and_then(|c| c.parse().ok())
         .unwrap_or(0);
     let mut out = json!({});
-    if s.failure == Failure::EndlessPages {
+    if *s.failure.lock().unwrap() == Failure::EndlessPages {
         out["tools"] = json!([tool(&format!("t{start}"), "page tool")]);
         out["nextCursor"] = json!((start + 1).to_string());
     } else {

@@ -37,6 +37,14 @@ export function hostChanged(was: string, now: string): boolean {
 /** In a few words, how the server stands. */
 export function statusOf(server: Server): string {
   if (!server.enabled) return "Disabled";
+  if (server.local !== null) {
+    const { phase, restarts } = server.local;
+    if (phase === "off") return "Local servers are off";
+    if (phase === "crashlooping") return `Crash-looping (${String(restarts)} restarts)`;
+    if (phase === "backoff") return "Restarting";
+    if (phase === "starting") return "Starting";
+    if (phase === "stopped") return "Stopped";
+  }
   if (server.usable === false) return "Secret needed";
   if (server.last_sync_error !== null) return "Sync failed";
   if (server.last_sync_at === null) return "Not synced yet";
@@ -170,4 +178,97 @@ export function searchCatalog(entries: readonly CatalogEntry[], search: string):
     const text = `${entry.id} ${entry.name} ${entry.description} ${entry.tags.join(" ")}`.toLowerCase();
     return words.every((word) => text.includes(word));
   });
+}
+
+type CreateRequest = components["schemas"]["CreateMcpServerRequest"];
+
+export const ENTER_A_COMMAND = "Enter the program to run.";
+export const ENTER_A_VARIABLE = "Enter the name of the variable.";
+export const VARIABLE_TWICE = "A variable is listed twice.";
+export const PROGRAM_KINDS = [
+  ["http", "Remote server (an address)"],
+  ["stdio", "Program on the gateway host"],
+] as const;
+
+/** One environment variable of a local server in the editor. */
+export interface EnvRow {
+  name: string;
+  /** What was typed; empty for a stored value that is kept. */
+  value: string;
+  /** Shown as dots while typing. Values are never shown again once saved. */
+  secret: boolean;
+  /** The server has a value for this name already. */
+  stored: boolean;
+}
+
+/** The lines of the arguments box, one argument each, empty lines left out. */
+export function argsOf(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line !== "");
+}
+
+/** The environment to send: name to value, an empty value keeping the stored one. */
+export function envOf(rows: readonly EnvRow[]): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const row of rows) {
+    const name = row.name.trim();
+    if (name === "") throw new ConsoleRefusal(ENTER_A_VARIABLE, "env");
+    if (name in env) throw new ConsoleRefusal(VARIABLE_TWICE, "env");
+    if (row.value === "" && !row.stored) throw new ConsoleRefusal(ENTER_A_VALUE, "env");
+    env[name] = row.value;
+  }
+  return env;
+}
+
+export interface LocalValues {
+  name: string;
+  command: string;
+  args: string;
+  description: string;
+}
+
+/** The registration of a program the gateway runs. */
+export function localCreateOf(values: LocalValues, rows: readonly EnvRow[]): CreateRequest {
+  const name = values.name.trim();
+  const command = values.command.trim();
+  if (name === "") throw new ConsoleRefusal("Enter the server's name.", "name");
+  if (command === "") throw new ConsoleRefusal(ENTER_A_COMMAND, "command");
+  const body: CreateRequest = {
+    name,
+    transport: "stdio",
+    command,
+    args: argsOf(values.args),
+    description: values.description,
+  };
+  const env = envOf(rows);
+  if (Object.keys(env).length > 0) body.env = env;
+  return body;
+}
+
+/** The change to send for an edit of a local server: only what differs. */
+export function localUpdateOf(
+  was: Server,
+  values: Omit<LocalValues, "name">,
+  rows: readonly EnvRow[],
+): UpdateRequest {
+  const body: UpdateRequest = {};
+  const command = values.command.trim();
+  if (command === "") throw new ConsoleRefusal(ENTER_A_COMMAND, "command");
+  if (command !== (was.command ?? "")) body.command = command;
+  const args = argsOf(values.args);
+  if (JSON.stringify(args) !== JSON.stringify(was.args ?? [])) body.args = args;
+  if (values.description !== was.description) body.description = values.description;
+  const env = envOf(rows);
+  const names = Object.keys(env).sort();
+  const was_ = [...(was.env_names ?? [])].sort();
+  const typed = Object.values(env).some((value) => value !== "");
+  if (typed || JSON.stringify(names) !== JSON.stringify(was_)) body.env = env;
+  return body;
+}
+
+/** Whether the server is a program the gateway runs. */
+export function isLocal(server: Server): boolean {
+  return server.transport === "stdio";
 }

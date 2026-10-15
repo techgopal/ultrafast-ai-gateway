@@ -662,6 +662,22 @@ export interface paths {
         patch: operations["mcp_servers_update"];
         trace?: never;
     };
+    "/api/mcp/servers/{id}/stderr": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["mcp_servers_stderr"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/mcp/servers/{id}/sync": {
         parameters: {
             query?: never;
@@ -1355,7 +1371,7 @@ export interface components {
             /** @description Names of channels. */
             channels?: string[];
             enabled?: boolean;
-            /** @description `budget`, `error_rate` or `circuit_open`. */
+            /** @description `budget`, `error_rate`, `circuit_open` or `mcp_down`. */
             kind: string;
             name: string;
             /**
@@ -1604,13 +1620,27 @@ export interface components {
             team_id?: number | null;
         };
         CreateMcpServerRequest: {
+            args?: string[] | null;
             /** @description The header that carries the secret, for `auth_kind` `header`. */
             auth_header?: string | null;
-            /** @description `none` (the default), `bearer` or `header`. */
+            /** @description `none` (the default), `bearer` or `header`. Only for `http`. */
             auth_kind?: string | null;
+            /**
+             * @description The program of a `stdio` server. It is run as it is, with `args`:
+             *     there is no shell.
+             */
+            command?: string | null;
             description?: string | null;
             /** @description On by default. */
             enabled?: boolean | null;
+            /**
+             * @description The environment of a `stdio` server, name to value; nothing else of
+             *     the gateway's environment reaches the program (it also gets `PATH`,
+             *     `HOME` and `LANG`). The values are stored encrypted and never shown.
+             */
+            env?: {
+                [key: string]: string;
+            } | null;
             /**
              * @description 1 to 63 characters of `a-z`, `0-9` and `-`, starting with a letter or
              *     a digit. It is the name in the endpoint `/mcp/{name}` and in a key's
@@ -1619,8 +1649,16 @@ export interface components {
             name: string;
             /** @description Required with `bearer` or `header`. */
             secret?: string | null;
-            /** @description The streamable-HTTP endpoint of the server. */
-            url: string;
+            /**
+             * @description `http` (the default), or `stdio` for a program the gateway runs on its
+             *     own host. Local servers need `UF_MCP_LOCAL=on`.
+             */
+            transport?: string | null;
+            /**
+             * @description The streamable-HTTP endpoint of the server. Required for `http`,
+             *     absent for `stdio`.
+             */
+            url?: string | null;
         };
         CreateModelRequest: {
             /** @description The provider's id for the model, 1 to 200 characters, no whitespace. */
@@ -1659,7 +1697,7 @@ export interface components {
             channel_ids: number[];
             /** @description On when left out. */
             enabled?: boolean | null;
-            /** @description `budget`, `error_rate` or `circuit_open`. */
+            /** @description `budget`, `error_rate`, `circuit_open` or `mcp_down`. */
             kind: string;
             name: string;
             /**
@@ -1667,7 +1705,8 @@ export interface components {
              *     `error_rate`: `{"scope": "gateway"|"route"|"provider"|"key",
              *     "subject": name or null, "percent": 1-100, "window_minutes": 5-60
              *     (5), "min_requests": 1-100000 (20)}`. `circuit_open`:
-             *     `{"provider": name or null, "model": name or null}`. Unknown fields
+             *     `{"provider": name or null, "model": name or null}`. `mcp_down`:
+             *     `{"server": name or null}`, any server when null. Unknown fields
              *     are refused.
              */
             params: {
@@ -2347,6 +2386,19 @@ export interface components {
              */
             source: components["schemas"]["Source"];
         };
+        /** @description How the program of a local server stands. */
+        McpLocalView: {
+            /**
+             * @description `starting`, `running`, `backoff` (died, waiting to be started again),
+             *     `crashlooping`, `stopped`, or `off` (local servers are not enabled).
+             */
+            phase: string;
+            /**
+             * Format: int32
+             * @description How many times it was started again.
+             */
+            restarts: number;
+        };
         /**
          * @description An MCP server. Its secret is never in a file: a server an import
          *     creates with authentication cannot be called until an admin enters it.
@@ -2375,18 +2427,26 @@ export interface components {
          *     call).
          */
         McpServerView: {
+            args: string[] | null;
             auth_header: string | null;
             /** @description `none`, `bearer` or `header`. */
             auth_kind: string | null;
+            /** @description The catalog entry the server was made from. */
+            catalog_id: string | null;
+            /** @description The program of a `stdio` server. */
+            command: string | null;
             created_at: string;
             description: string;
             enabled: boolean;
+            /** @description The names of the environment variables of a `stdio` server; never the values. */
+            env_names: string[] | null;
             has_secret: boolean | null;
             /** Format: int64 */
             id: number;
             last_sync_at: string | null;
             /** @description Our summary of why the last sync failed; never text from the server. */
             last_sync_error: string | null;
+            local: components["schemas"]["McpLocalView"] | null;
             name: string;
             /**
              * Format: int64
@@ -2394,9 +2454,24 @@ export interface components {
              *     else those they may call.
              */
             tool_count: number;
+            /** @description `http`, or `stdio` for a program the gateway runs. */
+            transport: string;
             url: string | null;
             /** @description The server can be called: it needs no secret, or its secret can be read. */
             usable: boolean | null;
+        };
+        /** @description What a local server's program wrote to stderr. */
+        McpStderrView: {
+            /**
+             * @description Whether the gateway keeps the output of this server now: it is
+             *     running, or waiting to be started again.
+             */
+            supervised: boolean;
+            /**
+             * @description The last 64 KiB, with the values of the server's environment replaced
+             *     by `***`.
+             */
+            text: string;
         };
         McpSyncResult: {
             /** @description Tools that are new, now switched off. */
@@ -3455,10 +3530,21 @@ export interface components {
             } | null;
         };
         UpdateMcpServerRequest: {
+            args?: string[] | null;
             auth_header?: string | null;
             auth_kind?: string | null;
+            /** @description The program of a `stdio` server. */
+            command?: string | null;
             description?: string | null;
             enabled?: boolean | null;
+            /**
+             * @description The environment of a `stdio` server. It replaces the old one: a name
+             *     that is not here is removed, a name with an empty value keeps the
+             *     value that is stored, any other value replaces it.
+             */
+            env?: {
+                [key: string]: string;
+            } | null;
             /**
              * @description Absent leaves the secret, `null` removes it, a string replaces it.
              *     Changing the host of a server that has a secret needs it again.
@@ -7010,6 +7096,65 @@ export interface operations {
             };
             /** @description Some fields are not valid, or the host changed and the secret was not sent again; `fields` names each of them. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_servers_stderr: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id of the server. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The end of what the program of a local server wrote to stderr. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpStderrView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is not a local server. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

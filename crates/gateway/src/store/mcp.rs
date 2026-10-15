@@ -16,7 +16,8 @@ use super::models::{grants_of_rows, GrantRow, Grants};
 use super::{flag, now, write_error, Store, Tx, DEFAULT_ORG};
 
 const SERVER_SELECT: &str = "SELECT id, name, url, auth_kind, auth_header, auth_secret_enc,
-        enabled, description, created_at, updated_at, last_sync_at, last_sync_error
+        enabled, description, created_at, updated_at, last_sync_at, last_sync_error,
+        transport, command, args, env_enc, catalog_id
      FROM mcp_servers";
 
 const TOOL_SELECT: &str = "SELECT id, server_id, name, title, description, input_schema,
@@ -42,6 +43,22 @@ pub struct McpServerRow {
     pub last_sync_at: Option<String>,
     /// Our own summary of why the last sync failed, never upstream text.
     pub last_sync_error: Option<String>,
+    /// `http`, or `stdio` for a program the gateway runs. A stdio server has
+    /// an empty `url`.
+    pub transport: String,
+    /// The program of a stdio server, run with `args` and no shell.
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    /// The environment values of a stdio server, each encrypted by the caller.
+    pub env_enc: std::collections::BTreeMap<String, String>,
+    /// The catalog entry the server was made from.
+    pub catalog_id: Option<String>,
+}
+
+impl McpServerRow {
+    pub fn is_local(&self) -> bool {
+        self.transport == "stdio"
+    }
 }
 
 /// Shows no URL and no secret, not even encrypted.
@@ -57,6 +74,8 @@ impl fmt::Debug for McpServerRow {
 }
 
 /// What a server is written with. `auth_secret_enc` is already encrypted.
+/// The fields after `description` are for a stdio server; `..Default::default()`
+/// gives an HTTP one.
 #[derive(Clone)]
 pub struct NewMcpServer<'a> {
     pub name: &'a str,
@@ -66,6 +85,34 @@ pub struct NewMcpServer<'a> {
     pub auth_secret_enc: Option<&'a str>,
     pub enabled: bool,
     pub description: &'a str,
+    /// `http` or `stdio`.
+    pub transport: &'a str,
+    pub command: Option<&'a str>,
+    pub args: &'a [String],
+    /// Name to encrypted value.
+    pub env_enc: &'a std::collections::BTreeMap<String, String>,
+    pub catalog_id: Option<&'a str>,
+}
+
+static NO_ENV: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+
+impl Default for NewMcpServer<'_> {
+    fn default() -> Self {
+        Self {
+            name: "",
+            url: "",
+            auth_kind: "none",
+            auth_header: None,
+            auth_secret_enc: None,
+            enabled: true,
+            description: "",
+            transport: "http",
+            command: None,
+            args: &[],
+            env_enc: &NO_ENV,
+            catalog_id: None,
+        }
+    }
 }
 
 /// A tool as stored.
@@ -127,6 +174,11 @@ fn server_from(r: &AnyRow) -> McpServerRow {
         updated_at: r.get("updated_at"),
         last_sync_at: r.get("last_sync_at"),
         last_sync_error: r.get("last_sync_error"),
+        transport: r.get("transport"),
+        command: r.get("command"),
+        args: serde_json::from_str(&r.get::<String, _>("args")).unwrap_or_default(),
+        env_enc: serde_json::from_str(&r.get::<String, _>("env_enc")).unwrap_or_default(),
+        catalog_id: r.get("catalog_id"),
     }
 }
 
@@ -187,8 +239,9 @@ impl Tx<'_> {
         let id: i64 = self
             .scalar(
                 "INSERT INTO mcp_servers (org_id, name, url, auth_kind, auth_header,
-                    auth_secret_enc, enabled, description, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                    auth_secret_enc, enabled, description, created_at, updated_at,
+                    transport, command, args, env_enc, catalog_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
             )
             .bind(DEFAULT_ORG)
             .bind(s.name)
@@ -200,19 +253,25 @@ impl Tx<'_> {
             .bind(s.description)
             .bind(at.clone())
             .bind(at)
+            .bind(s.transport)
+            .bind(s.command)
+            .bind(serde_json::to_string(s.args)?)
+            .bind(serde_json::to_string(s.env_enc)?)
+            .bind(s.catalog_id)
             .fetch_one(self.conn())
             .await
             .map_err(write_error)?;
         Ok(id)
     }
 
-    /// Replaces every field the caller can set. Returns `false` if there is
-    /// no such server; a taken name is `StoreError::Duplicate`.
+    /// Replaces every field the caller can set (the catalog entry a server
+    /// was made from is kept). Returns `false` if there is no such server; a taken name is `StoreError::Duplicate`.
     pub async fn update_server(&mut self, id: i64, s: NewMcpServer<'_>) -> Result<bool> {
         let r = self
             .q(
                 "UPDATE mcp_servers SET name = ?, url = ?, auth_kind = ?, auth_header = ?,
-                    auth_secret_enc = ?, enabled = ?, description = ?, updated_at = ?
+                    auth_secret_enc = ?, enabled = ?, description = ?, updated_at = ?,
+                    transport = ?, command = ?, args = ?, env_enc = ?
                  WHERE id = ? AND org_id = ?",
             )
             .bind(s.name)
@@ -223,6 +282,10 @@ impl Tx<'_> {
             .bind(flag(s.enabled))
             .bind(s.description)
             .bind(now())
+            .bind(s.transport)
+            .bind(s.command)
+            .bind(serde_json::to_string(s.args)?)
+            .bind(serde_json::to_string(s.env_enc)?)
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -539,6 +602,7 @@ mod tests {
             auth_secret_enc: Some("enc:abc"),
             enabled: true,
             description: "d",
+            ..Default::default()
         }
     }
 
@@ -727,5 +791,62 @@ mod tests {
             .execute(s.pool())
             .await;
         assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_local_server_round_trips_and_an_update_keeps_its_catalog_entry() {
+        let store = Store::open_in_memory().await.unwrap();
+        let args = vec!["-y".to_string(), "pkg".to_string()];
+        let env = std::collections::BTreeMap::from([("A".to_string(), "enc-a".to_string())]);
+        let mut tx = store.begin().await.unwrap();
+        let id = tx
+            .insert_server(NewMcpServer {
+                name: "local-one",
+                transport: "stdio",
+                command: Some("npx"),
+                args: &args,
+                env_enc: &env,
+                catalog_id: Some("fs"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let row = store.server_by_id(id).await.unwrap().unwrap();
+        assert!(row.is_local());
+        assert_eq!(row.url, "");
+        assert_eq!(row.command.as_deref(), Some("npx"));
+        assert_eq!(row.args, args);
+        assert_eq!(row.env_enc, env);
+        assert_eq!(row.catalog_id.as_deref(), Some("fs"));
+        let mut tx = store.begin().await.unwrap();
+        let changed = vec!["other".to_string()];
+        assert!(tx
+            .update_server(
+                id,
+                NewMcpServer {
+                    name: "local-one",
+                    transport: "stdio",
+                    command: Some("uvx"),
+                    args: &changed,
+                    env_enc: &env,
+                    catalog_id: None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap());
+        tx.commit().await.unwrap();
+        let row = store.server_by_id(id).await.unwrap().unwrap();
+        assert_eq!(row.command.as_deref(), Some("uvx"));
+        assert_eq!(row.args, changed);
+        assert_eq!(row.catalog_id.as_deref(), Some("fs"));
+        // A server made before the columns existed reads as an HTTP one.
+        let mut tx = store.begin().await.unwrap();
+        let web = tx.insert_server(server("web")).await.unwrap();
+        tx.commit().await.unwrap();
+        let web = store.server_by_id(web).await.unwrap().unwrap();
+        assert!(!web.is_local());
+        assert!(web.args.is_empty() && web.env_enc.is_empty());
     }
 }

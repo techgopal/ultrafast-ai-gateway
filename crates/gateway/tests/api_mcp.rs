@@ -38,6 +38,7 @@ async fn seed_server(org: &Org, name: &str, names: &[&str]) -> (i64, Vec<i64>) {
             auth_secret_enc: Some(&enc),
             enabled: true,
             description: "d",
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -349,6 +350,7 @@ async fn a_failed_sync_is_502_records_our_summary_and_changes_no_tool() {
             auth_secret_enc: Some(&enc),
             enabled: true,
             description: "",
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -388,6 +390,7 @@ async fn a_failed_sync_is_502_records_our_summary_and_changes_no_tool() {
             auth_secret_enc: None,
             enabled: true,
             description: "",
+            ..Default::default()
         },
     )
     .await
@@ -937,6 +940,7 @@ async fn callable_tools_of_key_follows_the_owner_the_server_and_removal() {
             auth_secret_enc: Some(&enc),
             enabled: false,
             description: "d",
+            ..Default::default()
         },
     )
     .await

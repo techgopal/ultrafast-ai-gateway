@@ -1397,10 +1397,10 @@ describe("every mutation calls its operation", () => {
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 65 of them, 31 queries, and the one that starts the audit log again", () => {
+  test("there are 65 of them, 32 queries, and the one that starts the audit log again", () => {
     expect(cases).toHaveLength(65);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(99);
+    expect(hooks).toHaveLength(100);
     // The alerts: three queries (channels, rules, events by page), and their eight mutations.
     for (const name of ["useAlertChannels", "useAlertRules", "useAlertEventsPages"]) {
       expect(hooks).toContain(name);
@@ -1408,7 +1408,7 @@ describe("every mutation calls its operation", () => {
     // The guardrails: one query (the list), and their five mutations.
     expect(hooks).toContain("useGuardrails");
     // The MCP servers: four queries (servers, the tools of one, the tools of several, the catalog), and their eight mutations.
-    for (const name of ["useMcpServers", "useMcpTools", "useMcpToolsOf", "useMcpCatalog"]) expect(hooks).toContain(name);
+    for (const name of ["useMcpServers", "useMcpTools", "useMcpToolsOf", "useMcpCatalog", "useMcpStderr"]) expect(hooks).toContain(name);
     // The playground: one query (the audio cap).
     expect(hooks).toContain("usePlaygroundConfig");
     // The prompt templates: three queries (the list, one template, one version), and their three mutations.

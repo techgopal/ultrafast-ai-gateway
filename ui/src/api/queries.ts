@@ -96,6 +96,7 @@ export const queryKeys = {
         ? ["mcp", "tools", serverId]
         : ["mcp", "tools", serverId, { keyTeamId }]) as QueryKey,
     catalog: () => ["mcp", "catalog"] as const,
+    stderr: (serverId: number) => ["mcp", "stderr", serverId] as const,
   },
   routingHealth: () => ["routing", "health"] as const,
   tokens: {
@@ -410,6 +411,13 @@ export const mcpCatalogOptions = () =>
     queryFn: ({ signal }) => api.get("/api/mcp/catalog", { signal }),
   });
 
+export const mcpStderrOptions = (serverId: number) =>
+  queryOptions({
+    queryKey: queryKeys.mcp.stderr(serverId),
+    queryFn: ({ signal }) =>
+      api.get("/api/mcp/servers/{id}/stderr", { params: { id: serverId }, signal }),
+  });
+
 export const guardrailsOptions = () =>
   queryOptions({
     queryKey: queryKeys.guardrails.list(),
@@ -520,6 +528,9 @@ export const useMcpToolsOf = (
   });
 /** Admin only. The signed catalog of MCP servers, with where it came from. */
 export const useMcpCatalog = (enabled = true) => useQuery({ ...mcpCatalogOptions(), enabled });
+/** Admin only. The end of what the program of a local MCP server wrote to stderr. */
+export const useMcpStderr = (serverId: number, enabled = true) =>
+  useQuery({ ...mcpStderrOptions(serverId), enabled });
 /** Admin only. Every guardrail, with the routes and the number of keys it is attached to. */
 export const useGuardrails = (enabled = true) => useQuery({ ...guardrailsOptions(), enabled });
 /** Every prompt template, by name, with its latest version's model and variables. Anyone signed in may read them. */

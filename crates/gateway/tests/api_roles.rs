@@ -269,6 +269,7 @@ async fn world() -> World {
             )),
             enabled: true,
             description: "",
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -753,6 +754,9 @@ fn table() -> Vec<Row> {
             |_, _| "/api/mcp/servers/from-catalog".into(),
             || Some(json!({ "catalog_id": "no-such-entry" })),
             [422, 403, 403, 401]),
+        row(112, "GET", "/api/mcp/servers/{id}/stderr", "a server that runs no program",
+            |w, _| format!("/api/mcp/servers/{}/stderr", w.mcp_server), no_body,
+            [404, 403, 403, 401]),
     ]
 }
 
@@ -827,7 +831,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=111).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=112).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -962,7 +966,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 111);
+    assert_eq!(operations, 112);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

@@ -2,7 +2,8 @@
 //!
 //! A rule's `params` are JSON, by kind: `budget` `{budget_id: id|null,
 //! percent: 1-100}`; `error_rate` `{scope, subject, percent, window_minutes
-//! 5-60 (5), min_requests 1-100000 (20)}`; `circuit_open` `{provider, model}`.
+//! 5-60 (5), min_requests 1-100000 (20)}`; `circuit_open` `{provider, model}`;
+//! `mcp_down` `{server}`.
 //! They are checked when the rule is written (unknown fields are refused) and again when the engine loads them.
 
 use serde_json::{json, Value};
@@ -10,7 +11,7 @@ use serde_json::{json, Value};
 use super::errors_window::Scope;
 
 /// The kinds of rule, as stored.
-pub const KINDS: [&str; 3] = ["budget", "error_rate", "circuit_open"];
+pub const KINDS: [&str; 4] = ["budget", "error_rate", "circuit_open", "mcp_down"];
 
 pub const DEFAULT_WINDOW_MINUTES: i64 = 5;
 pub const DEFAULT_MIN_REQUESTS: i64 = 20;
@@ -30,9 +31,17 @@ pub struct CircuitParams {
 /// Parameters, checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Params {
-    Budget { budget_id: Option<i64>, percent: u8 },
+    Budget {
+        budget_id: Option<i64>,
+        percent: u8,
+    },
     ErrorRate(ErrorRate),
     Circuit(CircuitParams),
+    /// `mcp_down`: fires when the health probe finds an MCP server down;
+    /// `None` is any server.
+    McpDown {
+        server: Option<String>,
+    },
 }
 
 /// `error_rate` parameters, checked.
@@ -213,8 +222,21 @@ pub fn parse(kind: &str, value: &Value) -> Result<Params, ParamError> {
             }
             Ok(Params::Circuit(out))
         }
+        "mcp_down" => {
+            let map = object(value, &["server"])?;
+            let server = match optional_text(map, "server")? {
+                None => None,
+                Some(name) => {
+                    crate::mcp::validate_server_name(name).map_err(|_| {
+                        ParamError::on("server", "must be the name of an MCP server")
+                    })?;
+                    Some(name.to_string())
+                }
+            };
+            Ok(Params::McpDown { server })
+        }
         _ => Err(ParamError::whole(
-            "kind must be budget, error_rate or circuit_open",
+            "kind must be budget, error_rate, circuit_open or mcp_down",
         )),
     }
 }
@@ -234,6 +256,7 @@ impl Params {
                 "min_requests": e.min_requests,
             }),
             Params::Circuit(c) => json!({ "provider": c.provider, "model": c.model }),
+            Params::McpDown { server } => json!({ "server": server }),
         }
     }
 }
@@ -336,6 +359,18 @@ mod tests {
     #[test]
     fn circuit_params_and_unknown_kinds() {
         assert!(parse("circuit_open", &json!({})).is_ok());
+        assert_eq!(
+            parse("mcp_down", &json!({})),
+            Ok(Params::McpDown { server: None })
+        );
+        assert_eq!(
+            parse("mcp_down", &json!({ "server": "git-hub" })),
+            Ok(Params::McpDown {
+                server: Some("git-hub".into())
+            })
+        );
+        assert!(parse("mcp_down", &json!({ "server": "Bad_Name" })).is_err());
+        assert!(parse("mcp_down", &json!({ "x": 1 })).is_err());
         assert!(parse(
             "circuit_open",
             &json!({ "provider": "openai", "model": null })

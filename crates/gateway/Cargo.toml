@@ -6,10 +6,18 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Ultrafast AI gateway"
+default-run = "ultrafast"
 
 [[bin]]
 name = "ultrafast"
 path = "src/main.rs"
+
+# A small MCP server over stdio, for the tests of local servers.
+[[bin]]
+name = "mcp-stdio-mock"
+path = "tests/support/mcp_stdio.rs"
+test = false
+required-features = ["test-support"]
 
 [features]
 # Test scaffolding: lets `Store::open_in_memory` return a private schema of the
@@ -55,6 +63,9 @@ utoipa.workspace = true
 utoipa-axum.workspace = true
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_lc_rs"] }
 base64 = "0.22"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 ultrafast-gateway = { path = ".", features = ["test-support"] }

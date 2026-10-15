@@ -104,6 +104,7 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(mcp::from_catalog))
         .routes(routes!(mcp::view, mcp::update, mcp::delete))
         .routes(routes!(mcp::sync))
+        .routes(routes!(mcp::stderr))
         .routes(routes!(mcp::tools_list))
         .routes(routes!(mcp::tools_update))
         .routes(routes!(mcp::tools_put_grants))

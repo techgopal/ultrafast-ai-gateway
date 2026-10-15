@@ -168,6 +168,9 @@ pub struct AppState {
     pub mcp: crate::mcp::call::Runtime,
     /// The signed catalog of MCP servers.
     pub catalog: Arc<crate::mcp::catalog::Catalog>,
+    /// The programs that local MCP servers run as. Starts nothing unless the
+    /// operator asked for it (`UF_MCP_LOCAL=on`).
+    pub local: Arc<crate::mcp::local::Supervisor>,
     /// The bearer token of `/metrics`. None: the path does not exist.
     pub metrics_token: Option<String>,
     /// The one-time code that `POST /api/setup` needs, made when the
@@ -214,6 +217,7 @@ impl AppState {
             alert_engine: None,
             metrics_token: None,
             mcp: crate::mcp::call::Runtime::from_env(),
+            local: Arc::new(crate::mcp::local::Supervisor::disabled()),
             catalog: Arc::new(crate::mcp::catalog::Catalog::from_env(
                 store.clone(),
                 catalog_client(),
@@ -343,6 +347,8 @@ impl AppState {
                 .is_some_and(|t| t.created_at == created)
         });
         self.snapshot.store(Arc::new(snapshot));
+        // Programs of local MCP servers follow the registry.
+        self.local.reconcile(&self.snapshot.load().local_servers());
         // Answers kept under the old configuration are not given under a new
         // one: a team, user or key id may be another one now, a route or a
         // provider may have changed. A refresh that finds nothing changed

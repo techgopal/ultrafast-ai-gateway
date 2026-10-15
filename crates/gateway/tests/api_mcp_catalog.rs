@@ -15,6 +15,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use mock_mcp::{tool, MockMcp};
 use serde_json::{json, Value};
 use ultrafast_gateway::mcp::catalog::{Catalog, Config};
+use ultrafast_gateway::mcp::local::{Config as LocalConfig, Supervisor};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -309,4 +310,66 @@ async fn only_admins_see_the_catalog() {
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_stdio_entry_becomes_a_local_server_with_its_env_when_local_servers_are_on() {
+    let mock = env!("CARGO_BIN_EXE_mcp-stdio-mock");
+    let entry = json!({
+        "id": "fs", "name": "Files", "description": "Files on the host.",
+        "homepage": "https://x.example", "transport": "stdio", "command": mock,
+        "args": ["--stderr", "5"],
+        "env": [{"name": "API_TOKEN", "secret": true, "help": ""}],
+        "auth": "none", "tags": []
+    });
+    let pages = publish(json!([entry])).await;
+    let url = format!("{}/v1.json", pages.uri());
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("mcp");
+    let org = org_tweaked(None, move |s| {
+        s.local = Arc::new(Supervisor::new(
+            root,
+            LocalConfig {
+                restart_min: Duration::from_millis(50),
+                ..LocalConfig::default()
+            },
+        ));
+        s.catalog = Arc::new(Catalog::new(
+            s.store.clone(),
+            reqwest::Client::new(),
+            Config {
+                off: false,
+                url,
+                refresh: Duration::from_secs(86_400),
+            },
+            key().verifying_key(),
+        ));
+    })
+    .await;
+    let maya = org.sign_in("maya").await;
+    let (_, view) = org
+        .call(Some(&maya), "POST", "/api/mcp/catalog/refresh", None)
+        .await;
+    assert_eq!(view["local_enabled"], true);
+    let (status, body) = add(
+        &org,
+        &maya,
+        json!({"catalog_id": "fs", "secrets": {"API_TOKEN": "tok-from-the-form"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["transport"], "stdio");
+    assert_eq!(body["command"], mock);
+    assert_eq!(body["args"], json!(["--stderr", "5"]));
+    assert_eq!(body["env_names"], json!(["API_TOKEN"]));
+    assert_eq!(body["catalog_id"], "fs");
+    // The program came up and was synced once.
+    assert_eq!(body["tool_count"], 6, "{body}");
+    assert!(!body.to_string().contains("tok-from-the-form"));
+    let (status, body) = add(&org, &maya, json!({"catalog_id": "fs", "name": "fs2"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        body["error"]["fields"]["secrets.API_TOKEN"].is_string(),
+        "{body}"
+    );
 }

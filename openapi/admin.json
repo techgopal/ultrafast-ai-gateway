@@ -4614,6 +4614,86 @@
         ]
       }
     },
+    "/api/mcp/servers/{id}/stderr": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_servers_stderr",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the server.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The end of what the program of a local server wrote to stderr.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpStderrView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is not a local server.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/mcp/servers/{id}/sync": {
       "post": {
         "tags": [
@@ -10545,7 +10625,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`budget`, `error_rate` or `circuit_open`."
+            "description": "`budget`, `error_rate`, `circuit_open` or `mcp_down`."
           },
           "name": {
             "type": "string"
@@ -11174,10 +11254,18 @@
       "CreateMcpServerRequest": {
         "type": "object",
         "required": [
-          "name",
-          "url"
+          "name"
         ],
         "properties": {
+          "args": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "auth_header": {
             "type": [
               "string",
@@ -11190,7 +11278,14 @@
               "string",
               "null"
             ],
-            "description": "`none` (the default), `bearer` or `header`."
+            "description": "`none` (the default), `bearer` or `header`. Only for `http`."
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The program of a `stdio` server. It is run as it is, with `args`:\nthere is no shell."
           },
           "description": {
             "type": [
@@ -11205,6 +11300,21 @@
             ],
             "description": "On by default."
           },
+          "env": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The environment of a `stdio` server, name to value; nothing else of\nthe gateway's environment reaches the program (it also gets `PATH`,\n`HOME` and `LANG`). The values are stored encrypted and never shown.",
+            "additionalProperties": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "propertyNames": {
+              "type": "string",
+              "writeOnly": true
+            }
+          },
           "name": {
             "type": "string",
             "description": "1 to 63 characters of `a-z`, `0-9` and `-`, starting with a letter or\na digit. It is the name in the endpoint `/mcp/{name}` and in a key's\nallowlist (`mcp:{name}/{tool}`), and cannot be changed."
@@ -11217,9 +11327,19 @@
             "description": "Required with `bearer` or `header`.",
             "writeOnly": true
           },
+          "transport": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`http` (the default), or `stdio` for a program the gateway runs on its\nown host. Local servers need `UF_MCP_LOCAL=on`."
+          },
           "url": {
-            "type": "string",
-            "description": "The streamable-HTTP endpoint of the server."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The streamable-HTTP endpoint of the server. Required for `http`,\nabsent for `stdio`."
           }
         },
         "additionalProperties": false
@@ -11348,14 +11468,14 @@
           },
           "kind": {
             "type": "string",
-            "description": "`budget`, `error_rate` or `circuit_open`."
+            "description": "`budget`, `error_rate`, `circuit_open` or `mcp_down`."
           },
           "name": {
             "type": "string"
           },
           "params": {
             "type": "object",
-            "description": "By kind. `budget`: `{\"budget_id\": id or null, \"percent\": 1-100}`.\n`error_rate`: `{\"scope\": \"gateway\"|\"route\"|\"provider\"|\"key\",\n\"subject\": name or null, \"percent\": 1-100, \"window_minutes\": 5-60\n(5), \"min_requests\": 1-100000 (20)}`. `circuit_open`:\n`{\"provider\": name or null, \"model\": name or null}`. Unknown fields\nare refused.",
+            "description": "By kind. `budget`: `{\"budget_id\": id or null, \"percent\": 1-100}`.\n`error_rate`: `{\"scope\": \"gateway\"|\"route\"|\"provider\"|\"key\",\n\"subject\": name or null, \"percent\": 1-100, \"window_minutes\": 5-60\n(5), \"min_requests\": 1-100000 (20)}`. `circuit_open`:\n`{\"provider\": name or null, \"model\": name or null}`. `mcp_down`:\n`{\"server\": name or null}`, any server when null. Unknown fields\nare refused.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
@@ -13078,6 +13198,26 @@
           }
         }
       },
+      "McpLocalView": {
+        "type": "object",
+        "description": "How the program of a local server stands.",
+        "required": [
+          "phase",
+          "restarts"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string",
+            "description": "`starting`, `running`, `backoff` (died, waiting to be started again),\n`crashlooping`, `stopped`, or `off` (local servers are not enabled)."
+          },
+          "restarts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many times it was started again.",
+            "minimum": 0
+          }
+        }
+      },
       "McpServerEntry": {
         "type": "object",
         "description": "An MCP server. Its secret is never in a file: a server an import\ncreates with authentication cannot be called until an admin enters it.",
@@ -13150,9 +13290,24 @@
           "has_secret",
           "usable",
           "last_sync_at",
-          "last_sync_error"
+          "last_sync_error",
+          "transport",
+          "command",
+          "args",
+          "env_names",
+          "catalog_id",
+          "local"
         ],
         "properties": {
+          "args": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "auth_header": {
             "type": [
               "string",
@@ -13166,6 +13321,20 @@
             ],
             "description": "`none`, `bearer` or `header`."
           },
+          "catalog_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The catalog entry the server was made from."
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The program of a `stdio` server."
+          },
           "created_at": {
             "type": "string"
           },
@@ -13174,6 +13343,16 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "env_names": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of the environment variables of a `stdio` server; never the values."
           },
           "has_secret": {
             "type": [
@@ -13198,6 +13377,17 @@
             ],
             "description": "Our summary of why the last sync failed; never text from the server."
           },
+          "local": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpLocalView",
+                "description": "How the program of a `stdio` server stands."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -13205,6 +13395,10 @@
             "type": "integer",
             "format": "int64",
             "description": "How many tools: for an admin those the server offers, for anybody\nelse those they may call."
+          },
+          "transport": {
+            "type": "string",
+            "description": "`http`, or `stdio` for a program the gateway runs."
           },
           "url": {
             "type": [
@@ -13218,6 +13412,24 @@
               "null"
             ],
             "description": "The server can be called: it needs no secret, or its secret can be read."
+          }
+        }
+      },
+      "McpStderrView": {
+        "type": "object",
+        "description": "What a local server's program wrote to stderr.",
+        "required": [
+          "text",
+          "supervised"
+        ],
+        "properties": {
+          "supervised": {
+            "type": "boolean",
+            "description": "Whether the gateway keeps the output of this server now: it is\nrunning, or waiting to be started again."
+          },
+          "text": {
+            "type": "string",
+            "description": "The last 64 KiB, with the values of the server's environment replaced\nby `***`."
           }
         }
       },
@@ -15789,6 +16001,15 @@
       "UpdateMcpServerRequest": {
         "type": "object",
         "properties": {
+          "args": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "auth_header": {
             "type": [
               "string",
@@ -15801,6 +16022,13 @@
               "null"
             ]
           },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The program of a `stdio` server."
+          },
           "description": {
             "type": [
               "string",
@@ -15812,6 +16040,21 @@
               "boolean",
               "null"
             ]
+          },
+          "env": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The environment of a `stdio` server. It replaces the old one: a name\nthat is not here is removed, a name with an empty value keeps the\nvalue that is stored, any other value replaces it.",
+            "additionalProperties": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "propertyNames": {
+              "type": "string",
+              "writeOnly": true
+            }
           },
           "secret": {
             "type": [

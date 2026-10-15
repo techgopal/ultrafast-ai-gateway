@@ -64,6 +64,11 @@ fn server(url: &str, kind: &str, header: Option<&str>) -> McpServerRow {
         updated_at: String::new(),
         last_sync_at: None,
         last_sync_error: None,
+        transport: "http".into(),
+        command: None,
+        args: Vec::new(),
+        env_enc: Default::default(),
+        catalog_id: None,
     }
 }
 

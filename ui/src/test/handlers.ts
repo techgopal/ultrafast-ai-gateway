@@ -484,6 +484,9 @@ export const handlers = [
     const tool = byId(fixtures.mcpToolList, call);
     return tool === undefined ? notFound() : ok("patch", "/api/mcp/tools/{id}", 200, tool);
   }),
+  handler("get", "/api/mcp/servers/{id}/stderr", () =>
+    ok("get", "/api/mcp/servers/{id}/stderr", 200, { text: "", supervised: true }),
+  ),
   handler("get", "/api/mcp/catalog", () =>
     ok("get", "/api/mcp/catalog", 200, fixtures.mcpCatalog),
   ),

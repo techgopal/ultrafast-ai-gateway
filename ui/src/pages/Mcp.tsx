@@ -3,7 +3,9 @@ import { useMemo, useState } from "react";
 import {
   useCreateMcpServer,
   useDeleteMcpServer,
+  useMcpCatalog,
   useMcpServers,
+  useMcpStderr,
   useMcpTools,
   useMcpToolsOf,
   usePutMcpToolGrants,
@@ -28,7 +30,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { liveTools, statusOf, syncText, toolRef } from "@/lib/mcp";
+import { Textarea } from "@/components/ui/textarea";
+import { isLocal, liveTools, statusOf, syncText, toolRef } from "@/lib/mcp";
 import { accessSummary, hasNoAccess } from "@/lib/models";
 import { AccessDialog } from "@/pages/McpAccess";
 import { ServerDialog } from "@/pages/McpServer";
@@ -166,6 +169,54 @@ function ToolsOfServer({
   );
 }
 
+/** The end of what the program of a local server wrote to stderr. */
+function ServerOutput({ server, onClose }: { server: Server; onClose: () => void }) {
+  const output = useMcpStderr(server.id);
+  return (
+    <section className="flex flex-col gap-3" aria-label={`Output of ${server.name}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-base font-medium">{`Output of ${server.name}`}</h2>
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            className={control}
+            onClick={() => {
+              void output.refetch();
+            }}
+          >
+            Refresh output
+          </Button>
+          <Button type="button" variant="outline" className={control} onClick={onClose}>
+            Close output
+          </Button>
+        </div>
+      </div>
+      {output.error !== null && output.data === undefined ? (
+        <ErrorState
+          error={output.error}
+          onRetry={() => {
+            void output.refetch();
+          }}
+        />
+      ) : (
+        <Textarea
+          readOnly
+          aria-label={`Output of ${server.name}, last lines`}
+          className="max-h-80 min-h-32 font-mono text-xs"
+          value={
+            output.data === undefined
+              ? "Loading..."
+              : output.data.text === ""
+                ? "Nothing written yet."
+                : output.data.text
+          }
+        />
+      )}
+    </section>
+  );
+}
+
 function AdminMcp() {
   const servers = useMcpServers();
   const create = useCreateMcpServer();
@@ -173,7 +224,9 @@ function AdminMcp() {
   const remove = useDeleteMcpServer();
   const sync = useSyncMcpServer();
   const grants = usePutMcpToolGrants();
+  const catalog = useMcpCatalog();
   const toast = useToast();
+  const [output, setOutput] = useState<Server | null>(null);
   const [asking, setAsking] = useState<Asking | null>(null);
   const [adding, setAdding] = useState(false);
   const [target, setTarget] = useState<Server | null>(null);
@@ -222,7 +275,9 @@ function AdminMcp() {
       header: "Address",
       cell: (server) => (
         <span className={`${longText} font-mono text-xs break-all md:max-w-80`}>
-          {server.url ?? ""}
+          {isLocal(server)
+            ? [server.command ?? "", ...(server.args ?? [])].join(" ")
+            : (server.url ?? "")}
         </span>
       ),
       hideOnMobile: true,
@@ -329,6 +384,18 @@ function AdminMcp() {
             >
               Sync
             </Button>
+            {isLocal(server) ? (
+              <Button
+                type="button"
+                variant="outline"
+                className={control}
+                onClick={() => {
+                  setOutput(server);
+                }}
+              >
+                Output
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="outline"
@@ -369,9 +436,18 @@ function AdminMcp() {
           />
         </section>
       )}
+      {output === null ? null : (
+        <ServerOutput
+          server={output}
+          onClose={() => {
+            setOutput(null);
+          }}
+        />
+      )}
       <ServerDialog
         open={asking === "add" || asking === "edit"}
         adding={adding}
+        localEnabled={catalog.data?.local_enabled ?? false}
         server={target}
         create={create}
         update={update}

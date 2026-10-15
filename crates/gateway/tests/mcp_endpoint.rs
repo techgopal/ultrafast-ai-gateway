@@ -71,6 +71,7 @@ async fn world_with(
             auth_secret_enc: Some(&enc),
             enabled: true,
             description: "d",
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -372,6 +373,7 @@ async fn a_disabled_or_unknown_server_is_404() {
             auth_secret_enc: Some(&enc),
             enabled: false,
             description: "d",
+            ..Default::default()
         },
     )
     .await
@@ -969,6 +971,7 @@ async fn a_passed_result_over_the_cap_is_refused_and_an_unsupported_method_is_no
             auth_secret_enc: None,
             enabled: true,
             description: "d",
+            ..Default::default()
         },
     )
     .await
@@ -997,6 +1000,7 @@ async fn a_passed_result_over_the_cap_is_refused_and_an_unsupported_method_is_no
             auth_secret_enc: None,
             enabled: true,
             description: "d",
+            ..Default::default()
         },
     )
     .await
@@ -1027,6 +1031,7 @@ async fn a_tool_call_through_the_gateway_to_a_stateful_upstream_works() {
             auth_secret_enc: None,
             enabled: true,
             description: "d",
+            ..Default::default()
         },
     )
     .await

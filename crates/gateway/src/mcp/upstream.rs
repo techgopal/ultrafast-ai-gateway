@@ -39,6 +39,9 @@ pub enum UpstreamError {
     InvalidParams,
     /// The upstream answered JSON-RPC -32601: it does not know the method.
     NotSupported,
+    /// A local server that is not running (starting, waiting to be
+    /// restarted, switched off).
+    Unavailable,
 }
 
 impl fmt::Display for UpstreamError {
@@ -52,6 +55,7 @@ impl fmt::Display for UpstreamError {
             Self::TooLarge => "the MCP server sent a response that is too large",
             Self::InvalidParams => "the MCP server rejected the arguments",
             Self::NotSupported => "the MCP server does not support this method",
+            Self::Unavailable => "the MCP server is not running",
         })
     }
 }
@@ -126,22 +130,39 @@ pub async fn discover_tools_with(
         Err(e) => return Err(e),
     }
 
-    let mut out = Discovered::default();
-    let mut cursor: Option<String> = None;
-    for page in 0.. {
-        if page == MAX_PAGES {
-            return Err(UpstreamError::TooMany);
-        }
+    let conn = &conn;
+    paginate(|cursor, page| {
         let params = match &cursor {
             Some(c) => json!({"cursor": c}),
             None => json!({}),
         };
-        let body = json!({"jsonrpc": "2.0", "id": page as u64 + 1, "method": "tools/list", "params": params});
-        let result = conn
-            .send(body, Some(page as u64 + 1))
-            .await
-            .map(|r| r.result)
-            .map_err(|f| f.error)?;
+        let body =
+            json!({"jsonrpc": "2.0", "id": page + 1, "method": "tools/list", "params": params});
+        async move {
+            conn.send(body, Some(page + 1))
+                .await
+                .map(|r| r.result)
+                .map_err(|f| f.error)
+        }
+    })
+    .await
+}
+
+/// Reads every page of `tools/list`, as `fetch(cursor, page_number)` gets
+/// them, and maps the tools the way the registry stores them. Used by the
+/// HTTP and the stdio client alike.
+pub async fn paginate<F, Fut>(mut fetch: F) -> Result<Discovered, UpstreamError>
+where
+    F: FnMut(Option<String>, u64) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, UpstreamError>>,
+{
+    let mut out = Discovered::default();
+    let mut cursor: Option<String> = None;
+    for page in 0..=MAX_PAGES {
+        if page == MAX_PAGES {
+            return Err(UpstreamError::TooMany);
+        }
+        let result = fetch(cursor.clone(), page as u64).await?;
         if page == 0 {
             out.ttl_ms = result["ttlMs"].as_i64().map(|t| t.max(0) as u64);
         }
@@ -401,7 +422,7 @@ async fn read_reply(resp: reqwest::Response, id: u64, opts: Options) -> Result<V
         .is_some_and(|v| v.starts_with("text/event-stream"));
     let mut seen = 0usize;
     let mut stream = resp.bytes_stream();
-    let mut reply = if sse {
+    let reply = if sse {
         // Events are parsed as they arrive; the matching reply ends the read.
         let mut pending: Vec<u8> = Vec::new();
         let mut data = String::new();
@@ -453,17 +474,21 @@ async fn read_reply(resp: reqwest::Response, id: u64, opts: Options) -> Result<V
         }
         message
     };
+    reply_result(reply).map_err(Failed::from)
+}
+
+/// The `result` of a JSON-RPC reply, or what its `error` means.
+pub(crate) fn reply_result(mut reply: Value) -> Result<Value, UpstreamError> {
     if let Some(error) = reply.get("error") {
         return Err(match error["code"].as_i64() {
             Some(-32602) => UpstreamError::InvalidParams,
             Some(-32601) => UpstreamError::NotSupported,
             _ => UpstreamError::Protocol,
-        }
-        .into());
+        });
     }
     match reply.get_mut("result") {
         Some(r) if r.is_object() => Ok(r.take()),
-        _ => Err(UpstreamError::Protocol.into()),
+        _ => Err(UpstreamError::Protocol),
     }
 }
 

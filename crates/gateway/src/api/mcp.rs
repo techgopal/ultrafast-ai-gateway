@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
@@ -32,9 +33,22 @@ pub struct CreateMcpServerRequest {
     /// a digit. It is the name in the endpoint `/mcp/{name}` and in a key's
     /// allowlist (`mcp:{name}/{tool}`), and cannot be changed.
     name: String,
-    /// The streamable-HTTP endpoint of the server.
-    url: String,
-    /// `none` (the default), `bearer` or `header`.
+    /// The streamable-HTTP endpoint of the server. Required for `http`,
+    /// absent for `stdio`.
+    url: Option<String>,
+    /// `http` (the default), or `stdio` for a program the gateway runs on its
+    /// own host. Local servers need `UF_MCP_LOCAL=on`.
+    transport: Option<String>,
+    /// The program of a `stdio` server. It is run as it is, with `args`:
+    /// there is no shell.
+    command: Option<String>,
+    args: Option<Vec<String>>,
+    /// The environment of a `stdio` server, name to value; nothing else of
+    /// the gateway's environment reaches the program (it also gets `PATH`,
+    /// `HOME` and `LANG`). The values are stored encrypted and never shown.
+    #[schema(write_only)]
+    env: Option<BTreeMap<String, String>>,
+    /// `none` (the default), `bearer` or `header`. Only for `http`.
     auth_kind: Option<String>,
     /// The header that carries the secret, for `auth_kind` `header`.
     auth_header: Option<String>,
@@ -50,6 +64,14 @@ pub struct CreateMcpServerRequest {
 #[serde(deny_unknown_fields)]
 pub struct UpdateMcpServerRequest {
     url: Option<String>,
+    /// The program of a `stdio` server.
+    command: Option<String>,
+    args: Option<Vec<String>>,
+    /// The environment of a `stdio` server. It replaces the old one: a name
+    /// that is not here is removed, a name with an empty value keeps the
+    /// value that is stored, any other value replaces it.
+    #[schema(write_only)]
+    env: Option<BTreeMap<String, String>>,
     auth_kind: Option<String>,
     auth_header: Option<String>,
     /// Absent leaves the secret, `null` removes it, a string replaces it.
@@ -105,10 +127,41 @@ pub struct McpServerView {
     /// Our summary of why the last sync failed; never text from the server.
     #[schema(required)]
     pub last_sync_error: Option<String>,
+    /// `http`, or `stdio` for a program the gateway runs.
+    pub transport: String,
+    /// The program of a `stdio` server.
+    #[schema(required)]
+    pub command: Option<String>,
+    #[schema(required)]
+    pub args: Option<Vec<String>>,
+    /// The names of the environment variables of a `stdio` server; never the values.
+    #[schema(required)]
+    pub env_names: Option<Vec<String>>,
+    /// The catalog entry the server was made from.
+    #[schema(required)]
+    pub catalog_id: Option<String>,
+    /// How the program of a `stdio` server stands.
+    #[schema(required)]
+    pub local: Option<McpLocalView>,
+}
+
+/// How the program of a local server stands.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct McpLocalView {
+    /// `starting`, `running`, `backoff` (died, waiting to be started again),
+    /// `crashlooping`, `stopped`, or `off` (local servers are not enabled).
+    pub phase: String,
+    /// How many times it was started again.
+    pub restarts: u32,
 }
 
 impl McpServerView {
-    fn admin(row: &McpServerRow, tool_count: i64, usable: bool) -> Self {
+    fn admin(
+        row: &McpServerRow,
+        tool_count: i64,
+        usable: bool,
+        local: Option<McpLocalView>,
+    ) -> Self {
         Self {
             id: row.id,
             name: row.name.clone(),
@@ -123,6 +176,14 @@ impl McpServerView {
             usable: Some(usable),
             last_sync_at: row.last_sync_at.clone(),
             last_sync_error: row.last_sync_error.clone(),
+            transport: row.transport.clone(),
+            command: row.command.clone(),
+            args: row.is_local().then(|| row.args.clone()),
+            env_names: row
+                .is_local()
+                .then(|| row.env_enc.keys().cloned().collect()),
+            catalog_id: row.catalog_id.clone(),
+            local,
         }
     }
 }
@@ -241,12 +302,37 @@ async fn tool_counts(store: &Store, row: &McpServerRow) -> Result<i64, ApiError>
     Ok(tools.iter().filter(|t| t.removed_at.is_none()).count() as i64)
 }
 
+fn local_view(state: &AppState, row: &McpServerRow) -> Option<McpLocalView> {
+    if !row.is_local() {
+        return None;
+    }
+    use crate::mcp::local::Phase;
+    Some(match state.local.health(row.id) {
+        Some(h) => McpLocalView {
+            phase: match h.phase {
+                Phase::Starting => "starting",
+                Phase::Running => "running",
+                Phase::Backoff => "backoff",
+                Phase::CrashLooping => "crashlooping",
+                Phase::Stopped => "stopped",
+            }
+            .to_string(),
+            restarts: h.restarts,
+        },
+        None => McpLocalView {
+            phase: "off".to_string(),
+            restarts: 0,
+        },
+    })
+}
+
 async fn admin_view(state: &AppState, row: &McpServerRow) -> Result<McpServerView, ApiError> {
     let count = tool_counts(&state.store, row).await?;
     Ok(McpServerView::admin(
         row,
         count,
         server_usable(row, &state.cipher),
+        local_view(state, row),
     ))
 }
 
@@ -331,6 +417,12 @@ pub async fn list(
                 usable: None,
                 last_sync_at: None,
                 last_sync_error: None,
+                transport: row.transport,
+                command: None,
+                args: None,
+                env_names: None,
+                catalog_id: None,
+                local: None,
             });
         }
     }
@@ -347,6 +439,74 @@ fn check_url(state: &AppState, url: &str, field: &str, fields: &mut BTreeMap<Str
             field.to_string(),
             "The address is on this machine or a private network. Set UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on to allow it.".to_string(),
         );
+    }
+}
+
+const LOCAL_OFF: &str =
+    "Local servers are off. Start the gateway with UF_MCP_LOCAL=on, not as root.";
+
+/// The checked and encrypted fields of a local server.
+#[derive(Default)]
+struct LocalFields {
+    command: Option<String>,
+    args: Vec<String>,
+    env_enc: BTreeMap<String, String>,
+}
+
+impl LocalFields {
+    /// Checks a program and its environment. `env` is name to value; an empty
+    /// value keeps the one in `stored` (name to encrypted value), which is
+    /// how an edit leaves a secret alone.
+    fn checked(
+        state: &AppState,
+        command: Option<&str>,
+        args: &[String],
+        env: &BTreeMap<String, String>,
+        stored: &BTreeMap<String, String>,
+        fields: &mut BTreeMap<String, String>,
+    ) -> Self {
+        match command {
+            Some(c) => crate::mcp::check_command(c, args, fields),
+            None => {
+                fields.insert("command".to_string(), "command is required".to_string());
+            }
+        }
+        if env.len() > crate::mcp::MAX_ENV_VARS {
+            fields.insert(
+                "env".to_string(),
+                format!("at most {} variables", crate::mcp::MAX_ENV_VARS),
+            );
+        }
+        let mut env_enc = BTreeMap::new();
+        for (name, value) in env {
+            if let Err(e) = crate::mcp::check_env_name(name) {
+                fields.insert(format!("env.{name}"), e.to_string());
+            } else if value.is_empty() {
+                match stored.get(name) {
+                    Some(old) => {
+                        env_enc.insert(name.clone(), old.clone());
+                    }
+                    None => {
+                        fields.insert(format!("env.{name}"), "A value is required.".to_string());
+                    }
+                }
+            } else if value.len() > crate::mcp::MAX_ENV_VALUE_BYTES || value.contains('\0') {
+                fields.insert(
+                    format!("env.{name}"),
+                    format!("at most {} bytes", crate::mcp::MAX_ENV_VALUE_BYTES),
+                );
+            } else {
+                env_enc.insert(
+                    name.clone(),
+                    crate::mcp::encrypt_value(&state.cipher, value),
+                );
+            }
+        }
+        Self {
+            command: command.map(String::from),
+            args: args.to_vec(),
+            env_enc,
+        }
     }
 }
 
@@ -383,44 +543,103 @@ pub async fn create(
     require(me, &Action::ManageMcp)?;
 
     let kind = req.auth_kind.as_deref().unwrap_or("none");
+    let transport = req.transport.as_deref().unwrap_or("http");
     let mut fields = BTreeMap::new();
     checked("name", validate_server_name(&req.name), &mut fields);
-    check_url(&state, &req.url, "url", &mut fields);
-    check_auth(kind, req.auth_header.as_deref(), &mut fields);
-    check_secret(req.secret.as_deref(), &mut fields);
-    if kind == "none" && req.secret.is_some() {
-        fields.insert(
-            "secret".to_string(),
-            "secret is only for auth_kind bearer or header".to_string(),
-        );
-    }
-    if kind != "none" && req.secret.is_none() {
-        fields.insert(
-            "secret".to_string(),
-            "secret is required with auth_kind bearer or header".to_string(),
-        );
-    }
     let description = req.description.as_deref().unwrap_or("");
     super::guardrails::check_description(description, &mut fields);
+    let mut local = LocalFields::default();
+    let mut url = "";
+    let mut secret_enc = None;
+    match transport {
+        "http" => {
+            match req.url.as_deref() {
+                Some(u) => {
+                    url = u;
+                    check_url(&state, u, "url", &mut fields);
+                }
+                None => {
+                    fields.insert("url".to_string(), "url is required".to_string());
+                }
+            }
+            if req.command.is_some() || req.args.is_some() || req.env.is_some() {
+                fields.insert(
+                    "transport".to_string(),
+                    "command, args and env are only for transport stdio".to_string(),
+                );
+            }
+            check_auth(kind, req.auth_header.as_deref(), &mut fields);
+            check_secret(req.secret.as_deref(), &mut fields);
+            if kind == "none" && req.secret.is_some() {
+                fields.insert(
+                    "secret".to_string(),
+                    "secret is only for auth_kind bearer or header".to_string(),
+                );
+            }
+            if kind != "none" && req.secret.is_none() {
+                fields.insert(
+                    "secret".to_string(),
+                    "secret is required with auth_kind bearer or header".to_string(),
+                );
+            }
+            // From here on only the encrypted form exists.
+            secret_enc = req
+                .secret
+                .as_deref()
+                .map(|s| encrypt_secret(&state.cipher, s));
+        }
+        "stdio" => {
+            if !state.local.enabled() {
+                fields.insert("transport".to_string(), LOCAL_OFF.to_string());
+            }
+            if req.url.is_some() {
+                fields.insert(
+                    "url".to_string(),
+                    "a local server has no address".to_string(),
+                );
+            }
+            if kind != "none" || req.auth_header.is_some() || req.secret.is_some() {
+                fields.insert(
+                    "auth_kind".to_string(),
+                    "a local server has no authentication: give it environment variables"
+                        .to_string(),
+                );
+            }
+            local = LocalFields::checked(
+                &state,
+                req.command.as_deref(),
+                req.args.as_deref().unwrap_or(&[]),
+                req.env.as_ref().unwrap_or(&BTreeMap::new()),
+                &BTreeMap::new(),
+                &mut fields,
+            );
+        }
+        _ => {
+            fields.insert(
+                "transport".to_string(),
+                "transport must be http or stdio".to_string(),
+            );
+        }
+    }
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
-    // From here on only the encrypted form exists.
-    let secret_enc = req
-        .secret
-        .as_deref()
-        .map(|s| encrypt_secret(&state.cipher, s));
 
     let mut tx = state.store.begin().await?;
     let inserted = tx
         .insert_server(NewMcpServer {
             name: &req.name,
-            url: &req.url,
+            url,
             auth_kind: kind,
             auth_header: req.auth_header.as_deref(),
             auth_secret_enc: secret_enc.as_deref(),
             enabled: req.enabled.unwrap_or(true),
             description,
+            transport,
+            command: local.command.as_deref(),
+            args: &local.args,
+            env_enc: &local.env_enc,
+            catalog_id: None,
         })
         .await;
     let id = match inserted {
@@ -438,7 +657,9 @@ pub async fn create(
         action: "mcp.create",
         target_type: "mcp_server",
         target_id: Some(id),
-        summary: &if secret_enc.is_some() {
+        summary: &if transport == "stdio" {
+            format!("Created local MCP server {}", req.name)
+        } else if secret_enc.is_some() {
             format!("Created MCP server {}, secret set", req.name)
         } else {
             format!("Created MCP server {}", req.name)
@@ -520,12 +741,24 @@ pub async fn update(
         && req.secret.is_none()
         && req.description.is_none()
         && req.enabled.is_none()
+        && req.command.is_none()
+        && req.args.is_none()
+        && req.env.is_none()
     {
         return Err(ApiError::bad_request(
-            "Send at least one of url, auth_kind, auth_header, secret, description and enabled.",
+            "Send at least one of url, auth_kind, auth_header, secret, command, args, env, description and enabled.",
         ));
     }
+    if target.is_local() {
+        return update_local(&state, me, &target, req).await;
+    }
     let mut fields = BTreeMap::new();
+    if req.command.is_some() || req.args.is_some() || req.env.is_some() {
+        fields.insert(
+            "command".to_string(),
+            "command, args and env are only for a local server".to_string(),
+        );
+    }
     if let Some(url) = req.url.as_deref().filter(|u| **u != target.url) {
         check_url(&state, url, "url", &mut fields);
     }
@@ -639,6 +872,7 @@ pub async fn update(
                 auth_secret_enc: secret_enc.as_deref(),
                 enabled: enabled.unwrap_or(was.enabled),
                 description: description.as_deref().unwrap_or(&was.description),
+                ..Default::default()
             },
         )
         .await?;
@@ -715,6 +949,127 @@ pub async fn delete(
     tx.commit().await?;
     refresh_snapshot(&state).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The edit of a local server: its program, arguments, environment,
+/// description and whether it is on. It has no address and no authentication.
+async fn update_local(
+    state: &Arc<AppState>,
+    me: &Principal,
+    target: &McpServerRow,
+    req: UpdateMcpServerRequest,
+) -> Result<Response, ApiError> {
+    let mut fields = BTreeMap::new();
+    if req.url.is_some()
+        || req.auth_kind.is_some()
+        || req.auth_header.is_some()
+        || req.secret.is_some()
+    {
+        fields.insert(
+            "url".to_string(),
+            "a local server has no address and no authentication".to_string(),
+        );
+    }
+    if let Some(description) = &req.description {
+        super::guardrails::check_description(description, &mut fields);
+    }
+    if req.enabled == Some(true) && !state.local.enabled() {
+        fields.insert("enabled".to_string(), LOCAL_OFF.to_string());
+    }
+    let mut tx = state.store.begin_immediate().await?;
+    let was = tx
+        .server_by_id(target.id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let command = req.command.clone().or_else(|| was.command.clone());
+    let args = req.args.clone().unwrap_or_else(|| was.args.clone());
+    let local = LocalFields::checked(
+        state,
+        command.as_deref(),
+        &args,
+        &match &req.env {
+            Some(env) => env.clone(),
+            // Every stored name, each keeping its value.
+            None => was
+                .env_enc
+                .keys()
+                .map(|k| (k.clone(), String::new()))
+                .collect(),
+        },
+        &was.env_enc,
+        &mut fields,
+    );
+    if !fields.is_empty() {
+        return Err(ApiError::validation(fields));
+    }
+    let mut changes = Vec::new();
+    if local.command != was.command {
+        changes.push("command changed");
+    }
+    if local.args != was.args {
+        changes.push("arguments changed");
+    }
+    if local.env_enc != was.env_enc {
+        changes.push("environment changed");
+    }
+    let description = req.description.clone().filter(|d| *d != was.description);
+    if description.is_some() {
+        changes.push("description changed");
+    }
+    let enabled = req.enabled.filter(|e| *e != was.enabled);
+    match enabled {
+        Some(true) => changes.push("enabled"),
+        Some(false) => changes.push("disabled"),
+        None => {}
+    }
+    if changes.is_empty() {
+        drop(tx);
+        refresh_snapshot(state).await?;
+        return Ok(Json(admin_view(state, &was).await?).into_response());
+    }
+    let updated = tx
+        .update_server(
+            was.id,
+            NewMcpServer {
+                name: &was.name,
+                url: "",
+                auth_kind: "none",
+                auth_header: None,
+                auth_secret_enc: None,
+                enabled: enabled.unwrap_or(was.enabled),
+                description: description.as_deref().unwrap_or(&was.description),
+                transport: "stdio",
+                command: local.command.as_deref(),
+                args: &local.args,
+                env_enc: &local.env_enc,
+                catalog_id: None,
+            },
+        )
+        .await?;
+    if !updated {
+        return Err(ApiError::not_found());
+    }
+    tx.audit(AuditEntry {
+        actor_user_id: Some(me.user_id),
+        actor_email: &me.email,
+        action: "mcp.update",
+        target_type: "mcp_server",
+        target_id: Some(was.id),
+        summary: &format!(
+            "Updated local MCP server {}: {}",
+            was.name,
+            changes.join(", ")
+        ),
+    })
+    .await?;
+    tx.commit().await?;
+    refresh_snapshot(state).await?;
+    let row = state
+        .store
+        .server_by_id(was.id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    Ok(Json(admin_view(state, &row).await?).into_response())
 }
 
 fn sync_failed() -> ApiError {
@@ -1038,7 +1393,7 @@ async fn catalog_response(state: &AppState) -> Response {
         fetched_at: view.fetched_at,
         error: view.error,
         fetch_enabled: !state.catalog.is_off(),
-        local_enabled: crate::mcp::local_enabled(),
+        local_enabled: state.local.enabled(),
     })
     .into_response()
 }
@@ -1136,12 +1491,9 @@ pub async fn from_catalog(
     let name = req.name.clone().unwrap_or_else(|| entry.id.clone());
     let mut fields = BTreeMap::new();
     checked("name", validate_server_name(&name), &mut fields);
-    if entry.transport != "http" {
-        // Programs that run on the gateway host come with local servers.
-        return Err(refused(
-            "catalog_id",
-            "This entry runs a program on the gateway host, which this gateway cannot do yet.",
-        ));
+    let stdio = entry.transport == "stdio";
+    if stdio && !state.local.enabled() {
+        return Err(refused("catalog_id", LOCAL_OFF));
     }
     if entry.auth == "oauth" {
         return Err(refused(
@@ -1149,8 +1501,14 @@ pub async fn from_catalog(
             "This entry signs in with OAuth. Add it by hand.",
         ));
     }
-    let url = entry.url.clone().unwrap_or_default();
-    check_url(&state, &url, "catalog_id", &mut fields);
+    let url = if stdio {
+        String::new()
+    } else {
+        entry.url.clone().unwrap_or_default()
+    };
+    if !stdio {
+        check_url(&state, &url, "catalog_id", &mut fields);
+    }
     // Names the entry does not list are not accepted; secrets it lists are
     // required, other values are optional.
     for given in req.secrets.keys() {
@@ -1170,14 +1528,32 @@ pub async fn from_catalog(
             );
         }
     }
-    // The catalog names exactly one secret item for a server that signs in.
-    let auth_kind = entry.auth.as_str();
+    // An HTTP entry names exactly one secret item for a server that signs in.
+    let auth_kind = if stdio { "none" } else { entry.auth.as_str() };
     let secret = entry
         .env
         .iter()
         .find(|e| e.secret)
         .filter(|_| auth_kind != "none")
         .and_then(|e| req.secrets.get(&e.name));
+    let mut local = LocalFields::default();
+    if stdio {
+        // The program of the entry, with the values given for its items.
+        let mut inner = BTreeMap::new();
+        local = LocalFields::checked(
+            &state,
+            entry.command.as_deref(),
+            &entry.args,
+            &req.secrets,
+            &BTreeMap::new(),
+            &mut inner,
+        );
+        for (field, text) in inner {
+            fields
+                .entry(field.replacen("env.", "secrets.", 1))
+                .or_insert(text);
+        }
+    }
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
@@ -1196,6 +1572,11 @@ pub async fn from_catalog(
             auth_secret_enc: secret_enc.as_deref(),
             enabled: true,
             description: &entry.description,
+            transport: &entry.transport,
+            command: local.command.as_deref(),
+            args: &local.args,
+            env_enc: &local.env_enc,
+            catalog_id: Some(&entry.id),
         })
         .await;
     let id = match inserted {
@@ -1230,11 +1611,76 @@ pub async fn from_catalog(
     // on the server; the registration stands.
     let worker = state.clone();
     let actor = Actor::of(me);
-    let _ = tokio::spawn(async move { sync_server(&worker, id, &actor).await }).await;
+    let _ = tokio::spawn(async move {
+        // A program takes a moment to come up.
+        if stdio {
+            worker.local.wait_running(id, Duration::from_secs(10)).await;
+        }
+        sync_server(&worker, id, &actor).await
+    })
+    .await;
     let row = state
         .store
         .server_by_id(id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     Ok((StatusCode::CREATED, Json(admin_view(&state, &row).await?)).into_response())
+}
+
+/// What a local server's program wrote to stderr.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct McpStderrView {
+    /// The last 64 KiB, with the values of the server's environment replaced
+    /// by `***`.
+    pub text: String,
+    /// Whether the gateway keeps the output of this server now: it is
+    /// running, or waiting to be started again.
+    pub supervised: bool,
+}
+
+#[utoipa::path(
+    get,
+    path = "/mcp/servers/{id}/stderr",
+    tag = "mcp",
+    operation_id = "mcp_servers_stderr",
+    params(
+        ("id" = i64, Path, description = "The id of the server."),
+    ),
+    responses(
+        (status = 200, description = "The end of what the program of a local server wrote to stderr.", body = McpStderrView),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist, or it is not a local server.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+pub async fn stderr(
+    State(state): State<Arc<AppState>>,
+    Path(raw_id): Path<String>,
+    authed: Authed,
+) -> Result<Response, ApiError> {
+    require(&authed.principal, &Action::ManageMcp)?;
+    let row = server_of(&state.store, &raw_id).await?;
+    if !row.is_local() {
+        return Err(ApiError::not_found());
+    }
+    let bytes = state.local.stderr(row.id);
+    let mut text = String::from_utf8_lossy(bytes.as_deref().unwrap_or_default()).into_owned();
+    // A program may print what it was given.
+    if let Some(spec) = state
+        .snapshot
+        .load()
+        .mcp_server_by_id(row.id)
+        .and_then(|s| s.local.clone())
+    {
+        for value in spec.env.values().filter(|v| v.len() >= 4) {
+            text = text.replace(value.as_str(), "***");
+        }
+    }
+    Ok(Json(McpStderrView {
+        text,
+        supervised: bytes.is_some(),
+    })
+    .into_response())
 }

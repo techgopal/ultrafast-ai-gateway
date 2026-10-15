@@ -1487,6 +1487,12 @@ export const mcpServers = {
     usable: true,
     last_sync_at: "2026-10-02 10:00:00",
     last_sync_error: null,
+    transport: "http",
+    command: null,
+    args: null,
+    env_names: null,
+    catalog_id: null,
+    local: null,
   },
   /** No authentication, never synced. */
   docs: {
@@ -1503,8 +1509,38 @@ export const mcpServers = {
     usable: true,
     last_sync_at: null,
     last_sync_error: "The server did not answer.",
+    transport: "http",
+    command: null,
+    args: null,
+    env_names: null,
+    catalog_id: null,
+    local: null,
   },
 } satisfies Record<string, McpServer>;
+
+
+/** A program the gateway runs; running. */
+export const mcpLocalServer: McpServer = {
+  id: 3,
+  name: "files",
+  description: "",
+  enabled: true,
+  tool_count: 0,
+  created_at: "2026-10-01 09:10:00",
+  url: "",
+  auth_kind: "none",
+  auth_header: null,
+  has_secret: false,
+  usable: true,
+  last_sync_at: null,
+  last_sync_error: null,
+  transport: "stdio",
+  command: "npx",
+  args: ["-y", "files-mcp"],
+  env_names: ["API_TOKEN"],
+  catalog_id: "filesystem",
+  local: { phase: "running", restarts: 0 },
+};
 
 export const mcpServerList: McpServer[] = Object.values(mcpServers);
 
@@ -1626,6 +1662,11 @@ export const mcpServersForMember: McpServer[] = [
     last_sync_at: null,
     last_sync_error: null,
     tool_count: 1,
+    command: null,
+    args: null,
+    env_names: null,
+    catalog_id: null,
+    local: null,
   },
 ];
 

@@ -166,6 +166,7 @@ fn upstream_failure(e: UpstreamError) -> (Ending, &'static str) {
             "Could not connect to the MCP server.",
         ),
         UpstreamError::InvalidParams => (400, "tool_error", "The server rejected the arguments."),
+        UpstreamError::Unavailable => (503, "unavailable", "The MCP server is not running."),
         UpstreamError::Protocol | UpstreamError::TooMany | UpstreamError::NotSupported => (
             502,
             "upstream_error",
@@ -475,15 +476,23 @@ pub async fn run(call: ToolCall<'_>) -> Response {
         timeout: limits.call_timeout,
         max_body_bytes: limits.max_result_bytes,
     };
-    let answered = upstream::call_tool(
-        &state.http,
-        &target,
-        tool_name,
-        &arguments,
-        traceparent,
-        opts,
-    )
-    .await;
+    let answered = if server.local.is_some() {
+        let params = json!({"name": tool_name, "arguments": arguments});
+        state
+            .local
+            .call(server.id, "tools/call", &params, opts)
+            .await
+    } else {
+        upstream::call_tool(
+            &state.http,
+            &target,
+            tool_name,
+            &arguments,
+            traceparent,
+            opts,
+        )
+        .await
+    };
     let upstream_ms = elapsed_ms(started);
     let raw = match answered {
         Ok(raw) => raw,
@@ -614,8 +623,11 @@ pub async fn proxy(
         max_body_bytes: limits.max_result_bytes,
     };
     let started = Instant::now();
-    let answered =
-        upstream::call_method(&state.http, &target, method, params, traceparent, opts).await;
+    let answered = if server.local.is_some() {
+        state.local.call(server.id, method, params, opts).await
+    } else {
+        upstream::call_method(&state.http, &target, method, params, traceparent, opts).await
+    };
     let ms = elapsed_ms(started);
     match answered {
         Ok(result) => {
@@ -648,6 +660,12 @@ pub async fn proxy(
                     StatusCode::BAD_GATEWAY,
                     "too_large",
                     "The MCP server's result was too large.",
+                ),
+                UpstreamError::Unavailable => (
+                    CODE_BUSY,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "The MCP server is not running.",
                 ),
                 _ => (
                     CODE_REFUSED,

@@ -1,7 +1,11 @@
 import { describe, expect, test } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import {
+  argsOf,
   catalogRequest,
+  envOf,
+  localCreateOf,
+  localUpdateOf,
   entryBlock,
   formFieldsOf,
   hostChanged,
@@ -117,5 +121,58 @@ describe("the catalog", () => {
     expect(ids("issues code")).toEqual(["github"]);
     expect(ids("LOCAL files")).toEqual(["filesystem"]);
     expect(ids("zzz")).toEqual([]);
+  });
+});
+
+describe("local servers", () => {
+  const files = fixtures.mcpLocalServer;
+
+  test("the arguments are the lines of the box", () => {
+    expect(argsOf("-y\r\nfiles-mcp\n\n  spaced arg \n")).toEqual(["-y", "files-mcp", "  spaced arg "]);
+    expect(argsOf("")).toEqual([]);
+  });
+
+  test("the environment is checked before it is sent", () => {
+    const row = (name: string, value: string, stored = false) => ({ name, value, secret: true, stored });
+    expect(envOf([row("A", "1"), row("B", "", true)])).toEqual({ A: "1", B: "" });
+    expect(() => envOf([row(" ", "1")])).toThrow("Enter the name of the variable.");
+    expect(() => envOf([row("A", "1"), row("A", "2")])).toThrow("A variable is listed twice.");
+    expect(() => envOf([row("A", "")])).toThrow("Enter a value.");
+  });
+
+  test("a registration holds the program and what it needs", () => {
+    expect(
+      localCreateOf(
+        { name: " files ", command: " npx ", args: "-y\nx", description: "d" },
+        [{ name: "T", value: "v", secret: true, stored: false }],
+      ),
+    ).toEqual({ name: "files", transport: "stdio", command: "npx", args: ["-y", "x"], description: "d", env: { T: "v" } });
+    expect(
+      localCreateOf({ name: "f", command: "npx", args: "", description: "" }, []),
+    ).toEqual({ name: "f", transport: "stdio", command: "npx", args: [], description: "" });
+    expect(() => localCreateOf({ name: "f", command: " ", args: "", description: "" }, [])).toThrow(
+      "Enter the program to run.",
+    );
+  });
+
+  test("an edit sends only the difference", () => {
+    const same = { command: "npx", args: "-y\nfiles-mcp", description: "" };
+    const kept = [{ name: "API_TOKEN", value: "", secret: true, stored: true }];
+    expect(localUpdateOf(files, same, kept)).toEqual({});
+    expect(localUpdateOf(files, { ...same, command: "uvx" }, kept)).toEqual({ command: "uvx" });
+    expect(localUpdateOf(files, { ...same, args: "-y" }, kept)).toEqual({ args: ["-y"] });
+    expect(localUpdateOf(files, same, [{ ...kept[0], value: "new" }] as never)).toEqual({ env: { API_TOKEN: "new" } });
+    // A variable taken away is a change of the set.
+    expect(localUpdateOf(files, same, [])).toEqual({ env: {} });
+  });
+
+  test("how a program stands", () => {
+    const at = (phase: string, restarts = 0) => statusOf({ ...files, local: { phase, restarts } });
+    expect(at("crashlooping", 7)).toBe("Crash-looping (7 restarts)");
+    expect(at("backoff", 1)).toBe("Restarting");
+    expect(at("starting")).toBe("Starting");
+    expect(at("off")).toBe("Local servers are off");
+    expect(at("running")).toBe("Not synced yet");
+    expect(statusOf({ ...files, enabled: false })).toBe("Disabled");
   });
 });
