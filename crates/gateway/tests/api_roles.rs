@@ -70,6 +70,10 @@ struct World {
     external_guardrail: i64,
     /// A template an admin made.
     prompt: i64,
+    /// An MCP server nothing listens for.
+    mcp_server: i64,
+    /// Its tool: on, and granted to everyone.
+    mcp_tool: i64,
     /// Keeps `syncable` answering.
     _upstream: MockServer,
     /// Owned by lena, in Platform.
@@ -252,6 +256,48 @@ async fn world() -> World {
     )
     .await
     .unwrap();
+    let mcp_server = tx
+        .insert_server(ultrafast_gateway::store::NewMcpServer {
+            name: "table-mcp",
+            // Nothing listens on port 1: a sync fails at once.
+            url: "http://127.0.0.1:1/mcp",
+            auth_kind: "bearer",
+            auth_header: None,
+            auth_secret_enc: Some(&ultrafast_gateway::mcp::encrypt_secret(
+                &org.api.state.cipher,
+                "tok-table",
+            )),
+            enabled: true,
+            description: "",
+        })
+        .await
+        .unwrap();
+    tx.upsert_tools(
+        mcp_server,
+        vec![ultrafast_gateway::store::DiscoveredTool {
+            name: "search".into(),
+            title: None,
+            description: "".into(),
+            input_schema: r#"{"type":"object"}"#.into(),
+            output_schema: None,
+            annotations: None,
+        }],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let mcp_tool = store.list_tools(mcp_server).await.unwrap()[0].id;
+    let mut tx = store.begin().await.unwrap();
+    tx.set_tool_enabled(mcp_tool, true).await.unwrap();
+    tx.replace_tool_grants(
+        mcp_tool,
+        &ultrafast_gateway::store::Grants {
+            everyone: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
     org.api.state.refresh().await.unwrap();
 
@@ -324,6 +370,8 @@ async fn world() -> World {
         guardrail,
         external_guardrail,
         prompt,
+        mcp_server,
+        mcp_tool,
         _upstream: upstream,
         lena_key,
         tomas_key,
@@ -673,6 +721,30 @@ fn table() -> Vec<Row> {
         row(99, "POST", "/api/users/{id}/password-link", "sso, who signs in through the provider",
             |w, _| format!("/api/users/{}/password-link", w.sso), no_body,
             [201, 403, 403, 401]),
+        row(100, "GET", "/api/mcp/servers", "", |_, _| "/api/mcp/servers".into(), no_body,
+            [200, 200, 200, 401]),
+        row(101, "POST", "/api/mcp/servers", "a server with no authentication", |_, _| "/api/mcp/servers".into(),
+            || Some(json!({ "name": "made", "url": "https://mcp.example.com/mcp" })),
+            [201, 403, 403, 401]),
+        row(102, "GET", "/api/mcp/servers/{id}", "", |w, _| format!("/api/mcp/servers/{}", w.mcp_server), no_body,
+            [200, 403, 403, 401]),
+        row(103, "PATCH", "/api/mcp/servers/{id}", "its description", |w, _| format!("/api/mcp/servers/{}", w.mcp_server),
+            || Some(json!({ "description": "changed" })),
+            [200, 403, 403, 401]),
+        row(104, "DELETE", "/api/mcp/servers/{id}", "", |w, _| format!("/api/mcp/servers/{}", w.mcp_server), no_body,
+            [204, 403, 403, 401]),
+        row(105, "POST", "/api/mcp/servers/{id}/sync", "a server that does not answer",
+            |w, _| format!("/api/mcp/servers/{}/sync", w.mcp_server), no_body,
+            [502, 403, 403, 401]),
+        row(106, "GET", "/api/mcp/servers/{id}/tools", "a tool granted to everyone",
+            |w, _| format!("/api/mcp/servers/{}/tools", w.mcp_server), no_body,
+            [200, 200, 200, 401]),
+        row(107, "PATCH", "/api/mcp/tools/{id}", "switched off", |w, _| format!("/api/mcp/tools/{}", w.mcp_tool),
+            || Some(json!({ "enabled": false })),
+            [200, 403, 403, 401]),
+        row(108, "PUT", "/api/mcp/tools/{id}/grants", "to nobody", |w, _| format!("/api/mcp/tools/{}/grants", w.mcp_tool),
+            || Some(json!({ "everyone": false, "team_ids": [], "user_ids": [] })),
+            [200, 403, 403, 401]),
     ]
 }
 
@@ -747,7 +819,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=99).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=108).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -882,7 +954,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 99);
+    assert_eq!(operations, 108);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

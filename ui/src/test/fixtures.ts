@@ -1465,3 +1465,119 @@ export const newPromptVersion: PromptVersion = {
   created_by: 1,
   created_at: "2026-09-30 11:00:00",
 };
+
+// MCP
+
+type McpServer = Schemas["McpServerView"];
+type McpTool = Schemas["McpToolView"];
+
+export const mcpServers = {
+  /** Bearer secret stored, synced, with two tools. */
+  github: {
+    id: 1,
+    name: "github",
+    description: "Issues and pull requests",
+    enabled: true,
+    tool_count: 2,
+    created_at: "2026-10-01 09:00:00",
+    url: "https://mcp.example.test/github",
+    auth_kind: "bearer",
+    auth_header: null,
+    has_secret: true,
+    usable: true,
+    last_sync_at: "2026-10-02 10:00:00",
+    last_sync_error: null,
+  },
+  /** No authentication, never synced. */
+  docs: {
+    id: 2,
+    name: "docs",
+    description: "",
+    enabled: true,
+    tool_count: 0,
+    created_at: "2026-10-01 09:05:00",
+    url: "https://docs.example.test/mcp",
+    auth_kind: "none",
+    auth_header: null,
+    has_secret: false,
+    usable: true,
+    last_sync_at: null,
+    last_sync_error: "The server did not answer.",
+  },
+} satisfies Record<string, McpServer>;
+
+export const mcpServerList: McpServer[] = Object.values(mcpServers);
+
+export const mcpTools = {
+  /** On, granted to a team. */
+  createIssue: {
+    id: 11,
+    server_id: mcpServers.github.id,
+    name: "create_issue",
+    title: "Create an issue",
+    description: "Opens an issue in a repository.",
+    input_schema: {},
+    output_schema: null,
+    annotations: null,
+    enabled: true,
+    removed: false,
+    grants: { everyone: false, team_ids: [teams.platform.id], user_ids: [] },
+  },
+  /** As a sync leaves it: off, granted to nobody. */
+  search: {
+    id: 12,
+    server_id: mcpServers.github.id,
+    name: "search",
+    title: null,
+    description: "Searches the code.",
+    input_schema: {},
+    output_schema: null,
+    annotations: null,
+    enabled: false,
+    removed: false,
+    grants: { everyone: false, team_ids: [], user_ids: [] },
+  },
+  /** The server stopped offering it. */
+  gone: {
+    id: 13,
+    server_id: mcpServers.github.id,
+    name: "old_tool",
+    title: null,
+    description: "",
+    input_schema: {},
+    output_schema: null,
+    annotations: null,
+    enabled: false,
+    removed: true,
+    grants: { everyone: false, team_ids: [], user_ids: [] },
+  },
+} satisfies Record<string, McpTool>;
+
+export const mcpToolList: McpTool[] = Object.values(mcpTools);
+
+/** What a member gets of the servers: no address and no secret. */
+export const mcpServersForMember: McpServer[] = [
+  {
+    ...mcpServers.github,
+    url: null,
+    auth_kind: null,
+    auth_header: null,
+    has_secret: null,
+    usable: null,
+    last_sync_at: null,
+    last_sync_error: null,
+    tool_count: 1,
+  },
+];
+
+/** What a member gets of the tools: those they may call, with empty grants. */
+export const mcpToolsForMember: McpTool[] = [
+  { ...mcpTools.createIssue, grants: { everyone: false, team_ids: [], user_ids: [] } },
+];
+
+export const mcpSyncResult: Schemas["McpSyncResult"] = {
+  added: ["search"],
+  updated: ["create_issue"],
+  removed: [],
+  skipped: 0,
+};

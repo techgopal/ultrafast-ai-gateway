@@ -70,8 +70,10 @@ more (dark theme, logs, models) are in [`docs/images/`](docs/images/).
   TypeScript and Python generated from it (`clients/admin-ts`,
   `clients/admin-py`; built from source, see Clients).
 - **Clients.** Rust, Python and TypeScript, sharing one Rust core.
+- **MCP gateway.** Register MCP servers, choose and grant their tools like models,
+  and let agents call them through `/mcp/{server}` with a virtual key (see MCP gateway).
 
-Not yet (phase 2): MCP tools and alerts by email. Not planned for now: a stateful Responses API, image edits and
+Not yet (phase 2): alerts by email. Not planned for now: a stateful Responses API, image edits and
 variations, and realtime audio.
 
 ## Quickstart
@@ -86,14 +88,14 @@ variations, and realtime audio.
 printf 'UF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' > admin.env
 chmod 600 admin.env
 docker run -d --name ultrafast -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast \
-  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.4
+  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.5
 ```
 
 **Or a binary** from the [latest release](https://github.com/techgopal/ultrafast-ai-gateway/releases)
 (Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x64). For Linux x86_64:
 
 ```bash
-V=2.0.0-beta.4; T=x86_64-unknown-linux-musl
+V=2.0.0-beta.5; T=x86_64-unknown-linux-musl
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/ultrafast-v$V-$T.tar.gz
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c
@@ -594,6 +596,52 @@ out.
   export is refused (409, or an error on the command line) while a template has a
   version that cannot be read, naming it, rather than leaving it out of the file.
 
+## MCP gateway
+
+Agents reach the MCP servers an admin registered through one endpoint per
+server, `POST /mcp/{server}`, with a virtual key as the bearer token. The
+gateway is the MCP server toward the agent and the MCP client toward the
+upstream: the agent's key never leaves the gateway, and the upstream's
+credential never reaches the agent. The endpoint is stateless (no
+`Mcp-Session-Id`, no handshake needed) and answers `initialize`, `ping`,
+`tools/list` and `tools/call`. `tools/list` shows only the tools the key may
+call; a tool that is off, not granted, or not on the key's allowlist
+(`mcp:<server>/<tool>`) is "Unknown tool" (`-32602`), the same as one that does
+not exist. A key with no callable tool on a server gets the same 404 as an unknown or
+disabled server, so a key learns nothing about servers it may not use. `tools/list` counts against the
+rate limits like a call. `resources/*` and `prompts/*` are answered "method not
+found"; proxying them is not part of this release. `GET` and `DELETE` answer
+405.
+
+Connect an agent (Claude Code, Cursor and others take the same shape):
+
+```json
+{ "mcpServers": { "github": { "url": "https://gw.example.com/mcp/github",
+    "headers": { "Authorization": "Bearer uf_..." } } } }
+```
+
+Every tool call goes through the pipeline of `/v1`: the rate limits of the key,
+its owner, their teams and the gateway; the budgets (a call costs nothing, but
+a spent `block` budget refuses it with 402); the guardrails over the
+arguments (a block is a tool result with `isError`, and the upstream is not
+called); the upstream call; and the guardrails over the text blocks of the
+result. Calls are logged under the endpoint `mcp` (`requested` is
+`mcp:<server>/<tool>`; the arguments and the result are not stored), counted in
+`uf_mcp_calls_total{server,tool,status}` and `uf_mcp_call_duration_seconds`, and
+exported as an `mcp.call` span with `mcp.server` and `mcp.tool` when trace
+export is on. A `traceparent` the agent sent is passed to the upstream. Images
+and embedded resources in a result are passed on unread.
+
+| Variable | Default | |
+| --- | --- | --- |
+| `UF_MCP_CALL_TIMEOUT` | `60` | Seconds an upstream call may take. Past it the agent gets a tool error. |
+| `UF_MCP_MAX_RESULT_BYTES` | `4194304` | The largest upstream answer read; a larger one is a tool error. |
+| `UF_MCP_MAX_ARGS_BYTES` | `262144` | The largest request body `/mcp/{server}` takes; larger is 413. |
+| `UF_MCP_MAX_DISCOVERY_BYTES` | `4194304` | The largest response read while syncing a server's tool list (one request); larger fails the sync. |
+
+At most 32 calls to one server run at once per process (fixed, not set by an
+environment variable); the next is refused with 503 and `Retry-After`.
+
 ## Console
 
 Served at `/`. What each role sees is decided by the API.
@@ -625,7 +673,8 @@ playground checks a file against the gateway's own `UF_MAX_AUDIO_BYTES` (it asks
 `GET /api/playground/config`). The Logs page filters by endpoint and shows the
 endpoint and the prompt (`name@version`) of each call.
 
-MCP tools appears in the navigation as coming. Leads and members do not see the
+The MCP tools page is in the navigation for everyone: admins manage servers and tools,
+leads and members see the tools they may call, read-only. Leads and members do not see the
 Guardrails page, but the guardrails of a key show on the key, and a call a
 guardrail stopped says so in the logs and in the playground.
 

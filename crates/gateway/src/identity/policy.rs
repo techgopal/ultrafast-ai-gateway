@@ -78,6 +78,10 @@ pub enum Action {
     // models
     ListModels,
     ManageModels,
+    // MCP servers and tools: managing them is for admins; every role lists
+    // (cut to what it may call by the caller).
+    ListMcp,
+    ManageMcp,
     // routes
     ListRoutes,
     ManageRoutes,
@@ -173,6 +177,7 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::ManageOwnTokens
         | Action::ListProviders
         | Action::ListModels
+        | Action::ListMcp
         | Action::ListRoutes
         | Action::ListLogs
         | Action::ListLimits
@@ -185,6 +190,7 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         | Action::CreateTeam
         | Action::ManageProviders
         | Action::ManageModels
+        | Action::ManageMcp
         | Action::ManageRoutes
         | Action::ViewAudit
         | Action::ViewRoutingHealth
@@ -1139,6 +1145,12 @@ mod tests {
                 Action::ManageModels,
                 Forbidden,
             ),
+            ("list_mcp: lead", lead, Action::ListMcp, Allow),
+            ("list_mcp: member", member, Action::ListMcp, Allow),
+            ("list_mcp: loner", loner, Action::ListMcp, Allow),
+            ("manage_mcp: lead", lead, Action::ManageMcp, Forbidden),
+            ("manage_mcp: member", member, Action::ManageMcp, Forbidden),
+            ("manage_mcp: loner", loner, Action::ManageMcp, Forbidden),
             ("list_routes: lead", lead, Action::ListRoutes, Allow),
             ("list_routes: member", member, Action::ListRoutes, Allow),
             ("list_routes: loner", loner, Action::ListRoutes, Allow),
@@ -1453,6 +1465,7 @@ mod tests {
             for action in [
                 Action::ManageProviders,
                 Action::ManageModels,
+                Action::ManageMcp,
                 Action::ManageRoutes,
                 Action::ViewAudit,
                 Action::ViewRoutingHealth,

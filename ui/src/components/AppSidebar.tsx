@@ -29,6 +29,7 @@ type Path =
   | "/playground"
   | "/providers"
   | "/models"
+  | "/mcp"
   | "/routes"
   | "/prompts"
   | "/keys"
@@ -83,7 +84,7 @@ const sections: NavSection[] = [
       { label: "Teams", to: "/teams" },
       { label: "Budgets and limits", to: "/limits" },
       { label: "Guardrails", to: "/guardrails", guardrails: true },
-      { label: "MCP tools" },
+      { label: "MCP tools", to: "/mcp" },
     ],
   },
 ];

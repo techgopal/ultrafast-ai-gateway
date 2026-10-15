@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from ..models.budget_entry import BudgetEntry
     from ..models.guardrail_entry import GuardrailEntry
     from ..models.limit_entry import LimitEntry
+    from ..models.mcp_server_entry import McpServerEntry
     from ..models.model_entry import ModelEntry
     from ..models.prompt_entry import PromptEntry
     from ..models.provider_entry import ProviderEntry
@@ -37,6 +38,8 @@ class ConfigFile:
         budgets (list[BudgetEntry] | Unset):
         guardrails (list[GuardrailEntry] | Unset): Left out of the file when there are none.
         limits (list[LimitEntry] | Unset):
+        mcp_servers (list[McpServerEntry] | Unset): MCP servers with the settings of their tools. Left out of the file
+            when there are none.
         models (list[ModelEntry] | Unset):
         prompts (list[PromptEntry] | Unset): Prompt templates with all their versions. Left out of the file when
             there are none.
@@ -53,6 +56,7 @@ class ConfigFile:
     budgets: list[BudgetEntry] | Unset = UNSET
     guardrails: list[GuardrailEntry] | Unset = UNSET
     limits: list[LimitEntry] | Unset = UNSET
+    mcp_servers: list[McpServerEntry] | Unset = UNSET
     models: list[ModelEntry] | Unset = UNSET
     prompts: list[PromptEntry] | Unset = UNSET
     providers: list[ProviderEntry] | Unset = UNSET
@@ -99,6 +103,13 @@ class ConfigFile:
             for limits_item_data in self.limits:
                 limits_item = limits_item_data.to_dict()
                 limits.append(limits_item)
+
+        mcp_servers: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.mcp_servers, Unset):
+            mcp_servers = []
+            for mcp_servers_item_data in self.mcp_servers:
+                mcp_servers_item = mcp_servers_item_data.to_dict()
+                mcp_servers.append(mcp_servers_item)
 
         models: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.models, Unset):
@@ -157,6 +168,8 @@ class ConfigFile:
             field_dict["guardrails"] = guardrails
         if limits is not UNSET:
             field_dict["limits"] = limits
+        if mcp_servers is not UNSET:
+            field_dict["mcp_servers"] = mcp_servers
         if models is not UNSET:
             field_dict["models"] = models
         if prompts is not UNSET:
@@ -179,6 +192,7 @@ class ConfigFile:
         from ..models.budget_entry import BudgetEntry
         from ..models.guardrail_entry import GuardrailEntry
         from ..models.limit_entry import LimitEntry
+        from ..models.mcp_server_entry import McpServerEntry
         from ..models.model_entry import ModelEntry
         from ..models.prompt_entry import PromptEntry
         from ..models.provider_entry import ProviderEntry
@@ -237,6 +251,15 @@ class ConfigFile:
                 limits_item = LimitEntry.from_dict(limits_item_data)
 
                 limits.append(limits_item)
+
+        _mcp_servers = d.pop("mcp_servers", UNSET)
+        mcp_servers: list[McpServerEntry] | Unset = UNSET
+        if _mcp_servers is not UNSET:
+            mcp_servers = []
+            for mcp_servers_item_data in _mcp_servers:
+                mcp_servers_item = McpServerEntry.from_dict(mcp_servers_item_data)
+
+                mcp_servers.append(mcp_servers_item)
 
         _models = d.pop("models", UNSET)
         models: list[ModelEntry] | Unset = UNSET
@@ -298,6 +321,7 @@ class ConfigFile:
             budgets=budgets,
             guardrails=guardrails,
             limits=limits,
+            mcp_servers=mcp_servers,
             models=models,
             prompts=prompts,
             providers=providers,

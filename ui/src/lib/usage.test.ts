@@ -95,7 +95,9 @@ describe("endpoints", () => {
       "translations",
       "speech",
       "playground",
+      "mcp",
     ]);
+    expect(endpointLabel("mcp")).toBe("MCP");
     expect(endpointLabel("chat")).toBe("Chat completions");
     expect(endpointLabel("speech")).toBe("Speech");
     expect(endpointLabel("somethingnew")).toBe("somethingnew");

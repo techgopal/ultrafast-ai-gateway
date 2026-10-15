@@ -9,6 +9,17 @@ import {
   test,
   type GatewayApi,
 } from "./fixtures";
+import { seedMcp, startMockMcp, type MockMcp } from "./mock-mcp";
+
+let mcp: MockMcp;
+
+test.beforeEach(async () => {
+  mcp = await startMockMcp();
+});
+
+test.afterEach(async () => {
+  await mcp.close();
+});
 
 // A phone, in both projects: the desktop project has no touch, the phone project has.
 test.use({ viewport: { width: 390, height: 844 } });
@@ -135,7 +146,9 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
   admin,
   apiAs,
 }) => {
-  await content(await apiAs(admin));
+  const seeded = await apiAs(admin);
+  await content(seeded);
+  await seedMcp(seeded, mcp.url);
 
   await page.goto("/sign-in");
   await expect(heading(page, "Sign in")).toBeVisible();
@@ -168,6 +181,7 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
     ["Prompts", "a-prompt-template-with-a-name"],
     ["Alerts", "a-rule-with-a-name-that-is-also-rather-long"],
     ["Guardrails", "a-guardrail-with-a-name"],
+    ["MCP tools", "echo"],
     ["Playground", "Nothing has been said yet"],
     ["Account", "Access tokens"],
     ["Settings", "Session lifetime"],
@@ -217,6 +231,9 @@ test("every page fits a phone; the drawer opens and closes; rows are cards; the 
   await page.getByRole("button", { name: "Create key" }).click();
   const dialog = page.getByRole("dialog", { name: "Create key" });
   await expect(dialog.getByLabel("Owner", { exact: true })).toBeVisible();
+  // The MCP tools section is part of the dialog that must fit.
+  await dialog.getByRole("radio", { name: "Only these" }).check();
+  await expect(dialog.getByRole("group", { name: "MCP tools" })).toBeVisible();
   const box = await dialog.boundingBox();
   expect(box).not.toBeNull();
   if (box !== null) {
@@ -237,7 +254,9 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
   admin,
   apiAs,
 }) => {
-  await content(await apiAs(admin));
+  const seeded = await apiAs(admin);
+  await content(seeded);
+  await seedMcp(seeded, mcp.url);
   // What is too small, everywhere: one list, so that a failure names every place.
   const found: string[] = [];
   const measure = async (scope: Locator, where: string) => {
@@ -261,6 +280,10 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     const dialog = page.getByRole("dialog", { name });
     await expect(dialog).toBeVisible();
     if (waitFor !== undefined) await expect(dialog.getByLabel(waitFor, { exact: true })).toBeVisible();
+    if (name === "Create key") {
+      await dialog.getByRole("radio", { name: "Only these" }).check();
+      await expect(dialog.getByRole("group", { name: "MCP tools" })).toBeVisible();
+    }
     await measure(dialog, `the dialog ${name}`);
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
@@ -274,6 +297,7 @@ test("every control of the pages and their dialogs is 44 x 44 px to touch", asyn
     ["Prompts", "a-prompt-template-with-a-name"],
     ["Alerts", "a-rule-with-a-name-that-is-also-rather-long"],
     ["Guardrails", "a-guardrail-with-a-name"],
+    ["MCP tools", "echo"],
     ["Playground", "Nothing has been said yet"],
     ["Account", "Access tokens"],
     ["Settings", "Session lifetime"],

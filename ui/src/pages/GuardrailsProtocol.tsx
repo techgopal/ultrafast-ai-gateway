@@ -5,8 +5,11 @@ import { ENDPOINTS } from "@/lib/usage";
 const block =
   "rounded-md bg-muted p-3 font-mono text-xs wrap-anywhere whitespace-pre-wrap text-foreground";
 
-/** What `endpoint` can be: every endpoint a call is logged under, and the test of a guardrail. */
-export const ENDPOINT_NAMES: readonly string[] = [...ENDPOINTS.map(([value]) => value), "test"];
+/** What `endpoint` can be: every endpoint a guardrail runs on (not `mcp`), and the test of a guardrail. */
+export const ENDPOINT_NAMES: readonly string[] = [
+  ...ENDPOINTS.map(([value]) => value).filter((value) => value !== "mcp"),
+  "test",
+];
 
 const REQUEST = `{
   "version": 1,

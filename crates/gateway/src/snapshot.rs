@@ -144,6 +144,55 @@ pub struct SnapGuardrail {
     pub external: Option<SnapExternal>,
 }
 
+/// An MCP server with its secret in the clear. It is never serialized and
+/// its `Debug` shows neither the URL nor the secret.
+#[derive(Clone)]
+pub struct SnapMcpServer {
+    pub id: i64,
+    pub name: String,
+    pub url: String,
+    /// `none`, `bearer` or `header`.
+    pub auth_kind: String,
+    pub auth_header: Option<String>,
+    pub secret: Option<String>,
+    pub enabled: bool,
+    /// It needs no secret, or its secret could be read. An unusable server
+    /// is kept, so it can be told from one that is not there, but nothing
+    /// is callable through it.
+    pub usable: bool,
+}
+
+impl fmt::Debug for SnapMcpServer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnapMcpServer")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("auth_kind", &self.auth_kind)
+            .field("enabled", &self.enabled)
+            .field("usable", &self.usable)
+            .field("url", &"<redacted>")
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+/// A switched-on tool that its server still offers.
+#[derive(Debug, Clone)]
+pub struct SnapMcpTool {
+    pub id: i64,
+    pub server_id: i64,
+    pub server_name: String,
+    pub name: String,
+    pub title: Option<String>,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    pub output_schema: Option<serde_json::Value>,
+    pub annotations: Option<serde_json::Value>,
+    pub everyone: bool,
+    pub team_ids: Vec<i64>,
+    pub user_ids: Vec<i64>,
+}
+
 /// An active user, as far as access goes.
 #[derive(Debug, Clone)]
 pub struct SnapUser {
@@ -211,6 +260,13 @@ pub struct Snapshot {
     guardrails_compiled: usize,
     /// The prompt templates with all their versions, by name.
     prompts: HashMap<String, Arc<Template>>,
+    /// The MCP servers, by name.
+    mcp_servers: HashMap<String, SnapMcpServer>,
+    /// Server id to name.
+    mcp_server_names: HashMap<i64, String>,
+    /// The tools that are on, by server id and then name. MCP results are
+    /// not cached, so none of this is in the fingerprint.
+    mcp_tools: HashMap<i64, std::collections::BTreeMap<String, SnapMcpTool>>,
     /// See [`Snapshot::cache_fingerprint`].
     cache_fingerprint: [u8; 32],
 }
@@ -383,6 +439,91 @@ fn load_prompts(
         }
     }
     out
+}
+
+type McpTools = HashMap<i64, std::collections::BTreeMap<String, SnapMcpTool>>;
+
+/// The servers (secrets read) and their tools that are on, with grants. A
+/// secret that cannot be read leaves the server in, unusable.
+fn load_mcp(
+    servers: Vec<crate::store::McpServerRow>,
+    tools: Vec<crate::store::McpToolRow>,
+    grants: Vec<crate::store::McpGrantRow>,
+    cipher: &Cipher,
+) -> (
+    HashMap<String, SnapMcpServer>,
+    HashMap<i64, String>,
+    McpTools,
+) {
+    let mut by_name = HashMap::new();
+    let mut names = HashMap::new();
+    for s in servers {
+        let secret = s
+            .auth_secret_enc
+            .as_deref()
+            .and_then(|enc| crate::mcp::decrypt_secret(cipher, enc));
+        let usable = s.auth_kind == "none" || secret.is_some();
+        if !usable {
+            tracing::error!(server = %s.name, "an MCP server cannot be called: its secret is missing or cannot be read");
+        }
+        names.insert(s.id, s.name.clone());
+        by_name.insert(
+            s.name.clone(),
+            SnapMcpServer {
+                id: s.id,
+                name: s.name,
+                url: s.url,
+                auth_kind: s.auth_kind,
+                auth_header: s.auth_header,
+                secret,
+                enabled: s.enabled,
+                usable,
+            },
+        );
+    }
+    let mut out: McpTools = HashMap::new();
+    let mut by_id: HashMap<i64, (i64, String)> = HashMap::new();
+    for t in tools {
+        let Some(server_name) = names.get(&t.server_id) else {
+            continue;
+        };
+        let json = |text: &str| serde_json::from_str::<serde_json::Value>(text).ok();
+        by_id.insert(t.id, (t.server_id, t.name.clone()));
+        out.entry(t.server_id).or_default().insert(
+            t.name.clone(),
+            SnapMcpTool {
+                id: t.id,
+                server_id: t.server_id,
+                server_name: server_name.clone(),
+                name: t.name,
+                title: t.title,
+                description: t.description,
+                // Stored as the upstream gave it; one that is not JSON is
+                // an empty object schema.
+                input_schema: json(&t.input_schema)
+                    .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
+                output_schema: t.output_schema.as_deref().and_then(json),
+                annotations: t.annotations.as_deref().and_then(json),
+                everyone: false,
+                team_ids: Vec::new(),
+                user_ids: Vec::new(),
+            },
+        );
+    }
+    for g in grants {
+        let Some((server_id, name)) = by_id.get(&g.tool_id) else {
+            continue;
+        };
+        let Some(tool) = out.get_mut(server_id).and_then(|m| m.get_mut(name)) else {
+            continue;
+        };
+        match (g.team_id, g.user_id) {
+            (Some(team), _) => push_new(&mut tool.team_ids, team),
+            (None, Some(user)) => push_new(&mut tool.user_ids, user),
+            (None, None) => tool.everyone = true,
+        }
+    }
+    (by_name, names, out)
 }
 
 fn rules_guardrail(g: &GuardrailRow) -> Option<SnapGuardrail> {
@@ -776,6 +917,12 @@ impl Snapshot {
                     action: b.action,
                 }));
         }
+        let (mcp_servers, mcp_server_names, mcp_tools) = load_mcp(
+            rows.mcp_servers,
+            rows.mcp_tools,
+            rows.mcp_tool_grants,
+            cipher,
+        );
         let (guardrails, default_guardrails, guardrails_compiled) =
             load_guardrails(&rows.guardrails, cipher, previous).await?;
         let prompts = load_prompts(
@@ -798,6 +945,9 @@ impl Snapshot {
             user_guardrails,
             guardrails_compiled,
             prompts,
+            mcp_servers,
+            mcp_server_names,
+            mcp_tools,
             cache_fingerprint,
         })
     }
@@ -815,6 +965,37 @@ impl Snapshot {
     /// from the snapshot it replaced.
     pub fn guardrails_compiled(&self) -> usize {
         self.guardrails_compiled
+    }
+
+    /// The MCP server with this name.
+    pub fn mcp_server(&self, name: &str) -> Option<&SnapMcpServer> {
+        self.mcp_servers.get(name)
+    }
+
+    pub fn mcp_server_by_id(&self, id: i64) -> Option<&SnapMcpServer> {
+        self.mcp_server_names
+            .get(&id)
+            .and_then(|name| self.mcp_servers.get(name))
+    }
+
+    /// Every MCP server, by name.
+    pub fn mcp_servers(&self) -> impl Iterator<Item = &SnapMcpServer> {
+        let mut all: Vec<&SnapMcpServer> = self.mcp_servers.values().collect();
+        all.sort_by(|a, b| a.name.cmp(&b.name));
+        all.into_iter()
+    }
+
+    /// The tools of the server that are switched on and still offered, by name.
+    pub fn mcp_tools_of(&self, server_id: i64) -> impl Iterator<Item = &SnapMcpTool> {
+        self.mcp_tools
+            .get(&server_id)
+            .into_iter()
+            .flat_map(|tools| tools.values())
+    }
+
+    pub fn mcp_tool(&self, server: &str, name: &str) -> Option<&SnapMcpTool> {
+        let server = self.mcp_servers.get(server)?;
+        self.mcp_tools.get(&server.id)?.get(name)
     }
 
     /// The prompt template with this name (exact), with its versions.

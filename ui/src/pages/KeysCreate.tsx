@@ -92,7 +92,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
         // What is sent is what the form shows: see `choiceOffered`.
         const choice = choiceOffered(value, me, owners, teamsFor);
         const made = await mutateAsync(
-          requestOf({ ...value, ...choice }, me, callable.items?.map((item) => item.id) ?? null),
+          requestOf({ ...value, ...choice }, me, callable.items === null ? null : [...callable.items, ...callable.mcp].map((item) => item.id)),
         );
         onCreated(made.secret);
       } catch (error) {
@@ -139,7 +139,7 @@ function KeyForm({ me, create, onCreated, onCancel, choice }: KeyFormProps) {
   // The models and routes are read when the key is limited to some.
   const read = useCallable(allowHeld === "some" && (!teamKey || keyTeam !== null), keyTeam);
   const callable: Callable =
-    teamKey && keyTeam === null ? { items: [], error: null, retry: () => undefined } : read;
+    teamKey && keyTeam === null ? { items: [], mcp: [], error: null, retry: () => undefined } : read;
   useEffect(() => {
     if (shown.owner_id !== ownerHeld) form.setFieldValue("owner_id", shown.owner_id);
     if (shown.team_id !== teamHeld) form.setFieldValue("team_id", shown.team_id);

@@ -12,6 +12,7 @@ pub mod health;
 pub mod keys;
 pub mod limits;
 pub mod logs;
+pub mod mcp;
 pub mod models;
 pub mod openapi;
 pub mod playground;
@@ -99,6 +100,12 @@ pub(crate) fn documented() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(models::list, models::create))
         .routes(routes!(models::update, models::delete))
         .routes(routes!(models::put_grants))
+        .routes(routes!(mcp::list, mcp::create))
+        .routes(routes!(mcp::view, mcp::update, mcp::delete))
+        .routes(routes!(mcp::sync))
+        .routes(routes!(mcp::tools_list))
+        .routes(routes!(mcp::tools_update))
+        .routes(routes!(mcp::tools_put_grants))
         .routes(routes!(routes::list, routes::create))
         .routes(routes!(routes::view, routes::update, routes::delete))
         .routes(routes!(tokens::list, tokens::create))

@@ -856,6 +856,28 @@ describe("creating a key", () => {
       expect(state.created).toEqual([{ name: "ci", allowed: ["research"] }]);
     });
 
+    test("MCP tools the viewer can call are a section of their own, and their names are sent", async () => {
+      const state = keeps([]);
+      override("get", "/api/mcp/servers", () =>
+        ok("get", "/api/mcp/servers", 200, { servers: fixtures.mcpServersForMember }),
+      );
+      override("get", "/api/mcp/servers/{id}/tools", () =>
+        ok("get", "/api/mcp/servers/{id}/tools", 200, { tools: fixtures.mcpToolsForMember }),
+      );
+      await page();
+      const dialog = await openCreate();
+      await userEvent.click(within(dialog).getByRole("radio", { name: "Only these" }));
+      const section = await within(dialog).findByRole("group", { name: "MCP tools" });
+      expect(
+        within(section).getAllByRole("checkbox").map((one) => one.closest("label")?.textContent),
+      ).toEqual(["mcp:github/create_issue"]);
+      await userEvent.click(within(section).getByRole("checkbox", { name: "mcp:github/create_issue" }));
+      await named(dialog, "agent");
+      await send(dialog);
+      await secretDialog();
+      expect(state.created).toEqual([{ name: "agent", allowed: ["mcp:github/create_issue"] }]);
+    });
+
     test("a lead's key for a member is limited from what is everyone's or the team's", async () => {
       const state = keeps([]);
       // The lists of the lead themselves, and those cut to the team.

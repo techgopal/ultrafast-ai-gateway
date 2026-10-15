@@ -94,25 +94,17 @@ describe("sidebar", () => {
       ["Teams", "/teams"],
       ["Budgets and limits", "/limits"],
       ["Guardrails", "/guardrails"],
+      ["MCP tools", "/mcp"],
       ["Settings", "/settings"],
       ["Account", "/account"],
     ]);
   });
 
-  test("coming items are not links", async () => {
+  test("MCP tools is a link to its page", async () => {
     await renderWithApp(null);
-    const nav = sidebar();
-    expect(within(nav).queryByRole("link", { name: /MCP tools/ })).toBeNull();
-    const logs = within(nav)
-      .getAllByTestId("nav-item")
-      .find((el) => el.getAttribute("data-label") === "MCP tools");
-    expect(logs).toBeDefined();
-    expect(logs).not.toHaveAttribute("href");
-    expect(logs).toHaveAttribute("aria-disabled", "true");
-    expect(logs).toHaveTextContent("Coming");
-    expect(logs?.tagName).not.toBe("A");
-    expect(logs?.tagName).not.toBe("BUTTON");
-    expect(logs?.querySelector("a, button")).toBeNull();
+    const link = within(sidebar()).getByRole("link", { name: /MCP tools/ });
+    expect(link).toHaveAttribute("href", "/mcp");
+    expect(link).not.toHaveTextContent("Coming");
   });
 
   test("active item is marked", async () => {

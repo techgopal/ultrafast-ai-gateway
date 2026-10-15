@@ -1,6 +1,17 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { Locator, Page } from "@playwright/test";
 import { expect, goTo, heading, test, typeSecret } from "./fixtures";
+import { seedMcp, startMockMcp, type MockMcp } from "./mock-mcp";
+
+let mcp: MockMcp;
+
+test.beforeEach(async () => {
+  mcp = await startMockMcp();
+});
+
+test.afterEach(async () => {
+  await mcp.close();
+});
 
 /** What axe finds wrong with the page as it is, one line per element. No rule is turned off. */
 async function axeProblems(page: Page): Promise<string[]> {
@@ -122,6 +133,7 @@ async function checkTabOrder(page: Page): Promise<void> {
 for (const scheme of ["light", "dark"] as const) {
   test(`keyboard and automated checks: ${scheme}`, async ({ page, admin, apiAs }) => {
     const api = await apiAs(admin);
+    await seedMcp(api, mcp.url);
     await api.activeUser("Mia");
     await api.send("POST", "/api/keys", { name: "a first key" });
     await page.emulateMedia({ colorScheme: scheme });
@@ -236,6 +248,12 @@ for (const scheme of ["light", "dark"] as const) {
     await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
 
+    await goTo(page, "MCP tools");
+    await expect(page.getByRole("heading", { name: "Tools of mock" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("echo");
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+
     await goTo(page, "Virtual keys");
     await expect(page.getByRole("main")).toContainText("a first key");
 
@@ -254,6 +272,11 @@ for (const scheme of ["light", "dark"] as const) {
     expect(forward).toEqual([...inOrder(count).slice(1), 0]);
     await page.keyboard.press("Shift+Tab");
     expect(await focusedStop(page)).toBe(count - 1);
+    expect(await axeProblems(page)).toEqual([]);
+
+    // With "Only these" the MCP tools section shows, and is as accessible.
+    await dialog.getByRole("radio", { name: "Only these" }).check();
+    await expect(dialog.getByRole("group", { name: "MCP tools" })).toBeVisible();
     expect(await axeProblems(page)).toEqual([]);
 
     await page.keyboard.press("Escape");
