@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0-beta.5] - 2026-10-15
+
+MCP gateway core: agents call the tools of registered MCP servers through the
+gateway with a virtual key.
+
+### Added
+- **MCP registry and tool sync.** Admins register MCP servers (`/api/mcp/servers`,
+  bearer or custom-header credential, stored encrypted, never returned) and sync
+  their tool lists. Tools start off and are switched on and granted one by one.
+- **Access by the model rule.** A tool is granted to everyone, to teams or to
+  users like a model; a key's allowlist names tools as `mcp:<server>/<tool>`;
+  the same predicates decide listing and calling.
+- **`POST /mcp/{server}`.** A stateless MCP endpoint (`initialize`, `ping`,
+  `tools/list`, `tools/call`). Calls pass the rate limits, budgets and guardrails
+  of `/v1`; a key with nothing to call on a server gets the same 404 as an
+  unknown one; an upstream argument rejection (-32602) is a tool error.
+- **Caps.** `UF_MCP_CALL_TIMEOUT`, `UF_MCP_MAX_RESULT_BYTES`,
+  `UF_MCP_MAX_ARGS_BYTES`, `UF_MCP_MAX_DISCOVERY_BYTES`, and 32 concurrent calls
+  per server per process.
+- **Logs, metrics and spans.** Calls are logged under the endpoint `mcp`,
+  counted in `uf_mcp_calls_total` and `uf_mcp_call_duration_seconds` and
+  exported as `mcp.call` spans.
+- **Console.** An MCP tools page (servers, tools, access dialog; read-only for
+  leads and members), an MCP section when creating a key, and a logs filter.
+- **Configuration export and import** include MCP servers, tools and grants
+  (secrets excluded).
+- Migrations SQLite 0021 and PostgreSQL 0007.
+
 ## [2.0.0-beta.4] - 2026-10-10
 
 Hardening: guardrails for teams and users, single sign-on password links, a

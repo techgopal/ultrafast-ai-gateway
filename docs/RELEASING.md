@@ -7,7 +7,7 @@ A tag `vX.Y.Z[-pre]` that names the version in `Cargo.toml` runs two workflows:
 `crates/client` and `crates/client-wasm`), `clients/ts/package.json`,
 `clients/admin-ts/package.json`, `crates/client-py/pyproject.toml` and
 `clients/admin-py/pyproject.toml`. Python uses the PEP 440 spelling
-(`2.0.0-beta.4` is `2.0.0b4`). `publish.yml` refuses a tag that does not match
+(`2.0.0-beta.5` is `2.0.0b5`). `publish.yml` refuses a tag that does not match
 all of them.
 
 ## What is published
