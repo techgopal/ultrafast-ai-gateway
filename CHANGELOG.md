@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-MCP catalog and local servers.
+## [2.1.0] - 2026-10-15
+
+MCP at scale: a signed catalog, local servers, health, one endpoint for every tool,
+tool search, result projection and OAuth toward servers.
 
 ### Added
 - **Signed MCP catalog.** A curated list of servers (`docs/mcp-catalog/`), signed

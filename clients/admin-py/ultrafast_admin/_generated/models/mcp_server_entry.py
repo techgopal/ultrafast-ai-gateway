@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.mcp_tool_entry import McpToolEntry
+    from ..models.oauth_entry import OauthEntry
 
 
 T = TypeVar("T", bound="McpServerEntry")
@@ -23,8 +24,9 @@ class McpServerEntry:
         Attributes:
             auth_header (None | str): The header name, for `auth_kind` `header`.
             name (str):
+            oauth (None | OauthEntry):
             url (str):
-            auth_kind (str | Unset): `none`, `bearer` or `header`.
+            auth_kind (str | Unset): `none`, `bearer`, `header` or `oauth` (then `oauth` says how).
             description (str | Unset):
             enabled (bool | Unset):
             tools (list[McpToolEntry] | Unset): The tools the server offers that have settings. A tool the server
@@ -33,6 +35,7 @@ class McpServerEntry:
 
     auth_header: None | str
     name: str
+    oauth: None | OauthEntry
     url: str
     auth_kind: str | Unset = UNSET
     description: str | Unset = UNSET
@@ -40,10 +43,18 @@ class McpServerEntry:
     tools: list[McpToolEntry] | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.oauth_entry import OauthEntry
+
         auth_header: None | str
         auth_header = self.auth_header
 
         name = self.name
+
+        oauth: dict[str, Any] | None
+        if isinstance(self.oauth, OauthEntry):
+            oauth = self.oauth.to_dict()
+        else:
+            oauth = self.oauth
 
         url = self.url
 
@@ -66,6 +77,7 @@ class McpServerEntry:
             {
                 "auth_header": auth_header,
                 "name": name,
+                "oauth": oauth,
                 "url": url,
             }
         )
@@ -83,6 +95,7 @@ class McpServerEntry:
     @classmethod
     def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
         from ..models.mcp_tool_entry import McpToolEntry
+        from ..models.oauth_entry import OauthEntry
 
         d = dict(src_dict)
 
@@ -94,6 +107,21 @@ class McpServerEntry:
         auth_header = _parse_auth_header(d.pop("auth_header"))
 
         name = d.pop("name")
+
+        def _parse_oauth(data: object) -> None | OauthEntry:
+            if data is None:
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                oauth_type_0 = OauthEntry.from_dict(data)
+
+                return oauth_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | OauthEntry, data)
+
+        oauth = _parse_oauth(d.pop("oauth"))
 
         url = d.pop("url")
 
@@ -115,6 +143,7 @@ class McpServerEntry:
         mcp_server_entry = cls(
             auth_header=auth_header,
             name=name,
+            oauth=oauth,
             url=url,
             auth_kind=auth_kind,
             description=description,

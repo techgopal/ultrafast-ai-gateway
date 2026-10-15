@@ -86,6 +86,25 @@ pub async fn serve(
 
 /// `POST /mcp`: every tool the key may call, as `server__tool`.
 pub async fn serve_combined(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    // The console has a page at the same path: a browser that opens or
+    // reloads it asks with GET and accepts HTML, which no MCP client does.
+    let from_browser = request.method() == Method::GET
+        && request
+            .headers()
+            .get(axum::http::header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|accept| accept.contains("text/html"));
+    if from_browser {
+        use tower::ServiceExt;
+        return match crate::web::router()
+            .with_state(state)
+            .oneshot(request)
+            .await
+        {
+            Ok(response) => response,
+            Err(never) => match never {},
+        };
+    }
     entry(state, None, request).await
 }
 

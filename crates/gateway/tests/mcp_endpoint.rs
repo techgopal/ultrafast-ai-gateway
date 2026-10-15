@@ -1644,3 +1644,33 @@ async fn a_result_a_projection_does_not_change_has_no_marker_and_other_tools_are
     let rec = w.h.sink.wait_for(1).await.remove(0);
     assert_eq!(rec.attempts[0].projected_bytes, None);
 }
+
+#[tokio::test]
+async fn a_browser_that_opens_the_console_page_at_the_endpoint_path_gets_the_console() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    let w = world().await;
+    let page = |accept: &'static str| {
+        Request::builder()
+            .method("GET")
+            .uri("/mcp")
+            .header("accept", accept)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response =
+        w.h.app
+            .clone()
+            .oneshot(page("text/html,*/*"))
+            .await
+            .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response =
+        w.h.app
+            .clone()
+            .oneshot(page("text/event-stream"))
+            .await
+            .unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}

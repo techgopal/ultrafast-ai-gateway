@@ -196,7 +196,7 @@ test("a tool call is shown, its result is sent back, and the model answers with 
   await picker(page).click();
   await page.getByRole("option", { name: "alpha/e2e-model" }).click();
 
-  await page.getByRole("button", { name: "Tools" }).click();
+  await page.getByRole("button", { name: "Tools", exact: true }).click();
   await page.getByRole("textbox", { name: "Tools" }).fill(
     JSON.stringify([
       {

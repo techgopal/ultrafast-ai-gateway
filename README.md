@@ -88,14 +88,14 @@ variations, and realtime audio.
 printf 'UF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' > admin.env
 chmod 600 admin.env
 docker run -d --name ultrafast -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast \
-  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.5
+  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.1.0
 ```
 
 **Or a binary** from the [latest release](https://github.com/techgopal/ultrafast-ai-gateway/releases)
 (Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x64). For Linux x86_64:
 
 ```bash
-V=2.0.0-beta.5; T=x86_64-unknown-linux-musl
+V=2.1.0; T=x86_64-unknown-linux-musl
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/ultrafast-v$V-$T.tar.gz
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c
@@ -1719,6 +1719,13 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
 
 ## Known limits
 
+- MCP: tool discovery is lexical (BM25), not semantic; per-person OAuth toward a
+  server is not supported (the gateway is one client for each server); `resources/*` and
+  `prompts/*` are per server, not on `POST /mcp`; the catalog is one signed file (no
+  ratings, versions or submissions); local servers are supervised, not sandboxed (trusted
+  programs only; no namespaces or seccomp; Linux cannot cap their resident memory), and
+  do not run in the Windows build; health, tokens in memory and the catalog's freshness
+  are per process.
 - SQLite: one gateway per database. Postgres: several processes may share one
   database, with per-process rate limits, response cache, single-flight,
   routing and breaker health, setup code and alert error windows (a limit of

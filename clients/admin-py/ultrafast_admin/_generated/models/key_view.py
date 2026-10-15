@@ -30,6 +30,8 @@ class KeyView:
         name (str):
         owner_email (None | str):
         owner_id (int | None):
+        pinned_tools (list[str]): The MCP tools (`mcp:<server>/<tool>`) the combined endpoint lists
+            when the key can call too many to list them all.
         revoked_at (None | str):
         status (str): `revoked`, `expired`, `suspended` or `active`, the first that
             applies. `suspended`: the owner of the key is not active, so the key
@@ -51,6 +53,7 @@ class KeyView:
     name: str
     owner_email: None | str
     owner_id: int | None
+    pinned_tools: list[str]
     revoked_at: None | str
     status: str
     tags: KeyViewTags
@@ -89,6 +92,8 @@ class KeyView:
         owner_id: int | None
         owner_id = self.owner_id
 
+        pinned_tools = self.pinned_tools
+
         revoked_at: None | str
         revoked_at = self.revoked_at
 
@@ -117,6 +122,7 @@ class KeyView:
                 "name": name,
                 "owner_email": owner_email,
                 "owner_id": owner_id,
+                "pinned_tools": pinned_tools,
                 "revoked_at": revoked_at,
                 "status": status,
                 "tags": tags,
@@ -186,6 +192,8 @@ class KeyView:
 
         owner_id = _parse_owner_id(d.pop("owner_id"))
 
+        pinned_tools = cast(list[str], d.pop("pinned_tools"))
+
         def _parse_revoked_at(data: object) -> None | str:
             if data is None:
                 return data
@@ -223,6 +231,7 @@ class KeyView:
             name=name,
             owner_email=owner_email,
             owner_id=owner_id,
+            pinned_tools=pinned_tools,
             revoked_at=revoked_at,
             status=status,
             tags=tags,

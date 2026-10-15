@@ -16,7 +16,8 @@ class CreateRuleRequestParams:
     `error_rate`: `{"scope": "gateway"|"route"|"provider"|"key",
     "subject": name or null, "percent": 1-100, "window_minutes": 5-60
     (5), "min_requests": 1-100000 (20)}`. `circuit_open`:
-    `{"provider": name or null, "model": name or null}`. Unknown fields
+    `{"provider": name or null, "model": name or null}`. `mcp_down`:
+    `{"server": name or null}`, any server when null. Unknown fields
     are refused.
 
     """

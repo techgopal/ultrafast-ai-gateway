@@ -20,13 +20,14 @@ class CreateRuleRequest:
     """
     Attributes:
         channel_ids (list[int]): The channels that are told, by id.
-        kind (str): `budget`, `error_rate` or `circuit_open`.
+        kind (str): `budget`, `error_rate`, `circuit_open` or `mcp_down`.
         name (str):
         params (CreateRuleRequestParams): By kind. `budget`: `{"budget_id": id or null, "percent": 1-100}`.
             `error_rate`: `{"scope": "gateway"|"route"|"provider"|"key",
             "subject": name or null, "percent": 1-100, "window_minutes": 5-60
             (5), "min_requests": 1-100000 (20)}`. `circuit_open`:
-            `{"provider": name or null, "model": name or null}`. Unknown fields
+            `{"provider": name or null, "model": name or null}`. `mcp_down`:
+            `{"server": name or null}`, any server when null. Unknown fields
             are refused.
         enabled (bool | None | Unset): On when left out.
     """

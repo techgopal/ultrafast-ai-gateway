@@ -86,7 +86,7 @@ test("the gateway gets only its own environment, and leaves nothing when it stop
     // On PostgreSQL (UF_E2E_DATABASE_URL) the gateway also gets its database and master key.
     expect(environmentNames(pid)).toEqual(
       databaseUrl() === null
-        ? ["NO_COLOR", "RUST_LOG", "UF_DATA_DIR", "UF_HOST", "UF_INSECURE_COOKIES", "UF_PORT"]
+        ? ["NO_COLOR", "RUST_LOG", "UF_DATA_DIR", "UF_HOST", "UF_INSECURE_COOKIES", "UF_MCP_ALLOW_PRIVATE_UPSTREAMS", "UF_MCP_CATALOG", "UF_PORT"]
         : [
             "NO_COLOR",
             "RUST_LOG",
@@ -95,6 +95,8 @@ test("the gateway gets only its own environment, and leaves nothing when it stop
             "UF_HOST",
             "UF_INSECURE_COOKIES",
             "UF_MASTER_KEY",
+            "UF_MCP_ALLOW_PRIVATE_UPSTREAMS",
+            "UF_MCP_CATALOG",
             "UF_PORT",
           ],
     );

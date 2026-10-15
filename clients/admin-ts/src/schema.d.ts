@@ -582,6 +582,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/mcp/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["mcp_catalog_view"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/catalog/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["mcp_catalog_refresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/mcp/servers": {
         parameters: {
             query?: never;
@@ -592,6 +624,22 @@ export interface paths {
         get: operations["mcp_servers_list"];
         put?: never;
         post: operations["mcp_servers_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/servers/from-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["mcp_servers_from_catalog"];
         delete?: never;
         options?: never;
         head?: never;
@@ -612,6 +660,22 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["mcp_servers_update"];
+        trace?: never;
+    };
+    "/api/mcp/servers/{id}/stderr": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["mcp_servers_stderr"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/mcp/servers/{id}/sync": {
@@ -672,6 +736,38 @@ export interface paths {
         get?: never;
         put: operations["mcp_tools_grants_put"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/tools/{id}/projection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["mcp_tools_projection_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/tools/{id}/projection/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["mcp_tools_projection_preview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -768,6 +864,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["playground_images"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/playground/mcp/{server}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["playground_mcp"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1307,7 +1419,7 @@ export interface components {
             /** @description Names of channels. */
             channels?: string[];
             enabled?: boolean;
-            /** @description `budget`, `error_rate` or `circuit_open`. */
+            /** @description `budget`, `error_rate`, `circuit_open` or `mcp_down`. */
             kind: string;
             name: string;
             /**
@@ -1556,23 +1668,65 @@ export interface components {
             team_id?: number | null;
         };
         CreateMcpServerRequest: {
+            args?: string[] | null;
             /** @description The header that carries the secret, for `auth_kind` `header`. */
             auth_header?: string | null;
-            /** @description `none` (the default), `bearer` or `header`. */
+            /** @description `none` (the default), `bearer`, `header` or `oauth`. Only for `http`. */
             auth_kind?: string | null;
+            /**
+             * @description The program of a `stdio` server. It is run as it is, with `args`:
+             *     there is no shell.
+             */
+            command?: string | null;
             description?: string | null;
             /** @description On by default. */
             enabled?: boolean | null;
+            /**
+             * @description The environment of a `stdio` server, name to value; nothing else of
+             *     the gateway's environment reaches the program (it also gets `PATH`,
+             *     `HOME` and `LANG`). The values are stored encrypted and never shown.
+             */
+            env?: {
+                [key: string]: string;
+            } | null;
             /**
              * @description 1 to 63 characters of `a-z`, `0-9` and `-`, starting with a letter or
              *     a digit. It is the name in the endpoint `/mcp/{name}` and in a key's
              *     allowlist (`mcp:{name}/{tool}`), and cannot be changed.
              */
             name: string;
-            /** @description Required with `bearer` or `header`. */
+            /** @description For `oauth`: the client the gateway is at the token endpoint. */
+            oauth_client_id?: string | null;
+            /**
+             * @description For `oauth`: `client_credentials` (the default) or `token_exchange`
+             *     (RFC 8693, with `secret` as the token to exchange). The token is made
+             *     for this server's URL (RFC 8707). The gateway never passes an agent's
+             *     key on, nor a token to an agent.
+             */
+            oauth_grant?: string | null;
+            /** @description For `oauth`: the scopes to ask for, space separated. */
+            oauth_scopes?: string | null;
+            /**
+             * @description For `auth_kind` `oauth`: where the gateway gets a token for this
+             *     server. HTTPS (unless private addresses are allowed), on an
+             *     authorization server the MCP server names, if it names any.
+             */
+            oauth_token_url?: string | null;
+            /**
+             * @description Required with `bearer`, `header` or `oauth` (the client secret, or for
+             *     `token_exchange` the token to exchange).
+             */
             secret?: string | null;
-            /** @description The streamable-HTTP endpoint of the server. */
-            url: string;
+            /**
+             * @description `http` (the default), or `stdio` for a program the gateway runs on its
+             *     own host. Local servers need `UF_MCP_LOCAL=on`.
+             */
+            transport?: string | null;
+            /**
+             * @description The streamable-HTTP endpoint of the server. Required for `http`,
+             *     absent for `stdio`.
+             */
+            url?: string | null;
         };
         CreateModelRequest: {
             /** @description The provider's id for the model, 1 to 200 characters, no whitespace. */
@@ -1611,7 +1765,7 @@ export interface components {
             channel_ids: number[];
             /** @description On when left out. */
             enabled?: boolean | null;
-            /** @description `budget`, `error_rate` or `circuit_open`. */
+            /** @description `budget`, `error_rate`, `circuit_open` or `mcp_down`. */
             kind: string;
             name: string;
             /**
@@ -1619,7 +1773,8 @@ export interface components {
              *     `error_rate`: `{"scope": "gateway"|"route"|"provider"|"key",
              *     "subject": name or null, "percent": 1-100, "window_minutes": 5-60
              *     (5), "min_requests": 1-100000 (20)}`. `circuit_open`:
-             *     `{"provider": name or null, "model": name or null}`. Unknown fields
+             *     `{"provider": name or null, "model": name or null}`. `mcp_down`:
+             *     `{"server": name or null}`, any server when null. Unknown fields
              *     are refused.
              */
             params: {
@@ -1684,6 +1839,32 @@ export interface components {
          * @enum {string}
          */
         Directions: "input" | "output" | "both";
+        Entry: {
+            args: string[];
+            /** @description `none`, `bearer`, `header` or `oauth`. */
+            auth: string;
+            auth_header: string | null;
+            command: string | null;
+            description: string;
+            env: components["schemas"]["EnvVar"][];
+            homepage: string;
+            /** @description `^[a-z0-9][a-z0-9-]{0,62}$`; also the default name of the server. */
+            id: string;
+            name: string;
+            tags: string[];
+            /** @description `http` or `stdio`. */
+            transport: string;
+            url: string | null;
+        };
+        EnvVar: {
+            help: string;
+            /**
+             * @description The name of the environment variable (stdio) or the one secret that
+             *     authenticates to the server (http).
+             */
+            name: string;
+            secret: boolean;
+        };
         EventList: {
             events: components["schemas"]["EventView"][];
         };
@@ -1762,6 +1943,20 @@ export interface components {
             guardrail_id: number;
             guardrail_name: string;
             rule_id: string;
+        };
+        FromCatalogRequest: {
+            /** @description The `id` of a catalog entry. */
+            catalog_id: string;
+            /** @description The name of the server. The entry's id by default. */
+            name?: string | null;
+            /**
+             * @description The values of the entry's `env` items, by name. A secret item is
+             *     required; the value of the one an HTTP entry authenticates with is
+             *     the server's secret.
+             */
+            secrets?: {
+                [key: string]: string;
+            };
         };
         GrantEntry: {
             everyone?: boolean;
@@ -1958,6 +2153,11 @@ export interface components {
             owner_email: string | null;
             /** Format: int64 */
             owner_id: number | null;
+            /**
+             * @description The MCP tools (`mcp:<server>/<tool>`) the combined endpoint lists
+             *     when the key can call too many to list them all.
+             */
+            pinned_tools: string[];
             revoked_at: string | null;
             /**
              * @description `revoked`, `expired`, `suspended` or `active`, the first that
@@ -2239,6 +2439,56 @@ export interface components {
         } | {
             pii: components["schemas"]["PiiType"][];
         };
+        /** @description The catalog of MCP servers the project publishes, as the console shows it. */
+        McpCatalogView: {
+            entries: components["schemas"]["Entry"][];
+            /** @description Why the newest attempt did not give a newer copy, in our words. */
+            error: string | null;
+            /** @description Whether the gateway fetches the catalog at all (`UF_MCP_CATALOG`). */
+            fetch_enabled: boolean;
+            fetched_at: string | null;
+            /**
+             * @description Whether servers that run as programs on this host may be added
+             *     (`UF_MCP_LOCAL=on`).
+             */
+            local_enabled: boolean;
+            /**
+             * @description Where `entries` came from: fetched since the gateway started
+             *     (`remote`), kept from an earlier fetch (`cache`), or the copy that
+             *     ships in the binary (`builtin`).
+             */
+            source: components["schemas"]["Source"];
+        };
+        /**
+         * @description The finding of a health probe: one `tools/list` outside any key, with a
+         *     5 second limit, every `UF_MCP_HEALTH_INTERVAL` seconds (60).
+         */
+        McpHealthView: {
+            checked_at: string;
+            /**
+             * Format: int64
+             * @description How long the answer took, when there was one.
+             */
+            latency_ms: number | null;
+            /**
+             * @description `ok`, `degraded` (slow, or one failed probe), `down` (two failed probes
+             *     in a row) or `crashlooping` (a local program that keeps dying).
+             */
+            status: string;
+        };
+        /** @description How the program of a local server stands. */
+        McpLocalView: {
+            /**
+             * @description `starting`, `running`, `backoff` (died, waiting to be started again),
+             *     `crashlooping`, `stopped`, or `off` (local servers are not enabled).
+             */
+            phase: string;
+            /**
+             * Format: int32
+             * @description How many times it was started again.
+             */
+            restarts: number;
+        };
         /**
          * @description An MCP server. Its secret is never in a file: a server an import
          *     creates with authentication cannot be called until an admin enters it.
@@ -2246,11 +2496,12 @@ export interface components {
         McpServerEntry: {
             /** @description The header name, for `auth_kind` `header`. */
             auth_header: string | null;
-            /** @description `none`, `bearer` or `header`. */
+            /** @description `none`, `bearer`, `header` or `oauth` (then `oauth` says how). */
             auth_kind?: string;
             description?: string;
             enabled?: boolean;
             name: string;
+            oauth: components["schemas"]["OauthEntry"] | null;
             /**
              * @description The tools the server offers that have settings. A tool the server
              *     does not offer yet is reported, not created.
@@ -2267,28 +2518,57 @@ export interface components {
          *     call).
          */
         McpServerView: {
+            args: string[] | null;
             auth_header: string | null;
-            /** @description `none`, `bearer` or `header`. */
+            /** @description `none`, `bearer`, `header` or `oauth`. */
             auth_kind: string | null;
+            /** @description The catalog entry the server was made from. */
+            catalog_id: string | null;
+            /** @description The program of a `stdio` server. */
+            command: string | null;
             created_at: string;
             description: string;
             enabled: boolean;
+            /** @description The names of the environment variables of a `stdio` server; never the values. */
+            env_names: string[] | null;
             has_secret: boolean | null;
+            health: components["schemas"]["McpHealthView"] | null;
             /** Format: int64 */
             id: number;
             last_sync_at: string | null;
             /** @description Our summary of why the last sync failed; never text from the server. */
             last_sync_error: string | null;
+            local: components["schemas"]["McpLocalView"] | null;
             name: string;
+            oauth_client_id: string | null;
+            oauth_grant: string | null;
+            oauth_scopes: string | null;
+            /** @description For `oauth`: the token endpoint, the client, the scopes and the grant. */
+            oauth_token_url: string | null;
             /**
              * Format: int64
              * @description How many tools: for an admin those the server offers, for anybody
              *     else those they may call.
              */
             tool_count: number;
+            /** @description `http`, or `stdio` for a program the gateway runs. */
+            transport: string;
             url: string | null;
             /** @description The server can be called: it needs no secret, or its secret can be read. */
             usable: boolean | null;
+        };
+        /** @description What a local server's program wrote to stderr. */
+        McpStderrView: {
+            /**
+             * @description Whether the gateway keeps the output of this server now: it is
+             *     running, or waiting to be started again.
+             */
+            supervised: boolean;
+            /**
+             * @description The last 64 KiB, with the values of the server's environment replaced
+             *     by `***`.
+             */
+            text: string;
         };
         McpSyncResult: {
             /** @description Tools that are new, now switched off. */
@@ -2311,6 +2591,7 @@ export interface components {
             enabled: boolean;
             grants?: components["schemas"]["GrantEntry"];
             name: string;
+            projection: components["schemas"]["ProjectionEntry"] | null;
         };
         McpToolList: {
             tools: components["schemas"]["McpToolView"][];
@@ -2327,6 +2608,7 @@ export interface components {
             input_schema: Record<string, never>;
             name: string;
             output_schema: Record<string, never> | null;
+            projection: components["schemas"]["ProjectionBody"] | null;
             /** @description The server no longer offers it; its grants are kept. */
             removed: boolean;
             /** Format: int64 */
@@ -2392,6 +2674,14 @@ export interface components {
             /** Format: int64 */
             provider_id: number;
             provider_name: string;
+        };
+        /** @description How the gateway signs in to an MCP server with OAuth (see `mcp::oauth`). */
+        OauthEntry: {
+            client_id: string;
+            /** @description `client_credentials` or `token_exchange`. */
+            grant: string;
+            scopes: string | null;
+            token_url: string;
         };
         OidcTestRequest: {
             /** @description The issuer to test. Left out or empty: the saved one. */
@@ -2659,6 +2949,49 @@ export interface components {
             /** @description For example `1024x1024`. */
             size?: string;
         };
+        /** @description The JSON-RPC answer of `/mcp/{server}` to a request it refused. */
+        PlaygroundMcpError: {
+            /** @description `{"code": <number>, "message": <text>}`. */
+            error: Record<string, never>;
+            /**
+             * Format: int64
+             * @description The `id` of the request; `null` when it could not be read.
+             */
+            id?: number | null;
+            jsonrpc: string;
+        };
+        /**
+         * @description The JSON-RPC answer of `/mcp/{server}` to a call that was carried out.
+         *     (A call the tool could not do is an `isError` result; a call the gateway
+         *     would not let through, such as one to a tool the user may not call, is a
+         *     JSON-RPC `error` in the place of `result`, see `PlaygroundMcpError`.)
+         */
+        PlaygroundMcpReply: {
+            /**
+             * Format: int64
+             * @description The `id` of the request.
+             */
+            id?: number | null;
+            jsonrpc: string;
+            result: Record<string, never>;
+        };
+        /**
+         * @description A JSON-RPC request for `/mcp/{server}`, as the console's playground sends
+         *     it: `tools/list` or `tools/call`. The body is read by the same dispatcher
+         *     as that endpoint's.
+         */
+        PlaygroundMcpRequest: {
+            /** Format: int64 */
+            id: number;
+            /** @description `2.0`. */
+            jsonrpc: string;
+            /**
+             * @description For example `tools/list`, or `tools/call` with `params`
+             *     `{"name": "<tool>", "arguments": {...}}`.
+             */
+            method: string;
+            params?: Record<string, never>;
+        };
         PlaygroundMessage: {
             /** @description Text, or a list of parts (`text` and `image_url`) as in `/v1/chat/completions`. Null is allowed on an assistant message that has `tool_calls`. Images are `data:` URLs or, except for Gemini, `http(s)` URLs, and count toward the request body limit (10 MiB). */
             content?: string | {
@@ -2747,6 +3080,61 @@ export interface components {
              * @description Zero for a caller who is not an admin.
              */
             weight: number;
+        };
+        /**
+         * @description What of a tool's result the agent is given. Left out, every list is empty
+         *     and every limit off; all four left out takes the projection off.
+         */
+        ProjectionBody: {
+            /** @description JSONPath queries of what to remove, after `keep`. */
+            drop?: string[];
+            /**
+             * @description JSONPath queries (RFC 9535) of what to keep: only the nodes they select
+             *     stay, with the structure above them. Empty keeps everything.
+             */
+            keep?: string[];
+            /**
+             * Format: int64
+             * @description The most bytes a text block may have; more is cut and says so.
+             */
+            max_bytes: number | null;
+            /**
+             * Format: int64
+             * @description The most items any array of the result may keep.
+             */
+            max_items: number | null;
+        };
+        /** @description A projection of a tool's result, as the file holds it. */
+        ProjectionEntry: {
+            /** @description JSONPath queries of what to remove, after `keep`. */
+            drop?: string[];
+            /** @description JSONPath queries of what to keep. */
+            keep?: string[];
+            /** Format: int64 */
+            max_bytes: number | null;
+            /** Format: int64 */
+            max_items: number | null;
+        };
+        ProjectionPreview: {
+            /** Format: int64 */
+            bytes_after: number;
+            /** Format: int64 */
+            bytes_before: number;
+            /** @description Whether the projection changed anything. */
+            changed: boolean;
+            /** @description The result as the agent would be given it. */
+            result: Record<string, never>;
+            /** @description Whether a limit cut something. */
+            truncated: boolean;
+        };
+        /** @description A result to project, and optionally a projection to try on it. */
+        ProjectionPreviewRequest: {
+            projection?: components["schemas"]["ProjectionBody"] | null;
+            /**
+             * @description A result of the tool as `tools/call` returns it (`content`,
+             *     `structuredContent`), for instance the last one from the playground.
+             */
+            result: Record<string, never>;
         };
         /**
          * @description A prompt template with all its versions. An import adds the versions a
@@ -3197,6 +3585,11 @@ export interface components {
             /** @description Always true: passwords are never turned off. */
             password: boolean;
         };
+        /**
+         * @description Where the entries a view shows came from.
+         * @enum {string}
+         */
+        Source: "remote" | "cache" | "builtin";
         SyncResult: {
             /** @description The names that were new, now in the catalog and disabled. */
             added: string[];
@@ -3326,13 +3719,24 @@ export interface components {
             /** @description `external` only: a new URL. */
             url?: string | null;
         };
-        /** @description What to change on a key. Admins only; send at least one field. */
+        /**
+         * @description What to change on a key. Admins; `pinned_tools` also a lead of the key's
+         *     team. Send at least one field.
+         */
         UpdateKeyRequest: {
             /**
              * @description Replaces the guardrails of the key; `[]` takes them all off. Left
              *     out, they stay.
              */
             guardrail_ids?: number[] | null;
+            /**
+             * @description Replaces the MCP tools pinned to the key (`mcp:<server>/<tool>`, at
+             *     most 100, each one the key may call); `[]` unpins them all. The
+             *     combined MCP endpoint lists them, with the search tools, when the key
+             *     can call more tools than `UF_MCP_LIST_INLINE_MAX`. A lead of the key's
+             *     team, a lead's own key, or an admin. Left out, they stay.
+             */
+            pinned_tools?: string[] | null;
             /**
              * @description Replaces all the tags of the key; `{}` removes them. The same limits
              *     as when the key is created. Left out, the tags stay.
@@ -3342,10 +3746,30 @@ export interface components {
             } | null;
         };
         UpdateMcpServerRequest: {
+            args?: string[] | null;
             auth_header?: string | null;
             auth_kind?: string | null;
+            /** @description The program of a `stdio` server. */
+            command?: string | null;
             description?: string | null;
             enabled?: boolean | null;
+            /**
+             * @description The environment of a `stdio` server. It replaces the old one: a name
+             *     that is not here is removed, a name with an empty value keeps the
+             *     value that is stored, any other value replaces it.
+             */
+            env?: {
+                [key: string]: string;
+            } | null;
+            oauth_client_id?: string | null;
+            oauth_grant?: string | null;
+            /** @description Empty removes the scopes. */
+            oauth_scopes?: string | null;
+            /**
+             * @description For `oauth`, as when the server is made. Changing the host of the
+             *     token URL needs the secret again.
+             */
+            oauth_token_url?: string | null;
             /**
              * @description Absent leaves the secret, `null` removes it, a string replaces it.
              *     Changing the host of a server that has a secret needs it again.
@@ -6358,6 +6782,103 @@ export interface operations {
             };
         };
     };
+    mcp_catalog_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The catalog entries with where they came from. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpCatalogView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_catalog_refresh: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The catalog after fetching it again. With fetching switched off nothing is requested. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpCatalogView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     mcp_servers_list: {
         parameters: {
             query?: {
@@ -6497,6 +7018,96 @@ export interface operations {
                 };
             };
             /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_servers_from_catalog: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FromCatalogRequest"];
+            };
+        };
+        responses: {
+            /** @description The new server, made from the catalog entry and synced once. If that sync failed, `last_sync_error` says so; the server exists either way. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `mcp_server_exists`: the name is taken. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The entry does not exist, needs something this gateway does not have (local servers, OAuth), a secret is missing or not named by the entry, or the address is private; `fields` names each of them. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -6710,6 +7321,65 @@ export interface operations {
             };
             /** @description Some fields are not valid, or the host changed and the secret was not sent again; `fields` names each of them. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_servers_stderr: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The id of the server. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The end of what the program of a local server wrote to stderr. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpStderrView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist, or it is not a local server. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7046,6 +7716,192 @@ export interface operations {
                 };
             };
             /** @description A team or user does not exist, or everyone is combined with others; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_tools_projection_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the tool. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectionBody"];
+            };
+        };
+        responses: {
+            /** @description The tool with its new projection (`null` when the request asked for nothing, which takes it off). It applies to the next call. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpToolView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description A query is not valid JSONPath, or a limit is out of range; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_tools_projection_preview: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the tool. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectionPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description The result with the projection applied. Nothing is stored and no tool is called. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectionPreview"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The projection is not valid, or `result` is not an object; `fields` names each of them. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -7675,6 +8531,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+        };
+    };
+    playground_mcp: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The name of the MCP server. */
+                server: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaygroundMcpRequest"];
+            };
+        };
+        responses: {
+            /** @description The JSON-RPC answer. A tool the user may not call or a refused argument is an `error` in place of `result` (see `PlaygroundMcpError`), a failing tool an `isError` result, as on `/mcp/{server}`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpReply"];
+                };
+            };
+            /** @description The body is not a JSON-RPC request. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
+                };
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description A spent budget refuses the call. */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
+                };
+            };
+            /** @description The call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundErrorBody"];
+                };
+            };
+            /** @description No such server, or the user may call none of its tools. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
+                };
+            };
+            /** @description A limit refuses the call; `Retry-After` says when to come back. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
+                };
+            };
+            /** @description The server is busy or not running. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaygroundMcpError"];
                 };
             };
         };

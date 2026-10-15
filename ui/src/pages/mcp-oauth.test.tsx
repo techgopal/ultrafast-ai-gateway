@@ -76,7 +76,7 @@ describe("OAuth in the server dialog", () => {
       oauth_scopes: "a",
       oauth_grant: "client_credentials",
     };
-    serve([api]);
+    serve([api as never]);
     const patch = counted("patch", "/api/mcp/servers/{id}", () => ok("patch", "/api/mcp/servers/{id}", 200, api));
     await renderWithApp(null, { route: "/mcp" });
     const table = await screen.findByRole("table", { name: "MCP servers" });

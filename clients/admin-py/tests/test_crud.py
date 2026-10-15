@@ -107,7 +107,7 @@ def test_mcp_server_create_list_delete(api: AdminClient) -> None:
         mcp_servers_create.sync_detailed(
             client=api.client,
             body=CreateMcpServerRequest(
-                name="smoke", url="http://127.0.0.1:1/mcp", auth_kind="bearer", secret="mcp-secret-not-real"
+                name="smoke", url="https://mcp.example.test/mcp", auth_kind="bearer", secret="mcp-secret-not-real"
             ),
         )
     )

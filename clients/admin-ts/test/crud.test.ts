@@ -154,7 +154,7 @@ describe("round trips through the token, one per tag", () => {
       api.raw.POST("/api/mcp/servers", {
         body: {
           name: "smoke",
-          url: "http://127.0.0.1:1/mcp",
+          url: "https://mcp.example.test/mcp",
           auth_kind: "bearer",
           secret: "mcp-secret-not-real",
         },

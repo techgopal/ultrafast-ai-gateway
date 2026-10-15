@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any, TypeVar, cast
+
+from attrs import define as _attrs_define
+from typing_extensions import Self
+
+from ..types import UNSET, Unset
+
+T = TypeVar("T", bound="ProjectionBody")
+
+
+@_attrs_define
+class ProjectionBody:
+    """What of a tool's result the agent is given. Left out, every list is empty
+    and every limit off; all four left out takes the projection off.
+
+        Attributes:
+            max_bytes (int | None): The most bytes a text block may have; more is cut and says so.
+            max_items (int | None): The most items any array of the result may keep.
+            drop (list[str] | Unset): JSONPath queries of what to remove, after `keep`.
+            keep (list[str] | Unset): JSONPath queries (RFC 9535) of what to keep: only the nodes they select
+                stay, with the structure above them. Empty keeps everything.
+    """
+
+    max_bytes: int | None
+    max_items: int | None
+    drop: list[str] | Unset = UNSET
+    keep: list[str] | Unset = UNSET
+
+    def to_dict(self) -> dict[str, Any]:
+        max_bytes: int | None
+        max_bytes = self.max_bytes
+
+        max_items: int | None
+        max_items = self.max_items
+
+        drop: list[str] | Unset = UNSET
+        if not isinstance(self.drop, Unset):
+            drop = self.drop
+
+        keep: list[str] | Unset = UNSET
+        if not isinstance(self.keep, Unset):
+            keep = self.keep
+
+        field_dict: dict[str, Any] = {}
+
+        field_dict.update(
+            {
+                "max_bytes": max_bytes,
+                "max_items": max_items,
+            }
+        )
+        if drop is not UNSET:
+            field_dict["drop"] = drop
+        if keep is not UNSET:
+            field_dict["keep"] = keep
+
+        return field_dict
+
+    @classmethod
+    def from_dict(cls, src_dict: Mapping[str, Any]) -> Self:
+        d = dict(src_dict)
+
+        def _parse_max_bytes(data: object) -> int | None:
+            if data is None:
+                return data
+            return cast(int | None, data)
+
+        max_bytes = _parse_max_bytes(d.pop("max_bytes"))
+
+        def _parse_max_items(data: object) -> int | None:
+            if data is None:
+                return data
+            return cast(int | None, data)
+
+        max_items = _parse_max_items(d.pop("max_items"))
+
+        drop = cast(list[str], d.pop("drop", UNSET))
+
+        keep = cast(list[str], d.pop("keep", UNSET))
+
+        projection_body = cls(
+            max_bytes=max_bytes,
+            max_items=max_items,
+            drop=drop,
+            keep=keep,
+        )
+
+        return projection_body

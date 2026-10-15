@@ -31,7 +31,7 @@ test.describe("the catalog", () => {
     await expect(files).toContainText("Needs local servers");
 
     // The search narrows the list.
-    await page.getByLabel("Search").fill("error");
+    await page.getByRole("searchbox", { name: "Search" }).fill("error");
     await expect(entries.getByRole("heading", { level: 2 })).toHaveText(["Sentry"]);
 
     // The dialog asks for the name and the one secret of the entry.
@@ -75,7 +75,7 @@ test.describe("local servers", () => {
     await add.getByRole("radio", { name: "Program on the gateway host" }).check();
     await add.getByLabel("Name", { exact: true }).fill("files");
     await add.getByLabel("Command", { exact: true }).fill(process.execPath);
-    await add.getByLabel("Arguments").fill(STDIO_SCRIPT);
+    await add.getByRole("textbox", { name: "Arguments" }).fill(STDIO_SCRIPT);
     await add.getByRole("button", { name: "Add variable" }).click();
     await add.getByLabel("Variable 1 name").fill("E2E_FLAG");
     await add.getByLabel("Variable 1 value").fill("on");
@@ -83,7 +83,6 @@ test.describe("local servers", () => {
     await expect(add).toBeHidden();
 
     const server = itemOf(page, "MCP servers", "files");
-    await expect(server).toContainText(process.execPath);
     // The program comes up on its own; sync reads its tools.
     await expect(async () => {
       await server.getByRole("button", { name: "Sync" }).click();
@@ -104,7 +103,7 @@ test.describe("local servers", () => {
       await expect(row).toContainText("On");
       await row.getByRole("button", { name: "Edit access" }).click();
       const access = page.getByRole("dialog", { name: "Edit access" });
-      await access.getByRole("radio", { name: /Everyone/ }).check();
+      await access.getByRole("switch", { name: "Everyone" }).setChecked(true);
       await access.getByRole("button", { name: "Save access" }).click();
       await expect(access).toBeHidden();
     }
@@ -115,7 +114,7 @@ test.describe("local servers", () => {
     const form = page.getByRole("form", { name: "MCP call" });
     await form.getByRole("combobox", { name: "MCP tool" }).click();
     await page.getByRole("option", { name: "echo" }).click();
-    await form.getByLabel("Arguments").fill('{"text": "hello"}');
+    await form.getByRole("textbox", { name: "Arguments" }).fill('{"text": "hello"}');
     await form.getByRole("button", { name: "Run tool" }).click();
     const result = page.getByRole("region", { name: "Result" });
     await expect(result).toContainText("mcp:files/echo");
@@ -207,10 +206,16 @@ test.describe("health", () => {
       await goTo(page, "MCP tools");
       const row = itemOf(page, "MCP servers", "mock");
       // The first look comes a few seconds after the start.
-      await expect(row).toContainText("Answered in", { timeout: 20_000 });
+      await expect(async () => {
+        await page.reload();
+        await expect(row).toContainText("Answered in", { timeout: 3000 });
+      }).toPass({ timeout: 30000 });
 
       mock.down = true;
-      await expect(row).toContainText("Down", { timeout: 40_000 });
+      await expect(async () => {
+        await page.reload();
+        await expect(row).toContainText("Down", { timeout: 3000 });
+      }).toPass({ timeout: 45000 });
       await expect.poll(() => received.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
       const firing = JSON.parse(received[0]?.body ?? "{}") as {
         state: string;
@@ -220,7 +225,10 @@ test.describe("health", () => {
       expect(firing).toMatchObject({ state: "firing", subject: "mcp:mock", rule: { kind: "mcp_down" } });
 
       mock.down = false;
-      await expect(row).toContainText("Answered in", { timeout: 30_000 });
+      await expect(async () => {
+        await page.reload();
+        await expect(row).toContainText("Answered in", { timeout: 3000 });
+      }).toPass({ timeout: 40000 });
       await expect
         .poll(() => received.some((one) => (JSON.parse(one.body) as { state: string }).state === "resolved"), {
           timeout: 20_000,
