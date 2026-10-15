@@ -17,7 +17,7 @@ use super::providers::checked;
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::access::{self, Viewer};
 use crate::app::AppState;
-use crate::config::{same_host, validate_base_url};
+use crate::config::{is_private_host, same_host, validate_base_url};
 use crate::identity::policy::Action;
 use crate::identity::Principal;
 use crate::mcp::sync::{sync_server, Actor, SyncError};
@@ -337,6 +337,19 @@ pub async fn list(
     Ok(Json(McpServerList { servers }).into_response())
 }
 
+/// The URL of a server: well formed, and not at this machine or a private
+/// network unless `UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on`. A name is judged by its
+/// spelling (see `is_private_host`).
+fn check_url(state: &AppState, url: &str, field: &str, fields: &mut BTreeMap<String, String>) {
+    checked(field, validate_base_url(url), fields);
+    if !fields.contains_key(field) && !state.mcp.allow_private_upstreams && is_private_host(url) {
+        fields.insert(
+            field.to_string(),
+            "The address is on this machine or a private network. Set UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on to allow it.".to_string(),
+        );
+    }
+}
+
 fn check_secret(secret: Option<&str>, fields: &mut BTreeMap<String, String>) {
     if secret.is_some_and(|s| s.trim().is_empty()) {
         fields.insert("secret".to_string(), "must not be empty".to_string());
@@ -372,7 +385,7 @@ pub async fn create(
     let kind = req.auth_kind.as_deref().unwrap_or("none");
     let mut fields = BTreeMap::new();
     checked("name", validate_server_name(&req.name), &mut fields);
-    checked("url", validate_base_url(&req.url), &mut fields);
+    check_url(&state, &req.url, "url", &mut fields);
     check_auth(kind, req.auth_header.as_deref(), &mut fields);
     check_secret(req.secret.as_deref(), &mut fields);
     if kind == "none" && req.secret.is_some() {
@@ -513,8 +526,8 @@ pub async fn update(
         ));
     }
     let mut fields = BTreeMap::new();
-    if let Some(url) = &req.url {
-        checked("url", validate_base_url(url), &mut fields);
+    if let Some(url) = req.url.as_deref().filter(|u| **u != target.url) {
+        check_url(&state, url, "url", &mut fields);
     }
     check_secret(req.secret.as_ref().and_then(|s| s.as_deref()), &mut fields);
     if let Some(description) = &req.description {
@@ -1071,4 +1084,157 @@ pub async fn catalog_refresh(
     require(&authed.principal, &Action::ManageMcp)?;
     state.catalog.refresh(time::OffsetDateTime::now_utc()).await;
     Ok(catalog_response(&state).await)
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FromCatalogRequest {
+    /// The `id` of a catalog entry.
+    catalog_id: String,
+    /// The values of the entry's `env` items, by name. A secret item is
+    /// required; the value of the one an HTTP entry authenticates with is
+    /// the server's secret.
+    #[serde(default)]
+    #[schema(write_only)]
+    secrets: BTreeMap<String, String>,
+    /// The name of the server. The entry's id by default.
+    name: Option<String>,
+}
+
+fn refused(field: &str, message: &str) -> ApiError {
+    ApiError::validation(BTreeMap::from([(field.to_string(), message.to_string())]))
+}
+
+#[utoipa::path(
+    post,
+    path = "/mcp/servers/from-catalog",
+    tag = "mcp",
+    operation_id = "mcp_servers_from_catalog",
+    request_body = FromCatalogRequest,
+    responses(
+        (status = 201, description = "The new server, made from the catalog entry and synced once. If that sync failed, `last_sync_error` says so; the server exists either way.", body = McpServerView),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 409, description = "`mcp_server_exists`: the name is taken.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "The entry does not exist, needs something this gateway does not have (local servers, OAuth), a secret is missing or not named by the entry, or the address is private; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+pub async fn from_catalog(
+    State(state): State<Arc<AppState>>,
+    authed: Authed,
+    ApiJson(req): ApiJson<FromCatalogRequest>,
+) -> Result<Response, ApiError> {
+    let me = &authed.principal;
+    require(me, &Action::ManageMcp)?;
+    let Some(entry) = state.catalog.entry(&req.catalog_id).await else {
+        return Err(refused("catalog_id", "There is no such catalog entry."));
+    };
+    let name = req.name.clone().unwrap_or_else(|| entry.id.clone());
+    let mut fields = BTreeMap::new();
+    checked("name", validate_server_name(&name), &mut fields);
+    if entry.transport != "http" {
+        // Programs that run on the gateway host come with local servers.
+        return Err(refused(
+            "catalog_id",
+            "This entry runs a program on the gateway host, which this gateway cannot do yet.",
+        ));
+    }
+    if entry.auth == "oauth" {
+        return Err(refused(
+            "catalog_id",
+            "This entry signs in with OAuth. Add it by hand.",
+        ));
+    }
+    let url = entry.url.clone().unwrap_or_default();
+    check_url(&state, &url, "catalog_id", &mut fields);
+    // Names the entry does not list are not accepted; secrets it lists are
+    // required, other values are optional.
+    for given in req.secrets.keys() {
+        if !entry.env.iter().any(|e| e.name == *given) {
+            fields.insert(
+                format!("secrets.{given}"),
+                "The entry has no such item.".to_string(),
+            );
+        }
+    }
+    for item in &entry.env {
+        let value = req.secrets.get(&item.name);
+        if value.is_some_and(|v| v.trim().is_empty()) || (item.secret && value.is_none()) {
+            fields.insert(
+                format!("secrets.{}", item.name),
+                "A value is required.".to_string(),
+            );
+        }
+    }
+    // The catalog names exactly one secret item for a server that signs in.
+    let auth_kind = entry.auth.as_str();
+    let secret = entry
+        .env
+        .iter()
+        .find(|e| e.secret)
+        .filter(|_| auth_kind != "none")
+        .and_then(|e| req.secrets.get(&e.name));
+    if !fields.is_empty() {
+        return Err(ApiError::validation(fields));
+    }
+    let secret_enc = secret.map(|s| encrypt_secret(&state.cipher, s));
+
+    let mut tx = state.store.begin().await?;
+    let inserted = tx
+        .insert_server(NewMcpServer {
+            name: &name,
+            url: &url,
+            auth_kind,
+            auth_header: entry
+                .auth_header
+                .as_deref()
+                .filter(|_| auth_kind == "header"),
+            auth_secret_enc: secret_enc.as_deref(),
+            enabled: true,
+            description: &entry.description,
+        })
+        .await;
+    let id = match inserted {
+        Ok(id) => id,
+        Err(e) => {
+            return Err(match e.downcast_ref::<StoreError>() {
+                Some(StoreError::Duplicate) => exists_err(),
+                None => e.into(),
+            })
+        }
+    };
+    tx.audit(AuditEntry {
+        actor_user_id: Some(me.user_id),
+        actor_email: &me.email,
+        action: "mcp.create",
+        target_type: "mcp_server",
+        target_id: Some(id),
+        summary: &format!(
+            "Created MCP server {name} from catalog entry {}{}",
+            entry.id,
+            if secret_enc.is_some() {
+                ", secret set"
+            } else {
+                ""
+            }
+        ),
+    })
+    .await?;
+    tx.commit().await?;
+    refresh_snapshot(&state).await?;
+    // One sync, so the tools are there to switch on. Its failure is recorded
+    // on the server; the registration stands.
+    let worker = state.clone();
+    let actor = Actor::of(me);
+    let _ = tokio::spawn(async move { sync_server(&worker, id, &actor).await }).await;
+    let row = state
+        .store
+        .server_by_id(id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    Ok((StatusCode::CREATED, Json(admin_view(&state, &row).await?)).into_response())
 }

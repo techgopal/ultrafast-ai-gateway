@@ -72,15 +72,18 @@ pub struct Entry {
     #[schema(required)]
     pub command: Option<String>,
     #[serde(default)]
+    #[schema(required)]
     pub args: Vec<String>,
     #[serde(default)]
     #[schema(required)]
     pub auth_header: Option<String>,
     #[serde(default)]
+    #[schema(required)]
     pub env: Vec<EnvVar>,
     /// `none`, `bearer`, `header` or `oauth`.
     pub auth: String,
     #[serde(default)]
+    #[schema(required)]
     pub tags: Vec<String>,
 }
 

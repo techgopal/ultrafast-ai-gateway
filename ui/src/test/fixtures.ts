@@ -1508,6 +1508,65 @@ export const mcpServers = {
 
 export const mcpServerList: McpServer[] = Object.values(mcpServers);
 
+type CatalogEntry = Schemas["Entry"];
+
+export const mcpCatalogEntries = {
+  github: {
+    id: "github",
+    name: "GitHub",
+    description: "Repositories, issues and pull requests.",
+    homepage: "https://github.example.test/mcp",
+    transport: "http",
+    url: "https://api.github.example.test/mcp/",
+    command: null,
+    args: [],
+    auth_header: null,
+    env: [{ name: "GITHUB_TOKEN", secret: true, help: "A personal access token." }],
+    auth: "bearer",
+    tags: ["code", "issues"],
+  },
+  filesystem: {
+    id: "filesystem",
+    name: "Filesystem",
+    description: "Read and write files in a directory on the gateway host.",
+    homepage: "https://files.example.test/mcp",
+    transport: "stdio",
+    url: null,
+    command: "npx",
+    args: ["-y", "files-mcp", "."],
+    auth_header: null,
+    env: [],
+    auth: "none",
+    tags: ["files", "local"],
+  },
+  slack: {
+    id: "slack",
+    name: "Slack",
+    description: "Channels and messages.",
+    homepage: "https://slack.example.test/mcp",
+    transport: "http",
+    url: "https://slack.example.test/mcp",
+    command: null,
+    args: [],
+    auth_header: null,
+    env: [
+      { name: "SLACK_TOKEN", secret: true, help: "" },
+      { name: "SLACK_TEAM", secret: false, help: "The workspace id." },
+    ],
+    auth: "bearer",
+    tags: ["chat"],
+  },
+} satisfies Record<string, CatalogEntry>;
+
+export const mcpCatalog: Schemas["McpCatalogView"] = {
+  entries: Object.values(mcpCatalogEntries),
+  source: "builtin",
+  fetched_at: null,
+  error: null,
+  fetch_enabled: true,
+  local_enabled: false,
+};
+
 export const mcpTools = {
   /** On, granted to a team. */
   createIssue: {

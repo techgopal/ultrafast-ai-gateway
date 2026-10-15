@@ -95,6 +95,7 @@ export const queryKeys = {
       (keyTeamId === null
         ? ["mcp", "tools", serverId]
         : ["mcp", "tools", serverId, { keyTeamId }]) as QueryKey,
+    catalog: () => ["mcp", "catalog"] as const,
   },
   routingHealth: () => ["routing", "health"] as const,
   tokens: {
@@ -403,6 +404,12 @@ export const mcpToolsOptions = (serverId: number, keyTeamId: number | null = nul
       }),
   });
 
+export const mcpCatalogOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.mcp.catalog(),
+    queryFn: ({ signal }) => api.get("/api/mcp/catalog", { signal }),
+  });
+
 export const guardrailsOptions = () =>
   queryOptions({
     queryKey: queryKeys.guardrails.list(),
@@ -511,6 +518,8 @@ export const useMcpToolsOf = (
   useQueries({
     queries: servers.map((server) => ({ ...mcpToolsOptions(server.id, keyTeamId), enabled })),
   });
+/** Admin only. The signed catalog of MCP servers, with where it came from. */
+export const useMcpCatalog = (enabled = true) => useQuery({ ...mcpCatalogOptions(), enabled });
 /** Admin only. Every guardrail, with the routes and the number of keys it is attached to. */
 export const useGuardrails = (enabled = true) => useQuery({ ...guardrailsOptions(), enabled });
 /** Every prompt template, by name, with its latest version's model and variables. Anyone signed in may read them. */
@@ -1013,6 +1022,21 @@ export const useCreateMcpServer = () =>
   useApiMutation(
     (body: BodyOf<"/api/mcp/servers", "post">) => api.post("/api/mcp/servers", { body }),
     () => ({ stale: [queryKeys.mcp.all(), audit] }),
+  );
+
+/** Registers a server from a catalog entry, with the secrets the entry asks for. */
+export const useAddMcpFromCatalog = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/mcp/servers/from-catalog", "post">) =>
+      api.post("/api/mcp/servers/from-catalog", { body }),
+    () => ({ stale: [queryKeys.mcp.all(), audit] }),
+  );
+
+/** Fetches the catalog again now. */
+export const useRefreshMcpCatalog = () =>
+  useApiMutation(
+    () => api.post("/api/mcp/catalog/refresh"),
+    () => ({ stale: [queryKeys.mcp.catalog()] }),
   );
 
 export const useUpdateMcpServer = () =>

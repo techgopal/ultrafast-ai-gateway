@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import {
   useCreateMcpServer,
@@ -267,17 +268,22 @@ function AdminMcp() {
         <PageHeader
           title="MCP tools"
           actions={
-            <Button
-              type="button"
-              className={control}
-              onClick={() => {
-                setAdding(true);
-                setTarget(null);
-                setAsking("add");
-              }}
-            >
-              Add server
-            </Button>
+            <>
+              <Button asChild variant="outline" className={control}>
+                <Link to="/mcp/catalog">Add from catalog</Link>
+              </Button>
+              <Button
+                type="button"
+                className={control}
+                onClick={() => {
+                  setAdding(true);
+                  setTarget(null);
+                  setAsking("add");
+                }}
+              >
+                Add server
+              </Button>
+            </>
           }
         />
         {problem === null ? null : (

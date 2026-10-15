@@ -88,6 +88,9 @@ impl Limits {
 #[derive(Default)]
 pub struct Runtime {
     pub limits: Limits,
+    /// `UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on`: servers may be registered at
+    /// loopback, private and link-local addresses.
+    pub allow_private_upstreams: bool,
     gates: Mutex<HashMap<i64, Arc<Semaphore>>>,
 }
 
@@ -95,6 +98,8 @@ impl Runtime {
     pub fn from_env() -> Self {
         Self {
             limits: Limits::from_env(),
+            allow_private_upstreams: std::env::var("UF_MCP_ALLOW_PRIVATE_UPSTREAMS")
+                .is_ok_and(|v| v.trim().eq_ignore_ascii_case("on")),
             gates: Mutex::default(),
         }
     }

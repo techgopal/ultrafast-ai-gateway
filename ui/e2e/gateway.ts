@@ -183,6 +183,10 @@ function environment(
     // The setup code has a target of its own: setup needs it.
     RUST_LOG: "warn,ultrafast::setup=info",
     NO_COLOR: "1",
+    // No request for the MCP catalog (the copy in the binary is shown), and
+    // the mock MCP servers of the tests are on 127.0.0.1.
+    UF_MCP_CATALOG: "off",
+    UF_MCP_ALLOW_PRIVATE_UPSTREAMS: "on",
   };
   if (publicUrl !== undefined) env.UF_PUBLIC_URL = publicUrl;
   if (database !== null) {

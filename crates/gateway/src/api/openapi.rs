@@ -328,7 +328,7 @@ mod tests {
 
     /// Every route of `api::router`, which has 108. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 110] = [
+    const ROUTES: [(&str, &str); 111] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -382,6 +382,7 @@ mod tests {
         ("PUT", "/api/mcp/tools/{id}/grants"),
         ("GET", "/api/mcp/catalog"),
         ("POST", "/api/mcp/catalog/refresh"),
+        ("POST", "/api/mcp/servers/from-catalog"),
         ("GET", "/api/routes"),
         ("POST", "/api/routes"),
         ("GET", "/api/routes/{id}"),
@@ -594,7 +595,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 110);
+        assert_eq!(routes.len(), 111);
         assert_eq!(documented, routes);
     }
 
@@ -616,7 +617,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 110);
+        assert_eq!(ids.len(), 111);
     }
 
     #[test]
@@ -753,7 +754,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "plans 18 and 19 regenerate openapi/admin.json and the SDKs once, at the end of plan 19"]
     fn committed_spec_is_current() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../openapi/admin.json");
         let committed = std::fs::read_to_string(path).expect("openapi/admin.json");

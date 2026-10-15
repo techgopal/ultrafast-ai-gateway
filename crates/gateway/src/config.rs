@@ -169,6 +169,56 @@ pub fn same_host(a: &str, b: &str) -> bool {
     }
 }
 
+/// Whether the host of `url` is one that only this machine or its own
+/// network can reach: loopback, private, link-local (the cloud metadata
+/// address 169.254.169.254 among them), carrier-grade NAT and unique-local
+/// addresses, `localhost`, single-label names and the usual internal
+/// suffixes. A name is judged by its spelling, not by what it resolves to.
+/// A URL that cannot be read counts as private.
+pub fn is_private_host(url: &str) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    fn v4(a: Ipv4Addr) -> bool {
+        let [o0, o1, ..] = a.octets();
+        a.is_loopback()
+            || a.is_private()
+            || a.is_link_local()
+            || a.is_unspecified()
+            || a.is_broadcast()
+            || (o0 == 100 && (64..128).contains(&o1))
+            || o0 == 0
+    }
+    fn v6(a: Ipv6Addr) -> bool {
+        if let Some(mapped) = a.to_ipv4_mapped() {
+            return v4(mapped);
+        }
+        let first = a.segments()[0];
+        a.is_loopback()
+            || a.is_unspecified()
+            || (first & 0xfe00) == 0xfc00
+            || (first & 0xffc0) == 0xfe80
+    }
+    let Some(host) = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+    else {
+        return true;
+    };
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(a) = bare.parse::<Ipv6Addr>() {
+        return v6(a);
+    }
+    // `Url` has already turned 0x7f.1 and 2130706433 into dotted form.
+    if let Ok(a) = bare.parse::<Ipv4Addr>() {
+        return v4(a);
+    }
+    let d = host.trim_end_matches('.');
+    !d.contains('.')
+        || d == "localhost"
+        || [".localhost", ".local", ".internal", ".lan", ".home.arpa"]
+            .iter()
+            .any(|suffix| d.ends_with(suffix))
+}
+
 /// Checks the API version of an Azure OpenAI provider: `2024-10-21` or
 /// `2025-03-01-preview`.
 pub fn validate_api_version(version: &str) -> Result<()> {
@@ -326,6 +376,41 @@ pub fn parse_public_url(value: &str, allow_plain_http: bool) -> Result<reqwest::
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn private_hosts_are_told_from_public_ones() {
+        for private in [
+            "http://127.0.0.1:8080/mcp",
+            "http://localhost/mcp",
+            "http://a.localhost/mcp",
+            "http://10.1.2.3/mcp",
+            "http://172.16.0.9/mcp",
+            "http://192.168.1.1/mcp",
+            "http://169.254.169.254/latest/meta-data",
+            "http://100.64.0.1/mcp",
+            "http://0.0.0.0/mcp",
+            "http://[::1]/mcp",
+            "http://[fd00::1]/mcp",
+            "http://[fe80::1]/mcp",
+            "http://[::ffff:127.0.0.1]/mcp",
+            "http://2130706433/mcp",
+            "http://metadata.google.internal/mcp",
+            "http://redis/mcp",
+            "http://printer.local/mcp",
+            "not a url",
+        ] {
+            assert!(super::is_private_host(private), "{private}");
+        }
+        for public in [
+            "https://mcp.example.com/mcp",
+            "http://8.8.8.8/mcp",
+            "https://api.githubcopilot.com/mcp/",
+            "http://[2606:4700::1111]/mcp",
+            "http://172.32.0.1/mcp",
+        ] {
+            assert!(!super::is_private_host(public), "{public}");
+        }
+    }
+
     use super::*;
 
     #[test]

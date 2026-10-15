@@ -749,6 +749,10 @@ fn table() -> Vec<Row> {
             [200, 403, 403, 401]),
         row(110, "POST", "/api/mcp/catalog/refresh", "fetching is off in tests", |_, _| "/api/mcp/catalog/refresh".into(), no_body,
             [200, 403, 403, 401]),
+        row(111, "POST", "/api/mcp/servers/from-catalog", "an entry that does not exist",
+            |_, _| "/api/mcp/servers/from-catalog".into(),
+            || Some(json!({ "catalog_id": "no-such-entry" })),
+            [422, 403, 403, 401]),
     ]
 }
 
@@ -823,7 +827,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=110).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=111).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -958,7 +962,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 110);
+    assert_eq!(operations, 111);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

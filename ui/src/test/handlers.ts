@@ -484,6 +484,15 @@ export const handlers = [
     const tool = byId(fixtures.mcpToolList, call);
     return tool === undefined ? notFound() : ok("patch", "/api/mcp/tools/{id}", 200, tool);
   }),
+  handler("get", "/api/mcp/catalog", () =>
+    ok("get", "/api/mcp/catalog", 200, fixtures.mcpCatalog),
+  ),
+  handler("post", "/api/mcp/catalog/refresh", () =>
+    ok("post", "/api/mcp/catalog/refresh", 200, fixtures.mcpCatalog),
+  ),
+  handler("post", "/api/mcp/servers/from-catalog", () =>
+    ok("post", "/api/mcp/servers/from-catalog", 201, fixtures.mcpServers.github),
+  ),
   handler("put", "/api/mcp/tools/{id}/grants", (call) => {
     const tool = byId(fixtures.mcpToolList, call);
     return tool === undefined ? notFound() : ok("put", "/api/mcp/tools/{id}/grants", 200, tool);

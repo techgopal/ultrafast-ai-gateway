@@ -582,6 +582,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/mcp/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["mcp_catalog_view"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/catalog/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["mcp_catalog_refresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/mcp/servers": {
         parameters: {
             query?: never;
@@ -592,6 +624,22 @@ export interface paths {
         get: operations["mcp_servers_list"];
         put?: never;
         post: operations["mcp_servers_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/servers/from-catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["mcp_servers_from_catalog"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1684,6 +1732,32 @@ export interface components {
          * @enum {string}
          */
         Directions: "input" | "output" | "both";
+        Entry: {
+            args: string[];
+            /** @description `none`, `bearer`, `header` or `oauth`. */
+            auth: string;
+            auth_header: string | null;
+            command: string | null;
+            description: string;
+            env: components["schemas"]["EnvVar"][];
+            homepage: string;
+            /** @description `^[a-z0-9][a-z0-9-]{0,62}$`; also the default name of the server. */
+            id: string;
+            name: string;
+            tags: string[];
+            /** @description `http` or `stdio`. */
+            transport: string;
+            url: string | null;
+        };
+        EnvVar: {
+            help: string;
+            /**
+             * @description The name of the environment variable (stdio) or the one secret that
+             *     authenticates to the server (http).
+             */
+            name: string;
+            secret: boolean;
+        };
         EventList: {
             events: components["schemas"]["EventView"][];
         };
@@ -1762,6 +1836,20 @@ export interface components {
             guardrail_id: number;
             guardrail_name: string;
             rule_id: string;
+        };
+        FromCatalogRequest: {
+            /** @description The `id` of a catalog entry. */
+            catalog_id: string;
+            /** @description The name of the server. The entry's id by default. */
+            name?: string | null;
+            /**
+             * @description The values of the entry's `env` items, by name. A secret item is
+             *     required; the value of the one an HTTP entry authenticates with is
+             *     the server's secret.
+             */
+            secrets?: {
+                [key: string]: string;
+            };
         };
         GrantEntry: {
             everyone?: boolean;
@@ -2238,6 +2326,26 @@ export interface components {
             regex: string;
         } | {
             pii: components["schemas"]["PiiType"][];
+        };
+        /** @description The catalog of MCP servers the project publishes, as the console shows it. */
+        McpCatalogView: {
+            entries: components["schemas"]["Entry"][];
+            /** @description Why the newest attempt did not give a newer copy, in our words. */
+            error: string | null;
+            /** @description Whether the gateway fetches the catalog at all (`UF_MCP_CATALOG`). */
+            fetch_enabled: boolean;
+            fetched_at: string | null;
+            /**
+             * @description Whether servers that run as programs on this host may be added
+             *     (`UF_MCP_LOCAL=on`).
+             */
+            local_enabled: boolean;
+            /**
+             * @description Where `entries` came from: fetched since the gateway started
+             *     (`remote`), kept from an earlier fetch (`cache`), or the copy that
+             *     ships in the binary (`builtin`).
+             */
+            source: components["schemas"]["Source"];
         };
         /**
          * @description An MCP server. Its secret is never in a file: a server an import
@@ -3197,6 +3305,11 @@ export interface components {
             /** @description Always true: passwords are never turned off. */
             password: boolean;
         };
+        /**
+         * @description Where the entries a view shows came from.
+         * @enum {string}
+         */
+        Source: "remote" | "cache" | "builtin";
         SyncResult: {
             /** @description The names that were new, now in the catalog and disabled. */
             added: string[];
@@ -6358,6 +6471,103 @@ export interface operations {
             };
         };
     };
+    mcp_catalog_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The catalog entries with where they came from. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpCatalogView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_catalog_refresh: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The catalog after fetching it again. With fetching switched off nothing is requested. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpCatalogView"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     mcp_servers_list: {
         parameters: {
             query?: {
@@ -6497,6 +6707,96 @@ export interface operations {
                 };
             };
             /** @description Some fields are not valid; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_servers_from_catalog: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FromCatalogRequest"];
+            };
+        };
+        responses: {
+            /** @description The new server, made from the catalog entry and synced once. If that sync failed, `last_sync_error` says so; the server exists either way. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description `mcp_server_exists`: the name is taken. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The entry does not exist, needs something this gateway does not have (local servers, OAuth), a secret is missing or not named by the entry, or the address is private; `fields` names each of them. */
             422: {
                 headers: {
                     [name: string]: unknown;

@@ -3874,6 +3874,133 @@
         ]
       }
     },
+    "/api/mcp/catalog": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_catalog_view",
+        "responses": {
+          "200": {
+            "description": "The catalog entries with where they came from.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpCatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/catalog/refresh": {
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_catalog_refresh",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The catalog after fetching it again. With fetching switched off nothing is requested.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpCatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/mcp/servers": {
       "get": {
         "tags": [
@@ -4052,6 +4179,125 @@
           },
           "422": {
             "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/servers/from-catalog": {
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_servers_from_catalog",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FromCatalogRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new server, made from the catalog entry and synced once. If that sync failed, `last_sync_error` says so; the server exists either way.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`mcp_server_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The entry does not exist, needs something this gateway does not have (local servers, OAuth), a secret is missing or not named by the entry, or the address is private; `fields` names each of them.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11260,6 +11506,102 @@
           "both"
         ]
       },
+      "Entry": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "homepage",
+          "transport",
+          "url",
+          "command",
+          "args",
+          "auth_header",
+          "env",
+          "auth",
+          "tags"
+        ],
+        "properties": {
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "auth": {
+            "type": "string",
+            "description": "`none`, `bearer`, `header` or `oauth`."
+          },
+          "auth_header": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "env": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnvVar"
+            }
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "`^[a-z0-9][a-z0-9-]{0,62}$`; also the default name of the server."
+          },
+          "name": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "transport": {
+            "type": "string",
+            "description": "`http` or `stdio`."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "EnvVar": {
+        "type": "object",
+        "required": [
+          "name",
+          "secret",
+          "help"
+        ],
+        "properties": {
+          "help": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "The name of the environment variable (stdio) or the one secret that\nauthenticates to the server (http)."
+          },
+          "secret": {
+            "type": "boolean"
+          }
+        }
+      },
       "EventList": {
         "type": "object",
         "required": [
@@ -11433,6 +11775,38 @@
             "type": "string"
           }
         }
+      },
+      "FromCatalogRequest": {
+        "type": "object",
+        "required": [
+          "catalog_id"
+        ],
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "description": "The `id` of a catalog entry."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name of the server. The entry's id by default."
+          },
+          "secrets": {
+            "type": "object",
+            "description": "The values of the entry's `env` items, by name. A secret item is\nrequired; the value of the one an HTTP entry authenticates with is\nthe server's secret.",
+            "additionalProperties": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "propertyNames": {
+              "type": "string",
+              "writeOnly": true
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "GrantEntry": {
         "type": "object",
@@ -12658,6 +13032,51 @@
           }
         ],
         "description": "What a rule looks for. Written as `{\"keywords\": {\"words\": [...],\n\"whole_word\": true}}`, `{\"regex\": \"...\"}` or `{\"pii\": [\"EMAIL\", ...]}`."
+      },
+      "McpCatalogView": {
+        "type": "object",
+        "description": "The catalog of MCP servers the project publishes, as the console shows it.",
+        "required": [
+          "entries",
+          "source",
+          "fetched_at",
+          "error",
+          "fetch_enabled",
+          "local_enabled"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the newest attempt did not give a newer copy, in our words."
+          },
+          "fetch_enabled": {
+            "type": "boolean",
+            "description": "Whether the gateway fetches the catalog at all (`UF_MCP_CATALOG`)."
+          },
+          "fetched_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "local_enabled": {
+            "type": "boolean",
+            "description": "Whether servers that run as programs on this host may be added\n(`UF_MCP_LOCAL=on`)."
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source",
+            "description": "Where `entries` came from: fetched since the gateway started\n(`remote`), kept from an earlier fetch (`cache`), or the copy that\nships in the binary (`builtin`)."
+          }
+        }
       },
       "McpServerEntry": {
         "type": "object",
@@ -14916,6 +15335,15 @@
             "description": "Always true: passwords are never turned off."
           }
         }
+      },
+      "Source": {
+        "type": "string",
+        "description": "Where the entries a view shows came from.",
+        "enum": [
+          "remote",
+          "cache",
+          "builtin"
+        ]
       },
       "SyncResult": {
         "type": "object",
