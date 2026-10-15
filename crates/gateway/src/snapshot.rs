@@ -43,6 +43,10 @@ pub struct SnapKey {
     /// The guardrails attached to the key, in order (ids; one that is
     /// disabled or gone is not in [`Snapshot::guardrail`]).
     pub guardrails: Vec<i64>,
+    /// The tools (`mcp:<server>/<tool>`) the combined MCP endpoint lists when
+    /// the key can call too many to list them all. A lead or an admin sets
+    /// them; one the key can no longer call is not listed.
+    pub pinned: Vec<String>,
 }
 
 /// A catalog model of a provider that is in the snapshot.
@@ -271,6 +275,8 @@ pub struct Snapshot {
     /// The tools that are on, by server id and then name. MCP results are
     /// not cached, so none of this is in the fingerprint.
     mcp_tools: HashMap<i64, std::collections::BTreeMap<String, SnapMcpTool>>,
+    /// The tools that are on, ready to be searched (`find_tools`).
+    tool_index: Arc<crate::mcp::discover::ToolIndex>,
     /// See [`Snapshot::cache_fingerprint`].
     cache_fingerprint: [u8; 32],
 }
@@ -741,6 +747,7 @@ impl Snapshot {
                     expires_at: k.expires_at,
                     allowed: k.allowed.map(|names| names.into_iter().collect()),
                     tags: k.tags,
+                    pinned: k.pinned_tools,
                 };
                 (k.hash, Arc::new(key))
             })
@@ -975,6 +982,9 @@ impl Snapshot {
             prompts,
             mcp_servers,
             mcp_server_names,
+            tool_index: Arc::new(crate::mcp::discover::ToolIndex::build(
+                mcp_tools.values().flat_map(|tools| tools.values()),
+            )),
             mcp_tools,
             cache_fingerprint,
         })
@@ -1016,6 +1026,15 @@ impl Snapshot {
             .collect();
         out.sort_by_key(|w| w.id);
         out
+    }
+
+    pub fn tool_index(&self) -> &crate::mcp::discover::ToolIndex {
+        &self.tool_index
+    }
+
+    /// A key by its id: a scan, for the rare caller that has no hash.
+    pub fn key_by_id(&self, id: i64) -> Option<&SnapKey> {
+        self.keys.values().map(|k| &**k).find(|k| k.id == id)
     }
 
     pub fn mcp_server_by_id(&self, id: i64) -> Option<&SnapMcpServer> {

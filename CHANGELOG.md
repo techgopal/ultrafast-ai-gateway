@@ -31,10 +31,13 @@ MCP catalog and local servers.
 - **`resources/list`, `resources/read`, `prompts/list` and `prompts/get`** are
   passed to the upstream; an upstream that insists on `Mcp-Session-Id` is handled
   per call, never stored.
+- **Many tools.** Past `UF_MCP_LIST_INLINE_MAX` (40) tools a key gets `find_tools`
+  (BM25 search over what it may call) and `describe_tools` from `POST /mcp`, plus
+  the tools pinned to it (`PATCH /api/keys/{id}` `pinned_tools`, lead or admin).
 - **`POST /mcp`**, one endpoint for every tool a key may call, named
   `server__tool`; a **Connect an agent** panel on the MCP tools page.
-- Migrations SQLite 0022 and PostgreSQL 0008 (also lets alert rules have the kind
-  `mcp_down`).
+- Migrations SQLite 0022-0023 and PostgreSQL 0008-0009 (0022/0008 also let alert
+  rules have the kind `mcp_down`).
 
 ## [2.0.0-beta.5] - 2026-10-15
 

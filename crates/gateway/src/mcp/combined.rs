@@ -8,11 +8,12 @@
 //! `a` and `b__c`. Telemetry is unchanged: a call is still
 //! `mcp:<server>/<tool>` in the logs.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
+use super::discover;
 use super::server::tool_json;
 use crate::access;
-use crate::snapshot::{SnapKey, SnapMcpServer, Snapshot};
+use crate::snapshot::{SnapKey, SnapMcpServer, SnapMcpTool, Snapshot};
 
 /// The separator between a server and a tool in the combined endpoint.
 pub const SEPARATOR: &str = "__";
@@ -39,13 +40,104 @@ pub fn resolve<'a>(snapshot: &'a Snapshot, name: &'a str) -> Option<(&'a SnapMcp
     Some((server, tool))
 }
 
-/// Every tool the key may call, by server and tool name.
-pub fn list(snapshot: &Snapshot, key: &SnapKey) -> Vec<Value> {
+/// What `tools/list` gives the key: every tool it may call, or, when that
+/// is more than `inline_max`, the search tools and the tools pinned to the
+/// key that it may still call.
+pub fn list(snapshot: &Snapshot, key: &SnapKey, inline_max: usize) -> Vec<Value> {
     let mut all = access::callable_tools_of_key(snapshot, key);
     all.sort_by(|a, b| (&a.0.name, &a.1.name).cmp(&(&b.0.name, &b.1.name)));
-    all.into_iter()
-        .map(|(server, tool)| tool_json(&server.name, tool, exposed_name(&server.name, &tool.name)))
-        .collect()
+    let shown = |server: &SnapMcpServer, tool: &SnapMcpTool| {
+        tool_json(&server.name, tool, exposed_name(&server.name, &tool.name))
+    };
+    if all.len() <= inline_max {
+        return all.into_iter().map(|(s, t)| shown(s, t)).collect();
+    }
+    let mut out = discover::meta_tools();
+    for entry in &key.pinned {
+        let Some((server, tool)) = crate::mcp::parse_allow_entry(entry) else {
+            continue;
+        };
+        if let Some((s, t)) = all.iter().find(|(s, t)| s.name == server && t.name == tool) {
+            out.push(shown(s, t));
+        }
+    }
+    out
+}
+
+fn may_call(snapshot: &Snapshot, key: &SnapKey, server: &str, tool: &str) -> bool {
+    snapshot
+        .mcp_server(server)
+        .zip(snapshot.mcp_tool(server, tool))
+        .is_some_and(|(s, t)| {
+            s.enabled && s.usable && access::key_may_call_tool(snapshot, key, s, t)
+        })
+}
+
+/// A result of a gateway tool: the data as text and as structured content.
+fn answer(data: Value) -> Value {
+    json!({
+        "content": [{"type": "text", "text": data.to_string()}],
+        "structuredContent": data,
+        "isError": false,
+    })
+}
+
+/// `find_tools`: the best matches among the tools the key may call.
+pub fn find(snapshot: &Snapshot, key: &SnapKey, arguments: &Value) -> Result<Value, &'static str> {
+    let query = arguments["query"]
+        .as_str()
+        .filter(|q| !q.trim().is_empty())
+        .ok_or("query is required.")?;
+    let limit = match arguments.get("limit") {
+        None | Some(Value::Null) => 5,
+        Some(v) => v
+            .as_u64()
+            .filter(|n| (1..=discover::MAX_RESULTS as u64).contains(n))
+            .ok_or("limit must be a whole number from 1 to 20.")? as usize,
+    };
+    let hits = snapshot
+        .tool_index()
+        .search(query, limit, &|s, t| may_call(snapshot, key, s, t));
+    let tools: Vec<Value> = hits
+        .iter()
+        .filter_map(|h| {
+            let tool = snapshot.mcp_tool(h.server, h.tool)?;
+            Some(json!({
+                "name": exposed_name(h.server, h.tool),
+                "server": h.server,
+                "title": tool.title,
+                "description": tool.description,
+            }))
+        })
+        .collect();
+    Ok(answer(json!({ "tools": tools })))
+}
+
+/// `describe_tools`: the schemas of tools, by the names `find_tools` gave. A
+/// name the key may not use is left out as a name that does not exist is.
+pub fn describe(
+    snapshot: &Snapshot,
+    key: &SnapKey,
+    arguments: &Value,
+) -> Result<Value, &'static str> {
+    let names = arguments["names"]
+        .as_array()
+        .filter(|n| !n.is_empty() && n.len() <= discover::MAX_DESCRIBE)
+        .ok_or("names must list from 1 to 20 tool names.")?;
+    let mut tools = Vec::new();
+    for name in names {
+        let name = name.as_str().ok_or("names must be text.")?;
+        let Some((server, tool)) = split(name) else {
+            continue;
+        };
+        if !may_call(snapshot, key, server, tool) {
+            continue;
+        }
+        if let Some(t) = snapshot.mcp_tool(server, tool) {
+            tools.push(tool_json(server, t, exposed_name(server, tool)));
+        }
+    }
+    Ok(answer(json!({ "tools": tools })))
 }
 
 #[cfg(test)]

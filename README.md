@@ -645,6 +645,7 @@ and embedded resources in a result are passed on unread.
 | `UF_MCP_MAX_RESULT_BYTES` | `4194304` | The largest upstream answer read; a larger one is a tool error. |
 | `UF_MCP_MAX_ARGS_BYTES` | `262144` | The largest request body `/mcp/{server}` takes; larger is 413. |
 | `UF_MCP_MAX_DISCOVERY_BYTES` | `4194304` | The largest response read while syncing a server's tool list (one request); larger fails the sync. |
+| `UF_MCP_LIST_INLINE_MAX` | `40` | The most tools `POST /mcp` lists for a key; past it the key gets `find_tools`, `describe_tools` and its pinned tools. |
 | `UF_MCP_ALLOW_PRIVATE_UPSTREAMS` | off | `on` lets an admin register a server at a loopback, private or link-local address (and the cloud metadata address). Off, such an address is refused when a server is added or its address is changed. A name is judged by its spelling, not by what it resolves to. |
 | `UF_MCP_CATALOG` | on | `off`: the gateway makes no request for the catalog at all (see Catalog). |
 | `UF_MCP_CATALOG_URL` | `https://ultrafast-ai.dev/mcp-catalog/v1.json` | Where the catalog is fetched from (the signature is at the same address plus `.sig`). |
@@ -667,6 +668,28 @@ name with the tool as that server knows it; the logs, metrics and spans still sa
 `/mcp/{server}`, which keeps working unchanged. `resources/*` and `prompts/*` are
 per server. The MCP tools page has a **Connect an agent** panel with both kinds of
 address.
+
+### Many tools
+
+An agent with hundreds of tools should not be given hundreds of tool definitions.
+When a key can call more than `UF_MCP_LIST_INLINE_MAX` tools (40), `tools/list` on
+`POST /mcp` returns two gateway tools and the key's **pinned** tools instead of the
+whole list:
+
+- `find_tools {query, limit}` searches the tools the key may call by what the agent
+  wants to do and returns the best matches (`name`, `server`, `title`,
+  `description`). It is BM25 over the tool names, titles and descriptions:
+  lexical, deterministic, no embeddings and no call to a model. An exact tool
+  name comes first. The score is computed over the tools the key may call only, so
+  what it may not call can neither appear nor move a ranking.
+- `describe_tools {names}` returns the full description and input schema of tools
+  found that way. A name the key may not use is left out, like one that does not exist.
+
+Both count as a request against the key's rate limits and are not logged as tool
+calls. A lead or an admin pins tools to a key with **Edit pinned tools** on the Keys
+page or `PATCH /api/keys/{id}` with `pinned_tools: ["mcp:<server>/<tool>"]` (at most
+100, each one the key can call). With fewer tools than the limit the list is
+unchanged, and the per-server endpoints always list everything.
 
 ### Catalog
 

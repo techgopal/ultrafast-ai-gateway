@@ -2101,6 +2101,11 @@ export interface components {
             owner_email: string | null;
             /** Format: int64 */
             owner_id: number | null;
+            /**
+             * @description The MCP tools (`mcp:<server>/<tool>`) the combined endpoint lists
+             *     when the key can call too many to list them all.
+             */
+            pinned_tools: string[];
             revoked_at: string | null;
             /**
              * @description `revoked`, `expired`, `suspended` or `active`, the first that
@@ -3591,13 +3596,24 @@ export interface components {
             /** @description `external` only: a new URL. */
             url?: string | null;
         };
-        /** @description What to change on a key. Admins only; send at least one field. */
+        /**
+         * @description What to change on a key. Admins; `pinned_tools` also a lead of the key's
+         *     team. Send at least one field.
+         */
         UpdateKeyRequest: {
             /**
              * @description Replaces the guardrails of the key; `[]` takes them all off. Left
              *     out, they stay.
              */
             guardrail_ids?: number[] | null;
+            /**
+             * @description Replaces the MCP tools pinned to the key (`mcp:<server>/<tool>`, at
+             *     most 100, each one the key may call); `[]` unpins them all. The
+             *     combined MCP endpoint lists them, with the search tools, when the key
+             *     can call more tools than `UF_MCP_LIST_INLINE_MAX`. A lead of the key's
+             *     team, a lead's own key, or an admin. Left out, they stay.
+             */
+            pinned_tools?: string[] | null;
             /**
              * @description Replaces all the tags of the key; `{}` removes them. The same limits
              *     as when the key is created. Left out, the tags stay.

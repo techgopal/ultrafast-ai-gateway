@@ -12537,6 +12537,7 @@
           "revoked_at",
           "created_at",
           "allowed",
+          "pinned_tools",
           "tags",
           "team_only",
           "guardrails",
@@ -12591,6 +12592,13 @@
               "null"
             ],
             "format": "int64"
+          },
+          "pinned_tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The MCP tools (`mcp:<server>/<tool>`) the combined endpoint lists\nwhen the key can call too many to list them all."
           },
           "revoked_at": {
             "type": [
@@ -16218,7 +16226,7 @@
       },
       "UpdateKeyRequest": {
         "type": "object",
-        "description": "What to change on a key. Admins only; send at least one field.",
+        "description": "What to change on a key. Admins; `pinned_tools` also a lead of the key's\nteam. Send at least one field.",
         "properties": {
           "guardrail_ids": {
             "type": [
@@ -16230,6 +16238,16 @@
               "format": "int64"
             },
             "description": "Replaces the guardrails of the key; `[]` takes them all off. Left\nout, they stay."
+          },
+          "pinned_tools": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replaces the MCP tools pinned to the key (`mcp:<server>/<tool>`, at\nmost 100, each one the key may call); `[]` unpins them all. The\ncombined MCP endpoint lists them, with the search tools, when the key\ncan call more tools than `UF_MCP_LIST_INLINE_MAX`. A lead of the key's\nteam, a lead's own key, or an admin. Left out, they stay."
           },
           "tags": {
             "type": [

@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { allowedSummary, NO_TEAM } from "@/lib/keys";
 import { CreateDialog } from "@/pages/KeysCreate";
 import { GuardrailsDialog } from "@/pages/KeysGuardrails";
+import { PinsDialog } from "@/pages/KeysPins";
 import { TagsDialog } from "@/pages/KeysTags";
 import {
   ANY,
@@ -43,6 +44,7 @@ export const TEAM_KEY_HINT = "Calls only what everyone or the team may use.";
 export const REVOKE_CONSEQUENCE = "Apps using this key stop working at once. This cannot be undone.";
 export const KEY_REVOKED = "Key revoked.";
 export const TAGS_SAVED = "Tags saved.";
+export const PINS_SAVED = "Pinned tools saved.";
 export const GUARDRAILS_SAVED = "Guardrails saved.";
 export const NO_GUARDRAILS = "None";
 
@@ -182,6 +184,9 @@ function KeyList({ me }: { me: Me }) {
   // The key whose guardrails are being changed; kept while the dialog closes.
   const [guarding, setGuarding] = useState<Key | null>(null);
   const [editingGuardrails, setEditingGuardrails] = useState(false);
+  // The key whose pinned tools are being changed; kept while the dialog closes.
+  const [pinning, setPinning] = useState<Key | null>(null);
+  const [editingPins, setEditingPins] = useState(false);
   const [search, setSearch] = useState("");
   const [teamChosen, setTeam] = useState(ANY);
   const [statusChosen, setStatus] = useState(ANY);
@@ -217,7 +222,15 @@ function KeyList({ me }: { me: Me }) {
     // Guardrails of a revoked key check no call.
     return key.status !== "revoked" && can(me, { type: "manageGuardrails" });
   }
-  const rowActions = all.some((key) => mayRevoke(key) || mayEditTags(key) || mayEditGuardrails(key))
+  function mayPin(key: Key): boolean {
+    return (
+      key.status !== "revoked" &&
+      can(me, { type: "pinKeyTools", ownerId: key.owner_id, teamId: key.team_id })
+    );
+  }
+  const rowActions = all.some(
+    (key) => mayRevoke(key) || mayEditTags(key) || mayEditGuardrails(key) || mayPin(key),
+  )
     ? (key: Key) => (
         <>
           {mayEditTags(key) ? (
@@ -231,6 +244,19 @@ function KeyList({ me }: { me: Me }) {
               }}
             >
               Edit tags
+            </Button>
+          ) : null}
+          {mayPin(key) ? (
+            <Button
+              type="button"
+              variant="outline"
+              className={control}
+              onClick={() => {
+                setPinning(key);
+                setEditingPins(true);
+              }}
+            >
+              Edit pinned tools
             </Button>
           ) : null}
           {mayEditGuardrails(key) ? (
@@ -263,6 +289,10 @@ function KeyList({ me }: { me: Me }) {
       )
     : undefined;
 
+  function closePins() {
+    setEditingPins(false);
+    update.reset();
+  }
   function closeTags() {
     setEditingTags(false);
     update.reset();
@@ -388,6 +418,18 @@ function KeyList({ me }: { me: Me }) {
           onDone={() => {
             closeTags();
             toast(TAGS_SAVED);
+          }}
+        />
+      )}
+      {pinning === null ? null : (
+        <PinsDialog
+          open={editingPins}
+          keyOf={pinning}
+          update={update}
+          onCancel={closePins}
+          onDone={() => {
+            closePins();
+            toast(PINS_SAVED);
           }}
         />
       )}

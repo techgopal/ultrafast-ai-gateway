@@ -32,6 +32,7 @@ pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_MAX_ARGS_BYTES: usize = 256 * 1024;
 pub const DEFAULT_CALLS_PER_SERVER: usize = 32;
+pub const DEFAULT_LIST_INLINE_MAX: usize = 40;
 
 /// The caps of tool calls.
 #[derive(Debug, Clone, Copy)]
@@ -44,6 +45,9 @@ pub struct Limits {
     pub max_args_bytes: usize,
     /// Calls to one server at once, per process.
     pub calls_per_server: usize,
+    /// A key that can call more tools than this gets the search tools and
+    /// its pinned tools from the combined endpoint, not the whole list.
+    pub list_inline_max: usize,
 }
 
 impl Default for Limits {
@@ -53,6 +57,7 @@ impl Default for Limits {
             max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
             max_args_bytes: DEFAULT_MAX_ARGS_BYTES,
             calls_per_server: DEFAULT_CALLS_PER_SERVER,
+            list_inline_max: DEFAULT_LIST_INLINE_MAX,
         }
     }
 }
@@ -65,8 +70,8 @@ fn env_number(name: &str) -> Option<u64> {
 }
 
 impl Limits {
-    /// `UF_MCP_CALL_TIMEOUT` (seconds), `UF_MCP_MAX_RESULT_BYTES` and
-    /// `UF_MCP_MAX_ARGS_BYTES`; an unusable value reads as the default.
+    /// `UF_MCP_CALL_TIMEOUT` (seconds), `UF_MCP_MAX_RESULT_BYTES`,
+    /// `UF_MCP_MAX_ARGS_BYTES` and `UF_MCP_LIST_INLINE_MAX`; an unusable value reads as the default.
     pub fn from_env() -> Self {
         let bytes = |name, default| {
             env_number(name)
@@ -79,6 +84,7 @@ impl Limits {
             max_result_bytes: bytes("UF_MCP_MAX_RESULT_BYTES", DEFAULT_MAX_RESULT_BYTES),
             max_args_bytes: bytes("UF_MCP_MAX_ARGS_BYTES", DEFAULT_MAX_ARGS_BYTES),
             calls_per_server: DEFAULT_CALLS_PER_SERVER,
+            list_inline_max: bytes("UF_MCP_LIST_INLINE_MAX", DEFAULT_LIST_INLINE_MAX),
         }
     }
 }

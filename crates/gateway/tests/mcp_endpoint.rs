@@ -1365,3 +1365,208 @@ async fn a_key_limited_to_one_tool_sees_only_it_on_the_combined_endpoint() {
     .await;
     assert_eq!(reply["error"]["message"], "Unknown tool");
 }
+
+// ------------------------------------------------------------- discovery
+
+/// Three tools are callable (`mock/echo`, `other-srv/echo`, `other-srv/b__c`) and
+/// the list is cut at two.
+async fn crowded() -> (World, MockMcp) {
+    let w = world_with(CallMode::Echo, Duration::ZERO, Failure::None, |s| {
+        s.mcp.limits.list_inline_max = 2;
+    })
+    .await;
+    let other = second_server(&w).await;
+    (w, other)
+}
+
+fn names_of(list: &Value) -> Vec<String> {
+    list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn past_the_threshold_the_list_is_the_search_tools_and_the_pinned_ones() {
+    let (w, _other) = crowded().await;
+    let key = Some(w.h.key.as_str());
+    let (_, list) = combined(&w, key, "tools/list", json!({})).await;
+    assert_eq!(names_of(&list), ["find_tools", "describe_tools"]);
+    // Pinned: listed after them, in the order pinned, if the key can still call them.
+    let id = w.h.store.list_keys().await.unwrap()[0].id;
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.set_key_pinned_tools(
+        id,
+        &[
+            "mcp:other-srv/echo".to_string(),
+            "mcp:mock/secret".to_string(), // off: not listed
+            "mcp:mock/echo".to_string(),
+        ],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    let (_, list) = combined(&w, key, "tools/list", json!({})).await;
+    assert_eq!(
+        names_of(&list),
+        [
+            "find_tools",
+            "describe_tools",
+            "other-srv__echo",
+            "mock__echo"
+        ]
+    );
+    // The per-server endpoint is not cut.
+    let (_, _, reply) = rpc(&w, "tools/list", json!({})).await;
+    assert_eq!(names_of(&reply), ["echo"]);
+}
+
+#[tokio::test]
+async fn find_tools_ranks_the_tools_the_key_may_call_and_describe_tools_gives_their_schemas() {
+    let (w, other) = crowded().await;
+    let key = Some(w.h.key.as_str());
+    let (_, found) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "find_tools", "arguments": {"query": "b c", "limit": 2}}),
+    )
+    .await;
+    assert_eq!(found["result"]["isError"], false, "{found}");
+    let tools = found["result"]["structuredContent"]["tools"]
+        .as_array()
+        .unwrap();
+    assert_eq!(tools[0]["name"], "other-srv__b__c");
+    assert_eq!(tools[0]["server"], "other-srv");
+    assert_eq!(tools[0]["description"], "does b__c");
+    assert!(tools.len() <= 2);
+    // An exact name comes first.
+    let (_, found) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "find_tools", "arguments": {"query": "echo"}}),
+    )
+    .await;
+    let names: Vec<&str> = found["result"]["structuredContent"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["mock__echo", "other-srv__echo"]);
+    let (_, described) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "describe_tools", "arguments": {"names": ["other-srv__b__c", "mock__secret", "nope", "x__y"]}}),
+    )
+    .await;
+    let tools = described["result"]["structuredContent"]["tools"]
+        .as_array()
+        .unwrap();
+    assert_eq!(tools.len(), 1, "{described}");
+    assert_eq!(tools[0]["name"], "other-srv__b__c");
+    assert_eq!(tools[0]["inputSchema"]["type"], "object");
+    // Neither goes upstream, and neither is a logged call.
+    assert!(other.received_method("tools/call").is_empty());
+    assert!(w.mock.received_method("tools/call").is_empty());
+    assert!(w.h.sink.records().is_empty());
+    // Bad arguments are told, not guessed.
+    for args in [
+        json!({}),
+        json!({"query": " "}),
+        json!({"query": "a", "limit": 99}),
+        json!({"query": "a", "limit": 0}),
+    ] {
+        let (_, reply) = combined(
+            &w,
+            key,
+            "tools/call",
+            json!({"name": "find_tools", "arguments": args}),
+        )
+        .await;
+        assert_eq!(reply["error"]["code"], -32602, "{args}: {reply}");
+    }
+    let (_, reply) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "describe_tools", "arguments": {"names": []}}),
+    )
+    .await;
+    assert_eq!(reply["error"]["code"], -32602);
+}
+
+#[tokio::test]
+async fn a_search_never_shows_a_tool_the_key_may_not_call() {
+    let (w, _other) = crowded().await;
+    // A key allowed `other-srv/echo` only.
+    let key = ultrafast_gateway::secrets::generate_key();
+    let id =
+        w.h.store
+            .insert_key("narrow", &key.hash, &key.display, None)
+            .await
+            .unwrap();
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.set_key_allowed(id, Some(&["mcp:other-srv/echo".to_string()]))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    let narrow = Some(key.full.as_str());
+    // `mock/echo` says "echoes" and `b__c` says "odd name": neither is visible.
+    for query in ["echoes", "does echo", "b c", "mock"] {
+        let (_, found) = combined(
+            &w,
+            narrow,
+            "tools/call",
+            json!({"name": "find_tools", "arguments": {"query": query}}),
+        )
+        .await;
+        let text = found["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(!text.contains("mock__"), "{query}: {text}");
+        assert!(!text.contains("b__c"), "{query}: {text}");
+    }
+    let (_, found) = combined(
+        &w,
+        narrow,
+        "tools/call",
+        json!({"name": "find_tools", "arguments": {"query": "other echo"}}),
+    )
+    .await;
+    assert_eq!(
+        found["result"]["structuredContent"]["tools"][0]["name"],
+        "other-srv__echo"
+    );
+    let (_, described) = combined(
+        &w,
+        narrow,
+        "tools/call",
+        json!({"name": "describe_tools", "arguments": {"names": ["mock__echo", "other-srv__b__c"]}}),
+    )
+    .await;
+    assert_eq!(described["result"]["structuredContent"]["tools"], json!([]));
+}
+
+#[tokio::test]
+async fn the_search_tools_count_against_the_rate_limit() {
+    let (w, _other) = crowded().await;
+    limit_requests(&w, 1).await;
+    let key = Some(w.h.key.as_str());
+    let call = || {
+        combined(
+            &w,
+            key,
+            "tools/call",
+            json!({"name": "find_tools", "arguments": {"query": "echo"}}),
+        )
+    };
+    assert_eq!(call().await.0, StatusCode::OK);
+    assert_eq!(call().await.0, StatusCode::TOO_MANY_REQUESTS);
+}

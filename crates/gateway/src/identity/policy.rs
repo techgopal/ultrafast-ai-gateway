@@ -70,6 +70,12 @@ pub enum Action {
         owner_id: Option<i64>,
         team_id: Option<i64>,
     },
+    /// The MCP tools a key lists first on the combined endpoint: an admin,
+    /// a lead of the key's team, or a lead's own key.
+    EditKeyPins {
+        owner_id: Option<i64>,
+        team_id: Option<i64>,
+    },
     // access tokens: always the caller's own
     ManageOwnTokens,
     // providers
@@ -306,6 +312,17 @@ pub fn authorize(p: &Principal, action: &Action) -> Decision {
         // that it is not there.
         Action::EditKeyTags { owner_id, team_id } => {
             if *owner_id == Some(p.user_id) || team_id.is_some_and(|t| p.leads(t)) {
+                Forbidden
+            } else {
+                Hidden
+            }
+        }
+        Action::EditKeyPins { owner_id, team_id } => {
+            let leads = team_id.is_some_and(|t| p.leads(t))
+                || (*owner_id == Some(p.user_id) && !p.led_teams().is_empty());
+            if leads {
+                Allow
+            } else if *owner_id == Some(p.user_id) {
                 Forbidden
             } else {
                 Hidden
@@ -1436,6 +1453,23 @@ mod tests {
         ] {
             assert_eq!(authorize(&f.admin, &action), Allow, "admin, {action:?}");
         }
+    }
+
+    #[test]
+    fn a_lead_pins_tools_to_the_keys_of_their_team_and_their_own() {
+        let f = fixture();
+        let pins = |owner_id, team_id| Action::EditKeyPins { owner_id, team_id };
+        assert_eq!(authorize(&f.admin, &pins(Some(99), None)), Allow);
+        assert_eq!(authorize(&f.lead, &pins(Some(99), Some(10))), Allow);
+        assert_eq!(authorize(&f.lead, &pins(Some(f.lead.user_id), None)), Allow);
+        // A member sees their own key and may not pin; another's key is not there.
+        assert_eq!(
+            authorize(&f.member, &pins(Some(f.member.user_id), None)),
+            Forbidden
+        );
+        assert_eq!(authorize(&f.member, &pins(Some(99), Some(10))), Hidden);
+        assert_eq!(authorize(&f.lead, &pins(Some(99), Some(77))), Hidden);
+        assert_eq!(authorize(&f.loner, &pins(None, None)), Hidden);
     }
 
     #[test]

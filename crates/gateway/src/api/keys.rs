@@ -42,7 +42,8 @@ pub struct CreateKeyRequest {
     guardrail_ids: Option<Vec<i64>>,
 }
 
-/// What to change on a key. Admins only; send at least one field.
+/// What to change on a key. Admins; `pinned_tools` also a lead of the key's
+/// team. Send at least one field.
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateKeyRequest {
@@ -53,6 +54,46 @@ pub struct UpdateKeyRequest {
     /// Replaces the guardrails of the key; `[]` takes them all off. Left
     /// out, they stay.
     guardrail_ids: Option<Vec<i64>>,
+    /// Replaces the MCP tools pinned to the key (`mcp:<server>/<tool>`, at
+    /// most 100, each one the key may call); `[]` unpins them all. The
+    /// combined MCP endpoint lists them, with the search tools, when the key
+    /// can call more tools than `UF_MCP_LIST_INLINE_MAX`. A lead of the key's
+    /// team, a lead's own key, or an admin. Left out, they stay.
+    pinned_tools: Option<Vec<String>>,
+}
+
+/// Most pinned tools a key may have.
+const MAX_PINNED: usize = 100;
+
+/// The pinned tools as they are stored: no repeats, each one the key may call
+/// now. The error is for `fields.pinned_tools`.
+fn checked_pins(state: &AppState, key_id: i64, asked: &[String]) -> Result<Vec<String>, ApiError> {
+    let bad = |message: &str| ApiError::invalid_field("pinned_tools", message);
+    if asked.len() > MAX_PINNED {
+        return Err(bad("must have at most 100 tools"));
+    }
+    let snapshot = state.snapshot.load();
+    let Some(snap_key) = snapshot.key_by_id(key_id) else {
+        return Err(bad("the key cannot call tools"));
+    };
+    let mut out: Vec<String> = Vec::new();
+    for entry in asked {
+        let Some((server, tool)) = crate::mcp::parse_allow_entry(entry) else {
+            return Err(bad("every entry must be mcp:<server>/<tool>"));
+        };
+        let callable = snapshot
+            .mcp_server(server)
+            .zip(snapshot.mcp_tool(server, tool))
+            .is_some_and(|(s, t)| crate::access::key_may_call_tool(&snapshot, snap_key, s, t));
+        if !callable {
+            // The same words for a tool that is hidden and one that is not there.
+            return Err(bad("a tool is not one the key can call"));
+        }
+        if !out.contains(entry) {
+            out.push(entry.clone());
+        }
+    }
+    Ok(out)
 }
 
 /// Most names an allowlist may hold, and the longest of them.
@@ -226,6 +267,9 @@ pub struct KeyView {
     /// The models and routes the key may call; `null` is no limit.
     #[schema(required)]
     pub allowed: Option<Vec<String>>,
+    /// The MCP tools (`mcp:<server>/<tool>`) the combined endpoint lists
+    /// when the key can call too many to list them all.
+    pub pinned_tools: Vec<String>,
     /// Added to every call of the key; the key's value wins over the call's
     /// for the same name. Empty when none.
     #[schema(value_type = std::collections::BTreeMap<String, String>)]
@@ -264,6 +308,7 @@ impl KeyView {
             revoked_at: k.revoked_at,
             created_at: k.created_at,
             allowed: k.allowed,
+            pinned_tools: k.pinned_tools,
             tags: k.tags,
             team_only: k.team_only,
             guardrails,
@@ -600,18 +645,42 @@ pub async fn update(
     let me = &authed.principal;
     let store = &state.store;
     let key = key_of(store, &raw_id).await?;
-    require(
-        me,
-        &Action::EditKeyTags {
-            owner_id: key.user_id,
-            team_id: key.team_id,
-        },
-    )?;
-    if req.tags.is_none() && req.guardrail_ids.is_none() {
+    let only_pins = req.tags.is_none() && req.guardrail_ids.is_none();
+    if only_pins && req.pinned_tools.is_some() {
+        require(
+            me,
+            &Action::EditKeyPins {
+                owner_id: key.user_id,
+                team_id: key.team_id,
+            },
+        )?;
+    } else {
+        require(
+            me,
+            &Action::EditKeyTags {
+                owner_id: key.user_id,
+                team_id: key.team_id,
+            },
+        )?;
+        if req.pinned_tools.is_some() {
+            require(
+                me,
+                &Action::EditKeyPins {
+                    owner_id: key.user_id,
+                    team_id: key.team_id,
+                },
+            )?;
+        }
+    }
+    if only_pins && req.pinned_tools.is_none() {
         return Err(ApiError::bad_request(
-            "Send at least one of tags and guardrail_ids.",
+            "Send at least one of tags, guardrail_ids and pinned_tools.",
         ));
     }
+    let pinned = match &req.pinned_tools {
+        Some(asked) => Some(checked_pins(&state, key.id, asked)?),
+        None => None,
+    };
     if let Some(reason) = req.tags.as_ref().and_then(tags::refusal) {
         return Err(ApiError::invalid_field("tags", reason));
     }
@@ -624,6 +693,23 @@ pub async fn update(
         },
         None => None,
     };
+    if let Some(pinned) = &pinned {
+        tx.set_key_pinned_tools(key.id, pinned).await?;
+        tx.audit(AuditEntry {
+            actor_user_id: Some(me.user_id),
+            actor_email: &me.email,
+            action: "key.pinned_tools",
+            target_type: "key",
+            target_id: Some(key.id),
+            summary: &format!(
+                "Pinned {} MCP tools to key {} ({})",
+                pinned.len(),
+                key.name,
+                key.display
+            ),
+        })
+        .await?;
+    }
     if let Some(key_tags) = &req.tags {
         tx.set_key_tags(key.id, key_tags).await?;
         tx.audit(AuditEntry {

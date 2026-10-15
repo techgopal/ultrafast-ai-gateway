@@ -230,31 +230,16 @@ pub(crate) async fn dispatch(
         }
         "ping" => reply(ok, id, json!({})),
         "tools/list" => {
-            // Listing counts as a request; nothing is upstream, so a permit
-            // is never given back.
-            let subjects = snapshot.subjects_of(Some(key.id), key.user_id, key.team_id);
-            let _permit = match state.rate.acquire(&subjects, 0, Instant::now()) {
-                Ok(permit) => permit,
-                Err(refusal) => {
-                    state.metrics.rate_limited(refusal.limit_name);
-                    let mut response = reply_error(
-                        StatusCode::TOO_MANY_REQUESTS,
-                        id,
-                        CODE_REFUSED,
-                        &refusal.message(),
-                    );
-                    response
-                        .headers_mut()
-                        .insert(RETRY_AFTER, refusal.retry_after_seconds().into());
-                    return response;
-                }
-            };
+            // Listing counts as a request.
+            if let Some(refused) = rate_check(state, snapshot, key, id) {
+                return refused;
+            }
             let listed: Vec<Value> = match &single {
                 Some((server, tools)) => tools
                     .iter()
                     .map(|t| tool_json(&server.name, t, t.name.clone()))
                     .collect(),
-                None => super::combined::list(snapshot, key),
+                None => super::combined::list(snapshot, key, state.mcp.limits.list_inline_max),
             };
             reply(ok, id, json!({"tools": listed}))
         }
@@ -275,6 +260,20 @@ pub(crate) async fn dispatch(
                     );
                 }
             };
+            if single.is_none() && super::discover::is_meta(tool) {
+                if let Some(refused) = rate_check(state, snapshot, key, id) {
+                    return refused;
+                }
+                let found = if tool == super::discover::FIND_TOOLS {
+                    super::combined::find(snapshot, key, &arguments)
+                } else {
+                    super::combined::describe(snapshot, key, &arguments)
+                };
+                return match found {
+                    Ok(result) => reply(ok, id, result),
+                    Err(message) => reply_error(ok, id, CODE_INVALID_PARAMS, message),
+                };
+            }
             let (server, tool) = match &single {
                 Some((server, _)) => (*server, tool),
                 None => match super::combined::resolve(snapshot, tool) {
@@ -309,6 +308,34 @@ pub(crate) async fn dispatch(
             call::proxy(state, snapshot, key, server, (method, &params), id, headers).await
         }
         _ => reply_error(ok, id, CODE_METHOD_NOT_FOUND, "Method not found."),
+    }
+}
+
+/// A request that is not a tool call counts against the rate limits of the
+/// key; nothing is upstream, so the permit is never given back. `Some` is the
+/// refusal.
+fn rate_check(
+    state: &AppState,
+    snapshot: &Snapshot,
+    key: &SnapKey,
+    id: &Value,
+) -> Option<Response> {
+    let subjects = snapshot.subjects_of(Some(key.id), key.user_id, key.team_id);
+    match state.rate.acquire(&subjects, 0, Instant::now()) {
+        Ok(_permit) => None,
+        Err(refusal) => {
+            state.metrics.rate_limited(refusal.limit_name);
+            let mut response = reply_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                id,
+                CODE_REFUSED,
+                &refusal.message(),
+            );
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, refusal.retry_after_seconds().into());
+            Some(response)
+        }
     }
 }
 
@@ -351,6 +378,7 @@ pub(crate) async fn playground(
         tags: crate::tags::Tags::new(),
         team_only: false,
         guardrails: Vec::new(),
+        pinned: Vec::new(),
     };
     let snapshot = state.snapshot.load_full();
     dispatch(state, &snapshot, &key, Some(name), &HeaderMap::new(), body).await

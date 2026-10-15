@@ -901,6 +901,7 @@ async fn callable_tools_of_key_follows_the_owner_the_server_and_removal() {
         tags: Default::default(),
         team_only: true,
         guardrails: Vec::new(),
+        pinned: Vec::new(),
     };
     let count = |user: Option<i64>| {
         let snapshot = org.api.state.snapshot.load();
@@ -948,4 +949,89 @@ async fn callable_tools_of_key_follows_the_owner_the_server_and_removal() {
     tx.commit().await.unwrap();
     org.api.state.refresh().await.unwrap();
     assert_eq!(count(Some(org.arjun)), 0);
+}
+
+async fn own_key(org: &Org, who: &Signed, name: &str) -> i64 {
+    let (status, body) = make_key(org, who, json!({ "name": name })).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["key"]["id"].as_i64().unwrap()
+}
+
+async fn pin(org: &Org, who: &Signed, key: i64, body: Value) -> (StatusCode, Value) {
+    org.call(Some(who), "PATCH", &format!("/api/keys/{key}"), Some(body))
+        .await
+}
+
+#[tokio::test]
+async fn pinned_tools_are_set_by_an_admin_or_a_lead_and_checked_against_what_the_key_can_call() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await; // admin
+    let arjun = org.sign_in("arjun").await; // lead of Platform
+    let lena = org.sign_in("lena").await; // member of Platform
+    let (_, tools) = seed_server(&org, "srv", &["a", "b", "off"]).await;
+    // `a` and `b` are on and for everyone; `off` is neither.
+    for tool in tools.iter().take(2) {
+        enable(&org, &maya, *tool, true).await;
+        let (status, _) = put_grants(&org, &maya, *tool, grants(true, &[], &[])).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let maya_key = own_key(&org, &maya, "maya-key").await;
+    let (status, view) = pin(
+        &org,
+        &maya,
+        maya_key,
+        json!({"pinned_tools": ["mcp:srv/a", "mcp:srv/b", "mcp:srv/a"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["pinned_tools"], json!(["mcp:srv/a", "mcp:srv/b"]));
+    assert!(org
+        .last_summary("key.pinned_tools")
+        .await
+        .contains("Pinned 2 MCP tools"));
+    // Unpinned with an empty list.
+    let (_, view) = pin(&org, &maya, maya_key, json!({"pinned_tools": []})).await;
+    assert_eq!(view["pinned_tools"], json!([]));
+    // What the key cannot call, or is not a tool, is refused in the same words.
+    for bad in [
+        json!(["mcp:srv/off"]),
+        json!(["mcp:srv/nope"]),
+        json!(["mcp:nope/a"]),
+        json!(["openai/gpt-4o"]),
+        Value::from(vec!["mcp:srv/a"; 101]),
+    ] {
+        let (status, body) = pin(&org, &maya, maya_key, json!({ "pinned_tools": bad })).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {body}");
+        assert!(body["error"]["fields"]["pinned_tools"].is_string());
+    }
+    // A lead pins to their own key; a member may not pin to theirs; nobody to another's.
+    let arjun_key = own_key(&org, &arjun, "arjun-key").await;
+    let (status, _) = pin(
+        &org,
+        &arjun,
+        arjun_key,
+        json!({"pinned_tools": ["mcp:srv/a"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let lena_key = own_key(&org, &lena, "lena-key").await;
+    let (status, _) = pin(
+        &org,
+        &lena,
+        lena_key,
+        json!({"pinned_tools": ["mcp:srv/a"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = pin(
+        &org,
+        &lena,
+        maya_key,
+        json!({"pinned_tools": ["mcp:srv/a"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // An empty request still says what to send.
+    let (status, _) = pin(&org, &maya, maya_key, json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
