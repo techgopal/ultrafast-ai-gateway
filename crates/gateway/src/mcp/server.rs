@@ -3,10 +3,11 @@
 //! Stateless, as the 2026-07-28 spec allows: no `Mcp-Session-Id` is issued or
 //! read, no handshake is needed, and every request stands alone. The
 //! JSON-RPC dispatcher is written by hand (as the client toward upstreams
-//! is): the whole server side is `initialize`, `ping`, `tools/list` and
-//! `tools/call`, and every reply is one JSON body. `resources/*`,
-//! `prompts/*` and everything else are answered "method not found"; proxying
-//! them is not part of this release.
+//! is): `initialize`, `ping`, `tools/list`, `tools/call`, and the four
+//! methods in `call::PASSED_METHODS` (`resources/list`, `resources/read`,
+//! `prompts/list`, `prompts/get`), which are passed to the upstream with
+//! the same authentication and caps. Every reply is one JSON body. Anything
+//! else is answered "method not found".
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -176,7 +177,11 @@ pub async fn serve(
                 id,
                 json!({
                     "protocolVersion": version,
-                    "capabilities": {"tools": {"listChanged": false}},
+                    "capabilities": {
+                        "tools": {"listChanged": false},
+                        "resources": {},
+                        "prompts": {},
+                    },
                     "serverInfo": {"name": "ultrafast-gateway", "version": env!("CARGO_PKG_VERSION")},
                 }),
             )
@@ -252,6 +257,26 @@ pub async fn serve(
                 id: id.clone(),
                 headers: &parts.headers,
             })
+            .await
+        }
+        m if call::PASSED_METHODS.contains(&m) => {
+            let method = call::PASSED_METHODS.iter().find(|p| **p == m).unwrap();
+            let params = match message.get("params") {
+                None | Some(Value::Null) => json!({}),
+                Some(p) if p.is_object() => p.clone(),
+                Some(_) => {
+                    return reply_error(ok, id, CODE_INVALID_PARAMS, "params must be an object.");
+                }
+            };
+            call::proxy(
+                &state,
+                &snapshot,
+                &key,
+                server,
+                (method, &params),
+                id,
+                &parts.headers,
+            )
             .await
         }
         _ => reply_error(ok, id, CODE_METHOD_NOT_FOUND, "Method not found."),

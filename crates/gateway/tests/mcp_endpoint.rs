@@ -413,7 +413,7 @@ async fn authentication_and_methods() {
 }
 
 #[tokio::test]
-async fn initialize_ping_and_the_methods_this_plan_does_not_proxy() {
+async fn initialize_ping_and_the_methods_the_gateway_does_not_proxy() {
     let w = world().await;
     let (status, headers, reply) = rpc(
         &w,
@@ -425,17 +425,16 @@ async fn initialize_ping_and_the_methods_this_plan_does_not_proxy() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reply["result"]["protocolVersion"], "2025-06-18");
     assert!(reply["result"]["capabilities"]["tools"].is_object());
-    assert!(reply["result"]["capabilities"].get("resources").is_none());
+    assert!(reply["result"]["capabilities"]["resources"].is_object());
+    assert!(reply["result"]["capabilities"]["prompts"].is_object());
     assert_eq!(reply["result"]["serverInfo"]["name"], "ultrafast-gateway");
     assert!(headers.get("mcp-session-id").is_none());
     let (_, _, reply) = rpc(&w, "ping", json!({})).await;
     assert_eq!(reply["result"], json!({}));
     for m in [
-        "resources/list",
-        "resources/read",
-        "prompts/list",
-        "prompts/get",
         "completion/complete",
+        "resources/subscribe",
+        "logging/setLevel",
     ] {
         let (status, _, reply) = rpc(&w, m, json!({})).await;
         assert_eq!(status, StatusCode::OK, "{m}");
@@ -908,4 +907,135 @@ async fn a_keys_allowlist_cuts_what_it_may_list_and_call() {
     let (status, _, reply) = send(list).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(reply["result"]["tools"][0]["name"], "echo");
+}
+
+#[tokio::test]
+async fn resources_and_prompts_are_passed_to_the_upstream_with_its_secret() {
+    let w = world().await;
+    let (status, _, reply) = rpc(&w, "resources/list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply["result"]["resources"][0]["uri"], "file:///a");
+    let (_, _, reply) = rpc(&w, "resources/read", json!({"uri": "file:///a"})).await;
+    assert_eq!(reply["result"]["contents"][0]["uri"], "file:///a");
+    let (_, _, reply) = rpc(&w, "prompts/list", json!({})).await;
+    assert_eq!(reply["result"]["prompts"][0]["name"], "p");
+    let (_, _, reply) = rpc(&w, "prompts/get", json!({"name": "p"})).await;
+    assert_eq!(reply["result"]["messages"][0]["role"], "user");
+    let seen = w.mock.received_method("resources/list");
+    assert_eq!(
+        seen[0].header_values("authorization"),
+        [format!("Bearer {SECRET}")]
+    );
+    // The agent's own key never goes upstream.
+    assert!(w.mock.received().iter().all(|r| !r
+        .header_values("authorization")
+        .iter()
+        .any(|v| v.contains(&w.h.key))));
+    // A request that is not an object is refused before the upstream.
+    let (_, _, reply) = rpc(&w, "resources/read", json!([1])).await;
+    assert_eq!(reply["error"]["code"], -32602);
+}
+
+#[tokio::test]
+async fn passed_methods_need_a_key_and_a_server_it_may_use() {
+    let w = world().await;
+    let body = json!({"jsonrpc":"2.0","id":1,"method":"resources/list"}).to_string();
+    let (status, _, _) = post_raw(&w, "mock", None, &[], &body).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = post_raw(&w, "nope", Some(&w.h.key), &[], &body).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(w.mock.received_method("resources/list").is_empty());
+}
+
+#[tokio::test]
+async fn a_passed_result_over_the_cap_is_refused_and_an_unsupported_method_is_not_found() {
+    let w2 = world_with(CallMode::Echo, Duration::ZERO, Failure::None, |s| {
+        s.mcp.limits.max_result_bytes = 2_000;
+    })
+    .await;
+    let mock2 = MockMcp::builder()
+        .tools(vec![tool("echo", "echoes")])
+        .resource_bytes(10_000)
+        .start()
+        .await;
+    let mut tx = w2.h.store.begin().await.unwrap();
+    tx.update_server(
+        w2.server_id,
+        NewMcpServer {
+            name: "mock",
+            url: &mock2.url,
+            auth_kind: "none",
+            auth_header: None,
+            auth_secret_enc: None,
+            enabled: true,
+            description: "d",
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w2.h.state.refresh().await.unwrap();
+    let (status, _, reply) = rpc(&w2, "resources/read", json!({"uri": "file:///a"})).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(reply["error"]["code"], -32000);
+    assert!(!reply.to_string().contains("rrrr"));
+
+    let w3 = world_with(CallMode::Echo, Duration::ZERO, Failure::None, |_| {}).await;
+    let none = MockMcp::builder()
+        .tools(vec![tool("echo", "echoes")])
+        .without_resources()
+        .start()
+        .await;
+    let mut tx = w3.h.store.begin().await.unwrap();
+    tx.update_server(
+        w3.server_id,
+        NewMcpServer {
+            name: "mock",
+            url: &none.url,
+            auth_kind: "none",
+            auth_header: None,
+            auth_secret_enc: None,
+            enabled: true,
+            description: "d",
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w3.h.state.refresh().await.unwrap();
+    let (status, _, reply) = rpc(&w3, "prompts/list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply["error"]["code"], -32601);
+}
+
+#[tokio::test]
+async fn a_tool_call_through_the_gateway_to_a_stateful_upstream_works() {
+    let mock = MockMcp::builder()
+        .tools(vec![tool("echo", "echoes")])
+        .require_session()
+        .start()
+        .await;
+    let w = world().await;
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.update_server(
+        w.server_id,
+        NewMcpServer {
+            name: "mock",
+            url: &mock.url,
+            auth_kind: "none",
+            auth_header: None,
+            auth_secret_enc: None,
+            enabled: true,
+            description: "d",
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    let (_, headers, reply) = call(&w, "echo", json!({"a": 1})).await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    // Toward the agent the endpoint stays stateless.
+    assert!(headers.get("mcp-session-id").is_none());
+    assert_eq!(mock.received_method("initialize").len(), 1);
 }

@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use mock_mcp::{tool, Failure, MockMcp};
 use ultrafast_gateway::mcp::upstream::{
-    discover_tools, discover_tools_with, Options, UpstreamError, MAX_PAGES,
+    call_method, call_tool, discover_tools, discover_tools_with, Options, Target, UpstreamError,
+    MAX_PAGES,
 };
 use ultrafast_gateway::store::McpServerRow;
 
@@ -527,4 +528,115 @@ async fn discovery_continues_when_initialize_is_405_or_method_not_found() {
     })
     .await;
     assert_eq!(discover_raw(&b, Options::default()).await, Ok(1));
+}
+
+#[tokio::test]
+async fn discovery_resends_the_session_id_an_initialize_reply_gave() {
+    let mock = MockMcp::builder()
+        .tools(names(3))
+        .require_session()
+        .start()
+        .await;
+    let http = reqwest::Client::new();
+    let row = server(&mock.url, "none", None);
+    let found = discover_tools(&http, &row, None).await.unwrap();
+    assert_eq!(found.tools.len(), 3);
+    let first = mock.received();
+    let sessions: Vec<_> = first
+        .iter()
+        .filter(|r| r.body["method"] != "initialize")
+        .map(|r| r.header_values("mcp-session-id"))
+        .collect();
+    assert!(!sessions.is_empty());
+    assert!(sessions.iter().all(|v| v == &["sess-1"]), "{sessions:?}");
+    // Nothing is kept: the next discovery shakes hands again and gets its own.
+    discover_tools(&http, &row, None).await.unwrap();
+    let all = mock.received();
+    assert_eq!(mock.received_method("initialize").len(), 2);
+    assert!(all[first.len()..]
+        .iter()
+        .filter(|r| r.body["method"] != "initialize")
+        .all(|r| r.header_values("mcp-session-id") == ["sess-2"]));
+}
+
+fn target(url: &str) -> Target<'_> {
+    Target {
+        url,
+        auth_kind: "none",
+        auth_header: None,
+        secret: None,
+    }
+}
+
+#[tokio::test]
+async fn a_call_to_an_upstream_that_wants_a_session_shakes_hands_once_and_forgets_it() {
+    let mock = MockMcp::builder()
+        .tools(names(1))
+        .require_session()
+        .start()
+        .await;
+    let http = reqwest::Client::new();
+    let opts = Options::default();
+    let args = serde_json::json!({"q": "x"});
+    for n in 1..=2 {
+        let reply = call_tool(&http, &target(&mock.url), "tool_0", &args, None, opts)
+            .await
+            .unwrap();
+        assert_eq!(reply["isError"], false);
+        let calls = mock.received_method("tools/call");
+        // The first try had no session and was refused; the resend had one.
+        assert_eq!(calls.len(), n * 2);
+        assert!(calls[(n - 1) * 2]
+            .header_values("mcp-session-id")
+            .is_empty());
+        assert_eq!(
+            calls[(n - 1) * 2 + 1].header_values("mcp-session-id"),
+            [format!("sess-{n}")]
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_stateless_upstream_gets_one_request_and_no_handshake() {
+    let mock = MockMcp::builder().tools(names(1)).start().await;
+    call_tool(
+        &reqwest::Client::new(),
+        &target(&mock.url),
+        "tool_0",
+        &serde_json::json!({}),
+        None,
+        Options::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(mock.received().len(), 1);
+}
+
+#[tokio::test]
+async fn other_methods_are_passed_and_an_unknown_one_is_not_supported() {
+    let mock = MockMcp::builder().without_resources().start().await;
+    let http = reqwest::Client::new();
+    let err = call_method(
+        &http,
+        &target(&mock.url),
+        "resources/list",
+        &serde_json::json!({}),
+        None,
+        Options::default(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, UpstreamError::NotSupported);
+    let mock = MockMcp::builder().start().await;
+    let reply = call_method(
+        &http,
+        &target(&mock.url),
+        "prompts/get",
+        &serde_json::json!({"name": "p"}),
+        None,
+        Options::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply["messages"][0]["content"]["text"], "p");
 }

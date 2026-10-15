@@ -161,7 +161,7 @@ fn upstream_failure(e: UpstreamError) -> (Ending, &'static str) {
             "Could not connect to the MCP server.",
         ),
         UpstreamError::InvalidParams => (400, "tool_error", "The server rejected the arguments."),
-        UpstreamError::Protocol | UpstreamError::TooMany => (
+        UpstreamError::Protocol | UpstreamError::TooMany | UpstreamError::NotSupported => (
             502,
             "upstream_error",
             "The MCP server sent an unexpected response.",
@@ -541,5 +541,120 @@ fn scan_message(failed: ScanFailed) -> (u16, &'static str) {
     } else {
         tracing::error!("a guardrail scan did not finish");
         (500, SCAN_FAILED)
+    }
+}
+
+/// The methods besides tools that are passed to the upstream as they are:
+/// what a server offers to read and to start from. They are not tools, so a
+/// key's tool grants do not cut them; a key that may call at least one tool
+/// of the server may use them, with its rate limits, the server's gate and
+/// the same time and size caps. Nothing in the result is filtered.
+pub const PASSED_METHODS: [&str; 4] = [
+    "resources/list",
+    "resources/read",
+    "prompts/list",
+    "prompts/get",
+];
+
+/// Passes `method` to the upstream and returns its result.
+pub async fn proxy(
+    state: &AppState,
+    snapshot: &Snapshot,
+    key: &SnapKey,
+    server: &SnapMcpServer,
+    (method, params): (&'static str, &Value),
+    id: &Value,
+    headers: &HeaderMap,
+) -> Response {
+    let subjects = snapshot.subjects_of(Some(key.id), key.user_id, key.team_id);
+    let _permit = match state.rate.acquire(&subjects, 0, Instant::now()) {
+        Ok(permit) => permit,
+        Err(refusal) => {
+            state.metrics.rate_limited(refusal.limit_name);
+            let mut response = reply_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                id,
+                CODE_REFUSED,
+                &refusal.message(),
+            );
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, refusal.retry_after_seconds().into());
+            return response;
+        }
+    };
+    let Ok(_slot) = state.mcp.gate(server.id).try_acquire_owned() else {
+        let mut response = reply_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            id,
+            CODE_BUSY,
+            "The MCP server is busy. Try again shortly.",
+        );
+        response.headers_mut().insert(RETRY_AFTER, 1.into());
+        return response;
+    };
+    let limits = state.mcp.limits;
+    let traceparent = headers
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok())
+        .filter(|t| TraceParent::parse(t).is_some());
+    let target = Target {
+        url: &server.url,
+        auth_kind: &server.auth_kind,
+        auth_header: server.auth_header.as_deref(),
+        secret: server.secret.as_deref(),
+    };
+    let opts = Options {
+        timeout: limits.call_timeout,
+        max_body_bytes: limits.max_result_bytes,
+    };
+    let started = Instant::now();
+    let answered =
+        upstream::call_method(&state.http, &target, method, params, traceparent, opts).await;
+    let ms = elapsed_ms(started);
+    match answered {
+        Ok(result) => {
+            state.metrics.mcp_call(&server.name, method, "ok", Some(ms));
+            reply(StatusCode::OK, id, result)
+        }
+        Err(e) => {
+            tracing::warn!(server = %server.name, method, error = %e, "an MCP request failed");
+            let (code, status, label, message) = match e {
+                UpstreamError::NotSupported => (
+                    super::server::CODE_METHOD_NOT_FOUND,
+                    StatusCode::OK,
+                    "unsupported",
+                    "Method not found.",
+                ),
+                UpstreamError::InvalidParams => (
+                    CODE_INVALID_PARAMS,
+                    StatusCode::OK,
+                    "tool_error",
+                    "The server rejected the parameters.",
+                ),
+                UpstreamError::Timeout => (
+                    CODE_REFUSED,
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "timeout",
+                    "The MCP server did not answer in time.",
+                ),
+                UpstreamError::TooLarge => (
+                    CODE_REFUSED,
+                    StatusCode::BAD_GATEWAY,
+                    "too_large",
+                    "The MCP server's result was too large.",
+                ),
+                _ => (
+                    CODE_REFUSED,
+                    StatusCode::BAD_GATEWAY,
+                    "upstream_error",
+                    "The MCP server sent an unexpected response.",
+                ),
+            };
+            state
+                .metrics
+                .mcp_call(&server.name, method, label, Some(ms));
+            reply_error(status, id, code, message)
+        }
     }
 }
