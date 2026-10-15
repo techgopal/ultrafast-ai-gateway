@@ -108,6 +108,7 @@ export const ENDPOINTS: readonly (readonly [value: string, label: string])[] = [
   ["translations", "Translations"],
   ["speech", "Speech"],
   ["playground", "Playground"],
+  ["mcp", "MCP"],
 ];
 
 /** The words for an endpoint; a name this console does not know is shown as it is. */

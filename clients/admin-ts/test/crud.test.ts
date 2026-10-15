@@ -149,6 +149,26 @@ describe("round trips through the token, one per tag", () => {
     expect(list.users.map((u) => u.email)).toContain("new@example.com");
   });
 
+  it("mcp: create a server, list it with its secret kept back, delete", async () => {
+    const created = await api.call(
+      api.raw.POST("/api/mcp/servers", {
+        body: {
+          name: "smoke",
+          url: "http://127.0.0.1:1/mcp",
+          auth_kind: "bearer",
+          secret: "mcp-secret-not-real",
+        },
+      }),
+    );
+    expect(created.has_secret).toBe(true);
+    expect(JSON.stringify(created)).not.toContain("mcp-secret-not-real");
+    const list = await api.call(api.raw.GET("/api/mcp/servers"));
+    expect(list.servers.map((server) => server.name)).toEqual(["smoke"]);
+    expect(JSON.stringify(list)).not.toContain("mcp-secret-not-real");
+    await api.call(api.raw.DELETE("/api/mcp/servers/{id}", { params: { path: { id: created.id } } }));
+    expect((await api.call(api.raw.GET("/api/mcp/servers"))).servers).toEqual([]);
+  });
+
   it("models and providers: delete in order", async () => {
     await api.call(api.raw.DELETE("/api/models/{id}", { params: { path: { id: modelId } } }));
     await api.call(api.raw.DELETE("/api/providers/{id}", { params: { path: { id: providerId } } }));

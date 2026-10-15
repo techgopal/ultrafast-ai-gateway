@@ -36,6 +36,7 @@ const page = {
   Logs: lazyRouteComponent(() => import("@/pages/Logs"), "Logs"),
   LogsDetail: lazyRouteComponent(() => import("@/pages/LogsDetail"), "LogsDetail"),
   Models: lazyRouteComponent(() => import("@/pages/Models"), "Models"),
+  Mcp: lazyRouteComponent(() => import("@/pages/Mcp"), "Mcp"),
   Overview: lazyRouteComponent(() => import("@/pages/Overview"), "Overview"),
   Playground: lazyRouteComponent(() => import("@/pages/Playground"), "Playground"),
   Prompts: lazyRouteComponent(() => import("@/pages/Prompts"), "Prompts"),
@@ -372,6 +373,13 @@ const modelsRoute = createRoute({
   component: page.Models,
 });
 
+const mcpRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/mcp",
+  staticData: { title: "MCP tools" },
+  component: page.Mcp,
+});
+
 const routesRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/routes",
@@ -492,6 +500,7 @@ const routeTree = rootRoute.addChildren([
     playgroundRoute,
     providersRoute,
     modelsRoute,
+    mcpRoute,
     routesRoute,
     routeNewRoute,
     routeRoute,

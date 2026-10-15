@@ -1385,20 +1385,28 @@ describe("every mutation calls its operation", () => {
       ["useCreatePrompt", "POST /api/prompts", q.useCreatePrompt, { name: "p", messages: [{ role: "user", content: "a" }] }],
       ["useCreatePromptVersion", "POST /api/prompts/1/versions", q.useCreatePromptVersion, { id: 1, body: { messages: [{ role: "user", content: "a" }] } }],
       ["useDeletePrompt", "DELETE /api/prompts/1", q.useDeletePrompt, { id: 1 }],
+      ["useCreateMcpServer", "POST /api/mcp/servers", q.useCreateMcpServer, { name: "m", url: "https://mcp.example.test/mcp" }],
+      ["useUpdateMcpServer", "PATCH /api/mcp/servers/1", q.useUpdateMcpServer, { id: 1, body: { enabled: false } }],
+      ["useDeleteMcpServer", "DELETE /api/mcp/servers/1", q.useDeleteMcpServer, { id: 1 }],
+      ["useSyncMcpServer", "POST /api/mcp/servers/1/sync", q.useSyncMcpServer, { id: 1 }],
+      ["useUpdateMcpTool", "PATCH /api/mcp/tools/11", q.useUpdateMcpTool, { id: 11, body: { enabled: true } }],
+      ["usePutMcpToolGrants", "PUT /api/mcp/tools/11/grants", q.usePutMcpToolGrants, { id: 11, body: { everyone: true, team_ids: [], user_ids: [] } }],
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 57 of them, 27 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(57);
+  test("there are 63 of them, 30 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(63);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(87);
+    expect(hooks).toHaveLength(96);
     // The alerts: three queries (channels, rules, events by page), and their eight mutations.
     for (const name of ["useAlertChannels", "useAlertRules", "useAlertEventsPages"]) {
       expect(hooks).toContain(name);
     }
     // The guardrails: one query (the list), and their five mutations.
     expect(hooks).toContain("useGuardrails");
+    // The MCP servers: three queries (servers, the tools of one, the tools of several), and their six mutations.
+    for (const name of ["useMcpServers", "useMcpTools", "useMcpToolsOf"]) expect(hooks).toContain(name);
     // The playground: one query (the audio cap).
     expect(hooks).toContain("usePlaygroundConfig");
     // The prompt templates: three queries (the list, one template, one version), and their three mutations.

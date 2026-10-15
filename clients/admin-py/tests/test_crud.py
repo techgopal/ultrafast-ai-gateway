@@ -18,6 +18,7 @@ from ultrafast_admin._generated.api.alerts import (
 from ultrafast_admin._generated.api.budgets import budgets_delete, budgets_list, budgets_set
 from ultrafast_admin._generated.api.keys import keys_create, keys_list, keys_revoke, keys_view
 from ultrafast_admin._generated.api.limits import limits_delete, limits_list, limits_set
+from ultrafast_admin._generated.api.mcp import mcp_servers_create, mcp_servers_delete, mcp_servers_list
 from ultrafast_admin._generated.api.models import models_create, models_delete, models_list, models_update
 from ultrafast_admin._generated.api.providers import (
     providers_create,
@@ -31,6 +32,7 @@ from ultrafast_admin._generated.api.users import users_invite, users_list
 from ultrafast_admin._generated.models import (
     CreateChannelRequest,
     CreateKeyRequest,
+    CreateMcpServerRequest,
     CreateModelRequest,
     CreateProviderRequest,
     CreateRuleRequest,
@@ -98,6 +100,24 @@ def test_keys_secret_once_then_revoke(api: AdminClient) -> None:
     api.call(keys_revoke.sync_detailed(created.key.id, client=api.client))
     viewed = api.call(keys_view.sync_detailed(created.key.id, client=api.client))
     assert viewed.revoked_at is not None
+
+
+def test_mcp_server_create_list_delete(api: AdminClient) -> None:
+    created = api.call(
+        mcp_servers_create.sync_detailed(
+            client=api.client,
+            body=CreateMcpServerRequest(
+                name="smoke", url="http://127.0.0.1:1/mcp", auth_kind="bearer", secret="mcp-secret-not-real"
+            ),
+        )
+    )
+    assert created.has_secret is True
+    assert "mcp-secret-not-real" not in json.dumps(created.to_dict())
+    listed = api.call(mcp_servers_list.sync_detailed(client=api.client))
+    assert [s.name for s in listed.servers] == ["smoke"]
+    assert "mcp-secret-not-real" not in json.dumps(listed.to_dict())
+    assert api.call(mcp_servers_delete.sync_detailed(created.id, client=api.client)) is None
+    assert api.call(mcp_servers_list.sync_detailed(client=api.client)).servers == []
 
 
 def test_budgets_set_list_delete(api: AdminClient) -> None:

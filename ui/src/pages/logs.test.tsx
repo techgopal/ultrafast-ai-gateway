@@ -288,7 +288,12 @@ describe("the filters", () => {
       "Translations",
       "Speech",
       "Playground",
+      "MCP",
     ]);
+    await choose(control("Endpoint"), "MCP");
+    await waitFor(() => {
+      expect(asked.asked.at(-1)?.get("endpoint")).toBe("mcp");
+    });
     await choose(control("Endpoint"), "Images");
     await waitFor(() => {
       expect(asked.asked.at(-1)?.get("endpoint")).toBe("images");
