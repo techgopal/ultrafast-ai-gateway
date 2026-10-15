@@ -8,6 +8,8 @@ import {
   useMcpStderr,
   useMcpTools,
   useMcpToolsOf,
+  usePreviewMcpProjection,
+  usePutMcpProjection,
   usePutMcpToolGrants,
   useSyncMcpServer,
   useUpdateMcpServer,
@@ -35,6 +37,7 @@ import { isLocal, liveTools, statusOf, syncText, toolRef } from "@/lib/mcp";
 import { accessSummary, hasNoAccess } from "@/lib/models";
 import { AccessDialog } from "@/pages/McpAccess";
 import { ConnectPanel } from "@/pages/McpConnect";
+import { ProjectionDialog } from "@/pages/McpProjection";
 import { ServerDialog } from "@/pages/McpServer";
 
 type Server = components["schemas"]["McpServerView"];
@@ -52,16 +55,20 @@ export const DONE = {
   delete: "Server deleted.",
 } as const;
 
-type Asking = "add" | "edit" | "access" | "delete";
+type Asking = "add" | "edit" | "access" | "delete" | "projection";
+
+export const PROJECTION_SAVED = "Projection saved.";
 
 function ToolsOfServer({
   server,
   onProblem,
   onAccess,
+  onProjection,
 }: {
   server: Server;
   onProblem: (message: string | null) => void;
   onAccess: (tool: Tool) => void;
+  onProjection: (tool: Tool) => void;
 }) {
   const tools = useMcpTools(server.id);
   const update = useUpdateMcpTool();
@@ -155,16 +162,28 @@ function ToolsOfServer({
         <EmptyState title="No tools" description="Sync the server to read the tools it offers." />
       }
       actions={(tool) => (
-        <Button
-          type="button"
-          variant="outline"
-          className={control}
-          onClick={() => {
-            onAccess(tool);
-          }}
-        >
-          Edit access
-        </Button>
+        <>
+          <Button
+            type="button"
+            variant="outline"
+            className={control}
+            onClick={() => {
+              onAccess(tool);
+            }}
+          >
+            Edit access
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className={control}
+            onClick={() => {
+              onProjection(tool);
+            }}
+          >
+            Edit projection
+          </Button>
+        </>
       )}
     />
   );
@@ -225,6 +244,8 @@ function AdminMcp() {
   const remove = useDeleteMcpServer();
   const sync = useSyncMcpServer();
   const grants = usePutMcpToolGrants();
+  const putProjection = usePutMcpProjection();
+  const previewProjection = usePreviewMcpProjection();
   const catalog = useMcpCatalog();
   const toast = useToast();
   const [output, setOutput] = useState<Server | null>(null);
@@ -440,6 +461,10 @@ function AdminMcp() {
               setTool(one);
               setAsking("access");
             }}
+            onProjection={(one) => {
+              setTool(one);
+              setAsking("projection");
+            }}
           />
         </section>
       )}
@@ -485,6 +510,28 @@ function AdminMcp() {
           toast(DONE.access);
         }}
       />
+      {tool === null ? null : (
+        <ProjectionDialog
+          open={asking === "projection"}
+          tool={tool}
+          server={shown?.name ?? ""}
+          put={putProjection}
+          preview={previewProjection}
+          onCancel={() => {
+            closing(() => {
+              putProjection.reset();
+              previewProjection.reset();
+            });
+          }}
+          onDone={() => {
+            closing(() => {
+              putProjection.reset();
+              previewProjection.reset();
+            });
+            toast(PROJECTION_SAVED);
+          }}
+        />
+      )}
       <ConfirmDialog
         open={asking === "delete"}
         onOpenChange={(open) => {

@@ -12,7 +12,7 @@ import { FilterSelect, type Choice } from "@/components/FilterSelect";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { liveTools, toolRef } from "@/lib/mcp";
+import { liveTools, rememberResult, toolRef } from "@/lib/mcp";
 import {
   argumentsOf,
   blocksOf,
@@ -88,6 +88,8 @@ export function McpMode() {
     try {
       const reply = await playgroundMcp(server.name, callOf(tool.name, checked.value), abort.signal);
       const result: unknown = reply.result;
+      // The projection dialog tries a projection on the last result.
+      if (typeof result === "object" && result !== null) rememberResult(server.name, tool.name, result);
       const structured: unknown =
         typeof result === "object" && result !== null ? Reflect.get(result, "structuredContent") : undefined;
       setShown({

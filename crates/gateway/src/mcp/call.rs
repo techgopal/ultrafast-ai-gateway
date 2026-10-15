@@ -525,6 +525,14 @@ pub async fn run(call: ToolCall<'_>) -> Response {
         );
         return tool_error(&id, "The MCP server sent an unexpected response.");
     };
+    // The tool's projection runs first: the guardrails read, and the log
+    // records, what the agent is given.
+    if let Some(projection) = &tool.projection {
+        let projected = projection.apply(&mut result);
+        if projected.changed {
+            scope.attempt_projected(projected.after as u64);
+        }
+    }
     scope.settle_attempt(AttemptOutcome::Ok, Some(200), started);
     let ended = |status: u16, label: &'static str| Ending {
         status,

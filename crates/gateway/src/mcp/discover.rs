@@ -217,6 +217,7 @@ mod tests {
             everyone: false,
             team_ids: Vec::new(),
             user_ids: Vec::new(),
+            projection: None,
         }
     }
 

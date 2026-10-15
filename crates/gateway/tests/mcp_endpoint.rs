@@ -1570,3 +1570,77 @@ async fn the_search_tools_count_against_the_rate_limit() {
     assert_eq!(call().await.0, StatusCode::OK);
     assert_eq!(call().await.0, StatusCode::TOO_MANY_REQUESTS);
 }
+
+// ------------------------------------------------------------ projection
+
+async fn project(w: &World, keep: &[&str], drop: &[&str], items: Option<i64>, bytes: Option<i64>) {
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.put_projection(&ultrafast_gateway::store::ProjectionRow {
+        tool_id: w.echo_id,
+        keep: keep.iter().map(|s| (*s).to_string()).collect(),
+        drop: drop.iter().map(|s| (*s).to_string()).collect(),
+        max_items: items,
+        max_bytes: bytes,
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_projection_cuts_the_result_and_marks_it_and_the_log_says_how_much_was_left() {
+    let w = world().await;
+    project(&w, &["$.public"], &[], None, None).await;
+    let (_, _, reply) = call(
+        &w,
+        "echo",
+        json!({"public": "ok", "hidden": "x".repeat(500)}),
+    )
+    .await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert_eq!(text_of(&reply), "{\"public\":\"ok\"}");
+    assert_eq!(reply["result"]["_meta"]["ultrafast"]["projected"], true);
+    let rec = w.h.sink.wait_for(1).await.remove(0);
+    let left = rec.attempts[0].projected_bytes.expect("projected bytes");
+    assert!(left > 0 && left < 400, "{left}");
+    // The log row carries it in the attempts.
+    let prices: ultrafast_gateway::logs::PriceLookup = std::sync::Arc::new(|_, _| None);
+    let row = ultrafast_gateway::logs::row_of(&rec, &prices);
+    let attempts: Value = serde_json::from_str(&row.attempts).unwrap();
+    assert_eq!(attempts[0]["projected_bytes"], left);
+}
+
+#[tokio::test]
+async fn a_projection_runs_before_the_guardrails_read_the_result() {
+    let w = world().await;
+    guardrail(&w, "g", word_rule("xyzzy", "block", "output")).await;
+    let args = json!({"public": "ok", "hidden": "xyzzy"});
+    let (_, _, reply) = call(&w, "echo", args.clone()).await;
+    assert_eq!(reply["result"]["isError"], true);
+    project(&w, &[], &["$.hidden"], None, None).await;
+    let (_, _, reply) = call(&w, "echo", args).await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert_eq!(text_of(&reply), "{\"public\":\"ok\"}");
+}
+
+#[tokio::test]
+async fn a_projection_that_removes_every_field_leaves_an_object_and_the_marker() {
+    let w = world().await;
+    project(&w, &["$.nothing"], &[], None, None).await;
+    let (_, _, reply) = call(&w, "echo", json!({"a": 1})).await;
+    assert_eq!(text_of(&reply), "{}");
+    assert_eq!(reply["result"]["_meta"]["ultrafast"]["projected"], true);
+    assert_eq!(reply["result"]["isError"], false);
+}
+
+#[tokio::test]
+async fn a_result_a_projection_does_not_change_has_no_marker_and_other_tools_are_untouched() {
+    let w = world().await;
+    project(&w, &[], &[], Some(10), None).await;
+    let (_, _, reply) = call(&w, "echo", json!({"a": 1})).await;
+    assert_eq!(text_of(&reply), "{\"a\":1}");
+    assert!(reply["result"].get("_meta").is_none(), "{reply}");
+    let rec = w.h.sink.wait_for(1).await.remove(0);
+    assert_eq!(rec.attempts[0].projected_bytes, None);
+}

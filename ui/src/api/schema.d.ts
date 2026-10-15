@@ -742,6 +742,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/mcp/tools/{id}/projection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["mcp_tools_projection_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/mcp/tools/{id}/projection/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["mcp_tools_projection_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/models": {
         parameters: {
             query?: never;
@@ -2533,6 +2565,7 @@ export interface components {
             enabled: boolean;
             grants?: components["schemas"]["GrantEntry"];
             name: string;
+            projection: components["schemas"]["ProjectionEntry"] | null;
         };
         McpToolList: {
             tools: components["schemas"]["McpToolView"][];
@@ -2549,6 +2582,7 @@ export interface components {
             input_schema: Record<string, never>;
             name: string;
             output_schema: Record<string, never> | null;
+            projection: components["schemas"]["ProjectionBody"] | null;
             /** @description The server no longer offers it; its grants are kept. */
             removed: boolean;
             /** Format: int64 */
@@ -3012,6 +3046,61 @@ export interface components {
              * @description Zero for a caller who is not an admin.
              */
             weight: number;
+        };
+        /**
+         * @description What of a tool's result the agent is given. Left out, every list is empty
+         *     and every limit off; all four left out takes the projection off.
+         */
+        ProjectionBody: {
+            /** @description JSONPath queries of what to remove, after `keep`. */
+            drop?: string[];
+            /**
+             * @description JSONPath queries (RFC 9535) of what to keep: only the nodes they select
+             *     stay, with the structure above them. Empty keeps everything.
+             */
+            keep?: string[];
+            /**
+             * Format: int64
+             * @description The most bytes a text block may have; more is cut and says so.
+             */
+            max_bytes: number | null;
+            /**
+             * Format: int64
+             * @description The most items any array of the result may keep.
+             */
+            max_items: number | null;
+        };
+        /** @description A projection of a tool's result, as the file holds it. */
+        ProjectionEntry: {
+            /** @description JSONPath queries of what to remove, after `keep`. */
+            drop?: string[];
+            /** @description JSONPath queries of what to keep. */
+            keep?: string[];
+            /** Format: int64 */
+            max_bytes: number | null;
+            /** Format: int64 */
+            max_items: number | null;
+        };
+        ProjectionPreview: {
+            /** Format: int64 */
+            bytes_after: number;
+            /** Format: int64 */
+            bytes_before: number;
+            /** @description Whether the projection changed anything. */
+            changed: boolean;
+            /** @description The result as the agent would be given it. */
+            result: Record<string, never>;
+            /** @description Whether a limit cut something. */
+            truncated: boolean;
+        };
+        /** @description A result to project, and optionally a projection to try on it. */
+        ProjectionPreviewRequest: {
+            projection?: components["schemas"]["ProjectionBody"] | null;
+            /**
+             * @description A result of the tool as `tools/call` returns it (`content`,
+             *     `structuredContent`), for instance the last one from the playground.
+             */
+            result: Record<string, never>;
         };
         /**
          * @description A prompt template with all its versions. An import adds the versions a
@@ -7584,6 +7673,192 @@ export interface operations {
                 };
             };
             /** @description A team or user does not exist, or everyone is combined with others; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_tools_projection_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the tool. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectionBody"];
+            };
+        };
+        responses: {
+            /** @description The tool with its new projection (`null` when the request asked for nothing, which takes it off). It applies to the next call. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpToolView"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description A query is not valid JSONPath, or a limit is out of range; `fields` names each of them. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description Something went wrong. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    mcp_tools_projection_preview: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The CSRF token of the session. Required with a session cookie; not needed with an access token. */
+                "x-csrf-token"?: string;
+            };
+            path: {
+                /** @description The id of the tool. */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectionPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description The result with the projection applied. Nothing is stored and no tool is called. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectionPreview"];
+                };
+            };
+            /** @description The request is not of the expected form. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description No valid session or access token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The caller is not allowed to do this, or the CSRF token is missing or does not match. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description It does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The request body is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description The projection is not valid, or `result` is not an object; `fields` names each of them. */
             422: {
                 headers: {
                     [name: string]: unknown;

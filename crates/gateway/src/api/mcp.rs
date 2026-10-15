@@ -24,7 +24,9 @@ use crate::identity::Principal;
 use crate::mcp::sync::{sync_server, Actor, SyncError};
 use crate::mcp::{check_auth, encrypt_secret, server_usable, validate_server_name};
 use crate::snapshot::{SnapMcpServer, SnapMcpTool};
-use crate::store::{AuditEntry, Grants, McpServerRow, McpToolRow, NewMcpServer, Store, StoreError};
+use crate::store::{
+    AuditEntry, Grants, McpServerRow, McpToolRow, NewMcpServer, ProjectionRow, Store, StoreError,
+};
 
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -228,6 +230,9 @@ pub struct McpToolView {
     #[schema(value_type = Option<Object>, required)]
     pub annotations: Option<serde_json::Value>,
     pub enabled: bool,
+    /// What of its result the agent is given; `null`: all of it.
+    #[schema(required)]
+    pub projection: Option<ProjectionBody>,
     /// The server no longer offers it; its grants are kept.
     pub removed: bool,
     /// Who may call it. For everyone who is not an admin it is always empty.
@@ -255,8 +260,9 @@ fn json_of(text: &str) -> serde_json::Value {
 }
 
 impl McpToolView {
-    fn of_row(t: &McpToolRow, grants: Grants) -> Self {
+    fn of_row(t: &McpToolRow, grants: Grants, projection: Option<&ProjectionRow>) -> Self {
         Self {
+            projection: projection.map(ProjectionBody::of),
             id: t.id,
             server_id: t.server_id,
             name: t.name.clone(),
@@ -280,6 +286,7 @@ impl McpToolView {
     /// What a caller who may call the tool sees: no grants.
     fn of_snapshot(t: &SnapMcpTool) -> Self {
         Self {
+            projection: None,
             id: t.id,
             server_id: t.server_id,
             name: t.name.clone(),
@@ -1202,12 +1209,19 @@ pub async fn tools_list(
             .await?
             .ok_or_else(ApiError::not_found)?;
         let mut grants = state.store.mcp_grants_of_server(server.id).await?;
+        let projections = state.store.list_projections().await?;
         let tools = state
             .store
             .list_tools(server.id)
             .await?
             .iter()
-            .map(|t| McpToolView::of_row(t, grants.remove(&t.id).unwrap_or_default()))
+            .map(|t| {
+                McpToolView::of_row(
+                    t,
+                    grants.remove(&t.id).unwrap_or_default(),
+                    projections.iter().find(|p| p.tool_id == t.id),
+                )
+            })
             .collect();
         return Ok(Json(McpToolList { tools }).into_response());
     }
@@ -1233,7 +1247,8 @@ async fn tool_view(state: &AppState, id: i64) -> Result<McpToolView, ApiError> {
         .await?
         .ok_or_else(ApiError::not_found)?;
     let grants = state.store.tool_grants_of(id).await?;
-    Ok(McpToolView::of_row(&tool, grants))
+    let projection = state.store.projection_of(id).await?;
+    Ok(McpToolView::of_row(&tool, grants, projection.as_ref()))
 }
 
 #[utoipa::path(
@@ -1709,6 +1724,218 @@ pub async fn stderr(
     Ok(Json(McpStderrView {
         text,
         supervised: bytes.is_some(),
+    })
+    .into_response())
+}
+
+/// What of a tool's result the agent is given. Left out, every list is empty
+/// and every limit off; all four left out takes the projection off.
+#[derive(Debug, Default, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionBody {
+    /// JSONPath queries (RFC 9535) of what to keep: only the nodes they select
+    /// stay, with the structure above them. Empty keeps everything.
+    #[serde(default)]
+    pub keep: Vec<String>,
+    /// JSONPath queries of what to remove, after `keep`.
+    #[serde(default)]
+    pub drop: Vec<String>,
+    /// The most items any array of the result may keep.
+    #[serde(default)]
+    #[schema(required)]
+    pub max_items: Option<u64>,
+    /// The most bytes a text block may have; more is cut and says so.
+    #[serde(default)]
+    #[schema(required)]
+    pub max_bytes: Option<u64>,
+}
+
+impl ProjectionBody {
+    fn of(row: &ProjectionRow) -> Self {
+        Self {
+            keep: row.keep.clone(),
+            drop: row.drop.clone(),
+            max_items: row.max_items.and_then(|n| u64::try_from(n).ok()),
+            max_bytes: row.max_bytes.and_then(|n| u64::try_from(n).ok()),
+        }
+    }
+
+    fn spec(&self) -> crate::mcp::project::Spec {
+        crate::mcp::project::Spec {
+            keep: self.keep.clone(),
+            drop: self.drop.clone(),
+            max_items: self.max_items,
+            max_bytes: self.max_bytes,
+        }
+    }
+
+    fn checked(&self) -> Result<(), ApiError> {
+        self.spec()
+            .check()
+            .map_err(|(field, message)| ApiError::invalid_field(field, &message))
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/mcp/tools/{id}/projection",
+    tag = "mcp",
+    operation_id = "mcp_tools_projection_put",
+    params(
+        ("id" = i64, Path, description = "The id of the tool."),
+    ),
+    request_body = ProjectionBody,
+    responses(
+        (status = 200, description = "The tool with its new projection (`null` when the request asked for nothing, which takes it off). It applies to the next call.", body = McpToolView),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "A query is not valid JSONPath, or a limit is out of range; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+pub async fn tools_put_projection(
+    State(state): State<Arc<AppState>>,
+    Path(raw_id): Path<String>,
+    authed: Authed,
+    ApiJson(req): ApiJson<ProjectionBody>,
+) -> Result<Response, ApiError> {
+    let me = &authed.principal;
+    require(me, &Action::ManageMcp)?;
+    let id = path_id(&raw_id)?;
+    req.checked()?;
+    let mut tx = state.store.begin().await?;
+    let tool = tx.tool_by_id(id).await?.ok_or_else(ApiError::not_found)?;
+    let server = tx
+        .server_by_id(tool.server_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let summary = if req.spec().is_empty() {
+        tx.delete_projection(id).await?;
+        format!(
+            "Took the projection off tool {} of {}",
+            tool.name, server.name
+        )
+    } else {
+        tx.put_projection(&ProjectionRow {
+            tool_id: id,
+            keep: req.keep.clone(),
+            drop: req.drop.clone(),
+            max_items: req.max_items.and_then(|n| i64::try_from(n).ok()),
+            max_bytes: req.max_bytes.and_then(|n| i64::try_from(n).ok()),
+        })
+        .await?;
+        format!(
+            "Set the projection of tool {} of {}",
+            tool.name, server.name
+        )
+    };
+    tx.audit(AuditEntry {
+        actor_user_id: Some(me.user_id),
+        actor_email: &me.email,
+        action: "mcp.tool_projection",
+        target_type: "mcp_tool",
+        target_id: Some(id),
+        summary: &summary,
+    })
+    .await?;
+    tx.commit().await?;
+    refresh_snapshot(&state).await?;
+    Ok(Json(tool_view(&state, id).await?).into_response())
+}
+
+/// A result to project, and optionally a projection to try on it.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionPreviewRequest {
+    /// A result of the tool as `tools/call` returns it (`content`,
+    /// `structuredContent`), for instance the last one from the playground.
+    #[schema(value_type = Object)]
+    result: serde_json::Value,
+    /// A projection to try. Left out, the tool's own is used.
+    projection: Option<ProjectionBody>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ProjectionPreview {
+    /// The result as the agent would be given it.
+    #[schema(value_type = Object)]
+    pub result: serde_json::Value,
+    /// Whether the projection changed anything.
+    pub changed: bool,
+    /// Whether a limit cut something.
+    pub truncated: bool,
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+}
+
+#[utoipa::path(
+    post,
+    path = "/mcp/tools/{id}/projection/preview",
+    tag = "mcp",
+    operation_id = "mcp_tools_projection_preview",
+    params(
+        ("id" = i64, Path, description = "The id of the tool."),
+    ),
+    request_body = ProjectionPreviewRequest,
+    responses(
+        (status = 200, description = "The result with the projection applied. Nothing is stored and no tool is called.", body = ProjectionPreview),
+        (status = 400, description = "The request is not of the expected form.", body = super::openapi::ApiErrorBody),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 404, description = "It does not exist.", body = super::openapi::ApiErrorBody),
+        (status = 413, description = "The request body is too large.", body = super::openapi::ApiErrorBody),
+        (status = 422, description = "The projection is not valid, or `result` is not an object; `fields` names each of them.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+pub async fn tools_projection_preview(
+    State(state): State<Arc<AppState>>,
+    Path(raw_id): Path<String>,
+    authed: Authed,
+    ApiJson(req): ApiJson<ProjectionPreviewRequest>,
+) -> Result<Response, ApiError> {
+    require(&authed.principal, &Action::ManageMcp)?;
+    let id = path_id(&raw_id)?;
+    state
+        .store
+        .tool_by_id(id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    if !req.result.is_object() {
+        return Err(ApiError::invalid_field("result", "must be an object"));
+    }
+    let body = match req.projection {
+        Some(p) => p,
+        None => state
+            .store
+            .projection_of(id)
+            .await?
+            .as_ref()
+            .map(ProjectionBody::of)
+            .unwrap_or_default(),
+    };
+    body.checked()?;
+    let mut result = req.result;
+    let outcome = match crate::mcp::project::Projection::compile(&body.spec()) {
+        Some(p) => p.apply(&mut result),
+        None => {
+            return Err(ApiError::invalid_field(
+                "keep",
+                "a query is not a valid JSONPath",
+            ))
+        }
+    };
+    Ok(Json(ProjectionPreview {
+        result,
+        changed: outcome.changed,
+        truncated: outcome.truncated,
+        bytes_before: outcome.before as u64,
+        bytes_after: outcome.after as u64,
     })
     .into_response())
 }

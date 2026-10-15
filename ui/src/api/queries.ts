@@ -1081,6 +1081,28 @@ export const useUpdateMcpTool = () =>
     mcpServerIsGone,
   );
 
+/** Sets the projection of a tool (what of its result the agent is given); empty takes it off. */
+export const usePutMcpProjection = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/mcp/tools/{id}/projection", "put"> }) =>
+      api.put("/api/mcp/tools/{id}/projection", { params: { id }, body }),
+    () => ({ stale: [queryKeys.mcp.all(), audit] }),
+    mcpServerIsGone,
+  );
+
+/** Applies a projection to a sample result; stores nothing. */
+export const usePreviewMcpProjection = () =>
+  useApiMutation(
+    ({
+      id,
+      body,
+    }: {
+      id: number;
+      body: BodyOf<"/api/mcp/tools/{id}/projection/preview", "post">;
+    }) => api.post("/api/mcp/tools/{id}/projection/preview", { params: { id }, body }),
+    () => ({ stale: [] }),
+  );
+
 /** Replaces the grants of the tool: who may call it. */
 export const usePutMcpToolGrants = () =>
   useApiMutation(

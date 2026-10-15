@@ -132,6 +132,30 @@ pub struct McpToolRow {
     pub removed_at: Option<String>,
 }
 
+/// What of a tool's result the agent is given (see `mcp::project`). The
+/// queries are JSONPath.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionRow {
+    pub tool_id: i64,
+    pub keep: Vec<String>,
+    pub drop: Vec<String>,
+    pub max_items: Option<i64>,
+    pub max_bytes: Option<i64>,
+}
+
+fn projection_from(r: &AnyRow) -> ProjectionRow {
+    ProjectionRow {
+        tool_id: r.get("tool_id"),
+        keep: serde_json::from_str(&r.get::<String, _>("keep_paths")).unwrap_or_default(),
+        drop: serde_json::from_str(&r.get::<String, _>("drop_paths")).unwrap_or_default(),
+        max_items: r.get("max_items"),
+        max_bytes: r.get("max_bytes"),
+    }
+}
+
+const PROJECTION_SELECT: &str =
+    "SELECT tool_id, keep_paths, drop_paths, max_items, max_bytes FROM mcp_tool_projections";
+
 /// A tool as a sync found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredTool {
@@ -214,6 +238,35 @@ fn same(row: &McpToolRow, t: &DiscoveredTool) -> bool {
 }
 
 impl Tx<'_> {
+    /// Sets the projection of a tool, replacing the old one.
+    pub async fn put_projection(&mut self, p: &ProjectionRow) -> Result<()> {
+        self.q(
+            "INSERT INTO mcp_tool_projections (tool_id, keep_paths, drop_paths, max_items, max_bytes)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (tool_id) DO UPDATE SET keep_paths = excluded.keep_paths,
+                drop_paths = excluded.drop_paths, max_items = excluded.max_items,
+                max_bytes = excluded.max_bytes",
+        )
+        .bind(p.tool_id)
+        .bind(serde_json::to_string(&p.keep)?)
+        .bind(serde_json::to_string(&p.drop)?)
+        .bind(p.max_items)
+        .bind(p.max_bytes)
+        .execute(self.conn())
+        .await?;
+        Ok(())
+    }
+
+    /// Takes the projection off a tool. Returns whether it had one.
+    pub async fn delete_projection(&mut self, tool_id: i64) -> Result<bool> {
+        let r = self
+            .q("DELETE FROM mcp_tool_projections WHERE tool_id = ?")
+            .bind(tool_id)
+            .execute(self.conn())
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
     /// For use inside a transaction; see `Store::server_by_id`.
     pub async fn server_by_id(&mut self, id: i64) -> Result<Option<McpServerRow>> {
         let sql = format!("{SERVER_SELECT} WHERE id = ? AND org_id = ?");
@@ -492,6 +545,23 @@ impl Store {
         Ok(row.as_ref().map(tool_from))
     }
 
+    /// Every projection, by tool.
+    pub async fn list_projections(&self) -> Result<Vec<ProjectionRow>> {
+        let mut conn = self.pool().acquire().await?;
+        list_projections_in(&mut conn).await
+    }
+
+    /// The projection of a tool, if it has one.
+    pub async fn projection_of(&self, tool_id: i64) -> Result<Option<ProjectionRow>> {
+        let sql = format!("{PROJECTION_SELECT} WHERE tool_id = ?");
+        let row = self
+            .q_dyn(sql)
+            .bind(tool_id)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.as_ref().map(projection_from))
+    }
+
     pub async fn server_by_name(&self, name: &str) -> Result<Option<McpServerRow>> {
         let sql = format!("{SERVER_SELECT} WHERE name = ? AND org_id = ?");
         let row = self
@@ -565,6 +635,13 @@ pub(crate) async fn list_offered_mcp_grants_in(
         .fetch_all(&mut *conn)
         .await?;
     Ok(rows.iter().map(grant_from).collect())
+}
+
+/// The projections of the tools [`list_offered_mcp_tools_in`] reads.
+pub(crate) async fn list_projections_in(conn: &mut AnyConnection) -> Result<Vec<ProjectionRow>> {
+    let sql = format!("{PROJECTION_SELECT} ORDER BY tool_id");
+    let rows = conn.q_dyn(sql).fetch_all(&mut *conn).await?;
+    Ok(rows.iter().map(projection_from).collect())
 }
 
 /// The tools a call could reach: switched on and still offered.

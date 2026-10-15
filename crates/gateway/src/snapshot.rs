@@ -187,6 +187,8 @@ impl fmt::Debug for SnapMcpServer {
 /// A switched-on tool that its server still offers.
 #[derive(Debug, Clone)]
 pub struct SnapMcpTool {
+    /// What of the result the agent is given; none: all of it.
+    pub projection: Option<Arc<crate::mcp::project::Projection>>,
     pub id: i64,
     pub server_id: i64,
     pub server_name: String,
@@ -459,6 +461,7 @@ fn load_mcp(
     servers: Vec<crate::store::McpServerRow>,
     tools: Vec<crate::store::McpToolRow>,
     grants: Vec<crate::store::McpGrantRow>,
+    projections: Vec<crate::store::ProjectionRow>,
     cipher: &Cipher,
 ) -> (
     HashMap<String, SnapMcpServer>,
@@ -541,6 +544,18 @@ fn load_mcp(
                 everyone: false,
                 team_ids: Vec::new(),
                 user_ids: Vec::new(),
+                projection: projections
+                    .iter()
+                    .find(|p| p.tool_id == t.id)
+                    .and_then(|p| {
+                        crate::mcp::project::Projection::compile(&crate::mcp::project::Spec {
+                            keep: p.keep.clone(),
+                            drop: p.drop.clone(),
+                            max_items: p.max_items.and_then(|n| u64::try_from(n).ok()),
+                            max_bytes: p.max_bytes.and_then(|n| u64::try_from(n).ok()),
+                        })
+                    })
+                    .map(Arc::new),
             },
         );
     }
@@ -956,6 +971,7 @@ impl Snapshot {
             rows.mcp_servers,
             rows.mcp_tools,
             rows.mcp_tool_grants,
+            rows.mcp_projections,
             cipher,
         );
         let (guardrails, default_guardrails, guardrails_compiled) =

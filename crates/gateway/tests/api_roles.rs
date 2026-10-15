@@ -761,6 +761,15 @@ fn table() -> Vec<Row> {
             |_, _| "/api/playground/mcp/table-mcp".into(),
             || Some(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })),
             [200, 200, 200, 401]),
+        row(114, "PUT", "/api/mcp/tools/{id}/projection", "a projection that keeps one field",
+            |w, _| format!("/api/mcp/tools/{}/projection", w.mcp_tool),
+            || Some(json!({ "keep": ["$.id"], "drop": [], "max_items": null, "max_bytes": null })),
+            [200, 403, 403, 401]),
+        row(115, "POST", "/api/mcp/tools/{id}/projection/preview", "a result to project",
+            |w, _| format!("/api/mcp/tools/{}/projection/preview", w.mcp_tool),
+            || Some(json!({ "result": { "content": [], "isError": false },
+                            "projection": { "keep": [], "drop": [], "max_items": 1, "max_bytes": null } })),
+            [200, 403, 403, 401]),
     ]
 }
 
@@ -835,7 +844,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=113).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=115).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -971,7 +980,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 113);
+    assert_eq!(operations, 115);
 
     for (method, path) in [
         ("GET", "/api/nothing"),

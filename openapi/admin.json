@@ -5161,6 +5161,264 @@
         ]
       }
     },
+    "/api/mcp/tools/{id}/projection": {
+      "put": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_tools_projection_put",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the tool.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The tool with its new projection (`null` when the request asked for nothing, which takes it off). It applies to the next call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpToolView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A query is not valid JSONPath, or a limit is out of range; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/tools/{id}/projection/preview": {
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_tools_projection_preview",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the tool.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectionPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The result with the projection applied. Nothing is stored and no tool is called.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The projection is not valid, or `result` is not an object; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/models": {
       "get": {
         "tags": [
@@ -13657,7 +13915,8 @@
         "description": "What an admin set on a tool of an MCP server: whether it is on and who\nmay call it. The tool itself (its schema) is the server's to say; it\narrives with a sync.",
         "required": [
           "name",
-          "enabled"
+          "enabled",
+          "projection"
         ],
         "properties": {
           "enabled": {
@@ -13668,6 +13927,17 @@
           },
           "name": {
             "type": "string"
+          },
+          "projection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionEntry",
+                "description": "What of the tool's result the agent is given (see `mcp::project`);\nnone: all of it."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -13698,6 +13968,7 @@
           "output_schema",
           "annotations",
           "enabled",
+          "projection",
           "removed",
           "grants"
         ],
@@ -13733,6 +14004,17 @@
             "type": [
               "object",
               "null"
+            ]
+          },
+          "projection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionBody",
+                "description": "What of its result the agent is given; `null`: all of it."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "removed": {
@@ -14725,6 +15007,149 @@
             "description": "Zero for a caller who is not an admin."
           }
         }
+      },
+      "ProjectionBody": {
+        "type": "object",
+        "description": "What of a tool's result the agent is given. Left out, every list is empty\nand every limit off; all four left out takes the projection off.",
+        "required": [
+          "max_items",
+          "max_bytes"
+        ],
+        "properties": {
+          "drop": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "JSONPath queries of what to remove, after `keep`."
+          },
+          "keep": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "JSONPath queries (RFC 9535) of what to keep: only the nodes they select\nstay, with the structure above them. Empty keeps everything."
+          },
+          "max_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The most bytes a text block may have; more is cut and says so.",
+            "minimum": 0
+          },
+          "max_items": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The most items any array of the result may keep.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionEntry": {
+        "type": "object",
+        "description": "A projection of a tool's result, as the file holds it.",
+        "required": [
+          "max_items",
+          "max_bytes"
+        ],
+        "properties": {
+          "drop": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "JSONPath queries of what to remove, after `keep`."
+          },
+          "keep": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "JSONPath queries of what to keep."
+          },
+          "max_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_items": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionPreview": {
+        "type": "object",
+        "required": [
+          "result",
+          "changed",
+          "truncated",
+          "bytes_before",
+          "bytes_after"
+        ],
+        "properties": {
+          "bytes_after": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes_before": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "Whether the projection changed anything."
+          },
+          "result": {
+            "type": "object",
+            "description": "The result as the agent would be given it."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether a limit cut something."
+          }
+        }
+      },
+      "ProjectionPreviewRequest": {
+        "type": "object",
+        "description": "A result to project, and optionally a projection to try on it.",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "projection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionBody",
+                "description": "A projection to try. Left out, the tool's own is used."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "type": "object",
+            "description": "A result of the tool as `tools/call` returns it (`content`,\n`structuredContent`), for instance the last one from the playground."
+          }
+        },
+        "additionalProperties": false
       },
       "PromptEntry": {
         "type": "object",

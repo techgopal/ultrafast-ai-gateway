@@ -106,6 +106,40 @@ pub struct McpToolEntry {
     pub enabled: bool,
     #[serde(default)]
     pub grants: GrantEntry,
+    /// What of the tool's result the agent is given (see `mcp::project`);
+    /// none: all of it.
+    #[serde(default)]
+    #[schema(required)]
+    pub projection: Option<ProjectionEntry>,
+}
+
+/// A projection of a tool's result, as the file holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionEntry {
+    /// JSONPath queries of what to keep.
+    #[serde(default)]
+    pub keep: Vec<String>,
+    /// JSONPath queries of what to remove, after `keep`.
+    #[serde(default)]
+    pub drop: Vec<String>,
+    #[serde(default)]
+    #[schema(required)]
+    pub max_items: Option<u64>,
+    #[serde(default)]
+    #[schema(required)]
+    pub max_bytes: Option<u64>,
+}
+
+impl ProjectionEntry {
+    fn spec(&self) -> crate::mcp::project::Spec {
+        crate::mcp::project::Spec {
+            keep: self.keep.clone(),
+            drop: self.drop.clone(),
+            max_items: self.max_items,
+            max_bytes: self.max_bytes,
+        }
+    }
 }
 
 /// An MCP server. Its secret is never in a file: a server an import
@@ -911,6 +945,16 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
                     name: t.name.clone(),
                     enabled: t.enabled,
                     grants: tool_grants.remove(&t.id).unwrap_or_default(),
+                    projection: state
+                        .mcp_projections
+                        .iter()
+                        .find(|p| p.tool_id == t.id)
+                        .map(|p| ProjectionEntry {
+                            keep: p.keep.clone(),
+                            drop: p.drop.clone(),
+                            max_items: p.max_items.and_then(|n| u64::try_from(n).ok()),
+                            max_bytes: p.max_bytes.and_then(|n| u64::try_from(n).ok()),
+                        }),
                 })
                 .collect();
             tools.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1058,6 +1102,8 @@ enum Op {
         id: i64,
         enabled: Option<bool>,
         grants: Option<GrantEntry>,
+        /// `Some(None)` takes the projection off.
+        projection: Option<Option<ProjectionEntry>>,
     },
     SetRetention(i64),
     SetSessionHours(i64),
@@ -1537,6 +1583,16 @@ impl Planner<'_> {
                 if have.is_none_or(|t| t.grants != wanted) {
                     tool_changes.push("grants".to_string());
                 }
+                let wanted_projection = tool.projection.clone().filter(|p| !p.spec().is_empty());
+                if let Some(p) = &wanted_projection {
+                    if let Err((field, message)) = p.spec().check() {
+                        self.error(format!("{at}.tools[{j}].projection.{field}"), message);
+                        continue;
+                    }
+                }
+                if have.map(|t| t.projection.clone()).unwrap_or_default() != wanted_projection {
+                    tool_changes.push("projection".to_string());
+                }
                 if tool_changes.is_empty() {
                     self.report.unchanged += 1;
                     continue;
@@ -1546,6 +1602,7 @@ impl Planner<'_> {
                     id: row.id,
                     enabled: has("enabled").then_some(tool.enabled),
                     grants: has("grants").then_some(wanted),
+                    projection: has("projection").then_some(wanted_projection),
                 };
                 self.push(
                     op,
@@ -3098,7 +3155,24 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                 id,
                 enabled,
                 grants,
+                projection,
             } => {
+                match projection {
+                    Some(Some(p)) => {
+                        tx.put_projection(&crate::store::ProjectionRow {
+                            tool_id: id,
+                            keep: p.keep,
+                            drop: p.drop,
+                            max_items: p.max_items.and_then(|n| i64::try_from(n).ok()),
+                            max_bytes: p.max_bytes.and_then(|n| i64::try_from(n).ok()),
+                        })
+                        .await?;
+                    }
+                    Some(None) => {
+                        tx.delete_projection(id).await?;
+                    }
+                    None => {}
+                }
                 if let Some(enabled) = enabled {
                     tx.set_tool_enabled(id, enabled).await?;
                 }

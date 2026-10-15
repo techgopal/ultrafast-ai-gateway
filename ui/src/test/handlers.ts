@@ -499,6 +499,13 @@ export const handlers = [
   handler("post", "/api/mcp/servers/from-catalog", () =>
     ok("post", "/api/mcp/servers/from-catalog", 201, fixtures.mcpServers.github),
   ),
+  handler("put", "/api/mcp/tools/{id}/projection", (call) => {
+    const tool = byId(fixtures.mcpToolList, call);
+    return tool === undefined ? notFound() : ok("put", "/api/mcp/tools/{id}/projection", 200, tool);
+  }),
+  handler("post", "/api/mcp/tools/{id}/projection/preview", () =>
+    ok("post", "/api/mcp/tools/{id}/projection/preview", 200, fixtures.mcpProjectionPreview),
+  ),
   handler("put", "/api/mcp/tools/{id}/grants", (call) => {
     const tool = byId(fixtures.mcpToolList, call);
     return tool === undefined ? notFound() : ok("put", "/api/mcp/tools/{id}/grants", 200, tool);

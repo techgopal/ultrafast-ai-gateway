@@ -45,7 +45,9 @@ pub use guardrails::{GuardrailPatch, GuardrailRow, NewGuardrail};
 pub use keys::{parse_allowed, KeyRow, LiveKey};
 pub use limits::LimitRow;
 pub use logs::{LogDetail, LogFilter, LogRow, LogScope, NewLog, UsageGroup, UsageSums};
-pub use mcp::{DiscoveredTool, McpGrantRow, McpServerRow, McpToolRow, NewMcpServer, SyncDelta};
+pub use mcp::{
+    DiscoveredTool, McpGrantRow, McpServerRow, McpToolRow, NewMcpServer, ProjectionRow, SyncDelta,
+};
 pub use models::{grants_of_rows, GrantRow, Grants, ModelRow};
 pub use portable::ConfigState;
 pub use prompts::{LatestStub, NewVersion, TemplateRow, VersionRow, VersionStub};
@@ -218,6 +220,8 @@ pub struct SnapshotRows {
     pub mcp_tools: Vec<McpToolRow>,
     /// The grants of `mcp_tools`.
     pub mcp_tool_grants: Vec<McpGrantRow>,
+    /// The projections of `mcp_tools`.
+    pub mcp_projections: Vec<ProjectionRow>,
     /// Every prompt template, by name.
     pub prompt_templates: Vec<TemplateRow>,
     /// `(template id, number of its newest version)`.
@@ -445,6 +449,7 @@ impl Store {
         let mcp_servers = mcp::list_mcp_servers_in(conn).await?;
         let mcp_tools = mcp::list_live_mcp_tools_in(conn).await?;
         let mcp_tool_grants = mcp::list_live_mcp_grants_in(conn).await?;
+        let mcp_projections = mcp::list_projections_in(conn).await?;
         let prompt_templates = prompts::list_templates_in(conn).await?;
         let prompt_latest = prompts::latest_numbers_in(conn).await?;
         let prompt_versions =
@@ -472,6 +477,7 @@ impl Store {
             mcp_servers,
             mcp_tools,
             mcp_tool_grants,
+            mcp_projections,
             prompt_templates,
             prompt_latest,
             prompt_versions,

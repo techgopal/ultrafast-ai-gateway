@@ -276,3 +276,75 @@ export function localUpdateOf(
 export function isLocal(server: Server): boolean {
   return server.transport === "stdio";
 }
+
+type ProjectionBody = components["schemas"]["ProjectionBody"];
+
+export const ENTER_A_NUMBER = "Enter a whole number, or leave it empty.";
+
+/** The lines of a box, trimmed, empty ones left out. */
+export function linesOf(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+function limitOf(text: string, field: string): number | null {
+  const typed = text.trim();
+  if (typed === "") return null;
+  if (!/^\d+$/.test(typed)) throw new ConsoleRefusal(ENTER_A_NUMBER, field);
+  return Number(typed);
+}
+
+export interface ProjectionValues {
+  keep: string;
+  drop: string;
+  max_items: string;
+  max_bytes: string;
+}
+
+/** The projection a form describes; all four empty takes it off. */
+export function projectionOf(values: ProjectionValues): ProjectionBody {
+  return {
+    keep: linesOf(values.keep),
+    drop: linesOf(values.drop),
+    max_items: limitOf(values.max_items, "max_items"),
+    max_bytes: limitOf(values.max_bytes, "max_bytes"),
+  };
+}
+
+/** What a form starts with for a tool. */
+export function projectionValues(tool: Pick<Tool, "projection">): ProjectionValues {
+  const p = tool.projection;
+  return {
+    keep: (p?.keep ?? []).join("\n"),
+    drop: (p?.drop ?? []).join("\n"),
+    max_items: p?.max_items == null ? "" : String(p.max_items),
+    max_bytes: p?.max_bytes == null ? "" : String(p.max_bytes),
+  };
+}
+
+/** The last result of each tool the playground ran, to try a projection on. Kept in memory. */
+const lastResults = new Map<string, unknown>();
+
+export function rememberResult(server: string, tool: string, result: unknown): void {
+  lastResults.set(`${server}/${tool}`, result);
+}
+
+export function lastResultOf(server: string, tool: string): unknown {
+  return lastResults.get(`${server}/${tool}`);
+}
+
+/** A sample result as the box holds it, or the reason it cannot be sent. */
+export function sampleOf(text: string): { value: Record<string, unknown> } | { error: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { error: "The sample is not valid JSON." };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { error: "The sample must be a JSON object, a result as tools/call returns it." };
+  }
+  return { value: parsed as Record<string, unknown> };
+}

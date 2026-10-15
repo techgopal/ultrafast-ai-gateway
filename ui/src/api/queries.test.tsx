@@ -1392,15 +1392,17 @@ describe("every mutation calls its operation", () => {
       ["useAddMcpFromCatalog", "POST /api/mcp/servers/from-catalog", q.useAddMcpFromCatalog, { catalog_id: "github", secrets: { GITHUB_TOKEN: "t" } }],
       ["useRefreshMcpCatalog", "POST /api/mcp/catalog/refresh", q.useRefreshMcpCatalog, undefined],
       ["useUpdateMcpTool", "PATCH /api/mcp/tools/11", q.useUpdateMcpTool, { id: 11, body: { enabled: true } }],
+      ["usePutMcpProjection", "PUT /api/mcp/tools/11/projection", q.usePutMcpProjection, { id: 11, body: { keep: [], drop: [] } }],
+      ["usePreviewMcpProjection", "POST /api/mcp/tools/11/projection/preview", q.usePreviewMcpProjection, { id: 11, body: { result: {} } }],
       ["usePutMcpToolGrants", "PUT /api/mcp/tools/11/grants", q.usePutMcpToolGrants, { id: 11, body: { everyone: true, team_ids: [], user_ids: [] } }],
     ];
 
   // Signing out has no hook here: it goes through `useSignOut` of the session only.
   // One hook is neither: `useAuditFromTheStart` gives what starts the audit log again.
-  test("there are 65 of them, 32 queries, and the one that starts the audit log again", () => {
-    expect(cases).toHaveLength(65);
+  test("there are 67 of them, 32 queries, and the one that starts the audit log again", () => {
+    expect(cases).toHaveLength(67);
     const hooks = Object.keys(q).filter((name) => /^use[A-Z]/.test(name));
-    expect(hooks).toHaveLength(100);
+    expect(hooks).toHaveLength(102);
     // The alerts: three queries (channels, rules, events by page), and their eight mutations.
     for (const name of ["useAlertChannels", "useAlertRules", "useAlertEventsPages"]) {
       expect(hooks).toContain(name);

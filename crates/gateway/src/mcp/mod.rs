@@ -15,6 +15,7 @@ pub mod combined;
 pub mod discover;
 pub mod health;
 pub mod local;
+pub mod project;
 pub mod server;
 pub mod sync;
 pub mod upstream;

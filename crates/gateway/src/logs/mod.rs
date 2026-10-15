@@ -169,6 +169,9 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
             if let Some(reason) = &a.skipped {
                 v["skipped"] = reason.clone().into();
             }
+            if let Some(bytes) = a.projected_bytes {
+                v["projected_bytes"] = bytes.into();
+            }
             v
         })
         .collect();
@@ -267,6 +270,7 @@ mod tests {
                 duration_ms: 1,
                 offset_ms: 0,
                 skipped: None,
+                projected_bytes: None,
             }],
             cached: false,
             estimated: true,

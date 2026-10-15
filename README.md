@@ -691,6 +691,30 @@ page or `PATCH /api/keys/{id}` with `pinned_tools: ["mcp:<server>/<tool>"]` (at 
 100, each one the key can call). With fewer tools than the limit the list is
 unchanged, and the per-server endpoints always list everything.
 
+### Trimming results (projection)
+
+A tool that answers with a whole API response costs an agent tokens it does not
+need. An admin gives the tool a **projection** (**Edit projection** on the MCP
+tools page, or `PUT /api/mcp/tools/{id}/projection`):
+
+- `keep`: JSONPath queries (RFC 9535) of what to keep. Only the nodes they select
+  stay, with the structure above them. Empty keeps everything.
+- `drop`: queries of what to remove, after `keep`.
+- `max_items`: no array of the result keeps more items.
+- `max_bytes`: a text longer than this is cut at a character and ends with
+  `[truncated by the gateway]`; a `structuredContent` longer than this is left out
+  (the text blocks carry the answer).
+
+It is applied to the text blocks that hold a JSON object or array and to
+`structuredContent`, **before** the output guardrails read the result and before
+the log is written; other text is only cut by `max_bytes`, images and resources pass.
+A result the projection changed carries `_meta.ultrafast.projected: true`
+(`truncated: true` when a limit cut it), and the log row of the call records the bytes
+left in `attempts[].projected_bytes`. A projection that removes every field leaves `{}`,
+never an empty body. `POST /api/mcp/tools/{id}/projection/preview` (and the **Try it on
+the sample** button, which starts from the last result of the playground) shows the
+effect without storing anything. Projections are part of the configuration export.
+
 ### Catalog
 
 The MCP tools page has **Add from catalog**: a short, curated list of servers

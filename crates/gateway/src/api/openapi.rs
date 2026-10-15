@@ -328,7 +328,7 @@ mod tests {
 
     /// Every route of `api::router`, which has 108. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 113] = [
+    const ROUTES: [(&str, &str); 115] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -381,6 +381,8 @@ mod tests {
         ("GET", "/api/mcp/servers/{id}/tools"),
         ("PATCH", "/api/mcp/tools/{id}"),
         ("PUT", "/api/mcp/tools/{id}/grants"),
+        ("PUT", "/api/mcp/tools/{id}/projection"),
+        ("POST", "/api/mcp/tools/{id}/projection/preview"),
         ("GET", "/api/mcp/catalog"),
         ("POST", "/api/mcp/catalog/refresh"),
         ("POST", "/api/mcp/servers/from-catalog"),
@@ -597,7 +599,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 113);
+        assert_eq!(routes.len(), 115);
         assert_eq!(documented, routes);
     }
 
@@ -619,7 +621,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 113);
+        assert_eq!(ids.len(), 115);
     }
 
     #[test]

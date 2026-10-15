@@ -313,6 +313,7 @@ fn record() -> RequestRecord {
             duration_ms: 1,
             offset_ms: 0,
             skipped: None,
+            projected_bytes: None,
         }],
         cached: false,
         estimated: false,

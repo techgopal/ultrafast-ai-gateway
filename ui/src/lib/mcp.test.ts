@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 import * as fixtures from "@/test/fixtures";
 import {
+  linesOf,
+  projectionOf,
+  projectionValues,
+  sampleOf,
   argsOf,
   catalogRequest,
   envOf,
@@ -180,5 +184,37 @@ describe("local servers", () => {
     expect(found("degraded")).toBe("Degraded");
     expect(found("crashlooping")).toBe("Crash-looping");
     expect(found("ok")).toBe("Synced");
+  });
+});
+
+describe("the projection form", () => {
+  test("lines are trimmed and empty ones left out", () => {
+    expect(linesOf(" $.a \n\n$.b\r\n")).toEqual(["$.a", "$.b"]);
+  });
+
+  test("the values become a projection, limits as numbers or none", () => {
+    expect(projectionOf({ keep: "$.a\n$.b", drop: "", max_items: " 5 ", max_bytes: "" })).toEqual({
+      keep: ["$.a", "$.b"],
+      drop: [],
+      max_items: 5,
+      max_bytes: null,
+    });
+    expect(() => projectionOf({ keep: "", drop: "", max_items: "x", max_bytes: "" })).toThrow(
+      "Enter a whole number, or leave it empty.",
+    );
+    expect(() => projectionOf({ keep: "", drop: "", max_items: "", max_bytes: "-1" })).toThrow();
+  });
+
+  test("a tool's projection fills the form, and none leaves it empty", () => {
+    expect(projectionValues({ projection: null })).toEqual({ keep: "", drop: "", max_items: "", max_bytes: "" });
+    expect(
+      projectionValues({ projection: { keep: ["$.a"], drop: ["$.b", "$.c"], max_items: 3, max_bytes: null } }),
+    ).toEqual({ keep: "$.a", drop: "$.b\n$.c", max_items: "3", max_bytes: "" });
+  });
+
+  test("a sample must be an object", () => {
+    expect(sampleOf('{"content": []}')).toEqual({ value: { content: [] } });
+    expect("error" in sampleOf("[1]")).toBe(true);
+    expect("error" in sampleOf("{")).toBe(true);
   });
 });

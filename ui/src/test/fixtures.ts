@@ -1620,6 +1620,7 @@ export const mcpTools = {
     annotations: null,
     enabled: true,
     removed: false,
+    projection: null,
     grants: { everyone: false, team_ids: [teams.platform.id], user_ids: [] },
   },
   /** As a sync leaves it: off, granted to nobody. */
@@ -1634,6 +1635,7 @@ export const mcpTools = {
     annotations: null,
     enabled: false,
     removed: false,
+    projection: null,
     grants: { everyone: false, team_ids: [], user_ids: [] },
   },
   /** The server stopped offering it. */
@@ -1648,9 +1650,19 @@ export const mcpTools = {
     annotations: null,
     enabled: false,
     removed: true,
+    projection: null,
     grants: { everyone: false, team_ids: [], user_ids: [] },
   },
 } satisfies Record<string, McpTool>;
+
+/** What the preview of a projection answers. */
+export const mcpProjectionPreview: Schemas["ProjectionPreview"] = {
+  result: { content: [{ type: "text", text: '{"id":1}' }], isError: false } as unknown as Record<string, never>,
+  changed: true,
+  truncated: false,
+  bytes_before: 120,
+  bytes_after: 40,
+};
 
 export const mcpToolList: McpTool[] = Object.values(mcpTools);
 
