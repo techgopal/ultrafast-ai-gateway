@@ -2038,6 +2038,7 @@ dependencies = [
  "pastey",
  "pin-project-lite",
  "rand",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",
@@ -3105,6 +3106,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]
