@@ -1,0 +1,45 @@
+# Publishes docs/mcp-catalog/ on GitHub Pages when it changes on main, so the
+# catalog gateways fetch (https://ultrafast-ai.dev/mcp-catalog/v1.json) is the
+# one in the repository. The files are served as committed: a test of the
+# gateway fails when v1.json was edited without signing it again. A release
+# signs the catalog afresh with the key in the repository secret
+# MCP_CATALOG_SIGNING_KEY (release.yml).
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/mcp-catalog/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Publish the MCP catalog
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Stage the catalog
+        run: |
+          mkdir -p _site/mcp-catalog
+          cp docs/mcp-catalog/v1.json docs/mcp-catalog/v1.json.sig docs/mcp-catalog/public-key.txt _site/mcp-catalog/
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

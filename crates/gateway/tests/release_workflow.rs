@@ -286,3 +286,29 @@ fn a_release_restores_no_cache() {
         );
     }
 }
+
+/// The MCP catalog is signed in the release, only for a pushed tag, with a
+/// key from a repository secret that is checked against the committed
+/// public key, and published on GitHub Pages.
+#[test]
+fn the_release_signs_and_publishes_the_mcp_catalog() {
+    let text = workflow();
+    let jobs = jobs(&text);
+    let catalog = job(&jobs, "catalog");
+    assert!(catalog.contains(PUBLISH_ONLY), "{catalog}");
+    assert!(
+        catalog.contains("secrets.MCP_CATALOG_SIGNING_KEY"),
+        "{catalog}"
+    );
+    assert!(catalog.contains("mcp-catalog-sign"), "{catalog}");
+    let sign = catalog.find("\" sign ").expect("a sign step");
+    let verify = catalog.find("\" verify ").expect("a verify step");
+    let deploy = catalog.find("actions/deploy-pages").expect("a deploy step");
+    assert!(sign < verify && verify < deploy, "{catalog}");
+    assert!(catalog.contains("docs/mcp-catalog/public-key.txt"));
+    // The private key is never written: it is only read from the environment.
+    assert!(!catalog.contains("> .mcp"));
+    // The pages workflow publishes what is committed.
+    let pages = repository_file(".github/workflows/pages.yml");
+    assert!(pages.contains("docs/mcp-catalog/**"), "{pages}");
+}

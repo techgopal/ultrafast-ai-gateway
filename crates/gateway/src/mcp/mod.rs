@@ -10,9 +10,16 @@ use crate::secrets::Cipher;
 use crate::store::McpServerRow;
 
 pub mod call;
+pub mod catalog;
 pub mod server;
 pub mod sync;
 pub mod upstream;
+
+/// Whether servers that run as programs on this host (stdio) may be added
+/// and started: `UF_MCP_LOCAL=on`, and never as root.
+pub fn local_enabled() -> bool {
+    std::env::var("UF_MCP_LOCAL").is_ok_and(|v| v.trim().eq_ignore_ascii_case("on"))
+}
 
 /// The longest server name.
 pub const MAX_SERVER_NAME: usize = 63;

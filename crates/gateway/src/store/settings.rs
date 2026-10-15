@@ -168,6 +168,16 @@ pub(super) async fn session_hours_in(conn: &mut AnyConnection) -> Result<i64> {
 }
 
 impl Store {
+    /// One row of the settings table, or `None`.
+    pub async fn setting(&self, key: &str) -> Result<Option<String>> {
+        let mut conn = self.pool().acquire().await?;
+        Ok(conn
+            .scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&mut *conn)
+            .await?)
+    }
+
     /// The single sign-on settings.
     pub async fn oidc_settings(&self) -> Result<OidcSettings> {
         let mut conn = self.pool().acquire().await?;
@@ -188,6 +198,20 @@ impl Store {
 }
 
 impl Tx<'_> {
+    /// Writes (or replaces) one row of the settings table.
+    pub async fn put_setting(&mut self, key: &str, value: &str) -> Result<()> {
+        put_setting(self.conn(), key, value).await
+    }
+
+    /// Deletes one row of the settings table.
+    pub async fn delete_setting(&mut self, key: &str) -> Result<()> {
+        self.q("DELETE FROM settings WHERE key = ?")
+            .bind(key)
+            .execute(self.conn())
+            .await?;
+        Ok(())
+    }
+
     /// Writes every single sign-on setting. The stored client secret is
     /// replaced only when `settings.client_secret_enc` holds one.
     pub async fn set_oidc_settings(&mut self, settings: &OidcSettings) -> Result<()> {

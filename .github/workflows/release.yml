@@ -6,6 +6,8 @@
 # By hand (workflow_dispatch): the same builds, kept as artifacts of the run.
 # Nothing is published: the jobs that publish run for the push of a tag only.
 #
+# The `catalog` job signs and publishes the MCP catalog on GitHub Pages.
+#
 # Not here yet: publishing the crates to crates.io (LATER), other registries.
 name: Release
 
@@ -39,6 +41,50 @@ jobs:
             echo "The tag $GITHUB_REF_NAME names version $tag; Cargo.toml has $version." >&2
             exit 1
           fi
+
+  # The MCP catalog is signed here, with a key that lives in the repository
+  # secret MCP_CATALOG_SIGNING_KEY (docs/mcp-catalog/README.md), and published
+  # on GitHub Pages. The public key is compiled into the binary; a signature
+  # that does not match it fails the job, so a wrong or missing key never
+  # publishes a catalog gateways would refuse.
+  catalog:
+    name: Sign and publish the MCP catalog
+    needs: version
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Rust
+        run: rustup toolchain install --profile minimal
+      - name: Sign
+        env:
+          MCP_CATALOG_SIGNING_KEY: ${{ secrets.MCP_CATALOG_SIGNING_KEY }}
+        run: |
+          if [ -z "$MCP_CATALOG_SIGNING_KEY" ]; then
+            echo "The secret MCP_CATALOG_SIGNING_KEY is not set (docs/mcp-catalog/README.md)." >&2
+            exit 1
+          fi
+          cargo build --release --locked -p mcp-catalog-sign
+          tool=target/release/mcp-catalog-sign
+          mkdir -p _site/mcp-catalog
+          cp docs/mcp-catalog/v1.json docs/mcp-catalog/public-key.txt _site/mcp-catalog/
+          "$tool" sign _site/mcp-catalog/v1.json
+          # The signature must check against the key compiled into this release.
+          "$tool" verify _site/mcp-catalog/v1.json docs/mcp-catalog/public-key.txt
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
 
   console:
     name: Console

@@ -996,3 +996,79 @@ pub async fn tools_put_grants(
     refresh_snapshot(&state).await?;
     Ok(Json(tool_view(&state, id).await?).into_response())
 }
+
+/// The catalog of MCP servers the project publishes, as the console shows it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct McpCatalogView {
+    pub entries: Vec<crate::mcp::catalog::Entry>,
+    /// Where `entries` came from: fetched since the gateway started
+    /// (`remote`), kept from an earlier fetch (`cache`), or the copy that
+    /// ships in the binary (`builtin`).
+    pub source: crate::mcp::catalog::Source,
+    #[schema(required)]
+    pub fetched_at: Option<String>,
+    /// Why the newest attempt did not give a newer copy, in our words.
+    #[schema(required)]
+    pub error: Option<String>,
+    /// Whether the gateway fetches the catalog at all (`UF_MCP_CATALOG`).
+    pub fetch_enabled: bool,
+    /// Whether servers that run as programs on this host may be added
+    /// (`UF_MCP_LOCAL=on`).
+    pub local_enabled: bool,
+}
+
+async fn catalog_response(state: &AppState) -> Response {
+    let view = state.catalog.view().await;
+    Json(McpCatalogView {
+        entries: view.entries,
+        source: view.source,
+        fetched_at: view.fetched_at,
+        error: view.error,
+        fetch_enabled: !state.catalog.is_off(),
+        local_enabled: crate::mcp::local_enabled(),
+    })
+    .into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/mcp/catalog",
+    tag = "mcp",
+    operation_id = "mcp_catalog_view",
+    responses(
+        (status = 200, description = "The catalog entries with where they came from.", body = McpCatalogView),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+pub async fn catalog_view(
+    State(state): State<Arc<AppState>>,
+    authed: Authed,
+) -> Result<Response, ApiError> {
+    require(&authed.principal, &Action::ManageMcp)?;
+    Ok(catalog_response(&state).await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/mcp/catalog/refresh",
+    tag = "mcp",
+    operation_id = "mcp_catalog_refresh",
+    responses(
+        (status = 200, description = "The catalog after fetching it again. With fetching switched off nothing is requested.", body = McpCatalogView),
+        (status = 401, description = "No valid session or access token.", body = super::openapi::ApiErrorBody),
+        (status = 403, description = "The caller is not allowed to do this, or the CSRF token is missing or does not match.", body = super::openapi::ApiErrorBody),
+        (status = 500, description = "Something went wrong.", body = super::openapi::ApiErrorBody),
+    ),
+    security(("session" = []), ("token" = [])),
+)]
+pub async fn catalog_refresh(
+    State(state): State<Arc<AppState>>,
+    authed: Authed,
+) -> Result<Response, ApiError> {
+    require(&authed.principal, &Action::ManageMcp)?;
+    state.catalog.refresh(time::OffsetDateTime::now_utc()).await;
+    Ok(catalog_response(&state).await)
+}

@@ -1,0 +1,13 @@
+[package]
+name = "mcp-catalog-sign"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Signs the MCP catalog with Ed25519 (release tooling, not shipped)"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+ed25519-dalek.workspace = true

@@ -166,6 +166,8 @@ pub struct AppState {
     pub alert_engine: Option<crate::alerts::EngineHandle>,
     /// The caps and gates of MCP tool calls.
     pub mcp: crate::mcp::call::Runtime,
+    /// The signed catalog of MCP servers.
+    pub catalog: Arc<crate::mcp::catalog::Catalog>,
     /// The bearer token of `/metrics`. None: the path does not exist.
     pub metrics_token: Option<String>,
     /// The one-time code that `POST /api/setup` needs, made when the
@@ -212,6 +214,10 @@ impl AppState {
             alert_engine: None,
             metrics_token: None,
             mcp: crate::mcp::call::Runtime::from_env(),
+            catalog: Arc::new(crate::mcp::catalog::Catalog::from_env(
+                store.clone(),
+                catalog_client(),
+            )),
             refreshes: AtomicU64::new(0),
             cache_fingerprint: std::sync::Mutex::new(snapshot_fingerprint),
             refreshing: Mutex::new(()),
@@ -388,6 +394,11 @@ pub fn spawn_refresher(state: Arc<AppState>, mut stop: watch::Receiver<bool>) ->
                 Ok(false) => {}
                 Err(e) => tracing::warn!(error = %e, "could not check the single sign-on settings"),
             }
+            // The MCP catalog, when it is due (never with UF_MCP_CATALOG=off).
+            state
+                .catalog
+                .refresh_if_due(time::OffsetDateTime::now_utc())
+                .await;
             // The sign-in limiter forgets what left its window here, not
             // on every attempt.
             state.limiter.prune(std::time::Instant::now());
@@ -464,6 +475,18 @@ pub fn http_client() -> reqwest::Client {
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(TOTAL_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("the HTTP client configuration is valid")
+}
+
+/// The client for the MCP catalog: it carries no credential, so it may follow
+/// a few redirects (a site moved to another address).
+fn catalog_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .user_agent(concat!("ultrafast-gateway/", env!("CARGO_PKG_VERSION")))
         .build()
         .expect("the HTTP client configuration is valid")
 }

@@ -745,6 +745,10 @@ fn table() -> Vec<Row> {
         row(108, "PUT", "/api/mcp/tools/{id}/grants", "to nobody", |w, _| format!("/api/mcp/tools/{}/grants", w.mcp_tool),
             || Some(json!({ "everyone": false, "team_ids": [], "user_ids": [] })),
             [200, 403, 403, 401]),
+        row(109, "GET", "/api/mcp/catalog", "", |_, _| "/api/mcp/catalog".into(), no_body,
+            [200, 403, 403, 401]),
+        row(110, "POST", "/api/mcp/catalog/refresh", "fetching is off in tests", |_, _| "/api/mcp/catalog/refresh".into(), no_body,
+            [200, 403, 403, 401]),
     ]
 }
 
@@ -819,7 +823,7 @@ fn documented_keys<'a>(spec: &'a Value, row: &Row, status: u16) -> BTreeSet<&'a 
 async fn every_endpoint_for_every_role() {
     let rows = table();
     let numbers: Vec<u32> = rows.iter().map(|r| r.number).collect();
-    assert_eq!(numbers, (1..=108).collect::<Vec<u32>>());
+    assert_eq!(numbers, (1..=110).collect::<Vec<u32>>());
 
     let spec = serde_json::to_value(spec()).unwrap();
     let mut failures = Vec::new();
@@ -954,7 +958,7 @@ async fn every_documented_operation_is_routed_and_nothing_else() {
             operations += 1;
         }
     }
-    assert_eq!(operations, 108);
+    assert_eq!(operations, 110);
 
     for (method, path) in [
         ("GET", "/api/nothing"),
