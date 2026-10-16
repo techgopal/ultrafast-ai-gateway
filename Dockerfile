@@ -13,6 +13,8 @@ FROM rust:1.94-slim-trixie@sha256:cf09adf8c3ebaba10779e5c23ff7fe4df4cccdab8a91f1
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# A workspace member (the catalog signing tool); cargo needs every member's manifest.
+COPY tools ./tools
 # The MCP catalog and its public key are compiled into the binary.
 COPY docs/mcp-catalog ./docs/mcp-catalog
 # Before the build: the gateway's build script compiles it into the binary.
