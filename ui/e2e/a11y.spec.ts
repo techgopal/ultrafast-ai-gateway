@@ -15,6 +15,15 @@ test.afterEach(async () => {
 
 /** What axe finds wrong with the page as it is, one line per element. No rule is turned off. */
 async function axeProblems(page: Page): Promise<string[]> {
+  // A dialog or a page that is still fading in has half-transparent text,
+  // which axe reads as low contrast: measure after the animations end.
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .map((animation) => animation.finished.catch(() => undefined)),
+    ),
+  );
   const result = await new AxeBuilder({ page }).analyze();
   // It looked at the page: the rules that apply to it passed or failed.
   expect(result.passes.length).toBeGreaterThan(10);
