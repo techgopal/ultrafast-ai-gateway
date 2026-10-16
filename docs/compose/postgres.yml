@@ -26,7 +26,7 @@
 
 services:
   gateway:
-    image: ghcr.io/techgopal/ultrafast-ai-gateway:2.1.0 # pin a version
+    image: ghcr.io/techgopal/ultrafast-ai-gateway:2.1.1 # pin a version
     restart: unless-stopped
     ports:
       - "3000:3000"
