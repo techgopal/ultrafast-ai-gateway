@@ -1,5 +1,5 @@
 # Publishes docs/mcp-catalog/ on GitHub Pages when it changes on main, so the
-# catalog gateways fetch (https://ufaigw.com/mcp-catalog/v1.json) is the
+# catalog gateways fetch (https://mcp.ufaigw.com/mcp-catalog/v1.json) is the
 # one in the repository. The files are served as committed: a test of the
 # gateway fails when v1.json was edited without signing it again. A release
 # signs the catalog afresh with the key in the repository secret

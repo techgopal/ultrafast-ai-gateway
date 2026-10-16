@@ -31,7 +31,7 @@ pub const BUILTIN_BODY: &str = include_str!("../../../../docs/mcp-catalog/v1.jso
 pub const BUILTIN_SIG: &str = include_str!("../../../../docs/mcp-catalog/v1.json.sig");
 pub const PUBLIC_KEY: &str = include_str!("../../../../docs/mcp-catalog/public-key.txt");
 
-pub const DEFAULT_URL: &str = "https://ufaigw.com/mcp-catalog/v1.json";
+pub const DEFAULT_URL: &str = "https://mcp.ufaigw.com/mcp-catalog/v1.json";
 pub const DEFAULT_REFRESH: Duration = Duration::from_secs(24 * 3600);
 /// The largest catalog that is read.
 pub const MAX_BYTES: usize = 1024 * 1024;

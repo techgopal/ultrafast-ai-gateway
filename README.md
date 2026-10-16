@@ -648,7 +648,7 @@ and embedded resources in a result are passed on unread.
 | `UF_MCP_LIST_INLINE_MAX` | `40` | The most tools `POST /mcp` lists for a key; past it the key gets `find_tools`, `describe_tools` and its pinned tools. |
 | `UF_MCP_ALLOW_PRIVATE_UPSTREAMS` | off | `on` lets an admin register a server at a loopback, private or link-local address (and the cloud metadata address). Off, such an address is refused when a server is added or its address is changed. A name is judged by its spelling, not by what it resolves to. |
 | `UF_MCP_CATALOG` | on | `off`: the gateway makes no request for the catalog at all (see Catalog). |
-| `UF_MCP_CATALOG_URL` | `https://ufaigw.com/mcp-catalog/v1.json` | Where the catalog is fetched from (the signature is at the same address plus `.sig`). |
+| `UF_MCP_CATALOG_URL` | `https://mcp.ufaigw.com/mcp-catalog/v1.json` | Where the catalog is fetched from (the signature is at the same address plus `.sig`). |
 | `UF_MCP_CATALOG_REFRESH` | `86400` | Seconds between fetches when the server names no `max-age` (never more often than hourly). |
 | `UF_MCP_LOCAL` | off | `on` lets admins add servers that run as a program on the gateway host (see Local servers). Refused when the gateway runs as root. |
 | `UF_MCP_LOCAL_MEMORY_MIB` | unset | Address-space limit of each local program, in MiB (`RLIMIT_AS`). Off by default: runtimes such as Node reserve far more address space than they use. |
