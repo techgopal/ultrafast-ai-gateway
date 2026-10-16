@@ -1,7 +1,7 @@
 {
   "name": "ultrafast-console",
   "private": true,
-  "version": "2.1.0",
+  "version": "2.1.1",
   "type": "module",
   "packageManager": "pnpm@11.20.0",
   "scripts": {

@@ -12,7 +12,7 @@ names the secrets the admin has to type.
 | `v1.json.sig` | Base64 Ed25519 signature of the exact bytes of `v1.json`. |
 | `public-key.txt` | Base64 public key. It is compiled into the gateway; gateways check every copy against it. |
 
-The gateway fetches `https://ultrafast-ai.dev/mcp-catalog/v1.json` (and the
+The gateway fetches `https://ufaigw.com/mcp-catalog/v1.json` (and the
 `.sig` next to it) every 24 hours or as the response's `max-age` says (never
 more often than hourly), keeps the last copy that verified in its database,
 and falls back to the copy compiled into the binary. A copy whose signature

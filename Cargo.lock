@@ -1491,7 +1491,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mcp-catalog-sign"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -3038,7 +3038,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "ultrafast-client"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "async-stream",
  "bytes",
@@ -3052,7 +3052,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-client-py"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "futures",
  "pyo3",
@@ -3065,7 +3065,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-client-wasm"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3075,7 +3075,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-gateway"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3125,7 +3125,7 @@ dependencies = [
 
 [[package]]
 name = "ultrafast-translate"
-version = "2.1.0"
+version = "2.1.1"
 dependencies = [
  "serde",
  "serde_json",

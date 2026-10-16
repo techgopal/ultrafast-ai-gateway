@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-10-16
+
+### Changed
+
+- The default MCP catalog address is `https://ufaigw.com/mcp-catalog/v1.json`
+  (`UF_MCP_CATALOG_URL`), where the signed catalog is published from this
+  repository through GitHub Pages. Gateways on 2.1.0 pointed at a name that did
+  not resolve and used the copy built into the binary; they keep working.
+
 ## [2.1.0] - 2026-10-15
 
 Known limit: `is_private_host` judges hostnames by spelling; a public name that
