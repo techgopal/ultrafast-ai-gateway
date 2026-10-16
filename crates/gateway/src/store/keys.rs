@@ -33,6 +33,8 @@ pub struct KeyRow {
     pub tags: Tags,
     /// A non-admin made it for another user: it acts for its team only.
     pub team_only: bool,
+    /// The MCP tools (`mcp:<server>/<tool>`) listed first on the combined endpoint.
+    pub pinned_tools: Vec<String>,
 }
 
 /// Reads the stored allowlist. A value that cannot be read is an empty
@@ -44,7 +46,7 @@ pub fn parse_allowed(raw: Option<&str>) -> Option<Vec<String>> {
 /// Every key query reads through this, so the hash is never selected.
 const KEY_SELECT: &str = "SELECT k.id, k.name, k.display, k.user_id, k.team_id,
             k.expires_at, k.revoked_at, k.created_at, k.allowed, k.tags, k.team_only,
-            u.email AS owner_email, t.name AS team_name,
+            k.pinned_tools, u.email AS owner_email, t.name AS team_name,
             CASE WHEN u.id IS NOT NULL AND u.status <> 'active' THEN 1 ELSE 0 END AS owner_inactive
      FROM virtual_keys k
      LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
@@ -68,6 +70,8 @@ fn key_from(r: &AnyRow) -> KeyRow {
         allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
         tags: tags::parse_stored(r.get::<Option<String>, _>("tags").as_deref()),
         team_only: r.get::<i64, _>("team_only") != 0,
+        pinned_tools: parse_allowed(r.get::<Option<String>, _>("pinned_tools").as_deref())
+            .unwrap_or_default(),
     }
 }
 
@@ -83,6 +87,7 @@ pub struct LiveKey {
     pub tags: Tags,
     /// It acts for its team only (see `access`).
     pub team_only: bool,
+    pub pinned_tools: Vec<String>,
 }
 
 impl Store {
@@ -224,6 +229,20 @@ impl Tx<'_> {
     }
 
     /// Sets the names the key may call. `None` removes the allowlist.
+    /// The tools the combined MCP endpoint lists first for the key.
+    pub async fn set_key_pinned_tools(&mut self, id: i64, pinned: &[String]) -> Result<()> {
+        let json = (!pinned.is_empty())
+            .then(|| serde_json::to_string(pinned))
+            .transpose()?;
+        self.q("UPDATE virtual_keys SET pinned_tools = ? WHERE id = ? AND org_id = ?")
+            .bind(json)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_key_allowed(&mut self, id: i64, allowed: Option<&[String]>) -> Result<()> {
         let json = allowed.map(serde_json::to_string).transpose()?;
         self.q("UPDATE virtual_keys SET allowed = ? WHERE id = ? AND org_id = ?")
@@ -307,7 +326,7 @@ pub(crate) async fn live_keys_in(conn: &mut AnyConnection) -> Result<Vec<LiveKey
     let rows = conn
         .q(
             "SELECT k.key_hash, k.id, k.name, k.user_id, k.team_id, k.expires_at, k.allowed,
-                k.tags, k.team_only
+                k.tags, k.team_only, k.pinned_tools
          FROM virtual_keys k
          LEFT JOIN users u ON u.id = k.user_id AND u.org_id = k.org_id
          WHERE k.org_id = ?
@@ -329,6 +348,8 @@ pub(crate) async fn live_keys_in(conn: &mut AnyConnection) -> Result<Vec<LiveKey
             allowed: parse_allowed(r.get::<Option<String>, _>("allowed").as_deref()),
             tags: tags::parse_stored(r.get::<Option<String>, _>("tags").as_deref()),
             team_only: r.get::<i64, _>("team_only") != 0,
+            pinned_tools: parse_allowed(r.get::<Option<String>, _>("pinned_tools").as_deref())
+                .unwrap_or_default(),
         })
         .collect())
 }

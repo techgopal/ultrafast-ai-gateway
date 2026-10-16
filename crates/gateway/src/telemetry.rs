@@ -51,6 +51,9 @@ pub struct Attempt {
     /// Why the target was passed over, when the request could not be
     /// expressed for it: `unsupported:<feature>`.
     pub skipped: Option<String>,
+    /// An MCP call whose result was cut by a projection: the bytes that
+    /// were given to the agent, of the `bytes_before` the tool sent.
+    pub projected_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -305,6 +308,7 @@ impl Scope {
             duration_ms: elapsed_ms(started),
             offset_ms,
             skipped: None,
+            projected_bytes: None,
         });
     }
 
@@ -321,6 +325,7 @@ impl Scope {
             duration_ms: 0,
             offset_ms,
             skipped: None,
+            projected_bytes: None,
         });
     }
 
@@ -332,6 +337,13 @@ impl Scope {
     }
 
     /// What the attempt that began last came to.
+    /// What the projection of an MCP tool left of its result, in bytes.
+    pub fn attempt_projected(&mut self, bytes: u64) {
+        if let Some(a) = self.record_mut().attempts.last_mut() {
+            a.projected_bytes = Some(bytes);
+        }
+    }
+
     pub fn settle_attempt(
         &mut self,
         outcome: AttemptOutcome,
@@ -423,6 +435,7 @@ impl Scope {
             duration_ms: 0,
             offset_ms: 0,
             skipped: None,
+            projected_bytes: None,
         });
     }
 
@@ -462,6 +475,7 @@ impl Scope {
                         // Passed over when the call ended.
                         skipped: None,
                         offset_ms: elapsed_ms(self.started),
+                        projected_bytes: None,
                     });
                 }
             }
@@ -590,6 +604,7 @@ mod tests {
             duration_ms: 1,
             offset_ms: 0,
             skipped: None,
+            projected_bytes: None,
         }
     }
 

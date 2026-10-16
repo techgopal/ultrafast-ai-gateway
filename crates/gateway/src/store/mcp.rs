@@ -16,7 +16,9 @@ use super::models::{grants_of_rows, GrantRow, Grants};
 use super::{flag, now, write_error, Store, Tx, DEFAULT_ORG};
 
 const SERVER_SELECT: &str = "SELECT id, name, url, auth_kind, auth_header, auth_secret_enc,
-        enabled, description, created_at, updated_at, last_sync_at, last_sync_error
+        enabled, description, created_at, updated_at, last_sync_at, last_sync_error,
+        transport, command, args, env_enc, catalog_id,
+        oauth_token_url, oauth_client_id, oauth_client_secret_enc, oauth_scopes, oauth_grant
      FROM mcp_servers";
 
 const TOOL_SELECT: &str = "SELECT id, server_id, name, title, description, input_schema,
@@ -42,6 +44,45 @@ pub struct McpServerRow {
     pub last_sync_at: Option<String>,
     /// Our own summary of why the last sync failed, never upstream text.
     pub last_sync_error: Option<String>,
+    /// `http`, or `stdio` for a program the gateway runs. A stdio server has
+    /// an empty `url`.
+    pub transport: String,
+    /// The program of a stdio server, run with `args` and no shell.
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    /// The environment values of a stdio server, each encrypted by the caller.
+    pub env_enc: std::collections::BTreeMap<String, String>,
+    /// The catalog entry the server was made from.
+    pub catalog_id: Option<String>,
+    /// OAuth toward the server (the gateway is the client): the token
+    /// endpoint, the client, its secret (encrypted by the caller), the scopes
+    /// and `client_credentials` or `token_exchange`. Such a server has
+    /// `auth_kind` `none`.
+    pub oauth_token_url: Option<String>,
+    pub oauth_client_id: Option<String>,
+    pub oauth_client_secret_enc: Option<String>,
+    pub oauth_scopes: Option<String>,
+    pub oauth_grant: Option<String>,
+}
+
+impl McpServerRow {
+    /// The server signs in with OAuth.
+    pub fn is_oauth(&self) -> bool {
+        self.oauth_grant.is_some()
+    }
+
+    /// The kind of authentication as the API says it.
+    pub fn auth_kind_shown(&self) -> &str {
+        if self.is_oauth() {
+            "oauth"
+        } else {
+            &self.auth_kind
+        }
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.transport == "stdio"
+    }
 }
 
 /// Shows no URL and no secret, not even encrypted.
@@ -57,6 +98,8 @@ impl fmt::Debug for McpServerRow {
 }
 
 /// What a server is written with. `auth_secret_enc` is already encrypted.
+/// The fields after `description` are for a stdio server; `..Default::default()`
+/// gives an HTTP one.
 #[derive(Clone)]
 pub struct NewMcpServer<'a> {
     pub name: &'a str,
@@ -66,6 +109,48 @@ pub struct NewMcpServer<'a> {
     pub auth_secret_enc: Option<&'a str>,
     pub enabled: bool,
     pub description: &'a str,
+    /// `http` or `stdio`.
+    pub transport: &'a str,
+    pub command: Option<&'a str>,
+    pub args: &'a [String],
+    /// Name to encrypted value.
+    pub env_enc: &'a std::collections::BTreeMap<String, String>,
+    pub catalog_id: Option<&'a str>,
+    pub oauth: Option<NewOauth<'a>>,
+}
+
+/// OAuth settings of a server that signs in that way.
+#[derive(Clone)]
+pub struct NewOauth<'a> {
+    pub token_url: &'a str,
+    pub client_id: &'a str,
+    /// Already encrypted.
+    pub client_secret_enc: Option<&'a str>,
+    pub scopes: Option<&'a str>,
+    /// `client_credentials` or `token_exchange`.
+    pub grant: &'a str,
+}
+
+static NO_ENV: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+
+impl Default for NewMcpServer<'_> {
+    fn default() -> Self {
+        Self {
+            name: "",
+            url: "",
+            auth_kind: "none",
+            auth_header: None,
+            auth_secret_enc: None,
+            enabled: true,
+            description: "",
+            transport: "http",
+            command: None,
+            args: &[],
+            env_enc: &NO_ENV,
+            catalog_id: None,
+            oauth: None,
+        }
+    }
 }
 
 /// A tool as stored.
@@ -84,6 +169,30 @@ pub struct McpToolRow {
     /// Set when a sync no longer saw the tool.
     pub removed_at: Option<String>,
 }
+
+/// What of a tool's result the agent is given (see `mcp::project`). The
+/// queries are JSONPath.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionRow {
+    pub tool_id: i64,
+    pub keep: Vec<String>,
+    pub drop: Vec<String>,
+    pub max_items: Option<i64>,
+    pub max_bytes: Option<i64>,
+}
+
+fn projection_from(r: &AnyRow) -> ProjectionRow {
+    ProjectionRow {
+        tool_id: r.get("tool_id"),
+        keep: serde_json::from_str(&r.get::<String, _>("keep_paths")).unwrap_or_default(),
+        drop: serde_json::from_str(&r.get::<String, _>("drop_paths")).unwrap_or_default(),
+        max_items: r.get("max_items"),
+        max_bytes: r.get("max_bytes"),
+    }
+}
+
+const PROJECTION_SELECT: &str =
+    "SELECT tool_id, keep_paths, drop_paths, max_items, max_bytes FROM mcp_tool_projections";
 
 /// A tool as a sync found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +236,16 @@ fn server_from(r: &AnyRow) -> McpServerRow {
         updated_at: r.get("updated_at"),
         last_sync_at: r.get("last_sync_at"),
         last_sync_error: r.get("last_sync_error"),
+        transport: r.get("transport"),
+        command: r.get("command"),
+        args: serde_json::from_str(&r.get::<String, _>("args")).unwrap_or_default(),
+        env_enc: serde_json::from_str(&r.get::<String, _>("env_enc")).unwrap_or_default(),
+        catalog_id: r.get("catalog_id"),
+        oauth_token_url: r.get("oauth_token_url"),
+        oauth_client_id: r.get("oauth_client_id"),
+        oauth_client_secret_enc: r.get("oauth_client_secret_enc"),
+        oauth_scopes: r.get("oauth_scopes"),
+        oauth_grant: r.get("oauth_grant"),
     }
 }
 
@@ -162,6 +281,35 @@ fn same(row: &McpToolRow, t: &DiscoveredTool) -> bool {
 }
 
 impl Tx<'_> {
+    /// Sets the projection of a tool, replacing the old one.
+    pub async fn put_projection(&mut self, p: &ProjectionRow) -> Result<()> {
+        self.q(
+            "INSERT INTO mcp_tool_projections (tool_id, keep_paths, drop_paths, max_items, max_bytes)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (tool_id) DO UPDATE SET keep_paths = excluded.keep_paths,
+                drop_paths = excluded.drop_paths, max_items = excluded.max_items,
+                max_bytes = excluded.max_bytes",
+        )
+        .bind(p.tool_id)
+        .bind(serde_json::to_string(&p.keep)?)
+        .bind(serde_json::to_string(&p.drop)?)
+        .bind(p.max_items)
+        .bind(p.max_bytes)
+        .execute(self.conn())
+        .await?;
+        Ok(())
+    }
+
+    /// Takes the projection off a tool. Returns whether it had one.
+    pub async fn delete_projection(&mut self, tool_id: i64) -> Result<bool> {
+        let r = self
+            .q("DELETE FROM mcp_tool_projections WHERE tool_id = ?")
+            .bind(tool_id)
+            .execute(self.conn())
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
     /// For use inside a transaction; see `Store::server_by_id`.
     pub async fn server_by_id(&mut self, id: i64) -> Result<Option<McpServerRow>> {
         let sql = format!("{SERVER_SELECT} WHERE id = ? AND org_id = ?");
@@ -187,8 +335,10 @@ impl Tx<'_> {
         let id: i64 = self
             .scalar(
                 "INSERT INTO mcp_servers (org_id, name, url, auth_kind, auth_header,
-                    auth_secret_enc, enabled, description, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                    auth_secret_enc, enabled, description, created_at, updated_at,
+                    transport, command, args, env_enc, catalog_id,
+                    oauth_token_url, oauth_client_id, oauth_client_secret_enc, oauth_scopes, oauth_grant)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
             )
             .bind(DEFAULT_ORG)
             .bind(s.name)
@@ -200,19 +350,32 @@ impl Tx<'_> {
             .bind(s.description)
             .bind(at.clone())
             .bind(at)
+            .bind(s.transport)
+            .bind(s.command)
+            .bind(serde_json::to_string(s.args)?)
+            .bind(serde_json::to_string(s.env_enc)?)
+            .bind(s.catalog_id)
+            .bind(s.oauth.as_ref().map(|o| o.token_url))
+            .bind(s.oauth.as_ref().map(|o| o.client_id))
+            .bind(s.oauth.as_ref().and_then(|o| o.client_secret_enc))
+            .bind(s.oauth.as_ref().and_then(|o| o.scopes))
+            .bind(s.oauth.as_ref().map(|o| o.grant))
             .fetch_one(self.conn())
             .await
             .map_err(write_error)?;
         Ok(id)
     }
 
-    /// Replaces every field the caller can set. Returns `false` if there is
-    /// no such server; a taken name is `StoreError::Duplicate`.
+    /// Replaces every field the caller can set (the catalog entry a server
+    /// was made from is kept). Returns `false` if there is no such server; a taken name is `StoreError::Duplicate`.
     pub async fn update_server(&mut self, id: i64, s: NewMcpServer<'_>) -> Result<bool> {
         let r = self
             .q(
                 "UPDATE mcp_servers SET name = ?, url = ?, auth_kind = ?, auth_header = ?,
-                    auth_secret_enc = ?, enabled = ?, description = ?, updated_at = ?
+                    auth_secret_enc = ?, enabled = ?, description = ?, updated_at = ?,
+                    transport = ?, command = ?, args = ?, env_enc = ?,
+                    oauth_token_url = ?, oauth_client_id = ?, oauth_client_secret_enc = ?,
+                    oauth_scopes = ?, oauth_grant = ?
                  WHERE id = ? AND org_id = ?",
             )
             .bind(s.name)
@@ -223,6 +386,15 @@ impl Tx<'_> {
             .bind(flag(s.enabled))
             .bind(s.description)
             .bind(now())
+            .bind(s.transport)
+            .bind(s.command)
+            .bind(serde_json::to_string(s.args)?)
+            .bind(serde_json::to_string(s.env_enc)?)
+            .bind(s.oauth.as_ref().map(|o| o.token_url))
+            .bind(s.oauth.as_ref().map(|o| o.client_id))
+            .bind(s.oauth.as_ref().and_then(|o| o.client_secret_enc))
+            .bind(s.oauth.as_ref().and_then(|o| o.scopes))
+            .bind(s.oauth.as_ref().map(|o| o.grant))
             .bind(id)
             .bind(DEFAULT_ORG)
             .execute(self.conn())
@@ -429,6 +601,23 @@ impl Store {
         Ok(row.as_ref().map(tool_from))
     }
 
+    /// Every projection, by tool.
+    pub async fn list_projections(&self) -> Result<Vec<ProjectionRow>> {
+        let mut conn = self.pool().acquire().await?;
+        list_projections_in(&mut conn).await
+    }
+
+    /// The projection of a tool, if it has one.
+    pub async fn projection_of(&self, tool_id: i64) -> Result<Option<ProjectionRow>> {
+        let sql = format!("{PROJECTION_SELECT} WHERE tool_id = ?");
+        let row = self
+            .q_dyn(sql)
+            .bind(tool_id)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.as_ref().map(projection_from))
+    }
+
     pub async fn server_by_name(&self, name: &str) -> Result<Option<McpServerRow>> {
         let sql = format!("{SERVER_SELECT} WHERE name = ? AND org_id = ?");
         let row = self
@@ -504,6 +693,58 @@ pub(crate) async fn list_offered_mcp_grants_in(
     Ok(rows.iter().map(grant_from).collect())
 }
 
+impl Store {
+    /// The cached token of a server (encrypted) and when it ends.
+    pub async fn mcp_token(&self, server_id: i64) -> Result<Option<(String, String)>> {
+        let row = self
+            .q("SELECT token_enc, expires_at FROM mcp_tokens WHERE server_id = ?")
+            .bind(server_id)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.map(|r| (r.get("token_enc"), r.get("expires_at"))))
+    }
+
+    /// Keeps a token (encrypted by the caller) until `expires_at`
+    /// (`YYYY-MM-DD HH:MM:SS`, UTC). A server deleted meanwhile keeps nothing.
+    pub async fn put_mcp_token(
+        &self,
+        server_id: i64,
+        token_enc: &str,
+        expires_at: &str,
+    ) -> Result<()> {
+        let mut tx = self.begin().await?;
+        if tx.server_by_id(server_id).await?.is_some() {
+            tx.q(
+                "INSERT INTO mcp_tokens (server_id, token_enc, expires_at) VALUES (?, ?, ?)
+                 ON CONFLICT (server_id) DO UPDATE SET token_enc = excluded.token_enc,
+                    expires_at = excluded.expires_at",
+            )
+            .bind(server_id)
+            .bind(token_enc)
+            .bind(expires_at)
+            .execute(tx.conn())
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    /// Forgets the token of a server.
+    pub async fn delete_mcp_token(&self, server_id: i64) -> Result<()> {
+        self.q("DELETE FROM mcp_tokens WHERE server_id = ?")
+            .bind(server_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
+    }
+}
+
+/// The projections of the tools [`list_offered_mcp_tools_in`] reads.
+pub(crate) async fn list_projections_in(conn: &mut AnyConnection) -> Result<Vec<ProjectionRow>> {
+    let sql = format!("{PROJECTION_SELECT} ORDER BY tool_id");
+    let rows = conn.q_dyn(sql).fetch_all(&mut *conn).await?;
+    Ok(rows.iter().map(projection_from).collect())
+}
+
 /// The tools a call could reach: switched on and still offered.
 pub(crate) async fn list_live_mcp_tools_in(conn: &mut AnyConnection) -> Result<Vec<McpToolRow>> {
     let sql = format!("{TOOL_SELECT} WHERE enabled <> 0 AND removed_at IS NULL ORDER BY id");
@@ -539,6 +780,7 @@ mod tests {
             auth_secret_enc: Some("enc:abc"),
             enabled: true,
             description: "d",
+            ..Default::default()
         }
     }
 
@@ -727,5 +969,62 @@ mod tests {
             .execute(s.pool())
             .await;
         assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_local_server_round_trips_and_an_update_keeps_its_catalog_entry() {
+        let store = Store::open_in_memory().await.unwrap();
+        let args = vec!["-y".to_string(), "pkg".to_string()];
+        let env = std::collections::BTreeMap::from([("A".to_string(), "enc-a".to_string())]);
+        let mut tx = store.begin().await.unwrap();
+        let id = tx
+            .insert_server(NewMcpServer {
+                name: "local-one",
+                transport: "stdio",
+                command: Some("npx"),
+                args: &args,
+                env_enc: &env,
+                catalog_id: Some("fs"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let row = store.server_by_id(id).await.unwrap().unwrap();
+        assert!(row.is_local());
+        assert_eq!(row.url, "");
+        assert_eq!(row.command.as_deref(), Some("npx"));
+        assert_eq!(row.args, args);
+        assert_eq!(row.env_enc, env);
+        assert_eq!(row.catalog_id.as_deref(), Some("fs"));
+        let mut tx = store.begin().await.unwrap();
+        let changed = vec!["other".to_string()];
+        assert!(tx
+            .update_server(
+                id,
+                NewMcpServer {
+                    name: "local-one",
+                    transport: "stdio",
+                    command: Some("uvx"),
+                    args: &changed,
+                    env_enc: &env,
+                    catalog_id: None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap());
+        tx.commit().await.unwrap();
+        let row = store.server_by_id(id).await.unwrap().unwrap();
+        assert_eq!(row.command.as_deref(), Some("uvx"));
+        assert_eq!(row.args, changed);
+        assert_eq!(row.catalog_id.as_deref(), Some("fs"));
+        // A server made before the columns existed reads as an HTTP one.
+        let mut tx = store.begin().await.unwrap();
+        let web = tx.insert_server(server("web")).await.unwrap();
+        tx.commit().await.unwrap();
+        let web = store.server_by_id(web).await.unwrap().unwrap();
+        assert!(!web.is_local());
+        assert!(web.args.is_empty() && web.env_enc.is_empty());
     }
 }

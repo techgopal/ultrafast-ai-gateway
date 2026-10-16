@@ -578,6 +578,20 @@ async fn main() -> Result<()> {
                     "Setup code: {code}; open the console to create the first admin."
                 );
             }
+            if ultrafast_gateway::mcp::local_requested() {
+                state.local = Arc::new(ultrafast_gateway::mcp::local::Supervisor::new(
+                    cli.data_dir.join("mcp"),
+                    ultrafast_gateway::mcp::local::Config::default(),
+                ));
+                if state.local.enabled() {
+                    tracing::warn!(
+                        "local MCP servers are on: the gateway runs the programs of the servers an admin registers"
+                    );
+                    state
+                        .local
+                        .reconcile(&state.snapshot.load().local_servers());
+                }
+            }
             let (log_sink, log_queue) = LogSink::channel(QUEUE_CAPACITY);
             let log_stats = log_sink.stats();
             state.sink = Arc::new(log_sink);
@@ -661,6 +675,11 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("could not listen on {addr}"))?;
             tracing::info!(%addr, "gateway listening");
             let refresher = spawn_refresher(state.clone(), stopped.clone());
+            let mcp_health = ultrafast_gateway::mcp::health::spawn(
+                state.clone(),
+                ultrafast_gateway::mcp::health::interval_from_env(),
+                stopped.clone(),
+            );
             let log_writer = logs::writer::spawn_accounted(
                 state.store.clone(),
                 log_queue,
@@ -683,6 +702,10 @@ async fn main() -> Result<()> {
             // Also when serving failed, so the task never outlives the server.
             let _ = stop.send(true);
             let _ = refresher.await;
+            let _ = mcp_health.await;
+            // The programs of local MCP servers stop before the writer, so a
+            // call that was in flight is still recorded.
+            state.local.shutdown().await;
             // The writer writes what is still queued before the process ends.
             let _ = log_writer.await;
             // Then the traces: the last of them are sent within 5 seconds.

@@ -5,6 +5,7 @@ import {
   useBudgets,
   useCreateAlertRule,
   useKeys,
+  useMcpServers,
   useModels,
   useProviders,
   useRoutes,
@@ -52,6 +53,8 @@ export const RULE_DESCRIPTION =
 export const PERCENT_HINT = "From 1 to 100.";
 export const CHANNELS_HINT =
   "Who is told. A rule with no channel still records its events in History.";
+export const MCP_DOWN_HINT =
+  "Fires when the health check finds the server down (two checks in a row fail), and resolves when it answers again. The check runs about every minute.";
 export const ERROR_RATE_HELP =
   "It resolves after the rate stays below the threshold for a full window. That can take up to about two windows after the last error.";
 
@@ -386,6 +389,24 @@ function RuleFormBody({ rule, lists, create, update, onDone, onCancel }: FormPro
               </form.Field>
               <p className="text-sm text-muted-foreground">{ERROR_RATE_HELP}</p>
             </>
+          ) : kind === "mcp_down" ? (
+            <form.Field name="server">
+              {(field) => (
+                <Choose
+                  label="MCP server"
+                  name={field.name}
+                  value={field.state.value}
+                  stored={storedOf(was?.server, (name) => name)}
+                  choices={[
+                    { value: ANY, label: "Any MCP server" },
+                    ...lists.servers.map((one) => ({ value: one.name, label: one.name })),
+                  ]}
+                  onChange={field.handleChange}
+                  hint={MCP_DOWN_HINT}
+                  error={failure.fieldError(field.name)}
+                />
+              )}
+            </form.Field>
           ) : (
             <>
               <form.Field name="provider">
@@ -521,8 +542,9 @@ function RuleForm(props: Omit<FormProps, "lists">) {
   const providers = useProviders();
   const keys = useKeys();
   const models = useModels();
+  const servers = useMcpServers();
   const channels = useAlertChannels();
-  const queries = [budgets, routes, providers, keys, models, channels];
+  const queries = [budgets, routes, providers, keys, models, servers, channels];
   const lists = useMemo(
     (): Lists | null =>
       budgets.data === undefined ||
@@ -530,6 +552,7 @@ function RuleForm(props: Omit<FormProps, "lists">) {
       providers.data === undefined ||
       keys.data === undefined ||
       models.data === undefined ||
+      servers.data === undefined ||
       channels.data === undefined
         ? null
         : {
@@ -538,9 +561,10 @@ function RuleForm(props: Omit<FormProps, "lists">) {
             providers: providers.data.providers,
             keys: keys.data.keys,
             models: models.data.models,
+            servers: servers.data.servers,
             channels: channels.data.channels,
           },
-    [budgets.data, routes.data, providers.data, keys.data, models.data, channels.data],
+    [budgets.data, routes.data, providers.data, keys.data, models.data, servers.data, channels.data],
   );
   if (lists !== null) return <RuleFormBody {...props} lists={lists} />;
   const failed = queries.find((query) => query.error !== null);

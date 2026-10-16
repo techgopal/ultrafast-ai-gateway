@@ -72,6 +72,7 @@ fn snap_key(k: &Keys, id: i64, team: Option<i64>) -> SnapKey {
         tags: Default::default(),
         team_only: false,
         guardrails: Vec::new(),
+        pinned: Vec::new(),
     }
 }
 

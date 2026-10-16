@@ -45,6 +45,7 @@ pub struct ConfigState {
     /// The tools still offered, switched on or not.
     pub mcp_tools: Vec<super::McpToolRow>,
     pub mcp_tool_grants: Vec<super::McpGrantRow>,
+    pub mcp_projections: Vec<super::ProjectionRow>,
 }
 
 async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
@@ -84,6 +85,7 @@ async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
     let mcp_servers = super::mcp::list_mcp_servers_in(conn).await?;
     let mcp_tools = super::mcp::list_offered_mcp_tools_in(conn).await?;
     let mcp_tool_grants = super::mcp::list_offered_mcp_grants_in(conn).await?;
+    let mcp_projections = super::mcp::list_projections_in(conn).await?;
     Ok(ConfigState {
         providers,
         models,
@@ -107,6 +109,7 @@ async fn read(conn: &mut AnyConnection) -> Result<ConfigState> {
         mcp_servers,
         mcp_tools,
         mcp_tool_grants,
+        mcp_projections,
     })
 }
 

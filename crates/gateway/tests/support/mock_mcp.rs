@@ -32,6 +32,8 @@ pub enum Failure {
     Hang,
     /// `tools/list` always returns a next cursor.
     EndlessPages,
+    /// `tools/list` answers after this many milliseconds.
+    SlowList(u64),
 }
 
 /// How `tools/call` goes wrong (listing is unaffected).
@@ -83,6 +85,9 @@ pub struct MockMcpBuilder {
     ttl_ms: Option<u64>,
     call_mode: CallMode,
     call_delay: Duration,
+    session: bool,
+    resources: bool,
+    resource_bytes: usize,
 }
 
 struct Inner {
@@ -90,9 +95,13 @@ struct Inner {
     call_mode: CallMode,
     call_delay: Duration,
     page_size: usize,
-    required: Option<(String, String)>,
-    failure: Failure,
+    required: Mutex<Option<(String, String)>>,
+    failure: Mutex<Failure>,
     ttl_ms: Option<u64>,
+    session: bool,
+    resources: bool,
+    resource_bytes: usize,
+    sessions: std::sync::atomic::AtomicU64,
     log: Mutex<Vec<Received>>,
 }
 
@@ -121,7 +130,20 @@ impl MockMcp {
             ttl_ms: None,
             call_mode: CallMode::Echo,
             call_delay: Duration::ZERO,
+            session: false,
+            resources: true,
+            resource_bytes: 5,
         }
+    }
+
+    /// Requests without exactly this header value answer 401 from now on.
+    pub fn set_required(&self, name: &str, value: &str) {
+        *self.inner.required.lock().unwrap() = Some((name.to_ascii_lowercase(), value.to_string()));
+    }
+
+    /// Changes how every request fails (or stops failing) from now on.
+    pub fn set_failure(&self, failure: Failure) {
+        *self.inner.failure.lock().unwrap() = failure;
     }
 
     /// Replaces the tool set; the next `tools/list` shows it (a changed upstream).
@@ -175,6 +197,22 @@ impl MockMcpBuilder {
         self.call_delay = d;
         self
     }
+    /// A stateful upstream: `initialize` answers with an `Mcp-Session-Id`
+    /// header and every other request without it answers 400.
+    pub fn require_session(mut self) -> Self {
+        self.session = true;
+        self
+    }
+    /// `resources/*` and `prompts/*` answer method-not-found.
+    pub fn without_resources(mut self) -> Self {
+        self.resources = false;
+        self
+    }
+    /// The size of the text `resources/read` returns.
+    pub fn resource_bytes(mut self, n: usize) -> Self {
+        self.resource_bytes = n;
+        self
+    }
     pub fn ttl_ms(mut self, ttl: u64) -> Self {
         self.ttl_ms = Some(ttl);
         self
@@ -186,9 +224,13 @@ impl MockMcpBuilder {
             call_mode: self.call_mode,
             call_delay: self.call_delay,
             page_size: self.page_size,
-            required: self.required,
-            failure: self.failure,
+            required: Mutex::new(self.required),
+            failure: Mutex::new(self.failure),
             ttl_ms: self.ttl_ms,
+            session: self.session,
+            resources: self.resources,
+            resource_bytes: self.resource_bytes,
+            sessions: std::sync::atomic::AtomicU64::new(0),
             log: Mutex::new(Vec::new()),
         });
         let app = Router::new()
@@ -225,7 +267,8 @@ async fn handle(State(s): State<Arc<Inner>>, headers: HeaderMap, body: String) -
             .collect(),
         body: parsed.clone(),
     });
-    match &s.failure {
+    let failure = s.failure.lock().unwrap().clone();
+    match &failure {
         Failure::Status500 => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         Failure::Status500Text(t) => {
             return (StatusCode::INTERNAL_SERVER_ERROR, *t).into_response()
@@ -240,22 +283,49 @@ async fn handle(State(s): State<Arc<Inner>>, headers: HeaderMap, body: String) -
         }
         _ => {}
     }
-    if let Some((name, value)) = &s.required {
+    let required = s.required.lock().unwrap().clone();
+    if let Some((name, value)) = &required {
         if headers.get(name).and_then(|v| v.to_str().ok()) != Some(value.as_str()) {
             return StatusCode::UNAUTHORIZED.into_response();
+        }
+    }
+    let is_initialize = parsed["method"] == "initialize";
+    if s.session && !is_initialize {
+        let ok = headers
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("sess-"));
+        if !ok {
+            return StatusCode::BAD_REQUEST.into_response();
         }
     }
     let Some(id) = parsed.get("id").cloned() else {
         // A notification.
         return StatusCode::ACCEPTED.into_response();
     };
+    let mut session_header = None;
+    if s.session && is_initialize {
+        let n = s.sessions.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        session_header = Some(format!("sess-{n}"));
+    }
+    let method = parsed["method"].as_str().unwrap_or("");
+    if !s.resources && (method.starts_with("resources/") || method.starts_with("prompts/")) {
+        return Json(json!({"jsonrpc": "2.0", "id": id,
+            "error": {"code": -32601, "message": "method not found"}}))
+        .into_response();
+    }
     let result = match parsed["method"].as_str().unwrap_or("") {
         "initialize" => json!({
             "protocolVersion": parsed["params"]["protocolVersion"],
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "mock-mcp", "version": "0"},
         }),
-        "tools/list" => list(&s, &parsed),
+        "tools/list" => {
+            if let Failure::SlowList(ms) = failure {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+            list(&s, &parsed)
+        }
         "tools/call" => {
             if !s.call_delay.is_zero() {
                 tokio::time::sleep(s.call_delay).await;
@@ -294,13 +364,27 @@ async fn handle(State(s): State<Arc<Inner>>, headers: HeaderMap, body: String) -
             }
         }
         "ping" => json!({}),
+        "resources/list" => json!({"resources": [{"uri": "file:///a", "name": "a"}]}),
+        "resources/read" => json!({"contents": [{
+            "uri": parsed["params"]["uri"],
+            "text": "r".repeat(s.resource_bytes),
+        }]}),
+        "prompts/list" => json!({"prompts": [{"name": "p", "description": "a prompt"}]}),
+        "prompts/get" => json!({"messages": [{"role": "user",
+            "content": {"type": "text", "text": parsed["params"]["name"]}}]}),
         _ => {
             return Json(json!({"jsonrpc": "2.0", "id": id,
                 "error": {"code": -32601, "message": "method not found"}}))
             .into_response()
         }
     };
-    Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
+    let mut response = Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response();
+    if let Some(sid) = session_header {
+        response
+            .headers_mut()
+            .insert("mcp-session-id", sid.parse().unwrap());
+    }
+    response
 }
 
 fn list(s: &Inner, req: &Value) -> Value {
@@ -309,7 +393,7 @@ fn list(s: &Inner, req: &Value) -> Value {
         .and_then(|c| c.parse().ok())
         .unwrap_or(0);
     let mut out = json!({});
-    if s.failure == Failure::EndlessPages {
+    if *s.failure.lock().unwrap() == Failure::EndlessPages {
         out["tools"] = json!([tool(&format!("t{start}"), "page tool")]);
         out["nextCursor"] = json!((start + 1).to_string());
     } else {

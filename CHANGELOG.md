@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-15
+
+Known limit: `is_private_host` judges hostnames by spelling; a public name that
+resolves to a private address (DNS rebinding) is not caught. The later fix is a
+resolved-address check at connect time.
+
+MCP at scale: a signed catalog, local servers, health, one endpoint for every tool,
+tool search, result projection and OAuth toward servers.
+
+### Added
+- **Signed MCP catalog.** A curated list of servers (`docs/mcp-catalog/`), signed
+  with Ed25519, fetched at runtime, cached in the database, with a copy built
+  into the binary. `UF_MCP_CATALOG=off` makes no request at all (air-gapped).
+  `GET /api/mcp/catalog`, `POST /api/mcp/catalog/refresh`,
+  `POST /api/mcp/servers/from-catalog`, and an **Add from catalog** page. The
+  release workflow signs and publishes the catalog on GitHub Pages
+  (`tools/mcp-catalog-sign`, `pages.yml`).
+- **Local servers.** `UF_MCP_LOCAL=on`: servers that run as a program the gateway
+  supervises (own process group, listed environment only, working directory of its
+  own, restart backoff 1 s to 60 s, stderr kept, 64 KiB), never as root and never
+  from a configuration file. `GET /api/mcp/servers/{id}/stderr`.
+- **Health.** A probe of every enabled server (`UF_MCP_HEALTH_INTERVAL`), shown on
+  the MCP tools page, as `uf_mcp_server_up{server}` and by the new alert kind
+  `mcp_down`. Probes skip the key pipeline.
+- **Playground MCP tools tab** (`POST /api/playground/mcp/{server}`), logged like an
+  agent's call.
+- **Private upstream guard.** Registering or moving a server to a loopback,
+  private or link-local address is refused unless `UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on`.
+- **`resources/list`, `resources/read`, `prompts/list` and `prompts/get`** are
+  passed to the upstream; an upstream that insists on `Mcp-Session-Id` is handled
+  per call, never stored.
+- **Many tools.** Past `UF_MCP_LIST_INLINE_MAX` (40) tools a key gets `find_tools`
+  (BM25 search over what it may call) and `describe_tools` from `POST /mcp`, plus
+  the tools pinned to it (`PATCH /api/keys/{id}` `pinned_tools`, lead or admin).
+- **OAuth toward a server.** `auth_kind` `oauth` (client credentials or RFC 8693 token
+  exchange, with the server's URL as the RFC 8707 resource): tokens are cached
+  encrypted until a minute before they end, asked for once at a time per server, renewed
+  once when a server answers 401. The agent's key is never forwarded. The token URL is
+  checked against the server's protected-resource metadata (RFC 9728) when it names
+  authorization servers. Migrations SQLite 0024 and PostgreSQL 0010.
+- **Projection.** Per-tool `keep`/`drop` JSONPath lists, `max_items` and `max_bytes`
+  trim a result before the guardrails read it (`PUT /api/mcp/tools/{id}/projection`,
+  a preview endpoint, a console dialog, export and import); `_meta.ultrafast.projected`
+  marks it and `attempts[].projected_bytes` records it. New dependency
+  `serde_json_path` (MIT).
+- **`POST /mcp`**, one endpoint for every tool a key may call, named
+  `server__tool`; a **Connect an agent** panel on the MCP tools page.
+- Migrations SQLite 0022-0024 and PostgreSQL 0008-0010 (0022/0008 also let alert
+  rules have the kind `mcp_down`).
+
 ## [2.0.0-beta.5] - 2026-10-15
 
 MCP gateway core: agents call the tools of registered MCP servers through the

@@ -95,6 +95,8 @@ export const queryKeys = {
       (keyTeamId === null
         ? ["mcp", "tools", serverId]
         : ["mcp", "tools", serverId, { keyTeamId }]) as QueryKey,
+    catalog: () => ["mcp", "catalog"] as const,
+    stderr: (serverId: number) => ["mcp", "stderr", serverId] as const,
   },
   routingHealth: () => ["routing", "health"] as const,
   tokens: {
@@ -403,6 +405,19 @@ export const mcpToolsOptions = (serverId: number, keyTeamId: number | null = nul
       }),
   });
 
+export const mcpCatalogOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.mcp.catalog(),
+    queryFn: ({ signal }) => api.get("/api/mcp/catalog", { signal }),
+  });
+
+export const mcpStderrOptions = (serverId: number) =>
+  queryOptions({
+    queryKey: queryKeys.mcp.stderr(serverId),
+    queryFn: ({ signal }) =>
+      api.get("/api/mcp/servers/{id}/stderr", { params: { id: serverId }, signal }),
+  });
+
 export const guardrailsOptions = () =>
   queryOptions({
     queryKey: queryKeys.guardrails.list(),
@@ -511,6 +526,11 @@ export const useMcpToolsOf = (
   useQueries({
     queries: servers.map((server) => ({ ...mcpToolsOptions(server.id, keyTeamId), enabled })),
   });
+/** Admin only. The signed catalog of MCP servers, with where it came from. */
+export const useMcpCatalog = (enabled = true) => useQuery({ ...mcpCatalogOptions(), enabled });
+/** Admin only. The end of what the program of a local MCP server wrote to stderr. */
+export const useMcpStderr = (serverId: number, enabled = true) =>
+  useQuery({ ...mcpStderrOptions(serverId), enabled });
 /** Admin only. Every guardrail, with the routes and the number of keys it is attached to. */
 export const useGuardrails = (enabled = true) => useQuery({ ...guardrailsOptions(), enabled });
 /** Every prompt template, by name, with its latest version's model and variables. Anyone signed in may read them. */
@@ -1015,6 +1035,21 @@ export const useCreateMcpServer = () =>
     () => ({ stale: [queryKeys.mcp.all(), audit] }),
   );
 
+/** Registers a server from a catalog entry, with the secrets the entry asks for. */
+export const useAddMcpFromCatalog = () =>
+  useApiMutation(
+    (body: BodyOf<"/api/mcp/servers/from-catalog", "post">) =>
+      api.post("/api/mcp/servers/from-catalog", { body }),
+    () => ({ stale: [queryKeys.mcp.all(), audit] }),
+  );
+
+/** Fetches the catalog again now. */
+export const useRefreshMcpCatalog = () =>
+  useApiMutation(
+    () => api.post("/api/mcp/catalog/refresh"),
+    () => ({ stale: [queryKeys.mcp.catalog()] }),
+  );
+
 export const useUpdateMcpServer = () =>
   useApiMutation(
     ({ id, body }: { id: number; body: BodyOf<"/api/mcp/servers/{id}", "patch"> }) =>
@@ -1044,6 +1079,28 @@ export const useUpdateMcpTool = () =>
       api.patch("/api/mcp/tools/{id}", { params: { id }, body }),
     () => ({ stale: [queryKeys.mcp.all(), audit] }),
     mcpServerIsGone,
+  );
+
+/** Sets the projection of a tool (what of its result the agent is given); empty takes it off. */
+export const usePutMcpProjection = () =>
+  useApiMutation(
+    ({ id, body }: { id: number; body: BodyOf<"/api/mcp/tools/{id}/projection", "put"> }) =>
+      api.put("/api/mcp/tools/{id}/projection", { params: { id }, body }),
+    () => ({ stale: [queryKeys.mcp.all(), audit] }),
+    mcpServerIsGone,
+  );
+
+/** Applies a projection to a sample result; stores nothing. */
+export const usePreviewMcpProjection = () =>
+  useApiMutation(
+    ({
+      id,
+      body,
+    }: {
+      id: number;
+      body: BodyOf<"/api/mcp/tools/{id}/projection/preview", "post">;
+    }) => api.post("/api/mcp/tools/{id}/projection/preview", { params: { id }, body }),
+    () => ({ stale: [] }),
   );
 
 /** Replaces the grants of the tool: who may call it. */

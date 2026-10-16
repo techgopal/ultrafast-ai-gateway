@@ -151,6 +151,7 @@ async fn admin_lists_all_keys() {
             "name",
             "owner_email",
             "owner_id",
+            "pinned_tools",
             "revoked_at",
             "status",
             "tags",

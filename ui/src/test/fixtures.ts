@@ -261,6 +261,7 @@ function key(
     revoked_at: dates.revoked_at ?? null,
     created_at: "2026-08-01 09:00:00",
     allowed: null,
+    pinned_tools: [],
     tags: {},
     team_only: false,
     guardrails: [],
@@ -1487,6 +1488,17 @@ export const mcpServers = {
     usable: true,
     last_sync_at: "2026-10-02 10:00:00",
     last_sync_error: null,
+    transport: "http",
+    command: null,
+    args: null,
+    env_names: null,
+    catalog_id: null,
+    local: null,
+    health: null,
+    oauth_token_url: null,
+    oauth_client_id: null,
+    oauth_scopes: null,
+    oauth_grant: null,
   },
   /** No authentication, never synced. */
   docs: {
@@ -1503,10 +1515,109 @@ export const mcpServers = {
     usable: true,
     last_sync_at: null,
     last_sync_error: "The server did not answer.",
+    transport: "http",
+    command: null,
+    args: null,
+    env_names: null,
+    catalog_id: null,
+    local: null,
+    health: null,
+    oauth_token_url: null,
+    oauth_client_id: null,
+    oauth_scopes: null,
+    oauth_grant: null,
   },
 } satisfies Record<string, McpServer>;
 
+
+/** A program the gateway runs; running. */
+export const mcpLocalServer: McpServer = {
+  id: 3,
+  name: "files",
+  description: "",
+  enabled: true,
+  tool_count: 0,
+  created_at: "2026-10-01 09:10:00",
+  url: "",
+  auth_kind: "none",
+  auth_header: null,
+  has_secret: false,
+  usable: true,
+  last_sync_at: null,
+  last_sync_error: null,
+  transport: "stdio",
+  command: "npx",
+  args: ["-y", "files-mcp"],
+  env_names: ["API_TOKEN"],
+  catalog_id: "filesystem",
+  local: { phase: "running", restarts: 0 },
+  health: null,
+  oauth_token_url: null,
+  oauth_client_id: null,
+  oauth_scopes: null,
+  oauth_grant: null,
+};
+
 export const mcpServerList: McpServer[] = Object.values(mcpServers);
+
+type CatalogEntry = Schemas["Entry"];
+
+export const mcpCatalogEntries = {
+  github: {
+    id: "github",
+    name: "GitHub",
+    description: "Repositories, issues and pull requests.",
+    homepage: "https://github.example.test/mcp",
+    transport: "http",
+    url: "https://api.github.example.test/mcp/",
+    command: null,
+    args: [],
+    auth_header: null,
+    env: [{ name: "GITHUB_TOKEN", secret: true, help: "A personal access token." }],
+    auth: "bearer",
+    tags: ["code", "issues"],
+  },
+  filesystem: {
+    id: "filesystem",
+    name: "Filesystem",
+    description: "Read and write files in a directory on the gateway host.",
+    homepage: "https://files.example.test/mcp",
+    transport: "stdio",
+    url: null,
+    command: "npx",
+    args: ["-y", "files-mcp", "."],
+    auth_header: null,
+    env: [],
+    auth: "none",
+    tags: ["files", "local"],
+  },
+  slack: {
+    id: "slack",
+    name: "Slack",
+    description: "Channels and messages.",
+    homepage: "https://slack.example.test/mcp",
+    transport: "http",
+    url: "https://slack.example.test/mcp",
+    command: null,
+    args: [],
+    auth_header: null,
+    env: [
+      { name: "SLACK_TOKEN", secret: true, help: "" },
+      { name: "SLACK_TEAM", secret: false, help: "The workspace id." },
+    ],
+    auth: "bearer",
+    tags: ["chat"],
+  },
+} satisfies Record<string, CatalogEntry>;
+
+export const mcpCatalog: Schemas["McpCatalogView"] = {
+  entries: Object.values(mcpCatalogEntries),
+  source: "builtin",
+  fetched_at: null,
+  error: null,
+  fetch_enabled: true,
+  local_enabled: false,
+};
 
 export const mcpTools = {
   /** On, granted to a team. */
@@ -1521,6 +1632,7 @@ export const mcpTools = {
     annotations: null,
     enabled: true,
     removed: false,
+    projection: null,
     grants: { everyone: false, team_ids: [teams.platform.id], user_ids: [] },
   },
   /** As a sync leaves it: off, granted to nobody. */
@@ -1535,6 +1647,7 @@ export const mcpTools = {
     annotations: null,
     enabled: false,
     removed: false,
+    projection: null,
     grants: { everyone: false, team_ids: [], user_ids: [] },
   },
   /** The server stopped offering it. */
@@ -1549,9 +1662,19 @@ export const mcpTools = {
     annotations: null,
     enabled: false,
     removed: true,
+    projection: null,
     grants: { everyone: false, team_ids: [], user_ids: [] },
   },
 } satisfies Record<string, McpTool>;
+
+/** What the preview of a projection answers. */
+export const mcpProjectionPreview: Schemas["ProjectionPreview"] = {
+  result: { content: [{ type: "text", text: '{"id":1}' }], isError: false } as unknown as Record<string, never>,
+  changed: true,
+  truncated: false,
+  bytes_before: 120,
+  bytes_after: 40,
+};
 
 export const mcpToolList: McpTool[] = Object.values(mcpTools);
 
@@ -1567,6 +1690,16 @@ export const mcpServersForMember: McpServer[] = [
     last_sync_at: null,
     last_sync_error: null,
     tool_count: 1,
+    command: null,
+    args: null,
+    env_names: null,
+    catalog_id: null,
+    local: null,
+    health: null,
+    oauth_token_url: null,
+    oauth_client_id: null,
+    oauth_scopes: null,
+    oauth_grant: null,
   },
 ];
 
@@ -1581,3 +1714,14 @@ export const mcpSyncResult: Schemas["McpSyncResult"] = {
   removed: [],
   skipped: 0,
 };
+
+/** What `/api/playground/mcp/{server}` answers to a call of `create_issue`. */
+export const playgroundMcpReply = {
+  jsonrpc: "2.0",
+  id: 1,
+  // The description types a free object as `Record<string, never>`.
+  result: {
+    content: [{ type: "text", text: "Opened issue 42." }],
+    isError: false,
+  } as unknown as Record<string, never>,
+} satisfies Schemas["PlaygroundMcpReply"];

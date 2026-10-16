@@ -564,13 +564,14 @@ pub async fn test(
 #[serde(deny_unknown_fields)]
 pub struct CreateRuleRequest {
     name: String,
-    /// `budget`, `error_rate` or `circuit_open`.
+    /// `budget`, `error_rate`, `circuit_open` or `mcp_down`.
     kind: String,
     /// By kind. `budget`: `{"budget_id": id or null, "percent": 1-100}`.
     /// `error_rate`: `{"scope": "gateway"|"route"|"provider"|"key",
     /// "subject": name or null, "percent": 1-100, "window_minutes": 5-60
     /// (5), "min_requests": 1-100000 (20)}`. `circuit_open`:
-    /// `{"provider": name or null, "model": name or null}`. Unknown fields
+    /// `{"provider": name or null, "model": name or null}`. `mcp_down`:
+    /// `{"server": name or null}`, any server when null. Unknown fields
     /// are refused.
     #[schema(value_type = std::collections::BTreeMap<String, Value>)]
     params: Value,
@@ -787,7 +788,7 @@ pub async fn rules_create(
     if !rules::KINDS.contains(&req.kind.as_str()) {
         fields.insert(
             "kind".to_string(),
-            "kind must be budget, error_rate or circuit_open".to_string(),
+            "kind must be budget, error_rate, circuit_open or mcp_down".to_string(),
         );
     }
     let params = if fields.contains_key("kind") {

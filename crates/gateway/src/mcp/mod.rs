@@ -10,9 +10,22 @@ use crate::secrets::Cipher;
 use crate::store::McpServerRow;
 
 pub mod call;
+pub mod catalog;
+pub mod combined;
+pub mod discover;
+pub mod health;
+pub mod local;
+pub mod oauth;
+pub mod project;
 pub mod server;
 pub mod sync;
 pub mod upstream;
+
+/// Whether the operator asked for local servers: `UF_MCP_LOCAL=on`. Whether
+/// they run is the supervisor's say (`Supervisor::enabled`): never as root.
+pub fn local_requested() -> bool {
+    std::env::var("UF_MCP_LOCAL").is_ok_and(|v| v.trim().eq_ignore_ascii_case("on"))
+}
 
 /// The longest server name.
 pub const MAX_SERVER_NAME: usize = 63;
@@ -57,6 +70,11 @@ pub fn encrypt_secret(cipher: &Cipher, secret: &str) -> String {
     STANDARD.encode(cipher.encrypt(secret.trim().as_bytes()))
 }
 
+/// The stored form of an environment value, kept exactly as given.
+pub fn encrypt_value(cipher: &Cipher, value: &str) -> String {
+    STANDARD.encode(cipher.encrypt(value.as_bytes()))
+}
+
 /// The secret of a stored form, or `None` when it cannot be read (another
 /// master key, damaged text).
 pub fn decrypt_secret(cipher: &Cipher, stored: &str) -> Option<String> {
@@ -68,11 +86,67 @@ pub fn decrypt_secret(cipher: &Cipher, stored: &str) -> Option<String> {
 /// Whether the server can be called: it needs no secret, or its secret is
 /// stored and can be read.
 pub fn server_usable(row: &McpServerRow, cipher: &Cipher) -> bool {
+    if row.is_oauth() {
+        return oauth::Config::of_row(row, cipher).is_some();
+    }
     row.auth_kind == "none"
         || row
             .auth_secret_enc
             .as_deref()
             .is_some_and(|s| decrypt_secret(cipher, s).is_some())
+}
+
+/// Environment variables the gateway sets itself, or that change what a
+/// program loads: a local server may not be given them.
+fn reserved_env(name: &str) -> bool {
+    matches!(name, "PATH" | "HOME" | "LANG")
+        || name.starts_with("LD_")
+        || name.starts_with("DYLD_")
+        || name.starts_with("UF_")
+}
+
+pub const MAX_ENV_VARS: usize = 32;
+pub const MAX_ENV_VALUE_BYTES: usize = 4096;
+pub const MAX_ARGS: usize = 64;
+pub const MAX_ARG_BYTES: usize = 1024;
+
+/// Checks a name of an environment variable of a local server.
+pub fn check_env_name(name: &str) -> anyhow::Result<()> {
+    let b = name.as_bytes();
+    let ok = !b.is_empty()
+        && b.len() <= 64
+        && (b[0].is_ascii_alphabetic() || b[0] == b'_')
+        && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_');
+    if !ok {
+        anyhow::bail!("names are letters, digits and '_', not starting with a digit, at most 64");
+    }
+    if reserved_env(name) {
+        anyhow::bail!("the gateway sets this one itself (PATH, HOME, LANG), or it changes what a program loads (LD_*, DYLD_*), or it is the gateway's own (UF_*)");
+    }
+    Ok(())
+}
+
+/// Checks the program of a local server: what is run, never a shell line.
+pub fn check_command(command: &str, args: &[String], fields: &mut BTreeMap<String, String>) {
+    if command.is_empty()
+        || command.len() > 512
+        || command.chars().any(|c| c == '\0' || c == '\n' || c == '\r')
+    {
+        fields.insert(
+            "command".to_string(),
+            "command is the program to run: at most 512 characters, one line".to_string(),
+        );
+    }
+    if args.len() > MAX_ARGS
+        || args
+            .iter()
+            .any(|a| a.len() > MAX_ARG_BYTES || a.contains('\0'))
+    {
+        fields.insert(
+            "args".to_string(),
+            format!("at most {MAX_ARGS} arguments of at most {MAX_ARG_BYTES} bytes"),
+        );
+    }
 }
 
 /// The kinds of upstream authentication.

@@ -15,11 +15,22 @@ test.afterEach(async () => {
 
 /** What axe finds wrong with the page as it is, one line per element. No rule is turned off. */
 async function axeProblems(page: Page): Promise<string[]> {
+  // A dialog or a page that is still fading in has half-transparent text,
+  // which axe reads as low contrast: measure after the animations end.
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .map((animation) => animation.finished.catch(() => undefined)),
+    ),
+  );
   const result = await new AxeBuilder({ page }).analyze();
   // It looked at the page: the rules that apply to it passed or failed.
   expect(result.passes.length).toBeGreaterThan(10);
   return result.violations.flatMap((violation) =>
-    violation.nodes.map((node) => `${violation.id} at ${node.target.join(" ")}`),
+    violation.nodes.map(
+      (node) => `${violation.id} at ${node.target.join(" ")}`,
+    ),
   );
 }
 
@@ -49,12 +60,19 @@ async function markTabStops(scope: Locator): Promise<number> {
     const active = document.activeElement;
     if (active instanceof HTMLElement) active.blur();
     // A ring that fades out is still there: its look is the one after the fade.
-    const fading = document.getAnimations().filter((animation) => animation instanceof CSSTransition);
-    await Promise.all(fading.map((animation) => animation.finished.catch(() => undefined)));
+    const fading = document
+      .getAnimations()
+      .filter((animation) => animation instanceof CSSTransition);
+    await Promise.all(
+      fading.map((animation) => animation.finished.catch(() => undefined)),
+    );
     const looks = new Map<Element, string>();
     for (const element of candidates) {
       const style = getComputedStyle(element);
-      looks.set(element, `${style.outlineStyle} ${style.outlineWidth} ${style.boxShadow}`);
+      looks.set(
+        element,
+        `${style.outlineStyle} ${style.outlineWidth} ${style.boxShadow}`,
+      );
     }
     if (active instanceof HTMLElement) active.focus({ preventScroll: true });
     Reflect.set(window, "__ufTabStops", { stops, looks });
@@ -95,7 +113,11 @@ async function focusShows(page: Page): Promise<boolean> {
  * Each stop that gets the focus must show it: it looks different than
  * without it.
  */
-async function tabThrough(page: Page, scope: Locator, count: number): Promise<number[]> {
+async function tabThrough(
+  page: Page,
+  scope: Locator,
+  count: number,
+): Promise<number[]> {
   const order: number[] = [];
   for (let press = 0; press < count; press += 1) {
     await page.keyboard.press("Tab");
@@ -103,7 +125,9 @@ async function tabThrough(page: Page, scope: Locator, count: number): Promise<nu
     order.push(place);
     if (place >= 0) {
       await expect
-        .poll(() => focusShows(page), { message: `the focus shows on stop ${String(place)}` })
+        .poll(() => focusShows(page), {
+          message: `the focus shows on stop ${String(place)}`,
+        })
         .toBe(true);
     }
   }
@@ -112,7 +136,8 @@ async function tabThrough(page: Page, scope: Locator, count: number): Promise<nu
   return order;
 }
 
-const inOrder = (count: number) => Array.from({ length: count }, (_, index) => index);
+const inOrder = (count: number) =>
+  Array.from({ length: count }, (_, index) => index);
 
 /**
  * Tab reaches every control of the page once, in the order of the document,
@@ -130,8 +155,23 @@ async function checkTabOrder(page: Page): Promise<void> {
   expect(cycle).toEqual([...inOrder(count), -1]);
 }
 
+/** Tab goes through every control of an open dialog once and comes back to the first. */
+async function expectDialogTabs(page: Page, dialog: Locator): Promise<void> {
+  const count = await markTabStops(dialog);
+  expect(count).toBeGreaterThan(2);
+  // A full lap of Tab stays in the dialog and reaches every control, except
+  // that a radio group is one stop: its other radios are marked but skipped.
+  const lap = await tabThrough(page, dialog, count + 1);
+  expect(lap).not.toContain(-1);
+  expect(new Set(lap).size).toBeGreaterThanOrEqual(count - 3);
+}
+
 for (const scheme of ["light", "dark"] as const) {
-  test(`keyboard and automated checks: ${scheme}`, async ({ page, admin, apiAs }) => {
+  test(`keyboard and automated checks: ${scheme}`, async ({
+    page,
+    admin,
+    apiAs,
+  }) => {
     const api = await apiAs(admin);
     await seedMcp(api, mcp.url);
     await api.activeUser("Mia");
@@ -147,7 +187,10 @@ for (const scheme of ["light", "dark"] as const) {
     // Sent with Enter from the password field.
     const form = page.getByRole("form", { name: "Sign in" });
     await typeSecret(form.getByLabel("Email", { exact: true }), admin.email);
-    await typeSecret(form.getByLabel("Password", { exact: true }), admin.password);
+    await typeSecret(
+      form.getByLabel("Password", { exact: true }),
+      admin.password,
+    );
     await page.keyboard.press("Enter");
     await expect(heading(page, "Overview")).toBeVisible();
     await expect(page.getByRole("main")).toContainText("Get started");
@@ -195,7 +238,9 @@ for (const scheme of ["light", "dark"] as const) {
     await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
     await page.getByRole("link", { name: "Open", exact: true }).first().click();
-    await expect(page.getByRole("button", { name: "Save as version 2" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Save as version 2" }),
+    ).toBeVisible();
     await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
     await goTo(page, "Prompts");
@@ -217,7 +262,9 @@ for (const scheme of ["light", "dark"] as const) {
       channel_ids: [channel.channel.id],
     });
     await goTo(page, "Alerts");
-    await expect(page.getByRole("main")).toContainText("Circuit opens on any target");
+    await expect(page.getByRole("main")).toContainText(
+      "Circuit opens on any target",
+    );
     await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
     const views = page.getByRole("navigation", { name: "Alerts sections" });
@@ -234,8 +281,18 @@ for (const scheme of ["light", "dark"] as const) {
       kind: "rules",
       is_default: true,
       rules: [
-        { id: "email", matcher: { pii: ["EMAIL"] }, action: "redact", directions: "output" },
-        { id: "words", matcher: { keywords: { words: ["swordfish"] } }, action: "block", directions: "input" },
+        {
+          id: "email",
+          matcher: { pii: ["EMAIL"] },
+          action: "redact",
+          directions: "output",
+        },
+        {
+          id: "words",
+          matcher: { keywords: { words: ["swordfish"] } },
+          action: "block",
+          directions: "input",
+        },
       ],
     });
     await goTo(page, "Guardrails");
@@ -249,8 +306,54 @@ for (const scheme of ["light", "dark"] as const) {
     expect(await axeProblems(page)).toEqual([]);
 
     await goTo(page, "MCP tools");
-    await expect(page.getByRole("heading", { name: "Tools of mock" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Tools of mock" }),
+    ).toBeVisible();
     await expect(page.getByRole("main")).toContainText("echo");
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+
+    // The server dialog with the OAuth fields, and the projection dialog of a tool.
+    await page.getByRole("button", { name: "Add server" }).click();
+    const addServer = page.getByRole("dialog", { name: "Add MCP server" });
+    await addServer
+      .getByRole("radio", { name: "OAuth (the gateway gets a token)" })
+      .check();
+    await expect(addServer.getByLabel("Token URL")).toBeVisible();
+    await expect(addServer.getByLabel("Client ID")).toBeVisible();
+    await expectDialogTabs(page, addServer);
+    expect(await axeProblems(page)).toEqual([]);
+    await page.keyboard.press("Escape");
+    await expect(addServer).toBeHidden();
+    await page.getByRole("button", { name: "Edit projection" }).first().click();
+    const projection = page.getByRole("dialog", { name: "Edit projection" });
+    await expect(projection).toBeVisible();
+    await expectDialogTabs(page, projection);
+    expect(await axeProblems(page)).toEqual([]);
+    await page.keyboard.press("Escape");
+    await expect(projection).toBeHidden();
+
+    // The catalog page, and its dialog.
+    await page.getByRole("link", { name: "Add from catalog" }).click();
+    await expect(
+      page.getByRole("heading", { level: 1, name: "MCP catalog" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("list", { name: "Catalog entries" }),
+    ).toBeVisible();
+    await checkTabOrder(page);
+    expect(await axeProblems(page)).toEqual([]);
+    await page.getByRole("button", { name: "Add Sentry" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Add Sentry" }),
+    ).toBeVisible();
+    expect(await axeProblems(page)).toEqual([]);
+    await page.getByRole("button", { name: "Cancel" }).click();
+
+    // The MCP tools tab of the playground.
+    await goTo(page, "Playground");
+    await page.getByRole("button", { name: "MCP tools" }).click();
+    await expect(page.getByRole("form", { name: "MCP call" })).toBeVisible();
     await checkTabOrder(page);
     expect(await axeProblems(page)).toEqual([]);
 
@@ -276,7 +379,9 @@ for (const scheme of ["light", "dark"] as const) {
 
     // With "Only these" the MCP tools section shows, and is as accessible.
     await dialog.getByRole("radio", { name: "Only these" }).check();
-    await expect(dialog.getByRole("group", { name: "MCP tools" })).toBeVisible();
+    await expect(
+      dialog.getByRole("group", { name: "MCP tools" }),
+    ).toBeVisible();
     expect(await axeProblems(page)).toEqual([]);
 
     await page.keyboard.press("Escape");

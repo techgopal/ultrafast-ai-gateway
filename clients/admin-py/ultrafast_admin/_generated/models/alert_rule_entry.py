@@ -21,7 +21,7 @@ class AlertRuleEntry:
     `{scope, name, period}` (or `null`: every budget) instead of an id.
 
         Attributes:
-            kind (str): `budget`, `error_rate` or `circuit_open`.
+            kind (str): `budget`, `error_rate`, `circuit_open` or `mcp_down`.
             name (str):
             params (AlertRuleEntryParams): As the API takes them, except that a `budget` rule has
                 `{"budget": {"scope", "name", "period"} or null, "percent"}`.

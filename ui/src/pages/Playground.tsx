@@ -40,6 +40,7 @@ type Model = components["schemas"]["ModelView"];
 
 const ImagesMode = lazy(() => import("@/pages/PlaygroundImages").then((m) => ({ default: m.ImagesMode })));
 const AudioMode = lazy(() => import("@/pages/PlaygroundAudio").then((m) => ({ default: m.AudioMode })));
+const McpMode = lazy(() => import("@/pages/PlaygroundMcp").then((m) => ({ default: m.McpMode })));
 
 export const DONE = {
   copied: "Copied.",
@@ -670,7 +671,7 @@ function Loading() {
 }
 
 function PlaygroundLoaded({ prompt }: { prompt: InitialPrompt | undefined }) {
-  const [mode, setMode] = useState<"chat" | "images" | "audio">("chat");
+  const [mode, setMode] = useState<"chat" | "images" | "audio" | "mcp">("chat");
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set(["chat"]));
   const models = useModels();
   const routes = useRoutes();
@@ -702,7 +703,7 @@ function PlaygroundLoaded({ prompt }: { prompt: InitialPrompt | undefined }) {
       {callable ? (
         <>
           <div role="group" aria-label="Mode" className="flex gap-2">
-            {(["chat", "images", "audio"] as const).map((name) => (
+            {(["chat", "images", "audio", "mcp"] as const).map((name) => (
               <Button
                 key={name}
                 type="button"
@@ -714,7 +715,7 @@ function PlaygroundLoaded({ prompt }: { prompt: InitialPrompt | undefined }) {
                   setOpened((was) => new Set(was).add(name));
                 }}
               >
-                {name === "chat" ? "Chat" : name === "images" ? "Images" : "Audio"}
+                {name === "chat" ? "Chat" : name === "images" ? "Images" : name === "audio" ? "Audio" : "MCP tools"}
               </Button>
             ))}
           </div>
@@ -722,7 +723,7 @@ function PlaygroundLoaded({ prompt }: { prompt: InitialPrompt | undefined }) {
           <div hidden={mode !== "chat"}>
             <PlaygroundOf models={models.data.models} routes={names} initialPrompt={prompt} />
           </div>
-          {/* Images and audio load when first chosen, then stay mounted. */}
+          {/* Images, audio and MCP tools load when first chosen, then stay mounted. */}
           {opened.has("images") ? (
             <div hidden={mode !== "images"}>
               <Suspense fallback={<Skeleton className="h-40 w-full" />}>
@@ -734,6 +735,13 @@ function PlaygroundLoaded({ prompt }: { prompt: InitialPrompt | undefined }) {
             <div hidden={mode !== "audio"}>
               <Suspense fallback={<Skeleton className="h-40 w-full" />}>
                 <AudioMode models={models.data.models} routes={names} />
+              </Suspense>
+            </div>
+          ) : null}
+          {opened.has("mcp") ? (
+            <div hidden={mode !== "mcp"}>
+              <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+                <McpMode />
               </Suspense>
             </div>
           ) : null}

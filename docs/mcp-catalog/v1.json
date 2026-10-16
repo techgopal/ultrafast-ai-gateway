@@ -1,0 +1,205 @@
+{
+  "schema": 1,
+  "updated": "2026-10-15",
+  "entries": [
+    {
+      "id": "github",
+      "name": "GitHub",
+      "description": "Repositories, issues, pull requests and code search on GitHub.",
+      "homepage": "https://github.com/github/github-mcp-server",
+      "transport": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "env": [
+        {
+          "name": "GITHUB_TOKEN",
+          "secret": true,
+          "help": "A personal access token with the scopes the tools need."
+        }
+      ],
+      "auth": "bearer",
+      "tags": [
+        "code",
+        "issues",
+        "git"
+      ]
+    },
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "description": "Read and write files in a directory on the gateway host.",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ],
+      "env": [],
+      "auth": "none",
+      "tags": [
+        "files",
+        "local"
+      ]
+    },
+    {
+      "id": "fetch",
+      "name": "Fetch",
+      "description": "Fetch a web page and return it as text.",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+      "transport": "stdio",
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ],
+      "env": [],
+      "auth": "none",
+      "tags": [
+        "web",
+        "local"
+      ]
+    },
+    {
+      "id": "brave-search",
+      "name": "Brave Search",
+      "description": "Web and local search through the Brave Search API.",
+      "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/brave-search",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
+      "env": [
+        {
+          "name": "BRAVE_API_KEY",
+          "secret": true,
+          "help": "Your Brave Search API key."
+        }
+      ],
+      "auth": "none",
+      "tags": [
+        "search",
+        "web",
+        "local"
+      ]
+    },
+    {
+      "id": "postgres",
+      "name": "Postgres",
+      "description": "Inspect a PostgreSQL database and run read-only queries.",
+      "homepage": "https://github.com/crystaldba/postgres-mcp",
+      "transport": "stdio",
+      "command": "uvx",
+      "args": [
+        "postgres-mcp",
+        "--access-mode=restricted"
+      ],
+      "env": [
+        {
+          "name": "DATABASE_URI",
+          "secret": true,
+          "help": "The connection string, such as postgresql://user:password@host:5432/db."
+        }
+      ],
+      "auth": "none",
+      "tags": [
+        "database",
+        "local"
+      ]
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "description": "Read channels and post messages in a Slack workspace.",
+      "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/slack",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-slack"
+      ],
+      "env": [
+        {
+          "name": "SLACK_BOT_TOKEN",
+          "secret": true,
+          "help": "The bot token (xoxb-...)."
+        },
+        {
+          "name": "SLACK_TEAM_ID",
+          "secret": false,
+          "help": "The workspace id (T...)."
+        }
+      ],
+      "auth": "none",
+      "tags": [
+        "chat",
+        "local"
+      ]
+    },
+    {
+      "id": "linear",
+      "name": "Linear",
+      "description": "Find, create and update issues and projects in Linear.",
+      "homepage": "https://linear.app/docs/mcp",
+      "transport": "http",
+      "url": "https://mcp.linear.app/mcp",
+      "env": [
+        {
+          "name": "LINEAR_API_KEY",
+          "secret": true,
+          "help": "A Linear API key."
+        }
+      ],
+      "auth": "bearer",
+      "tags": [
+        "issues",
+        "planning"
+      ]
+    },
+    {
+      "id": "sentry",
+      "name": "Sentry",
+      "description": "Look into errors and traces in Sentry.",
+      "homepage": "https://docs.sentry.io/product/sentry-mcp/",
+      "transport": "http",
+      "url": "https://mcp.sentry.dev/mcp",
+      "env": [
+        {
+          "name": "SENTRY_AUTH_TOKEN",
+          "secret": true,
+          "help": "A Sentry user auth token."
+        }
+      ],
+      "auth": "bearer",
+      "tags": [
+        "errors",
+        "observability"
+      ]
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "description": "Search and edit pages and databases in Notion.",
+      "homepage": "https://github.com/makenotion/notion-mcp-server",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@notionhq/notion-mcp-server"
+      ],
+      "env": [
+        {
+          "name": "NOTION_TOKEN",
+          "secret": true,
+          "help": "An internal integration token (ntn_...)."
+        }
+      ],
+      "auth": "none",
+      "tags": [
+        "docs",
+        "local"
+      ]
+    }
+  ]
+}

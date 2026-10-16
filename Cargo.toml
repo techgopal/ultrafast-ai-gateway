@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/translate", "crates/gateway", "crates/client", "crates/client-wasm", "crates/client-py"]
+members = ["crates/translate", "crates/gateway", "crates/client", "crates/client-wasm", "crates/client-py", "tools/mcp-catalog-sign"]
 
 [workspace.package]
-version = "2.0.0-beta.5"
+version = "2.1.0"
 edition = "2021"
 rust-version = "1.94"
 license = "MIT"
@@ -16,6 +16,7 @@ argon2 = { version = "0.6", features = ["rand_core"] }
 async-stream = "0.3"
 axum = "0.8"
 bytes = "1"
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 multer = "3"
 chacha20poly1305 = "0.11"
 clap = { version = "4", features = ["derive", "env"] }

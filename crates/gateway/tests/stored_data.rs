@@ -142,7 +142,10 @@ async fn a_database_written_by_the_earlier_build_opens_and_reads() {
             (18, "prompts", true),
             (19, "team user guardrails", true),
             (20, "invite kind", true),
-            (21, "mcp", true)
+            (21, "mcp", true),
+            (22, "mcp local", true),
+            (23, "mcp scale", true),
+            (24, "mcp oauth", true),
         ]
     );
 

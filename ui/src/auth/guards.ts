@@ -50,6 +50,8 @@ export type ConsoleAction =
   | { type: "revokeKey"; ownerId: number | null; teamId: number | null }
   /** Replaces the tags of a key: admins only, as in the gateway; the creator sets them when the key is made. */
   | { type: "editKeyTags"; ownerId: number | null; teamId: number | null }
+  /** Replaces the MCP tools pinned to a key: an admin, a lead of its team, or a lead's own key. */
+  | { type: "pinKeyTools"; ownerId: number | null; teamId: number | null }
   | { type: "manageProviders" }
   /** Adds, syncs, enables, grants and deletes models: what only an admin may. */
   | { type: "manageModels" }
@@ -131,6 +133,11 @@ export function can(me: Me, action: ConsoleAction): boolean {
     case "manageGuardrails":
     case "editKeyTags":
       return false;
+    case "pinKeyTools":
+      return (
+        (action.teamId !== null && leads(me, action.teamId)) ||
+        (action.ownerId === me.user.id && ledTeamIds(me).length > 0)
+      );
     case "renameUser":
       return action.userId === me.user.id;
     case "renameTeam":

@@ -88,14 +88,14 @@ variations, and realtime audio.
 printf 'UF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' > admin.env
 chmod 600 admin.env
 docker run -d --name ultrafast -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast \
-  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.0.0-beta.5
+  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.1.0
 ```
 
 **Or a binary** from the [latest release](https://github.com/techgopal/ultrafast-ai-gateway/releases)
 (Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x64). For Linux x86_64:
 
 ```bash
-V=2.0.0-beta.5; T=x86_64-unknown-linux-musl
+V=2.1.0; T=x86_64-unknown-linux-musl
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/ultrafast-v$V-$T.tar.gz
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c
@@ -609,9 +609,16 @@ call; a tool that is off, not granted, or not on the key's allowlist
 (`mcp:<server>/<tool>`) is "Unknown tool" (`-32602`), the same as one that does
 not exist. A key with no callable tool on a server gets the same 404 as an unknown or
 disabled server, so a key learns nothing about servers it may not use. `tools/list` counts against the
-rate limits like a call. `resources/*` and `prompts/*` are answered "method not
-found"; proxying them is not part of this release. `GET` and `DELETE` answer
-405.
+rate limits like a call. `resources/list`, `resources/read`, `prompts/list` and
+`prompts/get` are passed to the upstream as they are (the key's rate limit, the
+server's gate and the same time and size caps apply, nothing in the answer is
+filtered); a key that may call at least one tool of the server may use them.
+Everything else is "method not found". `GET` and `DELETE` answer 405.
+
+Toward the agent the endpoint is stateless. An upstream that insists on a session
+(`Mcp-Session-Id`) is handled by the gateway alone: a request it refuses with 400
+or 404 is repeated once after an `initialize` of the gateway's own, with the
+session id it was given for that one call; the id is never stored.
 
 Connect an agent (Claude Code, Cursor and others take the same shape):
 
@@ -638,9 +645,165 @@ and embedded resources in a result are passed on unread.
 | `UF_MCP_MAX_RESULT_BYTES` | `4194304` | The largest upstream answer read; a larger one is a tool error. |
 | `UF_MCP_MAX_ARGS_BYTES` | `262144` | The largest request body `/mcp/{server}` takes; larger is 413. |
 | `UF_MCP_MAX_DISCOVERY_BYTES` | `4194304` | The largest response read while syncing a server's tool list (one request); larger fails the sync. |
+| `UF_MCP_LIST_INLINE_MAX` | `40` | The most tools `POST /mcp` lists for a key; past it the key gets `find_tools`, `describe_tools` and its pinned tools. |
+| `UF_MCP_ALLOW_PRIVATE_UPSTREAMS` | off | `on` lets an admin register a server at a loopback, private or link-local address (and the cloud metadata address). Off, such an address is refused when a server is added or its address is changed. A name is judged by its spelling, not by what it resolves to. |
+| `UF_MCP_CATALOG` | on | `off`: the gateway makes no request for the catalog at all (see Catalog). |
+| `UF_MCP_CATALOG_URL` | `https://ultrafast-ai.dev/mcp-catalog/v1.json` | Where the catalog is fetched from (the signature is at the same address plus `.sig`). |
+| `UF_MCP_CATALOG_REFRESH` | `86400` | Seconds between fetches when the server names no `max-age` (never more often than hourly). |
+| `UF_MCP_LOCAL` | off | `on` lets admins add servers that run as a program on the gateway host (see Local servers). Refused when the gateway runs as root. |
+| `UF_MCP_LOCAL_MEMORY_MIB` | unset | Address-space limit of each local program, in MiB (`RLIMIT_AS`). Off by default: runtimes such as Node reserve far more address space than they use. |
+| `UF_MCP_HEALTH_INTERVAL` | `60` | Seconds between health checks of the servers (at least 5). |
 
 At most 32 calls to one server run at once per process (fixed, not set by an
 environment variable); the next is refused with 503 and `Retry-After`.
+
+### One endpoint for every tool
+
+`POST /mcp` is the same MCP server for **every tool the key may call**, each named
+`server__tool` (the separator is `__` because MCP clients mangle `/`). A server
+name cannot contain `_`, so a name splits at its first `__`: tool `b__c` of server
+`a` is `a__b__c`, and no two tools collide. `tools/call` goes to the server in the
+name with the tool as that server knows it; the logs, metrics and spans still say
+`mcp:<server>/<tool>`. Access, limits, budgets and guardrails are those of
+`/mcp/{server}`, which keeps working unchanged. `resources/*` and `prompts/*` are
+per server. The MCP tools page has a **Connect an agent** panel with both kinds of
+address.
+
+### Many tools
+
+An agent with hundreds of tools should not be given hundreds of tool definitions.
+When a key can call more than `UF_MCP_LIST_INLINE_MAX` tools (40), `tools/list` on
+`POST /mcp` returns two gateway tools and the key's **pinned** tools instead of the
+whole list:
+
+- `find_tools {query, limit}` searches the tools the key may call by what the agent
+  wants to do and returns the best matches (`name`, `server`, `title`,
+  `description`). It is BM25 over the tool names, titles and descriptions:
+  lexical, deterministic, no embeddings and no call to a model. An exact tool
+  name comes first. The score is computed over the tools the key may call only, so
+  what it may not call can neither appear nor move a ranking.
+- `describe_tools {names}` returns the full description and input schema of tools
+  found that way. A name the key may not use is left out, like one that does not exist.
+
+Both count as a request against the key's rate limits and are not logged as tool
+calls. A lead or an admin pins tools to a key with **Edit pinned tools** on the Keys
+page or `PATCH /api/keys/{id}` with `pinned_tools: ["mcp:<server>/<tool>"]` (at most
+100, each one the key can call). With fewer tools than the limit the list is
+unchanged, and the per-server endpoints always list everything.
+
+### OAuth toward a server
+
+A server that needs an OAuth token gets one from the gateway: choose **OAuth** as its
+authentication, give the token endpoint, a client id, the scopes and a secret, and pick
+the grant. `client_credentials` sends the client id and secret; `token_exchange`
+(RFC 8693) sends the stored secret as the token to exchange. Either way the token
+is asked for **the server's own address** as the resource (RFC 8707), kept until a
+minute before it ends (in memory and, encrypted, in the database, so gateways that
+share it do not each ask), and asked for once at a time per server. A server that
+answers 401 gets one new token and one more try; if that is refused too the call
+fails with "The MCP server did not accept the gateway's credentials." and the token is
+dropped. Health probes and syncs use the token like calls do. If the MCP server
+publishes `/.well-known/oauth-protected-resource` (RFC 9728) naming authorization
+servers, the token URL you give must be on one of them (checked when you save, nothing
+secret is sent); the token URL must be https unless private addresses are allowed.
+
+**Why there is no passthrough.** The MCP authorization spec forbids a server from
+accepting a token that was not issued for it, and a gateway that forwarded the
+agent's key would hand its credential to every server and tell servers who the caller
+is. So the agent's virtual key never leaves the gateway, a token the gateway holds
+never goes to an agent, and the gateway is one client per server, not the person
+behind the agent. The client secret is stored encrypted, never shown again, kept out of
+the configuration export, and asked for again when the token endpoint moves to another host.
+
+### Trimming results (projection)
+
+A tool that answers with a whole API response costs an agent tokens it does not
+need. An admin gives the tool a **projection** (**Edit projection** on the MCP
+tools page, or `PUT /api/mcp/tools/{id}/projection`):
+
+- `keep`: JSONPath queries (RFC 9535) of what to keep. Only the nodes they select
+  stay, with the structure above them. Empty keeps everything.
+- `drop`: queries of what to remove, after `keep`.
+- `max_items`: no array of the result keeps more items.
+- `max_bytes`: a text longer than this is cut at a character and ends with
+  `[truncated by the gateway]`; a `structuredContent` longer than this is left out
+  (the text blocks carry the answer).
+
+It is applied to the text blocks that hold a JSON object or array and to
+`structuredContent`, **before** the output guardrails read the result and before
+the log is written; other text is only cut by `max_bytes`, images and resources pass.
+A result the projection changed carries `_meta.ultrafast.projected: true`
+(`truncated: true` when a limit cut it), and the log row of the call records the bytes
+left in `attempts[].projected_bytes`. A projection that removes every field leaves `{}`,
+never an empty body. `POST /api/mcp/tools/{id}/projection/preview` (and the **Try it on
+the sample** button, which starts from the last result of the playground) shows the
+effect without storing anything. Projections are part of the configuration export.
+
+### Catalog
+
+The MCP tools page has **Add from catalog**: a short, curated list of servers
+(GitHub, Linear, Sentry, Notion, Slack, Brave Search, Fetch, Filesystem,
+Postgres) that this project publishes, signed with an Ed25519 key. It is a list,
+not a marketplace: an entry never registers itself. Adding one pre-fills the
+address (or the command and arguments) and asks only for the secrets the entry
+names; the tools start off like any server's.
+
+The gateway fetches the catalog every 24 hours (or as the response's `max-age`
+says, never more often than hourly), checks the signature against the public key
+compiled into the binary, keeps the last copy that verified in its database, and
+falls back to the copy built into the binary. A copy whose signature does not
+match is thrown away, and the console says "catalog signature invalid, showing
+the copy from <date>". The files, their schema and how they are signed are in
+[`docs/mcp-catalog/`](docs/mcp-catalog/README.md); proposing an entry is a pull
+request. An entry that runs a program needs local servers; one that signs in with
+OAuth is added by hand.
+
+**Air-gapped installs.** With `UF_MCP_CATALOG=off` the gateway never makes a
+request for the catalog; the console shows the copy built into the binary. Nothing
+else in the catalog code reaches the network.
+
+### Local servers
+
+`UF_MCP_LOCAL=on` lets an admin add a server as a **program the gateway runs**
+(`npx`, `uvx`, a binary), talking MCP over stdio. This runs arbitrary programs on
+the host, so it is off by default and refused when the gateway runs as root
+(the log says so). What the gateway does, and does not:
+
+- The program is started from the registry row exactly as written: `command`
+  and `args`, no shell. A configuration file can never add one (local servers are
+  left out of the export and cannot be created by an import).
+- Its environment is the names the admin lists (values are stored encrypted and
+  never shown again) plus `PATH`, `HOME` and `LANG`. Nothing else of the gateway's
+  environment reaches it; `PATH`, `HOME`, `LANG`, `LD_*`, `DYLD_*` and `UF_*`
+  cannot be listed. The values are trusted as the admin wrote them: apart from
+  the loader variables (`LD_*`, `DYLD_*`), nothing checks what an environment
+  variable does to the program.
+- Its working directory is its own, `<data dir>/mcp/<name>`, mode 0700.
+- It runs in its own process group; stopping it (switching it off, deleting it,
+  shutting the gateway down) sends SIGTERM and then SIGKILL to the whole group,
+  so what it started goes too. Core dumps are off for it; `UF_MCP_LOCAL_MEMORY_MIB`
+  can cap its address space (Linux cannot cap resident memory per process).
+- If it dies it is started again after 1 second, then 2, 4 ... up to 60; three
+  short runs in a row make it `crashlooping (n restarts)`, and calls to it fail at
+  once with "The MCP server is not running." instead of waiting.
+- What it writes to stderr is kept (the last 64 KiB) without ever blocking it;
+  the console's **Output** button shows it, with the values of its environment
+  replaced by `***`.
+
+It is supervised, not sandboxed: no namespaces, no seccomp. Add only programs you
+would run yourself. The binary a release ships for Windows does not run local
+servers.
+
+### Health
+
+Every `UF_MCP_HEALTH_INTERVAL` seconds (60) the gateway asks each enabled server
+for its tool list (one `tools/list`, 5 seconds) outside any key: a probe takes no
+rate-limit permit, costs no budget and writes no row to the logs. The result is
+`ok`, `degraded` (slower than 2 s, or one failed probe), `down` (two failed probes
+in a row) or `crashlooping`; it shows on the MCP tools page, in the gauge
+`uf_mcp_server_up{server}` (1 while it answers) and in the alert rules of kind
+**MCP server down**, which use the channels and the payload of the other rules
+(`"kind": "mcp_down"`, subject `mcp:<server>`). Health is per gateway process.
 
 ## Console
 
@@ -661,14 +824,17 @@ Served at `/`. What each role sees is decided by the API.
 | Settings (retention, sign-in, backup, config, audit log) | yes | no | no |
 | Account (name, password, access tokens) | yes | yes | yes |
 
-The playground has three modes. **Chat** sends images (5 MB each, 9 MiB per
+The playground has four modes. **Chat** sends images (5 MB each, 9 MiB per
 request including the history), tools as JSON with a tool choice, a response
 format (text, JSON or a JSON schema), and a prompt template: pick one, a
 version, and a value for each variable (a template that names a model can be
 called with "Template's model", and with no message of your own). The Prompts
 page has an *Open in Playground* link for each template and version
-(`/playground?prompt=<name>&version=<n>`). **Images** generates images and
-**Audio** transcribes, translates and speaks. The audio file check in the
+(`/playground?prompt=<name>&version=<n>`). **Images** generates images,
+**Audio** transcribes, translates and speaks, and **MCP tools** calls a tool you
+may call (pick a server and a tool, write the arguments as JSON, see the hints from
+the tool's schema): the call goes through the real `/mcp/{server}` pipeline as
+you, so it is rate limited, guarded and logged like an agent's. The audio file check in the
 playground checks a file against the gateway's own `UF_MAX_AUDIO_BYTES` (it asks
 `GET /api/playground/config`). The Logs page filters by endpoint and shows the
 endpoint and the prompt (`name@version`) of each call.
@@ -1555,6 +1721,15 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
 
 ## Known limits
 
+- MCP: tool discovery is lexical (BM25), not semantic; per-person OAuth toward a
+  server is not supported (the gateway is one client for each server); `resources/*` and
+  `prompts/*` are per server, not on `POST /mcp`; the catalog is one signed file (no
+  ratings, versions or submissions); local servers are supervised, not sandboxed (trusted
+  programs only; no namespaces or seccomp; Linux cannot cap their resident memory), and
+  do not run in the Windows build; health, tokens in memory and the catalog's freshness
+  are per process. `is_private_host` judges a hostname by its spelling: a public
+  name that resolves to a private address (DNS rebinding) is not caught; the later
+  fix is a check of the resolved address at connect time.
 - SQLite: one gateway per database. Postgres: several processes may share one
   database, with per-process rate limits, response cache, single-flight,
   routing and breaker health, setup code and alert error windows (a limit of

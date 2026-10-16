@@ -32,6 +32,7 @@ pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
 pub const DEFAULT_MAX_ARGS_BYTES: usize = 256 * 1024;
 pub const DEFAULT_CALLS_PER_SERVER: usize = 32;
+pub const DEFAULT_LIST_INLINE_MAX: usize = 40;
 
 /// The caps of tool calls.
 #[derive(Debug, Clone, Copy)]
@@ -44,6 +45,9 @@ pub struct Limits {
     pub max_args_bytes: usize,
     /// Calls to one server at once, per process.
     pub calls_per_server: usize,
+    /// A key that can call more tools than this gets the search tools and
+    /// its pinned tools from the combined endpoint, not the whole list.
+    pub list_inline_max: usize,
 }
 
 impl Default for Limits {
@@ -53,6 +57,7 @@ impl Default for Limits {
             max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
             max_args_bytes: DEFAULT_MAX_ARGS_BYTES,
             calls_per_server: DEFAULT_CALLS_PER_SERVER,
+            list_inline_max: DEFAULT_LIST_INLINE_MAX,
         }
     }
 }
@@ -65,8 +70,8 @@ fn env_number(name: &str) -> Option<u64> {
 }
 
 impl Limits {
-    /// `UF_MCP_CALL_TIMEOUT` (seconds), `UF_MCP_MAX_RESULT_BYTES` and
-    /// `UF_MCP_MAX_ARGS_BYTES`; an unusable value reads as the default.
+    /// `UF_MCP_CALL_TIMEOUT` (seconds), `UF_MCP_MAX_RESULT_BYTES`,
+    /// `UF_MCP_MAX_ARGS_BYTES` and `UF_MCP_LIST_INLINE_MAX`; an unusable value reads as the default.
     pub fn from_env() -> Self {
         let bytes = |name, default| {
             env_number(name)
@@ -79,6 +84,7 @@ impl Limits {
             max_result_bytes: bytes("UF_MCP_MAX_RESULT_BYTES", DEFAULT_MAX_RESULT_BYTES),
             max_args_bytes: bytes("UF_MCP_MAX_ARGS_BYTES", DEFAULT_MAX_ARGS_BYTES),
             calls_per_server: DEFAULT_CALLS_PER_SERVER,
+            list_inline_max: bytes("UF_MCP_LIST_INLINE_MAX", DEFAULT_LIST_INLINE_MAX),
         }
     }
 }
@@ -88,13 +94,23 @@ impl Limits {
 #[derive(Default)]
 pub struct Runtime {
     pub limits: Limits,
+    /// `UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on`: servers may be registered at
+    /// loopback, private and link-local addresses.
+    pub allow_private_upstreams: bool,
     gates: Mutex<HashMap<i64, Arc<Semaphore>>>,
+}
+
+/// `UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on`, read from the environment.
+pub fn allow_private_upstreams_from_env() -> bool {
+    std::env::var("UF_MCP_ALLOW_PRIVATE_UPSTREAMS")
+        .is_ok_and(|v| v.trim().eq_ignore_ascii_case("on"))
 }
 
 impl Runtime {
     pub fn from_env() -> Self {
         Self {
             limits: Limits::from_env(),
+            allow_private_upstreams: allow_private_upstreams_from_env(),
             gates: Mutex::default(),
         }
     }
@@ -161,7 +177,8 @@ fn upstream_failure(e: UpstreamError) -> (Ending, &'static str) {
             "Could not connect to the MCP server.",
         ),
         UpstreamError::InvalidParams => (400, "tool_error", "The server rejected the arguments."),
-        UpstreamError::Protocol | UpstreamError::TooMany => (
+        UpstreamError::Unavailable => (503, "unavailable", "The MCP server is not running."),
+        UpstreamError::Protocol | UpstreamError::TooMany | UpstreamError::NotSupported => (
             502,
             "upstream_error",
             "The MCP server sent an unexpected response.",
@@ -284,9 +301,11 @@ pub async fn run(call: ToolCall<'_>) -> Response {
         id,
         headers,
     } = call;
+    // The console's playground makes calls as a user with no key (id 0): they
+    // are recorded and counted for the user, under no key.
     let mut scope = Scope::begin(
         state.sink.clone(),
-        Some(key.id),
+        (key.id != 0).then_some(key.id),
         key.user_id,
         key.team_id,
         ENDPOINT,
@@ -460,25 +479,12 @@ pub async fn run(call: ToolCall<'_>) -> Response {
     // 6. The upstream call.
     scope.begin_attempt(&format!("mcp:{}", server.name), tool_name);
     let started = Instant::now();
-    let target = Target {
-        url: &server.url,
-        auth_kind: &server.auth_kind,
-        auth_header: server.auth_header.as_deref(),
-        secret: server.secret.as_deref(),
-    };
     let opts = Options {
         timeout: limits.call_timeout,
         max_body_bytes: limits.max_result_bytes,
     };
-    let answered = upstream::call_tool(
-        &state.http,
-        &target,
-        tool_name,
-        &arguments,
-        traceparent,
-        opts,
-    )
-    .await;
+    let params = json!({"name": tool_name, "arguments": arguments});
+    let answered = request(state, server, "tools/call", &params, traceparent, opts).await;
     let upstream_ms = elapsed_ms(started);
     let raw = match answered {
         Ok(raw) => raw,
@@ -503,6 +509,14 @@ pub async fn run(call: ToolCall<'_>) -> Response {
         );
         return tool_error(&id, "The MCP server sent an unexpected response.");
     };
+    // The tool's projection runs first: the guardrails read, and the log
+    // records, what the agent is given.
+    if let Some(projection) = &tool.projection {
+        let projected = projection.apply(&mut result);
+        if projected.changed {
+            scope.attempt_projected(projected.after as u64);
+        }
+    }
     scope.settle_attempt(AttemptOutcome::Ok, Some(200), started);
     let ended = |status: u16, label: &'static str| Ending {
         status,
@@ -541,5 +555,157 @@ fn scan_message(failed: ScanFailed) -> (u16, &'static str) {
     } else {
         tracing::error!("a guardrail scan did not finish");
         (500, SCAN_FAILED)
+    }
+}
+
+/// One request to the upstream of a registry server: its program, or its
+/// address with the credentials it signs in with (a token the gateway got
+/// for it, for a server that uses OAuth). The credentials of the caller are
+/// never part of it.
+pub(crate) async fn request(
+    state: &AppState,
+    server: &SnapMcpServer,
+    method: &str,
+    params: &Value,
+    traceparent: Option<&str>,
+    opts: Options,
+) -> Result<Value, UpstreamError> {
+    if server.local.is_some() {
+        return state.local.call(server.id, method, params, opts).await;
+    }
+    if let Some(cfg) = &server.oauth {
+        return state
+            .oauth
+            .with_bearer(cfg, |token| async move {
+                let target = Target {
+                    url: &server.url,
+                    auth_kind: "bearer",
+                    auth_header: None,
+                    secret: Some(&token),
+                };
+                upstream::call_method(&state.http, &target, method, params, traceparent, opts).await
+            })
+            .await;
+    }
+    let target = Target {
+        url: &server.url,
+        auth_kind: &server.auth_kind,
+        auth_header: server.auth_header.as_deref(),
+        secret: server.secret.as_deref(),
+    };
+    upstream::call_method(&state.http, &target, method, params, traceparent, opts).await
+}
+
+/// The methods besides tools that are passed to the upstream as they are:
+/// what a server offers to read and to start from. They are not tools, so a
+/// key's tool grants do not cut them; a key that may call at least one tool
+/// of the server may use them, with its rate limits, the server's gate and
+/// the same time and size caps. Nothing in the result is filtered.
+pub const PASSED_METHODS: [&str; 4] = [
+    "resources/list",
+    "resources/read",
+    "prompts/list",
+    "prompts/get",
+];
+
+/// Passes `method` to the upstream and returns its result.
+pub async fn proxy(
+    state: &AppState,
+    snapshot: &Snapshot,
+    key: &SnapKey,
+    server: &SnapMcpServer,
+    (method, params): (&'static str, &Value),
+    id: &Value,
+    headers: &HeaderMap,
+) -> Response {
+    let subjects = snapshot.subjects_of(Some(key.id), key.user_id, key.team_id);
+    let _permit = match state.rate.acquire(&subjects, 0, Instant::now()) {
+        Ok(permit) => permit,
+        Err(refusal) => {
+            state.metrics.rate_limited(refusal.limit_name);
+            let mut response = reply_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                id,
+                CODE_REFUSED,
+                &refusal.message(),
+            );
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, refusal.retry_after_seconds().into());
+            return response;
+        }
+    };
+    let Ok(_slot) = state.mcp.gate(server.id).try_acquire_owned() else {
+        let mut response = reply_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            id,
+            CODE_BUSY,
+            "The MCP server is busy. Try again shortly.",
+        );
+        response.headers_mut().insert(RETRY_AFTER, 1.into());
+        return response;
+    };
+    let limits = state.mcp.limits;
+    let traceparent = headers
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok())
+        .filter(|t| TraceParent::parse(t).is_some());
+    let opts = Options {
+        timeout: limits.call_timeout,
+        max_body_bytes: limits.max_result_bytes,
+    };
+    let started = Instant::now();
+    let answered = request(state, server, method, params, traceparent, opts).await;
+    let ms = elapsed_ms(started);
+    match answered {
+        Ok(result) => {
+            state.metrics.mcp_call(&server.name, method, "ok", Some(ms));
+            reply(StatusCode::OK, id, result)
+        }
+        Err(e) => {
+            tracing::warn!(server = %server.name, method, error = %e, "an MCP request failed");
+            let (code, status, label, message) = match e {
+                UpstreamError::NotSupported => (
+                    super::server::CODE_METHOD_NOT_FOUND,
+                    StatusCode::OK,
+                    "unsupported",
+                    "Method not found.",
+                ),
+                UpstreamError::InvalidParams => (
+                    CODE_INVALID_PARAMS,
+                    StatusCode::OK,
+                    "tool_error",
+                    "The server rejected the parameters.",
+                ),
+                UpstreamError::Timeout => (
+                    CODE_REFUSED,
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "timeout",
+                    "The MCP server did not answer in time.",
+                ),
+                UpstreamError::TooLarge => (
+                    CODE_REFUSED,
+                    StatusCode::BAD_GATEWAY,
+                    "too_large",
+                    "The MCP server's result was too large.",
+                ),
+                UpstreamError::Unavailable => (
+                    CODE_BUSY,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "The MCP server is not running.",
+                ),
+                _ => (
+                    CODE_REFUSED,
+                    StatusCode::BAD_GATEWAY,
+                    "upstream_error",
+                    "The MCP server sent an unexpected response.",
+                ),
+            };
+            state
+                .metrics
+                .mcp_call(&server.name, method, label, Some(ms));
+            reply_error(status, id, code, message)
+        }
     }
 }

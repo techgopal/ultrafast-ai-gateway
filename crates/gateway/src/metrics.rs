@@ -110,6 +110,8 @@ pub struct Metrics {
     mcp_calls: Mutex<BTreeMap<(String, String, &'static str), u64>>,
     /// MCP tool call time, per server.
     mcp_durations: Mutex<BTreeMap<String, Histogram>>,
+    /// Whether the last health probe found each MCP server up, by name.
+    mcp_up: Mutex<BTreeMap<String, bool>>,
     /// The counters of the log pipeline, once it exists.
     logs: OnceLock<Arc<LogStats>>,
 }
@@ -217,6 +219,15 @@ impl Metrics {
         if durations.contains_key(server) || durations.len() < MAX_MCP_SERIES {
             durations.entry(server.to_string()).or_default().observe(ms);
         }
+    }
+
+    /// What the last health probe found: every server of the map, up or
+    /// not. Servers that are not in it are forgotten.
+    pub fn set_mcp_up(&self, up: BTreeMap<String, bool>) {
+        *self
+            .mcp_up
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = up;
     }
 
     pub fn cache_hit(&self) {
@@ -489,6 +500,27 @@ impl Metrics {
                 let _ = writeln!(
                     out,
                     "uf_mcp_calls_total{{server=\"{server}\",tool=\"{tool}\",status=\"{status}\"}} {count}"
+                );
+            }
+        }
+        header(
+            &mut out,
+            "uf_mcp_server_up",
+            "gauge",
+            "1 while the last health probe found an MCP server answering, else 0. Servers that are switched off are not listed.",
+        );
+        {
+            let up = self
+                .mcp_up
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            for (server, up) in &up {
+                let _ = writeln!(
+                    out,
+                    "uf_mcp_server_up{{server=\"{}\"}} {}",
+                    escape_label(server),
+                    u8::from(*up)
                 );
             }
         }

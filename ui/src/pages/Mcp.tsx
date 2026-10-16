@@ -1,10 +1,15 @@
+import { Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import {
   useCreateMcpServer,
   useDeleteMcpServer,
+  useMcpCatalog,
   useMcpServers,
+  useMcpStderr,
   useMcpTools,
   useMcpToolsOf,
+  usePreviewMcpProjection,
+  usePutMcpProjection,
   usePutMcpToolGrants,
   useSyncMcpServer,
   useUpdateMcpServer,
@@ -27,9 +32,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { liveTools, statusOf, syncText, toolRef } from "@/lib/mcp";
+import { Textarea } from "@/components/ui/textarea";
+import { isLocal, liveTools, statusOf, syncText, toolRef } from "@/lib/mcp";
 import { accessSummary, hasNoAccess } from "@/lib/models";
 import { AccessDialog } from "@/pages/McpAccess";
+import { ConnectPanel } from "@/pages/McpConnect";
+import { ProjectionDialog } from "@/pages/McpProjection";
 import { ServerDialog } from "@/pages/McpServer";
 
 type Server = components["schemas"]["McpServerView"];
@@ -47,16 +55,20 @@ export const DONE = {
   delete: "Server deleted.",
 } as const;
 
-type Asking = "add" | "edit" | "access" | "delete";
+type Asking = "add" | "edit" | "access" | "delete" | "projection";
+
+export const PROJECTION_SAVED = "Projection saved.";
 
 function ToolsOfServer({
   server,
   onProblem,
   onAccess,
+  onProjection,
 }: {
   server: Server;
   onProblem: (message: string | null) => void;
   onAccess: (tool: Tool) => void;
+  onProjection: (tool: Tool) => void;
 }) {
   const tools = useMcpTools(server.id);
   const update = useUpdateMcpTool();
@@ -150,18 +162,78 @@ function ToolsOfServer({
         <EmptyState title="No tools" description="Sync the server to read the tools it offers." />
       }
       actions={(tool) => (
-        <Button
-          type="button"
-          variant="outline"
-          className={control}
-          onClick={() => {
-            onAccess(tool);
-          }}
-        >
-          Edit access
-        </Button>
+        <>
+          <Button
+            type="button"
+            variant="outline"
+            className={control}
+            onClick={() => {
+              onAccess(tool);
+            }}
+          >
+            Edit access
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className={control}
+            onClick={() => {
+              onProjection(tool);
+            }}
+          >
+            Edit projection
+          </Button>
+        </>
       )}
     />
+  );
+}
+
+/** The end of what the program of a local server wrote to stderr. */
+function ServerOutput({ server, onClose }: { server: Server; onClose: () => void }) {
+  const output = useMcpStderr(server.id);
+  return (
+    <section className="flex flex-col gap-3" aria-label={`Output of ${server.name}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-base font-medium">{`Output of ${server.name}`}</h2>
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            className={control}
+            onClick={() => {
+              void output.refetch();
+            }}
+          >
+            Refresh output
+          </Button>
+          <Button type="button" variant="outline" className={control} onClick={onClose}>
+            Close output
+          </Button>
+        </div>
+      </div>
+      {output.error !== null && output.data === undefined ? (
+        <ErrorState
+          error={output.error}
+          onRetry={() => {
+            void output.refetch();
+          }}
+        />
+      ) : (
+        <Textarea
+          readOnly
+          aria-label={`Output of ${server.name}, last lines`}
+          className="max-h-80 min-h-32 font-mono text-xs"
+          value={
+            output.data === undefined
+              ? "Loading..."
+              : output.data.text === ""
+                ? "Nothing written yet."
+                : output.data.text
+          }
+        />
+      )}
+    </section>
   );
 }
 
@@ -172,7 +244,11 @@ function AdminMcp() {
   const remove = useDeleteMcpServer();
   const sync = useSyncMcpServer();
   const grants = usePutMcpToolGrants();
+  const putProjection = usePutMcpProjection();
+  const previewProjection = usePreviewMcpProjection();
+  const catalog = useMcpCatalog();
   const toast = useToast();
+  const [output, setOutput] = useState<Server | null>(null);
   const [asking, setAsking] = useState<Asking | null>(null);
   const [adding, setAdding] = useState(false);
   const [target, setTarget] = useState<Server | null>(null);
@@ -221,7 +297,9 @@ function AdminMcp() {
       header: "Address",
       cell: (server) => (
         <span className={`${longText} font-mono text-xs break-all md:max-w-80`}>
-          {server.url ?? ""}
+          {isLocal(server)
+            ? [server.command ?? "", ...(server.args ?? [])].join(" ")
+            : (server.url ?? "")}
         </span>
       ),
       hideOnMobile: true,
@@ -235,6 +313,11 @@ function AdminMcp() {
           {server.last_sync_error === null ? null : (
             <span className={`${longText} text-xs text-muted-foreground md:max-w-64`}>
               {server.last_sync_error}
+            </span>
+          )}
+          {server.health?.latency_ms == null ? null : (
+            <span className="text-xs text-muted-foreground">
+              {`Answered in ${String(server.health.latency_ms)} ms`}
             </span>
           )}
         </span>
@@ -267,17 +350,22 @@ function AdminMcp() {
         <PageHeader
           title="MCP tools"
           actions={
-            <Button
-              type="button"
-              className={control}
-              onClick={() => {
-                setAdding(true);
-                setTarget(null);
-                setAsking("add");
-              }}
-            >
-              Add server
-            </Button>
+            <>
+              <Button asChild variant="outline" className={control}>
+                <Link to="/mcp/catalog">Add from catalog</Link>
+              </Button>
+              <Button
+                type="button"
+                className={control}
+                onClick={() => {
+                  setAdding(true);
+                  setTarget(null);
+                  setAsking("add");
+                }}
+              >
+                Add server
+              </Button>
+            </>
           }
         />
         {problem === null ? null : (
@@ -288,6 +376,7 @@ function AdminMcp() {
           </Alert>
         )}
       </div>
+      <ConnectPanel servers={all.map((server) => server.name)} />
       <DataTable
         caption="MCP servers"
         columns={columns}
@@ -323,6 +412,18 @@ function AdminMcp() {
             >
               Sync
             </Button>
+            {isLocal(server) ? (
+              <Button
+                type="button"
+                variant="outline"
+                className={control}
+                onClick={() => {
+                  setOutput(server);
+                }}
+              >
+                Output
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="outline"
@@ -360,12 +461,25 @@ function AdminMcp() {
               setTool(one);
               setAsking("access");
             }}
+            onProjection={(one) => {
+              setTool(one);
+              setAsking("projection");
+            }}
           />
         </section>
+      )}
+      {output === null ? null : (
+        <ServerOutput
+          server={output}
+          onClose={() => {
+            setOutput(null);
+          }}
+        />
       )}
       <ServerDialog
         open={asking === "add" || asking === "edit"}
         adding={adding}
+        localEnabled={catalog.data?.local_enabled ?? false}
         server={target}
         create={create}
         update={update}
@@ -396,6 +510,28 @@ function AdminMcp() {
           toast(DONE.access);
         }}
       />
+      {tool === null ? null : (
+        <ProjectionDialog
+          open={asking === "projection"}
+          tool={tool}
+          server={shown?.name ?? ""}
+          put={putProjection}
+          preview={previewProjection}
+          onCancel={() => {
+            closing(() => {
+              putProjection.reset();
+              previewProjection.reset();
+            });
+          }}
+          onDone={() => {
+            closing(() => {
+              putProjection.reset();
+              previewProjection.reset();
+            });
+            toast(PROJECTION_SAVED);
+          }}
+        />
+      )}
       <ConfirmDialog
         open={asking === "delete"}
         onOpenChange={(open) => {
@@ -441,6 +577,7 @@ function MemberMcp() {
   return (
     <>
       <PageHeader title="MCP tools" />
+      {waiting ? null : <ConnectPanel servers={groups.map((group) => group.server.name)} />}
       {waiting ? null : groups.length === 0 ? (
         <EmptyState title="No MCP tools" description={EMPTY_FOR_MEMBER} />
       ) : (

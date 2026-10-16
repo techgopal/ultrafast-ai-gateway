@@ -17,6 +17,7 @@ use ultrafast_gateway::app::AppState;
 use ultrafast_gateway::budgets::{account, BudgetAction, Period};
 use ultrafast_gateway::limits::{LimitScope, RateLimit};
 use ultrafast_gateway::mcp::encrypt_secret;
+use ultrafast_gateway::mcp::health::{probe_once, Status};
 use ultrafast_gateway::otel::{Exporter, OtelConfig};
 use ultrafast_gateway::store::{DiscoveredTool, Grants, NewGuardrail, NewMcpServer};
 use ultrafast_gateway::telemetry::{AttemptOutcome, RequestRecord};
@@ -71,6 +72,7 @@ async fn world_with(
             auth_secret_enc: Some(&enc),
             enabled: true,
             description: "d",
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -372,6 +374,7 @@ async fn a_disabled_or_unknown_server_is_404() {
             auth_secret_enc: Some(&enc),
             enabled: false,
             description: "d",
+            ..Default::default()
         },
     )
     .await
@@ -407,13 +410,13 @@ async fn authentication_and_methods() {
         assert_eq!(resp.headers()["allow"], "POST", "{verb}");
     }
     // Other paths under /mcp are JSON 404s, not the console.
-    let (status, _, text) = post_to(&w.h.app, "/mcp", &[], "{}").await;
+    let (status, _, text) = post_to(&w.h.app, "/mcp/", &[], "{}").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(!text.contains("<html"), "{text}");
 }
 
 #[tokio::test]
-async fn initialize_ping_and_the_methods_this_plan_does_not_proxy() {
+async fn initialize_ping_and_the_methods_the_gateway_does_not_proxy() {
     let w = world().await;
     let (status, headers, reply) = rpc(
         &w,
@@ -425,17 +428,16 @@ async fn initialize_ping_and_the_methods_this_plan_does_not_proxy() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reply["result"]["protocolVersion"], "2025-06-18");
     assert!(reply["result"]["capabilities"]["tools"].is_object());
-    assert!(reply["result"]["capabilities"].get("resources").is_none());
+    assert!(reply["result"]["capabilities"]["resources"].is_object());
+    assert!(reply["result"]["capabilities"]["prompts"].is_object());
     assert_eq!(reply["result"]["serverInfo"]["name"], "ultrafast-gateway");
     assert!(headers.get("mcp-session-id").is_none());
     let (_, _, reply) = rpc(&w, "ping", json!({})).await;
     assert_eq!(reply["result"], json!({}));
     for m in [
-        "resources/list",
-        "resources/read",
-        "prompts/list",
-        "prompts/get",
         "completion/complete",
+        "resources/subscribe",
+        "logging/setLevel",
     ] {
         let (status, _, reply) = rpc(&w, m, json!({})).await;
         assert_eq!(status, StatusCode::OK, "{m}");
@@ -908,4 +910,767 @@ async fn a_keys_allowlist_cuts_what_it_may_list_and_call() {
     let (status, _, reply) = send(list).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(reply["result"]["tools"][0]["name"], "echo");
+}
+
+#[tokio::test]
+async fn resources_and_prompts_are_passed_to_the_upstream_with_its_secret() {
+    let w = world().await;
+    let (status, _, reply) = rpc(&w, "resources/list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply["result"]["resources"][0]["uri"], "file:///a");
+    let (_, _, reply) = rpc(&w, "resources/read", json!({"uri": "file:///a"})).await;
+    assert_eq!(reply["result"]["contents"][0]["uri"], "file:///a");
+    let (_, _, reply) = rpc(&w, "prompts/list", json!({})).await;
+    assert_eq!(reply["result"]["prompts"][0]["name"], "p");
+    let (_, _, reply) = rpc(&w, "prompts/get", json!({"name": "p"})).await;
+    assert_eq!(reply["result"]["messages"][0]["role"], "user");
+    let seen = w.mock.received_method("resources/list");
+    assert_eq!(
+        seen[0].header_values("authorization"),
+        [format!("Bearer {SECRET}")]
+    );
+    // The agent's own key never goes upstream.
+    assert!(w.mock.received().iter().all(|r| !r
+        .header_values("authorization")
+        .iter()
+        .any(|v| v.contains(&w.h.key))));
+    // A request that is not an object is refused before the upstream.
+    let (_, _, reply) = rpc(&w, "resources/read", json!([1])).await;
+    assert_eq!(reply["error"]["code"], -32602);
+}
+
+#[tokio::test]
+async fn passed_methods_need_a_key_and_a_server_it_may_use() {
+    let w = world().await;
+    let body = json!({"jsonrpc":"2.0","id":1,"method":"resources/list"}).to_string();
+    let (status, _, _) = post_raw(&w, "mock", None, &[], &body).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = post_raw(&w, "nope", Some(&w.h.key), &[], &body).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(w.mock.received_method("resources/list").is_empty());
+}
+
+#[tokio::test]
+async fn a_passed_result_over_the_cap_is_refused_and_an_unsupported_method_is_not_found() {
+    let w2 = world_with(CallMode::Echo, Duration::ZERO, Failure::None, |s| {
+        s.mcp.limits.max_result_bytes = 2_000;
+    })
+    .await;
+    let mock2 = MockMcp::builder()
+        .tools(vec![tool("echo", "echoes")])
+        .resource_bytes(10_000)
+        .start()
+        .await;
+    let mut tx = w2.h.store.begin().await.unwrap();
+    tx.update_server(
+        w2.server_id,
+        NewMcpServer {
+            name: "mock",
+            url: &mock2.url,
+            auth_kind: "none",
+            auth_header: None,
+            auth_secret_enc: None,
+            enabled: true,
+            description: "d",
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w2.h.state.refresh().await.unwrap();
+    let (status, _, reply) = rpc(&w2, "resources/read", json!({"uri": "file:///a"})).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(reply["error"]["code"], -32000);
+    assert!(!reply.to_string().contains("rrrr"));
+
+    let w3 = world_with(CallMode::Echo, Duration::ZERO, Failure::None, |_| {}).await;
+    let none = MockMcp::builder()
+        .tools(vec![tool("echo", "echoes")])
+        .without_resources()
+        .start()
+        .await;
+    let mut tx = w3.h.store.begin().await.unwrap();
+    tx.update_server(
+        w3.server_id,
+        NewMcpServer {
+            name: "mock",
+            url: &none.url,
+            auth_kind: "none",
+            auth_header: None,
+            auth_secret_enc: None,
+            enabled: true,
+            description: "d",
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w3.h.state.refresh().await.unwrap();
+    let (status, _, reply) = rpc(&w3, "prompts/list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply["error"]["code"], -32601);
+}
+
+#[tokio::test]
+async fn a_tool_call_through_the_gateway_to_a_stateful_upstream_works() {
+    let mock = MockMcp::builder()
+        .tools(vec![tool("echo", "echoes")])
+        .require_session()
+        .start()
+        .await;
+    let w = world().await;
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.update_server(
+        w.server_id,
+        NewMcpServer {
+            name: "mock",
+            url: &mock.url,
+            auth_kind: "none",
+            auth_header: None,
+            auth_secret_enc: None,
+            enabled: true,
+            description: "d",
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    let (_, headers, reply) = call(&w, "echo", json!({"a": 1})).await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    // Toward the agent the endpoint stays stateless.
+    assert!(headers.get("mcp-session-id").is_none());
+    assert_eq!(mock.received_method("initialize").len(), 1);
+}
+
+// ---------------------------------------------------------------- health
+
+async fn probe(w: &World) -> ultrafast_gateway::mcp::health::Probe {
+    probe_once(&w.h.state).await;
+    w.h.state.mcp_health.get(w.server_id).expect("a probe")
+}
+
+#[tokio::test]
+async fn probes_tell_ok_degraded_down_and_back() {
+    let w = world().await;
+    let first = probe(&w).await;
+    assert_eq!(first.status, Status::Ok);
+    assert!(first.latency_ms.is_some());
+    assert!(first.checked_at.starts_with("20"));
+    // The probe asks for a tool list, outside any key.
+    assert!(!w.mock.received_method("tools/list").is_empty());
+    w.mock.set_failure(Failure::Status500);
+    // One failure is a warning, two in a row are down.
+    assert_eq!(probe(&w).await.status, Status::Degraded);
+    let down = probe(&w).await;
+    assert_eq!(down.status, Status::Down);
+    assert_eq!(down.latency_ms, None);
+    assert_eq!(probe(&w).await.status, Status::Down);
+    w.mock.set_failure(Failure::None);
+    assert_eq!(probe(&w).await.status, Status::Ok);
+}
+
+#[tokio::test]
+async fn a_slow_answer_is_degraded() {
+    let w = world_with(CallMode::Echo, Duration::ZERO, Failure::None, |_| {}).await;
+    w.mock.set_failure(Failure::SlowList(2_300));
+    assert_eq!(probe(&w).await.status, Status::Degraded);
+}
+
+#[tokio::test]
+async fn probes_take_no_permit_cost_no_budget_and_leave_no_log_row() {
+    let w = world().await;
+    limit_requests(&w, 1).await;
+    for _ in 0..5 {
+        probe_once(&w.h.state).await;
+    }
+    // The one request the limit allows is still there for a key.
+    let (_, _, reply) = call(&w, "echo", json!({})).await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    // And the only record is that call's.
+    let records = w.h.sink.records();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].endpoint, "mcp");
+}
+
+#[tokio::test]
+async fn the_gauge_follows_the_probes() {
+    let w = world_with(CallMode::Echo, Duration::ZERO, Failure::None, |s| {
+        s.metrics_token = Some(METRICS_TOKEN.into());
+    })
+    .await;
+    async fn text(w: &World) -> String {
+        let req = axum::http::Request::builder()
+            .uri("/metrics")
+            .header("authorization", format!("Bearer {METRICS_TOKEN}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = tower::ServiceExt::oneshot(w.h.app.clone(), req)
+            .await
+            .unwrap();
+        String::from_utf8(
+            axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+    assert!(!text(&w).await.contains("uf_mcp_server_up{"));
+    probe_once(&w.h.state).await;
+    assert!(text(&w)
+        .await
+        .contains("uf_mcp_server_up{server=\"mock\"} 1"));
+    w.mock.set_failure(Failure::Status500);
+    probe_once(&w.h.state).await;
+    probe_once(&w.h.state).await;
+    assert!(text(&w)
+        .await
+        .contains("uf_mcp_server_up{server=\"mock\"} 0"));
+}
+
+#[tokio::test]
+async fn a_server_that_is_off_or_gone_is_not_probed() {
+    let w = world().await;
+    probe_once(&w.h.state).await;
+    let before = w.mock.received_method("tools/list").len();
+    let mut tx = w.h.store.begin().await.unwrap();
+    let row = tx.server_by_id(w.server_id).await.unwrap().unwrap();
+    tx.update_server(
+        w.server_id,
+        NewMcpServer {
+            name: "mock",
+            url: &row.url,
+            auth_kind: &row.auth_kind,
+            auth_header: row.auth_header.as_deref(),
+            auth_secret_enc: row.auth_secret_enc.as_deref(),
+            enabled: false,
+            description: "d",
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    probe_once(&w.h.state).await;
+    assert_eq!(w.mock.received_method("tools/list").len(), before);
+}
+
+// ------------------------------------------------------------- combined
+
+/// A second server "other-srv" with `echo` and `b__c`, both on and granted to everyone.
+async fn second_server(w: &World) -> MockMcp {
+    let mock = MockMcp::builder()
+        .tools(vec![tool("echo", "other echo"), tool("b__c", "odd name")])
+        .start()
+        .await;
+    let mut tx = w.h.store.begin().await.unwrap();
+    let id = tx
+        .insert_server(NewMcpServer {
+            name: "other-srv",
+            url: &mock.url,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    tx.upsert_tools(id, vec![discovered("echo"), discovered("b__c")])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    for t in w.h.store.list_tools(id).await.unwrap() {
+        let mut tx = w.h.store.begin().await.unwrap();
+        tx.set_tool_enabled(t.id, true).await.unwrap();
+        tx.replace_tool_grants(
+            t.id,
+            &Grants {
+                everyone: true,
+                ..Grants::default()
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+    w.h.state.refresh().await.unwrap();
+    mock
+}
+
+async fn combined(
+    w: &World,
+    key: Option<&str>,
+    method: &str,
+    params: Value,
+) -> (StatusCode, Value) {
+    let bearer = key.map(|k| format!("Bearer {k}"));
+    let mut headers = Vec::new();
+    if let Some(b) = &bearer {
+        headers.push(("authorization", b.as_str()));
+    }
+    let body = json!({"jsonrpc": "2.0", "id": 3, "method": method, "params": params});
+    let (status, _, text) = post_to(&w.h.app, "/mcp", &headers, &body.to_string()).await;
+    (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn the_combined_endpoint_lists_every_callable_tool_by_namespaced_name_and_routes_calls() {
+    let w = world().await;
+    let other = second_server(&w).await;
+    let key = Some(w.h.key.as_str());
+    let (status, list) = combined(&w, key, "tools/list", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    // `mock/secret` is off, so it is not there.
+    assert_eq!(names, ["mock__echo", "other-srv__b__c", "other-srv__echo"]);
+    assert_eq!(
+        list["result"]["tools"][0]["_meta"]["ultrafast"]["server"],
+        "mock"
+    );
+
+    // A call goes to the server in the name, with the tool as that server knows it.
+    let (_, reply) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "other-srv__b__c", "arguments": {"q": "x"}}),
+    )
+    .await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    let calls = other.received_method("tools/call");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].body["params"]["name"], "b__c");
+    assert!(w.mock.received_method("tools/call").is_empty());
+    let (_, reply) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "mock__echo", "arguments": {}}),
+    )
+    .await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert_eq!(w.mock.received_method("tools/call").len(), 1);
+    // The record names the server and the tool as before.
+    let recs = w.h.sink.wait_for(2).await;
+    assert_eq!(recs[0].requested, "mcp:other-srv/b__c");
+    assert_eq!(recs[1].requested, "mcp:mock/echo");
+
+    // Names that lead nowhere are the same Unknown tool.
+    for name in [
+        "echo",
+        "nope__x",
+        "mock__secret",
+        "mock__",
+        "__echo",
+        "mock__nope",
+    ] {
+        let (status, reply) = combined(&w, key, "tools/call", json!({"name": name})).await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+        assert_eq!(reply["error"]["message"], "Unknown tool", "{name}: {reply}");
+    }
+    assert_eq!(w.mock.received_method("tools/call").len(), 1);
+}
+
+#[tokio::test]
+async fn the_per_server_endpoints_are_unchanged_beside_the_combined_one() {
+    let w = world().await;
+    let _other = second_server(&w).await;
+    let (_, _, reply) = rpc(&w, "tools/list", json!({})).await;
+    let names: Vec<&str> = reply["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["echo"]);
+    let (_, _, reply) = call(&w, "echo", json!({})).await;
+    assert_eq!(reply["result"]["isError"], false);
+    // A namespaced name is not a tool of a single server.
+    let (_, _, reply) = call(&w, "mock__echo", json!({})).await;
+    assert_eq!(reply["error"]["message"], "Unknown tool");
+}
+
+#[tokio::test]
+async fn the_combined_endpoint_checks_the_key_the_method_and_the_verb() {
+    let w = world().await;
+    let (status, _) = combined(&w, None, "ping", json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, reply) = combined(&w, Some("uf-sk-wrong"), "ping", json!({})).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{reply}");
+    let key = Some(w.h.key.as_str());
+    let (status, reply) = combined(
+        &w,
+        key,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply["result"]["serverInfo"]["name"], "ultrafast-gateway");
+    // Resources and prompts are per server.
+    let (_, reply) = combined(&w, key, "resources/list", json!({})).await;
+    assert_eq!(reply["error"]["code"], -32601);
+    for verb in ["GET", "DELETE"] {
+        let req = axum::http::Request::builder()
+            .method(verb)
+            .uri("/mcp")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = tower::ServiceExt::oneshot(w.h.app.clone(), req)
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED, "{verb}");
+    }
+}
+
+#[tokio::test]
+async fn a_key_limited_to_one_tool_sees_only_it_on_the_combined_endpoint() {
+    let w = world().await;
+    let _other = second_server(&w).await;
+    // A key allowed `mcp:other-srv/echo` only.
+    let key = ultrafast_gateway::secrets::generate_key();
+    let id =
+        w.h.store
+            .insert_key("narrow", &key.hash, &key.display, None)
+            .await
+            .unwrap();
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.set_key_allowed(id, Some(&["mcp:other-srv/echo".to_string()]))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let made = key.full.clone();
+    w.h.state.refresh().await.unwrap();
+    let (_, list) = combined(&w, Some(made.as_str()), "tools/list", json!({})).await;
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["other-srv__echo"]);
+    let (_, reply) = combined(
+        &w,
+        Some(made.as_str()),
+        "tools/call",
+        json!({"name": "mock__echo"}),
+    )
+    .await;
+    assert_eq!(reply["error"]["message"], "Unknown tool");
+}
+
+// ------------------------------------------------------------- discovery
+
+/// Three tools are callable (`mock/echo`, `other-srv/echo`, `other-srv/b__c`) and
+/// the list is cut at two.
+async fn crowded() -> (World, MockMcp) {
+    let w = world_with(CallMode::Echo, Duration::ZERO, Failure::None, |s| {
+        s.mcp.limits.list_inline_max = 2;
+    })
+    .await;
+    let other = second_server(&w).await;
+    (w, other)
+}
+
+fn names_of(list: &Value) -> Vec<String> {
+    list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn past_the_threshold_the_list_is_the_search_tools_and_the_pinned_ones() {
+    let (w, _other) = crowded().await;
+    let key = Some(w.h.key.as_str());
+    let (_, list) = combined(&w, key, "tools/list", json!({})).await;
+    assert_eq!(names_of(&list), ["find_tools", "describe_tools"]);
+    // Pinned: listed after them, in the order pinned, if the key can still call them.
+    let id = w.h.store.list_keys().await.unwrap()[0].id;
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.set_key_pinned_tools(
+        id,
+        &[
+            "mcp:other-srv/echo".to_string(),
+            "mcp:mock/secret".to_string(), // off: not listed
+            "mcp:mock/echo".to_string(),
+        ],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    let (_, list) = combined(&w, key, "tools/list", json!({})).await;
+    assert_eq!(
+        names_of(&list),
+        [
+            "find_tools",
+            "describe_tools",
+            "other-srv__echo",
+            "mock__echo"
+        ]
+    );
+    // The per-server endpoint is not cut.
+    let (_, _, reply) = rpc(&w, "tools/list", json!({})).await;
+    assert_eq!(names_of(&reply), ["echo"]);
+}
+
+#[tokio::test]
+async fn find_tools_ranks_the_tools_the_key_may_call_and_describe_tools_gives_their_schemas() {
+    let (w, other) = crowded().await;
+    let key = Some(w.h.key.as_str());
+    let (_, found) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "find_tools", "arguments": {"query": "b c", "limit": 2}}),
+    )
+    .await;
+    assert_eq!(found["result"]["isError"], false, "{found}");
+    let tools = found["result"]["structuredContent"]["tools"]
+        .as_array()
+        .unwrap();
+    assert_eq!(tools[0]["name"], "other-srv__b__c");
+    assert_eq!(tools[0]["server"], "other-srv");
+    assert_eq!(tools[0]["description"], "does b__c");
+    assert!(tools.len() <= 2);
+    // An exact name comes first.
+    let (_, found) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "find_tools", "arguments": {"query": "echo"}}),
+    )
+    .await;
+    let names: Vec<&str> = found["result"]["structuredContent"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["mock__echo", "other-srv__echo"]);
+    let (_, described) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "describe_tools", "arguments": {"names": ["other-srv__b__c", "mock__secret", "nope", "x__y"]}}),
+    )
+    .await;
+    let tools = described["result"]["structuredContent"]["tools"]
+        .as_array()
+        .unwrap();
+    assert_eq!(tools.len(), 1, "{described}");
+    assert_eq!(tools[0]["name"], "other-srv__b__c");
+    assert_eq!(tools[0]["inputSchema"]["type"], "object");
+    // Neither goes upstream, and neither is a logged call.
+    assert!(other.received_method("tools/call").is_empty());
+    assert!(w.mock.received_method("tools/call").is_empty());
+    assert!(w.h.sink.records().is_empty());
+    // Bad arguments are told, not guessed.
+    for args in [
+        json!({}),
+        json!({"query": " "}),
+        json!({"query": "a", "limit": 99}),
+        json!({"query": "a", "limit": 0}),
+    ] {
+        let (_, reply) = combined(
+            &w,
+            key,
+            "tools/call",
+            json!({"name": "find_tools", "arguments": args}),
+        )
+        .await;
+        assert_eq!(reply["error"]["code"], -32602, "{args}: {reply}");
+    }
+    let (_, reply) = combined(
+        &w,
+        key,
+        "tools/call",
+        json!({"name": "describe_tools", "arguments": {"names": []}}),
+    )
+    .await;
+    assert_eq!(reply["error"]["code"], -32602);
+}
+
+#[tokio::test]
+async fn a_search_never_shows_a_tool_the_key_may_not_call() {
+    let (w, _other) = crowded().await;
+    // A key allowed `other-srv/echo` only.
+    let key = ultrafast_gateway::secrets::generate_key();
+    let id =
+        w.h.store
+            .insert_key("narrow", &key.hash, &key.display, None)
+            .await
+            .unwrap();
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.set_key_allowed(id, Some(&["mcp:other-srv/echo".to_string()]))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    let narrow = Some(key.full.as_str());
+    // `mock/echo` says "echoes" and `b__c` says "odd name": neither is visible.
+    for query in ["echoes", "does echo", "b c", "mock"] {
+        let (_, found) = combined(
+            &w,
+            narrow,
+            "tools/call",
+            json!({"name": "find_tools", "arguments": {"query": query}}),
+        )
+        .await;
+        let text = found["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(!text.contains("mock__"), "{query}: {text}");
+        assert!(!text.contains("b__c"), "{query}: {text}");
+    }
+    let (_, found) = combined(
+        &w,
+        narrow,
+        "tools/call",
+        json!({"name": "find_tools", "arguments": {"query": "other echo"}}),
+    )
+    .await;
+    assert_eq!(
+        found["result"]["structuredContent"]["tools"][0]["name"],
+        "other-srv__echo"
+    );
+    let (_, described) = combined(
+        &w,
+        narrow,
+        "tools/call",
+        json!({"name": "describe_tools", "arguments": {"names": ["mock__echo", "other-srv__b__c"]}}),
+    )
+    .await;
+    assert_eq!(described["result"]["structuredContent"]["tools"], json!([]));
+}
+
+#[tokio::test]
+async fn the_search_tools_count_against_the_rate_limit() {
+    let (w, _other) = crowded().await;
+    limit_requests(&w, 1).await;
+    let key = Some(w.h.key.as_str());
+    let call = || {
+        combined(
+            &w,
+            key,
+            "tools/call",
+            json!({"name": "find_tools", "arguments": {"query": "echo"}}),
+        )
+    };
+    assert_eq!(call().await.0, StatusCode::OK);
+    assert_eq!(call().await.0, StatusCode::TOO_MANY_REQUESTS);
+}
+
+// ------------------------------------------------------------ projection
+
+async fn project(w: &World, keep: &[&str], drop: &[&str], items: Option<i64>, bytes: Option<i64>) {
+    let mut tx = w.h.store.begin().await.unwrap();
+    tx.put_projection(&ultrafast_gateway::store::ProjectionRow {
+        tool_id: w.echo_id,
+        keep: keep.iter().map(|s| (*s).to_string()).collect(),
+        drop: drop.iter().map(|s| (*s).to_string()).collect(),
+        max_items: items,
+        max_bytes: bytes,
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_projection_cuts_the_result_and_marks_it_and_the_log_says_how_much_was_left() {
+    let w = world().await;
+    project(&w, &["$.public"], &[], None, None).await;
+    let (_, _, reply) = call(
+        &w,
+        "echo",
+        json!({"public": "ok", "hidden": "x".repeat(500)}),
+    )
+    .await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert_eq!(text_of(&reply), "{\"public\":\"ok\"}");
+    assert_eq!(reply["result"]["_meta"]["ultrafast"]["projected"], true);
+    let rec = w.h.sink.wait_for(1).await.remove(0);
+    let left = rec.attempts[0].projected_bytes.expect("projected bytes");
+    assert!(left > 0 && left < 400, "{left}");
+    // The log row carries it in the attempts.
+    let prices: ultrafast_gateway::logs::PriceLookup = std::sync::Arc::new(|_, _| None);
+    let row = ultrafast_gateway::logs::row_of(&rec, &prices);
+    let attempts: Value = serde_json::from_str(&row.attempts).unwrap();
+    assert_eq!(attempts[0]["projected_bytes"], left);
+}
+
+#[tokio::test]
+async fn a_projection_runs_before_the_guardrails_read_the_result() {
+    let w = world().await;
+    guardrail(&w, "g", word_rule("xyzzy", "block", "output")).await;
+    let args = json!({"public": "ok", "hidden": "xyzzy"});
+    let (_, _, reply) = call(&w, "echo", args.clone()).await;
+    assert_eq!(reply["result"]["isError"], true);
+    project(&w, &[], &["$.hidden"], None, None).await;
+    let (_, _, reply) = call(&w, "echo", args).await;
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert_eq!(text_of(&reply), "{\"public\":\"ok\"}");
+}
+
+#[tokio::test]
+async fn a_projection_that_removes_every_field_leaves_an_object_and_the_marker() {
+    let w = world().await;
+    project(&w, &["$.nothing"], &[], None, None).await;
+    let (_, _, reply) = call(&w, "echo", json!({"a": 1})).await;
+    assert_eq!(text_of(&reply), "{}");
+    assert_eq!(reply["result"]["_meta"]["ultrafast"]["projected"], true);
+    assert_eq!(reply["result"]["isError"], false);
+}
+
+#[tokio::test]
+async fn a_result_a_projection_does_not_change_has_no_marker_and_other_tools_are_untouched() {
+    let w = world().await;
+    project(&w, &[], &[], Some(10), None).await;
+    let (_, _, reply) = call(&w, "echo", json!({"a": 1})).await;
+    assert_eq!(text_of(&reply), "{\"a\":1}");
+    assert!(reply["result"].get("_meta").is_none(), "{reply}");
+    let rec = w.h.sink.wait_for(1).await.remove(0);
+    assert_eq!(rec.attempts[0].projected_bytes, None);
+}
+
+#[tokio::test]
+async fn a_browser_that_opens_the_console_page_at_the_endpoint_path_gets_the_console() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    let w = world().await;
+    let page = |accept: &'static str| {
+        Request::builder()
+            .method("GET")
+            .uri("/mcp")
+            .header("accept", accept)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response =
+        w.h.app
+            .clone()
+            .oneshot(page("text/html,*/*"))
+            .await
+            .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response =
+        w.h.app
+            .clone()
+            .oneshot(page("text/event-stream"))
+            .await
+            .unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 }

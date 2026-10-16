@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "2.0.0-beta.5"
+    "version": "2.1.0"
   },
   "paths": {
     "/api/alerts/channels": {
@@ -3874,6 +3874,133 @@
         ]
       }
     },
+    "/api/mcp/catalog": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_catalog_view",
+        "responses": {
+          "200": {
+            "description": "The catalog entries with where they came from.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpCatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/catalog/refresh": {
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_catalog_refresh",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The catalog after fetching it again. With fetching switched off nothing is requested.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpCatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
     "/api/mcp/servers": {
       "get": {
         "tags": [
@@ -4052,6 +4179,125 @@
           },
           "422": {
             "description": "Some fields are not valid; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/servers/from-catalog": {
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_servers_from_catalog",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FromCatalogRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new server, made from the catalog entry and synced once. If that sync failed, `last_sync_error` says so; the server exists either way.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpServerView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`mcp_server_exists`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The entry does not exist, needs something this gateway does not have (local servers, OAuth), a secret is missing or not named by the entry, or the address is private; `fields` names each of them.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4339,6 +4585,86 @@
           },
           "422": {
             "description": "Some fields are not valid, or the host changed and the secret was not sent again; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/servers/{id}/stderr": {
+      "get": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_servers_stderr",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the server.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The end of what the program of a local server wrote to stderr.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpStderrView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist, or it is not a local server.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4806,6 +5132,264 @@
           },
           "422": {
             "description": "A team or user does not exist, or everyone is combined with others; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/tools/{id}/projection": {
+      "put": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_tools_projection_put",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the tool.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The tool with its new projection (`null` when the request asked for nothing, which takes it off). It applies to the next call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpToolView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A query is not valid JSONPath, or a limit is out of range; `fields` names each of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Something went wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ]
+      }
+    },
+    "/api/mcp/tools/{id}/projection/preview": {
+      "post": {
+        "tags": [
+          "mcp"
+        ],
+        "operationId": "mcp_tools_projection_preview",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The id of the tool.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectionPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The result with the projection applied. Nothing is stored and no tool is called.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not of the expected form.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session or access token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not allowed to do this, or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "It does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The projection is not valid, or `result` is not an object; `fields` names each of them.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5643,6 +6227,141 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/playground/mcp/{server}": {
+      "post": {
+        "tags": [
+          "playground"
+        ],
+        "operationId": "playground_mcp",
+        "parameters": [
+          {
+            "name": "server",
+            "in": "path",
+            "description": "The name of the MCP server.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "The CSRF token of the session. Required with a session cookie; not needed with an access token.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaygroundMcpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The JSON-RPC answer. A tool the user may not call or a refused argument is an `error` in place of `result` (see `PlaygroundMcpError`), a failing tool an `isError` result, as on `/mcp/{server}`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpReply"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not a JSON-RPC request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "A spent budget refuses the call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The call was made with an access token (the playground is for a signed-in browser session only), or the CSRF token is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such server, or the user may call none of its tools.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A limit refuses the call; `Retry-After` says when to come back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is busy or not running.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaygroundMcpError"
                 }
               }
             }
@@ -10299,7 +11018,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`budget`, `error_rate` or `circuit_open`."
+            "description": "`budget`, `error_rate`, `circuit_open` or `mcp_down`."
           },
           "name": {
             "type": "string"
@@ -10928,10 +11647,18 @@
       "CreateMcpServerRequest": {
         "type": "object",
         "required": [
-          "name",
-          "url"
+          "name"
         ],
         "properties": {
+          "args": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "auth_header": {
             "type": [
               "string",
@@ -10944,7 +11671,14 @@
               "string",
               "null"
             ],
-            "description": "`none` (the default), `bearer` or `header`."
+            "description": "`none` (the default), `bearer`, `header` or `oauth`. Only for `http`."
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The program of a `stdio` server. It is run as it is, with `args`:\nthere is no shell."
           },
           "description": {
             "type": [
@@ -10959,21 +11693,74 @@
             ],
             "description": "On by default."
           },
+          "env": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The environment of a `stdio` server, name to value; nothing else of\nthe gateway's environment reaches the program (it also gets `PATH`,\n`HOME` and `LANG`). The values are stored encrypted and never shown.",
+            "additionalProperties": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "propertyNames": {
+              "type": "string",
+              "writeOnly": true
+            }
+          },
           "name": {
             "type": "string",
             "description": "1 to 63 characters of `a-z`, `0-9` and `-`, starting with a letter or\na digit. It is the name in the endpoint `/mcp/{name}` and in a key's\nallowlist (`mcp:{name}/{tool}`), and cannot be changed."
+          },
+          "oauth_client_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `oauth`: the client the gateway is at the token endpoint."
+          },
+          "oauth_grant": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `oauth`: `client_credentials` (the default) or `token_exchange`\n(RFC 8693, with `secret` as the token to exchange). The token is made\nfor this server's URL (RFC 8707). The gateway never passes an agent's\nkey on, nor a token to an agent."
+          },
+          "oauth_scopes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `oauth`: the scopes to ask for, space separated."
+          },
+          "oauth_token_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `auth_kind` `oauth`: where the gateway gets a token for this\nserver. HTTPS (unless private addresses are allowed), on an\nauthorization server the MCP server names, if it names any."
           },
           "secret": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Required with `bearer` or `header`.",
+            "description": "Required with `bearer`, `header` or `oauth` (the client secret, or for\n`token_exchange` the token to exchange).",
             "writeOnly": true
           },
+          "transport": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`http` (the default), or `stdio` for a program the gateway runs on its\nown host. Local servers need `UF_MCP_LOCAL=on`."
+          },
           "url": {
-            "type": "string",
-            "description": "The streamable-HTTP endpoint of the server."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The streamable-HTTP endpoint of the server. Required for `http`,\nabsent for `stdio`."
           }
         },
         "additionalProperties": false
@@ -11102,14 +11889,14 @@
           },
           "kind": {
             "type": "string",
-            "description": "`budget`, `error_rate` or `circuit_open`."
+            "description": "`budget`, `error_rate`, `circuit_open` or `mcp_down`."
           },
           "name": {
             "type": "string"
           },
           "params": {
             "type": "object",
-            "description": "By kind. `budget`: `{\"budget_id\": id or null, \"percent\": 1-100}`.\n`error_rate`: `{\"scope\": \"gateway\"|\"route\"|\"provider\"|\"key\",\n\"subject\": name or null, \"percent\": 1-100, \"window_minutes\": 5-60\n(5), \"min_requests\": 1-100000 (20)}`. `circuit_open`:\n`{\"provider\": name or null, \"model\": name or null}`. Unknown fields\nare refused.",
+            "description": "By kind. `budget`: `{\"budget_id\": id or null, \"percent\": 1-100}`.\n`error_rate`: `{\"scope\": \"gateway\"|\"route\"|\"provider\"|\"key\",\n\"subject\": name or null, \"percent\": 1-100, \"window_minutes\": 5-60\n(5), \"min_requests\": 1-100000 (20)}`. `circuit_open`:\n`{\"provider\": name or null, \"model\": name or null}`. `mcp_down`:\n`{\"server\": name or null}`, any server when null. Unknown fields\nare refused.",
             "additionalProperties": {},
             "propertyNames": {
               "type": "string"
@@ -11259,6 +12046,102 @@
           "output",
           "both"
         ]
+      },
+      "Entry": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "homepage",
+          "transport",
+          "url",
+          "command",
+          "args",
+          "auth_header",
+          "env",
+          "auth",
+          "tags"
+        ],
+        "properties": {
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "auth": {
+            "type": "string",
+            "description": "`none`, `bearer`, `header` or `oauth`."
+          },
+          "auth_header": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "env": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EnvVar"
+            }
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "`^[a-z0-9][a-z0-9-]{0,62}$`; also the default name of the server."
+          },
+          "name": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "transport": {
+            "type": "string",
+            "description": "`http` or `stdio`."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "EnvVar": {
+        "type": "object",
+        "required": [
+          "name",
+          "secret",
+          "help"
+        ],
+        "properties": {
+          "help": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "The name of the environment variable (stdio) or the one secret that\nauthenticates to the server (http)."
+          },
+          "secret": {
+            "type": "boolean"
+          }
+        }
       },
       "EventList": {
         "type": "object",
@@ -11433,6 +12316,38 @@
             "type": "string"
           }
         }
+      },
+      "FromCatalogRequest": {
+        "type": "object",
+        "required": [
+          "catalog_id"
+        ],
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "description": "The `id` of a catalog entry."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name of the server. The entry's id by default."
+          },
+          "secrets": {
+            "type": "object",
+            "description": "The values of the entry's `env` items, by name. A secret item is\nrequired; the value of the one an HTTP entry authenticates with is\nthe server's secret.",
+            "additionalProperties": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "propertyNames": {
+              "type": "string",
+              "writeOnly": true
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "GrantEntry": {
         "type": "object",
@@ -11908,6 +12823,7 @@
           "revoked_at",
           "created_at",
           "allowed",
+          "pinned_tools",
           "tags",
           "team_only",
           "guardrails",
@@ -11962,6 +12878,13 @@
               "null"
             ],
             "format": "int64"
+          },
+          "pinned_tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The MCP tools (`mcp:<server>/<tool>`) the combined endpoint lists\nwhen the key can call too many to list them all."
           },
           "revoked_at": {
             "type": [
@@ -12659,12 +13582,105 @@
         ],
         "description": "What a rule looks for. Written as `{\"keywords\": {\"words\": [...],\n\"whole_word\": true}}`, `{\"regex\": \"...\"}` or `{\"pii\": [\"EMAIL\", ...]}`."
       },
+      "McpCatalogView": {
+        "type": "object",
+        "description": "The catalog of MCP servers the project publishes, as the console shows it.",
+        "required": [
+          "entries",
+          "source",
+          "fetched_at",
+          "error",
+          "fetch_enabled",
+          "local_enabled"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Entry"
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the newest attempt did not give a newer copy, in our words."
+          },
+          "fetch_enabled": {
+            "type": "boolean",
+            "description": "Whether the gateway fetches the catalog at all (`UF_MCP_CATALOG`)."
+          },
+          "fetched_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "local_enabled": {
+            "type": "boolean",
+            "description": "Whether servers that run as programs on this host may be added\n(`UF_MCP_LOCAL=on`)."
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source",
+            "description": "Where `entries` came from: fetched since the gateway started\n(`remote`), kept from an earlier fetch (`cache`), or the copy that\nships in the binary (`builtin`)."
+          }
+        }
+      },
+      "McpHealthView": {
+        "type": "object",
+        "description": "The finding of a health probe: one `tools/list` outside any key, with a\n5 second limit, every `UF_MCP_HEALTH_INTERVAL` seconds (60).",
+        "required": [
+          "status",
+          "latency_ms",
+          "checked_at"
+        ],
+        "properties": {
+          "checked_at": {
+            "type": "string"
+          },
+          "latency_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the answer took, when there was one.",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "description": "`ok`, `degraded` (slow, or one failed probe), `down` (two failed probes\nin a row) or `crashlooping` (a local program that keeps dying)."
+          }
+        }
+      },
+      "McpLocalView": {
+        "type": "object",
+        "description": "How the program of a local server stands.",
+        "required": [
+          "phase",
+          "restarts"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string",
+            "description": "`starting`, `running`, `backoff` (died, waiting to be started again),\n`crashlooping`, `stopped`, or `off` (local servers are not enabled)."
+          },
+          "restarts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many times it was started again.",
+            "minimum": 0
+          }
+        }
+      },
       "McpServerEntry": {
         "type": "object",
         "description": "An MCP server. Its secret is never in a file: a server an import\ncreates with authentication cannot be called until an admin enters it.",
         "required": [
           "name",
           "url",
+          "oauth",
           "auth_header"
         ],
         "properties": {
@@ -12677,7 +13693,7 @@
           },
           "auth_kind": {
             "type": "string",
-            "description": "`none`, `bearer` or `header`."
+            "description": "`none`, `bearer`, `header` or `oauth` (then `oauth` says how)."
           },
           "description": {
             "type": "string"
@@ -12687,6 +13703,17 @@
           },
           "name": {
             "type": "string"
+          },
+          "oauth": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/OauthEntry",
+                "description": "For `auth_kind` `oauth`: where the gateway gets a token. The client\nsecret is never in a file."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "tools": {
             "type": "array",
@@ -12731,9 +13758,29 @@
           "has_secret",
           "usable",
           "last_sync_at",
-          "last_sync_error"
+          "last_sync_error",
+          "transport",
+          "command",
+          "args",
+          "env_names",
+          "catalog_id",
+          "local",
+          "oauth_token_url",
+          "oauth_client_id",
+          "oauth_scopes",
+          "oauth_grant",
+          "health"
         ],
         "properties": {
+          "args": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "auth_header": {
             "type": [
               "string",
@@ -12745,7 +13792,21 @@
               "string",
               "null"
             ],
-            "description": "`none`, `bearer` or `header`."
+            "description": "`none`, `bearer`, `header` or `oauth`."
+          },
+          "catalog_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The catalog entry the server was made from."
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The program of a `stdio` server."
           },
           "created_at": {
             "type": "string"
@@ -12756,10 +13817,31 @@
           "enabled": {
             "type": "boolean"
           },
+          "env_names": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of the environment variables of a `stdio` server; never the values."
+          },
           "has_secret": {
             "type": [
               "boolean",
               "null"
+            ]
+          },
+          "health": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpHealthView",
+                "description": "What the last health probe of this gateway process found; `null`\nbefore the first probe, and for a server that is switched off."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "id": {
@@ -12779,13 +13861,53 @@
             ],
             "description": "Our summary of why the last sync failed; never text from the server."
           },
+          "local": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpLocalView",
+                "description": "How the program of a `stdio` server stands."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "type": "string"
+          },
+          "oauth_client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_grant": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_scopes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_token_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `oauth`: the token endpoint, the client, the scopes and the grant."
           },
           "tool_count": {
             "type": "integer",
             "format": "int64",
             "description": "How many tools: for an admin those the server offers, for anybody\nelse those they may call."
+          },
+          "transport": {
+            "type": "string",
+            "description": "`http`, or `stdio` for a program the gateway runs."
           },
           "url": {
             "type": [
@@ -12799,6 +13921,24 @@
               "null"
             ],
             "description": "The server can be called: it needs no secret, or its secret can be read."
+          }
+        }
+      },
+      "McpStderrView": {
+        "type": "object",
+        "description": "What a local server's program wrote to stderr.",
+        "required": [
+          "text",
+          "supervised"
+        ],
+        "properties": {
+          "supervised": {
+            "type": "boolean",
+            "description": "Whether the gateway keeps the output of this server now: it is\nrunning, or waiting to be started again."
+          },
+          "text": {
+            "type": "string",
+            "description": "The last 64 KiB, with the values of the server's environment replaced\nby `***`."
           }
         }
       },
@@ -12844,7 +13984,8 @@
         "description": "What an admin set on a tool of an MCP server: whether it is on and who\nmay call it. The tool itself (its schema) is the server's to say; it\narrives with a sync.",
         "required": [
           "name",
-          "enabled"
+          "enabled",
+          "projection"
         ],
         "properties": {
           "enabled": {
@@ -12855,6 +13996,17 @@
           },
           "name": {
             "type": "string"
+          },
+          "projection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionEntry",
+                "description": "What of the tool's result the agent is given (see `mcp::project`);\nnone: all of it."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -12885,6 +14037,7 @@
           "output_schema",
           "annotations",
           "enabled",
+          "projection",
           "removed",
           "grants"
         ],
@@ -12920,6 +14073,17 @@
             "type": [
               "object",
               "null"
+            ]
+          },
+          "projection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionBody",
+                "description": "What of its result the agent is given; `null`: all of it."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "removed": {
@@ -13111,6 +14275,35 @@
             "type": "string"
           }
         }
+      },
+      "OauthEntry": {
+        "type": "object",
+        "description": "How the gateway signs in to an MCP server with OAuth (see `mcp::oauth`).",
+        "required": [
+          "token_url",
+          "client_id",
+          "scopes",
+          "grant"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "grant": {
+            "type": "string",
+            "description": "`client_credentials` or `token_exchange`."
+          },
+          "scopes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_url": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "OidcTestRequest": {
         "type": "object",
@@ -13658,6 +14851,81 @@
           }
         }
       },
+      "PlaygroundMcpError": {
+        "type": "object",
+        "description": "The JSON-RPC answer of `/mcp/{server}` to a request it refused.",
+        "required": [
+          "jsonrpc",
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "description": "`{\"code\": <number>, \"message\": <text>}`."
+          },
+          "id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The `id` of the request; `null` when it could not be read."
+          },
+          "jsonrpc": {
+            "type": "string"
+          }
+        }
+      },
+      "PlaygroundMcpReply": {
+        "type": "object",
+        "description": "The JSON-RPC answer of `/mcp/{server}` to a call that was carried out.\n(A call the tool could not do is an `isError` result; a call the gateway\nwould not let through, such as one to a tool the user may not call, is a\nJSON-RPC `error` in the place of `result`, see `PlaygroundMcpError`.)",
+        "required": [
+          "jsonrpc",
+          "result"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The `id` of the request."
+          },
+          "jsonrpc": {
+            "type": "string"
+          },
+          "result": {
+            "type": "object"
+          }
+        }
+      },
+      "PlaygroundMcpRequest": {
+        "type": "object",
+        "description": "A JSON-RPC request for `/mcp/{server}`, as the console's playground sends\nit: `tools/list` or `tools/call`. The body is read by the same dispatcher\nas that endpoint's.",
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "jsonrpc": {
+            "type": "string",
+            "description": "`2.0`."
+          },
+          "method": {
+            "type": "string",
+            "description": "For example `tools/list`, or `tools/call` with `params`\n`{\"name\": \"<tool>\", \"arguments\": {...}}`."
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
       "PlaygroundMessage": {
         "type": "object",
         "required": [
@@ -13837,6 +15105,149 @@
             "description": "Zero for a caller who is not an admin."
           }
         }
+      },
+      "ProjectionBody": {
+        "type": "object",
+        "description": "What of a tool's result the agent is given. Left out, every list is empty\nand every limit off; all four left out takes the projection off.",
+        "required": [
+          "max_items",
+          "max_bytes"
+        ],
+        "properties": {
+          "drop": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "JSONPath queries of what to remove, after `keep`."
+          },
+          "keep": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "JSONPath queries (RFC 9535) of what to keep: only the nodes they select\nstay, with the structure above them. Empty keeps everything."
+          },
+          "max_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The most bytes a text block may have; more is cut and says so.",
+            "minimum": 0
+          },
+          "max_items": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The most items any array of the result may keep.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionEntry": {
+        "type": "object",
+        "description": "A projection of a tool's result, as the file holds it.",
+        "required": [
+          "max_items",
+          "max_bytes"
+        ],
+        "properties": {
+          "drop": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "JSONPath queries of what to remove, after `keep`."
+          },
+          "keep": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "JSONPath queries of what to keep."
+          },
+          "max_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_items": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionPreview": {
+        "type": "object",
+        "required": [
+          "result",
+          "changed",
+          "truncated",
+          "bytes_before",
+          "bytes_after"
+        ],
+        "properties": {
+          "bytes_after": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes_before": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "Whether the projection changed anything."
+          },
+          "result": {
+            "type": "object",
+            "description": "The result as the agent would be given it."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether a limit cut something."
+          }
+        }
+      },
+      "ProjectionPreviewRequest": {
+        "type": "object",
+        "description": "A result to project, and optionally a projection to try on it.",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "projection": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionBody",
+                "description": "A projection to try. Left out, the tool's own is used."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "type": "object",
+            "description": "A result of the tool as `tools/call` returns it (`content`,\n`structuredContent`), for instance the last one from the playground."
+          }
+        },
+        "additionalProperties": false
       },
       "PromptEntry": {
         "type": "object",
@@ -14917,6 +16328,15 @@
           }
         }
       },
+      "Source": {
+        "type": "string",
+        "description": "Where the entries a view shows came from.",
+        "enum": [
+          "remote",
+          "cache",
+          "builtin"
+        ]
+      },
       "SyncResult": {
         "type": "object",
         "required": [
@@ -15329,7 +16749,7 @@
       },
       "UpdateKeyRequest": {
         "type": "object",
-        "description": "What to change on a key. Admins only; send at least one field.",
+        "description": "What to change on a key. Admins; `pinned_tools` also a lead of the key's\nteam. Send at least one field.",
         "properties": {
           "guardrail_ids": {
             "type": [
@@ -15341,6 +16761,16 @@
               "format": "int64"
             },
             "description": "Replaces the guardrails of the key; `[]` takes them all off. Left\nout, they stay."
+          },
+          "pinned_tools": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replaces the MCP tools pinned to the key (`mcp:<server>/<tool>`, at\nmost 100, each one the key may call); `[]` unpins them all. The\ncombined MCP endpoint lists them, with the search tools, when the key\ncan call more tools than `UF_MCP_LIST_INLINE_MAX`. A lead of the key's\nteam, a lead's own key, or an admin. Left out, they stay."
           },
           "tags": {
             "type": [
@@ -15361,6 +16791,15 @@
       "UpdateMcpServerRequest": {
         "type": "object",
         "properties": {
+          "args": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "auth_header": {
             "type": [
               "string",
@@ -15373,6 +16812,13 @@
               "null"
             ]
           },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The program of a `stdio` server."
+          },
           "description": {
             "type": [
               "string",
@@ -15384,6 +16830,47 @@
               "boolean",
               "null"
             ]
+          },
+          "env": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The environment of a `stdio` server. It replaces the old one: a name\nthat is not here is removed, a name with an empty value keeps the\nvalue that is stored, any other value replaces it.",
+            "additionalProperties": {
+              "type": "string",
+              "writeOnly": true
+            },
+            "propertyNames": {
+              "type": "string",
+              "writeOnly": true
+            }
+          },
+          "oauth_client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_grant": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_scopes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Empty removes the scopes."
+          },
+          "oauth_token_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `oauth`, as when the server is made. Changing the host of the\ntoken URL needs the secret again."
           },
           "secret": {
             "type": [

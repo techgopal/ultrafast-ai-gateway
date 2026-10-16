@@ -60,6 +60,8 @@ pub enum EngineInput {
         period_start: String,
         spent_micros: u64,
     },
+    /// The health probe's finding about an MCP server.
+    McpStatus { server: String, down: bool },
     /// Evaluate the error windows now; `done` is answered afterwards.
     Tick { done: Option<oneshot::Sender<()>> },
     /// Read the rules again; `done` is answered afterwards.
@@ -98,6 +100,15 @@ impl EngineHandle {
                 spent_micros,
             })
             .is_ok()
+    }
+
+    /// What the health probe found about an MCP server. Never waits; a full
+    /// queue drops it, and the next probe says it again.
+    pub fn mcp_status(&self, server: &str, down: bool) {
+        let _ = self.tx.try_send(EngineInput::McpStatus {
+            server: server.to_string(),
+            down,
+        });
     }
 
     /// A handle whose engine never reads: for a test of a full queue.
@@ -630,6 +641,88 @@ impl Engine {
         }
     }
 
+    /// An MCP server was found down or up. A rule for it fires on the first
+    /// finding of `down` and resolves on the first of `up`; the health probe
+    /// has already waited for two failures in a row. An episode belongs to
+    /// the process that opened it: the others leave it alone.
+    pub async fn on_mcp(&mut self, server: &str, down: bool) {
+        let subject = format!("mcp:{server}");
+        for i in 0..self.rules.len() {
+            let r = &self.rules[i];
+            let Params::McpDown { server: only } = &r.params else {
+                continue;
+            };
+            if !r.enabled || only.as_ref().is_some_and(|s| s != server) {
+                continue;
+            }
+            let id = r.id;
+            let firing = self.episodes.is_firing(id, &subject);
+            if firing && self.episodes.is_foreign(id, &subject) {
+                continue;
+            }
+            let (change, summary) = match (firing, down) {
+                (false, true) => (Change::Fire, format!("MCP server {server} is down")),
+                (true, false) => (
+                    Change::Resolve,
+                    format!("MCP server {server} answers again"),
+                ),
+                _ => continue,
+            };
+            let details = json!({ "server": server });
+            if let Err(e) = self
+                .change(i, &subject, change, &summary, &details, None)
+                .await
+            {
+                tracing::warn!(error = %e, "could not record an alert");
+            }
+        }
+    }
+
+    /// Resolves the MCP episodes whose server is gone, as for a removed
+    /// target: nothing would ever report it up again.
+    async fn resolve_removed_mcp(&mut self) {
+        let mut firing = Vec::new();
+        for (i, r) in self.rules.iter().enumerate() {
+            if r.enabled && matches!(r.params, Params::McpDown { .. }) {
+                for subject in self.episodes.firing_subjects(r.id) {
+                    firing.push((i, subject));
+                }
+            }
+        }
+        if firing.is_empty() {
+            return;
+        }
+        let known: std::collections::HashSet<String> = match self.store.list_mcp_servers().await {
+            Ok(rows) => rows.into_iter().map(|s| s.name).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the MCP servers for the alert engine");
+                return;
+            }
+        };
+        for (i, subject) in firing {
+            let Some(server) = subject.strip_prefix("mcp:") else {
+                continue;
+            };
+            if known.contains(server) {
+                continue;
+            }
+            let details = json!({ "server": server });
+            if let Err(e) = self
+                .change(
+                    i,
+                    &subject,
+                    Change::Resolve,
+                    "server removed",
+                    &details,
+                    None,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "could not record an alert");
+            }
+        }
+    }
+
     /// Resolves the circuit episodes whose breaker has stayed closed for the
     /// quiet period.
     async fn settle_quiet_circuits(&mut self, at: Instant) {
@@ -821,6 +914,7 @@ impl Engine {
     async fn on_tick_at(&mut self, now: u32, at: Instant) {
         self.keep_alive().await;
         self.resolve_removed_targets().await;
+        self.resolve_removed_mcp().await;
         self.resync_circuits(at).await;
         self.settle_quiet_circuits(at).await;
         self.prune_budget_states().await;
@@ -953,6 +1047,9 @@ pub fn spawn(
                         EngineInput::BudgetSpend { budget, period_start, spent_micros } => {
                             engine.on_spend(&budget, &period_start, spent_micros).await;
                         }
+                        EngineInput::McpStatus { server, down } => {
+                            engine.on_mcp(&server, down).await;
+                        }
                         EngineInput::Tick { done } => {
                             engine.on_tick(windows.current()).await;
                             if let Some(done) = done { let _ = done.send(()); }
@@ -962,6 +1059,7 @@ pub fn spawn(
                                 tracing::warn!(error = %e, "could not read the alert rules");
                             }
                             engine.resolve_removed_targets().await;
+                            engine.resolve_removed_mcp().await;
                             if let Some(done) = done { let _ = done.send(()); }
                         }
                     }

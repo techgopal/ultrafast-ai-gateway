@@ -67,7 +67,7 @@ const RULE_SELECT: &str = "SELECT id, name, kind, params, enabled, created_at FR
 pub struct RuleRow {
     pub id: i64,
     pub name: String,
-    /// `budget`, `error_rate` or `circuit_open`.
+    /// `budget`, `error_rate`, `circuit_open` or `mcp_down`.
     pub kind: String,
     pub params: String,
     pub enabled: bool,

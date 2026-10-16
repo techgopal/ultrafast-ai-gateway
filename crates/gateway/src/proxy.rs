@@ -417,6 +417,7 @@ impl<'a> Actor<'a> {
                 tags: Tags::new(),
                 team_only: false,
                 guardrails: Vec::new(),
+                pinned: Vec::new(),
             }),
             key_id: None,
         }

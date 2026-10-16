@@ -34,15 +34,15 @@ use crate::api::trimmed_name;
 use crate::budgets::{BudgetAction, Period};
 use crate::cache::{CacheScope, RouteCache};
 use crate::catalog::validate_model_name;
-use crate::config::{same_host, validate_base_url, validate_provider_name};
+use crate::config::{is_private_host, same_host, validate_base_url, validate_provider_name};
 use crate::guardrails::{Directions, RuleSpec};
 use crate::limits::{LimitScope, RateLimit};
 use crate::mcp::{check_auth, validate_server_name, MAX_TOOL_NAME_BYTES};
 use crate::prompts::{self, Params, TemplateMessage, MAX_TEMPLATES, MAX_VERSIONS};
 use crate::secrets::Cipher;
 use crate::store::{
-    AuditEntry, ConfigState, Grants, GuardrailPatch, NewGuardrail, NewMcpServer, NewVersion,
-    RouteSettings, Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
+    AuditEntry, ConfigState, Grants, GuardrailPatch, McpServerRow, NewGuardrail, NewMcpServer,
+    NewVersion, RouteSettings, Store, TargetsInput, Tx, SESSION_HOURS_RANGE,
 };
 
 /// The `format` of the file.
@@ -106,6 +106,74 @@ pub struct McpToolEntry {
     pub enabled: bool,
     #[serde(default)]
     pub grants: GrantEntry,
+    /// What of the tool's result the agent is given (see `mcp::project`);
+    /// none: all of it.
+    #[serde(default)]
+    #[schema(required)]
+    pub projection: Option<ProjectionEntry>,
+}
+
+/// How the gateway signs in to an MCP server with OAuth (see `mcp::oauth`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OauthEntry {
+    pub token_url: String,
+    pub client_id: String,
+    #[serde(default)]
+    #[schema(required)]
+    pub scopes: Option<String>,
+    /// `client_credentials` or `token_exchange`.
+    pub grant: String,
+}
+
+/// A projection of a tool's result, as the file holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectionEntry {
+    /// JSONPath queries of what to keep.
+    #[serde(default)]
+    pub keep: Vec<String>,
+    /// JSONPath queries of what to remove, after `keep`.
+    #[serde(default)]
+    pub drop: Vec<String>,
+    #[serde(default)]
+    #[schema(required)]
+    pub max_items: Option<u64>,
+    #[serde(default)]
+    #[schema(required)]
+    pub max_bytes: Option<u64>,
+}
+
+impl OauthEntry {
+    fn of(row: &McpServerRow) -> Option<Self> {
+        row.is_oauth().then(|| Self {
+            token_url: row.oauth_token_url.clone().unwrap_or_default(),
+            client_id: row.oauth_client_id.clone().unwrap_or_default(),
+            scopes: row.oauth_scopes.clone(),
+            grant: row.oauth_grant.clone().unwrap_or_default(),
+        })
+    }
+
+    fn new_row<'a>(&'a self, secret_enc: Option<&'a str>) -> crate::store::NewOauth<'a> {
+        crate::store::NewOauth {
+            token_url: &self.token_url,
+            client_id: &self.client_id,
+            client_secret_enc: secret_enc,
+            scopes: self.scopes.as_deref().filter(|s| !s.is_empty()),
+            grant: &self.grant,
+        }
+    }
+}
+
+impl ProjectionEntry {
+    fn spec(&self) -> crate::mcp::project::Spec {
+        crate::mcp::project::Spec {
+            keep: self.keep.clone(),
+            drop: self.drop.clone(),
+            max_items: self.max_items,
+            max_bytes: self.max_bytes,
+        }
+    }
 }
 
 /// An MCP server. Its secret is never in a file: a server an import
@@ -115,9 +183,14 @@ pub struct McpToolEntry {
 pub struct McpServerEntry {
     pub name: String,
     pub url: String,
-    /// `none`, `bearer` or `header`.
+    /// `none`, `bearer`, `header` or `oauth` (then `oauth` says how).
     #[serde(default = "no_auth")]
     pub auth_kind: String,
+    /// For `auth_kind` `oauth`: where the gateway gets a token. The client
+    /// secret is never in a file.
+    #[serde(default)]
+    #[schema(required)]
+    pub oauth: Option<OauthEntry>,
     /// The header name, for `auth_kind` `header`.
     #[serde(default)]
     #[schema(required)]
@@ -261,7 +334,7 @@ pub struct AlertChannelEntry {
 #[serde(deny_unknown_fields)]
 pub struct AlertRuleEntry {
     pub name: String,
-    /// `budget`, `error_rate` or `circuit_open`.
+    /// `budget`, `error_rate`, `circuit_open` or `mcp_down`.
     pub kind: String,
     #[serde(default = "yes")]
     pub enabled: bool,
@@ -896,9 +969,12 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
 
     let (alert_channels, alert_rules) = alerts_of(state);
     let mut tool_grants = grants_by_tool(state);
+    // A program to run on a host is not configuration to carry between
+    // gateways: local servers are not in the file, and a file cannot make one.
     let mut mcp_servers: Vec<McpServerEntry> = state
         .mcp_servers
         .iter()
+        .filter(|server| !server.is_local())
         .map(|server| {
             let mut tools: Vec<McpToolEntry> = state
                 .mcp_tools
@@ -908,13 +984,29 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
                     name: t.name.clone(),
                     enabled: t.enabled,
                     grants: tool_grants.remove(&t.id).unwrap_or_default(),
+                    projection: state
+                        .mcp_projections
+                        .iter()
+                        .find(|p| p.tool_id == t.id)
+                        .map(|p| ProjectionEntry {
+                            keep: p.keep.clone(),
+                            drop: p.drop.clone(),
+                            max_items: p.max_items.and_then(|n| u64::try_from(n).ok()),
+                            max_bytes: p.max_bytes.and_then(|n| u64::try_from(n).ok()),
+                        }),
                 })
                 .collect();
             tools.sort_by(|a, b| a.name.cmp(&b.name));
             McpServerEntry {
                 name: server.name.clone(),
                 url: server.url.clone(),
-                auth_kind: server.auth_kind.clone(),
+                auth_kind: server.auth_kind_shown().to_string(),
+                oauth: server.is_oauth().then(|| OauthEntry {
+                    token_url: server.oauth_token_url.clone().unwrap_or_default(),
+                    client_id: server.oauth_client_id.clone().unwrap_or_default(),
+                    scopes: server.oauth_scopes.clone(),
+                    grant: server.oauth_grant.clone().unwrap_or_default(),
+                }),
                 auth_header: server.auth_header.clone(),
                 description: server.description.clone(),
                 enabled: server.enabled,
@@ -1055,6 +1147,8 @@ enum Op {
         id: i64,
         enabled: Option<bool>,
         grants: Option<GrantEntry>,
+        /// `Some(None)` takes the projection off.
+        projection: Option<Option<ProjectionEntry>>,
     },
     SetRetention(i64),
     SetSessionHours(i64),
@@ -1388,7 +1482,66 @@ impl Planner<'_> {
             let mut fields = BTreeMap::new();
             checked_provider("name", validate_server_name(&entry.name), &mut fields);
             checked_provider("url", validate_base_url(&entry.url), &mut fields);
-            check_auth(&entry.auth_kind, entry.auth_header.as_deref(), &mut fields);
+            let allow_private = crate::mcp::call::allow_private_upstreams_from_env();
+            let private_msg = "The address is on this machine or a private network. Set UF_MCP_ALLOW_PRIVATE_UPSTREAMS=on to allow it.";
+            if !fields.contains_key("url") && !allow_private && is_private_host(&entry.url) {
+                fields.insert("url".to_string(), private_msg.to_string());
+            }
+            if entry.auth_kind == "oauth" {
+                match &entry.oauth {
+                    None => {
+                        fields.insert(
+                            "oauth".to_string(),
+                            "oauth is required with auth_kind oauth".to_string(),
+                        );
+                    }
+                    Some(o) => {
+                        checked_provider(
+                            "oauth.token_url",
+                            validate_base_url(&o.token_url),
+                            &mut fields,
+                        );
+                        if !fields.contains_key("oauth.token_url") && !allow_private {
+                            if is_private_host(&o.token_url) {
+                                fields
+                                    .insert("oauth.token_url".to_string(), private_msg.to_string());
+                            } else if !o.token_url.starts_with("https://") {
+                                fields.insert(
+                                    "oauth.token_url".to_string(),
+                                    "The token URL must be https: the secret is sent to it."
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        if o.client_id.is_empty() || o.client_id.len() > 200 {
+                            fields.insert(
+                                "oauth.client_id".to_string(),
+                                "must be 1 to 200 characters".to_string(),
+                            );
+                        }
+                        if crate::mcp::oauth::Grant::parse(&o.grant).is_none() {
+                            fields.insert(
+                                "oauth.grant".to_string(),
+                                "must be client_credentials or token_exchange".to_string(),
+                            );
+                        }
+                        if entry.auth_header.is_some() {
+                            fields.insert(
+                                "auth_header".to_string(),
+                                "is only for auth_kind header".to_string(),
+                            );
+                        }
+                    }
+                }
+            } else {
+                check_auth(&entry.auth_kind, entry.auth_header.as_deref(), &mut fields);
+                if entry.oauth.is_some() {
+                    fields.insert(
+                        "oauth".to_string(),
+                        "is only for auth_kind oauth".to_string(),
+                    );
+                }
+            }
             check_description(&entry.description, &mut fields);
             self.fields(&at, fields);
             if !seen.insert(entry.name.clone()) {
@@ -1414,6 +1567,16 @@ impl Planner<'_> {
                 continue;
             }
             let existing = state.mcp_servers.iter().find(|s| s.name == entry.name);
+            if existing.is_some_and(McpServerRow::is_local) {
+                self.error(
+                    at.clone(),
+                    format!(
+                        "'{}' is a local MCP server; local servers are not part of a configuration file",
+                        entry.name
+                    ),
+                );
+                continue;
+            }
             let Some(existing) = existing else {
                 if entry.auth_kind != "none" {
                     self.report.warnings.push(Issue {
@@ -1443,7 +1606,11 @@ impl Planner<'_> {
                 continue;
             };
             let mut changes = Vec::new();
-            let mut secret_enc = existing.auth_secret_enc.clone();
+            let mut secret_enc = if existing.is_oauth() {
+                existing.oauth_client_secret_enc.clone()
+            } else {
+                existing.auth_secret_enc.clone()
+            };
             if existing.url != entry.url {
                 changes.push("url".to_string());
                 // The stored secret goes only to the host it was given for.
@@ -1461,8 +1628,28 @@ impl Planner<'_> {
                     });
                 }
             }
-            if existing.auth_kind != entry.auth_kind || existing.auth_header != entry.auth_header {
+            let was_oauth = OauthEntry::of(existing);
+            if existing.auth_kind_shown() != entry.auth_kind
+                || existing.auth_header != entry.auth_header
+                || was_oauth != entry.oauth
+            {
                 changes.push("auth".to_string());
+                // A secret made for another way of signing in, or for another
+                // token endpoint, is not kept.
+                let moved_token_url = match (&was_oauth, &entry.oauth) {
+                    (Some(was), Some(now)) => !same_host(&was.token_url, &now.token_url),
+                    _ => existing.is_oauth() != (entry.auth_kind == "oauth"),
+                };
+                if moved_token_url && secret_enc.is_some() && entry.auth_kind != "none" {
+                    secret_enc = None;
+                    self.report.warnings.push(Issue {
+                        at: format!("{at}.auth_kind"),
+                        message: format!(
+                            "MCP server '{}' signs in another way: its stored secret is removed; set it again",
+                            entry.name
+                        ),
+                    });
+                }
                 if entry.auth_kind == "none" {
                     secret_enc = None;
                 } else if secret_enc.is_none() {
@@ -1524,6 +1711,16 @@ impl Planner<'_> {
                 if have.is_none_or(|t| t.grants != wanted) {
                     tool_changes.push("grants".to_string());
                 }
+                let wanted_projection = tool.projection.clone().filter(|p| !p.spec().is_empty());
+                if let Some(p) = &wanted_projection {
+                    if let Err((field, message)) = p.spec().check() {
+                        self.error(format!("{at}.tools[{j}].projection.{field}"), message);
+                        continue;
+                    }
+                }
+                if have.map(|t| t.projection.clone()).unwrap_or_default() != wanted_projection {
+                    tool_changes.push("projection".to_string());
+                }
                 if tool_changes.is_empty() {
                     self.report.unchanged += 1;
                     continue;
@@ -1533,6 +1730,7 @@ impl Planner<'_> {
                     id: row.id,
                     enabled: has("enabled").then_some(tool.enabled),
                     grants: has("grants").then_some(wanted),
+                    projection: has("projection").then_some(wanted_projection),
                 };
                 self.push(
                     op,
@@ -3047,12 +3245,18 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                 tx.insert_server(NewMcpServer {
                     name: &entry.name,
                     url: &entry.url,
-                    auth_kind: &entry.auth_kind,
+                    auth_kind: if entry.auth_kind == "oauth" {
+                        "none"
+                    } else {
+                        &entry.auth_kind
+                    },
                     auth_header: entry.auth_header.as_deref(),
                     // A file holds no secret.
                     auth_secret_enc: None,
                     enabled: entry.enabled,
                     description: &entry.description,
+                    oauth: entry.oauth.as_ref().map(|o| o.new_row(None)),
+                    ..Default::default()
                 })
                 .await?;
             }
@@ -3067,11 +3271,24 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                         NewMcpServer {
                             name: &entry.name,
                             url: &entry.url,
-                            auth_kind: &entry.auth_kind,
+                            auth_kind: if entry.auth_kind == "oauth" {
+                                "none"
+                            } else {
+                                &entry.auth_kind
+                            },
                             auth_header: entry.auth_header.as_deref(),
-                            auth_secret_enc: secret_enc.as_deref(),
+                            auth_secret_enc: if entry.auth_kind == "oauth" {
+                                None
+                            } else {
+                                secret_enc.as_deref()
+                            },
                             enabled: entry.enabled,
                             description: &entry.description,
+                            oauth: entry
+                                .oauth
+                                .as_ref()
+                                .map(|o| o.new_row(secret_enc.as_deref())),
+                            ..Default::default()
                         },
                     )
                     .await?;
@@ -3083,7 +3300,24 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                 id,
                 enabled,
                 grants,
+                projection,
             } => {
+                match projection {
+                    Some(Some(p)) => {
+                        tx.put_projection(&crate::store::ProjectionRow {
+                            tool_id: id,
+                            keep: p.keep,
+                            drop: p.drop,
+                            max_items: p.max_items.and_then(|n| i64::try_from(n).ok()),
+                            max_bytes: p.max_bytes.and_then(|n| i64::try_from(n).ok()),
+                        })
+                        .await?;
+                    }
+                    Some(None) => {
+                        tx.delete_projection(id).await?;
+                    }
+                    None => {}
+                }
                 if let Some(enabled) = enabled {
                     tx.set_tool_enabled(id, enabled).await?;
                 }

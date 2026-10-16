@@ -2,6 +2,8 @@
 //! breaker that opens, a budget that fills, a configuration that moves.
 
 mod common;
+#[path = "support/mock_mcp.rs"]
+mod mock_mcp;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +12,7 @@ use axum::http::StatusCode;
 use common::{
     call, error_code, harness_with_state, post_chat, seed_user, Harness, Signed, ORG_PASSWORD,
 };
+use mock_mcp::{tool, Failure, MockMcp};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -18,7 +21,8 @@ use ultrafast_gateway::alerts::{Deliverer, DeliveryConfig, EngineConfig};
 use ultrafast_gateway::budgets::{self, BudgetAction, Period};
 use ultrafast_gateway::identity::Role;
 use ultrafast_gateway::limits::LimitScope;
-use ultrafast_gateway::store::{RouteSettings, TargetsInput};
+use ultrafast_gateway::mcp::health::probe_once;
+use ultrafast_gateway::store::{NewMcpServer, RouteSettings, TargetsInput};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1314,5 +1318,126 @@ async fn disabling_a_rule_forgets_its_episodes_and_enabling_it_starts_fresh() {
             .len(),
         2
     );
+    w.shutdown().await;
+}
+
+/// An MCP server `name` at the mock, registered and in the snapshot.
+async fn mcp_server(w: &World, mock: &MockMcp, name: &str) -> i64 {
+    let mut tx = w.h.store.begin().await.unwrap();
+    let id = tx
+        .insert_server(NewMcpServer {
+            name,
+            url: &mock.url,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    id
+}
+
+#[tokio::test]
+async fn an_mcp_server_found_down_fires_mcp_down_and_answering_again_resolves_it() {
+    let w = world().await;
+    let mock = MockMcp::builder()
+        .tools(vec![tool("echo", "e")])
+        .start()
+        .await;
+    mcp_server(&w, &mock, "mock").await;
+    let rule = w.rule("mcp", "mcp_down", json!({ "server": "mock" })).await;
+    let elsewhere = w
+        .rule("elsewhere", "mcp_down", json!({ "server": "other" }))
+        .await;
+    let any = w.rule("any", "mcp_down", json!({})).await;
+
+    probe_once(&w.h.state).await;
+    assert!(w.events("").await.is_empty());
+
+    // One failed probe is only a warning.
+    mock.set_failure(Failure::Status500);
+    probe_once(&w.h.state).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(w.events("").await.is_empty());
+    // The second makes it down: the rules for it, and for any server, fire once.
+    probe_once(&w.h.state).await;
+    let firing = w.wait_event(rule, "firing").await;
+    assert_eq!(firing["subject"], "mcp:mock");
+    assert_eq!(firing["kind"], "mcp_down");
+    assert_eq!(firing["details"], json!({ "server": "mock" }));
+    assert_eq!(firing["summary"], "MCP server mock is down");
+    w.wait_event(any, "firing").await;
+    let sent = w.delivered(2).await;
+    assert!(sent.iter().all(|b| b["rule"]["kind"] == "mcp_down"
+        && b["subject"] == "mcp:mock"
+        && b["state"] == "firing"));
+    // Still down: nothing more is said.
+    probe_once(&w.h.state).await;
+    probe_once(&w.h.state).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(w.events(&format!("?rule_id={rule}")).await.len(), 1);
+
+    // Answering again ends the episode.
+    mock.set_failure(Failure::None);
+    probe_once(&w.h.state).await;
+    let resolved = w.wait_event(rule, "resolved").await;
+    assert_eq!(resolved["summary"], "MCP server mock answers again");
+    w.wait_event(any, "resolved").await;
+    assert!(w.events(&format!("?rule_id={elsewhere}")).await.is_empty());
+    w.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_mcp_episode_whose_server_was_deleted_is_resolved() {
+    let w = world().await;
+    let mock = MockMcp::builder()
+        .tools(vec![tool("echo", "e")])
+        .failure(Failure::Status500)
+        .start()
+        .await;
+    let id = mcp_server(&w, &mock, "mock").await;
+    let rule = w.rule("any", "mcp_down", json!({})).await;
+    probe_once(&w.h.state).await;
+    probe_once(&w.h.state).await;
+    w.wait_event(rule, "firing").await;
+    let mut tx = w.h.store.begin().await.unwrap();
+    assert!(tx.delete_server(id).await.unwrap());
+    tx.commit().await.unwrap();
+    w.h.state.refresh().await.unwrap();
+    w.h.state.alert_engine.as_ref().unwrap().tick().await;
+    let resolved = w.wait_event(rule, "resolved").await;
+    assert_eq!(resolved["summary"], "server removed");
+    w.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_mcp_down_rule_is_checked_when_it_is_written() {
+    let w = world().await;
+    for bad in [
+        json!({ "server": "Bad_Name" }),
+        json!({ "x": 1 }),
+        json!({ "server": 3 }),
+    ] {
+        let (status, body) = w
+            .api(
+                "POST",
+                "/api/alerts/rules",
+                Some(json!({ "name": "r", "kind": "mcp_down", "params": bad,
+                              "channel_ids": [w.channel] })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+    let id = w
+        .rule("ok", "mcp_down", json!({ "server": "git-hub" }))
+        .await;
+    let (_, rules) = w.api("GET", "/api/alerts/rules", None).await;
+    let rule = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap();
+    assert_eq!(rule["params"], json!({ "server": "git-hub" }));
     w.shutdown().await;
 }

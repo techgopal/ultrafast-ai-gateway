@@ -38,6 +38,7 @@ async fn seed_server(org: &Org, name: &str, names: &[&str]) -> (i64, Vec<i64>) {
             auth_secret_enc: Some(&enc),
             enabled: true,
             description: "d",
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -349,6 +350,7 @@ async fn a_failed_sync_is_502_records_our_summary_and_changes_no_tool() {
             auth_secret_enc: Some(&enc),
             enabled: true,
             description: "",
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -388,6 +390,7 @@ async fn a_failed_sync_is_502_records_our_summary_and_changes_no_tool() {
             auth_secret_enc: None,
             enabled: true,
             description: "",
+            ..Default::default()
         },
     )
     .await
@@ -723,13 +726,14 @@ async fn the_export_has_servers_and_tool_settings_but_no_secret_and_round_trips(
             "name": "s",
             "url": "https://mcp.example.com/mcp",
             "auth_kind": "bearer",
+            "oauth": null,
             "auth_header": null,
             "description": "d",
             "enabled": true,
             "tools": [
-                { "name": "a", "enabled": true,
+                { "name": "a", "enabled": true, "projection": null,
                   "grants": { "everyone": false, "teams": ["Platform"], "users": ["tomas@example.com"] } },
-                { "name": "b", "enabled": false,
+                { "name": "b", "enabled": false, "projection": null,
                   "grants": { "everyone": true, "teams": [], "users": [] } },
             ],
         }])
@@ -898,6 +902,7 @@ async fn callable_tools_of_key_follows_the_owner_the_server_and_removal() {
         tags: Default::default(),
         team_only: true,
         guardrails: Vec::new(),
+        pinned: Vec::new(),
     };
     let count = |user: Option<i64>| {
         let snapshot = org.api.state.snapshot.load();
@@ -937,6 +942,7 @@ async fn callable_tools_of_key_follows_the_owner_the_server_and_removal() {
             auth_secret_enc: Some(&enc),
             enabled: false,
             description: "d",
+            ..Default::default()
         },
     )
     .await
@@ -944,4 +950,248 @@ async fn callable_tools_of_key_follows_the_owner_the_server_and_removal() {
     tx.commit().await.unwrap();
     org.api.state.refresh().await.unwrap();
     assert_eq!(count(Some(org.arjun)), 0);
+}
+
+async fn own_key(org: &Org, who: &Signed, name: &str) -> i64 {
+    let (status, body) = make_key(org, who, json!({ "name": name })).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["key"]["id"].as_i64().unwrap()
+}
+
+async fn pin(org: &Org, who: &Signed, key: i64, body: Value) -> (StatusCode, Value) {
+    org.call(Some(who), "PATCH", &format!("/api/keys/{key}"), Some(body))
+        .await
+}
+
+#[tokio::test]
+async fn pinned_tools_are_set_by_an_admin_or_a_lead_and_checked_against_what_the_key_can_call() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await; // admin
+    let arjun = org.sign_in("arjun").await; // lead of Platform
+    let lena = org.sign_in("lena").await; // member of Platform
+    let (_, tools) = seed_server(&org, "srv", &["a", "b", "off"]).await;
+    // `a` and `b` are on and for everyone; `off` is neither.
+    for tool in tools.iter().take(2) {
+        enable(&org, &maya, *tool, true).await;
+        let (status, _) = put_grants(&org, &maya, *tool, grants(true, &[], &[])).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let maya_key = own_key(&org, &maya, "maya-key").await;
+    let (status, view) = pin(
+        &org,
+        &maya,
+        maya_key,
+        json!({"pinned_tools": ["mcp:srv/a", "mcp:srv/b", "mcp:srv/a"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["pinned_tools"], json!(["mcp:srv/a", "mcp:srv/b"]));
+    assert!(org
+        .last_summary("key.pinned_tools")
+        .await
+        .contains("Pinned 2 MCP tools"));
+    // Unpinned with an empty list.
+    let (_, view) = pin(&org, &maya, maya_key, json!({"pinned_tools": []})).await;
+    assert_eq!(view["pinned_tools"], json!([]));
+    // What the key cannot call, or is not a tool, is refused in the same words.
+    for bad in [
+        json!(["mcp:srv/off"]),
+        json!(["mcp:srv/nope"]),
+        json!(["mcp:nope/a"]),
+        json!(["openai/gpt-4o"]),
+        Value::from(vec!["mcp:srv/a"; 101]),
+    ] {
+        let (status, body) = pin(&org, &maya, maya_key, json!({ "pinned_tools": bad })).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {body}");
+        assert!(body["error"]["fields"]["pinned_tools"].is_string());
+    }
+    // A lead pins to their own key; a member may not pin to theirs; nobody to another's.
+    let arjun_key = own_key(&org, &arjun, "arjun-key").await;
+    let (status, _) = pin(
+        &org,
+        &arjun,
+        arjun_key,
+        json!({"pinned_tools": ["mcp:srv/a"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let lena_key = own_key(&org, &lena, "lena-key").await;
+    let (status, _) = pin(
+        &org,
+        &lena,
+        lena_key,
+        json!({"pinned_tools": ["mcp:srv/a"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = pin(
+        &org,
+        &lena,
+        maya_key,
+        json!({"pinned_tools": ["mcp:srv/a"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // An empty request still says what to send.
+    let (status, _) = pin(&org, &maya, maya_key, json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+async fn put(org: &Org, who: &Signed, tool: i64, body: Value) -> (StatusCode, Value) {
+    org.call(
+        Some(who),
+        "PUT",
+        &format!("/api/mcp/tools/{tool}/projection"),
+        Some(body),
+    )
+    .await
+}
+
+async fn preview(org: &Org, who: &Signed, tool: i64, body: Value) -> (StatusCode, Value) {
+    org.call(
+        Some(who),
+        "POST",
+        &format!("/api/mcp/tools/{tool}/projection/preview"),
+        Some(body),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_projection_is_set_shown_checked_previewed_and_taken_off_by_an_admin() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    let lena = org.sign_in("lena").await;
+    let (server, tools) = seed_server(&org, "srv", &["a"]).await;
+    let tool = tools[0];
+    // Nothing yet.
+    let (_, listed) = tools_of(&org, &maya, server).await;
+    assert!(listed["tools"][0]["projection"].is_null(), "{listed}");
+
+    let (status, view) = put(
+        &org,
+        &maya,
+        tool,
+        json!({"keep": ["$.items[*].id"], "drop": ["$..secret"], "max_items": 5, "max_bytes": 2048}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(
+        view["projection"],
+        json!({"keep": ["$.items[*].id"], "drop": ["$..secret"], "max_items": 5, "max_bytes": 2048})
+    );
+    assert!(org
+        .last_summary("mcp.tool_projection")
+        .await
+        .contains("Set the projection"));
+    let (_, listed) = tools_of(&org, &maya, server).await;
+    assert_eq!(listed["tools"][0]["projection"]["max_items"], 5);
+    // Anybody else sees no projection, and may not set one.
+    enable(&org, &maya, tool, true).await;
+    let (status, _) = put_grants(&org, &maya, tool, grants(true, &[], &[])).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, seen) = tools_of(&org, &lena, server).await;
+    assert!(seen["tools"][0]["projection"].is_null());
+    let (status, _) = put(&org, &lena, tool, json!({"keep": []})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Bad queries and limits are told per field.
+    for (body, field) in [
+        (json!({"keep": ["$["]}), "keep"),
+        (json!({"drop": [""]}), "drop"),
+        (json!({"max_items": 0}), "max_items"),
+        (json!({"max_bytes": 999999999999u64}), "max_bytes"),
+    ] {
+        let (status, err) = put(&org, &maya, tool, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+        assert!(err["error"]["fields"][field].is_string(), "{field}: {err}");
+    }
+    let (status, _) = org
+        .call(
+            Some(&maya),
+            "PUT",
+            "/api/mcp/tools/99999/projection",
+            Some(json!({"keep": []})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The preview applies the stored projection, or one sent along, and stores nothing.
+    let result = json!({"content": [{"type": "text",
+        "text": json!({"items": [{"id": 1, "secret": "s"}, {"id": 2, "secret": "t"}]}).to_string()}],
+        "isError": false});
+    let (status, p) = preview(&org, &maya, tool, json!({"result": result})).await;
+    assert_eq!(status, StatusCode::OK, "{p}");
+    assert_eq!(p["changed"], true);
+    assert_eq!(
+        p["result"]["content"][0]["text"],
+        "{\"items\":[{\"id\":1},{\"id\":2}]}"
+    );
+    assert!(p["bytes_after"].as_u64().unwrap() < p["bytes_before"].as_u64().unwrap());
+    let (_, p) = preview(
+        &org,
+        &maya,
+        tool,
+        json!({"result": result, "projection": {"max_items": 1}}),
+    )
+    .await;
+    assert_eq!(p["truncated"], true);
+    let (status, _) = preview(&org, &maya, tool, json!({"result": [1]})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, _) = preview(
+        &org,
+        &maya,
+        tool,
+        json!({"result": result, "projection": {"keep": ["$["]}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        org.api
+            .store
+            .projection_of(tool)
+            .await
+            .unwrap()
+            .unwrap()
+            .max_items,
+        Some(5)
+    );
+
+    // The export carries it, and an import brings it back.
+    let file = export(&org, &maya).await;
+    assert_eq!(
+        file["mcp_servers"][0]["tools"][0]["projection"]["keep"],
+        json!(["$.items[*].id"])
+    );
+    let (status, _) = put(&org, &maya, tool, json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(org.api.store.projection_of(tool).await.unwrap().is_none());
+    assert!(org
+        .last_summary("mcp.tool_projection")
+        .await
+        .contains("Took the projection off"));
+    let parsed: ConfigFile = serde_json::from_value(file).unwrap();
+    let report = portable::import(&org.api.store, &parsed, &actor(), false)
+        .await
+        .unwrap();
+    assert!(report.is_clean(), "{:?}", report.errors);
+    let back = org.api.store.projection_of(tool).await.unwrap().unwrap();
+    assert_eq!(back.keep, ["$.items[*].id"]);
+    assert_eq!(back.max_bytes, Some(2048));
+
+    // A bad projection in a file is an error that names the place.
+    let mut bad = export(&org, &maya).await;
+    bad["mcp_servers"][0]["tools"][0]["projection"]["keep"] = json!(["$["]);
+    let parsed: ConfigFile = serde_json::from_value(bad).unwrap();
+    let report = portable::import(&org.api.store, &parsed, &actor(), true)
+        .await
+        .unwrap();
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|e| e.at.contains("projection.keep")),
+        "{:?}",
+        report.errors
+    );
 }

@@ -18,6 +18,8 @@ export interface MockMcp {
   methods: string[];
   /** What `tools/list` offers; a test may change it before the next sync. */
   tools: MockMcpTool[];
+  /** While true every request is answered 500: the server is down. */
+  down: boolean;
   close: () => Promise<void>;
 }
 
@@ -45,13 +47,17 @@ export async function startMockMcp(
     { name: "shout", description: "Says it loudly." },
   ],
 ): Promise<MockMcp> {
-  const mock: MockMcp = { url: "", methods: [], tools, close: () => Promise.resolve() };
+  const mock: MockMcp = { url: "", methods: [], tools, down: false, close: () => Promise.resolve() };
   const server = createServer((request, response) => {
     void (async () => {
       const body = objectOf(await rawOf(request));
       const method = typeof body.method === "string" ? body.method : "";
       const id = body.id;
       mock.methods.push(method);
+      if (mock.down) {
+        response.writeHead(500).end();
+        return;
+      }
       if (request.method !== "POST" || id === undefined) {
         // A notification: accepted, no body.
         response.writeHead(202).end();

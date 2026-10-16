@@ -328,7 +328,7 @@ mod tests {
 
     /// Every route of `api::router`, which has 108. Its fallbacks are not
     /// routes.
-    const ROUTES: [(&str, &str); 108] = [
+    const ROUTES: [(&str, &str); 115] = [
         ("GET", "/api/setup"),
         ("POST", "/api/setup"),
         ("POST", "/api/auth/login"),
@@ -377,9 +377,15 @@ mod tests {
         ("PATCH", "/api/mcp/servers/{id}"),
         ("DELETE", "/api/mcp/servers/{id}"),
         ("POST", "/api/mcp/servers/{id}/sync"),
+        ("GET", "/api/mcp/servers/{id}/stderr"),
         ("GET", "/api/mcp/servers/{id}/tools"),
         ("PATCH", "/api/mcp/tools/{id}"),
         ("PUT", "/api/mcp/tools/{id}/grants"),
+        ("PUT", "/api/mcp/tools/{id}/projection"),
+        ("POST", "/api/mcp/tools/{id}/projection/preview"),
+        ("GET", "/api/mcp/catalog"),
+        ("POST", "/api/mcp/catalog/refresh"),
+        ("POST", "/api/mcp/servers/from-catalog"),
         ("GET", "/api/routes"),
         ("POST", "/api/routes"),
         ("GET", "/api/routes/{id}"),
@@ -406,6 +412,7 @@ mod tests {
         ("GET", "/api/usage"),
         ("GET", "/api/playground/config"),
         ("POST", "/api/playground/chat"),
+        ("POST", "/api/playground/mcp/{server}"),
         ("POST", "/api/playground/images"),
         ("POST", "/api/playground/transcriptions"),
         ("POST", "/api/playground/speech"),
@@ -592,7 +599,7 @@ mod tests {
             .iter()
             .map(|(method, path)| (method.to_string(), path.to_string()))
             .collect();
-        assert_eq!(routes.len(), 108);
+        assert_eq!(routes.len(), 115);
         assert_eq!(documented, routes);
     }
 
@@ -614,7 +621,7 @@ mod tests {
             );
             assert!(ids.insert(id.to_string()), "{id} names two operations");
         }
-        assert_eq!(ids.len(), 108);
+        assert_eq!(ids.len(), 115);
     }
 
     #[test]
@@ -686,7 +693,12 @@ mod tests {
                 }
                 let schema = &response["content"]["application/json"]["schema"];
                 // The playground's errors are of two shapes, in one schema.
-                let shared = if path.starts_with("/api/playground/") {
+                let shared = if path.starts_with("/api/playground/mcp/")
+                    && !matches!(status.as_str(), "401" | "403")
+                {
+                    // What `/mcp/{server}` answers: a JSON-RPC error.
+                    "#/components/schemas/PlaygroundMcpError"
+                } else if path.starts_with("/api/playground/") {
                     "#/components/schemas/PlaygroundErrorBody"
                 } else if path == "/api/config/import" && status == "422" {
                     // The report of a file that has errors.

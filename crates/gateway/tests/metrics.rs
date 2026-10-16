@@ -374,6 +374,7 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         duration_ms: 0,
         offset_ms: 0,
         skipped: None,
+        projected_bytes: None,
     };
     let mut record = RequestRecord {
         tags: Default::default(),

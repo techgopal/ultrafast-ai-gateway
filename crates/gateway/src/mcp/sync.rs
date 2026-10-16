@@ -83,6 +83,9 @@ pub async fn sync_server(
         .server_by_id(server_id)
         .await?
         .ok_or(SyncError::NotFound)?;
+    if row.is_local() {
+        return sync_local(state, &row, actor).await;
+    }
     let secret = if row.auth_kind == "none" {
         None
     } else {
@@ -98,7 +101,27 @@ pub async fn sync_server(
             }
         }
     };
-    let discovered = match discover_tools(&state.http, &row, secret.as_deref()).await {
+    let found =
+        if row.is_oauth() {
+            // A token for the server, as a bearer secret, in place of a stored one.
+            match super::oauth::Config::of_row(&row, &state.cipher) {
+                Some(cfg) => state
+                    .oauth
+                    .with_bearer(&cfg, |token| {
+                        let mut as_bearer = row.clone();
+                        as_bearer.auth_kind = "bearer".to_string();
+                        async move { discover_tools(&state.http, &as_bearer, Some(&token)).await }
+                    })
+                    .await,
+                None => {
+                    record_failure(state, &row, actor, &SyncError::Unusable).await;
+                    return Err(SyncError::Unusable);
+                }
+            }
+        } else {
+            discover_tools(&state.http, &row, secret.as_deref()).await
+        };
+    let discovered = match found {
         Ok(found) => found,
         Err(e) => {
             let e = SyncError::Upstream(e);
@@ -106,7 +129,36 @@ pub async fn sync_server(
             return Err(e);
         }
     };
+    store_found(state, &row, actor, discovered).await
+}
 
+/// A local server is asked through its running program.
+async fn sync_local(
+    state: &AppState,
+    row: &crate::store::McpServerRow,
+    actor: &Actor,
+) -> Result<SyncOutcome, SyncError> {
+    let found = state
+        .local
+        .discover(row.id, super::upstream::Options::default())
+        .await;
+    match found {
+        Ok(found) => store_found(state, row, actor, found).await,
+        Err(e) => {
+            let e = SyncError::Upstream(e);
+            record_failure(state, row, actor, &e).await;
+            Err(e)
+        }
+    }
+}
+
+/// Stores what a discovery found.
+async fn store_found(
+    state: &AppState,
+    row: &crate::store::McpServerRow,
+    actor: &Actor,
+    discovered: super::upstream::Discovered,
+) -> Result<SyncOutcome, SyncError> {
     // A name the registry cannot hold is left out, not an error.
     let mut skipped = discovered.skipped;
     let mut found = discovered.tools;

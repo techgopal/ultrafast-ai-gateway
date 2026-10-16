@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..models.mcp_tool_view_annotations_type_0 import McpToolViewAnnotationsType0
     from ..models.mcp_tool_view_input_schema import McpToolViewInputSchema
     from ..models.mcp_tool_view_output_schema_type_0 import McpToolViewOutputSchemaType0
+    from ..models.projection_body import ProjectionBody
 
 
 T = TypeVar("T", bound="McpToolView")
@@ -30,6 +31,7 @@ class McpToolView:
         input_schema (McpToolViewInputSchema): JSON Schema of the arguments, as the server gave it.
         name (str):
         output_schema (McpToolViewOutputSchemaType0 | None):
+        projection (None | ProjectionBody):
         removed (bool): The server no longer offers it; its grants are kept.
         server_id (int):
         title (None | str):
@@ -43,6 +45,7 @@ class McpToolView:
     input_schema: McpToolViewInputSchema
     name: str
     output_schema: McpToolViewOutputSchemaType0 | None
+    projection: None | ProjectionBody
     removed: bool
     server_id: int
     title: None | str
@@ -55,6 +58,7 @@ class McpToolView:
         from ..models.mcp_tool_view_output_schema_type_0 import (
             McpToolViewOutputSchemaType0,
         )
+        from ..models.projection_body import ProjectionBody
 
         annotations: dict[str, Any] | None
         if isinstance(self.annotations, McpToolViewAnnotationsType0):
@@ -80,6 +84,12 @@ class McpToolView:
         else:
             output_schema = self.output_schema
 
+        projection: dict[str, Any] | None
+        if isinstance(self.projection, ProjectionBody):
+            projection = self.projection.to_dict()
+        else:
+            projection = self.projection
+
         removed = self.removed
 
         server_id = self.server_id
@@ -99,6 +109,7 @@ class McpToolView:
                 "input_schema": input_schema,
                 "name": name,
                 "output_schema": output_schema,
+                "projection": projection,
                 "removed": removed,
                 "server_id": server_id,
                 "title": title,
@@ -119,6 +130,7 @@ class McpToolView:
         from ..models.mcp_tool_view_output_schema_type_0 import (
             McpToolViewOutputSchemaType0,
         )
+        from ..models.projection_body import ProjectionBody
 
         d = dict(src_dict)
 
@@ -164,6 +176,21 @@ class McpToolView:
 
         output_schema = _parse_output_schema(d.pop("output_schema"))
 
+        def _parse_projection(data: object) -> None | ProjectionBody:
+            if data is None:
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                projection_type_0 = ProjectionBody.from_dict(data)
+
+                return projection_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | ProjectionBody, data)
+
+        projection = _parse_projection(d.pop("projection"))
+
         removed = d.pop("removed")
 
         server_id = d.pop("server_id")
@@ -184,6 +211,7 @@ class McpToolView:
             input_schema=input_schema,
             name=name,
             output_schema=output_schema,
+            projection=projection,
             removed=removed,
             server_id=server_id,
             title=title,

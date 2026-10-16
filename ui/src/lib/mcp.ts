@@ -1,6 +1,6 @@
 // What the console knows of MCP servers and their tools: how a tool is named
 // in a key's allowlist, what a sync said, and what is sent when a server is edited.
-import { ConsoleRefusal } from "@/api/errors";
+import { ApiError, ConsoleRefusal } from "@/api/errors";
 import type { components } from "@/api/schema";
 
 type Server = components["schemas"]["McpServerView"];
@@ -13,7 +13,16 @@ export const AUTH_KINDS = [
   ["none", "No authentication"],
   ["bearer", "Bearer token"],
   ["header", "Custom header"],
+  ["oauth", "OAuth (the gateway gets a token)"],
 ] as const;
+
+export const OAUTH_GRANTS = [
+  ["client_credentials", "Client credentials"],
+  ["token_exchange", "Token exchange (RFC 8693)"],
+] as const;
+
+export const ENTER_A_TOKEN_URL = "Enter the address of the token endpoint.";
+export const ENTER_A_CLIENT = "Enter the client id.";
 
 /** How a call and a key's allowlist name a tool. */
 export function toolRef(server: string, tool: string): string {
@@ -37,6 +46,18 @@ export function hostChanged(was: string, now: string): boolean {
 /** In a few words, how the server stands. */
 export function statusOf(server: Server): string {
   if (!server.enabled) return "Disabled";
+  if (server.local !== null) {
+    const { phase, restarts } = server.local;
+    if (phase === "off") return "Local servers are off";
+    if (phase === "crashlooping") return `Crash-looping (${String(restarts)} restarts)`;
+    if (phase === "backoff") return "Restarting";
+    if (phase === "starting") return "Starting";
+    if (phase === "stopped") return "Stopped";
+  }
+  const health = server.health?.status;
+  if (health === "down") return "Down";
+  if (health === "degraded") return "Degraded";
+  if (health === "crashlooping") return "Crash-looping";
   if (server.usable === false) return "Secret needed";
   if (server.last_sync_error !== null) return "Sync failed";
   if (server.last_sync_at === null) return "Not synced yet";
@@ -49,6 +70,10 @@ export interface ServerValues {
   auth_kind: string;
   auth_header: string;
   secret: string;
+  oauth_token_url: string;
+  oauth_client_id: string;
+  oauth_scopes: string;
+  oauth_grant: string;
 }
 
 /**
@@ -64,11 +89,29 @@ export function updateOf(was: Server, values: ServerValues): UpdateRequest {
   if (values.auth_kind !== (was.auth_kind ?? "none")) body.auth_kind = values.auth_kind;
   const header = values.auth_header.trim();
   if (values.auth_kind === "header" && header !== (was.auth_header ?? "")) body.auth_header = header;
+  if (values.auth_kind === "oauth") {
+    const tokenUrl = values.oauth_token_url.trim();
+    const client = values.oauth_client_id.trim();
+    if (tokenUrl === "") throw new ConsoleRefusal(ENTER_A_TOKEN_URL, "oauth_token_url");
+    if (client === "") throw new ConsoleRefusal(ENTER_A_CLIENT, "oauth_client_id");
+    if (tokenUrl !== (was.oauth_token_url ?? "")) body.oauth_token_url = tokenUrl;
+    if (client !== (was.oauth_client_id ?? "")) body.oauth_client_id = client;
+    if (values.oauth_scopes.trim() !== (was.oauth_scopes ?? "")) body.oauth_scopes = values.oauth_scopes.trim();
+    if (values.oauth_grant !== (was.oauth_grant ?? "client_credentials")) body.oauth_grant = values.oauth_grant;
+    // The secret goes to the token endpoint, and only to the host it was given for.
+    if (
+      values.secret === "" &&
+      (was.auth_kind !== "oauth" || hostChanged(was.oauth_token_url ?? "", tokenUrl))
+    ) {
+      throw new ConsoleRefusal(was.auth_kind === "oauth" ? HOST_CHANGED : "Enter the secret.", "secret");
+    }
+  }
   if (values.secret !== "") body.secret = values.secret;
   else if (
     body.url !== undefined &&
     was.has_secret === true &&
     values.auth_kind !== "none" &&
+    values.auth_kind !== "oauth" &&
     hostChanged(was.url ?? "", url)
   ) {
     throw new ConsoleRefusal(HOST_CHANGED, "secret");
@@ -87,4 +130,252 @@ export function liveTools(tools: readonly Tool[]): Tool[] {
   return tools
     .filter((tool) => tool.enabled && !tool.removed)
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+type CatalogEntry = components["schemas"]["Entry"];
+type CatalogView = components["schemas"]["McpCatalogView"];
+type FromCatalogRequest = components["schemas"]["FromCatalogRequest"];
+
+export const NEEDS_LOCAL = "Needs local servers: start the gateway with UF_MCP_LOCAL=on.";
+export const NEEDS_BY_HAND = "Signs in with OAuth. Add it by hand.";
+export const ENTER_A_VALUE = "Enter a value.";
+
+/** The form field that holds the value of an item of an entry's `env`. */
+export const envField = (name: string): string => `env_${name}`;
+
+/**
+ * Whether the entry can be added on this gateway, and if not why not:
+ * a program that runs on the gateway host needs local servers, and OAuth
+ * servers are added by hand.
+ */
+export function entryBlock(entry: CatalogEntry, view: CatalogView): string | null {
+  if (entry.auth === "oauth") return NEEDS_BY_HAND;
+  if (entry.transport === "stdio" && !view.local_enabled) return NEEDS_LOCAL;
+  return null;
+}
+
+export interface CatalogValues {
+  name: string;
+  [field: string]: string;
+}
+
+/** The registration to send: only what the entry asks for, secrets required. */
+export function catalogRequest(entry: CatalogEntry, values: CatalogValues): FromCatalogRequest {
+  const secrets: Record<string, string> = {};
+  for (const item of entry.env) {
+    const value = values[envField(item.name)] ?? "";
+    if (value.trim() === "") {
+      if (item.secret) throw new ConsoleRefusal(ENTER_A_VALUE, envField(item.name));
+      continue;
+    }
+    secrets[item.name] = value;
+  }
+  const body: FromCatalogRequest = { catalog_id: entry.id, secrets };
+  const name = values.name.trim();
+  if (name !== "" && name !== entry.id) body.name = name;
+  return body;
+}
+
+/** An answer's `secrets.NAME` field is the form's `env_NAME`. */
+export function formFieldsOf(fields: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(fields).map(([name, text]) => [
+      name.startsWith("secrets.") ? envField(name.slice("secrets.".length)) : name,
+      text,
+    ]),
+  );
+}
+
+/** The error of the gateway, with the names of its fields as the catalog form has them. */
+export function catalogFailure(error: unknown): unknown {
+  return error instanceof ApiError
+    ? new ApiError(error.status, error.code, error.message, formFieldsOf(error.fields), error.retryAfter)
+    : error;
+}
+
+/** What the catalog's source says, in a few words. */
+export function sourceText(view: CatalogView): string {
+  const at = view.fetched_at === null ? "" : ` from ${view.fetched_at.slice(0, 10)}`;
+  switch (view.source) {
+    case "remote":
+      return `Fetched${at}.`;
+    case "cache":
+      return `Showing the copy${at}.`;
+    case "builtin":
+      return "Showing the copy that ships with this gateway.";
+  }
+}
+
+/** Entries whose name, text or tags contain every word of the search. */
+export function searchCatalog(entries: readonly CatalogEntry[], search: string): CatalogEntry[] {
+  const words = search.toLowerCase().split(/\s+/).filter((w) => w !== "");
+  return entries.filter((entry) => {
+    const text = `${entry.id} ${entry.name} ${entry.description} ${entry.tags.join(" ")}`.toLowerCase();
+    return words.every((word) => text.includes(word));
+  });
+}
+
+type CreateRequest = components["schemas"]["CreateMcpServerRequest"];
+
+export const ENTER_A_COMMAND = "Enter the program to run.";
+export const ENTER_A_VARIABLE = "Enter the name of the variable.";
+export const VARIABLE_TWICE = "A variable is listed twice.";
+export const PROGRAM_KINDS = [
+  ["http", "Remote server (an address)"],
+  ["stdio", "Program on the gateway host"],
+] as const;
+
+/** One environment variable of a local server in the editor. */
+export interface EnvRow {
+  name: string;
+  /** What was typed; empty for a stored value that is kept. */
+  value: string;
+  /** Shown as dots while typing. Values are never shown again once saved. */
+  secret: boolean;
+  /** The server has a value for this name already. */
+  stored: boolean;
+}
+
+/** The lines of the arguments box, one argument each, empty lines left out. */
+export function argsOf(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line !== "");
+}
+
+/** The environment to send: name to value, an empty value keeping the stored one. */
+export function envOf(rows: readonly EnvRow[]): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const row of rows) {
+    const name = row.name.trim();
+    if (name === "") throw new ConsoleRefusal(ENTER_A_VARIABLE, "env");
+    if (name in env) throw new ConsoleRefusal(VARIABLE_TWICE, "env");
+    if (row.value === "" && !row.stored) throw new ConsoleRefusal(ENTER_A_VALUE, "env");
+    env[name] = row.value;
+  }
+  return env;
+}
+
+export interface LocalValues {
+  name: string;
+  command: string;
+  args: string;
+  description: string;
+}
+
+/** The registration of a program the gateway runs. */
+export function localCreateOf(values: LocalValues, rows: readonly EnvRow[]): CreateRequest {
+  const name = values.name.trim();
+  const command = values.command.trim();
+  if (name === "") throw new ConsoleRefusal("Enter the server's name.", "name");
+  if (command === "") throw new ConsoleRefusal(ENTER_A_COMMAND, "command");
+  const body: CreateRequest = {
+    name,
+    transport: "stdio",
+    command,
+    args: argsOf(values.args),
+    description: values.description,
+  };
+  const env = envOf(rows);
+  if (Object.keys(env).length > 0) body.env = env;
+  return body;
+}
+
+/** The change to send for an edit of a local server: only what differs. */
+export function localUpdateOf(
+  was: Server,
+  values: Omit<LocalValues, "name">,
+  rows: readonly EnvRow[],
+): UpdateRequest {
+  const body: UpdateRequest = {};
+  const command = values.command.trim();
+  if (command === "") throw new ConsoleRefusal(ENTER_A_COMMAND, "command");
+  if (command !== (was.command ?? "")) body.command = command;
+  const args = argsOf(values.args);
+  if (JSON.stringify(args) !== JSON.stringify(was.args ?? [])) body.args = args;
+  if (values.description !== was.description) body.description = values.description;
+  const env = envOf(rows);
+  const names = Object.keys(env).sort();
+  const was_ = [...(was.env_names ?? [])].sort();
+  const typed = Object.values(env).some((value) => value !== "");
+  if (typed || JSON.stringify(names) !== JSON.stringify(was_)) body.env = env;
+  return body;
+}
+
+/** Whether the server is a program the gateway runs. */
+export function isLocal(server: Server): boolean {
+  return server.transport === "stdio";
+}
+
+type ProjectionBody = components["schemas"]["ProjectionBody"];
+
+export const ENTER_A_NUMBER = "Enter a whole number, or leave it empty.";
+
+/** The lines of a box, trimmed, empty ones left out. */
+export function linesOf(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+function limitOf(text: string, field: string): number | null {
+  const typed = text.trim();
+  if (typed === "") return null;
+  if (!/^\d+$/.test(typed)) throw new ConsoleRefusal(ENTER_A_NUMBER, field);
+  return Number(typed);
+}
+
+export interface ProjectionValues {
+  keep: string;
+  drop: string;
+  max_items: string;
+  max_bytes: string;
+}
+
+/** The projection a form describes; all four empty takes it off. */
+export function projectionOf(values: ProjectionValues): ProjectionBody {
+  return {
+    keep: linesOf(values.keep),
+    drop: linesOf(values.drop),
+    max_items: limitOf(values.max_items, "max_items"),
+    max_bytes: limitOf(values.max_bytes, "max_bytes"),
+  };
+}
+
+/** What a form starts with for a tool. */
+export function projectionValues(tool: Pick<Tool, "projection">): ProjectionValues {
+  const p = tool.projection;
+  return {
+    keep: (p?.keep ?? []).join("\n"),
+    drop: (p?.drop ?? []).join("\n"),
+    max_items: p?.max_items == null ? "" : String(p.max_items),
+    max_bytes: p?.max_bytes == null ? "" : String(p.max_bytes),
+  };
+}
+
+/** The last result of each tool the playground ran, to try a projection on. Kept in memory. */
+const lastResults = new Map<string, unknown>();
+
+export function rememberResult(server: string, tool: string, result: unknown): void {
+  lastResults.set(`${server}/${tool}`, result);
+}
+
+export function lastResultOf(server: string, tool: string): unknown {
+  return lastResults.get(`${server}/${tool}`);
+}
+
+/** A sample result as the box holds it, or the reason it cannot be sent. */
+export function sampleOf(text: string): { value: Record<string, unknown> } | { error: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { error: "The sample is not valid JSON." };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { error: "The sample must be a JSON object, a result as tools/call returns it." };
+  }
+  return { value: parsed as Record<string, unknown> };
 }

@@ -110,7 +110,9 @@ def sync_detailed(
     Args:
         id (int):
         x_csrf_token (str | Unset):
-        body (UpdateKeyRequest): What to change on a key. Admins only; send at least one field.
+        body (UpdateKeyRequest): What to change on a key. Admins; `pinned_tools` also a lead of
+            the key's
+            team. Send at least one field.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -146,7 +148,9 @@ def sync(
     Args:
         id (int):
         x_csrf_token (str | Unset):
-        body (UpdateKeyRequest): What to change on a key. Admins only; send at least one field.
+        body (UpdateKeyRequest): What to change on a key. Admins; `pinned_tools` also a lead of
+            the key's
+            team. Send at least one field.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -177,7 +181,9 @@ async def asyncio_detailed(
     Args:
         id (int):
         x_csrf_token (str | Unset):
-        body (UpdateKeyRequest): What to change on a key. Admins only; send at least one field.
+        body (UpdateKeyRequest): What to change on a key. Admins; `pinned_tools` also a lead of
+            the key's
+            team. Send at least one field.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -211,7 +217,9 @@ async def asyncio(
     Args:
         id (int):
         x_csrf_token (str | Unset):
-        body (UpdateKeyRequest): What to change on a key. Admins only; send at least one field.
+        body (UpdateKeyRequest): What to change on a key. Admins; `pinned_tools` also a lead of
+            the key's
+            team. Send at least one field.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

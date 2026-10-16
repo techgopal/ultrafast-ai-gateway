@@ -84,6 +84,8 @@ export interface GatewayOptions {
    * its port is (the usual case). A text: that address. None: not set.
    */
   publicUrl?: boolean | string | undefined;
+  /** More variables for this gateway, after the ones every test has. */
+  env?: Record<string, string> | undefined;
 }
 
 export interface Gateway {
@@ -173,6 +175,7 @@ function environment(
   admin: Account | undefined,
   publicUrl: string | undefined,
   database: { url: string; masterKey: string } | null,
+  extra: Record<string, string> = {},
 ) {
   const env: Record<string, string> = {
     UF_DATA_DIR: dataDir,
@@ -183,7 +186,12 @@ function environment(
     // The setup code has a target of its own: setup needs it.
     RUST_LOG: "warn,ultrafast::setup=info",
     NO_COLOR: "1",
+    // No request for the MCP catalog (the copy in the binary is shown), and
+    // the mock MCP servers of the tests are on 127.0.0.1.
+    UF_MCP_CATALOG: "off",
+    UF_MCP_ALLOW_PRIVATE_UPSTREAMS: "on",
   };
+  Object.assign(env, extra);
   if (publicUrl !== undefined) env.UF_PUBLIC_URL = publicUrl;
   if (database !== null) {
     env.UF_DATABASE_URL = database.url;
@@ -326,6 +334,7 @@ async function startOnce(binary: string, options: GatewayOptions): Promise<Try> 
       options.admin,
       options.publicUrl === true ? origin : options.publicUrl || undefined,
       database,
+      options.env,
     ),
     stdio: ["ignore", "pipe", "pipe"],
   });

@@ -43,6 +43,10 @@ pub struct SnapKey {
     /// The guardrails attached to the key, in order (ids; one that is
     /// disabled or gone is not in [`Snapshot::guardrail`]).
     pub guardrails: Vec<i64>,
+    /// The tools (`mcp:<server>/<tool>`) the combined MCP endpoint lists when
+    /// the key can call too many to list them all. A lead or an admin sets
+    /// them; one the key can no longer call is not listed.
+    pub pinned: Vec<String>,
 }
 
 /// A catalog model of a provider that is in the snapshot.
@@ -160,6 +164,12 @@ pub struct SnapMcpServer {
     /// is kept, so it can be told from one that is not there, but nothing
     /// is callable through it.
     pub usable: bool,
+    /// `http` or `stdio`.
+    pub transport: String,
+    /// What a stdio server is run with, its environment in the clear.
+    pub local: Option<Arc<crate::mcp::local::Spec>>,
+    /// How the gateway gets a token for a server that signs in with OAuth.
+    pub oauth: Option<Arc<crate::mcp::oauth::Config>>,
 }
 
 impl fmt::Debug for SnapMcpServer {
@@ -179,6 +189,8 @@ impl fmt::Debug for SnapMcpServer {
 /// A switched-on tool that its server still offers.
 #[derive(Debug, Clone)]
 pub struct SnapMcpTool {
+    /// What of the result the agent is given; none: all of it.
+    pub projection: Option<Arc<crate::mcp::project::Projection>>,
     pub id: i64,
     pub server_id: i64,
     pub server_name: String,
@@ -267,6 +279,8 @@ pub struct Snapshot {
     /// The tools that are on, by server id and then name. MCP results are
     /// not cached, so none of this is in the fingerprint.
     mcp_tools: HashMap<i64, std::collections::BTreeMap<String, SnapMcpTool>>,
+    /// The tools that are on, ready to be searched (`find_tools`).
+    tool_index: Arc<crate::mcp::discover::ToolIndex>,
     /// See [`Snapshot::cache_fingerprint`].
     cache_fingerprint: [u8; 32],
 }
@@ -449,6 +463,7 @@ fn load_mcp(
     servers: Vec<crate::store::McpServerRow>,
     tools: Vec<crate::store::McpToolRow>,
     grants: Vec<crate::store::McpGrantRow>,
+    projections: Vec<crate::store::ProjectionRow>,
     cipher: &Cipher,
 ) -> (
     HashMap<String, SnapMcpServer>,
@@ -462,7 +477,39 @@ fn load_mcp(
             .auth_secret_enc
             .as_deref()
             .and_then(|enc| crate::mcp::decrypt_secret(cipher, enc));
-        let usable = s.auth_kind == "none" || secret.is_some();
+        // A server that signs in with OAuth is usable when its client secret can be read.
+        let oauth = s
+            .is_oauth()
+            .then(|| crate::mcp::oauth::Config::of_row(&s, cipher))
+            .flatten()
+            .map(Arc::new);
+        let mut usable = if s.is_oauth() {
+            oauth.is_some()
+        } else {
+            s.auth_kind == "none" || secret.is_some()
+        };
+        // A program is run with its command, arguments and every environment
+        // value read; one that cannot be read leaves the server unusable.
+        let local = if s.is_local() {
+            let env: Option<std::collections::BTreeMap<String, String>> = s
+                .env_enc
+                .iter()
+                .map(|(k, v)| crate::mcp::decrypt_secret(cipher, v).map(|v| (k.clone(), v)))
+                .collect();
+            match (s.command.clone(), env) {
+                (Some(command), Some(env)) => Some(Arc::new(crate::mcp::local::Spec {
+                    command,
+                    args: s.args.clone(),
+                    env,
+                })),
+                _ => {
+                    usable = false;
+                    None
+                }
+            }
+        } else {
+            None
+        };
         if !usable {
             tracing::error!(server = %s.name, "an MCP server cannot be called: its secret is missing or cannot be read");
         }
@@ -478,6 +525,9 @@ fn load_mcp(
                 secret,
                 enabled: s.enabled,
                 usable,
+                transport: s.transport,
+                local,
+                oauth,
             },
         );
     }
@@ -507,6 +557,18 @@ fn load_mcp(
                 everyone: false,
                 team_ids: Vec::new(),
                 user_ids: Vec::new(),
+                projection: projections
+                    .iter()
+                    .find(|p| p.tool_id == t.id)
+                    .and_then(|p| {
+                        crate::mcp::project::Projection::compile(&crate::mcp::project::Spec {
+                            keep: p.keep.clone(),
+                            drop: p.drop.clone(),
+                            max_items: p.max_items.and_then(|n| u64::try_from(n).ok()),
+                            max_bytes: p.max_bytes.and_then(|n| u64::try_from(n).ok()),
+                        })
+                    })
+                    .map(Arc::new),
             },
         );
     }
@@ -713,6 +775,7 @@ impl Snapshot {
                     expires_at: k.expires_at,
                     allowed: k.allowed.map(|names| names.into_iter().collect()),
                     tags: k.tags,
+                    pinned: k.pinned_tools,
                 };
                 (k.hash, Arc::new(key))
             })
@@ -921,6 +984,7 @@ impl Snapshot {
             rows.mcp_servers,
             rows.mcp_tools,
             rows.mcp_tool_grants,
+            rows.mcp_projections,
             cipher,
         );
         let (guardrails, default_guardrails, guardrails_compiled) =
@@ -947,6 +1011,9 @@ impl Snapshot {
             prompts,
             mcp_servers,
             mcp_server_names,
+            tool_index: Arc::new(crate::mcp::discover::ToolIndex::build(
+                mcp_tools.values().flat_map(|tools| tools.values()),
+            )),
             mcp_tools,
             cache_fingerprint,
         })
@@ -970,6 +1037,33 @@ impl Snapshot {
     /// The MCP server with this name.
     pub fn mcp_server(&self, name: &str) -> Option<&SnapMcpServer> {
         self.mcp_servers.get(name)
+    }
+
+    /// The local servers that are on and can be run.
+    pub fn local_servers(&self) -> Vec<crate::mcp::local::Wanted> {
+        let mut out: Vec<_> = self
+            .mcp_servers
+            .values()
+            .filter(|s| s.enabled && s.usable)
+            .filter_map(|s| {
+                s.local.as_ref().map(|spec| crate::mcp::local::Wanted {
+                    id: s.id,
+                    name: s.name.clone(),
+                    spec: spec.clone(),
+                })
+            })
+            .collect();
+        out.sort_by_key(|w| w.id);
+        out
+    }
+
+    pub fn tool_index(&self) -> &crate::mcp::discover::ToolIndex {
+        &self.tool_index
+    }
+
+    /// A key by its id: a scan, for the rare caller that has no hash.
+    pub fn key_by_id(&self, id: i64) -> Option<&SnapKey> {
+        self.keys.values().map(|k| &**k).find(|k| k.id == id)
     }
 
     pub fn mcp_server_by_id(&self, id: i64) -> Option<&SnapMcpServer> {

@@ -2,6 +2,7 @@ target
 .git
 data
 docs
+!docs/mcp-catalog
 ui/node_modules
 ui/dist
 ui/test-results

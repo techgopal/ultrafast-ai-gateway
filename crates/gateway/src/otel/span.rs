@@ -256,6 +256,7 @@ mod tests {
             duration_ms: dur,
             offset_ms: off,
             skipped: None,
+            projected_bytes: None,
         }
     }
 

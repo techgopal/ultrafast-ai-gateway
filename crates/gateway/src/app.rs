@@ -166,6 +166,15 @@ pub struct AppState {
     pub alert_engine: Option<crate::alerts::EngineHandle>,
     /// The caps and gates of MCP tool calls.
     pub mcp: crate::mcp::call::Runtime,
+    /// The signed catalog of MCP servers.
+    pub catalog: Arc<crate::mcp::catalog::Catalog>,
+    /// The programs that local MCP servers run as. Starts nothing unless the
+    /// operator asked for it (`UF_MCP_LOCAL=on`).
+    pub local: Arc<crate::mcp::local::Supervisor>,
+    /// Gets and keeps the OAuth tokens of the MCP servers that need one.
+    pub oauth: Arc<crate::mcp::oauth::TokenService>,
+    /// What the last health probe found about each MCP server.
+    pub mcp_health: Arc<crate::mcp::health::Board>,
     /// The bearer token of `/metrics`. None: the path does not exist.
     pub metrics_token: Option<String>,
     /// The one-time code that `POST /api/setup` needs, made when the
@@ -212,6 +221,17 @@ impl AppState {
             alert_engine: None,
             metrics_token: None,
             mcp: crate::mcp::call::Runtime::from_env(),
+            local: Arc::new(crate::mcp::local::Supervisor::disabled()),
+            mcp_health: Arc::default(),
+            oauth: Arc::new(crate::mcp::oauth::TokenService::new(
+                http_client(),
+                store.clone(),
+                cipher.clone(),
+            )),
+            catalog: Arc::new(crate::mcp::catalog::Catalog::from_env(
+                store.clone(),
+                catalog_client(),
+            )),
             refreshes: AtomicU64::new(0),
             cache_fingerprint: std::sync::Mutex::new(snapshot_fingerprint),
             refreshing: Mutex::new(()),
@@ -337,6 +357,8 @@ impl AppState {
                 .is_some_and(|t| t.created_at == created)
         });
         self.snapshot.store(Arc::new(snapshot));
+        // Programs of local MCP servers follow the registry.
+        self.local.reconcile(&self.snapshot.load().local_servers());
         // Answers kept under the old configuration are not given under a new
         // one: a team, user or key id may be another one now, a route or a
         // provider may have changed. A refresh that finds nothing changed
@@ -388,6 +410,11 @@ pub fn spawn_refresher(state: Arc<AppState>, mut stop: watch::Receiver<bool>) ->
                 Ok(false) => {}
                 Err(e) => tracing::warn!(error = %e, "could not check the single sign-on settings"),
             }
+            // The MCP catalog, when it is due (never with UF_MCP_CATALOG=off).
+            state
+                .catalog
+                .refresh_if_due(time::OffsetDateTime::now_utc())
+                .await;
             // The sign-in limiter forgets what left its window here, not
             // on every attempt.
             state.limiter.prune(std::time::Instant::now());
@@ -419,7 +446,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // Every other path under `/v1` is answered here, so the console's
         // pages never stand in for a model API that does not exist.
         .route("/mcp/{server}", any(crate::mcp::server::serve))
-        .route("/mcp", any(crate::mcp::server::not_found))
+        .route("/mcp", any(crate::mcp::server::serve_combined))
         .route("/mcp/", any(crate::mcp::server::not_found))
         .route("/mcp/{server}/{*rest}", any(crate::mcp::server::not_found))
         .route("/v1", any(v1_not_found))
@@ -464,6 +491,18 @@ pub fn http_client() -> reqwest::Client {
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(TOTAL_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("the HTTP client configuration is valid")
+}
+
+/// The client for the MCP catalog: it carries no credential, so it may follow
+/// a few redirects (a site moved to another address).
+fn catalog_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .user_agent(concat!("ultrafast-gateway/", env!("CARGO_PKG_VERSION")))
         .build()
         .expect("the HTTP client configuration is valid")
 }

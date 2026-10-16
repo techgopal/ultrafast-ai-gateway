@@ -27,6 +27,7 @@ from .create_guardrail_request import CreateGuardrailRequest
 from .create_key_request import CreateKeyRequest
 from .create_key_request_tags_type_0 import CreateKeyRequestTagsType0
 from .create_mcp_server_request import CreateMcpServerRequest
+from .create_mcp_server_request_env_type_0 import CreateMcpServerRequestEnvType0
 from .create_model_request import CreateModelRequest
 from .create_prompt_request import CreatePromptRequest
 from .create_provider_request import CreateProviderRequest
@@ -41,6 +42,8 @@ from .created_token import CreatedToken
 from .database_kind import DatabaseKind
 from .direction import Direction
 from .directions import Directions
+from .entry import Entry
+from .env_var import EnvVar
 from .event_list import EventList
 from .event_view import EventView
 from .event_view_deliveries_item import EventViewDeliveriesItem
@@ -50,6 +53,8 @@ from .fallback_view import FallbackView
 from .firing import Firing
 from .flag_log import FlagLog
 from .flag_view import FlagView
+from .from_catalog_request import FromCatalogRequest
+from .from_catalog_request_secrets import FromCatalogRequestSecrets
 from .grant_entry import GrantEntry
 from .grants_view import GrantsView
 from .guardrail_entry import GuardrailEntry
@@ -84,9 +89,13 @@ from .login_response import LoginResponse
 from .matcher_type_0 import MatcherType0
 from .matcher_type_1 import MatcherType1
 from .matcher_type_2 import MatcherType2
+from .mcp_catalog_view import McpCatalogView
+from .mcp_health_view import McpHealthView
+from .mcp_local_view import McpLocalView
 from .mcp_server_entry import McpServerEntry
 from .mcp_server_list import McpServerList
 from .mcp_server_view import McpServerView
+from .mcp_stderr_view import McpStderrView
 from .mcp_sync_result import McpSyncResult
 from .mcp_tool_entry import McpToolEntry
 from .mcp_tool_list import McpToolList
@@ -100,6 +109,7 @@ from .member_request import MemberRequest
 from .model_entry import ModelEntry
 from .model_list import ModelList
 from .model_view import ModelView
+from .oauth_entry import OauthEntry
 from .oidc_test_request import OidcTestRequest
 from .oidc_test_result import OidcTestResult
 from .oidc_update_request import OidcUpdateRequest
@@ -133,6 +143,12 @@ from .playground_image_answer import PlaygroundImageAnswer
 from .playground_image_answer_data_item import PlaygroundImageAnswerDataItem
 from .playground_image_answer_usage import PlaygroundImageAnswerUsage
 from .playground_image_request import PlaygroundImageRequest
+from .playground_mcp_error import PlaygroundMcpError
+from .playground_mcp_error_error import PlaygroundMcpErrorError
+from .playground_mcp_reply import PlaygroundMcpReply
+from .playground_mcp_reply_result import PlaygroundMcpReplyResult
+from .playground_mcp_request import PlaygroundMcpRequest
+from .playground_mcp_request_params import PlaygroundMcpRequestParams
 from .playground_message import PlaygroundMessage
 from .playground_message_content_type_1_item import PlaygroundMessageContentType1Item
 from .playground_message_tool_calls_item import PlaygroundMessageToolCallsItem
@@ -141,6 +157,12 @@ from .playground_transcription_form import PlaygroundTranscriptionForm
 from .primary_entry import PrimaryEntry
 from .primary_request import PrimaryRequest
 from .primary_view import PrimaryView
+from .projection_body import ProjectionBody
+from .projection_entry import ProjectionEntry
+from .projection_preview import ProjectionPreview
+from .projection_preview_request import ProjectionPreviewRequest
+from .projection_preview_request_result import ProjectionPreviewRequestResult
+from .projection_preview_result import ProjectionPreviewResult
 from .prompt_entry import PromptEntry
 from .prompt_list import PromptList
 from .prompt_summary import PromptSummary
@@ -174,6 +196,7 @@ from .side_log import SideLog
 from .side_log_redactions import SideLogRedactions
 from .sign_in_method_oidc import SignInMethodOidc
 from .sign_in_methods import SignInMethods
+from .source import Source
 from .sync_result import SyncResult
 from .target_health import TargetHealth
 from .target_state import TargetState
@@ -193,6 +216,7 @@ from .update_guardrail_request import UpdateGuardrailRequest
 from .update_key_request import UpdateKeyRequest
 from .update_key_request_tags_type_0 import UpdateKeyRequestTagsType0
 from .update_mcp_server_request import UpdateMcpServerRequest
+from .update_mcp_server_request_env_type_0 import UpdateMcpServerRequestEnvType0
 from .update_mcp_tool_request import UpdateMcpToolRequest
 from .update_model_request import UpdateModelRequest
 from .update_provider_request import UpdateProviderRequest
@@ -237,6 +261,7 @@ __all__ = (
     "CreateKeyRequest",
     "CreateKeyRequestTagsType0",
     "CreateMcpServerRequest",
+    "CreateMcpServerRequestEnvType0",
     "CreateModelRequest",
     "CreatePromptRequest",
     "CreateProviderRequest",
@@ -251,6 +276,8 @@ __all__ = (
     "DatabaseKind",
     "Direction",
     "Directions",
+    "Entry",
+    "EnvVar",
     "EventList",
     "EventView",
     "EventViewDeliveriesItem",
@@ -260,6 +287,8 @@ __all__ = (
     "Firing",
     "FlagLog",
     "FlagView",
+    "FromCatalogRequest",
+    "FromCatalogRequestSecrets",
     "GrantEntry",
     "GrantsView",
     "GuardrailEntry",
@@ -294,9 +323,13 @@ __all__ = (
     "MatcherType0",
     "MatcherType1",
     "MatcherType2",
+    "McpCatalogView",
+    "McpHealthView",
+    "McpLocalView",
     "McpServerEntry",
     "McpServerList",
     "McpServerView",
+    "McpStderrView",
     "McpSyncResult",
     "McpToolEntry",
     "McpToolList",
@@ -310,6 +343,7 @@ __all__ = (
     "ModelEntry",
     "ModelList",
     "ModelView",
+    "OauthEntry",
     "OidcTestRequest",
     "OidcTestResult",
     "OidcUpdateRequest",
@@ -337,6 +371,12 @@ __all__ = (
     "PlaygroundImageAnswerDataItem",
     "PlaygroundImageAnswerUsage",
     "PlaygroundImageRequest",
+    "PlaygroundMcpError",
+    "PlaygroundMcpErrorError",
+    "PlaygroundMcpReply",
+    "PlaygroundMcpReplyResult",
+    "PlaygroundMcpRequest",
+    "PlaygroundMcpRequestParams",
     "PlaygroundMessage",
     "PlaygroundMessageContentType1Item",
     "PlaygroundMessageToolCallsItem",
@@ -345,6 +385,12 @@ __all__ = (
     "PrimaryEntry",
     "PrimaryRequest",
     "PrimaryView",
+    "ProjectionBody",
+    "ProjectionEntry",
+    "ProjectionPreview",
+    "ProjectionPreviewRequest",
+    "ProjectionPreviewRequestResult",
+    "ProjectionPreviewResult",
     "PromptEntry",
     "PromptList",
     "PromptSummary",
@@ -378,6 +424,7 @@ __all__ = (
     "SideLogRedactions",
     "SignInMethodOidc",
     "SignInMethods",
+    "Source",
     "SyncResult",
     "TargetHealth",
     "TargetState",
@@ -397,6 +444,7 @@ __all__ = (
     "UpdateKeyRequest",
     "UpdateKeyRequestTagsType0",
     "UpdateMcpServerRequest",
+    "UpdateMcpServerRequestEnvType0",
     "UpdateMcpToolRequest",
     "UpdateModelRequest",
     "UpdateProviderRequest",
