@@ -12,6 +12,30 @@ pub fn db_path(data_dir: &Path) -> PathBuf {
     data_dir.join("gateway.db")
 }
 
+/// The image's data directory.
+pub const IMAGE_DATA_DIR: &str = "/var/lib/ufaigw";
+
+/// The 2.1 image's data directory.
+pub const OLD_IMAGE_DATA_DIR: &str = "/var/lib/ultrafast";
+
+/// Refuses a gateway in the image whose volume is still mounted where the
+/// 2.1 image kept its data: it would otherwise start empty. Nothing is read
+/// from or moved out of the old directory.
+pub fn check_moved_image_volume(
+    data_dir: &Path,
+    image_dir: &Path,
+    old_image_dir: &Path,
+) -> Result<()> {
+    if data_dir != image_dir || db_path(image_dir).exists() || !db_path(old_image_dir).exists() {
+        return Ok(());
+    }
+    let (old, new) = (old_image_dir.display(), image_dir.display());
+    bail!(
+        "the database is at {old}, the 2.1 image's data directory; this image keeps its data in \
+         {new}: mount the volume at {new} (for example -v ultrafast-data:{new})"
+    )
+}
+
 /// The most connections to the database that may be asked for.
 pub const MAX_DATABASE_CONNECTIONS: u32 = 1000;
 
@@ -632,6 +656,46 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("master.key"), "garbage").unwrap();
         assert!(load_master_key(dir.path(), None).is_err());
+    }
+
+    /// Three directories: the one the gateway was given and the two image
+    /// data directories, all temporary.
+    fn image_dirs() -> (tempfile::TempDir, tempfile::TempDir) {
+        (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap())
+    }
+
+    #[test]
+    fn a_volume_left_at_the_old_mount_point_refuses_to_start() {
+        let (image, old) = image_dirs();
+        std::fs::write(db_path(old.path()), "").unwrap();
+        let err = check_moved_image_volume(image.path(), image.path(), old.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(&image.path().display().to_string()), "{err}");
+        assert!(err.contains(&old.path().display().to_string()), "{err}");
+        assert!(err.contains("mount the volume at"), "{err}");
+    }
+
+    #[test]
+    fn a_volume_at_the_new_mount_point_starts() {
+        let (image, old) = image_dirs();
+        std::fs::write(db_path(image.path()), "").unwrap();
+        std::fs::write(db_path(old.path()), "").unwrap();
+        assert!(check_moved_image_volume(image.path(), image.path(), old.path()).is_ok());
+    }
+
+    #[test]
+    fn a_fresh_image_starts() {
+        let (image, old) = image_dirs();
+        assert!(check_moved_image_volume(image.path(), image.path(), old.path()).is_ok());
+    }
+
+    #[test]
+    fn a_data_dir_elsewhere_is_not_checked() {
+        let (image, old) = image_dirs();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(db_path(old.path()), "").unwrap();
+        assert!(check_moved_image_volume(elsewhere.path(), image.path(), old.path()).is_ok());
     }
 
     #[test]

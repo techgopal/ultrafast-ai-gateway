@@ -58,9 +58,9 @@ jobs:
             exit 1
           fi
       - name: Build image
-        run: docker build -t ultrafast:ci .
+        run: docker build -t ufaigw:ci .
       - name: Run image
-        run: docker run --rm ultrafast:ci --version
+        run: docker run --rm ufaigw:ci --version
       - name: Report binary size
         run: |
           cargo build --release --locked -p ufaigw-gateway
@@ -108,7 +108,7 @@ jobs:
           certs="$RUNNER_TEMP/postgres-ssl"
           mkdir -p "$certs"
           openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
-            -subj "/CN=ultrafast test CA" \
+            -subj "/CN=ufaigw test CA" \
             -keyout "$certs/ca.key" -out "$certs/ca.crt"
           openssl req -new -newkey rsa:2048 -nodes \
             -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" \

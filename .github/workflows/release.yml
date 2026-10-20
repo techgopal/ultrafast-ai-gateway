@@ -164,7 +164,7 @@ jobs:
           exe=ufaigw
           if [ "${{ matrix.archive }}" = "zip" ]; then exe=ufaigw.exe; fi
           ref="${GITHUB_REF_NAME//\//-}"
-          name="ultrafast-${ref}-${{ matrix.target }}"
+          name="ufaigw-${ref}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/$exe" README.md LICENSE CHANGELOG.md "dist/$name/"
           cd dist
@@ -248,7 +248,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/ultrafast-ai-gateway
+          images: ghcr.io/${{ github.repository_owner }}/ufaigw
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}

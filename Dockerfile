@@ -26,11 +26,12 @@ RUN cargo build --release --locked -p ufaigw-gateway
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --create-home --home-dir /var/lib/ultrafast ultrafast
-COPY --from=builder /app/target/release/ufaigw /usr/local/bin/ultrafast
-USER ultrafast
-ENV UF_DATA_DIR=/var/lib/ultrafast UF_HOST=0.0.0.0 UF_PORT=3000
-VOLUME /var/lib/ultrafast
+    && groupadd --system --gid 999 ufaigw \
+    && useradd --system --uid 999 --gid 999 --create-home --home-dir /var/lib/ufaigw ufaigw
+COPY --from=builder /app/target/release/ufaigw /usr/local/bin/ufaigw
+USER ufaigw
+ENV UF_DATA_DIR=/var/lib/ufaigw UF_HOST=0.0.0.0 UF_PORT=3000
+VOLUME /var/lib/ufaigw
 EXPOSE 3000
-ENTRYPOINT ["ultrafast"]
+ENTRYPOINT ["ufaigw"]
 CMD ["serve"]

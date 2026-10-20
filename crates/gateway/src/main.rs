@@ -12,9 +12,10 @@ use ufaigw_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
 use ufaigw_gateway::budgets::{self, FLUSH_INTERVAL};
 use ufaigw_gateway::catalog::{add_model, describe_model_add, validate_model_name};
 use ufaigw_gateway::config::{
-    db_path, load_master_key, master_key_from_env_only, parse_database_url, parse_public_url,
-    parse_trusted_proxies, restrict_permissions, validate_api_version, validate_base_url,
-    validate_database_max_connections, validate_provider_name, DEFAULT_DATABASE_MAX_CONNECTIONS,
+    check_moved_image_volume, db_path, load_master_key, master_key_from_env_only,
+    parse_database_url, parse_public_url, parse_trusted_proxies, restrict_permissions,
+    validate_api_version, validate_base_url, validate_database_max_connections,
+    validate_provider_name, DEFAULT_DATABASE_MAX_CONNECTIONS, IMAGE_DATA_DIR, OLD_IMAGE_DATA_DIR,
 };
 use ufaigw_gateway::identity::password;
 use ufaigw_gateway::logs::{self, LogSink, QUEUE_CAPACITY};
@@ -527,6 +528,11 @@ async fn main() -> Result<()> {
             Database::connect(url, database.max_connections).await?,
         )
     } else {
+        check_moved_image_volume(
+            &cli.data_dir,
+            Path::new(IMAGE_DATA_DIR),
+            Path::new(OLD_IMAGE_DATA_DIR),
+        )?;
         let master = load_master_key(&cli.data_dir, cli.master_key.as_deref())?;
         let cipher = Cipher::from_hex(&master)?;
         let store = Store::open(&db_path(&cli.data_dir))
