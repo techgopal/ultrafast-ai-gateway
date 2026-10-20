@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use crate::guardrails::log::SideLog;
 pub use flight::{FlightGuard, Flights};
 pub use key::{CacheKey, KeyParts};
-use ultrafast_translate::embeddings::EmbeddingsResponse;
-use ultrafast_translate::types::{ChatResponse, Usage};
+use ufaigw_translate::embeddings::EmbeddingsResponse;
+use ufaigw_translate::types::{ChatResponse, Usage};
 
 /// The most entries the in-memory cache holds.
 pub const MAX_ENTRIES: usize = 10_000;
@@ -306,7 +306,7 @@ impl ResponseCache for MemoryCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ultrafast_translate::types::{ChatRequest, Message, Role};
+    use ufaigw_translate::types::{ChatRequest, Message, Role};
 
     fn answer(content: &str) -> Cached {
         Cached {

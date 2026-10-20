@@ -5,8 +5,8 @@
 // the test ends and when the test process exits.
 //
 // The binary is `UF_E2E_BINARY` when set. Otherwise `startGateway` builds the
-// debug binary with `cargo build -p ultrafast-gateway` (once per test file; a
-// no-op when it is up to date) and starts `<target_directory>/debug/ultrafast`,
+// debug binary with `cargo build -p ufaigw-gateway` (once per test file; a
+// no-op when it is up to date) and starts `<target_directory>/debug/ufaigw`,
 // where `target_directory` is what `cargo metadata` says, so `CARGO_TARGET_DIR`
 // is honoured. Tests that need no gateway never build.
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -78,7 +78,7 @@ export function binaryPath(): Promise<string> {
     const given = process.env[BINARY_VARIABLE];
     let path: string;
     if (given === undefined || given === "") {
-      await run("cargo", ["build", "-p", "ultrafast-gateway"], REPOSITORY);
+      await run("cargo", ["build", "-p", "ufaigw-gateway"], REPOSITORY);
       const metadata = JSON.parse(
         await run("cargo", ["metadata", "--no-deps", "--format-version", "1"], REPOSITORY),
       ) as { target_directory: string };
@@ -92,7 +92,7 @@ export function binaryPath(): Promise<string> {
     try {
       accessSync(path, constants.X_OK);
     } catch {
-      throw new Error(`No gateway binary at ${path}. Build it: cargo build -p ultrafast-gateway`);
+      throw new Error(`No gateway binary at ${path}. Build it: cargo build -p ufaigw-gateway`);
     }
     return path;
   })();

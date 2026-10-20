@@ -7,9 +7,9 @@ mod common;
 use axum::http::StatusCode;
 use common::{error_code, org, sign_in, Org, Signed};
 use serde_json::{json, Value};
-use ultrafast_gateway::identity::{Role, UserStatus};
-use ultrafast_gateway::secrets::{generate_secret, INVITE_PREFIX};
-use ultrafast_gateway::store::{after, NewUser};
+use ufaigw_gateway::identity::{Role, UserStatus};
+use ufaigw_gateway::secrets::{generate_secret, INVITE_PREFIX};
+use ufaigw_gateway::store::{after, NewUser};
 
 const PASSWORD: &str = "a long enough phrase 7";
 const PAGE: &str = "/accept-invite#token=";
@@ -261,7 +261,7 @@ async fn only_an_admin_issues_a_link_and_only_for_the_right_user() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(error_code(&body), "not_sso_user");
     // A user made by single sign-on who has a password already.
-    let ann_hash = ultrafast_gateway::identity::password::hash_password(PASSWORD).unwrap();
+    let ann_hash = ufaigw_gateway::identity::password::hash_password(PASSWORD).unwrap();
     let mut tx = org.api.store.begin().await.unwrap();
     assert!(tx.set_user_password(ann, &ann_hash).await.unwrap());
     tx.commit().await.unwrap();

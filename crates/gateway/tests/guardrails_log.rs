@@ -6,8 +6,8 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::harness;
-use ultrafast_gateway::snapshot::Snapshot;
-use ultrafast_gateway::store::NewGuardrail;
+use ufaigw_gateway::snapshot::Snapshot;
+use ufaigw_gateway::store::NewGuardrail;
 
 #[derive(Clone, Default)]
 struct Capture(Arc<Mutex<Vec<u8>>>);

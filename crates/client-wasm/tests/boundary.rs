@@ -2,7 +2,7 @@
 //! reads out, for every provider kind.
 
 use serde_json::{json, Value};
-use ultrafast_client_wasm::api;
+use ufaigw_client_wasm::api;
 
 fn j(s: &str) -> Value {
     serde_json::from_str(s).unwrap()
@@ -361,16 +361,10 @@ fn the_decoder_says_whether_the_stream_completed() {
 #[test]
 fn a_redirect_answer_says_the_same_thing_everywhere() {
     let e = j(&api::classify_error(302, b"<html></html>", Some("5")));
-    assert_eq!(
-        e["message"],
-        ultrafast_translate::classify::REDIRECT_MESSAGE
-    );
+    assert_eq!(e["message"], ufaigw_translate::classify::REDIRECT_MESSAGE);
     assert_eq!(e["kind"], "invalid_request");
     let e = j(&api::parse_response("openai", 301, b"", None).unwrap_err());
-    assert_eq!(
-        e["message"],
-        ultrafast_translate::classify::REDIRECT_MESSAGE
-    );
+    assert_eq!(e["message"], ufaigw_translate::classify::REDIRECT_MESSAGE);
 }
 
 fn tool_req() -> Value {

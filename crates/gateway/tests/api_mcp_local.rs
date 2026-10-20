@@ -9,7 +9,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use common::{org_tweaked, post_to, Org, Signed};
 use serde_json::{json, Value};
-use ultrafast_gateway::mcp::local::{Config, Supervisor};
+use ufaigw_gateway::mcp::local::{Config, Supervisor};
 
 const MOCK: &str = env!("CARGO_BIN_EXE_mcp-stdio-mock");
 
@@ -154,7 +154,7 @@ async fn a_local_server_runs_syncs_is_called_through_the_endpoint_and_stops() {
             .state
             .local
             .health(id)
-            .is_some_and(|h| h.phase == ultrafast_gateway::mcp::local::Phase::Running)
+            .is_some_and(|h| h.phase == ufaigw_gateway::mcp::local::Phase::Running)
     })
     .await;
     let (_, view) = org
@@ -421,14 +421,14 @@ async fn health_shows_in_the_server_list_and_a_crash_loop_is_found_without_askin
     let (_, list) = org.call(Some(&maya), "GET", "/api/mcp/servers", None).await;
     assert!(list["servers"][0]["health"].is_null(), "{list}");
     until("the good program and the crash loop", || {
-        use ultrafast_gateway::mcp::local::Phase;
+        use ufaigw_gateway::mcp::local::Phase;
         let s = &org.api.state.local;
         s.health(good).is_some_and(|h| h.phase == Phase::Running)
             && s.health(bad)
                 .is_some_and(|h| h.phase == Phase::CrashLooping)
     })
     .await;
-    ultrafast_gateway::mcp::health::probe_once(&org.api.state).await;
+    ufaigw_gateway::mcp::health::probe_once(&org.api.state).await;
     let (_, list) = org.call(Some(&maya), "GET", "/api/mcp/servers", None).await;
     let of = |id: i64| {
         list["servers"]

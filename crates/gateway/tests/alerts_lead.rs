@@ -6,10 +6,10 @@ mod common;
 use axum::http::StatusCode;
 use common::{org, Org};
 use serde_json::{json, Value};
-use ultrafast_gateway::budgets::{BudgetAction, Period};
-use ultrafast_gateway::limits::LimitScope;
-use ultrafast_gateway::secrets::generate_key;
-use ultrafast_gateway::store::NewAlertEvent;
+use ufaigw_gateway::budgets::{BudgetAction, Period};
+use ufaigw_gateway::limits::LimitScope;
+use ufaigw_gateway::secrets::generate_key;
+use ufaigw_gateway::store::NewAlertEvent;
 
 struct World {
     org: Org,

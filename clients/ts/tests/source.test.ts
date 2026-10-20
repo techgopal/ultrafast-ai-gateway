@@ -17,7 +17,7 @@ describe("src/ is free of Node-specific APIs", () => {
   const all = files(SRC);
   it("scans something", () => {
     expect(all.some((f) => f.endsWith("client.ts"))).toBe(true);
-    expect(all.some((f) => f.endsWith("ultrafast_client_wasm.js"))).toBe(true);
+    expect(all.some((f) => f.endsWith("ufaigw_client_wasm.js"))).toBe(true);
   });
   const forbidden: Array<[string, RegExp]> = [
     ["Buffer", /\bBuffer\b/],

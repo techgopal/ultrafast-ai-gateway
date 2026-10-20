@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use ultrafast_translate::types::Usage;
+use ufaigw_translate::types::Usage;
 
 use crate::app::AppState;
 use crate::store::NewLog;

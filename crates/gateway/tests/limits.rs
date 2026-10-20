@@ -16,11 +16,11 @@ use common::{
 use futures::StreamExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
-use ultrafast_gateway::identity::{Role, TeamRole};
-use ultrafast_gateway::limits::{
+use ufaigw_gateway::identity::{Role, TeamRole};
+use ufaigw_gateway::limits::{
     LimitScope, Limiter, MemoryLimiter, Permit, RateLimit, Refusal, Subjects,
 };
-use ultrafast_gateway::secrets::generate_key;
+use ufaigw_gateway::secrets::generate_key;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -623,7 +623,7 @@ async fn a_team_key_is_throttled_by_its_teams_limit_without_membership() {
 /// gives back its request slot: the next call is a 503 again, not a 429.
 #[tokio::test]
 async fn a_call_with_no_usable_model_gives_back_its_request_slot() {
-    use ultrafast_gateway::store::RouteSettings;
+    use ufaigw_gateway::store::RouteSettings;
     let w = world().await;
     let mut tx = w.h.store.begin().await.unwrap();
     tx.insert_route(

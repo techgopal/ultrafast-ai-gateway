@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 
 use common::*;
-use ultrafast_client::{ChatRequest, Client, EmbeddingsRequest, Error, ErrorKind, Target};
+use ufaigw_client::{ChatRequest, Client, EmbeddingsRequest, Error, ErrorKind, Target};
 
 const KEY: &str = "sk-very-secret-key-123";
 
@@ -218,10 +218,7 @@ async fn a_body_at_the_cap_is_read() {
 
 #[test]
 fn the_default_cap_is_32_mib() {
-    assert_eq!(
-        ultrafast_client::DEFAULT_MAX_RESPONSE_BYTES,
-        32 * 1024 * 1024
-    );
+    assert_eq!(ufaigw_client::DEFAULT_MAX_RESPONSE_BYTES, 32 * 1024 * 1024);
 }
 
 #[tokio::test]
@@ -275,7 +272,7 @@ async fn a_stream_that_stalls_after_text_times_out_after_the_text() {
     let first = st.next().await.unwrap().unwrap();
     assert_eq!(
         first,
-        ultrafast_client::types::StreamEvent::Delta { text: "par".into() }
+        ufaigw_client::types::StreamEvent::Delta { text: "par".into() }
     );
     let e = st.next().await.unwrap().unwrap_err();
     assert_eq!(e.kind, ErrorKind::Timeout);

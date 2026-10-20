@@ -7,7 +7,7 @@
 //! self-signed for `localhost`); the CI Postgres job starts such a server
 //! (`postgres-ssl`) and sets both, so they run there.
 
-use ultrafast_gateway::store::Store;
+use ufaigw_gateway::store::Store;
 
 fn with(url: &str, query: &str) -> String {
     let sep = if url.contains('?') { '&' } else { '?' };

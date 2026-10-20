@@ -10,10 +10,10 @@ use std::collections::BTreeSet;
 use axum::http::StatusCode;
 use common::{error_code, org_on_disk, send, Org, Signed, ORG_PASSWORD};
 use serde_json::{json, Value};
-use ultrafast_gateway::api::openapi::spec;
-use ultrafast_gateway::identity::{Role, UserStatus};
-use ultrafast_gateway::secrets::{generate_key, generate_secret, INVITE_PREFIX, TOKEN_PREFIX};
-use ultrafast_gateway::store::{after, NewUser};
+use ufaigw_gateway::api::openapi::spec;
+use ufaigw_gateway::identity::{Role, UserStatus};
+use ufaigw_gateway::secrets::{generate_key, generate_secret, INVITE_PREFIX, TOKEN_PREFIX};
+use ufaigw_gateway::store::{after, NewUser};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -166,7 +166,7 @@ async fn world() -> World {
     let route = tx
         .insert_route(
             "main-route",
-            &ultrafast_gateway::store::RouteSettings {
+            &ufaigw_gateway::store::RouteSettings {
                 retries: 2,
                 first_token_timeout_ms: 30_000,
                 total_timeout_ms: 300_000,
@@ -180,7 +180,7 @@ async fn world() -> World {
         .unwrap();
     tx.replace_targets(
         route,
-        &ultrafast_gateway::store::TargetsInput {
+        &ufaigw_gateway::store::TargetsInput {
             primaries: vec![(model, 1)],
             fallbacks: vec![],
         },
@@ -210,7 +210,7 @@ async fn world() -> World {
         cipher.encrypt(b"https://guard.example.com/check"),
         cipher.encrypt(b"whsec_table"),
     );
-    let new_guardrail = |name, kind, rules| ultrafast_gateway::store::NewGuardrail {
+    let new_guardrail = |name, kind, rules| ufaigw_gateway::store::NewGuardrail {
         name,
         description: "",
         kind,
@@ -232,7 +232,7 @@ async fn world() -> World {
         .await
         .unwrap();
     let external_guardrail = tx
-        .insert_guardrail(ultrafast_gateway::store::NewGuardrail {
+        .insert_guardrail(ufaigw_gateway::store::NewGuardrail {
             url: Some((&hook_url, "https://guard.example.com")),
             secret_enc: Some(&hook_secret),
             ..new_guardrail("external", "external", "[]")
@@ -246,7 +246,7 @@ async fn world() -> World {
         .unwrap();
     tx.insert_prompt_version(
         prompt,
-        ultrafast_gateway::store::NewVersion {
+        ufaigw_gateway::store::NewVersion {
             messages: r#"[{"role":"user","content":"hi {{x}}"}]"#,
             variables: r#"["x"]"#,
             model: None,
@@ -257,13 +257,13 @@ async fn world() -> World {
     .await
     .unwrap();
     let mcp_server = tx
-        .insert_server(ultrafast_gateway::store::NewMcpServer {
+        .insert_server(ufaigw_gateway::store::NewMcpServer {
             name: "table-mcp",
             // Nothing listens on port 1: a sync fails at once.
             url: "http://127.0.0.1:1/mcp",
             auth_kind: "bearer",
             auth_header: None,
-            auth_secret_enc: Some(&ultrafast_gateway::mcp::encrypt_secret(
+            auth_secret_enc: Some(&ufaigw_gateway::mcp::encrypt_secret(
                 &org.api.state.cipher,
                 "tok-table",
             )),
@@ -275,7 +275,7 @@ async fn world() -> World {
         .unwrap();
     tx.upsert_tools(
         mcp_server,
-        vec![ultrafast_gateway::store::DiscoveredTool {
+        vec![ufaigw_gateway::store::DiscoveredTool {
             name: "search".into(),
             title: None,
             description: "".into(),
@@ -292,7 +292,7 @@ async fn world() -> World {
     tx.set_tool_enabled(mcp_tool, true).await.unwrap();
     tx.replace_tool_grants(
         mcp_tool,
-        &ultrafast_gateway::store::Grants {
+        &ufaigw_gateway::store::Grants {
             everyone: true,
             ..Default::default()
         },
@@ -302,7 +302,7 @@ async fn world() -> World {
     tx.commit().await.unwrap();
     org.api.state.refresh().await.unwrap();
 
-    let log = |user: i64, team: i64| ultrafast_gateway::store::NewLog {
+    let log = |user: i64, team: i64| ufaigw_gateway::store::NewLog {
         tags: None,
         at: "2026-01-01 10:00:00".into(),
         key_id: None,
@@ -333,9 +333,9 @@ async fn world() -> World {
     // Limit 1, which the table's DELETE row removes.
     let mut tx = org.api.store.begin().await.unwrap();
     tx.upsert_limit(
-        ultrafast_gateway::limits::LimitScope::Gateway,
+        ufaigw_gateway::limits::LimitScope::Gateway,
         None,
-        &ultrafast_gateway::limits::RateLimit {
+        &ufaigw_gateway::limits::RateLimit {
             requests_per_minute: Some(100),
             ..Default::default()
         },
@@ -344,11 +344,11 @@ async fn world() -> World {
     .unwrap();
     // Budget 1, which the table's DELETE row removes.
     tx.upsert_budget(
-        ultrafast_gateway::limits::LimitScope::Gateway,
+        ufaigw_gateway::limits::LimitScope::Gateway,
         None,
         1_000_000,
-        ultrafast_gateway::budgets::Period::Daily,
-        ultrafast_gateway::budgets::BudgetAction::Block,
+        ufaigw_gateway::budgets::Period::Daily,
+        ufaigw_gateway::budgets::BudgetAction::Block,
     )
     .await
     .unwrap();

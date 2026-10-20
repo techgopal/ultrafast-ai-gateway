@@ -17,13 +17,13 @@ use futures::{Stream, StreamExt};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
-use ultrafast_client::types::{ChatResponse, FinishReason, StreamEvent, ToolChoice, Usage};
-use ultrafast_client::{
+use ufaigw_client::types::{ChatResponse, FinishReason, StreamEvent, ToolChoice, Usage};
+use ufaigw_client::{
     ChatRequest, Client as RustClient, EmbeddingsRequest, EmbeddingsResponse, Error, ErrorKind,
     Target as RustTarget,
 };
-use ultrafast_translate::error::TranslateError;
-use ultrafast_translate::ingress::openai::{parse_messages, parse_response_format, parse_tools};
+use ufaigw_translate::error::TranslateError;
+use ufaigw_translate::ingress::openai::{parse_messages, parse_response_format, parse_tools};
 
 /// How long a blocking call waits before it lets Python handle a signal.
 const SIGNAL_SLICE: Duration = Duration::from_millis(100);

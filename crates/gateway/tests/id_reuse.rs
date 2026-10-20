@@ -5,10 +5,10 @@
 mod common;
 
 use common::{assert_id_given_again, email_of, org, seed_team, seed_user, Org, ORG_PASSWORD};
-use ultrafast_gateway::budgets::{self, BudgetAction, Period};
-use ultrafast_gateway::identity::{Role, TeamRole};
-use ultrafast_gateway::limits::LimitScope;
-use ultrafast_gateway::store::{LogFilter, LogScope, NewLog, UsageGroup};
+use ufaigw_gateway::budgets::{self, BudgetAction, Period};
+use ufaigw_gateway::identity::{Role, TeamRole};
+use ufaigw_gateway::limits::LimitScope;
+use ufaigw_gateway::store::{LogFilter, LogScope, NewLog, UsageGroup};
 
 fn log(at: &str, user: Option<i64>, team: Option<i64>, cost: i64) -> NewLog {
     NewLog {
@@ -49,7 +49,7 @@ async fn reused() -> Reused {
     let store = org.api.store.clone();
     let user = seed_user(&store, "zed@example.com", Role::Member, ORG_PASSWORD).await;
     let team = seed_team(&store, "Ops", &[(user, TeamRole::Member)]).await;
-    let now = ultrafast_gateway::store::now();
+    let now = ufaigw_gateway::store::now();
     store
         .insert_logs(&[
             log(&now, Some(user), Some(team), 4_000_000),
@@ -175,7 +175,7 @@ async fn a_budget_on_a_reused_id_starts_from_zero() {
 async fn deleting_a_user_or_team_keeps_other_rows_attributed() {
     let org = org().await;
     let store = &org.api.store;
-    let now = ultrafast_gateway::store::now();
+    let now = ufaigw_gateway::store::now();
     store
         .insert_logs(&[log(&now, Some(org.lena), Some(org.platform), 1)])
         .await

@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 
 const pkg = path.resolve(process.argv[2] ?? new URL("../pkg", import.meta.url).pathname);
-const w = createRequire(import.meta.url)(path.join(pkg, "ultrafast_client_wasm.js"));
+const w = createRequire(import.meta.url)(path.join(pkg, "ufaigw_client_wasm.js"));
 
 const CHAT = {
   id: "c1", model: "gpt-4o",

@@ -3,8 +3,8 @@ mod common;
 use axum::http::StatusCode;
 use common::{call_with_token, error_code, org, seed_user, Org, Signed, ORG_PASSWORD};
 use serde_json::{json, Value};
-use ultrafast_gateway::identity::Role;
-use ultrafast_gateway::secrets::{generate_secret, hash_key, TOKEN_PREFIX};
+use ufaigw_gateway::identity::Role;
+use ufaigw_gateway::secrets::{generate_secret, hash_key, TOKEN_PREFIX};
 
 const PAST: &str = "2000-01-01 00:00:00";
 const FUTURE: &str = "2999-01-01 00:00:00";

@@ -3,8 +3,8 @@ mod common;
 use axum::http::StatusCode;
 use common::{compared, error_code, org, raw, Org, Signed, ORG_PASSWORD};
 use serde_json::{json, Value};
-use ultrafast_gateway::identity::{Role, UserStatus};
-use ultrafast_gateway::secrets::{generate_key, generate_secret, TOKEN_PREFIX};
+use ufaigw_gateway::identity::{Role, UserStatus};
+use ufaigw_gateway::secrets::{generate_key, generate_secret, TOKEN_PREFIX};
 
 const NEW_PASSWORD: &str = "another horse battery";
 /// The token is in the fragment: a browser never sends it to a server, so
@@ -940,7 +940,7 @@ async fn user_view_lists_teams() {
 async fn user_view_teams_are_only_those_the_caller_may_see() {
     let org = org().await;
     let mut tx = org.api.store.begin().await.unwrap();
-    use ultrafast_gateway::identity::TeamRole;
+    use ufaigw_gateway::identity::TeamRole;
     tx.put_member(org.growth, org.lena, TeamRole::Member)
         .await
         .unwrap();

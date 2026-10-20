@@ -11,13 +11,13 @@ use axum::http::StatusCode;
 use common::{error_code, org};
 use serde_json::Value;
 use sqlx::{Connection, Row};
-use ultrafast_gateway::secrets::Cipher;
-use ultrafast_gateway::store::Dialect;
+use ufaigw_gateway::secrets::Cipher;
+use ufaigw_gateway::store::Dialect;
 
 /// The program with a clean environment plus `env`, run in a data directory
 /// of its own.
 fn run(data_dir: &Path, env: &[(&str, &str)], args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ultrafast"))
+    Command::new(env!("CARGO_BIN_EXE_ufaigw"))
         .env_clear()
         .envs(env.iter().copied())
         .arg("--data-dir")
@@ -40,7 +40,7 @@ fn startup_database_line(env: &[(&str, &str)]) -> String {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     let dir = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ultrafast"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ufaigw"))
         .env_clear()
         .envs(env.iter().copied())
         .arg("--data-dir")

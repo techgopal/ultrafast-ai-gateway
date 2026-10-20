@@ -1,22 +1,22 @@
 //! The boundary in plain Rust: strings and bytes in, a JSON string out. An
 //! `Err` is always the JSON of a classified error, `{kind, retryable, status,
 //! message, retry_after_secs}`, with the same kinds and retry rules as the
-//! Rust client (both use `ultrafast_translate::classify`).
+//! Rust client (both use `ufaigw_translate::classify`).
 
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use ultrafast_translate::classify::{classify_answer, parse_retry_after, Classified, ErrorKind};
-use ultrafast_translate::embeddings::{self, EmbeddingsRequest};
-use ultrafast_translate::ingress::openai::{
+use ufaigw_translate::classify::{classify_answer, parse_retry_after, Classified, ErrorKind};
+use ufaigw_translate::embeddings::{self, EmbeddingsRequest};
+use ufaigw_translate::ingress::openai::{
     parse_messages, parse_response_format, parse_tool_choice, parse_tools,
 };
-use ultrafast_translate::provider::{
+use ufaigw_translate::provider::{
     self, HttpRequest, ProviderKind, StreamDecoder, Target as WireTarget,
 };
-use ultrafast_translate::tags;
-use ultrafast_translate::types::{ChatRequest, ChatResponse, FinishReason, StreamEvent, Usage};
+use ufaigw_translate::tags;
+use ufaigw_translate::types::{ChatRequest, ChatResponse, FinishReason, StreamEvent, Usage};
 
 pub type Failure = String;
 
@@ -35,7 +35,7 @@ fn invalid(message: impl Into<String>) -> Failure {
     error_json(&Classified::new(ErrorKind::InvalidRequest, message))
 }
 
-fn classified(e: ultrafast_translate::error::TranslateError, retry_after: Option<&str>) -> Failure {
+fn classified(e: ufaigw_translate::error::TranslateError, retry_after: Option<&str>) -> Failure {
     error_json(&Classified::from_translate(
         e,
         retry_after.and_then(parse_retry_after),
@@ -393,7 +393,7 @@ pub fn host_error(kind: &str, message: &str) -> Result<String, Failure> {
 
 /// `message` with the key replaced by `[redacted]`.
 pub fn scrub(message: &str, key: &str) -> String {
-    ultrafast_translate::classify::scrub(message, key)
+    ufaigw_translate::classify::scrub(message, key)
 }
 
 /// An error JSON (as thrown by any function here) with the key removed from

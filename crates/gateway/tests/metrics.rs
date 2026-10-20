@@ -18,17 +18,17 @@ use serde_json::json;
 use time::OffsetDateTime;
 use tokio::sync::watch;
 use tower::ServiceExt;
-use ultrafast_gateway::budgets::{account, BudgetAction, Period};
-use ultrafast_gateway::cache::{CacheScope, RouteCache};
-use ultrafast_gateway::identity::{Role, TeamRole};
-use ultrafast_gateway::limits::{LimitScope, Limiter, Permit, Refusal, Subjects};
-use ultrafast_gateway::logs::writer::{spawn, WriterConfig};
-use ultrafast_gateway::logs::{LogSink, Price, PriceLookup};
-use ultrafast_gateway::metrics::escape_label;
-use ultrafast_gateway::routing::{BreakerSettings, TargetRef};
-use ultrafast_gateway::secrets::generate_key;
-use ultrafast_gateway::store::{RouteSettings, TargetsInput};
-use ultrafast_gateway::telemetry::{NoopSink, RequestRecord, Scope};
+use ufaigw_gateway::budgets::{account, BudgetAction, Period};
+use ufaigw_gateway::cache::{CacheScope, RouteCache};
+use ufaigw_gateway::identity::{Role, TeamRole};
+use ufaigw_gateway::limits::{LimitScope, Limiter, Permit, Refusal, Subjects};
+use ufaigw_gateway::logs::writer::{spawn, WriterConfig};
+use ufaigw_gateway::logs::{LogSink, Price, PriceLookup};
+use ufaigw_gateway::metrics::escape_label;
+use ufaigw_gateway::routing::{BreakerSettings, TargetRef};
+use ufaigw_gateway::secrets::generate_key;
+use ufaigw_gateway::store::{RouteSettings, TargetsInput};
+use ufaigw_gateway::telemetry::{NoopSink, RequestRecord, Scope};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -364,8 +364,8 @@ async fn requests_tokens_and_upstream_time_move_with_traffic() {
 
 #[tokio::test]
 async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
-    use ultrafast_gateway::telemetry::{Attempt, AttemptOutcome};
-    let metrics = ultrafast_gateway::metrics::Metrics::new();
+    use ufaigw_gateway::telemetry::{Attempt, AttemptOutcome};
+    let metrics = ufaigw_gateway::metrics::Metrics::new();
     let attempt = |outcome| Attempt {
         provider: "p".into(),
         model: "m".into(),
@@ -395,7 +395,7 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         ],
         cached: false,
         estimated: false,
-        started_at: ultrafast_gateway::store::now(),
+        started_at: ufaigw_gateway::store::now(),
         duration_ms: 1,
         trace_parent: None,
         provider_kinds: Vec::new(),
@@ -436,7 +436,7 @@ async fn a_failing_provider_counts_as_5xx() {
 
 #[test]
 fn a_call_the_caller_abandoned_counts_as_499_and_not_as_a_4xx() {
-    let metrics = Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let metrics = Arc::new(ufaigw_gateway::metrics::Metrics::new());
     let mut scope = Scope::begin(Arc::new(NoopSink), Some(1), None, None, "messages");
     scope.metered(metrics.clone());
     drop(scope);
@@ -459,7 +459,7 @@ fn a_call_the_caller_abandoned_counts_as_499_and_not_as_a_4xx() {
 
 #[test]
 fn a_playground_call_has_its_own_endpoint_in_the_counts() {
-    let metrics = Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let metrics = Arc::new(ufaigw_gateway::metrics::Metrics::new());
     // A call of a user, with no key.
     let mut scope = Scope::begin(Arc::new(NoopSink), None, Some(1), None, "playground");
     scope.metered(metrics.clone());
@@ -596,7 +596,7 @@ async fn a_budget_refusal_is_counted() {
         attempts: Vec::new(),
         cached: false,
         estimated: false,
-        started_at: ultrafast_gateway::store::now(),
+        started_at: ufaigw_gateway::store::now(),
         duration_ms: 1,
         trace_parent: None,
         provider_kinds: Vec::new(),
@@ -798,7 +798,7 @@ async fn guardrail_actions_are_counted_by_action_and_direction_with_no_names() {
     ])
     .to_string();
     let mut tx = h.store.begin().await.unwrap();
-    tx.insert_guardrail(ultrafast_gateway::store::NewGuardrail {
+    tx.insert_guardrail(ufaigw_gateway::store::NewGuardrail {
         name: "a-secret-name",
         description: "",
         kind: "rules",

@@ -5,8 +5,8 @@ mod common;
 use axum::http::StatusCode;
 use common::{email_of, error_code, org, Org};
 use serde_json::{json, Value};
-use ultrafast_gateway::secrets::generate_key;
-use ultrafast_gateway::store::NewLog;
+use ufaigw_gateway::secrets::generate_key;
+use ufaigw_gateway::store::NewLog;
 
 #[allow(clippy::too_many_arguments)]
 fn log(

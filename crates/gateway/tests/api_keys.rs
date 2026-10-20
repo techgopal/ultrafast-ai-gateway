@@ -3,7 +3,7 @@ mod common;
 use axum::http::StatusCode;
 use common::{allow_model, error_code, org, post_chat, Org, Signed};
 use serde_json::{json, Value};
-use ultrafast_gateway::secrets::{generate_key, hash_key};
+use ufaigw_gateway::secrets::{generate_key, hash_key};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

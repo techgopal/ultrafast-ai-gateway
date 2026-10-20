@@ -11,11 +11,11 @@ use axum::http::StatusCode;
 use common::{call, org, Org};
 use serde_json::json;
 use time::OffsetDateTime;
-use ultrafast_gateway::app::{router, AppState};
-use ultrafast_gateway::budgets::{self, BudgetAction, Period};
-use ultrafast_gateway::limits::LimitScope;
-use ultrafast_gateway::secrets::Cipher;
-use ultrafast_gateway::store::Dialect;
+use ufaigw_gateway::app::{router, AppState};
+use ufaigw_gateway::budgets::{self, BudgetAction, Period};
+use ufaigw_gateway::limits::LimitScope;
+use ufaigw_gateway::secrets::Cipher;
+use ufaigw_gateway::store::Dialect;
 
 /// Process A is the organization's own gateway; B is another one on the
 /// same database. `None` where the tests do not run.
@@ -240,8 +240,8 @@ async fn a_session_made_on_one_process_signs_in_on_the_other() {
 #[tokio::test]
 async fn an_idle_process_leaves_the_alert_episode_of_the_other_alone() {
     use std::time::Duration;
-    use ultrafast_gateway::alerts::engine::Engine;
-    use ultrafast_gateway::alerts::errors_window::{ErrorWindows, Sample};
+    use ufaigw_gateway::alerts::engine::Engine;
+    use ufaigw_gateway::alerts::errors_window::{ErrorWindows, Sample};
 
     let Some((org, _b)) = two().await else { return };
     let store = org.api.store.clone();

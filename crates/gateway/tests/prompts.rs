@@ -14,10 +14,10 @@ use common::{
     MemorySink, Org, Signed, ORG_PASSWORD,
 };
 use serde_json::{json, Value};
-use ultrafast_gateway::identity::{Role, TeamRole};
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
-use ultrafast_gateway::secrets::generate_key;
-use ultrafast_gateway::store::{NewGuardrail, NewLog};
+use ufaigw_gateway::identity::{Role, TeamRole};
+use ufaigw_gateway::limits::{LimitScope, RateLimit};
+use ufaigw_gateway::secrets::generate_key;
+use ufaigw_gateway::store::{NewGuardrail, NewLog};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1184,7 +1184,7 @@ async fn stuff(w: &World, name: &str, n: usize, bytes: usize) -> i64 {
             .to_string();
         tx.insert_prompt_version(
             id,
-            ultrafast_gateway::store::NewVersion {
+            ufaigw_gateway::store::NewVersion {
                 messages: &messages,
                 variables: "[]",
                 model: Some("p/m"),
@@ -1457,7 +1457,7 @@ async fn a_team_lead_may_make_100_templates_and_an_admin_more() {
                 .unwrap();
             tx.insert_prompt_version(
                 t,
-                ultrafast_gateway::store::NewVersion {
+                ufaigw_gateway::store::NewVersion {
                     messages: "[{\"role\":\"user\",\"content\":\"x\"}]",
                     variables: "[]",
                     model: None,
@@ -1551,7 +1551,7 @@ async fn there_are_at_most_1000_templates_and_200_versions_each() {
                 .unwrap();
             tx.insert_prompt_version(
                 t,
-                ultrafast_gateway::store::NewVersion {
+                ufaigw_gateway::store::NewVersion {
                     messages: "[{\"role\":\"user\",\"content\":\"x\"}]",
                     variables: "[]",
                     model: None,
@@ -1633,7 +1633,7 @@ async fn a_template_that_cannot_be_read_is_flagged_in_the_list_not_fatal() {
         let t = tx.insert_prompt_template("broken", "", None).await.unwrap();
         tx.insert_prompt_version(
             t,
-            ultrafast_gateway::store::NewVersion {
+            ufaigw_gateway::store::NewVersion {
                 messages: "not json",
                 variables: "[]",
                 model: None,

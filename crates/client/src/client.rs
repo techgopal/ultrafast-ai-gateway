@@ -2,11 +2,11 @@ use std::fmt;
 use std::time::Duration;
 
 use futures::Stream;
-use ultrafast_translate::classify::{parse_retry_after, REDIRECT_MESSAGE};
-use ultrafast_translate::embeddings;
-use ultrafast_translate::embeddings::EmbeddingsResponse;
-use ultrafast_translate::provider::{self, HttpRequest};
-use ultrafast_translate::types::{ChatResponse, StreamEvent};
+use ufaigw_translate::classify::{parse_retry_after, REDIRECT_MESSAGE};
+use ufaigw_translate::embeddings;
+use ufaigw_translate::embeddings::EmbeddingsResponse;
+use ufaigw_translate::provider::{self, HttpRequest};
+use ufaigw_translate::types::{ChatResponse, StreamEvent};
 
 use crate::error::{Error, ErrorKind};
 use crate::request::{tags_header, ChatRequest, EmbeddingsRequest};

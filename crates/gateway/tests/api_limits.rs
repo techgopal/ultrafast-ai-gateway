@@ -5,7 +5,7 @@ mod common;
 use axum::http::StatusCode;
 use common::{error_code, org, Org, Signed};
 use serde_json::{json, Value};
-use ultrafast_gateway::secrets::generate_key;
+use ufaigw_gateway::secrets::generate_key;
 
 /// An org with a key of lena (in Platform) and one of tomas (in Research).
 struct World {
@@ -430,7 +430,7 @@ async fn a_deleted_team_or_user_takes_its_limits_with_it() {
 async fn the_database_refuses_a_second_gateway_limit() {
     let w = world().await;
     let mut tx = w.org.api.store.begin().await.unwrap();
-    use ultrafast_gateway::limits::{LimitScope, RateLimit};
+    use ufaigw_gateway::limits::{LimitScope, RateLimit};
     let limit = RateLimit {
         requests_per_minute: Some(1),
         tokens_per_minute: None,

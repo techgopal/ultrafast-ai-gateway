@@ -1,21 +1,21 @@
-# ultrafast-client
+# ufaigw-client
 
 Rust client for an Ultrafast gateway, or for a provider directly. Built on
-`ultrafast-translate` (request building and response parsing are the code
+`ufaigw-translate` (request building and response parsing are the code
 the gateway uses; error classification and stream decoding are shared with the
 other clients) and `reqwest` with rustls.
 
 ```sh
-cargo add ultrafast-client
+cargo add ufaigw-client
 ```
 
 The crates appear on crates.io from v2.0.0-beta.4.
 
 ```rust
 use futures::StreamExt;
-use ultrafast_client::{ChatRequest, Client, EmbeddingsRequest, Target};
+use ufaigw_client::{ChatRequest, Client, EmbeddingsRequest, Target};
 
-async fn run() -> Result<(), ultrafast_client::Error> {
+async fn run() -> Result<(), ufaigw_client::Error> {
     let client = Client::new(Target::gateway("http://127.0.0.1:3000", "uf-key"));
 
     let reply = client
@@ -50,7 +50,7 @@ without sending anything.
 ## Tools and images
 
 ```rust
-use ultrafast_client::{ChatRequest, Tool, ToolChoice};
+use ufaigw_client::{ChatRequest, Tool, ToolChoice};
 
 let weather = Tool {
     name: "weather".into(),
@@ -113,7 +113,7 @@ chunks.
 ## Test
 
 ```
-cargo test -p ultrafast-client
+cargo test -p ufaigw-client
 ```
 
 `tests/fixtures.rs` runs the parity fixtures in `clients/fixtures/*.json`

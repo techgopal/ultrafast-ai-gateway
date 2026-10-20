@@ -771,7 +771,7 @@ mod tests {
             spec_json(),
             committed,
             "openapi/admin.json is out of date; run: \
-             cargo run -p ultrafast-gateway -- openapi > openapi/admin.json"
+             cargo run -p ufaigw-gateway -- openapi > openapi/admin.json"
         );
     }
 }

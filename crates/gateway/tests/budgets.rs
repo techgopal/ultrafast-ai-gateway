@@ -12,17 +12,17 @@ use serde_json::{json, Value};
 use time::macros::datetime;
 use time::OffsetDateTime;
 use tokio::sync::watch;
-use ultrafast_gateway::app::AppState;
-use ultrafast_gateway::budgets::{
+use ufaigw_gateway::app::AppState;
+use ufaigw_gateway::budgets::{
     self, account, usd, Budget, BudgetAction, Budgets, MemoryBudgets, Period, FLUSH_INTERVAL,
 };
-use ultrafast_gateway::identity::{Role, TeamRole};
-use ultrafast_gateway::limits::LimitScope;
-use ultrafast_gateway::logs::writer::{spawn_accounted, WriterConfig};
-use ultrafast_gateway::logs::{snapshot_prices, LogSink};
-use ultrafast_gateway::secrets::generate_key;
-use ultrafast_gateway::store::{NewLog, Store};
-use ultrafast_gateway::telemetry::RequestRecord;
+use ufaigw_gateway::identity::{Role, TeamRole};
+use ufaigw_gateway::limits::LimitScope;
+use ufaigw_gateway::logs::writer::{spawn_accounted, WriterConfig};
+use ufaigw_gateway::logs::{snapshot_prices, LogSink};
+use ufaigw_gateway::secrets::generate_key;
+use ufaigw_gateway::store::{NewLog, Store};
+use ufaigw_gateway::telemetry::RequestRecord;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -399,7 +399,7 @@ impl World {
             attempts: Vec::new(),
             cached: false,
             estimated: false,
-            started_at: ultrafast_gateway::store::now(),
+            started_at: ufaigw_gateway::store::now(),
             duration_ms: 1,
             trace_parent: None,
             provider_kinds: Vec::new(),
@@ -477,7 +477,7 @@ async fn a_block_budget_refuses_at_every_scope() {
 /// next refusals are still budget refusals, never rate-limit ones.
 #[tokio::test]
 async fn a_budget_refusal_gives_back_the_request_slot_and_the_tokens() {
-    use ultrafast_gateway::limits::RateLimit;
+    use ufaigw_gateway::limits::RateLimit;
     let w = world().await;
     let mut tx = w.h.store.begin().await.unwrap();
     for scope in [
@@ -848,7 +848,7 @@ async fn a_block_budget_already_spent_keeps_blocking_after_a_restart() {
         budgets::rebuild(&state, OffsetDateTime::now_utc())
             .await
             .unwrap();
-        let app = ultrafast_gateway::app::router(state);
+        let app = ufaigw_gateway::app::router(state);
         let bearer = format!("Bearer {}", w.key);
         let (status, _, body) = post_to(
             &app,
@@ -863,7 +863,7 @@ async fn a_block_budget_already_spent_keeps_blocking_after_a_restart() {
 }
 
 fn store_now() -> String {
-    ultrafast_gateway::store::now()
+    ufaigw_gateway::store::now()
 }
 
 #[tokio::test]
@@ -951,7 +951,7 @@ async fn a_late_alert_does_not_lower_the_cached_spend() {
     // A write of an older, lower value never lowers the row.
     let start = Period::Daily.start_string(OffsetDateTime::now_utc());
     w.h.store
-        .write_budget_usage(&[ultrafast_gateway::store::UsageRow {
+        .write_budget_usage(&[ufaigw_gateway::store::UsageRow {
             budget_id: id,
             period_start: start,
             spent_micros: 10,

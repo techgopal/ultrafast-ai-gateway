@@ -1,5 +1,5 @@
 [package]
-name = "ultrafast-client-wasm"
+name = "ufaigw-client-wasm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,11 +12,11 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ultrafast-translate = { version = "2.1.1", path = "../translate" }
+ufaigw-translate = { version = "2.1.1", path = "../translate" }
 serde.workspace = true
 serde_json.workspace = true
 # Pinned: the wasm-bindgen CLI that builds the package must be this version.
 wasm-bindgen = "=0.2.129"
 
 [dev-dependencies]
-ultrafast-translate = { path = "../translate" }
+ufaigw-translate = { path = "../translate" }

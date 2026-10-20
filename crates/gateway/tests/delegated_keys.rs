@@ -9,8 +9,8 @@ mod common;
 use axum::http::StatusCode;
 use common::{error_code, org, post_chat, seed_user, sign_in, Org, Signed, ORG_PASSWORD};
 use serde_json::{json, Value};
-use ultrafast_gateway::identity::{Role, TeamRole};
-use ultrafast_gateway::store::{Grants, RouteSettings, TargetsInput};
+use ufaigw_gateway::identity::{Role, TeamRole};
+use ufaigw_gateway::store::{Grants, RouteSettings, TargetsInput};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

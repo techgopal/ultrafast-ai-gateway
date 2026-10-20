@@ -15,8 +15,8 @@ use common::{allow_model, harness, harness_with_metrics_token, harness_with_stat
 use futures::StreamExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
-use ultrafast_gateway::store::{Grants, NewGuardrail, RouteSettings, TargetsInput};
-use ultrafast_gateway::telemetry::AttemptOutcome;
+use ufaigw_gateway::store::{Grants, NewGuardrail, RouteSettings, TargetsInput};
+use ufaigw_gateway::telemetry::AttemptOutcome;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -240,7 +240,7 @@ async fn a_30_mib_upload_is_refused_without_reading_it_all() {
         .respond_with(tokens_answer())
         .mount(&h.upstream)
         .await;
-    assert_eq!(ultrafast_gateway::app::DEFAULT_MAX_AUDIO_BYTES, 25 * MIB);
+    assert_eq!(ufaigw_gateway::app::DEFAULT_MAX_AUDIO_BYTES, 25 * MIB);
     let pulled = Arc::new(AtomicUsize::new(0));
     let chunk = Bytes::from(vec![7u8; 64 * 1024]);
     let counter = pulled.clone();
@@ -680,7 +680,7 @@ async fn transcripts_are_checked_in_every_format_and_the_audio_never_is() {
 
 #[tokio::test]
 async fn audio_calls_are_not_cached() {
-    use ultrafast_gateway::cache::{CacheScope, RouteCache};
+    use ufaigw_gateway::cache::{CacheScope, RouteCache};
     let h = harness("openai").await;
     let model = allow_model(&h.store, "p", "stt").await;
     let mut tx = h.store.begin().await.unwrap();
@@ -807,8 +807,8 @@ async fn the_calls_are_counted_by_endpoint() {
     }
 }
 
-fn slow_floor_off(s: &mut ultrafast_gateway::app::AppState) {
-    s.slow_calls = ultrafast_gateway::app::SlowCalls {
+fn slow_floor_off(s: &mut ufaigw_gateway::app::AppState) {
+    s.slow_calls = ufaigw_gateway::app::SlowCalls {
         first_byte: Duration::ZERO,
         total: Duration::ZERO,
     };
@@ -1028,7 +1028,7 @@ async fn an_unknown_or_forbidden_model_is_refused_before_the_file_is_read() {
 
 #[tokio::test]
 async fn a_rate_limited_key_is_refused_before_the_file_is_read_and_the_permit_is_kept_once() {
-    use ultrafast_gateway::limits::{LimitScope, RateLimit};
+    use ufaigw_gateway::limits::{LimitScope, RateLimit};
     let h = harness("openai").await;
     Mock::given(method("POST"))
         .respond_with(tokens_answer())
@@ -1251,7 +1251,7 @@ async fn an_upload_place_is_given_back_once_the_body_has_arrived() {
 // estimate of what it turned out to be, so a token limit counts it.
 #[tokio::test]
 async fn a_chunked_upload_that_names_the_model_first_is_charged_tokens() {
-    use ultrafast_gateway::limits::{LimitScope, RateLimit};
+    use ufaigw_gateway::limits::{LimitScope, RateLimit};
     let h = harness("openai").await;
     // No usage in the answer: the estimate stays what the call was charged.
     Mock::given(method("POST"))

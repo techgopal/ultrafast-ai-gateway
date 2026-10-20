@@ -5,7 +5,7 @@ mod common;
 use axum::http::StatusCode;
 use common::{org_tweaked, Org, Signed};
 use serde_json::{json, Value};
-use ultrafast_gateway::portable::{self, Actor, ConfigFile};
+use ufaigw_gateway::portable::{self, Actor, ConfigFile};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

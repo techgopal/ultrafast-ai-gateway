@@ -80,7 +80,7 @@ fn the_console_is_built_before_the_binary_that_embeds_it() {
         .find("actions/download-artifact")
         .expect("the binaries take the console");
     let compile = build
-        .find("cargo build --release --locked -p ultrafast-gateway")
+        .find("cargo build --release --locked -p ufaigw-gateway")
         .expect("a release build");
     assert!(fetch < compile, "the console is fetched after the build");
     assert!(

@@ -2,14 +2,14 @@
 
 use std::collections::BTreeMap;
 
-use ultrafast_translate::embeddings::EmbeddingsRequest as Wire;
-use ultrafast_translate::types::{
+use ufaigw_translate::embeddings::EmbeddingsRequest as Wire;
+use ufaigw_translate::types::{
     self, image_source, Message, Part, ResponseFormat, Role, Tool, ToolCall, ToolChoice,
 };
 
 use crate::error::{Error, ErrorKind};
 
-pub use ultrafast_translate::tags::MAX_TAGS_BYTES;
+pub use ufaigw_translate::tags::MAX_TAGS_BYTES;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatRequest {
@@ -212,16 +212,16 @@ impl From<Wire> for EmbeddingsRequest {
     }
 }
 
-/// The `x-uf-tags` value; see [`ultrafast_translate::tags::tags_header`].
+/// The `x-uf-tags` value; see [`ufaigw_translate::tags::tags_header`].
 pub(crate) fn tags_header(tags: &BTreeMap<String, String>) -> Result<Option<String>, Error> {
-    ultrafast_translate::tags::tags_header(tags).map_err(|c| Error::new(c.kind, c.message))
+    ufaigw_translate::tags::tags_header(tags).map_err(|c| Error::new(c.kind, c.message))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use ultrafast_translate::types::{ImageSource, Part, Tool, ToolCall, ToolChoice};
+    use ufaigw_translate::types::{ImageSource, Part, Tool, ToolCall, ToolChoice};
 
     fn weather() -> Tool {
         Tool {

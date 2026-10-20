@@ -9,8 +9,8 @@ use axum::http::{Request, StatusCode};
 use common::{error_code, org, post_chat, Org};
 use serde_json::{json, Value};
 use tower::ServiceExt;
-use ultrafast_gateway::secrets::generate_key;
-use ultrafast_gateway::store::{Grants, RouteSettings, TargetsInput};
+use ufaigw_gateway::secrets::generate_key;
+use ufaigw_gateway::store::{Grants, RouteSettings, TargetsInput};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -436,10 +436,10 @@ async fn the_console_and_v1_agree_on_who_may_call_what() {
 
     // A key whose owner the snapshot does not hold agrees with the
     // predicates: nothing is usable or callable for a missing owner.
-    use ultrafast_gateway::access::{
+    use ufaigw_gateway::access::{
         callable_names, model_callable, route_usable, ModelFacts, RouteFacts, Viewer,
     };
-    use ultrafast_gateway::snapshot::{SnapKey, Snapshot};
+    use ufaigw_gateway::snapshot::{SnapKey, Snapshot};
     let snapshot = Snapshot::load(&w.org.api.store, &w.org.api.state.cipher)
         .await
         .unwrap();
@@ -805,12 +805,9 @@ async fn a_disabled_owner_is_still_refused_before_access() {
     w.refresh().await;
     assert_eq!(w.status(&key, "p/m1").await, StatusCode::OK);
     let mut tx = w.org.api.store.begin().await.unwrap();
-    tx.set_user_status(
-        w.org.lena,
-        ultrafast_gateway::identity::UserStatus::Disabled,
-    )
-    .await
-    .unwrap();
+    tx.set_user_status(w.org.lena, ufaigw_gateway::identity::UserStatus::Disabled)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     w.refresh().await;
     assert_eq!(w.status(&key, "p/m1").await, StatusCode::UNAUTHORIZED);
@@ -818,8 +815,8 @@ async fn a_disabled_owner_is_still_refused_before_access() {
 
 #[tokio::test]
 async fn a_key_whose_owner_is_missing_calls_nothing() {
-    use ultrafast_gateway::access::{callable_names, resolve, Denied};
-    use ultrafast_gateway::snapshot::{SnapKey, Snapshot};
+    use ufaigw_gateway::access::{callable_names, resolve, Denied};
+    use ufaigw_gateway::snapshot::{SnapKey, Snapshot};
 
     let w = world().await;
     let open = w.model("open", true, Grant::Everyone).await;

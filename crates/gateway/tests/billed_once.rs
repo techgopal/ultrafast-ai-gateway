@@ -13,13 +13,13 @@ use axum::http::StatusCode;
 use common::{allow_model, harness_with_state, post_to, Harness};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use ultrafast_gateway::store::{RouteSettings, TargetsInput};
-use ultrafast_gateway::telemetry::AttemptOutcome;
+use ufaigw_gateway::store::{RouteSettings, TargetsInput};
+use ufaigw_gateway::telemetry::AttemptOutcome;
 use wiremock::matchers::method;
 use wiremock::{Mock, ResponseTemplate};
 
-fn slow_floor_off(s: &mut ultrafast_gateway::app::AppState) {
-    s.slow_calls = ultrafast_gateway::app::SlowCalls {
+fn slow_floor_off(s: &mut ufaigw_gateway::app::AppState) {
+    s.slow_calls = ufaigw_gateway::app::SlowCalls {
         first_byte: Duration::ZERO,
         total: Duration::ZERO,
     };

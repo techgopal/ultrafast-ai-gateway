@@ -8,7 +8,7 @@ mod common;
 use axum::http::StatusCode;
 use common::{error_code, org, Org, Signed};
 use serde_json::{json, Value};
-use ultrafast_gateway::snapshot::Snapshot;
+use ufaigw_gateway::snapshot::Snapshot;
 
 fn pii_email() -> Value {
     json!({ "id": "email", "matcher": { "pii": ["EMAIL"] }, "action": "redact", "directions": "both" })
@@ -61,7 +61,7 @@ async fn effective(org: &Org, secret: &str, route: Option<&str>) -> Vec<i64> {
         .unwrap();
     let key = snap
         .key(
-            &ultrafast_gateway::secrets::hash_key(secret),
+            &ufaigw_gateway::secrets::hash_key(secret),
             "2000-01-01 00:00:00",
         )
         .unwrap();

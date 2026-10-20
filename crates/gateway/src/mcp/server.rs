@@ -243,7 +243,7 @@ pub(crate) async fn dispatch(
                         "resources": {},
                         "prompts": {},
                     },
-                    "serverInfo": {"name": "ultrafast-gateway", "version": env!("CARGO_PKG_VERSION")},
+                    "serverInfo": {"name": "ufaigw", "version": env!("CARGO_PKG_VERSION")},
                 }),
             )
         }

@@ -30,7 +30,7 @@ pub struct ModelAdded {
     pub created: bool,
 }
 
-/// The line `ultrafast model add` prints.
+/// The line `ufaigw model add` prints.
 pub fn describe_model_add(
     out: &ModelAdded,
     provider: &str,
@@ -49,7 +49,7 @@ pub fn describe_model_add(
     )
 }
 
-/// `ultrafast model add`: puts the provider's model in the catalog when it is
+/// `ufaigw model add`: puts the provider's model in the catalog when it is
 /// missing, enables it when `enable`, and grants it to everyone when
 /// `everyone`. The same name validation as the API. Audited as the CLI.
 pub async fn add_model(

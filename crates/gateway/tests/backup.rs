@@ -1,4 +1,4 @@
-//! `GET /api/backup` and `ultrafast backup`: a consistent copy of the
+//! `GET /api/backup` and `ufaigw backup`: a consistent copy of the
 //! database, taken while the gateway writes.
 
 mod common;
@@ -11,12 +11,12 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{error_code, seed_user, ORG_PASSWORD};
 use tower::ServiceExt;
-use ultrafast_gateway::app::{router, AppState};
-use ultrafast_gateway::config::db_path;
-use ultrafast_gateway::identity::password::warm_up;
-use ultrafast_gateway::identity::Role;
-use ultrafast_gateway::secrets::Cipher;
-use ultrafast_gateway::store::{AuditEntry, Store};
+use ufaigw_gateway::app::{router, AppState};
+use ufaigw_gateway::config::db_path;
+use ufaigw_gateway::identity::password::warm_up;
+use ufaigw_gateway::identity::Role;
+use ufaigw_gateway::secrets::Cipher;
+use ufaigw_gateway::store::{AuditEntry, Store};
 
 /// A gateway over a database file in a directory of its own.
 struct Disk {
@@ -105,15 +105,15 @@ async fn an_admin_downloads_a_sqlite_file_with_the_tables_and_nothing_is_left_be
     assert_eq!(headers["content-type"], "application/vnd.sqlite3");
     let disposition = headers["content-disposition"].to_str().unwrap();
     assert!(
-        disposition.starts_with("attachment; filename=\"ultrafast-"),
+        disposition.starts_with("attachment; filename=\"ufaigw-"),
         "{disposition}"
     );
     assert!(disposition.ends_with(".db\""), "{disposition}");
-    // `ultrafast-YYYYMMDD-HHMMSS.db`
+    // `ufaigw-YYYYMMDD-HHMMSS.db`
     let name = disposition
         .trim_start_matches("attachment; filename=\"")
         .trim_end_matches('"');
-    assert_eq!(name.len(), "ultrafast-20260101-000000.db".len(), "{name}");
+    assert_eq!(name.len(), "ufaigw-20260101-000000.db".len(), "{name}");
     assert_eq!(
         headers["content-length"].to_str().unwrap(),
         bytes.len().to_string()
@@ -299,7 +299,7 @@ async fn a_backup_taken_while_the_gateway_writes_is_consistent_migrated_and_serv
 }
 
 fn program(data_dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_ultrafast"))
+    Command::new(env!("CARGO_BIN_EXE_ufaigw"))
         .env_clear()
         .arg("--data-dir")
         .arg(data_dir)

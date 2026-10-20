@@ -8,10 +8,10 @@ use axum::http::{Request, StatusCode};
 use common::{allow_model, harness, harness_with_metrics_token, post_to, Harness};
 use serde_json::{json, Value};
 use tower::ServiceExt;
-use ultrafast_gateway::cache::{CacheScope, RouteCache};
-use ultrafast_gateway::logs::{cost, Price};
-use ultrafast_gateway::store::{Grants, NewGuardrail, RouteSettings, TargetsInput};
-use ultrafast_gateway::telemetry::AttemptOutcome;
+use ufaigw_gateway::cache::{CacheScope, RouteCache};
+use ufaigw_gateway::logs::{cost, Price};
+use ufaigw_gateway::store::{Grants, NewGuardrail, RouteSettings, TargetsInput};
+use ufaigw_gateway::telemetry::AttemptOutcome;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -450,7 +450,7 @@ async fn route_of_two(h: &Harness, first_token_ms: i64) {
 #[tokio::test]
 async fn an_image_call_that_times_out_is_not_repeated_or_sent_to_a_fallback() {
     let h = common::harness_with_state("openai", |s| {
-        s.slow_calls = ultrafast_gateway::app::SlowCalls {
+        s.slow_calls = ufaigw_gateway::app::SlowCalls {
             first_byte: std::time::Duration::ZERO,
             total: std::time::Duration::ZERO,
         };
@@ -521,20 +521,20 @@ async fn an_image_answer_that_is_not_json_is_not_repeated() {
 #[test]
 fn image_calls_get_longer_timeouts_than_a_route_gives() {
     use std::time::Duration;
-    use ultrafast_gateway::app::SlowCalls;
+    use ufaigw_gateway::app::SlowCalls;
     let floors = SlowCalls::default();
     assert_eq!(floors.first_byte, Duration::from_secs(180));
     assert_eq!(floors.total, Duration::from_secs(300));
-    let low = ultrafast_gateway::routing::Settings {
+    let low = ufaigw_gateway::routing::Settings {
         first_token_timeout: Duration::from_secs(30),
         total_timeout: Duration::from_secs(60),
-        ..ultrafast_gateway::routing::Settings::DIRECT
+        ..ufaigw_gateway::routing::Settings::DIRECT
     };
     let raised = floors.raise(low);
     assert_eq!(raised.first_token_timeout, Duration::from_secs(180));
     assert_eq!(raised.total_timeout, Duration::from_secs(300));
     // A route that allows more keeps it.
-    let high = ultrafast_gateway::routing::Settings {
+    let high = ufaigw_gateway::routing::Settings {
         first_token_timeout: Duration::from_secs(240),
         total_timeout: Duration::from_secs(600),
         ..low
@@ -558,11 +558,11 @@ fn answer_of_len(len: usize) -> Vec<u8> {
 #[tokio::test]
 async fn image_answers_have_their_own_larger_size_cap() {
     assert_eq!(
-        ultrafast_gateway::app::DEFAULT_MAX_IMAGE_RESPONSE_BYTES,
+        ufaigw_gateway::app::DEFAULT_MAX_IMAGE_RESPONSE_BYTES,
         128 * 1024 * 1024
     );
     assert_eq!(
-        ultrafast_gateway::app::DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
+        ufaigw_gateway::app::DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
         32 * 1024 * 1024
     );
     // Chat cap 1 KiB, image cap 4 KiB.
@@ -636,8 +636,8 @@ async fn a_route_with_an_unsupported_primary_serves_from_the_openai_fallback() {
 
 #[tokio::test]
 async fn a_spent_budget_refuses_an_image_call() {
-    use ultrafast_gateway::budgets::{account, BudgetAction, Period};
-    use ultrafast_gateway::limits::LimitScope;
+    use ufaigw_gateway::budgets::{account, BudgetAction, Period};
+    use ufaigw_gateway::limits::LimitScope;
     let h = harness("openai").await;
     Mock::given(method("POST"))
         .respond_with(with_usage())
@@ -668,7 +668,7 @@ async fn a_spent_budget_refuses_an_image_call() {
 
 #[tokio::test]
 async fn a_rate_limit_refuses_an_image_call_before_the_provider() {
-    use ultrafast_gateway::limits::LimitScope;
+    use ufaigw_gateway::limits::LimitScope;
     let h = harness("openai").await;
     Mock::given(method("POST"))
         .respond_with(with_usage())
@@ -678,7 +678,7 @@ async fn a_rate_limit_refuses_an_image_call_before_the_provider() {
     tx.upsert_limit(
         LimitScope::Gateway,
         None,
-        &ultrafast_gateway::limits::RateLimit {
+        &ufaigw_gateway::limits::RateLimit {
             requests_per_minute: Some(1),
             tokens_per_minute: None,
             concurrent: None,
@@ -697,12 +697,12 @@ async fn a_rate_limit_refuses_an_image_call_before_the_provider() {
 
 /// One request per minute, gateway-wide.
 async fn one_request_a_minute(h: &Harness) {
-    use ultrafast_gateway::limits::LimitScope;
+    use ufaigw_gateway::limits::LimitScope;
     let mut tx = h.store.begin().await.unwrap();
     tx.upsert_limit(
         LimitScope::Gateway,
         None,
-        &ultrafast_gateway::limits::RateLimit {
+        &ufaigw_gateway::limits::RateLimit {
             requests_per_minute: Some(1),
             tokens_per_minute: None,
             concurrent: None,

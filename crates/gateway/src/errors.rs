@@ -5,9 +5,9 @@ use axum::http::header::RETRY_AFTER;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use ultrafast_translate::error::TranslateError;
-use ultrafast_translate::ingress::anthropic;
-use ultrafast_translate::ingress::openai::render_error;
+use ufaigw_translate::error::TranslateError;
+use ufaigw_translate::ingress::anthropic;
+use ufaigw_translate::ingress::openai::render_error;
 
 use crate::budgets::BudgetRefusal;
 use crate::limits::Refusal;

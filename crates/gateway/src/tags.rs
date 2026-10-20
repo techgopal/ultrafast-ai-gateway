@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use axum::http::HeaderMap;
-use ultrafast_translate::tags::{HEADER, MAX_TAGS_BYTES};
+use ufaigw_translate::tags::{HEADER, MAX_TAGS_BYTES};
 
 /// The most tags a call, a key or a header may have.
 pub const MAX_TAGS: usize = 20;

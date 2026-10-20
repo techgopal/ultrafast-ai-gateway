@@ -4,8 +4,8 @@
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use ultrafast_gateway::mcp::local::{Config, Health, Phase, Spec, Supervisor, Wanted};
-use ultrafast_gateway::mcp::upstream::{Options, UpstreamError};
+use ufaigw_gateway::mcp::local::{Config, Health, Phase, Spec, Supervisor, Wanted};
+use ufaigw_gateway::mcp::upstream::{Options, UpstreamError};
 
 const MOCK: &str = env!("CARGO_BIN_EXE_mcp-stdio-mock");
 

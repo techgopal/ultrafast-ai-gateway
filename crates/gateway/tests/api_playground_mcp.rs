@@ -11,8 +11,8 @@ use axum::http::StatusCode;
 use common::{org_tweaked, MemorySink, Org, Signed};
 use mock_mcp::{tool, MockMcp};
 use serde_json::{json, Value};
-use ultrafast_gateway::mcp::encrypt_secret;
-use ultrafast_gateway::store::{DiscoveredTool, Grants, NewMcpServer};
+use ufaigw_gateway::mcp::encrypt_secret;
+use ufaigw_gateway::store::{DiscoveredTool, Grants, NewMcpServer};
 
 const SECRET: &str = "upstream-secret-3a9c";
 
@@ -184,9 +184,9 @@ async fn the_playground_takes_a_session_only_and_the_limits_of_the_user_apply() 
     // A limit of the user's own: one request a minute.
     let mut tx = w.org.api.store.begin().await.unwrap();
     tx.upsert_limit(
-        ultrafast_gateway::limits::LimitScope::User,
+        ufaigw_gateway::limits::LimitScope::User,
         Some(lena.user_id),
-        &ultrafast_gateway::limits::RateLimit {
+        &ufaigw_gateway::limits::RateLimit {
             requests_per_minute: Some(1),
             tokens_per_minute: None,
             concurrent: None,

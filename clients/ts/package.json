@@ -29,7 +29,7 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./wasm/ultrafast_client_wasm_bg.wasm": "./dist/wasm/ultrafast_client_wasm_bg.wasm"
+    "./wasm/ufaigw_client_wasm_bg.wasm": "./dist/wasm/ufaigw_client_wasm_bg.wasm"
   },
   "files": [
     "dist",

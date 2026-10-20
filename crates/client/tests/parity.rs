@@ -5,8 +5,8 @@ mod common;
 
 use common::*;
 use serde_json::Value;
-use ultrafast_client::{ChatRequest, Client, Target};
-use ultrafast_client_wasm::api;
+use ufaigw_client::{ChatRequest, Client, Target};
+use ufaigw_client_wasm::api;
 
 const BODIES: [&str; 5] = [
     r#"{"error":{"message":"slow down","type":"rate_limit_error"}}"#,

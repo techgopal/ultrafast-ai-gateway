@@ -1,8 +1,8 @@
 mod common;
 
 use common::*;
-use ultrafast_client::types::{FinishReason, Usage};
-use ultrafast_client::{ChatRequest, Client, Target};
+use ufaigw_client::types::{FinishReason, Usage};
+use ufaigw_client::{ChatRequest, Client, Target};
 
 fn req(model: &str) -> ChatRequest {
     ChatRequest::new(model)
@@ -12,7 +12,7 @@ fn req(model: &str) -> ChatRequest {
         .temperature(0.5)
 }
 
-fn check(r: &ultrafast_client::types::ChatResponse) {
+fn check(r: &ufaigw_client::types::ChatResponse) {
     assert_eq!(r.content, "hello");
     assert_eq!(r.finish_reason, Some(FinishReason::Stop));
     assert_eq!(
@@ -146,7 +146,7 @@ async fn tags_over_one_kib_are_refused_before_sending() {
         .chat(req("m").tag("k", "x".repeat(2000)))
         .await
         .unwrap_err();
-    assert_eq!(e.kind, ultrafast_client::ErrorKind::InvalidRequest);
+    assert_eq!(e.kind, ufaigw_client::ErrorKind::InvalidRequest);
     assert!(g.requests().is_empty());
 }
 
@@ -154,10 +154,10 @@ async fn tags_over_one_kib_are_refused_before_sending() {
 async fn a_translate_request_converts() {
     let s = serve(Script::json(200, OPENAI_CHAT)).await;
     let c = Client::new(Target::gateway(&s.url, "k"));
-    let t = ultrafast_client::types::ChatRequest {
+    let t = ufaigw_client::types::ChatRequest {
         model: "m".into(),
-        messages: vec![ultrafast_client::types::Message::text(
-            ultrafast_client::types::Role::User,
+        messages: vec![ufaigw_client::types::Message::text(
+            ufaigw_client::types::Role::User,
             "hi",
         )],
         max_tokens: None,
@@ -189,8 +189,8 @@ async fn a_gateway_base_url_ending_in_v1_is_not_doubled() {
 
 const OPENAI_TOOL_CALL: &str = r#"{"id":"c2","model":"gpt-4o","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":9,"completion_tokens":4}}"#;
 
-fn weather() -> ultrafast_client::Tool {
-    ultrafast_client::Tool {
+fn weather() -> ufaigw_client::Tool {
+    ufaigw_client::Tool {
         name: "weather".into(),
         description: Some("Current weather".into()),
         parameters: serde_json::json!({"type":"object","properties":{"city":{"type":"string"}}}),
@@ -211,7 +211,7 @@ async fn a_gateway_tool_call_answer_and_the_result_round_trip() {
             ChatRequest::new("gpt-4o")
                 .user("weather in Paris?")
                 .tool(weather())
-                .tool_choice(ultrafast_client::ToolChoice::Tool("weather".into()))
+                .tool_choice(ufaigw_client::ToolChoice::Tool("weather".into()))
                 .parallel_tool_calls(false),
         )
         .await
@@ -220,7 +220,7 @@ async fn a_gateway_tool_call_answer_and_the_result_round_trip() {
     assert_eq!(r.content, "");
     assert_eq!(
         r.tool_calls,
-        vec![ultrafast_client::ToolCall {
+        vec![ufaigw_client::ToolCall {
             id: "call_1".into(),
             name: "weather".into(),
             arguments: r#"{"city":"Paris"}"#.into()
@@ -295,7 +295,7 @@ async fn a_direct_provider_target_gets_tools_and_images_too() {
 
 #[tokio::test]
 async fn response_format_reaches_a_gateway_and_each_provider_in_its_form() {
-    use ultrafast_client::ResponseFormat;
+    use ufaigw_client::ResponseFormat;
     let schema = serde_json::json!({"type":"object","properties":{"a":{"type":"string"}}});
     let format = ResponseFormat::JsonSchema {
         name: "n".into(),

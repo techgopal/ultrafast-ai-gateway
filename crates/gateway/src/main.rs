@@ -5,27 +5,27 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use ultrafast_gateway::api::auth::bootstrap_admin;
-use ultrafast_gateway::api::openapi::spec;
-use ultrafast_gateway::api::trimmed_name;
-use ultrafast_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
-use ultrafast_gateway::budgets::{self, FLUSH_INTERVAL};
-use ultrafast_gateway::catalog::{add_model, describe_model_add, validate_model_name};
-use ultrafast_gateway::config::{
+use ufaigw_gateway::api::auth::bootstrap_admin;
+use ufaigw_gateway::api::openapi::spec;
+use ufaigw_gateway::api::trimmed_name;
+use ufaigw_gateway::app::{router, shutdown_signal, spawn_refresher, AppState};
+use ufaigw_gateway::budgets::{self, FLUSH_INTERVAL};
+use ufaigw_gateway::catalog::{add_model, describe_model_add, validate_model_name};
+use ufaigw_gateway::config::{
     db_path, load_master_key, master_key_from_env_only, parse_database_url, parse_public_url,
     parse_trusted_proxies, restrict_permissions, validate_api_version, validate_base_url,
     validate_database_max_connections, validate_provider_name, DEFAULT_DATABASE_MAX_CONNECTIONS,
 };
-use ultrafast_gateway::identity::password;
-use ultrafast_gateway::logs::{self, LogSink, QUEUE_CAPACITY};
-use ultrafast_gateway::otel::{Exporter, OtelConfig};
-use ultrafast_gateway::portable;
-use ultrafast_gateway::secrets::{generate_key, Cipher};
-use ultrafast_gateway::store::{Store, POSTGRES_BACKUP_TEXT};
-use ultrafast_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
+use ufaigw_gateway::identity::password;
+use ufaigw_gateway::logs::{self, LogSink, QUEUE_CAPACITY};
+use ufaigw_gateway::otel::{Exporter, OtelConfig};
+use ufaigw_gateway::portable;
+use ufaigw_gateway::secrets::{generate_key, Cipher};
+use ufaigw_gateway::store::{Store, POSTGRES_BACKUP_TEXT};
+use ufaigw_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
 
 #[derive(Parser)]
-#[command(name = "ultrafast", version, about = "Ultrafast AI gateway")]
+#[command(name = "ufaigw", version, about = "Ultrafast AI gateway")]
 struct Cli {
     /// Directory for the database and master key.
     #[arg(long, env = "UF_DATA_DIR", default_value = "./data", global = true)]
@@ -107,7 +107,7 @@ enum Command {
         #[arg(long, env = "UF_OTEL_HEADERS", hide_env_values = true)]
         otel_headers: Option<String>,
         /// The `service.name` of the exported traces.
-        #[arg(long, env = "UF_OTEL_SERVICE_NAME", default_value = "ultrafast")]
+        #[arg(long, env = "UF_OTEL_SERVICE_NAME", default_value = "ufaigw")]
         otel_service_name: String,
         /// The share of traces exported, 0.0 to 1.0, decided per trace. A
         /// call whose `traceparent` says sampled is always exported, one that
@@ -120,7 +120,7 @@ enum Command {
         #[arg(
             long,
             env = "UF_MAX_AUDIO_BYTES",
-            default_value_t = ultrafast_gateway::app::DEFAULT_MAX_AUDIO_BYTES as u64,
+            default_value_t = ufaigw_gateway::app::DEFAULT_MAX_AUDIO_BYTES as u64,
             value_parser = clap::value_parser!(u64).range(1..=1_073_741_824)
         )]
         max_audio_bytes: u64,
@@ -132,7 +132,7 @@ enum Command {
         #[arg(
             long,
             env = "UF_MAX_CONCURRENT_UPLOADS",
-            default_value_t = ultrafast_gateway::app::DEFAULT_MAX_CONCURRENT_UPLOADS as u64,
+            default_value_t = ufaigw_gateway::app::DEFAULT_MAX_CONCURRENT_UPLOADS as u64,
             value_parser = clap::value_parser!(u64).range(1..=1024)
         )]
         max_concurrent_uploads: u64,
@@ -330,7 +330,7 @@ fn validate_otel(
         }
     }
     if let Some(headers) = headers {
-        ultrafast_gateway::otel::parse_headers(headers).map_err(anyhow::Error::msg)?;
+        ufaigw_gateway::otel::parse_headers(headers).map_err(anyhow::Error::msg)?;
     }
     if service_name.trim().is_empty() {
         bail!("the OTLP service name must not be empty");
@@ -368,7 +368,7 @@ impl Database {
     }
 }
 
-/// `ultrafast backup <path>`.
+/// `ufaigw backup <path>`.
 async fn backup_command(data_dir: &Path, database: &Database, path: &Path) -> Result<()> {
     if database.is_postgres() {
         bail!("{POSTGRES_BACKUP_TEXT}");
@@ -405,7 +405,7 @@ fn restrict_file(_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `ultrafast config ...`. It needs no master key: the file holds no secret,
+/// `ufaigw config ...`. It needs no master key: the file holds no secret,
 /// and a key is neither read nor made.
 async fn config_command(
     data_dir: &Path,
@@ -557,8 +557,8 @@ async fn main() -> Result<()> {
             tracing::info!(
                 "database: {}",
                 match store.dialect() {
-                    ultrafast_gateway::store::Dialect::Sqlite => "sqlite",
-                    ultrafast_gateway::store::Dialect::Postgres => "postgres",
+                    ufaigw_gateway::store::Dialect::Sqlite => "sqlite",
+                    ufaigw_gateway::store::Dialect::Postgres => "postgres",
                 }
             );
             tokio::task::spawn_blocking(password::warm_up)
@@ -574,14 +574,14 @@ async fn main() -> Result<()> {
                 // Its own target, so it can be shown with every other info
                 // line hidden. It is the only way to the first admin.
                 tracing::info!(
-                    target: "ultrafast::setup",
+                    target: "ufaigw::setup",
                     "Setup code: {code}; open the console to create the first admin."
                 );
             }
-            if ultrafast_gateway::mcp::local_requested() {
-                state.local = Arc::new(ultrafast_gateway::mcp::local::Supervisor::new(
+            if ufaigw_gateway::mcp::local_requested() {
+                state.local = Arc::new(ufaigw_gateway::mcp::local::Supervisor::new(
                     cli.data_dir.join("mcp"),
-                    ultrafast_gateway::mcp::local::Config::default(),
+                    ufaigw_gateway::mcp::local::Config::default(),
                 ));
                 if state.local.enabled() {
                     tracing::warn!(
@@ -622,7 +622,7 @@ async fn main() -> Result<()> {
             let (stop, stopped) = tokio::sync::watch::channel(false);
             let mut otel_task = None;
             if let Some(endpoint) = otel_endpoint.filter(|e| !e.trim().is_empty()) {
-                let headers = ultrafast_gateway::otel::parse_headers(
+                let headers = ufaigw_gateway::otel::parse_headers(
                     otel_headers.as_deref().unwrap_or_default(),
                 )
                 .map_err(anyhow::Error::msg)?;
@@ -635,7 +635,7 @@ async fn main() -> Result<()> {
                     },
                     // Its own client: no redirects, so a custom header is
                     // never sent to another host.
-                    ultrafast_gateway::app::http_client(),
+                    ufaigw_gateway::app::http_client(),
                     state.metrics.clone(),
                     stopped.clone(),
                 );
@@ -646,19 +646,19 @@ async fn main() -> Result<()> {
                     "exporting traces over OTLP"
                 );
             }
-            let (deliverer, alert_task) = ultrafast_gateway::alerts::Deliverer::spawn(
+            let (deliverer, alert_task) = ufaigw_gateway::alerts::Deliverer::spawn(
                 state.store.clone(),
                 state.cipher.clone(),
                 state.http.clone(),
                 state.metrics.clone(),
-                ultrafast_gateway::alerts::DeliveryConfig::default(),
+                ufaigw_gateway::alerts::DeliveryConfig::default(),
                 stopped.clone(),
             );
-            let (engine, engine_task) = ultrafast_gateway::alerts::engine::spawn(
+            let (engine, engine_task) = ufaigw_gateway::alerts::engine::spawn(
                 state.store.clone(),
                 Some(deliverer.clone()),
                 Some(state.health.clone()),
-                ultrafast_gateway::alerts::EngineConfig::default(),
+                ufaigw_gateway::alerts::EngineConfig::default(),
                 stopped.clone(),
             );
             state.health.watch(engine.health_sender());
@@ -675,9 +675,9 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("could not listen on {addr}"))?;
             tracing::info!(%addr, "gateway listening");
             let refresher = spawn_refresher(state.clone(), stopped.clone());
-            let mcp_health = ultrafast_gateway::mcp::health::spawn(
+            let mcp_health = ufaigw_gateway::mcp::health::spawn(
                 state.clone(),
-                ultrafast_gateway::mcp::health::interval_from_env(),
+                ufaigw_gateway::mcp::health::interval_from_env(),
                 stopped.clone(),
             );
             let log_writer = logs::writer::spawn_accounted(
@@ -750,7 +750,7 @@ async fn main() -> Result<()> {
             .with_context(|| format!("could not add provider '{name}' (is the name taken?)"))?;
             tx.commit().await.context("could not save the provider")?;
             println!(
-                "Added provider '{name}'. Add and enable models with `ultrafast model add`, then call them as {name}/<model>."
+                "Added provider '{name}'. Add and enable models with `ufaigw model add`, then call them as {name}/<model>."
             );
         }
         Command::Model {
@@ -812,7 +812,7 @@ mod tests {
             metrics_token: None,
             otel_endpoint: None,
             otel_headers: None,
-            otel_service_name: "ultrafast".into(),
+            otel_service_name: "ufaigw".into(),
             otel_sample_ratio: 1.0,
             max_audio_bytes: 1,
             max_concurrent_uploads: 1,
@@ -857,7 +857,7 @@ mod tests {
     #[test]
     fn the_audio_cap_is_a_flag_with_bounds() {
         let parse = |args: &[&str]| {
-            let mut all = vec!["ultrafast", "serve"];
+            let mut all = vec!["ufaigw", "serve"];
             all.extend_from_slice(args);
             Cli::try_parse_from(all)
         };
@@ -874,9 +874,25 @@ mod tests {
     }
 
     #[test]
+    fn otel_service_name_defaults_to_ufaigw_and_the_setting_overrides_it() {
+        let name = |args: &[&str]| {
+            let mut all = vec!["ufaigw", "serve"];
+            all.extend_from_slice(args);
+            match Cli::try_parse_from(all).unwrap().command {
+                Command::Serve {
+                    otel_service_name, ..
+                } => otel_service_name,
+                _ => unreachable!(),
+            }
+        };
+        assert_eq!(name(&[]), "ufaigw");
+        assert_eq!(name(&["--otel-service-name", "ultrafast"]), "ultrafast");
+    }
+
+    #[test]
     fn the_upload_bound_is_a_flag_with_bounds() {
         let parse = |args: &[&str]| {
-            let mut all = vec!["ultrafast", "serve"];
+            let mut all = vec!["ufaigw", "serve"];
             all.extend_from_slice(args);
             Cli::try_parse_from(all)
         };

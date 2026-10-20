@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use ultrafast_translate::provider::{gateway_base, ProviderKind};
+use ufaigw_translate::provider::{gateway_base, ProviderKind};
 
 const REDACTED: &str = "[redacted]";
 
@@ -92,10 +92,10 @@ impl Target {
 
     /// The `translate` target for a call to `model`. A gateway is an
     /// OpenAI-kind target under `/v1`.
-    pub(crate) fn translate(&self, model: &str) -> ultrafast_translate::provider::Target {
+    pub(crate) fn translate(&self, model: &str) -> ufaigw_translate::provider::Target {
         let key = |k: &str| (!k.is_empty()).then(|| k.to_string());
         match self {
-            Target::Gateway { base_url, key: k } => ultrafast_translate::provider::Target {
+            Target::Gateway { base_url, key: k } => ufaigw_translate::provider::Target {
                 kind: ProviderKind::OpenAi,
                 base_url: gateway_base(base_url),
                 api_key: key(k),
@@ -107,7 +107,7 @@ impl Target {
                 base_url,
                 key: k,
                 api_version,
-            } => ultrafast_translate::provider::Target {
+            } => ufaigw_translate::provider::Target {
                 kind: *kind,
                 base_url: base_url.clone(),
                 api_key: key(k),

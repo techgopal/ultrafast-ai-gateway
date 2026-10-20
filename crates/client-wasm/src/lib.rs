@@ -1,4 +1,4 @@
-//! `ultrafast-translate` for WebAssembly. Every call takes strings and bytes
+//! `ufaigw-translate` for WebAssembly. Every call takes strings and bytes
 //! and returns a JSON string; an error is thrown as a JSON string (see
 //! [`api`]). The TypeScript client owns the HTTP, this crate owns the wire.
 

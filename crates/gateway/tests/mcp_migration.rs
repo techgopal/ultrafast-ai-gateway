@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use ultrafast_gateway::store::Store;
+use ufaigw_gateway::store::Store;
 
 /// The shipped SQLite migrations before 0022, in a directory of their own.
 fn before_0022(into: &Path) {

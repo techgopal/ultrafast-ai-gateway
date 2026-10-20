@@ -269,7 +269,7 @@ mod tests {
             endpoint: "chat",
             stream: false,
             status: 200,
-            usage: Some(ultrafast_translate::types::Usage {
+            usage: Some(ufaigw_translate::types::Usage {
                 input_tokens: 10,
                 output_tokens: 5,
             }),

@@ -4,11 +4,11 @@
 mod common;
 
 use common::{org, Org};
-use ultrafast_gateway::budgets::{BudgetAction, Period};
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
-use ultrafast_gateway::secrets::generate_key;
-use ultrafast_gateway::snapshot::SnapKey;
-use ultrafast_gateway::store::NewLog;
+use ufaigw_gateway::budgets::{BudgetAction, Period};
+use ufaigw_gateway::limits::{LimitScope, RateLimit};
+use ufaigw_gateway::secrets::generate_key;
+use ufaigw_gateway::snapshot::SnapKey;
+use ufaigw_gateway::store::NewLog;
 
 struct Keys {
     org: Org,
@@ -130,7 +130,7 @@ async fn a_key_without_a_team_counts_for_all_of_its_owners_teams() {
 fn log(user: i64, team: Option<i64>, cost: i64) -> NewLog {
     NewLog {
         tags: None,
-        at: ultrafast_gateway::store::now(),
+        at: ufaigw_gateway::store::now(),
         key_id: None,
         user_id: Some(user),
         team_id: team,

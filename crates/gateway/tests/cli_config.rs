@@ -1,21 +1,36 @@
-//! `ultrafast config export` and `ultrafast config import`, run as the
+//! `ufaigw config export` and `ufaigw config import`, run as the
 //! program: they need no master key and touch no port.
 
 use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use ultrafast_gateway::config::db_path;
-use ultrafast_gateway::store::{Grants, RouteSettings, Store, TargetsInput};
+use ufaigw_gateway::config::db_path;
+use ufaigw_gateway::store::{Grants, RouteSettings, Store, TargetsInput};
 
 fn run(data_dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ultrafast"))
+    Command::new(env!("CARGO_BIN_EXE_ufaigw"))
         .env_clear()
         .arg("--data-dir")
         .arg(data_dir)
         .args(args)
         .output()
         .expect("the program runs")
+}
+
+#[test]
+fn the_command_is_ufaigw() {
+    let out = Command::new(env!("CARGO_BIN_EXE_ufaigw"))
+        .env_clear()
+        .arg("--version")
+        .output()
+        .expect("the program runs");
+    assert!(out.status.success());
+    assert!(
+        text(&out.stdout).starts_with("ufaigw "),
+        "{}",
+        text(&out.stdout)
+    );
 }
 
 fn text(bytes: &[u8]) -> String {

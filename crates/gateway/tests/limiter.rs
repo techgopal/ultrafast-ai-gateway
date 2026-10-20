@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ultrafast_gateway::limits::{LimitScope, Limiter, MemoryLimiter, RateLimit, Subject, Subjects};
+use ufaigw_gateway::limits::{LimitScope, Limiter, MemoryLimiter, RateLimit, Subject, Subjects};
 
 fn subject(
     scope: LimitScope,

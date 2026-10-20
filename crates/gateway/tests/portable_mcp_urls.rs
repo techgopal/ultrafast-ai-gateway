@@ -5,7 +5,7 @@ mod common;
 
 use common::org_tweaked;
 use serde_json::json;
-use ultrafast_gateway::portable::{self, Actor, ConfigFile};
+use ufaigw_gateway::portable::{self, Actor, ConfigFile};
 
 fn actor() -> Actor<'static> {
     Actor {

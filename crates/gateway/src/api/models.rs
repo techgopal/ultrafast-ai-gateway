@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::access;
 use crate::app::AppState;
-use ultrafast_translate::provider::ProviderKind;
+use ufaigw_translate::provider::ProviderKind;
 
 use crate::catalog::sync::{fetch_model_names, SyncError};
 use crate::catalog::validate_model_name;

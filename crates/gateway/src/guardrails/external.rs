@@ -201,10 +201,7 @@ pub async fn call(
         .post(&ext.url)
         .timeout(limit)
         .header("content-type", "application/json")
-        .header(
-            "user-agent",
-            concat!("ultrafast/", env!("CARGO_PKG_VERSION")),
-        )
+        .header("user-agent", concat!("ufaigw/", env!("CARGO_PKG_VERSION")))
         .header(SIGNATURE_HEADER, header_value(&ext.secret, t, &body))
         .body(body);
     // The client's own timeout covers the same span; this one also bounds a

@@ -6,9 +6,9 @@ mod common;
 use axum::http::StatusCode;
 use common::{error_code, org, Org, Signed};
 use serde_json::{json, Value};
-use ultrafast_gateway::budgets::Period;
-use ultrafast_gateway::secrets::generate_key;
-use ultrafast_gateway::store::NewLog;
+use ufaigw_gateway::budgets::Period;
+use ufaigw_gateway::secrets::generate_key;
+use ufaigw_gateway::store::NewLog;
 
 /// An org with a key of lena (in Platform) and one of tomas (in Research).
 struct World {
@@ -236,7 +236,7 @@ async fn spent_is_shown_only_where_the_caller_may_see_it() {
         assert_eq!(put(&w, &maya, body).await.0, StatusCode::OK);
     }
     // Everything lena's key spent is counted by every budget.
-    let record = ultrafast_gateway::telemetry::RequestRecord {
+    let record = ufaigw_gateway::telemetry::RequestRecord {
         tags: Default::default(),
         key_id: Some(w.lena_key),
         user_id: Some(w.org.lena),
@@ -249,7 +249,7 @@ async fn spent_is_shown_only_where_the_caller_may_see_it() {
         attempts: Vec::new(),
         cached: false,
         estimated: false,
-        started_at: ultrafast_gateway::store::now(),
+        started_at: ufaigw_gateway::store::now(),
         duration_ms: 1,
         trace_parent: None,
         provider_kinds: Vec::new(),
@@ -257,7 +257,7 @@ async fn spent_is_shown_only_where_the_caller_may_see_it() {
         guardrails: None,
         prompt: None,
     };
-    ultrafast_gateway::budgets::account(
+    ufaigw_gateway::budgets::account(
         &w.org.api.state,
         &record,
         1_000_000,
@@ -443,7 +443,7 @@ fn log(at: &str, key_id: i64, user_id: i64, team_id: i64, cost: i64) -> NewLog {
 async fn a_new_budget_counts_what_the_period_already_spent_and_the_list_shows_it() {
     let w = world().await;
     let maya = w.org.sign_in("maya").await;
-    let now = ultrafast_gateway::store::now();
+    let now = ufaigw_gateway::store::now();
     w.org
         .api
         .store
@@ -486,7 +486,7 @@ async fn editing_a_budget_does_not_count_a_logged_call_twice() {
         .api
         .store
         .insert_logs(&[log(
-            &ultrafast_gateway::store::now(),
+            &ufaigw_gateway::store::now(),
             w.lena_key,
             w.org.lena,
             w.org.platform,
@@ -497,8 +497,8 @@ async fn editing_a_budget_does_not_count_a_logged_call_twice() {
     let (status, again) = put(&w, &maya, team_budget(w.org.platform, 8_000_000)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(again["spent_micros"], 100);
-    ultrafast_gateway::budgets::flush(&state).await;
-    ultrafast_gateway::budgets::flush(&state).await;
+    ufaigw_gateway::budgets::flush(&state).await;
+    ufaigw_gateway::budgets::flush(&state).await;
     let start = Period::Monthly.start_string(now);
     assert_eq!(
         w.org.api.store.budget_usage(id, &start).await.unwrap(),
@@ -518,7 +518,7 @@ async fn editing_a_budget_does_not_read_the_logs_again() {
         .api
         .store
         .insert_logs(&[log(
-            &ultrafast_gateway::store::now(),
+            &ufaigw_gateway::store::now(),
             w.lena_key,
             w.org.lena,
             w.org.platform,

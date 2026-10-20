@@ -11,13 +11,13 @@ use axum::http::StatusCode;
 use common::{harness, post_to, seed_team, seed_user, Harness};
 use serde_json::{json, Value};
 use time::OffsetDateTime;
-use ultrafast_gateway::budgets::{account, BudgetAction, Period};
-use ultrafast_gateway::cache::{CacheScope, RouteCache};
-use ultrafast_gateway::identity::{Role, TeamRole};
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
-use ultrafast_gateway::secrets::generate_key;
-use ultrafast_gateway::store::{RouteSettings, TargetsInput};
-use ultrafast_gateway::telemetry::{AttemptOutcome, RequestRecord};
+use ufaigw_gateway::budgets::{account, BudgetAction, Period};
+use ufaigw_gateway::cache::{CacheScope, RouteCache};
+use ufaigw_gateway::identity::{Role, TeamRole};
+use ufaigw_gateway::limits::{LimitScope, RateLimit};
+use ufaigw_gateway::secrets::generate_key;
+use ufaigw_gateway::store::{RouteSettings, TargetsInput};
+use ufaigw_gateway::telemetry::{AttemptOutcome, RequestRecord};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -500,7 +500,7 @@ async fn a_hit_still_passes_the_budgets() {
         attempts: Vec::new(),
         cached: false,
         estimated: false,
-        started_at: ultrafast_gateway::store::now(),
+        started_at: ufaigw_gateway::store::now(),
         duration_ms: 1,
         trace_parent: None,
         provider_kinds: Vec::new(),
@@ -787,9 +787,9 @@ async fn the_log_row_of_a_hit_names_who_gave_the_answer() {
     assert_eq!(w.chat(&a, BODY).await, StatusCode::OK);
     assert_eq!(w.provider_calls().await, 1);
     let records = w.h.sink.records();
-    let prices: ultrafast_gateway::logs::PriceLookup = std::sync::Arc::new(|_, _| None);
+    let prices: ufaigw_gateway::logs::PriceLookup = std::sync::Arc::new(|_, _| None);
     for record in &records {
-        let row = ultrafast_gateway::logs::row_of(record, &prices);
+        let row = ufaigw_gateway::logs::row_of(record, &prices);
         assert_eq!(
             (row.provider.as_deref(), row.model.as_deref()),
             (Some("p"), Some("gpt-4o")),

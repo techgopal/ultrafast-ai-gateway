@@ -102,8 +102,8 @@ async fn only_an_admin_sees_or_changes_settings() {
 /// What the settings say the gateway runs on.
 fn database_of(org: &common::Org) -> &'static str {
     match org.api.store.dialect() {
-        ultrafast_gateway::store::Dialect::Sqlite => "sqlite",
-        ultrafast_gateway::store::Dialect::Postgres => "postgres",
+        ufaigw_gateway::store::Dialect::Sqlite => "sqlite",
+        ufaigw_gateway::store::Dialect::Postgres => "postgres",
     }
 }
 
@@ -277,10 +277,10 @@ async fn the_lifetime_applies_to_new_sessions_only() {
         .await
         .unwrap()
         .unwrap();
-    assert!(session.expires_at >= ultrafast_gateway::store::after(2 * 3600 - 5));
-    assert!(session.expires_at <= ultrafast_gateway::store::after(2 * 3600 + 5));
+    assert!(session.expires_at >= ufaigw_gateway::store::after(2 * 3600 - 5));
+    assert!(session.expires_at <= ufaigw_gateway::store::after(2 * 3600 + 5));
     // The session of before is as it was: 12 hours.
-    assert!(before.expires_at >= ultrafast_gateway::store::after(12 * 3600 - 60));
+    assert!(before.expires_at >= ufaigw_gateway::store::after(12 * 3600 - 60));
     let again = org
         .api
         .store

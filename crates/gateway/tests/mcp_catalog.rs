@@ -7,8 +7,8 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use time::OffsetDateTime;
-use ultrafast_gateway::mcp::catalog::{self, Catalog, Config, Source};
-use ultrafast_gateway::store::Store;
+use ufaigw_gateway::mcp::catalog::{self, Catalog, Config, Source};
+use ufaigw_gateway::store::Store;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

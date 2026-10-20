@@ -10,11 +10,11 @@ use std::path::Path;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::Row;
-use ultrafast_gateway::budgets::{BudgetAction, Period};
-use ultrafast_gateway::identity::{Role, UserStatus};
-use ultrafast_gateway::limits::LimitScope;
-use ultrafast_gateway::secrets::hash_key;
-use ultrafast_gateway::store::{LogFilter, LogScope, Store, UsageGroup};
+use ufaigw_gateway::budgets::{BudgetAction, Period};
+use ufaigw_gateway::identity::{Role, UserStatus};
+use ufaigw_gateway::limits::LimitScope;
+use ufaigw_gateway::secrets::hash_key;
+use ufaigw_gateway::store::{LogFilter, LogScope, Store, UsageGroup};
 
 const SESSION: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const TOKEN: &str = "uf-at-00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";

@@ -9,10 +9,10 @@ use axum::http::StatusCode;
 use common::{call, org_with_sink, post_to, raw, MemorySink, Org, Signed};
 use serde_json::{json, Value};
 use time::OffsetDateTime;
-use ultrafast_gateway::identity::UserStatus;
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
-use ultrafast_gateway::secrets::generate_key;
-use ultrafast_gateway::store::{Grants, RouteSettings, TargetsInput};
+use ufaigw_gateway::identity::UserStatus;
+use ufaigw_gateway::limits::{LimitScope, RateLimit};
+use ufaigw_gateway::secrets::generate_key;
+use ufaigw_gateway::store::{Grants, RouteSettings, TargetsInput};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -330,7 +330,7 @@ async fn limits_of_the_user_and_their_teams_apply() {
 
 #[tokio::test]
 async fn a_spent_budget_refuses_the_call_as_it_would_a_key() {
-    use ultrafast_gateway::budgets::{BudgetAction, Period};
+    use ufaigw_gateway::budgets::{BudgetAction, Period};
     let w = world().await;
     let mut tx = w.org.api.store.begin().await.unwrap();
     tx.upsert_budget(
@@ -472,7 +472,7 @@ async fn a_body_that_is_not_a_chat_request_is_refused_in_the_openai_shape() {
 
 #[tokio::test]
 async fn a_cache_kept_per_key_is_kept_per_user_for_a_call_without_a_key() {
-    use ultrafast_gateway::cache::{CacheScope, RouteCache};
+    use ufaigw_gateway::cache::{CacheScope, RouteCache};
     let w = world().await;
     let mut tx = w.org.api.store.begin().await.unwrap();
     let route = tx
@@ -542,9 +542,9 @@ async fn an_access_token_cannot_call_the_playground() {
 async fn spend_reaches(scope: LimitScope, who: &str) {
     use std::time::Duration;
     use tokio::sync::watch;
-    use ultrafast_gateway::budgets::{self, BudgetAction, Period};
-    use ultrafast_gateway::logs::writer::{spawn_accounted, WriterConfig};
-    use ultrafast_gateway::logs::{snapshot_prices, LogSink};
+    use ufaigw_gateway::budgets::{self, BudgetAction, Period};
+    use ufaigw_gateway::logs::writer::{spawn_accounted, WriterConfig};
+    use ufaigw_gateway::logs::{snapshot_prices, LogSink};
 
     let (sink, rx) = LogSink::channel(64);
     let stats = sink.stats();
@@ -738,7 +738,7 @@ async fn the_playground_is_checked_by_the_same_guardrails_as_a_key() {
     ])
     .to_string();
     let mut tx = w.org.api.store.begin().await.unwrap();
-    tx.insert_guardrail(ultrafast_gateway::store::NewGuardrail {
+    tx.insert_guardrail(ufaigw_gateway::store::NewGuardrail {
         name: "house-rules",
         description: "",
         kind: "rules",

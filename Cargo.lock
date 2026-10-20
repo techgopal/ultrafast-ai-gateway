@@ -3037,7 +3037,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
-name = "ultrafast-client"
+name = "ufaigw-client"
 version = "2.1.1"
 dependencies = [
  "async-stream",
@@ -3046,12 +3046,12 @@ dependencies = [
  "reqwest",
  "serde_json",
  "tokio",
- "ultrafast-client-wasm",
- "ultrafast-translate",
+ "ufaigw-client-wasm",
+ "ufaigw-translate",
 ]
 
 [[package]]
-name = "ultrafast-client-py"
+name = "ufaigw-client-py"
 version = "2.1.1"
 dependencies = [
  "futures",
@@ -3059,22 +3059,22 @@ dependencies = [
  "pyo3-async-runtimes",
  "serde_json",
  "tokio",
- "ultrafast-client",
- "ultrafast-translate",
+ "ufaigw-client",
+ "ufaigw-translate",
 ]
 
 [[package]]
-name = "ultrafast-client-wasm"
+name = "ufaigw-client-wasm"
 version = "2.1.1"
 dependencies = [
  "serde",
  "serde_json",
- "ultrafast-translate",
+ "ufaigw-translate",
  "wasm-bindgen",
 ]
 
 [[package]]
-name = "ultrafast-gateway"
+name = "ufaigw-gateway"
 version = "2.1.1"
 dependencies = [
  "anyhow",
@@ -3115,8 +3115,8 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
- "ultrafast-gateway",
- "ultrafast-translate",
+ "ufaigw-gateway",
+ "ufaigw-translate",
  "utoipa",
  "utoipa-axum",
  "wiremock",
@@ -3124,7 +3124,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ultrafast-translate"
+name = "ufaigw-translate"
 version = "2.1.1"
 dependencies = [
  "serde",

@@ -70,7 +70,7 @@ pub async fn export(
             (CONTENT_TYPE, "application/json".to_string()),
             (
                 CONTENT_DISPOSITION,
-                format!("attachment; filename=\"ultrafast-config-{stamp}.json\""),
+                format!("attachment; filename=\"ufaigw-config-{stamp}.json\""),
             ),
         ],
         bytes,

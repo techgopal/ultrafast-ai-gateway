@@ -7,15 +7,15 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::Router;
 use tower::ServiceExt;
-use ultrafast_gateway::app::{
+use ufaigw_gateway::app::{
     router, AppState, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_PROVIDER_RESPONSE_BYTES,
 };
-use ultrafast_gateway::identity::password::{hash_password, warm_up};
-use ultrafast_gateway::identity::{Role, TeamRole, UserStatus};
-use ultrafast_gateway::limits::Limiter;
-use ultrafast_gateway::secrets::{generate_key, Cipher};
-use ultrafast_gateway::store::{Dialect, Grants, NewUser, Store};
-use ultrafast_gateway::telemetry::{RequestRecord, RequestSink};
+use ufaigw_gateway::identity::password::{hash_password, warm_up};
+use ufaigw_gateway::identity::{Role, TeamRole, UserStatus};
+use ufaigw_gateway::limits::Limiter;
+use ufaigw_gateway::secrets::{generate_key, Cipher};
+use ufaigw_gateway::store::{Dialect, Grants, NewUser, Store};
+use ufaigw_gateway::telemetry::{RequestRecord, RequestSink};
 use wiremock::MockServer;
 
 /// A row id that was deleted and then asked for again. SQLite gives the id of

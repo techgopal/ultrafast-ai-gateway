@@ -1,5 +1,5 @@
 //! The configuration of the gateway as one file: what `GET /api/config/export`
-//! and `ultrafast config export` write, and what the import reads.
+//! and `ufaigw config export` write, and what the import reads.
 //!
 //! The file holds names, never ids, so it can go to another gateway: models
 //! are `provider/model`, grants and route access name teams and users (by
@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use ultrafast_translate::provider::ProviderKind;
+use ufaigw_translate::provider::ProviderKind;
 
 use crate::alerts::rules as alert_rules;
 use crate::alerts::sign::new_secret;
