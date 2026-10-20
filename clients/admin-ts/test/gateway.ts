@@ -82,7 +82,7 @@ export function binaryPath(): Promise<string> {
       const metadata = JSON.parse(
         await run("cargo", ["metadata", "--no-deps", "--format-version", "1"], REPOSITORY),
       ) as { target_directory: string };
-      path = join(metadata.target_directory, "debug", "ultrafast");
+      path = join(metadata.target_directory, "debug", "ufaigw");
     } else {
       path = resolve(given);
     }

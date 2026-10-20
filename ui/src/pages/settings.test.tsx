@@ -603,7 +603,7 @@ describe("configuration: export", () => {
     await waitFor(() => {
       expect(saved.names).toHaveLength(1);
     });
-    expect(saved.names[0]).toMatch(/^ultrafast-config-.*\.json$/);
+    expect(saved.names[0]).toMatch(/^ufaigw-config-.*\.json$/);
     const [file] = saved.made;
     expect(JSON.parse((await file?.text()) ?? "null")).toEqual(fixtures.configFile);
     expect(within(section).queryByRole("alert")).toBeNull();

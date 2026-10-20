@@ -1,4 +1,4 @@
-# @ultrafast/admin
+# @ufaigw/admin
 
 TypeScript SDK for the Ultrafast gateway's admin API (`/api`): manage providers,
 models, routes, keys, users, teams, limits, budgets, alerts and guardrails from
@@ -7,7 +7,7 @@ code and CI. The types and the typed client are generated from
 typed error. It is not published to npm: build it from source.
 
 ```sh
-npm i @ultrafast/admin@beta
+npm i @ufaigw/admin@beta
 ```
 
 The package appears on npm from v2.0.0-beta.4. Before that, build it from a checkout:
@@ -20,7 +20,7 @@ The playground operations (`/api/playground/*`) and creating access tokens
 and need a signed-in browser session.
 
 ```ts
-import { createAdminClient, AdminApiError } from "@ultrafast/admin";
+import { createAdminClient, AdminApiError } from "@ufaigw/admin";
 
 const api = createAdminClient({
   baseUrl: "https://gateway.example.com",
@@ -139,7 +139,7 @@ pnpm --dir clients/admin-ts check:gen    # fails when it differs from openapi/ad
 
 `pnpm test` starts the real gateway on a free port with a temporary data
 directory under `~/.cache`: `UF_E2E_BINARY` if set, else it runs
-`cargo build -p ultrafast-gateway` and starts `debug/ultrafast` in the target
+`cargo build -p ufaigw-gateway` and starts `debug/ufaigw` in the target
 directory `cargo metadata` reports, so `CARGO_TARGET_DIR` is honoured. Tests
 that need no gateway never build. It signs in once to mint a token, then uses
 only the token.

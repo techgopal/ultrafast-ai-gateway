@@ -184,7 +184,7 @@ function environment(
     UF_INSECURE_COOKIES: "true",
     // Warnings and errors only: the gateway logs the admin's email at `info`.
     // The setup code has a target of its own: setup needs it.
-    RUST_LOG: "warn,ultrafast::setup=info",
+    RUST_LOG: "warn,ufaigw::setup=info",
     NO_COLOR: "1",
     // No request for the MCP catalog (the copy in the binary is shown), and
     // the mock MCP servers of the tests are on 127.0.0.1.
