@@ -531,7 +531,8 @@ pub async fn login(
         return Err(ApiError::invalid_credentials());
     };
 
-    let mut tx = store.begin().await?;
+    // Creating the session reads the session length before it writes.
+    let mut tx = store.begin_immediate().await?;
     let session = open_session(&mut tx, &user, &format!("{} signed in", user.email)).await?;
     tx.commit().await?;
     attempt_succeeded(&state, &key, addr);

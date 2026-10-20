@@ -20,21 +20,10 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/clients.yml"
+  # Every pull request, whatever it touches: the admin SDK jobs are required
+  # checks, and a check that never runs blocks the merge.
   pull_request:
     branches: [main, v2]
-    paths:
-      - "crates/translate/**"
-      - "crates/client/**"
-      - "crates/client-wasm/**"
-      - "crates/client-py/**"
-      - "clients/**"
-      - "openapi/admin.json"
-      - "clients/admin-ts/**"
-      - "clients/admin-py/**"
-      - "crates/gateway/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/clients.yml"
   workflow_dispatch:
 
 env:
