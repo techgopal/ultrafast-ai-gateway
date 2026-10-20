@@ -1,6 +1,6 @@
 //! Python bindings for the Rust client.
 //!
-//! This module is the thin native layer (`ultrafast._native`): it takes plain
+//! This module is the thin native layer (`ufaigw._native`): it takes plain
 //! values, runs the Rust client on a shared tokio runtime, and gives plain
 //! tuples back. The typed classes, argument checks and exceptions live in the
 //! Python package. The key stays inside `Target`; its `repr` is redacted, and
@@ -131,10 +131,10 @@ fn embed_out(r: EmbeddingsResponse) -> EmbedOut {
     (r.model, r.vectors, r.prompt_tokens)
 }
 
-/// The Python exception for a client error; the classes are in `ultrafast._errors`.
+/// The Python exception for a client error; the classes are in `ufaigw._errors`.
 fn to_py(py: Python<'_>, e: &Error) -> PyErr {
     let build = || -> PyResult<PyErr> {
-        let made = py.import("ultrafast._errors")?.getattr("make")?.call1((
+        let made = py.import("ufaigw._errors")?.getattr("make")?.call1((
             e.kind.as_str(),
             e.message.as_str(),
             e.status,
@@ -243,7 +243,7 @@ fn embed_request(
 }
 
 /// Where calls go. Holds the key; never shows it.
-#[pyclass(frozen, module = "ultrafast")]
+#[pyclass(frozen, module = "ufaigw")]
 struct Target(RustTarget);
 
 #[pymethods]
@@ -365,7 +365,7 @@ async fn open_stream(client: RustClient, req: ChatRequest) -> Result<Arc<Shared>
     Ok(Shared::new(Box::pin(s)))
 }
 
-#[pyclass(module = "ultrafast._native")]
+#[pyclass(module = "ufaigw._native")]
 struct Client {
     inner: RustClient,
 }
@@ -479,7 +479,7 @@ impl Client {
     }
 }
 
-#[pyclass(module = "ultrafast._native")]
+#[pyclass(module = "ufaigw._native")]
 struct SyncStream {
     shared: Arc<Shared>,
 }
@@ -498,7 +498,7 @@ impl SyncStream {
     }
 }
 
-#[pyclass(module = "ultrafast._native")]
+#[pyclass(module = "ufaigw._native")]
 struct AsyncClient {
     inner: RustClient,
 }
@@ -616,7 +616,7 @@ impl AsyncClient {
     }
 }
 
-#[pyclass(module = "ultrafast._native")]
+#[pyclass(module = "ufaigw._native")]
 struct AsyncStream {
     shared: Arc<Shared>,
 }

@@ -7,29 +7,29 @@ from typing import Any
 
 import pytest
 
-from ultrafast_admin import AdminApiError, AdminClient
-from ultrafast_admin._generated.api.alerts import (
+from ufaigw_admin import AdminApiError, AdminClient
+from ufaigw_admin._generated.api.alerts import (
     alerts_channels_create,
     alerts_channels_delete,
     alerts_rules_create,
     alerts_rules_delete,
     alerts_rules_list,
 )
-from ultrafast_admin._generated.api.budgets import budgets_delete, budgets_list, budgets_set
-from ultrafast_admin._generated.api.keys import keys_create, keys_list, keys_revoke, keys_view
-from ultrafast_admin._generated.api.limits import limits_delete, limits_list, limits_set
-from ultrafast_admin._generated.api.mcp import mcp_servers_create, mcp_servers_delete, mcp_servers_list
-from ultrafast_admin._generated.api.models import models_create, models_delete, models_list, models_update
-from ultrafast_admin._generated.api.providers import (
+from ufaigw_admin._generated.api.budgets import budgets_delete, budgets_list, budgets_set
+from ufaigw_admin._generated.api.keys import keys_create, keys_list, keys_revoke, keys_view
+from ufaigw_admin._generated.api.limits import limits_delete, limits_list, limits_set
+from ufaigw_admin._generated.api.mcp import mcp_servers_create, mcp_servers_delete, mcp_servers_list
+from ufaigw_admin._generated.api.models import models_create, models_delete, models_list, models_update
+from ufaigw_admin._generated.api.providers import (
     providers_create,
     providers_delete,
     providers_list,
     providers_update,
 )
-from ultrafast_admin._generated.api.teams import teams_create, teams_delete, teams_rename, teams_view
-from ultrafast_admin._generated.api.tokens import tokens_list, tokens_revoke
-from ultrafast_admin._generated.api.users import users_invite, users_list
-from ultrafast_admin._generated.models import (
+from ufaigw_admin._generated.api.teams import teams_create, teams_delete, teams_rename, teams_view
+from ufaigw_admin._generated.api.tokens import tokens_list, tokens_revoke
+from ufaigw_admin._generated.api.users import users_invite, users_list
+from ufaigw_admin._generated.models import (
     CreateChannelRequest,
     CreateKeyRequest,
     CreateMcpServerRequest,

@@ -2,12 +2,12 @@
 
 A call that fails raises ``AdminApiError``, whichever generated function made it.
 The calls are generated from ``openapi/admin.json`` (see ``gen.sh``) and live in
-``ultrafast_admin.api.<tag>.<operation_id>`` (the types in ``ultrafast_admin.models``);
+``ufaigw_admin.api.<tag>.<operation_id>`` (the types in ``ufaigw_admin.models``);
 each module has ``sync``, ``sync_detailed``, ``asyncio`` and ``asyncio_detailed``.
 This module adds the client, the error type, and the two downloads::
 
-    from ultrafast_admin import AdminClient
-    from ultrafast_admin.api.providers import providers_list
+    from ufaigw_admin import AdminClient
+    from ufaigw_admin.api.providers import providers_list
 
     api = AdminClient("https://gateway.example.com", token)
     providers = api.call(providers_list.sync_detailed(client=api.client)).providers
@@ -35,12 +35,12 @@ from ._generated.types import Response
 
 __all__ = ["AdminApiError", "AdminClient", "api", "models"]
 
-# ``ultrafast_admin.api`` and ``ultrafast_admin.models`` are the generated packages
-# themselves (one module object each), so ``from ultrafast_admin.api.providers import
+# ``ufaigw_admin.api`` and ``ufaigw_admin.models`` are the generated packages
+# themselves (one module object each), so ``from ufaigw_admin.api.providers import
 # providers_list`` works and ``_generated`` stays importable.
 _ALIASES = {
-    "ultrafast_admin.api": "ultrafast_admin._generated.api",
-    "ultrafast_admin.models": "ultrafast_admin._generated.models",
+    "ufaigw_admin.api": "ufaigw_admin._generated.api",
+    "ufaigw_admin.models": "ufaigw_admin._generated.models",
 }
 for _alias, _real in _ALIASES.items():
     sys.modules[_alias] = importlib.import_module(_real)
@@ -58,7 +58,7 @@ class _AliasLoader(importlib.abc.Loader):
 
 
 class _AliasFinder(importlib.abc.MetaPathFinder):
-    """Maps ``ultrafast_admin.api.x`` / ``ultrafast_admin.models.x`` onto the generated module of the same path."""
+    """Maps ``ufaigw_admin.api.x`` / ``ufaigw_admin.models.x`` onto the generated module of the same path."""
 
     def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> importlib.machinery.ModuleSpec | None:
         for alias, real in _ALIASES.items():

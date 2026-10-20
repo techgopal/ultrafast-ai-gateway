@@ -84,7 +84,7 @@ def binary_path() -> Path:
     else:
         _run("cargo", "build", "-p", "ufaigw-gateway")
         metadata = json.loads(_run("cargo", "metadata", "--no-deps", "--format-version", "1"))
-        path = Path(metadata["target_directory"]) / "debug" / "ultrafast"
+        path = Path(metadata["target_directory"]) / "debug" / "ufaigw"
     if _is_deployed(path):
         raise RuntimeError(f"{BINARY_VARIABLE} names a binary of the deployed gateway; it is not started.")
     if not os.access(path, os.X_OK):

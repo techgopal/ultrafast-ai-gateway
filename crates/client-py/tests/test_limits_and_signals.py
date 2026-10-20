@@ -5,14 +5,14 @@ import threading
 import time
 
 import pytest
-import ultrafast
+import ufaigw
 from conftest import KEY, OPENAI_CHAT, OPENAI_EMB, OPENAI_STREAM, Script, delta, sse
 
 MSGS = [{"role": "user", "content": "hi"}]
 
 
 def gw(url, **kw):
-    return ultrafast.Client(ultrafast.gateway(url, KEY), **kw)
+    return ufaigw.Client(ufaigw.gateway(url, KEY), **kw)
 
 
 @pytest.mark.parametrize("bad", [-1, 2**32, 10**30])
@@ -76,7 +76,7 @@ def test_ctrl_c_interrupts_a_hanging_embed(serve):
 def test_ctrl_c_interrupts_a_stream_that_stalls_and_it_stays_usable(serve):
     s = serve(Script.sse(sse(delta("a")), hang_after=True))
     stream = gw(s.url, timeout=60).chat_stream("m", MSGS)
-    assert next(stream) == ultrafast.Delta("a")
+    assert next(stream) == ufaigw.Delta("a")
     _interrupted(lambda: next(stream))
     stream.close()
 

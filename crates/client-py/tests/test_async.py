@@ -1,26 +1,26 @@
 import asyncio
 
 import pytest
-import ultrafast
+import ufaigw
 from conftest import KEY, OPENAI_CHAT, OPENAI_EMB, OPENAI_STREAM, Script, delta, sse
 
 pytestmark = pytest.mark.asyncio
 MSGS = [{"role": "user", "content": "hi"}]
 EXPECTED = [
-    ultrafast.Delta("hé"),
-    ultrafast.Delta("llo"),
-    ultrafast.Done("stop", ultrafast.Usage(3, 2)),
+    ufaigw.Delta("hé"),
+    ufaigw.Delta("llo"),
+    ufaigw.Done("stop", ufaigw.Usage(3, 2)),
 ]
 
 
 def gw(url, **kw):
-    return ultrafast.AsyncClient(ultrafast.gateway(url, KEY), **kw)
+    return ufaigw.AsyncClient(ufaigw.gateway(url, KEY), **kw)
 
 
 async def test_chat(serve):
     s = serve(Script.json(200, OPENAI_CHAT))
     r = await gw(s.url).chat("m", MSGS, tags={"team": "a"})
-    assert r.content == "hello" and r.usage == ultrafast.Usage(3, 2)
+    assert r.content == "hello" and r.usage == ufaigw.Usage(3, 2)
     assert s.only()["headers"]["x-uf-tags"] == '{"team":"a"}'
 
 
@@ -45,24 +45,24 @@ async def test_stream_can_be_awaited_first(serve):
 async def test_text_then_error(serve):
     s = serve(Script.sse(sse(delta("par"))))
     got = []
-    with pytest.raises(ultrafast.MalformedError):
+    with pytest.raises(ufaigw.MalformedError):
         async for e in gw(s.url).chat_stream("m", MSGS):
             got.append(e)
-    assert got == [ultrafast.Delta("par")]
+    assert got == [ufaigw.Delta("par")]
 
 
 async def test_errors_and_retry_after(serve):
     s = serve(Script.json(429, '{"error":{"message":"slow","type":"x"}}', headers={"Retry-After": "5"}))
-    with pytest.raises(ultrafast.RateLimitError) as ei:
+    with pytest.raises(ufaigw.RateLimitError) as ei:
         await gw(s.url).chat("m", MSGS)
     assert ei.value.retry_after == 5 and ei.value.retryable
-    with pytest.raises(ultrafast.RateLimitError):
+    with pytest.raises(ufaigw.RateLimitError):
         async for _ in gw(s.url).chat_stream("m", MSGS):
             pass
 
 
 async def test_connection_failure_has_no_key(dead_url):
-    with pytest.raises(ultrafast.NetworkError) as ei:
+    with pytest.raises(ufaigw.NetworkError) as ei:
         await gw(dead_url).chat("m", MSGS)
     assert KEY not in f"{ei.value} {ei.value!r}"
 
@@ -70,7 +70,7 @@ async def test_connection_failure_has_no_key(dead_url):
 async def test_timeout(serve):
     s = serve(Script.json(200, "{}"))
     s.script.hang = True
-    with pytest.raises(ultrafast.RequestTimeoutError):
+    with pytest.raises(ufaigw.RequestTimeoutError):
         await gw(s.url, timeout=0.3).chat("m", MSGS)
 
 
@@ -96,7 +96,7 @@ async def test_cancellation_does_not_break_the_client(serve):
 
 
 async def test_repr_has_no_key():
-    c = ultrafast.AsyncClient(ultrafast.openai(KEY))
+    c = ufaigw.AsyncClient(ufaigw.openai(KEY))
     assert KEY not in repr(c)
 
 

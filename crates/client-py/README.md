@@ -1,24 +1,24 @@
-# ultrafast (Python)
+# ufaigw (Python)
 
 Python client for an Ultrafast gateway, or for an LLM provider directly. It
 wraps the Rust client (`crates/client`) with PyO3: one wheel per platform for
 Python 3.9 and newer (abi3). It does not retry, route, cache or break circuits.
 
 ```sh
-pip install --pre ultrafast
+pip install --pre ufaigw
 ```
 
 The wheels appear on PyPI from v2.0.0-beta.4.
 
 ```python
-import ultrafast
+import ufaigw
 
-client = ultrafast.Client(ultrafast.gateway("http://localhost:3000", "uf-...key"))
+client = ufaigw.Client(ufaigw.gateway("http://localhost:3000", "uf-...key"))
 reply = client.chat("gpt-4o", [{"role": "user", "content": "Say hi."}], tags={"team": "search"})
 print(reply.content, reply.usage)
 
 for event in client.chat_stream("gpt-4o", [{"role": "user", "content": "Count."}]):
-    if isinstance(event, ultrafast.Delta):
+    if isinstance(event, ufaigw.Delta):
         print(event.text, end="")
 
 vectors = client.embed("text-embedding-3-small", ["a", "b"]).vectors
@@ -27,7 +27,7 @@ vectors = client.embed("text-embedding-3-small", ["a", "b"]).vectors
 Async, same arguments:
 
 ```python
-client = ultrafast.AsyncClient(ultrafast.openai(key))
+client = ufaigw.AsyncClient(ufaigw.openai(key))
 reply = await client.chat("gpt-4o", messages)
 async for event in client.chat_stream("gpt-4o", messages):
     ...
@@ -85,7 +85,7 @@ is sent. Direct provider targets accept the same arguments.
 
 ## Errors
 
-Every failure is an `ultrafast.Error` with `.kind`, `.status`, `.retryable` and
+Every failure is an `ufaigw.Error` with `.kind`, `.status`, `.retryable` and
 `.retry_after` (seconds, when the server sent one). Subclasses: `AuthenticationError`,
 `PermissionDeniedError`, `NotFoundError`, `InvalidRequestError`, `RateLimitError`,
 `UpstreamError`, `NetworkError`, `RequestTimeoutError`, `MalformedError`.
