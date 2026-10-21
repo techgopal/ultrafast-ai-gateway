@@ -350,3 +350,32 @@ fn the_release_signs_and_publishes_the_mcp_catalog() {
     let pages = repository_file(".github/workflows/pages.yml");
     assert!(pages.contains("docs/mcp-catalog/**"), "{pages}");
 }
+
+/// All package versions move together (docs/RELEASING.md); a 3.0.0 is
+/// written as 3.0.0 in PEP 440 too.
+#[test]
+fn every_package_names_the_gateway_version() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |p: &str| std::fs::read_to_string(root.join(p)).expect(p);
+    let v = env!("CARGO_PKG_VERSION");
+    for p in [
+        "clients/ts/package.json",
+        "clients/admin-ts/package.json",
+        "ui/package.json",
+    ] {
+        assert!(read(p).contains(&format!("\"version\": \"{v}\"")), "{p}");
+    }
+    for p in [
+        "crates/client-py/pyproject.toml",
+        "clients/admin-py/pyproject.toml",
+    ] {
+        assert!(read(p).contains(&format!("version = \"{v}\"")), "{p}");
+    }
+    for p in ["crates/client/Cargo.toml", "crates/client-wasm/Cargo.toml"] {
+        assert!(
+            read(p).contains(&format!("ufaigw-translate = {{ version = \"{v}\"")),
+            "{p}"
+        );
+    }
+    assert!(read("openapi/admin.json").contains(&format!("\"version\": \"{v}\"")));
+}

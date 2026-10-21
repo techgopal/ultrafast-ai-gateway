@@ -115,11 +115,14 @@ fn the_compose_example_pins_a_release_with_postgres() {
         .lines()
         .find(|l| {
             l.trim_start()
-                .starts_with("image: ghcr.io/techgopal/ultrafast-ai-gateway")
+                .starts_with("image: ghcr.io/techgopal/ufaigw")
         })
         .expect("the gateway service has an image");
     assert!(
-        image.contains("ultrafast-ai-gateway:2.1.1") && !image.contains(":latest"),
+        image.contains(concat!(
+            "ghcr.io/techgopal/ufaigw:",
+            env!("CARGO_PKG_VERSION")
+        )) && !image.contains(":latest"),
         "{image}"
     );
     assert!(
