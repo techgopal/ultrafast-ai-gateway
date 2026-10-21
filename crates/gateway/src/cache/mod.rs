@@ -132,6 +132,7 @@ impl Cached {
             Answer::Embeddings(r) => Some(Usage {
                 input_tokens: r.prompt_tokens,
                 output_tokens: 0,
+                ..Default::default()
             }),
         }
     }

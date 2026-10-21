@@ -213,6 +213,8 @@ pub(crate) struct StreamState {
     pub finish: Option<FinishReason>,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+    pub cache_read_tokens: Option<u32>,
+    pub cache_write_tokens: Option<u32>,
     /// The stream has ended by its own account but its end is not yet given
     /// (Gemini: a usage-only chunk may still follow).
     pub ended: bool,
@@ -237,6 +239,8 @@ impl StreamState {
             (i, o) => Some(Usage {
                 input_tokens: i.unwrap_or(0),
                 output_tokens: o.unwrap_or(0),
+                cache_read_input_tokens: self.cache_read_tokens.unwrap_or(0),
+                cache_write_input_tokens: self.cache_write_tokens.unwrap_or(0),
             }),
         }
     }

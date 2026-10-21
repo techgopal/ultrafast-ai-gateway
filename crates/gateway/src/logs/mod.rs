@@ -211,6 +211,7 @@ mod tests {
         Some(Usage {
             input_tokens,
             output_tokens,
+            ..Default::default()
         })
     }
 

@@ -357,8 +357,14 @@ fn usage_json(u: Option<Usage>) -> Value {
     let u = u.unwrap_or(Usage {
         input_tokens: 0,
         output_tokens: 0,
+        ..Default::default()
     });
-    json!({ "input_tokens": u.input_tokens, "output_tokens": u.output_tokens })
+    json!({
+        "input_tokens": u.input_tokens,
+        "output_tokens": u.output_tokens,
+        "cache_read_input_tokens": u.cache_read_input_tokens,
+        "cache_creation_input_tokens": u.cache_write_input_tokens,
+    })
 }
 
 pub fn render_response(r: &ChatResponse) -> Value {
@@ -698,6 +704,7 @@ mod tests {
             usage: Some(Usage {
                 input_tokens: 3,
                 output_tokens: 2,
+                ..Default::default()
             }),
         };
         let v = render_response(&r);
@@ -705,10 +712,27 @@ mod tests {
         assert_eq!(v["role"], "assistant");
         assert_eq!(v["content"][0], json!({"type":"text","text":"hello"}));
         assert_eq!(v["stop_reason"], "max_tokens");
-        assert_eq!(v["usage"], json!({"input_tokens":3,"output_tokens":2}));
+        assert_eq!(
+            v["usage"],
+            json!({"input_tokens":3,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0})
+        );
         let mut r = r;
         r.finish_reason = Some(FinishReason::Stop);
         assert_eq!(render_response(&r)["stop_reason"], "end_turn");
+    }
+
+    #[test]
+    fn usage_renders_cache_reads_and_writes() {
+        let u = Usage {
+            input_tokens: 7,
+            output_tokens: 3,
+            cache_read_input_tokens: 100,
+            cache_write_input_tokens: 20,
+        };
+        assert_eq!(
+            usage_json(Some(u)),
+            json!({"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":100,"cache_creation_input_tokens":20})
+        );
     }
 
     #[test]
@@ -771,6 +795,7 @@ mod tests {
             usage: Some(Usage {
                 input_tokens: 4,
                 output_tokens: 2,
+                ..Default::default()
             }),
         });
         let all = format!("{a}{b}{c}");

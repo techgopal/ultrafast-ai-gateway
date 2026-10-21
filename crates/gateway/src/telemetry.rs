@@ -498,6 +498,7 @@ impl Scope {
                     let usage = Usage {
                         input_tokens: to_u32(input),
                         output_tokens: to_u32(self.streamed_chars.div_ceil(4)),
+                        ..Default::default()
                     };
                     record.usage = Some(usage);
                     record.estimated = true;

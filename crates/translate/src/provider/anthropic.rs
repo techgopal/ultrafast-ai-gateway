@@ -302,6 +302,8 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
     let usage = v.get("usage").filter(|u| u.is_object()).map(|u| Usage {
         input_tokens: saturate(u["input_tokens"].as_u64().unwrap_or(0)),
         output_tokens: saturate(u["output_tokens"].as_u64().unwrap_or(0)),
+        cache_read_input_tokens: saturate(u["cache_read_input_tokens"].as_u64().unwrap_or(0)),
+        cache_write_input_tokens: saturate(u["cache_creation_input_tokens"].as_u64().unwrap_or(0)),
     });
     Ok(ChatResponse {
         id: v["id"].as_str().unwrap_or_default().to_string(),
@@ -325,6 +327,8 @@ pub(crate) fn decode(
             let u = &v["message"]["usage"];
             state.input_tokens = u["input_tokens"].as_u64().map(saturate);
             state.output_tokens = u["output_tokens"].as_u64().map(saturate);
+            state.cache_read_tokens = u["cache_read_input_tokens"].as_u64().map(saturate);
+            state.cache_write_tokens = u["cache_creation_input_tokens"].as_u64().map(saturate);
         }
         Some("content_block_start") => {
             let kind = v["content_block"]["type"].as_str();
@@ -407,8 +411,19 @@ pub(crate) fn decode(
             if let Some(s) = v["delta"]["stop_reason"].as_str() {
                 state.finish = finish(s);
             }
-            if let Some(n) = v["usage"]["output_tokens"].as_u64() {
+            let u = &v["usage"];
+            if let Some(n) = u["output_tokens"].as_u64() {
                 state.output_tokens = Some(saturate(n));
+            }
+            // A message_delta may repeat the input side; when it does, it is the newer count.
+            if let Some(n) = u["input_tokens"].as_u64() {
+                state.input_tokens = Some(saturate(n));
+            }
+            if let Some(n) = u["cache_read_input_tokens"].as_u64() {
+                state.cache_read_tokens = Some(saturate(n));
+            }
+            if let Some(n) = u["cache_creation_input_tokens"].as_u64() {
+                state.cache_write_tokens = Some(saturate(n));
             }
         }
         Some("message_stop") => {
@@ -473,6 +488,48 @@ mod tests {
     }
 
     #[test]
+    fn usage_carries_cache_reads_and_writes() {
+        let want = Usage {
+            input_tokens: 7,
+            output_tokens: 3,
+            cache_read_input_tokens: 100,
+            cache_write_input_tokens: 20,
+        };
+        let body = br#"{"id":"m1","model":"m","content":[{"type":"text","text":"a"}],"stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":100,"cache_creation_input_tokens":20}}"#;
+        assert_eq!(
+            parse_response(ProviderKind::Anthropic, 200, body)
+                .unwrap()
+                .usage,
+            Some(want)
+        );
+
+        let done = |events: Vec<StreamEvent>| match events.last() {
+            Some(StreamEvent::Done { usage, .. }) => *usage,
+            other => panic!("no done: {other:?}"),
+        };
+        let mut d = StreamDecoder::new(ProviderKind::Anthropic);
+        let ev = d
+            .feed(concat!(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"m\",\"usage\":{\"input_tokens\":7,\"output_tokens\":1,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":20}}}\n\n",
+                "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            ).as_bytes())
+            .unwrap();
+        assert_eq!(done(ev), Some(want));
+
+        // A message_delta that repeats the usage (cache counts included) wins.
+        let mut d = StreamDecoder::new(ProviderKind::Anthropic);
+        let ev = d
+            .feed(concat!(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"m\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":1}}}\n\n",
+                "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":20}}\n\n",
+                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            ).as_bytes())
+            .unwrap();
+        assert_eq!(done(ev), Some(want));
+    }
+
+    #[test]
     fn builds_request_with_system_field_and_default_max_tokens() {
         let req = request(vec![
             msg(Role::System, "be brief"),
@@ -523,7 +580,8 @@ mod tests {
             r.usage,
             Some(Usage {
                 input_tokens: 7,
-                output_tokens: 3
+                output_tokens: 3,
+                ..Default::default()
             })
         );
     }
@@ -565,6 +623,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 9,
                     output_tokens: 12,
+                    ..Default::default()
                 }),
             },
         ]
@@ -600,7 +659,8 @@ mod tests {
             r.usage,
             Some(Usage {
                 input_tokens: u32::MAX,
-                output_tokens: 3
+                output_tokens: 3,
+                ..Default::default()
             })
         );
     }
@@ -624,7 +684,8 @@ mod tests {
                 finish_reason: Some(FinishReason::Stop),
                 usage: Some(Usage {
                     input_tokens: u32::MAX,
-                    output_tokens: u32::MAX
+                    output_tokens: u32::MAX,
+                    ..Default::default()
                 }),
             }]
         );
@@ -968,6 +1029,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 20,
                     output_tokens: 30,
+                    ..Default::default()
                 }),
             },
         ];

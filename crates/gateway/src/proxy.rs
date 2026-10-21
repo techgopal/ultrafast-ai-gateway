@@ -1368,6 +1368,7 @@ async fn dispatch(
             record.usage(Some(Usage {
                 input_tokens: response.prompt_tokens,
                 output_tokens: 0,
+                ..Default::default()
             }));
             keep(state, &cache, record, Answer::Embeddings(response.clone()));
             Json(embeddings::render_response(&response)).into_response()
@@ -1379,6 +1380,7 @@ async fn dispatch(
             record.usage(response.usage.as_ref().map(|u| Usage {
                 input_tokens: u.input_tokens,
                 output_tokens: u.output_tokens,
+                ..Default::default()
             }));
             Json(images::render_response(&response)).into_response()
         }
@@ -1387,6 +1389,7 @@ async fn dispatch(
             record.usage(answer.usage.map(|(input_tokens, output_tokens)| Usage {
                 input_tokens,
                 output_tokens,
+                ..Default::default()
             }));
             if let Err(refusal) = check_transcript(
                 &guard,

@@ -553,13 +553,22 @@ fn finished_arguments(arguments: &str) -> &str {
 fn usage_json(u: Option<Usage>) -> Value {
     match u {
         None => Value::Null,
-        Some(u) => json!({
-            "input_tokens": u.input_tokens,
-            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
-            "output_tokens": u.output_tokens,
-            "output_tokens_details": {"reasoning_tokens": 0},
-            "total_tokens": u64::from(u.input_tokens) + u64::from(u.output_tokens),
-        }),
+        Some(u) => {
+            // `input_tokens` includes cached tokens, as OpenAI's does.
+            let input = u64::from(u.input_tokens)
+                + u64::from(u.cache_read_input_tokens)
+                + u64::from(u.cache_write_input_tokens);
+            json!({
+                "input_tokens": input,
+                "input_tokens_details": {
+                    "cached_tokens": u.cache_read_input_tokens,
+                    "cache_write_tokens": u.cache_write_input_tokens,
+                },
+                "output_tokens": u.output_tokens,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": input + u64::from(u.output_tokens),
+            })
+        }
     }
 }
 
@@ -887,6 +896,19 @@ mod tests {
             TranslateError::InvalidRequest(m) | TranslateError::Unsupported(m) => m,
             e => panic!("{e}"),
         }
+    }
+
+    #[test]
+    fn input_tokens_include_cached_tokens() {
+        let v = usage_json(Some(Usage {
+            input_tokens: 20,
+            output_tokens: 5,
+            cache_read_input_tokens: 100,
+            cache_write_input_tokens: 10,
+        }));
+        assert_eq!(v["input_tokens"], 130);
+        assert_eq!(v["input_tokens_details"]["cached_tokens"], 100);
+        assert_eq!(v["total_tokens"], 135);
     }
 
     #[test]
@@ -1242,6 +1264,7 @@ mod tests {
             usage: Some(Usage {
                 input_tokens: 4,
                 output_tokens: 2,
+                ..Default::default()
             }),
         }
     }
@@ -1421,6 +1444,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 3,
                     output_tokens: 8,
+                    ..Default::default()
                 }),
             },
         ]

@@ -129,7 +129,8 @@ mod tests {
             r.usage,
             Some(Usage {
                 input_tokens: 9,
-                output_tokens: 4
+                output_tokens: 4,
+                ..Default::default()
             })
         );
     }
@@ -174,7 +175,8 @@ mod tests {
                         finish_reason: Some(FinishReason::Stop),
                         usage: Some(Usage {
                             input_tokens: 9,
-                            output_tokens: 2
+                            output_tokens: 2,
+                            ..Default::default()
                         }),
                     },
                 ],

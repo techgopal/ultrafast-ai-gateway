@@ -272,6 +272,7 @@ mod tests {
             usage: Some(ufaigw_translate::types::Usage {
                 input_tokens: 10,
                 output_tokens: 5,
+                ..Default::default()
             }),
             attempts: vec![],
             cached: false,

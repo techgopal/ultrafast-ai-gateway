@@ -19,7 +19,8 @@ fn check(r: &ufaigw_client::types::ChatResponse) {
         r.usage,
         Some(Usage {
             input_tokens: 3,
-            output_tokens: 2
+            output_tokens: 2,
+            ..Default::default()
         })
     );
 }

@@ -261,6 +261,14 @@ struct WireMessage {
 struct WireUsage {
     prompt_tokens: u64,
     completion_tokens: u64,
+    #[serde(default)]
+    prompt_tokens_details: Option<WirePromptDetails>,
+}
+
+#[derive(Deserialize)]
+struct WirePromptDetails {
+    #[serde(default)]
+    cached_tokens: u64,
 }
 
 pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
@@ -312,9 +320,14 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
         content,
         tool_calls,
         finish_reason,
-        usage: w.usage.map(|u| Usage {
-            input_tokens: saturate(u.prompt_tokens),
-            output_tokens: saturate(u.completion_tokens),
+        usage: w.usage.map(|u| {
+            let cached = u.prompt_tokens_details.map_or(0, |d| d.cached_tokens);
+            Usage {
+                input_tokens: saturate(u.prompt_tokens.saturating_sub(cached)),
+                output_tokens: saturate(u.completion_tokens),
+                cache_read_input_tokens: saturate(cached),
+                cache_write_input_tokens: 0,
+            }
         }),
     })
 }
@@ -398,8 +411,14 @@ pub(crate) fn decode(
         });
     }
     if let Some(u) = v.get("usage").filter(|u| u.is_object()) {
-        state.input_tokens = u["prompt_tokens"].as_u64().map(saturate);
+        let cached = u["prompt_tokens_details"]["cached_tokens"]
+            .as_u64()
+            .unwrap_or(0);
+        state.input_tokens = u["prompt_tokens"]
+            .as_u64()
+            .map(|n| saturate(n.saturating_sub(cached)));
         state.output_tokens = u["completion_tokens"].as_u64().map(saturate);
+        state.cache_read_tokens = Some(saturate(cached));
     }
     let choice = &v["choices"][0];
     let delta = &choice["delta"];
@@ -544,7 +563,8 @@ mod tests {
             r.usage,
             Some(Usage {
                 input_tokens: 1,
-                output_tokens: 2
+                output_tokens: 2,
+                ..Default::default()
             })
         );
     }
@@ -604,6 +624,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 4,
                     output_tokens: 6,
+                    ..Default::default()
                 }),
             },
         ]
@@ -643,7 +664,8 @@ mod tests {
             r.usage,
             Some(Usage {
                 input_tokens: u32::MAX,
-                output_tokens: 2
+                output_tokens: 2,
+                ..Default::default()
             })
         );
     }
@@ -660,7 +682,8 @@ mod tests {
                 finish_reason: None,
                 usage: Some(Usage {
                     input_tokens: u32::MAX,
-                    output_tokens: 6
+                    output_tokens: 6,
+                    ..Default::default()
                 }),
             }]
         );
@@ -1134,6 +1157,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 30,
                     output_tokens: 20,
+                    ..Default::default()
                 }),
             },
         ];
@@ -1272,6 +1296,37 @@ mod tests {
             serde_json::json!({"type":"json_schema","json_schema":{
                 "name":"person","description":"a person","strict":true,
                 "schema":{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}}})
+        );
+    }
+
+    #[test]
+    fn cached_prompt_tokens_are_cache_reads() {
+        let want = Usage {
+            input_tokens: 20,
+            output_tokens: 5,
+            cache_read_input_tokens: 100,
+            cache_write_input_tokens: 0,
+        };
+        let body = br#"{"id":"c1","model":"m","choices":[{"message":{"content":"yo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":100}}}"#;
+        let r = parse_response(ProviderKind::OpenAi, 200, body).unwrap();
+        assert_eq!(r.usage, Some(want));
+        let mut d = StreamDecoder::new(ProviderKind::OpenAi);
+        let events = d
+            .feed(
+                concat!(
+                    "data: {\"id\":\"c\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                    "data: {\"id\":\"c\",\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":100}}}\n\n",
+                    "data: [DONE]\n\n",
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(
+            events,
+            vec![StreamEvent::Done {
+                finish_reason: Some(FinishReason::Stop),
+                usage: Some(want),
+            }]
         );
     }
 }

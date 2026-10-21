@@ -31,6 +31,7 @@ fn record(requested: &str) -> RequestRecord {
         usage: Some(Usage {
             input_tokens: 1_000,
             output_tokens: 500,
+            ..Default::default()
         }),
         attempts: vec![Attempt {
             provider: "p".into(),
@@ -148,6 +149,7 @@ async fn cost_is_tokens_times_price_per_million_rounded_half_up() {
     half.usage = Some(Usage {
         input_tokens: 1,
         output_tokens: 0,
+        ..Default::default()
     });
     sink.record(half);
     stop.send(true).unwrap();
@@ -267,6 +269,7 @@ async fn only_a_side_with_tokens_needs_a_price() {
     embedding.usage = Some(Usage {
         input_tokens: 10_000,
         output_tokens: 0,
+        ..Default::default()
     });
     sink.record(embedding);
     sink.record(record("chat"));
