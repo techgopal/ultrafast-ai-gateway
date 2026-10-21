@@ -24,7 +24,8 @@ database migration.
   `ufaigw-admin` (`import ufaigw`, `import ufaigw_admin`); npm
   `@ufaigw/client` and `@ufaigw/admin`.
 - The User-Agent, the MCP client and server name and the alert payload's
-  `gateway` field say `ufaigw`; the default OTel service name is `ufaigw`.
+  `gateway` field say `ufaigw`; the default OTel service name and the OTel
+  scope name are `ufaigw`.
 - Downloads are named `ufaigw-<stamp>.db` and `ufaigw-config-<stamp>.json`.
   The config file's format stays `ultrafast-config`: 2.x exports import.
 

@@ -92,6 +92,9 @@ docker run -d --name ufaigw -p 3000:3000 -v ufaigw-data:/var/lib/ufaigw \
   --env-file admin.env ghcr.io/techgopal/ufaigw:3.0.0
 ```
 
+Upgrading from 2.x: keep your existing volume (`-v ultrafast-data:/var/lib/ufaigw`),
+not a new `ufaigw-data` one, or the gateway starts empty.
+
 **Or a binary** from the [latest release](https://github.com/techgopal/ultrafast-ai-gateway/releases)
 (Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x64). For Linux x86_64:
 
@@ -1410,7 +1413,9 @@ A file with errors is refused whole. An import creates and updates by name and
 never deletes; new providers have no credential until an admin sets one.
 
 **Upgrade.** Stop, replace the binary (or image), start: migrations run at
-start. Back up first. Coming from `2.0.0-alpha.1`: existing providers work only
+start. Back up first. Coming from 2.x: the command is `ufaigw` and the image
+`ghcr.io/techgopal/ufaigw`; keep your volume and mount it at `/var/lib/ufaigw`
+(`-v ultrafast-data:/var/lib/ufaigw`), as the 3.0.0 release notes say. Coming from `2.0.0-alpha.1`: existing providers work only
 after an admin syncs, enables and grants their models (console, Models, or
 `ufaigw model add --provider NAME --model ID --enable --everyone`); until
 then calls to `NAME/MODEL` are refused.

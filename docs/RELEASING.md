@@ -45,6 +45,12 @@ Until these are done the workflow only does dry runs.
 Also create the GitHub environment `release` (Settings, Environments), ideally
 with the owner as a required reviewer.
 
+**The image.** `release.yml` pushes `ghcr.io/techgopal/ufaigw`. The first push
+creates the package, and a new package can start private: under the package's
+settings (github.com/users/techgopal/packages/container/ufaigw), set it public
+and connect it to this repository. Before publishing a draft release, check that
+`docker pull ghcr.io/techgopal/ufaigw:<version>` works signed out.
+
 Then set the repository variable `PUBLISH_LIVE=true` (Settings, Secrets and
 variables, Actions, Variables). From then on a tag publishes for real.
 

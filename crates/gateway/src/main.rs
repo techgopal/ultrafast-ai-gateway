@@ -342,6 +342,17 @@ fn validate_otel(
     Ok(())
 }
 
+/// Where the database is, for every command that uses one. SQLite in the
+/// image is refused while its volume is still at the 2.1 mount point,
+/// before any command can create a database or a master key.
+fn database_for(cli: &Cli, image_dir: &Path, old_image_dir: &Path) -> Result<Database> {
+    let database = Database::of(cli)?;
+    if !database.is_postgres() {
+        check_moved_image_volume(&cli.data_dir, image_dir, old_image_dir)?;
+    }
+    Ok(database)
+}
+
 /// Where the database is: the SQLite file in the data directory, or the
 /// PostgreSQL database `UF_DATABASE_URL` names.
 struct Database {
@@ -510,7 +521,11 @@ async fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&spec())?);
         return Ok(());
     }
-    let database = Database::of(&cli)?;
+    let database = database_for(
+        &cli,
+        Path::new(IMAGE_DATA_DIR),
+        Path::new(OLD_IMAGE_DATA_DIR),
+    )?;
     // Neither needs the master key: it is not read, and not made.
     match cli.command {
         Command::Config { command } => {
@@ -528,11 +543,6 @@ async fn main() -> Result<()> {
             Database::connect(url, database.max_connections).await?,
         )
     } else {
-        check_moved_image_volume(
-            &cli.data_dir,
-            Path::new(IMAGE_DATA_DIR),
-            Path::new(OLD_IMAGE_DATA_DIR),
-        )?;
         let master = load_master_key(&cli.data_dir, cli.master_key.as_deref())?;
         let cipher = Cipher::from_hex(&master)?;
         let store = Store::open(&db_path(&cli.data_dir))
@@ -877,6 +887,31 @@ mod tests {
         assert_eq!(cap(&["--max-audio-bytes", "1048576"]), 1_048_576);
         assert!(parse(&["--max-audio-bytes", "0"]).is_err());
         assert!(parse(&["--max-audio-bytes", "1073741825"]).is_err());
+    }
+
+    /// `config` and `backup` return before the store is opened: the check
+    /// for a volume left at the 2.1 mount point must come first, or a
+    /// `config import` makes a fresh database that `serve` then starts on.
+    #[test]
+    fn every_sqlite_command_checks_for_a_volume_left_at_the_old_mount_point() {
+        let (image, old) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(db_path(old.path()), "").unwrap();
+        let data_dir = image.path().to_str().unwrap();
+        for command in [
+            &["config", "import", "x.json"][..],
+            &["config", "export", "x.json"],
+            &["backup", "x.db"],
+            &["serve"],
+        ] {
+            let mut all = vec!["ufaigw", "--data-dir", data_dir];
+            all.extend_from_slice(command);
+            let cli = Cli::try_parse_from(all).unwrap();
+            let err = database_for(&cli, image.path(), old.path()).err();
+            assert!(
+                err.is_some_and(|e| e.to_string().contains("mount the volume at")),
+                "{command:?}"
+            );
+        }
     }
 
     #[test]
