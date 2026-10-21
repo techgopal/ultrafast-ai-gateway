@@ -8,11 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use mock_mcp::{tool, Failure, MockMcp};
-use ultrafast_gateway::mcp::upstream::{
+use ufaigw_gateway::mcp::upstream::{
     call_method, call_tool, discover_tools, discover_tools_with, Options, Target, UpstreamError,
     MAX_PAGES,
 };
-use ultrafast_gateway::store::McpServerRow;
+use ufaigw_gateway::store::McpServerRow;
 
 const SECRET: &str = "mcp-secret-never-logged-4d2f";
 

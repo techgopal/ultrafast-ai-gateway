@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use ultrafast_translate::types::Usage;
+use ufaigw_translate::types::Usage;
 
 use crate::alerts::errors_window::Sample;
 use crate::alerts::EngineHandle;

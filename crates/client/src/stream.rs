@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use ultrafast_translate::provider::{ProviderKind, StreamDecoder};
-use ultrafast_translate::types::StreamEvent;
+use ufaigw_translate::provider::{ProviderKind, StreamDecoder};
+use ufaigw_translate::types::StreamEvent;
 
 use crate::error::{Error, ErrorKind};
 

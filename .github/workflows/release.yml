@@ -156,15 +156,15 @@ jobs:
           rustup target add ${{ matrix.target }}
       # No cache: a release is built from nothing an earlier run left.
       - name: Build
-        run: cargo build --release --locked -p ultrafast-gateway --target ${{ matrix.target }}
+        run: cargo build --release --locked -p ufaigw-gateway --target ${{ matrix.target }}
       - name: Smoke test
-        run: ./target/${{ matrix.target }}/release/ultrafast --version
+        run: ./target/${{ matrix.target }}/release/ufaigw --version
       - name: Package
         run: |
-          exe=ultrafast
-          if [ "${{ matrix.archive }}" = "zip" ]; then exe=ultrafast.exe; fi
+          exe=ufaigw
+          if [ "${{ matrix.archive }}" = "zip" ]; then exe=ufaigw.exe; fi
           ref="${GITHUB_REF_NAME//\//-}"
-          name="ultrafast-${ref}-${{ matrix.target }}"
+          name="ufaigw-${ref}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/$exe" README.md LICENSE CHANGELOG.md "dist/$name/"
           cd dist
@@ -248,7 +248,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/ultrafast-ai-gateway
+          images: ghcr.io/${{ github.repository_owner }}/ufaigw
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}

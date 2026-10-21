@@ -14,9 +14,7 @@ pub use client::{Client, DEFAULT_MAX_RESPONSE_BYTES};
 pub use error::{Error, ErrorKind};
 pub use request::{ChatRequest, EmbeddingsRequest, MAX_TAGS_BYTES};
 pub use target::Target;
-pub use ultrafast_translate::embeddings::EmbeddingsResponse;
-pub use ultrafast_translate::provider::ProviderKind;
-pub use ultrafast_translate::types;
-pub use ultrafast_translate::types::{
-    ImageSource, Part, ResponseFormat, Tool, ToolCall, ToolChoice,
-};
+pub use ufaigw_translate::embeddings::EmbeddingsResponse;
+pub use ufaigw_translate::provider::ProviderKind;
+pub use ufaigw_translate::types;
+pub use ufaigw_translate::types::{ImageSource, Part, ResponseFormat, Tool, ToolCall, ToolChoice};

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use serde_json::Value;
-use ultrafast_translate::provider::ProviderKind;
+use ufaigw_translate::provider::ProviderKind;
 
 use crate::snapshot::SnapProvider;
 

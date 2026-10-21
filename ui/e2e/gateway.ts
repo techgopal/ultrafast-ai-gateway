@@ -1,6 +1,6 @@
 // Starts the real gateway binary for the browser tests. It builds nothing:
 // the console and the binary are built before (`pnpm --dir ui build`, then
-// `cargo build --release -p ultrafast-gateway`, which embeds the console).
+// `cargo build --release -p ufaigw-gateway`, which embeds the console).
 //
 // Each gateway gets a port that the system gives out and a data directory of
 // its own, made here and removed when it stops. Its environment is written
@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 
 /** The port of the gateway that is in use on this machine. Never taken here. */
 export const IN_USE_PORT = 3900;
-/** The binary to start in place of `target/release/ultrafast` of this repository. */
+/** The binary to start in place of `target/release/ufaigw` of this repository. */
 export const BINARY_VARIABLE = "UF_E2E_BINARY";
 
 /**
@@ -60,7 +60,7 @@ async function psql(url: string, statement: string): Promise<void> {
 
 /** The directory of the deployed gateway: no binary under it is started. */
 const DEPLOYED = join(homedir(), ".local", "share", "ultrafast-gateway");
-const OWN_BINARY = fileURLToPath(new URL("../../target/release/ultrafast", import.meta.url));
+const OWN_BINARY = fileURLToPath(new URL("../../target/release/ufaigw", import.meta.url));
 
 const READY_WITHIN_MS = 30_000;
 const STOP_WITHIN_MS = 10_000;
@@ -143,7 +143,7 @@ export function binaryPath(): string {
   } catch {
     throw new Error(
       `No gateway binary at ${path}. Build it first: ` +
-        "pnpm --dir ui build && cargo build --release -p ultrafast-gateway",
+        "pnpm --dir ui build && cargo build --release -p ufaigw-gateway",
     );
   }
   return path;
@@ -184,7 +184,7 @@ function environment(
     UF_INSECURE_COOKIES: "true",
     // Warnings and errors only: the gateway logs the admin's email at `info`.
     // The setup code has a target of its own: setup needs it.
-    RUST_LOG: "warn,ultrafast::setup=info",
+    RUST_LOG: "warn,ufaigw::setup=info",
     NO_COLOR: "1",
     // No request for the MCP catalog (the copy in the binary is shown), and
     // the mock MCP servers of the tests are on 127.0.0.1.

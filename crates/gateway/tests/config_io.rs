@@ -6,13 +6,13 @@ mod common;
 use axum::http::StatusCode;
 use common::{call, error_code, org, org_with_sink, seed_user, Org, ORG_PASSWORD};
 use serde_json::{json, Value};
-use ultrafast_gateway::budgets::{BudgetAction, Period};
-use ultrafast_gateway::cache::{CacheScope, RouteCache};
-use ultrafast_gateway::identity::Role;
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
-use ultrafast_gateway::portable::{self, Actor, ConfigFile};
-use ultrafast_gateway::secrets::{generate_key, generate_secret, TOKEN_PREFIX};
-use ultrafast_gateway::store::{Grants, RouteSettings, Store, TargetsInput};
+use ufaigw_gateway::budgets::{BudgetAction, Period};
+use ufaigw_gateway::cache::{CacheScope, RouteCache};
+use ufaigw_gateway::identity::Role;
+use ufaigw_gateway::limits::{LimitScope, RateLimit};
+use ufaigw_gateway::portable::{self, Actor, ConfigFile};
+use ufaigw_gateway::secrets::{generate_key, generate_secret, TOKEN_PREFIX};
+use ufaigw_gateway::store::{Grants, RouteSettings, Store, TargetsInput};
 
 const CREDENTIAL: &str = "sk-live-credential-of-the-main-provider";
 
@@ -207,7 +207,7 @@ async fn world() -> World {
     tx.commit().await.unwrap();
     let session = store.create_session(org.maya).await.unwrap();
     store
-        .insert_logs(&[ultrafast_gateway::store::NewLog {
+        .insert_logs(&[ufaigw_gateway::store::NewLog {
             tags: None,
             at: "2026-01-01 10:00:00".into(),
             key_id: Some(key_id),
@@ -350,7 +350,7 @@ async fn the_export_holds_no_secret() {
     assert_eq!(status, StatusCode::OK);
     let disposition = headers["content-disposition"].to_str().unwrap();
     assert!(
-        disposition.starts_with("attachment; filename=\"ultrafast-config"),
+        disposition.starts_with("attachment; filename=\"ufaigw-config"),
         "{disposition}"
     );
     let text = w.export().await.to_string();
@@ -423,14 +423,14 @@ fn file_of(value: Value) -> ConfigFile {
 }
 
 fn actor() -> Actor<'static> {
-    static CIPHER: std::sync::OnceLock<ultrafast_gateway::secrets::Cipher> =
+    static CIPHER: std::sync::OnceLock<ufaigw_gateway::secrets::Cipher> =
         std::sync::OnceLock::new();
     Actor {
         user_id: None,
         email: "cli",
         cipher: Some(CIPHER.get_or_init(|| {
-            ultrafast_gateway::secrets::Cipher::from_hex(
-                &ultrafast_gateway::secrets::Cipher::generate_master_hex(),
+            ufaigw_gateway::secrets::Cipher::from_hex(
+                &ufaigw_gateway::secrets::Cipher::generate_master_hex(),
             )
             .unwrap()
         })),
@@ -623,7 +623,7 @@ async fn unknown_references_are_reported_exactly_and_nothing_is_written() {
     let store = &w.org.api.store;
     let before_audit = audit_count(store).await;
     let state = store.config_state().await.unwrap();
-    let ids = |s: &ultrafast_gateway::store::ConfigState| {
+    let ids = |s: &ufaigw_gateway::store::ConfigState| {
         (
             s.providers.len(),
             s.models.len(),
@@ -1085,7 +1085,7 @@ async fn an_import_survives_another_connection_writing_meanwhile() {
         tokio::spawn(async move {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let mut tx = store.begin().await.unwrap();
-                tx.audit(ultrafast_gateway::store::AuditEntry {
+                tx.audit(ufaigw_gateway::store::AuditEntry {
                     actor_user_id: None,
                     actor_email: "noise",
                     action: "noise",
@@ -1140,7 +1140,7 @@ async fn a_failure_partway_through_an_apply_writes_nothing() {
     use sqlx::Connection;
     let org = common::org_on_disk().await;
     let store = org.api.store.clone();
-    let path = ultrafast_gateway::config::db_path(org.dir.as_ref().unwrap().path());
+    let path = ufaigw_gateway::config::db_path(org.dir.as_ref().unwrap().path());
     let mut conn = sqlx::SqliteConnection::connect(&format!("sqlite://{}", path.display()))
         .await
         .unwrap();
@@ -1205,7 +1205,7 @@ async fn moving_a_provider_with_a_credential_to_a_new_host_removes_it_with_a_war
         format!("providers[{main_at}].base_url")
     );
     // A dry run removes nothing.
-    let main = |state: &ultrafast_gateway::store::ConfigState| {
+    let main = |state: &ufaigw_gateway::store::ConfigState| {
         state
             .providers
             .iter()

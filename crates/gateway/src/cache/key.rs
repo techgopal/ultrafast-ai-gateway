@@ -2,8 +2,8 @@
 //! everything that can change the answer, and of whom the answer is for.
 
 use sha2::{Digest, Sha256};
-use ultrafast_translate::embeddings::EmbeddingsRequest;
-use ultrafast_translate::types::{
+use ufaigw_translate::embeddings::EmbeddingsRequest;
+use ufaigw_translate::types::{
     ChatRequest, ImageSource, Message, Part, ResponseFormat, Role, Tool, ToolCall, ToolChoice,
 };
 
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn the_response_format_and_its_schema_change_the_key() {
-        use ultrafast_translate::types::ResponseFormat;
+        use ufaigw_translate::types::ResponseFormat;
         let schema = |s: serde_json::Value, strict: Option<bool>, name: &str| {
             Some(ResponseFormat::JsonSchema {
                 name: name.into(),

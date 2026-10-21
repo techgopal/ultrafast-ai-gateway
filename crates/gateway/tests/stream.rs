@@ -338,7 +338,7 @@ async fn other_error_inside_stream_shows_only_the_provider_message() {
 
 mod records {
     use super::*;
-    use ultrafast_gateway::telemetry::AttemptOutcome;
+    use ufaigw_gateway::telemetry::AttemptOutcome;
 
     #[tokio::test]
     async fn a_finished_stream_is_recorded_with_its_usage() {

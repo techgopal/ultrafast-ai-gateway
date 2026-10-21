@@ -5,8 +5,8 @@ its own and an environment written out in full, so no `UF_*` variable of the
 shell reaches it. It is stopped by its process id and its directory removed when
 the fixture ends and when the test process exits.
 
-The binary is `UF_E2E_BINARY` when set, else `target/debug/ultrafast` of this
-repository, built with `cargo build -p ultrafast-gateway` (see `conftest.py`).
+The binary is `UF_E2E_BINARY` when set, else `target/debug/ufaigw` of this
+repository, built with `cargo build -p ufaigw-gateway` (see `conftest.py`).
 """
 
 from __future__ import annotations
@@ -82,13 +82,13 @@ def binary_path() -> Path:
     if given:
         path = Path(given).resolve()
     else:
-        _run("cargo", "build", "-p", "ultrafast-gateway")
+        _run("cargo", "build", "-p", "ufaigw-gateway")
         metadata = json.loads(_run("cargo", "metadata", "--no-deps", "--format-version", "1"))
-        path = Path(metadata["target_directory"]) / "debug" / "ultrafast"
+        path = Path(metadata["target_directory"]) / "debug" / "ufaigw"
     if _is_deployed(path):
         raise RuntimeError(f"{BINARY_VARIABLE} names a binary of the deployed gateway; it is not started.")
     if not os.access(path, os.X_OK):
-        raise RuntimeError(f"No gateway binary at {path}. Build it: cargo build -p ultrafast-gateway")
+        raise RuntimeError(f"No gateway binary at {path}. Build it: cargo build -p ufaigw-gateway")
     _binary = path
     return path
 

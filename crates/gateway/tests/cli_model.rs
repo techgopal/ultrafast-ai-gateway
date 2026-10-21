@@ -1,9 +1,9 @@
-//! `ultrafast model add`: the catalog from the command line.
+//! `ufaigw model add`: the catalog from the command line.
 
 mod common;
 
 use common::api;
-use ultrafast_gateway::catalog::{add_model, describe_model_add, ModelAdded};
+use ufaigw_gateway::catalog::{add_model, describe_model_add, ModelAdded};
 
 #[tokio::test]
 async fn model_add_creates_enables_grants_and_is_audited_as_the_cli() {

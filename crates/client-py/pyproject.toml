@@ -3,8 +3,8 @@ requires = ["maturin>=1.7,<2"]
 build-backend = "maturin"
 
 [project]
-name = "ultrafast"
-version = "2.1.1"
+name = "ufaigw"
+version = "3.0.0"
 description = "Python client for the Ultrafast gateway and for LLM providers directly."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -23,7 +23,7 @@ test = ["pytest", "pytest-asyncio"]
 
 [tool.maturin]
 python-source = "python"
-module-name = "ultrafast._native"
+module-name = "ufaigw._native"
 features = ["pyo3/extension-module"]
 
 [tool.pytest.ini_options]

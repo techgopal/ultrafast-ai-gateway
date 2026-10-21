@@ -3,8 +3,8 @@ mod common;
 use axum::http::StatusCode;
 use common::{compared, error_code, org, raw, Org, Signed};
 use serde_json::{json, Value};
-use ultrafast_gateway::identity::TeamRole;
-use ultrafast_gateway::secrets::generate_key;
+use ufaigw_gateway::identity::TeamRole;
+use ufaigw_gateway::secrets::generate_key;
 
 fn team_path(id: i64) -> String {
     format!("/api/teams/{id}")

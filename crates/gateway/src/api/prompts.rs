@@ -24,7 +24,7 @@ use crate::prompts::{
     MAX_TEMPLATES, MAX_TEMPLATES_PER_LEAD, MAX_TOTAL_BYTES, MAX_VARIABLES, MAX_VERSIONS, ROLES,
 };
 use crate::store::{AuditEntry, LatestStub, NewVersion, StoreError, TemplateRow, VersionRow};
-use ultrafast_translate::ingress::openai::parse_response_format;
+use ufaigw_translate::ingress::openai::parse_response_format;
 
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]

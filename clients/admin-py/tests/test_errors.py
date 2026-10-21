@@ -5,10 +5,10 @@ from typing import Any
 
 import pytest
 
-from ultrafast_admin import AdminApiError, AdminClient
-from ultrafast_admin._generated.api.keys import keys_view
-from ultrafast_admin._generated.api.providers import providers_create, providers_list
-from ultrafast_admin._generated.models import CreateProviderRequest
+from ufaigw_admin import AdminApiError, AdminClient
+from ufaigw_admin._generated.api.keys import keys_view
+from ufaigw_admin._generated.api.providers import providers_create, providers_list
+from ufaigw_admin._generated.models import CreateProviderRequest
 
 from .gateway import Gateway
 

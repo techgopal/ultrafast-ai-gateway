@@ -71,7 +71,7 @@ pub async fn download(
         .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf);
     let mut random = [0u8; 8];
     crate::secrets::fill_random(&mut random);
-    let temp = TempFile(dir.join(format!(".ultrafast-backup-{}.tmp", hex::encode(random))));
+    let temp = TempFile(dir.join(format!(".ufaigw-backup-{}.tmp", hex::encode(random))));
     state.store.backup_to(&temp.0).await?;
     restrict(&temp.0)?;
     let mut file = tokio::fs::File::open(&temp.0)
@@ -122,7 +122,7 @@ pub async fn download(
             (CONTENT_LENGTH, length.to_string()),
             (
                 CONTENT_DISPOSITION,
-                format!("attachment; filename=\"ultrafast-{stamp}.db\""),
+                format!("attachment; filename=\"ufaigw-{stamp}.db\""),
             ),
         ],
         Body::from_stream(stream),

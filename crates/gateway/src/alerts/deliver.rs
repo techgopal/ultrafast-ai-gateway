@@ -478,10 +478,7 @@ pub async fn send_once(
         .post(url)
         .timeout(timeout)
         .header("content-type", "application/json")
-        .header(
-            "user-agent",
-            concat!("ultrafast/", env!("CARGO_PKG_VERSION")),
-        )
+        .header("user-agent", concat!("ufaigw/", env!("CARGO_PKG_VERSION")))
         .header(SIGNATURE_HEADER, header_value(secret, t, body))
         .body(body.to_vec());
     match request.send().await {

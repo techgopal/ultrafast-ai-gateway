@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from ultrafast_admin import AdminClient
-from ultrafast_admin._generated.api.providers import providers_create
-from ultrafast_admin._generated.models import CreateProviderRequest
+from ufaigw_admin import AdminClient
+from ufaigw_admin._generated.api.providers import providers_create
+from ufaigw_admin._generated.models import CreateProviderRequest
 
 
 @pytest.fixture(scope="module", autouse=True)

@@ -7,7 +7,7 @@
       "name": "MIT",
       "identifier": "MIT"
     },
-    "version": "2.1.1"
+    "version": "3.0.0"
   },
   "paths": {
     "/api/alerts/channels": {
@@ -16196,7 +16196,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The networks (CIDR) whose forwarding headers are believed, as the\ngateway was started. Read only: it is a flag of `ultrafast serve`."
+            "description": "The networks (CIDR) whose forwarding headers are believed, as the\ngateway was started. Read only: it is a flag of `ufaigw serve`."
           }
         }
       },

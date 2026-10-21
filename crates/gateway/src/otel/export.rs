@@ -236,7 +236,7 @@ impl Sender {
                 { "key": "service.name", "value": { "stringValue": self.cfg.service_name } },
                 { "key": "service.version", "value": { "stringValue": env!("CARGO_PKG_VERSION") } },
             ] },
-            "scopeSpans": [{ "scope": { "name": "ultrafast" }, "spans": spans }],
+            "scopeSpans": [{ "scope": { "name": "ufaigw" }, "spans": spans }],
         }] });
         let mut request = self
             .http

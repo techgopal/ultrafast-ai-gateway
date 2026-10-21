@@ -50,21 +50,21 @@ jobs:
       # The guardrail CPU tests measure how scanning scales and only make
       # sense in an optimised build (they are compiled out of debug builds).
       - name: Guardrail CPU tests (release)
-        run: cargo test --release --locked -p ultrafast-gateway --lib guardrails
+        run: cargo test --release --locked -p ufaigw-gateway --lib guardrails
       - name: OpenAPI spec is current
         run: |
-          if ! cargo run -q -p ultrafast-gateway -- openapi | diff - openapi/admin.json; then
-            echo "openapi/admin.json is out of date; run: cargo run -p ultrafast-gateway -- openapi > openapi/admin.json"
+          if ! cargo run -q -p ufaigw-gateway -- openapi | diff - openapi/admin.json; then
+            echo "openapi/admin.json is out of date; run: cargo run -p ufaigw-gateway -- openapi > openapi/admin.json"
             exit 1
           fi
       - name: Build image
-        run: docker build -t ultrafast:ci .
+        run: docker build -t ufaigw:ci .
       - name: Run image
-        run: docker run --rm ultrafast:ci --version
+        run: docker run --rm ufaigw:ci --version
       - name: Report binary size
         run: |
-          cargo build --release --locked -p ultrafast-gateway
-          ls -l target/release/ultrafast | awk '{printf "binary size: %.1f MB\n", $5/1048576}'
+          cargo build --release --locked -p ufaigw-gateway
+          ls -l target/release/ufaigw | awk '{printf "binary size: %.1f MB\n", $5/1048576}'
 
   postgres:
     name: Postgres
@@ -108,7 +108,7 @@ jobs:
           certs="$RUNNER_TEMP/postgres-ssl"
           mkdir -p "$certs"
           openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
-            -subj "/CN=ultrafast test CA" \
+            -subj "/CN=ufaigw test CA" \
             -keyout "$certs/ca.key" -out "$certs/ca.crt"
           openssl req -new -newkey rsa:2048 -nodes \
             -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" \
@@ -138,7 +138,7 @@ jobs:
             echo "UF_TEST_TLS_CA=$certs/ca.crt"
           } >> "$GITHUB_ENV"
       - name: Tests on PostgreSQL
-        run: cargo test --locked --workspace --exclude ultrafast-client-py --no-fail-fast
+        run: cargo test --locked --workspace --exclude ufaigw-client-py --no-fail-fast
 
   secrets:
     name: Secret scan
@@ -248,7 +248,7 @@ jobs:
           pnpm --dir ui install --frozen-lockfile
           pnpm --dir ui build
       - name: Build the gateway
-        run: cargo build --release --locked -p ultrafast-gateway
+        run: cargo build --release --locked -p ufaigw-gateway
       - name: Install Chromium
         run: pnpm --dir ui exec playwright install --with-deps chromium
       # The errors are in this log. Nothing of the run is uploaded: what a

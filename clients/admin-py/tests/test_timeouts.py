@@ -7,8 +7,8 @@ import time
 import httpx
 import pytest
 
-from ultrafast_admin import AdminApiError, AdminClient
-from ultrafast_admin._generated.api.providers import providers_list
+from ufaigw_admin import AdminApiError, AdminClient
+from ufaigw_admin._generated.api.providers import providers_list
 
 from .slow_server import slow_server
 

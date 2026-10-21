@@ -1,4 +1,4 @@
-# ultrafast-admin
+# ufaigw-admin
 
 Typed Python client for the UltraFast AI Gateway admin API (`/api`): providers,
 models, keys, budgets, limits, teams, users, alerts, guardrails, routes, tokens,
@@ -6,7 +6,7 @@ settings, usage, logs, audit, backup and configuration. Synchronous and
 asynchronous calls, generated from `openapi/admin.json`.
 
 ```sh
-pip install --pre ultrafast-admin   # Python 3.11 or newer
+pip install --pre ufaigw-admin   # Python 3.11 or newer
 ```
 
 The package appears on PyPI from v2.0.0-beta.4. Before that, `pip install ./clients/admin-py` builds it from a checkout.
@@ -16,9 +16,9 @@ operations (`api.playground`) and `tokens_create` refuse access tokens by
 design: they answer 403 `forbidden` and need a signed-in browser session. Then:
 
 ```python
-from ultrafast_admin import AdminClient, AdminApiError
-from ultrafast_admin.api.providers import providers_list, providers_create
-from ultrafast_admin.models import CreateProviderRequest
+from ufaigw_admin import AdminClient, AdminApiError
+from ufaigw_admin.api.providers import providers_list, providers_create
+from ufaigw_admin.models import CreateProviderRequest
 
 api = AdminClient("https://gateway.example.com", token)  # timeout=30.0 seconds
 
@@ -35,9 +35,9 @@ except AdminApiError as error:
     print(error.status, error.code, error.message, error.fields)
 ```
 
-Calls live in `ultrafast_admin.api.<tag>.<operation_id>` and the types in
-`ultrafast_admin.models` (the generated packages, also reachable as
-`ultrafast_admin._generated`); each module
+Calls live in `ufaigw_admin.api.<tag>.<operation_id>` and the types in
+`ufaigw_admin.models` (the generated packages, also reachable as
+`ufaigw_admin._generated`); each module
 has `sync`, `sync_detailed`, `asyncio` and `asyncio_detailed`. The async form:
 
 ```python
@@ -79,13 +79,13 @@ call.
 
 ## Regenerating
 
-`./gen.sh` rewrites `ultrafast_admin/_generated/` from `../../openapi/admin.json`
+`./gen.sh` rewrites `ufaigw_admin/_generated/` from `../../openapi/admin.json`
 with a pinned openapi-python-client in a virtualenv under `~/.cache`. Run it twice
 and nothing changes. Do not edit generated files.
 
 ## Tests
 
 `pip install -e '.[test]' && pytest` starts the real gateway (a debug build,
-`cargo build -p ultrafast-gateway`, or the binary named by `UF_E2E_BINARY`) on a
+`cargo build -p ufaigw-gateway`, or the binary named by `UF_E2E_BINARY`) on a
 free port with a temporary data directory under `~/.cache`. `CARGO_TARGET_DIR` is
 honoured (the binary is found with `cargo metadata`).

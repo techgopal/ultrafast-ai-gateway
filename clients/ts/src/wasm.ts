@@ -1,4 +1,4 @@
-import init, * as bindings from "./wasm/ultrafast_client_wasm.js";
+import init, * as bindings from "./wasm/ufaigw_client_wasm.js";
 import { WASM_BASE64 } from "./wasm/inline.js";
 import { MalformedError } from "./errors.js";
 

@@ -9,6 +9,6 @@ root="$(cd "$here/../.." && pwd)"
 out="${1:-$here/pkg}"
 target="${2:-nodejs}"
 cd "$root"
-cargo build -p ultrafast-client-wasm --target wasm32-unknown-unknown --release
+cargo build -p ufaigw-client-wasm --target wasm32-unknown-unknown --release
 wasm-bindgen --target "$target" --out-dir "$out" \
-  "${CARGO_TARGET_DIR:-$root/target}/wasm32-unknown-unknown/release/ultrafast_client_wasm.wasm"
+  "${CARGO_TARGET_DIR:-$root/target}/wasm32-unknown-unknown/release/ufaigw_client_wasm.wasm"

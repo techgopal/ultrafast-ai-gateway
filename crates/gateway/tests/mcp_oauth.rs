@@ -15,9 +15,9 @@ use axum::http::StatusCode;
 use common::{harness_with_state, post_to, Harness};
 use mock_mcp::{tool, MockMcp};
 use serde_json::{json, Value};
-use ultrafast_gateway::mcp::encrypt_secret;
-use ultrafast_gateway::mcp::oauth::{Config, Grant, TokenService};
-use ultrafast_gateway::store::{DiscoveredTool, Grants, NewMcpServer, NewOauth};
+use ufaigw_gateway::mcp::encrypt_secret;
+use ufaigw_gateway::mcp::oauth::{Config, Grant, TokenService};
+use ufaigw_gateway::store::{DiscoveredTool, Grants, NewMcpServer, NewOauth};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -213,7 +213,7 @@ async fn many_calls_at_once_make_one_request_to_the_token_endpoint() {
 
 #[tokio::test]
 async fn many_calls_refused_at_once_renew_the_token_once() {
-    use ultrafast_gateway::mcp::upstream::UpstreamError;
+    use ufaigw_gateway::mcp::upstream::UpstreamError;
     let idp = token_endpoint(Tokens {
         delay: Duration::from_millis(150),
         ..tokens()
@@ -492,18 +492,18 @@ async fn a_token_endpoint_that_is_down_fails_the_call_without_reaching_the_serve
 #[tokio::test]
 async fn sync_and_the_health_probe_use_the_token_too() {
     let w = world(tokens()).await;
-    let mut admin_state = ultrafast_gateway::mcp::sync::Actor {
+    let mut admin_state = ufaigw_gateway::mcp::sync::Actor {
         user_id: None,
         email: "test".into(),
     };
     admin_state.email = "test".into();
-    let done = ultrafast_gateway::mcp::sync::sync_server(&w.h.state, w.server_id, &admin_state)
+    let done = ufaigw_gateway::mcp::sync::sync_server(&w.h.state, w.server_id, &admin_state)
         .await
         .unwrap();
     assert!(done.delta.added.is_empty() && done.delta.removed.is_empty());
-    ultrafast_gateway::mcp::health::probe_once(&w.h.state).await;
+    ufaigw_gateway::mcp::health::probe_once(&w.h.state).await;
     let probe = w.h.state.mcp_health.get(w.server_id).unwrap();
-    assert_eq!(probe.status, ultrafast_gateway::mcp::health::Status::Ok);
+    assert_eq!(probe.status, ufaigw_gateway::mcp::health::Status::Ok);
     let lists = w.mock.received_method("tools/list");
     assert!(lists.len() >= 2);
     assert!(lists

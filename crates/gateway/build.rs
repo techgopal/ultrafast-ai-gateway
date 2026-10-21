@@ -19,7 +19,7 @@ const PLACEHOLDER: &str = r#"<!doctype html>
     <h1>Ultrafast Gateway</h1>
     <p>The gateway is running, but the console was not built into this binary.</p>
     <p>To build the console and the gateway together, run in the repository:</p>
-    <pre>pnpm --dir ui install --frozen-lockfile &amp;&amp; pnpm --dir ui build &amp;&amp; cargo build --release -p ultrafast-gateway</pre>
+    <pre>pnpm --dir ui install --frozen-lockfile &amp;&amp; pnpm --dir ui build &amp;&amp; cargo build --release -p ufaigw-gateway</pre>
     <p>The API at /api and /v1 works without the console.</p>
   </body>
 </html>

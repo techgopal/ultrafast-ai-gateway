@@ -26,7 +26,7 @@ class SettingsView:
         session_hours (int): How many hours a session lives, from sign-in. Sessions that exist
             keep the lifetime they were made with.
         trusted_proxies (list[str]): The networks (CIDR) whose forwarding headers are believed, as the
-            gateway was started. Read only: it is a flag of `ultrafast serve`.
+            gateway was started. Read only: it is a flag of `ufaigw serve`.
     """
 
     database: DatabaseKind

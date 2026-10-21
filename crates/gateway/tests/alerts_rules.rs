@@ -16,13 +16,13 @@ use mock_mcp::{tool, Failure, MockMcp};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use ultrafast_gateway::alerts::engine;
-use ultrafast_gateway::alerts::{Deliverer, DeliveryConfig, EngineConfig};
-use ultrafast_gateway::budgets::{self, BudgetAction, Period};
-use ultrafast_gateway::identity::Role;
-use ultrafast_gateway::limits::LimitScope;
-use ultrafast_gateway::mcp::health::probe_once;
-use ultrafast_gateway::store::{NewMcpServer, RouteSettings, TargetsInput};
+use ufaigw_gateway::alerts::engine;
+use ufaigw_gateway::alerts::{Deliverer, DeliveryConfig, EngineConfig};
+use ufaigw_gateway::budgets::{self, BudgetAction, Period};
+use ufaigw_gateway::identity::Role;
+use ufaigw_gateway::limits::LimitScope;
+use ufaigw_gateway::mcp::health::probe_once;
+use ufaigw_gateway::store::{NewMcpServer, RouteSettings, TargetsInput};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -79,8 +79,8 @@ async fn world() -> World {
                 retry_delays: vec![Duration::from_millis(50), Duration::from_millis(100)],
                 timeout: Duration::from_secs(5),
                 shutdown_cap: Duration::from_millis(300),
-                queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
-                max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+                queue_capacity: ufaigw_gateway::alerts::QUEUE_CAPACITY,
+                max_pending: ufaigw_gateway::alerts::MAX_PENDING,
             },
             stopped_in.clone(),
         );
@@ -100,7 +100,7 @@ async fn world() -> World {
     let tasks = std::mem::take(&mut *tasks.lock().unwrap());
     let admin_id = seed_user(&h.store, "maya@example.com", Role::Admin, ORG_PASSWORD).await;
     let member_id = seed_user(&h.store, "lena@example.com", Role::Member, ORG_PASSWORD).await;
-    let session = |id: i64, s: ultrafast_gateway::store::NewSession| Signed {
+    let session = |id: i64, s: ufaigw_gateway::store::NewSession| Signed {
         cookie: format!("uf_session={}", s.id),
         csrf: s.csrf_token,
         user_id: id,
@@ -624,7 +624,7 @@ async fn rules_are_validated_listed_changed_and_deleted_and_audited() {
     w.shutdown().await;
 }
 
-async fn sqlx_actions(store: &ultrafast_gateway::store::Store) -> Vec<String> {
+async fn sqlx_actions(store: &ufaigw_gateway::store::Store) -> Vec<String> {
     store
         .list_audit(200, None)
         .await
@@ -642,7 +642,7 @@ async fn the_events_list_filters_pages_and_refuses_bad_queries() {
     let mut tx = w.h.store.begin().await.unwrap();
     for i in 0..5 {
         for (rule_id, name) in [(rule, "c"), (other, "d")] {
-            tx.insert_alert_event(ultrafast_gateway::store::NewAlertEvent {
+            tx.insert_alert_event(ufaigw_gateway::store::NewAlertEvent {
                 rule_id: Some(rule_id),
                 rule_name: name,
                 kind: "circuit_open",
@@ -781,7 +781,7 @@ async fn no_event_delivery_or_audit_row_holds_a_secret() {
     w.shutdown().await;
 }
 
-async fn sqlx_actions_all(store: &ultrafast_gateway::store::Store) -> String {
+async fn sqlx_actions_all(store: &ufaigw_gateway::store::Store) -> String {
     let rows = store.list_audit(200, None).await.unwrap();
     rows.iter()
         .map(|r| format!("{} {}", r.action, r.summary))
@@ -1161,13 +1161,13 @@ async fn an_import_with_bad_alert_entries_is_refused_whole_and_a_dry_run_writes_
     w.shutdown().await;
 }
 
-fn windows(w: &World) -> &Arc<ultrafast_gateway::alerts::errors_window::ErrorWindows> {
+fn windows(w: &World) -> &Arc<ufaigw_gateway::alerts::errors_window::ErrorWindows> {
     w.h.state.alert_engine.as_ref().unwrap().windows()
 }
 
 #[tokio::test]
 async fn names_a_caller_makes_up_are_never_subjects_of_an_error_window() {
-    use ultrafast_gateway::alerts::errors_window::Scope;
+    use ufaigw_gateway::alerts::errors_window::Scope;
     let w = world().await;
     w.route(FAIL_FAST).await;
     w.rule(
@@ -1200,7 +1200,7 @@ async fn names_a_caller_makes_up_are_never_subjects_of_an_error_window() {
 
 #[tokio::test]
 async fn calls_are_counted_only_while_an_enabled_error_rate_rule_exists() {
-    use ultrafast_gateway::alerts::errors_window::Scope;
+    use ufaigw_gateway::alerts::errors_window::Scope;
     let w = world().await;
     // Counting starts on and the engine turns it off once it has read the
     // rules (no error-rate rule yet); a slower database takes longer to answer.

@@ -23,9 +23,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ultrafast_translate::ingress::openai::parse_response_format;
-use ultrafast_translate::ingress::prompt::PromptRef;
-use ultrafast_translate::types::{ChatRequest, Message, ResponseFormat, Role};
+use ufaigw_translate::ingress::openai::parse_response_format;
+use ufaigw_translate::ingress::prompt::PromptRef;
+use ufaigw_translate::types::{ChatRequest, Message, ResponseFormat, Role};
 
 use crate::store::{TemplateRow, VersionRow};
 

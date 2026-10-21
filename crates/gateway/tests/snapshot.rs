@@ -11,13 +11,13 @@ use common::{
     Signed,
 };
 use serde_json::{json, Value};
-use ultrafast_gateway::api::refresh_snapshot;
-use ultrafast_gateway::app::{router, spawn_refresher, AppState};
-use ultrafast_gateway::identity::Role;
-use ultrafast_gateway::secrets::{generate_key, hash_key, Cipher};
-use ultrafast_gateway::snapshot::{SnapProvider, Snapshot};
-use ultrafast_gateway::store::{after, now, Store};
-use ultrafast_translate::provider::ProviderKind;
+use ufaigw_gateway::api::refresh_snapshot;
+use ufaigw_gateway::app::{router, spawn_refresher, AppState};
+use ufaigw_gateway::identity::Role;
+use ufaigw_gateway::secrets::{generate_key, hash_key, Cipher};
+use ufaigw_gateway::snapshot::{SnapProvider, Snapshot};
+use ufaigw_gateway::store::{after, now, Store};
+use ufaigw_translate::provider::ProviderKind;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

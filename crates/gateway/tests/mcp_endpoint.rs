@@ -13,14 +13,14 @@ use mock_mcp::{tool, CallMode, Failure, MockMcp};
 use serde_json::{json, Value};
 use time::OffsetDateTime;
 use tokio::sync::watch;
-use ultrafast_gateway::app::AppState;
-use ultrafast_gateway::budgets::{account, BudgetAction, Period};
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
-use ultrafast_gateway::mcp::encrypt_secret;
-use ultrafast_gateway::mcp::health::{probe_once, Status};
-use ultrafast_gateway::otel::{Exporter, OtelConfig};
-use ultrafast_gateway::store::{DiscoveredTool, Grants, NewGuardrail, NewMcpServer};
-use ultrafast_gateway::telemetry::{AttemptOutcome, RequestRecord};
+use ufaigw_gateway::app::AppState;
+use ufaigw_gateway::budgets::{account, BudgetAction, Period};
+use ufaigw_gateway::limits::{LimitScope, RateLimit};
+use ufaigw_gateway::mcp::encrypt_secret;
+use ufaigw_gateway::mcp::health::{probe_once, Status};
+use ufaigw_gateway::otel::{Exporter, OtelConfig};
+use ufaigw_gateway::store::{DiscoveredTool, Grants, NewGuardrail, NewMcpServer};
+use ufaigw_gateway::telemetry::{AttemptOutcome, RequestRecord};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -430,7 +430,7 @@ async fn initialize_ping_and_the_methods_the_gateway_does_not_proxy() {
     assert!(reply["result"]["capabilities"]["tools"].is_object());
     assert!(reply["result"]["capabilities"]["resources"].is_object());
     assert!(reply["result"]["capabilities"]["prompts"].is_object());
-    assert_eq!(reply["result"]["serverInfo"]["name"], "ultrafast-gateway");
+    assert_eq!(reply["result"]["serverInfo"]["name"], "ufaigw");
     assert!(headers.get("mcp-session-id").is_none());
     let (_, _, reply) = rpc(&w, "ping", json!({})).await;
     assert_eq!(reply["result"], json!({}));
@@ -487,8 +487,8 @@ async fn the_log_row_of_a_call_names_the_server_and_the_tool() {
     assert_eq!(rec.attempts[0].provider, "mcp:mock");
     assert_eq!(rec.attempts[0].model, "echo");
     assert_eq!(rec.attempts[0].outcome, AttemptOutcome::Ok);
-    let prices: ultrafast_gateway::logs::PriceLookup = std::sync::Arc::new(|_, _| None);
-    let row = ultrafast_gateway::logs::row_of(&rec, &prices);
+    let prices: ufaigw_gateway::logs::PriceLookup = std::sync::Arc::new(|_, _| None);
+    let row = ufaigw_gateway::logs::row_of(&rec, &prices);
     assert_eq!(row.endpoint, "mcp");
     assert_eq!(row.provider.as_deref(), Some("mcp:mock"));
     assert_eq!(row.model.as_deref(), Some("echo"));
@@ -588,7 +588,7 @@ fn spent_record() -> RequestRecord {
         attempts: Vec::new(),
         cached: false,
         estimated: false,
-        started_at: ultrafast_gateway::store::now(),
+        started_at: ufaigw_gateway::store::now(),
         duration_ms: 1,
         trace_parent: None,
         provider_kinds: Vec::new(),
@@ -881,7 +881,7 @@ fn the_mcp_endpoint_is_not_in_the_admin_spec() {
 #[tokio::test]
 async fn a_keys_allowlist_cuts_what_it_may_list_and_call() {
     let w = world().await;
-    let key = ultrafast_gateway::secrets::generate_key();
+    let key = ufaigw_gateway::secrets::generate_key();
     let id =
         w.h.store
             .insert_key("limited", &key.hash, &key.display, None)
@@ -1048,7 +1048,7 @@ async fn a_tool_call_through_the_gateway_to_a_stateful_upstream_works() {
 
 // ---------------------------------------------------------------- health
 
-async fn probe(w: &World) -> ultrafast_gateway::mcp::health::Probe {
+async fn probe(w: &World) -> ufaigw_gateway::mcp::health::Probe {
     probe_once(&w.h.state).await;
     w.h.state.mcp_health.get(w.server_id).expect("a probe")
 }
@@ -1313,7 +1313,7 @@ async fn the_combined_endpoint_checks_the_key_the_method_and_the_verb() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(reply["result"]["serverInfo"]["name"], "ultrafast-gateway");
+    assert_eq!(reply["result"]["serverInfo"]["name"], "ufaigw");
     // Resources and prompts are per server.
     let (_, reply) = combined(&w, key, "resources/list", json!({})).await;
     assert_eq!(reply["error"]["code"], -32601);
@@ -1335,7 +1335,7 @@ async fn a_key_limited_to_one_tool_sees_only_it_on_the_combined_endpoint() {
     let w = world().await;
     let _other = second_server(&w).await;
     // A key allowed `mcp:other-srv/echo` only.
-    let key = ultrafast_gateway::secrets::generate_key();
+    let key = ufaigw_gateway::secrets::generate_key();
     let id =
         w.h.store
             .insert_key("narrow", &key.hash, &key.display, None)
@@ -1505,7 +1505,7 @@ async fn find_tools_ranks_the_tools_the_key_may_call_and_describe_tools_gives_th
 async fn a_search_never_shows_a_tool_the_key_may_not_call() {
     let (w, _other) = crowded().await;
     // A key allowed `other-srv/echo` only.
-    let key = ultrafast_gateway::secrets::generate_key();
+    let key = ufaigw_gateway::secrets::generate_key();
     let id =
         w.h.store
             .insert_key("narrow", &key.hash, &key.display, None)
@@ -1575,7 +1575,7 @@ async fn the_search_tools_count_against_the_rate_limit() {
 
 async fn project(w: &World, keep: &[&str], drop: &[&str], items: Option<i64>, bytes: Option<i64>) {
     let mut tx = w.h.store.begin().await.unwrap();
-    tx.put_projection(&ultrafast_gateway::store::ProjectionRow {
+    tx.put_projection(&ufaigw_gateway::store::ProjectionRow {
         tool_id: w.echo_id,
         keep: keep.iter().map(|s| (*s).to_string()).collect(),
         drop: drop.iter().map(|s| (*s).to_string()).collect(),
@@ -1605,8 +1605,8 @@ async fn a_projection_cuts_the_result_and_marks_it_and_the_log_says_how_much_was
     let left = rec.attempts[0].projected_bytes.expect("projected bytes");
     assert!(left > 0 && left < 400, "{left}");
     // The log row carries it in the attempts.
-    let prices: ultrafast_gateway::logs::PriceLookup = std::sync::Arc::new(|_, _| None);
-    let row = ultrafast_gateway::logs::row_of(&rec, &prices);
+    let prices: ufaigw_gateway::logs::PriceLookup = std::sync::Arc::new(|_, _| None);
+    let row = ufaigw_gateway::logs::row_of(&rec, &prices);
     let attempts: Value = serde_json::from_str(&row.attempts).unwrap();
     assert_eq!(attempts[0]["projected_bytes"], left);
 }

@@ -6,8 +6,8 @@ mod common;
 use common::*;
 use futures::StreamExt;
 use serde_json::{json, Value};
-use ultrafast_client::types::{Role, StreamEvent};
-use ultrafast_client::{ChatRequest, Client, EmbeddingsRequest, Error, Target};
+use ufaigw_client::types::{Role, StreamEvent};
+use ufaigw_client::{ChatRequest, Client, EmbeddingsRequest, Error, Target};
 
 const REQUESTS: &str = include_str!("../../../clients/fixtures/requests.json");
 const RESPONSES: &str = include_str!("../../../clients/fixtures/responses.json");

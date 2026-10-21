@@ -3,8 +3,8 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ultrafast-admin"
-version = "2.1.1"
+name = "ufaigw-admin"
+version = "3.0.0"
 description = "Typed Python client for the UltraFast AI Gateway admin API (/api), with sync and async calls."
 readme = "README.md"
 # The generator (openapi-python-client 0.29) emits Python 3.11 code (typing.Self).
@@ -24,10 +24,10 @@ Issues = "https://github.com/techgopal/ultrafast-ai-gateway/issues"
 test = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [tool.setuptools.packages.find]
-include = ["ultrafast_admin*"]
+include = ["ufaigw_admin*"]
 
 [tool.setuptools.package-data]
-ultrafast_admin = ["py.typed"]
+ufaigw_admin = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -35,4 +35,4 @@ asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["ultrafast_admin/_generated"]
+extend-exclude = ["ufaigw_admin/_generated"]

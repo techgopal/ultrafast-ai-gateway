@@ -6,9 +6,9 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ultrafast_gateway::budgets::{BudgetAction, Period};
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
-use ultrafast_gateway::store::{LogFilter, LogScope, NewLog, Store, UsageGroup};
+use ufaigw_gateway::budgets::{BudgetAction, Period};
+use ufaigw_gateway::limits::{LimitScope, RateLimit};
+use ufaigw_gateway::store::{LogFilter, LogScope, NewLog, Store, UsageGroup};
 
 fn limit(rpm: u64) -> RateLimit {
     RateLimit {
@@ -334,7 +334,7 @@ async fn transactions_that_read_then_write_are_serialized() {
 /// (triggers in both schemas). Rows of others stay.
 #[tokio::test]
 async fn deleting_a_team_or_user_removes_its_limits_and_budgets_and_detaches_its_logs() {
-    use ultrafast_gateway::identity::{Role, TeamRole};
+    use ufaigw_gateway::identity::{Role, TeamRole};
     let store = Store::open_in_memory().await.unwrap();
     let gone_user =
         common::seed_user(&store, "gone@example.com", Role::Member, "pw-pw-pw-pw").await;

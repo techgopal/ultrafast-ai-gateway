@@ -80,7 +80,7 @@ fn the_console_is_built_before_the_binary_that_embeds_it() {
         .find("actions/download-artifact")
         .expect("the binaries take the console");
     let compile = build
-        .find("cargo build --release --locked -p ultrafast-gateway")
+        .find("cargo build --release --locked -p ufaigw-gateway")
         .expect("a release build");
     assert!(fetch < compile, "the console is fetched after the build");
     assert!(
@@ -104,6 +104,44 @@ fn it_builds_every_target_of_the_plan() {
     }
     // Each archive has a checksum.
     assert!(build.contains("sha256"), "no checksum");
+}
+
+#[test]
+fn the_archives_and_the_image_are_named_ufaigw() {
+    let text = workflow();
+    let jobs = jobs(&text);
+    let build = job(&jobs, "build");
+    assert!(build.contains("exe=ufaigw\n"), "{build}");
+    assert!(build.contains("exe=ufaigw.exe"), "{build}");
+    assert!(build.contains(r#"name="ufaigw-${ref}-"#), "{build}");
+    assert!(!build.contains("ultrafast"), "{build}");
+    let docker = job(&jobs, "docker-publish");
+    assert!(
+        docker.contains("images: ghcr.io/${{ github.repository_owner }}/ufaigw\n"),
+        "{docker}"
+    );
+}
+
+/// A 2.1 volume is owned by the old image's user, uid and gid 999: the new
+/// user has the same ids, so the volume needs no chown.
+#[test]
+fn the_image_runs_as_ufaigw_with_the_old_ids_from_var_lib_ufaigw() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Dockerfile");
+    let docker = std::fs::read_to_string(&path).expect("the Dockerfile is in the repository");
+    assert!(
+        docker.contains("groupadd --system --gid 999 ufaigw"),
+        "{docker}"
+    );
+    assert!(
+        docker.contains(
+            "useradd --system --uid 999 --gid 999 --create-home --home-dir /var/lib/ufaigw ufaigw"
+        ),
+        "{docker}"
+    );
+    assert!(docker.contains("USER ufaigw"), "{docker}");
+    assert!(docker.contains("UF_DATA_DIR=/var/lib/ufaigw"), "{docker}");
+    assert!(docker.contains("VOLUME /var/lib/ufaigw"), "{docker}");
+    assert!(docker.contains(r#"ENTRYPOINT ["ufaigw"]"#), "{docker}");
 }
 
 #[test]
@@ -311,4 +349,33 @@ fn the_release_signs_and_publishes_the_mcp_catalog() {
     // The pages workflow publishes what is committed.
     let pages = repository_file(".github/workflows/pages.yml");
     assert!(pages.contains("docs/mcp-catalog/**"), "{pages}");
+}
+
+/// All package versions move together (docs/RELEASING.md); a 3.0.0 is
+/// written as 3.0.0 in PEP 440 too.
+#[test]
+fn every_package_names_the_gateway_version() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |p: &str| std::fs::read_to_string(root.join(p)).expect(p);
+    let v = env!("CARGO_PKG_VERSION");
+    for p in [
+        "clients/ts/package.json",
+        "clients/admin-ts/package.json",
+        "ui/package.json",
+    ] {
+        assert!(read(p).contains(&format!("\"version\": \"{v}\"")), "{p}");
+    }
+    for p in [
+        "crates/client-py/pyproject.toml",
+        "clients/admin-py/pyproject.toml",
+    ] {
+        assert!(read(p).contains(&format!("version = \"{v}\"")), "{p}");
+    }
+    for p in ["crates/client/Cargo.toml", "crates/client-wasm/Cargo.toml"] {
+        assert!(
+            read(p).contains(&format!("ufaigw-translate = {{ version = \"{v}\"")),
+            "{p}"
+        );
+    }
+    assert!(read("openapi/admin.json").contains(&format!("\"version\": \"{v}\"")));
 }

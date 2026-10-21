@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use common::{allow_model, hanging_upstream, harness, post_chat, Harness};
 use serde_json::{json, Value};
-use ultrafast_gateway::routing::{BreakerSettings, TargetRef, TargetState};
-use ultrafast_gateway::store::{RouteSettings, TargetsInput};
-use ultrafast_gateway::telemetry::{AttemptOutcome, RequestRecord};
+use ufaigw_gateway::routing::{BreakerSettings, TargetRef, TargetState};
+use ufaigw_gateway::store::{RouteSettings, TargetsInput};
+use ufaigw_gateway::telemetry::{AttemptOutcome, RequestRecord};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -656,7 +656,7 @@ async fn all_open_is_fast_503() {
 
 #[tokio::test]
 async fn skips_targets_caller_may_not_call() {
-    use ultrafast_gateway::store::Grants;
+    use ufaigw_gateway::store::Grants;
     let h = harness("openai").await;
     let (a, ma) = provider(&h, "a").await;
     let (b, mb) = provider(&h, "b").await;
@@ -1307,7 +1307,7 @@ async fn a_primary_that_has_the_feature_is_not_skipped() {
 
 #[tokio::test]
 async fn a_skip_leaves_the_cache_key_of_the_request_alone() {
-    use ultrafast_gateway::cache::{CacheScope, RouteCache};
+    use ufaigw_gateway::cache::{CacheScope, RouteCache};
     let h = harness("openai").await;
     let first = anthropic(&h, "anth").await;
     let (b, mb) = provider(&h, "b").await;

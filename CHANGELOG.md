@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-21
+
+The command, the image, the release archives and the client packages are
+named `ufaigw`, after ufaigw.com. "Ultrafast" stays the product's name. No
+database migration.
+
+### Changed
+
+- The command is `ufaigw`; archives are `ufaigw-vX.Y.Z-<target>`.
+- The image is `ghcr.io/techgopal/ufaigw`; it runs as `ufaigw` (uid and gid
+  999, as before) and keeps its data in `/var/lib/ufaigw`. A volume still
+  mounted at `/var/lib/ultrafast` makes the gateway refuse to start and say
+  where to mount it.
+- Crates `ufaigw-translate` and `ufaigw-client`; PyPI `ufaigw` and
+  `ufaigw-admin` (`import ufaigw`, `import ufaigw_admin`); npm
+  `@ufaigw/client` and `@ufaigw/admin`.
+- The User-Agent, the MCP client and server name and the alert payload's
+  `gateway` field say `ufaigw`; the default OTel service name and the OTel
+  scope name are `ufaigw`.
+- Downloads are named `ufaigw-<stamp>.db` and `ufaigw-config-<stamp>.json`.
+  The config file's format stays `ultrafast-config`: 2.x exports import.
+
+### Fixed
+
+- On SQLite, a change made while another request writes (a sign-in, model
+  grants, and any other write that reads first) no longer fails with
+  "database is locked": every transaction takes the write lock at once.
+
 ## [2.1.1] - 2026-10-16
 
 ### Changed

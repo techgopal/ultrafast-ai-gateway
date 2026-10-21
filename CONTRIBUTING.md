@@ -12,7 +12,7 @@ for a full build:
 ```bash
 pnpm --dir ui install --frozen-lockfile
 pnpm --dir ui build
-cargo build -p ultrafast-gateway
+cargo build -p ufaigw-gateway
 ```
 
 A plain `cargo build` works without Node; the console page then says it was

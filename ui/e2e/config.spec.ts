@@ -66,7 +66,7 @@ test("the configuration of one gateway is exported, imported into a fresh one th
   const downloading = page.waitForEvent("download");
   await page.getByRole("link", { name: "Download configuration" }).click();
   const download = await downloading;
-  expect(download.suggestedFilename()).toMatch(/^ultrafast-config-\d{8}-\d{6}\.json$/);
+  expect(download.suggestedFilename()).toMatch(/^ufaigw-config-\d{8}-\d{6}\.json$/);
   const path = await download.path();
   const exported = await readFile(path, "utf8");
   // Nothing of a credential is in it.

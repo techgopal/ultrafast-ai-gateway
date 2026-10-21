@@ -1,7 +1,7 @@
 """Python client for the Ultrafast gateway, or for a provider directly.
 
-    import ultrafast
-    client = ultrafast.Client(ultrafast.gateway("http://localhost:3000", key))
+    import ufaigw
+    client = ufaigw.Client(ufaigw.gateway("http://localhost:3000", key))
     reply = client.chat("gpt-4o", [{"role": "user", "content": "hi"}])
 
 The client does not retry, route, cache or break circuits: every error says

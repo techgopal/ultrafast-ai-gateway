@@ -3,10 +3,10 @@
 use std::fmt;
 use std::time::Duration;
 
-use ultrafast_translate::classify::{scrub, Classified};
-use ultrafast_translate::error::TranslateError;
+use ufaigw_translate::classify::{scrub, Classified};
+use ufaigw_translate::error::TranslateError;
 
-pub use ultrafast_translate::classify::ErrorKind;
+pub use ufaigw_translate::classify::ErrorKind;
 
 /// Holds no credential: messages come from the server's answer (scrubbed of
 /// the key before they get here) or from this crate.

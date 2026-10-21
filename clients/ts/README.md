@@ -1,4 +1,4 @@
-# @ultrafast/client (TypeScript)
+# @ufaigw/client (TypeScript)
 
 Client for the Ultrafast gateway, or for a provider directly. Request building,
 response parsing and stream decoding are the Rust code the Rust and Python
@@ -10,13 +10,13 @@ edge runtimes that forbid compiling WebAssembly at run time with one extra call
 (see below).
 
 ```sh
-npm i @ultrafast/client@beta
+npm i @ufaigw/client@beta
 ```
 
 The package appears on npm from v2.0.0-beta.4.
 
 ```ts
-import { Client, gateway } from "@ultrafast/client";
+import { Client, gateway } from "@ufaigw/client";
 
 const client = new Client(gateway({ baseUrl: "http://localhost:3000", key }));
 
@@ -98,8 +98,8 @@ that the platform or your bundler provides:
 
 ```ts
 // Cloudflare Workers: wrangler turns a .wasm import into a compiled module.
-import wasmModule from "@ultrafast/client/wasm/ultrafast_client_wasm_bg.wasm";
-import { Client, gateway, initWasm } from "@ultrafast/client";
+import wasmModule from "@ufaigw/client/wasm/ufaigw_client_wasm_bg.wasm";
+import { Client, gateway, initWasm } from "@ufaigw/client";
 
 await initWasm(wasmModule);
 const client = new Client(gateway({ baseUrl, key }));

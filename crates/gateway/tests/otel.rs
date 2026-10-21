@@ -9,8 +9,8 @@ use common::{harness, harness_with_state, post_chat, post_to, Harness};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use ultrafast_gateway::otel::{Exporter, OtelConfig};
-use ultrafast_gateway::telemetry::{Attempt, AttemptOutcome, RequestRecord};
+use ufaigw_gateway::otel::{Exporter, OtelConfig};
+use ufaigw_gateway::telemetry::{Attempt, AttemptOutcome, RequestRecord};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -167,7 +167,7 @@ async fn a_full_traces_url_is_used_as_it_is() {
         .expect(1)
         .mount(&collector)
         .await;
-    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let metrics = std::sync::Arc::new(ufaigw_gateway::metrics::Metrics::new());
     let (stop, stopped) = watch::channel(false);
     let (exporter, task) = Exporter::spawn(
         config(format!("{}/v1/traces", collector.uri()), 1.0),
@@ -335,7 +335,7 @@ async fn a_full_queue_drops_and_counts_and_stays_bounded() {
         .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
         .mount(&collector)
         .await;
-    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let metrics = std::sync::Arc::new(ufaigw_gateway::metrics::Metrics::new());
     let (_stop, stopped) = watch::channel(false);
     let (exporter, _task) = Exporter::spawn(
         config(collector.uri(), 1.0),
@@ -368,7 +368,7 @@ async fn a_failing_collector_counts_failures_and_drops_the_batch() {
         .respond_with(ResponseTemplate::new(500))
         .mount(&collector)
         .await;
-    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let metrics = std::sync::Arc::new(ufaigw_gateway::metrics::Metrics::new());
     let (stop, stopped) = watch::channel(false);
     let (exporter, task) = Exporter::spawn(
         config(collector.uri(), 1.0),
@@ -392,7 +392,7 @@ async fn shutdown_ends_within_the_cap_even_with_a_send_in_flight() {
         .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
         .mount(&collector)
         .await;
-    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let metrics = std::sync::Arc::new(ufaigw_gateway::metrics::Metrics::new());
     let (stop, stopped) = watch::channel(false);
     let (exporter, task) = Exporter::spawn(
         config(collector.uri(), 1.0),
@@ -428,7 +428,7 @@ async fn a_query_string_stays_after_the_traces_path() {
         .expect(1)
         .mount(&collector)
         .await;
-    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let metrics = std::sync::Arc::new(ufaigw_gateway::metrics::Metrics::new());
     let (stop, stopped) = watch::channel(false);
     let (exporter, task) = Exporter::spawn(
         config(format!("{}/?token=t", collector.uri()), 1.0),
@@ -453,7 +453,7 @@ async fn rejected_spans_of_a_partial_success_are_counted_as_dropped() {
         ))
         .mount(&collector)
         .await;
-    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let metrics = std::sync::Arc::new(ufaigw_gateway::metrics::Metrics::new());
     let (stop, stopped) = watch::channel(false);
     let (exporter, task) = Exporter::spawn(
         config(collector.uri(), 1.0),
@@ -481,7 +481,7 @@ async fn an_oversized_answer_to_a_good_export_is_not_read_to_the_end() {
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .mount(&collector)
         .await;
-    let metrics = std::sync::Arc::new(ultrafast_gateway::metrics::Metrics::new());
+    let metrics = std::sync::Arc::new(ufaigw_gateway::metrics::Metrics::new());
     let (stop, stopped) = watch::channel(false);
     let (exporter, task) = Exporter::spawn(
         config(collector.uri(), 1.0),

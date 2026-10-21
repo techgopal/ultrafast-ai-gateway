@@ -12,10 +12,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-/** `ultrafast-config-YYYYMMDD-HHMMSS.json`, as the gateway names its own download (UTC). */
+/** `ufaigw-config-YYYYMMDD-HHMMSS.json`, as the gateway names its own download (UTC). */
 function exportName(): string {
   const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
-  return `ultrafast-config-${stamp}.json`;
+  return `ufaigw-config-${stamp}.json`;
 }
 
 /** The largest file the gateway reads. */

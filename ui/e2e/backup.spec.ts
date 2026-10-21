@@ -23,7 +23,7 @@ test("the backup downloaded from Settings is a SQLite file with the tables and t
     const downloading = page.waitForEvent("download");
     await section.getByRole("link", { name: "Download backup" }).click();
     const download = await downloading;
-    expect(download.suggestedFilename()).toMatch(/^ultrafast-\d{8}-\d{6}\.db$/);
+    expect(download.suggestedFilename()).toMatch(/^ufaigw-\d{8}-\d{6}\.db$/);
     const bytes = await readFile(await download.path());
 
     expect(bytes.subarray(0, 16).toString("latin1")).toBe("SQLite format 3\0");

@@ -6,7 +6,7 @@ use std::path::Path;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::Row;
-use ultrafast_gateway::store::Store;
+use ufaigw_gateway::store::Store;
 
 /// The migrations up to and including `last`, in a directory of their own.
 fn migrations_up_to(last: u32, dir: &Path) {

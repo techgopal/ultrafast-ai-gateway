@@ -11,10 +11,10 @@ use common::{
     harness, harness_with_response_limit, harness_with_state, post_chat, post_to, Harness,
 };
 use serde_json::{json, Value};
-use ultrafast_gateway::alerts::sign::{signature, SIGNATURE_HEADER};
-use ultrafast_gateway::guardrails::log::LoggedAction;
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
-use ultrafast_gateway::store::NewGuardrail;
+use ufaigw_gateway::alerts::sign::{signature, SIGNATURE_HEADER};
+use ufaigw_gateway::guardrails::log::LoggedAction;
+use ufaigw_gateway::limits::{LimitScope, RateLimit};
+use ufaigw_gateway::store::NewGuardrail;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -700,8 +700,8 @@ async fn an_answer_a_hook_redacted_is_kept_redacted() {
 }
 
 async fn common_route_with_cache(h: &Harness) {
-    use ultrafast_gateway::cache::{CacheScope, RouteCache};
-    use ultrafast_gateway::store::{RouteSettings, TargetsInput};
+    use ufaigw_gateway::cache::{CacheScope, RouteCache};
+    use ufaigw_gateway::store::{RouteSettings, TargetsInput};
     let models = h.store.list_models().await.unwrap();
     let model = models.iter().find(|m| m.name == "m").unwrap().id;
     let mut tx = h.store.begin().await.unwrap();
@@ -1301,7 +1301,7 @@ async fn past_the_cap_on_a_fail_open_stream_the_rules_still_redact_what_follows(
 
 /// A route `r` whose whole request may take 1.5 s.
 async fn route_with_one_and_a_half_seconds(h: &Harness) {
-    use ultrafast_gateway::store::{RouteSettings, TargetsInput};
+    use ufaigw_gateway::store::{RouteSettings, TargetsInput};
     let models = h.store.list_models().await.unwrap();
     let model = models.iter().find(|m| m.name == "m").unwrap().id;
     let mut tx = h.store.begin().await.unwrap();

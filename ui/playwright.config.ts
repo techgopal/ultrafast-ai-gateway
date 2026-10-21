@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 // The browser tests run the real gateway binary (see e2e/gateway.ts), which
 // must be built first:
-//   pnpm --dir ui build && cargo build --release -p ultrafast-gateway
+//   pnpm --dir ui build && cargo build --release -p ufaigw-gateway
 //
 // What a failure writes may hold the test's credentials: an error message can
 // show a value, and Playwright writes a snapshot of the page, with the text of

@@ -42,7 +42,7 @@ pub fn payload(channel_kind: &str, event: &AlertEventRow) -> Vec<u8> {
             "summary": event.summary,
             "details": details,
             "at": rfc3339(&event.at),
-            "gateway": format!("ultrafast {}", env!("CARGO_PKG_VERSION")),
+            "gateway": format!("ufaigw {}", env!("CARGO_PKG_VERSION")),
         })
     };
     serde_json::to_vec(&value).expect("a JSON value serializes")
@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(p["subject"], "budget:12:2999-01-01");
         assert_eq!(p["details"], json!({ "spent": 5 }));
         assert_eq!(p["at"], "2999-01-01T10:20:30Z");
-        assert!(p["gateway"].as_str().unwrap().starts_with("ultrafast "));
+        assert!(p["gateway"].as_str().unwrap().starts_with("ufaigw "));
         assert_eq!(p.as_object().unwrap().len(), 9);
     }
 

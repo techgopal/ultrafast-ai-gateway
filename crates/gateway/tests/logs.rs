@@ -9,14 +9,12 @@ use std::time::{Duration, Instant};
 use common::{harness_with_sink, post_chat};
 use serde_json::json;
 use tokio::sync::watch;
-use ultrafast_gateway::logs::retention::{
-    self, purge, purge_alert_events, Purged, RetentionConfig,
-};
-use ultrafast_gateway::logs::writer::{spawn, WriterConfig};
-use ultrafast_gateway::logs::{snapshot_prices, LogSink, Price, PriceLookup, QUEUE_CAPACITY};
-use ultrafast_gateway::store::{NewAlertEvent, NewLog, Store};
-use ultrafast_gateway::telemetry::{Attempt, AttemptOutcome, RequestRecord, RequestSink};
-use ultrafast_translate::types::Usage;
+use ufaigw_gateway::logs::retention::{self, purge, purge_alert_events, Purged, RetentionConfig};
+use ufaigw_gateway::logs::writer::{spawn, WriterConfig};
+use ufaigw_gateway::logs::{snapshot_prices, LogSink, Price, PriceLookup, QUEUE_CAPACITY};
+use ufaigw_gateway::store::{NewAlertEvent, NewLog, Store};
+use ufaigw_gateway::telemetry::{Attempt, AttemptOutcome, RequestRecord, RequestSink};
+use ufaigw_translate::types::Usage;
 use wiremock::matchers::method;
 use wiremock::{Mock, ResponseTemplate};
 

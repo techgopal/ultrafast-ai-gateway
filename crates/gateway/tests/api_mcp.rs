@@ -6,9 +6,9 @@ mod common;
 use axum::http::StatusCode;
 use common::{error_code, org, Org, Signed};
 use serde_json::{json, Value};
-use ultrafast_gateway::mcp::encrypt_secret;
-use ultrafast_gateway::portable::{self, Actor, ConfigFile};
-use ultrafast_gateway::store::{DiscoveredTool, NewMcpServer};
+use ufaigw_gateway::mcp::encrypt_secret;
+use ufaigw_gateway::portable::{self, Actor, ConfigFile};
+use ufaigw_gateway::store::{DiscoveredTool, NewMcpServer};
 
 const SECRET: &str = "tok-0123456789-secret";
 
@@ -663,18 +663,18 @@ async fn a_key_allowlist_names_tools_the_creator_can_call() {
     // The gateway's own rule agrees: what the key allowlists and the owner
     // may call is callable, and an allowlist cuts the rest.
     let snapshot = org.api.state.snapshot.load();
-    let viewer = ultrafast_gateway::access::Viewer::User {
+    let viewer = ufaigw_gateway::access::Viewer::User {
         id: org.lena,
         admin: false,
         team_ids: &[org.platform],
     };
-    let all: Vec<_> = ultrafast_gateway::access::callable_tools(&snapshot, viewer, None)
+    let all: Vec<_> = ufaigw_gateway::access::callable_tools(&snapshot, viewer, None)
         .iter()
         .map(|(_, t)| t.name.clone())
         .collect();
     assert_eq!(all, ["open", "team"]);
     let only: std::collections::HashSet<String> = ["mcp:s/team".to_string()].into();
-    let cut: Vec<_> = ultrafast_gateway::access::callable_tools(&snapshot, viewer, Some(&only))
+    let cut: Vec<_> = ufaigw_gateway::access::callable_tools(&snapshot, viewer, Some(&only))
         .iter()
         .map(|(_, t)| t.name.clone())
         .collect();
@@ -881,8 +881,8 @@ async fn importing_a_server_to_another_host_drops_its_secret_and_checks_the_file
 
 #[tokio::test]
 async fn callable_tools_of_key_follows_the_owner_the_server_and_removal() {
-    use ultrafast_gateway::access::callable_tools_of_key;
-    use ultrafast_gateway::snapshot::SnapKey;
+    use ufaigw_gateway::access::callable_tools_of_key;
+    use ufaigw_gateway::snapshot::SnapKey;
 
     let org = org().await;
     let maya = org.sign_in("maya").await;

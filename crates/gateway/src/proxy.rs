@@ -27,22 +27,20 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
-use ultrafast_translate::audio::{
+use ufaigw_translate::audio::{
     self, FileInfo, SpeechRequest, Task, TranscribeRequest, Transcript, TranscriptAnswer,
 };
-use ultrafast_translate::embeddings::{
+use ufaigw_translate::embeddings::{
     self, EmbeddingsRequest, EmbeddingsResponse, NOT_SUPPORTED as EMBEDDINGS_NOT_SUPPORTED,
 };
-use ultrafast_translate::error::TranslateError;
-use ultrafast_translate::images::{self, ImageRequest, ImageResponse};
-use ultrafast_translate::ingress::prompt::PromptRef;
-use ultrafast_translate::ingress::{anthropic, openai, responses};
-use ultrafast_translate::provider::{
+use ufaigw_translate::error::TranslateError;
+use ufaigw_translate::images::{self, ImageRequest, ImageResponse};
+use ufaigw_translate::ingress::prompt::PromptRef;
+use ufaigw_translate::ingress::{anthropic, openai, responses};
+use ufaigw_translate::provider::{
     build_request, parse_response, HttpRequest, StreamDecoder, Target,
 };
-use ultrafast_translate::types::{
-    ChatRequest, ChatResponse, FinishReason, Part, StreamEvent, Usage,
-};
+use ufaigw_translate::types::{ChatRequest, ChatResponse, FinishReason, Part, StreamEvent, Usage};
 
 use crate::access::{self, Denied, Resolved};
 use crate::app::AppState;
@@ -333,7 +331,7 @@ impl Call {
     }
 
     /// Whether a provider of this kind can serve it.
-    fn served_by(&self, kind: ultrafast_translate::provider::ProviderKind) -> bool {
+    fn served_by(&self, kind: ufaigw_translate::provider::ProviderKind) -> bool {
         match self {
             Call::Chat(_) => true,
             Call::Embed(_) => kind.supports_embeddings(),

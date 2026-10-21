@@ -8,9 +8,9 @@ mod common;
 use axum::http::StatusCode;
 use common::{harness, post_chat};
 use serde_json::{json, Value};
-use ultrafast_gateway::guardrails::run::{scan_slots, INLINE_LIMIT_BYTES};
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
-use ultrafast_gateway::store::NewGuardrail;
+use ufaigw_gateway::guardrails::run::{scan_slots, INLINE_LIMIT_BYTES};
+use ufaigw_gateway::limits::{LimitScope, RateLimit};
+use ufaigw_gateway::store::NewGuardrail;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 

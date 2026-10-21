@@ -2,8 +2,8 @@ mod common;
 
 use common::*;
 use futures::StreamExt;
-use ultrafast_client::types::{FinishReason, StreamEvent, Usage};
-use ultrafast_client::{ChatRequest, Client, ErrorKind, Target};
+use ufaigw_client::types::{FinishReason, StreamEvent, Usage};
+use ufaigw_client::{ChatRequest, Client, ErrorKind, Target};
 
 const OPENAI_STREAM: &str = concat!(
     "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
@@ -30,7 +30,7 @@ fn expected() -> Vec<StreamEvent> {
     ]
 }
 
-async fn collect(c: &Client) -> (Vec<StreamEvent>, Option<ultrafast_client::Error>) {
+async fn collect(c: &Client) -> (Vec<StreamEvent>, Option<ufaigw_client::Error>) {
     let mut s = Box::pin(
         c.chat_stream(ChatRequest::new("m").user("hi"))
             .await

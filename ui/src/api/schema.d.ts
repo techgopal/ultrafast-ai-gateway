@@ -3544,7 +3544,7 @@ export interface components {
             session_hours: number;
             /**
              * @description The networks (CIDR) whose forwarding headers are believed, as the
-             *     gateway was started. Read only: it is a flag of `ultrafast serve`.
+             *     gateway was started. Read only: it is a flag of `ufaigw serve`.
              */
             trusted_proxies: string[];
         };

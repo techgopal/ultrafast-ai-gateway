@@ -11,9 +11,9 @@ use common::{
 };
 use serde_json::{json, Value};
 use tower::ServiceExt;
-use ultrafast_gateway::identity::{Role, TeamRole, UserStatus};
-use ultrafast_gateway::secrets::{generate_secret, INVITE_PREFIX, TOKEN_PREFIX};
-use ultrafast_gateway::store::{after, NewUser, Store};
+use ufaigw_gateway::identity::{Role, TeamRole, UserStatus};
+use ufaigw_gateway::secrets::{generate_secret, INVITE_PREFIX, TOKEN_PREFIX};
+use ufaigw_gateway::store::{after, NewUser, Store};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -749,7 +749,7 @@ async fn accept_invite_rejects_bad_input() {
     let now = api.store.user_by_id(active).await.unwrap().unwrap();
     assert_eq!(now.password_hash, before.password_hash);
     // The invite was left unused.
-    let hash = ultrafast_gateway::secrets::hash_key(&for_active);
+    let hash = ufaigw_gateway::secrets::hash_key(&for_active);
     assert!(api.store.invite_by_hash(&hash).await.unwrap().is_some());
     let audit = api.store.list_audit(20, None).await.unwrap();
     assert!(audit.iter().all(|e| e.action != "user.accept_invite"));

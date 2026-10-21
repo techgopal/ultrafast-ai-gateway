@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use ultrafast_translate::provider::ProviderKind;
+use ufaigw_translate::provider::ProviderKind;
 
 use crate::budgets::Budget;
 use sha2::{Digest, Sha256};

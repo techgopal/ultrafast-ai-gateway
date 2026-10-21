@@ -57,7 +57,7 @@ pub struct SettingsView {
     /// keep the lifetime they were made with.
     pub session_hours: i64,
     /// The networks (CIDR) whose forwarding headers are believed, as the
-    /// gateway was started. Read only: it is a flag of `ultrafast serve`.
+    /// gateway was started. Read only: it is a flag of `ufaigw serve`.
     pub trusted_proxies: Vec<String>,
     /// Read only: built in.
     pub login_limits: LoginLimits,

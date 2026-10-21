@@ -90,7 +90,7 @@ describe("generated files", () => {
     expect(readFileSync(new URL("../src/wasm/inline.ts", import.meta.url), "utf8")).toMatch(/WASM_BASE64: string =/);
   });
   it("the glue (source and built) never reaches for import.meta.url", () => {
-    for (const f of ["../src/wasm/ultrafast_client_wasm.js", "../dist/wasm/ultrafast_client_wasm.js"]) {
+    for (const f of ["../src/wasm/ufaigw_client_wasm.js", "../dist/wasm/ufaigw_client_wasm.js"]) {
       const u = new URL(f, import.meta.url);
       if (existsSync(u)) expect(readFileSync(u, "utf8")).not.toContain("import.meta");
     }

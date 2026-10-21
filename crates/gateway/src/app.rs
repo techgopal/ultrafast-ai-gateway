@@ -502,7 +502,7 @@ fn catalog_client() -> reqwest::Client {
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::limited(3))
-        .user_agent(concat!("ultrafast-gateway/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("ufaigw/", env!("CARGO_PKG_VERSION")))
         .build()
         .expect("the HTTP client configuration is valid")
 }

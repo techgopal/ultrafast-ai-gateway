@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use ultrafast_client::{Client, EmbeddingsRequest, ErrorKind, Target};
+use ufaigw_client::{Client, EmbeddingsRequest, ErrorKind, Target};
 
 const OPENAI_EMB: &str = r#"{"model":"te3","data":[{"index":1,"embedding":[0.25]},{"index":0,"embedding":[0.5]}],"usage":{"prompt_tokens":4}}"#;
 const GEMINI_EMB: &str = r#"{"embeddings":[{"values":[0.5]},{"values":[0.25]}]}"#;

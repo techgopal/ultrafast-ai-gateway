@@ -338,7 +338,7 @@ impl Conn<'_> {
     async fn handshake(&mut self) -> Result<(), UpstreamError> {
         let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
             "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                       "clientInfo": {"name": "ultrafast-gateway", "version": env!("CARGO_PKG_VERSION")}}});
+                       "clientInfo": {"name": "ufaigw", "version": env!("CARGO_PKG_VERSION")}}});
         let reply = self.send(init, Some(0)).await;
         if let Ok(r) = &reply {
             self.session = r.session.clone().map(|mut v| {

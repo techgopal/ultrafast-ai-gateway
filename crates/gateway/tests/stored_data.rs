@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::Row;
-use ultrafast_gateway::identity::password::verify_password;
-use ultrafast_gateway::identity::{Role, UserStatus};
-use ultrafast_gateway::secrets::{hash_key, Cipher};
-use ultrafast_gateway::store::Store;
+use ufaigw_gateway::identity::password::verify_password;
+use ufaigw_gateway::identity::{Role, UserStatus};
+use ufaigw_gateway::secrets::{hash_key, Cipher};
+use ufaigw_gateway::store::Store;
 
 const MASTER: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 const KEY: &str = "uf-sk-00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";

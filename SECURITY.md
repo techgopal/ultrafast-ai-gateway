@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-Ultrafast v2 is in beta (`2.0.0-beta.x`). Fixes go into the latest beta
-release on `main`; older prereleases and v1 (tag `v1-final`) get none.
+Fixes go into the latest 3.x release (`ufaigw`); 2.x, older prereleases and v1
+(tag `v1-final`) get none.
 
 ## Reporting a vulnerability
 

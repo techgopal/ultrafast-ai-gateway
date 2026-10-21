@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
-use ultrafast_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
+use ufaigw_translate::provider::{ProviderKind, DEFAULT_AZURE_API_VERSION};
 
 use super::{path_id, refresh_snapshot, require, ApiError, ApiJson, Authed};
 use crate::app::AppState;

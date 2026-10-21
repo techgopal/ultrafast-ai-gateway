@@ -865,7 +865,7 @@ async fn guardrails_attach_to_keys_for_admins_and_lenders_see_them() {
 
 #[tokio::test]
 async fn the_snapshot_holds_what_is_enabled_and_its_fingerprint_follows_every_edit() {
-    use ultrafast_gateway::snapshot::Snapshot;
+    use ufaigw_gateway::snapshot::Snapshot;
 
     let org = org().await;
     let maya = org.sign_in("maya").await;
@@ -1083,7 +1083,7 @@ async fn external_guardrails_need_a_url_before_they_are_enabled() {
     let mut tx = org.api.store.begin().await.unwrap();
     let cipher = &org.api.state.cipher;
     let id = tx
-        .insert_guardrail(ultrafast_gateway::store::NewGuardrail {
+        .insert_guardrail(ufaigw_gateway::store::NewGuardrail {
             name: "imported",
             description: "",
             kind: "external",
@@ -1396,8 +1396,8 @@ async fn an_import_is_checked_before_anything_is_written() {
 
 #[tokio::test]
 async fn the_snapshot_holds_the_enabled_guardrails_in_the_order_calls_use_them() {
-    use ultrafast_gateway::guardrails::{check_texts, Direction};
-    use ultrafast_gateway::snapshot::Snapshot;
+    use ufaigw_gateway::guardrails::{check_texts, Direction};
+    use ufaigw_gateway::snapshot::Snapshot;
 
     let org = org().await;
     let maya = org.sign_in("maya").await;
@@ -1446,7 +1446,7 @@ async fn the_snapshot_holds_the_enabled_guardrails_in_the_order_calls_use_them()
 
     // A row that does not compile is left out; the load still succeeds.
     let mut tx = org.api.store.begin().await.unwrap();
-    tx.insert_guardrail(ultrafast_gateway::store::NewGuardrail {
+    tx.insert_guardrail(ufaigw_gateway::store::NewGuardrail {
         name: "broken",
         description: "",
         kind: "rules",
@@ -1477,7 +1477,7 @@ async fn the_snapshot_holds_the_enabled_guardrails_in_the_order_calls_use_them()
     assert_eq!(route.guardrails, [d, off, ext], "as attached, in order");
     let key = snap
         .key(
-            &ultrafast_gateway::secrets::hash_key(&secret),
+            &ufaigw_gateway::secrets::hash_key(&secret),
             "2000-01-01 00:00:00",
         )
         .unwrap();
@@ -1582,7 +1582,7 @@ async fn a_rule_that_cannot_be_read_is_named_not_a_bare_400() {
 
 #[tokio::test]
 async fn a_refresh_that_changed_no_guardrail_compiles_nothing() {
-    use ultrafast_gateway::snapshot::Snapshot;
+    use ufaigw_gateway::snapshot::Snapshot;
 
     let org = org().await;
     let maya = org.sign_in("maya").await;
@@ -1644,7 +1644,7 @@ async fn a_refresh_that_changed_no_guardrail_compiles_nothing() {
 
 #[tokio::test]
 async fn an_edit_that_keeps_the_length_of_the_rules_is_compiled_again() {
-    use ultrafast_gateway::snapshot::Snapshot;
+    use ufaigw_gateway::snapshot::Snapshot;
 
     let org = org().await;
     let maya = org.sign_in("maya").await;
@@ -1689,8 +1689,8 @@ async fn an_edit_that_keeps_the_length_of_the_rules_is_compiled_again() {
 
 #[tokio::test]
 async fn rules_that_stop_compiling_keep_running_as_they_were_and_show_as_not_usable() {
-    use ultrafast_gateway::snapshot::Snapshot;
-    use ultrafast_gateway::store::GuardrailPatch;
+    use ufaigw_gateway::snapshot::Snapshot;
+    use ufaigw_gateway::store::GuardrailPatch;
 
     let org = org().await;
     let maya = org.sign_in("maya").await;
@@ -1727,7 +1727,7 @@ async fn rules_that_stop_compiling_keep_running_as_they_were_and_show_as_not_usa
 
 #[tokio::test]
 async fn an_external_guardrail_that_cannot_be_called_shows_as_not_usable() {
-    use ultrafast_gateway::store::GuardrailPatch;
+    use ufaigw_gateway::store::GuardrailPatch;
 
     let org = org().await;
     let maya = org.sign_in("maya").await;
@@ -1953,7 +1953,7 @@ async fn the_test_calls_the_hook_signed_and_returns_what_it_decided() {
         .unwrap();
     assert_eq!(
         v1,
-        ultrafast_gateway::alerts::sign::signature(
+        ufaigw_gateway::alerts::sign::signature(
             &secret,
             t.parse().unwrap(),
             calls[0]["raw"].as_str().unwrap().as_bytes()

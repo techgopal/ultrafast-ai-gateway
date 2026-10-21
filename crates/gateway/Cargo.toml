@@ -1,15 +1,15 @@
 [package]
-name = "ultrafast-gateway"
+name = "ufaigw-gateway"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Ultrafast AI gateway"
-default-run = "ultrafast"
+default-run = "ufaigw"
 
 [[bin]]
-name = "ultrafast"
+name = "ufaigw"
 path = "src/main.rs"
 
 # A small MCP server over stdio, for the tests of local servers.
@@ -26,7 +26,7 @@ required-features = ["test-support"]
 test-support = []
 
 [dependencies]
-ultrafast-translate = { path = "../translate" }
+ufaigw-translate = { path = "../translate" }
 anyhow.workspace = true
 arc-swap.workspace = true
 argon2.workspace = true
@@ -70,7 +70,7 @@ tower.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
-ultrafast-gateway = { path = ".", features = ["test-support"] }
+ufaigw-gateway = { path = ".", features = ["test-support"] }
 aws-lc-rs = "1.18"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

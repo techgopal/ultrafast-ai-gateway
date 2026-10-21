@@ -12,8 +12,9 @@ and briefs add to these; they do not repeat them.
   Only the controller deploys, and only with the owner's consent.
 - A gateway you start for a test uses a port the OS gives out, a fresh
   temporary data directory, and an environment written out in full (no
-  inherited `UF_*`). Stop it by PID. `pgrep -a ultrafast` shows only the
-  production process when you are done.
+  inherited `UF_*`). Stop it by PID. `pgrep -a 'ultrafast|ufaigw'` shows only the
+  production process when you are done (test gateways are `ufaigw`; the
+  production process keeps its name until the owner redeploys it).
 - Scratch copies (`git archive <sha> | tar -x -C <dir>`) install their own
   `node_modules`; never link or share the checkout's.
 - Remove anything a browser tool writes into the repository (`.playwright-mcp/`).
@@ -38,7 +39,7 @@ and briefs add to these; they do not repeat them.
     `pnpm --dir ui build` before E2E or at the end.
   - Rust: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`,
     `cargo test --all`.
-  - E2E: `pnpm --dir ui build`, `cargo build --release -p ultrafast-gateway`
+  - E2E: `pnpm --dir ui build`, `cargo build --release -p ufaigw-gateway`
     (the binary embeds the console), `pnpm --dir ui test:e2e`.
 - Before reporting done: `git status --ignored` shows no source file ignored, and a
   clean `git archive HEAD` extracted to a temp dir builds (`cargo check`), so what
@@ -67,7 +68,7 @@ and briefs add to these; they do not repeat them.
   generated from it and every operation has a unique `operationId`.
 - After any admin API change (a route, a request or response type, a doc
   comment that reaches the spec): regenerate `openapi/admin.json`
-  (`cargo run -p ultrafast-gateway -- openapi > openapi/admin.json`), the console's
+  (`cargo run -p ufaigw-gateway -- openapi > openapi/admin.json`), the console's
   schema (`pnpm --dir ui gen:api`) and both admin SDKs (`pnpm --dir clients/admin-ts gen`,
   `clients/admin-py/gen.sh`), and commit them with the change. CI fails when any
   of them is out of date. A spec shape a generator cannot read is fixed in the

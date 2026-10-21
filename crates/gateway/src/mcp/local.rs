@@ -632,7 +632,7 @@ async fn run_once(
         max_body_bytes: cfg.max_line,
     };
     let init = json!({"protocolVersion": "2025-06-18", "capabilities": {},
-        "clientInfo": {"name": "ultrafast-gateway", "version": env!("CARGO_PKG_VERSION")}});
+        "clientInfo": {"name": "ufaigw", "version": env!("CARGO_PKG_VERSION")}});
     let handshake = live.request("initialize", &init, opts);
     let shaken = tokio::select! {
         r = handshake => r.is_ok(),

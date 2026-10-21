@@ -17,9 +17,9 @@ use base64::Engine;
 use common::{email_of, error_code, org_with_public_url, send, Org, Signed, ORG_PASSWORD};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde_json::{json, Value};
-use ultrafast_gateway::identity::oidc::flow::FlowState;
-use ultrafast_gateway::identity::{Role, UserStatus};
-use ultrafast_gateway::store::NewUser;
+use ufaigw_gateway::identity::oidc::flow::FlowState;
+use ufaigw_gateway::identity::{Role, UserStatus};
+use ufaigw_gateway::store::NewUser;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -427,7 +427,7 @@ async fn signed_from(org: &Org, answer: &Answer) -> Signed {
     }
 }
 
-async fn user_of(org: &Org, name: &str) -> ultrafast_gateway::store::UserRow {
+async fn user_of(org: &Org, name: &str) -> ufaigw_gateway::store::UserRow {
     org.api
         .store
         .user_by_email(&email_of(name))
@@ -508,7 +508,7 @@ async fn start_sends_the_browser_to_the_idp_with_a_flow_cookie() {
 #[tokio::test]
 async fn the_flow_cookie_is_secure_where_session_cookies_are() {
     let api = common::api_tweaked(
-        ultrafast_gateway::store::Store::open_in_memory()
+        ufaigw_gateway::store::Store::open_in_memory()
             .await
             .unwrap(),
         |s| {
@@ -1533,7 +1533,7 @@ async fn a_stored_off_switch_stops_a_provider_that_is_still_loaded() {
 /// applies, in both directions, and an unchanged row rebuilds nothing.
 #[tokio::test]
 async fn the_refresher_follows_sign_in_settings_saved_on_another_process() {
-    use ultrafast_gateway::app::AppState;
+    use ufaigw_gateway::app::AppState;
 
     let org = org_with_public_url(PUBLIC_URL).await;
     let a = org.api.state.clone();
@@ -1571,7 +1571,7 @@ async fn the_refresher_follows_sign_in_settings_saved_on_another_process() {
 /// The refresher task itself applies the change, with no call to it.
 #[tokio::test]
 async fn the_refresher_task_applies_sign_in_settings_by_itself() {
-    use ultrafast_gateway::app::{spawn_refresher, AppState};
+    use ufaigw_gateway::app::{spawn_refresher, AppState};
 
     let org = org_with_public_url(PUBLIC_URL).await;
     let a = org.api.state.clone();

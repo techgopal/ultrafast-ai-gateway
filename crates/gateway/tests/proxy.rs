@@ -95,14 +95,14 @@ async fn bad_keys_get_401_and_never_reach_the_provider() {
         .mount(&h.upstream)
         .await;
 
-    let revoked = ultrafast_gateway::secrets::generate_key();
+    let revoked = ufaigw_gateway::secrets::generate_key();
     let id = h
         .store
         .insert_key("r", &revoked.hash, &revoked.display, None)
         .await
         .unwrap();
     h.store.revoke_key(id).await.unwrap();
-    let expired = ultrafast_gateway::secrets::generate_key();
+    let expired = ufaigw_gateway::secrets::generate_key();
     h.store
         .insert_key(
             "e",
@@ -440,7 +440,7 @@ async fn provider_response_within_the_limit_is_returned() {
 
 mod records {
     use super::*;
-    use ultrafast_gateway::telemetry::AttemptOutcome;
+    use ufaigw_gateway::telemetry::AttemptOutcome;
 
     #[tokio::test]
     async fn a_success_is_recorded_with_usage_and_one_attempt() {
@@ -526,7 +526,7 @@ mod records {
 
     #[tokio::test]
     async fn the_targets_of_a_route_not_tried_are_recorded_as_skipped() {
-        use ultrafast_gateway::store::{RouteSettings, TargetsInput};
+        use ufaigw_gateway::store::{RouteSettings, TargetsInput};
         let h = harness("openai").await;
         Mock::given(method("POST"))
             .respond_with(openai_ok())
@@ -680,7 +680,7 @@ async fn azure_without_an_api_version_uses_the_default() {
 mod tools_and_images {
     use super::*;
     use common::upstream_calls;
-    use ultrafast_gateway::telemetry::AttemptOutcome;
+    use ufaigw_gateway::telemetry::AttemptOutcome;
 
     const PNG: &str = "iVBORw0KGgo=";
 

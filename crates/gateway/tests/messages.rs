@@ -3,8 +3,8 @@ mod common;
 use axum::http::StatusCode;
 use common::{allow_model, harness, post_to, Harness};
 use serde_json::{json, Value};
-use ultrafast_gateway::store::{Grants, RouteSettings, TargetsInput};
-use ultrafast_gateway::telemetry::AttemptOutcome;
+use ufaigw_gateway::store::{Grants, RouteSettings, TargetsInput};
+use ufaigw_gateway::telemetry::AttemptOutcome;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, ResponseTemplate};
 

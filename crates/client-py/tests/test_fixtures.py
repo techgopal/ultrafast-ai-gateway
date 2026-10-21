@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-import ultrafast
+import ufaigw
 from conftest import Script
 
 FIXTURES = Path(__file__).resolve().parents[3] / "clients" / "fixtures"
@@ -30,12 +30,12 @@ def target(t, base):
     url = t["base_url"].replace("{base}", base)
     kind = t["kind"]
     if kind == "gateway":
-        return ultrafast.gateway(url, KEY)
+        return ufaigw.gateway(url, KEY)
     if kind == "openai_compatible":
-        return ultrafast.openai_compatible(url, KEY)
+        return ufaigw.openai_compatible(url, KEY)
     if kind == "azure":
-        return ultrafast.azure(url, KEY, t.get("api_version"))
-    return getattr(ultrafast, kind)(KEY, base_url=url)
+        return ufaigw.azure(url, KEY, t.get("api_version"))
+    return getattr(ufaigw, kind)(KEY, base_url=url)
 
 
 def chat_kwargs(r):
@@ -64,7 +64,7 @@ def test_request_on_the_wire(serve, case):
     op, r, want = case["op"], case["request"], case["expect"]
     script = Script.sse("data: [DONE]\n\n") if op == "chat_stream" else Script.json(200, "{}")
     s = serve(script)
-    client = ultrafast.Client(target(case["target"], s.url))
+    client = ufaigw.Client(target(case["target"], s.url))
     failure = None
     try:
         if op == "chat":
@@ -73,7 +73,7 @@ def test_request_on_the_wire(serve, case):
             client.embed(r["model"], r["input"], **{k: r[k] for k in ("dimensions", "tags") if k in r})
         else:
             list(client.chat_stream(r["model"], r["messages"], **chat_kwargs(r)))
-    except ultrafast.Error as e:
+    except ufaigw.Error as e:
         failure = e
     if not want["sent"]:
         assert s.requests == [], "nothing may be sent"
@@ -98,7 +98,7 @@ def usage(u):
 
 def answer(serve, case):
     s = serve(Script(case["status"], [case["body"]], headers=case["headers"]))
-    client = ultrafast.Client(target(case["target"], s.url))
+    client = ufaigw.Client(target(case["target"], s.url))
     if case["op"] == "embed":
         r = client.embed(case.get("model", "m"), ["a"])
         return {"model": r.model, "vectors": r.vectors, "prompt_tokens": r.prompt_tokens}
@@ -118,33 +118,33 @@ def test_parsed_response_or_error(serve, case):
     if "ok" in want:
         assert answer(serve, case) == want["ok"]
     else:
-        with pytest.raises(ultrafast.Error) as ei:
+        with pytest.raises(ufaigw.Error) as ei:
             answer(serve, case)
         check_error(error_of(ei.value), want["error"])
 
 
 @pytest.mark.parametrize("case", ERRORS, ids=ids(ERRORS))
 def test_http_error(serve, case):
-    with pytest.raises(ultrafast.Error) as ei:
+    with pytest.raises(ufaigw.Error) as ei:
         answer(serve, case)
     check_error(error_of(ei.value), case["expect"]["error"])
 
 
 def event(e):
-    if isinstance(e, ultrafast.Delta):
+    if isinstance(e, ufaigw.Delta):
         return {"type": "delta", "text": e.text}
     return {"type": "done", "finish_reason": e.finish_reason, "usage": usage(e.usage)}
 
 
 def run_stream(serve, case, chunks):
     s = serve(Script(200, chunks, content_type="text/event-stream"))
-    client = ultrafast.Client(target(case["target"], s.url))
+    client = ufaigw.Client(target(case["target"], s.url))
     events, error = [], None
     stream = client.chat_stream("m", [{"role": "user", "content": "hi"}])
     try:
         for e in stream:
             events.append(event(e))
-    except ultrafast.Error as e:
+    except ufaigw.Error as e:
         error = error_of(e)
         with pytest.raises(StopIteration):
             next(iter(stream))

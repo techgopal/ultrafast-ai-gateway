@@ -1,6 +1,6 @@
-# Publishes the client packages on a tag `v*`: crates.io (ultrafast-translate,
-# then ultrafast-client), PyPI (ultrafast, ultrafast-admin; trusted publishing,
-# no stored tokens) and npm (@ultrafast/client, @ultrafast/admin; trusted
+# Publishes the client packages on a tag `v*`: crates.io (ufaigw-translate,
+# then ufaigw-client), PyPI (ufaigw, ufaigw-admin; trusted publishing,
+# no stored tokens) and npm (@ufaigw/client, @ufaigw/admin; trusted
 # publishing with provenance).
 #
 # It publishes nothing until the owner has registered the trusted publishers
@@ -53,8 +53,8 @@ jobs:
           for f in crates/client-py clients/admin-py; do
             check "$f/pyproject.toml" "$(sed -n 's/^version = "\(.*\)"/\1/p' $f/pyproject.toml | head -n 1)" "$py"
           done
-          check "ultrafast-translate dependency of ultrafast-client" \
-            "$(sed -n 's/^ultrafast-translate = { version = "\([^"]*\)".*/\1/p' crates/client/Cargo.toml)" "$version"
+          check "ufaigw-translate dependency of ufaigw-client" \
+            "$(sed -n 's/^ufaigw-translate = { version = "\([^"]*\)".*/\1/p' crates/client/Cargo.toml)" "$version"
           [ "$fail" = 0 ] || exit 1
           echo "version=$version" >> "$GITHUB_OUTPUT"
           case "$version" in *-*) echo "npm_tag=beta" >> "$GITHUB_OUTPUT" ;; *) echo "npm_tag=latest" >> "$GITHUB_OUTPUT" ;; esac
@@ -84,10 +84,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      # Both in one command: ultrafast-client depends on this version of
-      # ultrafast-translate, which is not on crates.io yet, and cargo
+      # Both in one command: ufaigw-client depends on this version of
+      # ufaigw-translate, which is not on crates.io yet, and cargo
       # (1.90 and newer) resolves it from the same publish, in order.
-      - run: cargo publish --dry-run --locked -p ultrafast-translate -p ultrafast-client
+      - run: cargo publish --dry-run --locked -p ufaigw-translate -p ufaigw-client
 
   crates:
     name: Crates (publish)
@@ -111,11 +111,11 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         if: steps.token.outputs.have == 'false'
         id: auth
-      - name: Publish ultrafast-translate, then ultrafast-client
+      - name: Publish ufaigw-translate, then ufaigw-client
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
         run: |
-          cargo publish --locked -p ultrafast-translate -p ultrafast-client
+          cargo publish --locked -p ufaigw-translate -p ufaigw-client
 
   # ---- PyPI ---------------------------------------------------------------
   pypi-wheels:
@@ -161,7 +161,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - name: Build ultrafast-admin
+      - name: Build ufaigw-admin
         run: |
           python -m pip install build
           python -m build clients/admin-py --outdir clients/admin-py/dist

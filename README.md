@@ -9,7 +9,8 @@
 Ultrafast is one small Rust binary that sits between your apps and your LLM
 providers. It speaks the OpenAI and Anthropic APIs, adds an admin API, and
 serves a built-in web console, with SQLite for storage and nothing else to
-run (or PostgreSQL, when several processes share one database). It is for small teams who host it themselves. This is v2; the v1 code is
+run (or PostgreSQL, when several processes share one database). It is for small teams who host it themselves. Its command, image and
+packages are named `ufaigw`, after [ufaigw.com](https://ufaigw.com). This is v3; the v1 code is
 tagged `v1-final`.
 
 ## Screenshots
@@ -80,28 +81,31 @@ variations, and realtime audio.
 
 ### 1. Get it
 
-**Docker** (linux/amd64; listens on 3000, keeps its data in `/var/lib/ultrafast`):
+**Docker** (linux/amd64; listens on 3000, keeps its data in `/var/lib/ufaigw`):
 
 ```bash
 # The first admin, in a file of its own: not on the command line, where the
 # password would be in the shell history and in `docker inspect`.
 printf 'UF_ADMIN_EMAIL=you@example.com\nUF_ADMIN_PASSWORD=a long password\n' > admin.env
 chmod 600 admin.env
-docker run -d --name ultrafast -p 3000:3000 -v ultrafast-data:/var/lib/ultrafast \
-  --env-file admin.env ghcr.io/techgopal/ultrafast-ai-gateway:2.1.1
+docker run -d --name ufaigw -p 3000:3000 -v ufaigw-data:/var/lib/ufaigw \
+  --env-file admin.env ghcr.io/techgopal/ufaigw:3.0.0
 ```
+
+Upgrading from 2.x: keep your existing volume (`-v ultrafast-data:/var/lib/ufaigw`),
+not a new `ufaigw-data` one, or the gateway starts empty.
 
 **Or a binary** from the [latest release](https://github.com/techgopal/ultrafast-ai-gateway/releases)
 (Linux x86_64/aarch64, macOS Intel/Apple Silicon, Windows x64). For Linux x86_64:
 
 ```bash
-V=2.1.1; T=x86_64-unknown-linux-musl
-curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/ultrafast-v$V-$T.tar.gz
+V=3.0.0; T=x86_64-unknown-linux-musl
+curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/ufaigw-v$V-$T.tar.gz
 curl -LO https://github.com/techgopal/ultrafast-ai-gateway/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS   # macOS: shasum -a 256 --ignore-missing -c
-tar xzf ultrafast-v$V-$T.tar.gz && cd ultrafast-v$V-$T
+tar xzf ufaigw-v$V-$T.tar.gz && cd ufaigw-v$V-$T
 UF_DATA_DIR=./data UF_ADMIN_EMAIL=you@example.com UF_ADMIN_PASSWORD='a long password' \
-  ./ultrafast serve
+  ./ufaigw serve
 ```
 
 (Other targets: `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`,
@@ -218,11 +222,11 @@ directory:
 
 ```bash
 export UF_DATA_DIR=./data
-UF_PROVIDER_API_KEY=sk-... ./ultrafast provider add \
+UF_PROVIDER_API_KEY=sk-... ./ufaigw provider add \
   --name openai --kind openai --base-url https://api.openai.com/v1
-./ultrafast model add --provider openai --model gpt-4o --enable --everyone
-./ultrafast key create --name my-app     # printed once
-# In Docker: docker exec -e UF_PROVIDER_API_KEY=sk-... ultrafast ultrafast provider add ...
+./ufaigw model add --provider openai --model gpt-4o --enable --everyone
+./ufaigw key create --name my-app     # printed once
+# In Docker: docker exec -e UF_PROVIDER_API_KEY=sk-... ufaigw ufaigw provider add ...
 ```
 
 A running gateway picks up CLI changes within 30 seconds; changes through the
@@ -231,12 +235,12 @@ console or `/api` apply at once.
 ## Configuration
 
 There is no config file. Everything is a flag or an environment variable
-(`ultrafast --help`, `ultrafast serve --help`). Prefer the variable for
+(`ufaigw --help`, `ufaigw serve --help`). Prefer the variable for
 secrets: a flag shows in the process list.
 
 | Variable | Flag | Default | Meaning |
 | --- | --- | --- | --- |
-| `UF_DATA_DIR` | `--data-dir` | `./data` (`/var/lib/ultrafast` in the image) | Directory of the SQLite database (`gateway.db`) and `master.key`. Not used with `UF_DATABASE_URL`. Any subcommand. |
+| `UF_DATA_DIR` | `--data-dir` | `./data` (`/var/lib/ufaigw` in the image) | Directory of the SQLite database (`gateway.db`) and `master.key`. Not used with `UF_DATABASE_URL`. Any subcommand. |
 | `UF_MASTER_KEY` | `--master-key` | generated into `master.key` | 64 hex characters; encrypts provider credentials. Any subcommand. Required with `UF_DATABASE_URL`, and the same for every gateway on that database. |
 | `UF_DATABASE_URL` | `--database-url` | unset (SQLite in the data directory) | A PostgreSQL URL (`postgres://user:password@host:5432/db`). Set: the gateway uses that database and `UF_MASTER_KEY` is required. Add `?sslmode=require` (or `verify-full` with `sslrootcert=/path/ca.pem`) for TLS. Prefer the variable: the URL holds the password. Any subcommand. See Using PostgreSQL. |
 | `UF_DATABASE_MAX_CONNECTIONS` | `--database-max-connections` | `10` | The most connections one gateway process opens to PostgreSQL, 1 to 1000. Ignored on SQLite. |
@@ -250,12 +254,12 @@ secrets: a flag shows in the process list.
 | `UF_METRICS_TOKEN` | `--metrics-token` | unset | Enables `GET /metrics` for callers sending this bearer token. |
 | `UF_OTEL_ENDPOINT` | `--otel-endpoint` | unset | Enables trace export. The OTLP base URL of a collector or backend (`http://localhost:4318`): spans are posted to `<base>/v1/traces`. A URL that already ends in `/v1/traces` is used as it is; a query string is kept. `serve`. See Tracing. |
 | `UF_OTEL_HEADERS` | `--otel-headers` | unset | Headers sent with every export, `name=value` pairs separated by commas (for example `authorization=Bearer ...`). Prefer the variable: it can hold a credential. |
-| `UF_OTEL_SERVICE_NAME` | `--otel-service-name` | `ultrafast` | The `service.name` resource attribute. |
+| `UF_OTEL_SERVICE_NAME` | `--otel-service-name` | `ufaigw` | The `service.name` resource attribute. |
 | `UF_OTEL_SAMPLE_RATIO` | `--otel-sample-ratio` | `1.0` | Share of calls traced, 0.0 to 1.0, when the caller sent no `traceparent`. |
 | `UF_MAX_AUDIO_BYTES` | `--max-audio-bytes` | `26214400` (25 MiB) | `serve`: the largest audio file `/v1/audio/transcriptions` and `/v1/audio/translations` take, 1 to 1 GiB. A larger upload is refused with 413 while it is read. |
 | `UF_MAX_CONCURRENT_UPLOADS` | `--max-concurrent-uploads` | `8` | `serve`: how many audio uploads are received at once by this process, 1 to 1024. Each holds up to `UF_MAX_AUDIO_BYTES` in memory while its body arrives; the place is given back once the body has been received, not kept while the provider answers. One past the bound is refused with 503 before its body is read. |
 | `UF_PROVIDER_API_KEY` | `--api-key` | unset | `provider add` only: the provider's API key. |
-| `RUST_LOG` | none | `info` | Log filter. A gateway that starts with no user logs its one-time setup code at `info` under the target `ultrafast::setup`: when you lower the level, keep it, as in `RUST_LOG=warn,ultrafast::setup=info`. |
+| `RUST_LOG` | none | `info` | Log filter. A gateway that starts with no user logs its one-time setup code at `info` under the target `ufaigw::setup`: when you lower the level, keep it, as in `RUST_LOG=warn,ufaigw::setup=info`. |
 
 For the dev tooling only: `UF_DEV_GATEWAY` (where `pnpm --dir ui dev` proxies
 to), `UF_E2E_BINARY` (the binary the browser tests run), `UF_E2E_DATABASE_URL`
@@ -292,7 +296,7 @@ Subcommands: `serve`, `provider add`, `model add`, `key create`,
 - **Prices and budgets.** A model without a price is logged without a cost, so
   spend is a lower bound. Budgets are per UTC day, week (from Monday) or month.
 - **Admin API.** `/api/*`, described by [`openapi/admin.json`](openapi/admin.json)
-  (also `ultrafast openapi`). Sign in with a session, or send an access token
+  (also `ufaigw openapi`). Sign in with a session, or send an access token
   (`uf-at-...`, from Account) as a bearer token.
 
 ## Endpoints
@@ -1288,7 +1292,7 @@ holds the password, is never logged.
 ```bash
 export UF_MASTER_KEY=$(openssl rand -hex 32)      # keep it: see below
 export UF_DATABASE_URL='postgres://ultrafast:PASSWORD@db.example.com:5432/ultrafast?sslmode=require'
-ultrafast serve
+ufaigw serve
 ```
 
 A complete example with PostgreSQL in a container is
@@ -1342,7 +1346,7 @@ older release ignores `UF_DATABASE_URL` and runs SQLite, so use beta.3 or later.
   `UF_ADMIN_PASSWORD` (the admin is made once, whichever process gets there
   first), or start one process and finish the setup before starting the rest.
 - **Backup** is `pg_dump` (or your provider's snapshots); the console's Backup
-  panel and `ultrafast backup` say so and do nothing. Back up the database and
+  panel and `ufaigw backup` say so and do nothing. Back up the database and
   keep `UF_MASTER_KEY` separately. Restore with `pg_restore` or `psql` into an
   empty database, with the gateways stopped, and start them with the same key.
 - **Upgrade.** Migrations run when the first gateway starts and take a
@@ -1359,10 +1363,10 @@ configuration export and import moves the setup, not the data:
 | providers (name, kind, URL), models with their grants, routes, teams, gateway/team/user limits and budgets, alert channels (name and kind) and rules, the retention and session-hour settings | provider credentials (set them again, or the providers stay without one), users and their passwords, invitations and sessions (people are invited again, or the first admin is made from `UF_ADMIN_EMAIL`/`UF_ADMIN_PASSWORD`), virtual keys (create new ones), request logs and usage history, the audit log, alert history, alert channel URLs and secrets, single sign-on settings, and the response cache |
 
 ```bash
-ultrafast --data-dir ./data config export ./config.json
-UF_DATABASE_URL=... UF_MASTER_KEY=... UF_ADMIN_EMAIL=... UF_ADMIN_PASSWORD=... ultrafast serve   # first start: makes the admin
-UF_DATABASE_URL=... UF_MASTER_KEY=... ultrafast config import ./config.json --dry-run
-UF_DATABASE_URL=... UF_MASTER_KEY=... ultrafast config import ./config.json
+ufaigw --data-dir ./data config export ./config.json
+UF_DATABASE_URL=... UF_MASTER_KEY=... UF_ADMIN_EMAIL=... UF_ADMIN_PASSWORD=... ufaigw serve   # first start: makes the admin
+UF_DATABASE_URL=... UF_MASTER_KEY=... ufaigw config import ./config.json --dry-run
+UF_DATABASE_URL=... UF_MASTER_KEY=... ufaigw config import ./config.json
 ```
 
 Users and keys are not in the file, so the people and the applications that
@@ -1375,7 +1379,7 @@ moved. Going from Postgres back to SQLite is the same, the other way round.
 `GET /api/backup` (admin); or
 
 ```bash
-ultrafast --data-dir ./data backup ./backups/ultrafast-2026-10-04.db   # the file must not exist
+ufaigw --data-dir ./data backup ./backups/ufaigw-2026-10-04.db   # the file must not exist
 ```
 
 It holds users, sessions, logs, the audit log and encrypted provider
@@ -1389,7 +1393,7 @@ place, start:
 mv data/gateway.db data/gateway.db.before
 [ -e data/gateway.db-wal ] && mv data/gateway.db-wal data/gateway.db.before-wal
 [ -e data/gateway.db-shm ] && mv data/gateway.db-shm data/gateway.db.before-shm
-cp backups/ultrafast-2026-10-04.db data/gateway.db && chmod 600 data/gateway.db
+cp backups/ufaigw-2026-10-04.db data/gateway.db && chmod 600 data/gateway.db
 ```
 
 The gateway must have the master key of the one the backup came from.
@@ -1400,18 +1404,20 @@ limits and budgets, settings. Settings, Configuration in the console (with a
 dry run first), `GET /api/config/export` and `POST /api/config/import`, or:
 
 ```bash
-ultrafast --data-dir ./data config export ./config.json          # file must not exist
-ultrafast --data-dir ./other config import ./config.json --dry-run
-ultrafast --data-dir ./other config import ./config.json
+ufaigw --data-dir ./data config export ./config.json          # file must not exist
+ufaigw --data-dir ./other config import ./config.json --dry-run
+ufaigw --data-dir ./other config import ./config.json
 ```
 
 A file with errors is refused whole. An import creates and updates by name and
 never deletes; new providers have no credential until an admin sets one.
 
 **Upgrade.** Stop, replace the binary (or image), start: migrations run at
-start. Back up first. Coming from `2.0.0-alpha.1`: existing providers work only
+start. Back up first. Coming from 2.x: the command is `ufaigw` and the image
+`ghcr.io/techgopal/ufaigw`; keep your volume and mount it at `/var/lib/ufaigw`
+(`-v ultrafast-data:/var/lib/ufaigw`), as the 3.0.0 release notes say. Coming from `2.0.0-alpha.1`: existing providers work only
 after an admin syncs, enables and grants their models (console, Models, or
-`ultrafast model add --provider NAME --model ID --enable --everyone`); until
+`ufaigw model add --provider NAME --model ID --enable --everyone`); until
 then calls to `NAME/MODEL` are refused.
 
 **Metrics.** Set `UF_METRICS_TOKEN`, then scrape `GET /metrics` with
@@ -1420,8 +1426,8 @@ wrong token is 401.
 
 ```yaml
 scrape_configs:
-  - job_name: ultrafast
-    authorization: { credentials_file: /etc/prometheus/ultrafast-token }
+  - job_name: ufaigw
+    authorization: { credentials_file: /etc/prometheus/ufaigw-token }
     static_configs: [{ targets: ["127.0.0.1:3000"] }]
 ```
 
@@ -1446,7 +1452,7 @@ background over OTLP/HTTP with JSON bodies:
 ```bash
 UF_OTEL_ENDPOINT=http://localhost:4318 \
 UF_OTEL_HEADERS='authorization=Bearer ...' \
-UF_OTEL_SAMPLE_RATIO=0.25 ultrafast serve
+UF_OTEL_SAMPLE_RATIO=0.25 ufaigw serve
 ```
 
 - *Format.* Only OTLP JSON over HTTP is spoken: no protobuf, no gRPC, and
@@ -1510,7 +1516,7 @@ A webhook body:
   "subject": "budget:12:2026-10-01",
   "summary": "Budget '...' passed 80% (...)",
   "details": { },
-  "at": "2026-10-08T10:20:30Z", "gateway": "ultrafast 2.0.0" }
+  "at": "2026-10-08T10:20:30Z", "gateway": "ufaigw 3.0.0" }
 ```
 
 `state` is `firing` or `resolved` (`test` for a Send test). The body holds
@@ -1598,7 +1604,7 @@ does the same. A rule's `kind` cannot be changed.
 URL or secret) and rules (with their channel names, and budget rule targets by
 name). An imported channel is created disabled, with a new secret and no URL:
 an admin sets the URL in the console (Alerts), rotates the secret if needed and
-enables it. `ultrafast config import` cannot create a channel (it has no access
+enables it. `ufaigw config import` cannot create a channel (it has no access
 to the encryption key); use the console for the first import of a file that
 holds new channels. Error windows are not exported.
 
@@ -1617,21 +1623,21 @@ trusted network use `--insecure-cookies`. `/v1` with a key works over HTTP.
 ## Clients
 
 Rust, Python and TypeScript clients for the gateway (or a provider directly),
-built on one Rust core, `ultrafast-translate`, and tested with shared fixtures
+built on one Rust core, `ufaigw-translate`, and tested with shared fixtures
 (`clients/fixtures/`). They do not retry, route or cache; an error says
 whether to retry and when. Install them (the packages appear from v2.0.0-beta.4,
 as pre-releases; before that, build from source as each README says):
 
 ```sh
-cargo add ultrafast-client
-pip install --pre ultrafast ultrafast-admin
-npm i @ultrafast/client@beta @ultrafast/admin@beta
+cargo add ufaigw-client
+pip install --pre ufaigw ufaigw-admin
+npm i @ufaigw/client@beta @ufaigw/admin@beta
 ```
 
 Rust ([`crates/client`](crates/client/README.md)):
 
 ```rust
-use ultrafast_client::{ChatRequest, Client, Target};
+use ufaigw_client::{ChatRequest, Client, Target};
 
 let client = Client::new(Target::gateway("http://127.0.0.1:3000", key));
 let reply = client.chat(ChatRequest::new("anthropic/claude-sonnet-5").user("Say hi.")).await?;
@@ -1641,9 +1647,9 @@ println!("{}", reply.content);
 Python ([`crates/client-py`](crates/client-py/README.md)):
 
 ```python
-import ultrafast
+import ufaigw
 
-client = ultrafast.Client(ultrafast.gateway("http://127.0.0.1:3000", key))
+client = ufaigw.Client(ufaigw.gateway("http://127.0.0.1:3000", key))
 reply = client.chat("anthropic/claude-sonnet-5", [{"role": "user", "content": "Say hi."}])
 print(reply.content)
 ```
@@ -1651,7 +1657,7 @@ print(reply.content)
 TypeScript ([`clients/ts`](clients/ts/README.md)):
 
 ```ts
-import { Client, gateway } from "@ultrafast/client";
+import { Client, gateway } from "@ufaigw/client";
 
 const client = new Client(gateway({ baseUrl: "http://127.0.0.1:3000", key }));
 const reply = await client.chat({ model: "anthropic/claude-sonnet-5", messages: [{ role: "user", content: "Say hi." }] });
@@ -1684,12 +1690,12 @@ committed copy differs.
 TypeScript ([`clients/admin-ts`](clients/admin-ts/README.md)):
 
 ```sh
-npm i @ultrafast/admin@beta
+npm i @ufaigw/admin@beta
 # from a checkout: pnpm --dir clients/admin-ts install && pnpm --dir clients/admin-ts build
 ```
 
 ```ts
-import { createAdminClient } from "@ultrafast/admin";
+import { createAdminClient } from "@ufaigw/admin";
 
 const api = createAdminClient({ baseUrl: "http://127.0.0.1:3000", token: process.env.UF_ADMIN_TOKEN! });
 const { providers } = await api.call(api.raw.GET("/api/providers"));
@@ -1703,15 +1709,15 @@ console.log("created channel", channel.id);
 Python 3.11 or newer ([`clients/admin-py`](clients/admin-py/README.md)):
 
 ```sh
-pip install --pre ultrafast-admin   # from a checkout: pip install ./clients/admin-py
+pip install --pre ufaigw-admin   # from a checkout: pip install ./clients/admin-py
 ```
 
 ```python
 import os
-from ultrafast_admin import AdminClient
-from ultrafast_admin.api.providers import providers_list
-from ultrafast_admin.api.alerts import alerts_channels_create
-from ultrafast_admin.models import CreateChannelRequest
+from ufaigw_admin import AdminClient
+from ufaigw_admin.api.providers import providers_list
+from ufaigw_admin.api.alerts import alerts_channels_create
+from ufaigw_admin.models import CreateChannelRequest
 
 with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
     print([p.name for p in api.call(providers_list.sync_detailed(client=api.client)).providers])
@@ -1802,7 +1808,7 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   until then, build the clients and SDKs from source.
 - A backup restore is manual, and a configuration import never deletes. There
   is no online migration between SQLite and Postgres (see Using PostgreSQL).
-- On Postgres the console and `ultrafast backup` do not back up: use `pg_dump`.
+- On Postgres the console and `ufaigw backup` do not back up: use `pg_dump`.
 - The Responses API is stateless: no `store`, `previous_response_id`,
   conversations, background mode, built-in tools or retrieval of a response.
 - Images and audio are served by OpenAI, Azure and OpenAI-compatible providers
@@ -1839,15 +1845,15 @@ embed `ui/dist`, so build the console first:
 
 ```bash
 pnpm --dir ui install --frozen-lockfile
-pnpm --dir ui build && cargo build --release -p ultrafast-gateway   # target/release/ultrafast
-docker build -t ultrafast .                                         # or the image
+pnpm --dir ui build && cargo build --release -p ufaigw-gateway   # target/release/ufaigw
+docker build -t ufaigw .                                         # or the image
 ```
 
 A plain `cargo build` works without Node: `/` then says the console was not
 built, while `/api`, `/v1`, `/health` and `/metrics` work.
 
 ```bash
-cargo run -p ultrafast-gateway -- serve --port 3001 --insecure-cookies   # your own port
+cargo run -p ufaigw-gateway -- serve --port 3001 --insecure-cookies   # your own port
 pnpm --dir ui dev                                                        # UF_DEV_GATEWAY=http://127.0.0.1:3002 for another port
 ```
 
@@ -1859,14 +1865,14 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all
 pnpm --dir ui lint && pnpm --dir ui typecheck && pnpm --dir ui test
 pnpm --dir ui exec playwright install chromium
-pnpm --dir ui build && cargo build --release -p ultrafast-gateway && pnpm --dir ui test:e2e
+pnpm --dir ui build && cargo build --release -p ufaigw-gateway && pnpm --dir ui test:e2e
 ```
 
 CI (`.github/workflows/`): `ci.yml` (lint, tests, OpenAPI is current, image, secret scan),
 `clients.yml`, and `release.yml` (a tag `v*` that names the version in
 `Cargo.toml` makes a draft GitHub release with binaries for Linux x86_64 and
 aarch64, macOS x86_64 and arm64 and Windows x64, and pushes
-`ghcr.io/techgopal/ultrafast-ai-gateway`).
+`ghcr.io/techgopal/ufaigw`).
 
 Layout:
 
@@ -1881,7 +1887,7 @@ Layout:
 
 Contributors: read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) first. After
 changing an admin route, regenerate the spec with
-`cargo run -p ultrafast-gateway -- openapi > openapi/admin.json`. Security
+`cargo run -p ufaigw-gateway -- openapi > openapi/admin.json`. Security
 reports: see [`SECURITY.md`](SECURITY.md).
 
 ## License

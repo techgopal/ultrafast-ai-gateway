@@ -6,8 +6,8 @@ mod common;
 use axum::http::StatusCode;
 use common::{harness, post_to, seed_team, seed_user, Harness};
 use serde_json::{json, Value};
-use ultrafast_gateway::cache::{CacheScope, RouteCache};
-use ultrafast_gateway::store::{NewGuardrail, RouteSettings, TargetsInput};
+use ufaigw_gateway::cache::{CacheScope, RouteCache};
+use ufaigw_gateway::store::{NewGuardrail, RouteSettings, TargetsInput};
 use wiremock::matchers::{body_partial_json, method, path, path_regex};
 use wiremock::{Mock, ResponseTemplate};
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerates ultrafast_admin/_generated/ from ../../openapi/admin.json.
+# Regenerates ufaigw_admin/_generated/ from ../../openapi/admin.json.
 # The generator, the formatter it runs and its dependencies (constraints.txt) are pinned; the venv lives under
 # ~/.cache, never in the repository. Running it twice changes nothing.
 set -euo pipefail
@@ -34,7 +34,7 @@ RUFF_NO_CACHE=true PATH="$venv/bin:$PATH" "$venv/bin/openapi-python-client" gene
   --output-path "$work/out" \
   --overwrite
 
-rm -rf "$here/ultrafast_admin/_generated"
-mkdir -p "$here/ultrafast_admin"
+rm -rf "$here/ufaigw_admin/_generated"
+mkdir -p "$here/ufaigw_admin"
 rm -rf "$work/out/.ruff_cache"
-mv "$work/out" "$here/ultrafast_admin/_generated"
+mv "$work/out" "$here/ufaigw_admin/_generated"

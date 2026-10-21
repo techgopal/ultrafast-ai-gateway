@@ -7,9 +7,9 @@ mod common;
 use axum::http::StatusCode;
 use common::{harness, post_chat, post_to, Harness};
 use serde_json::{json, Value};
-use ultrafast_gateway::cache::CacheScope;
-use ultrafast_gateway::limits::{LimitScope, RateLimit};
-use ultrafast_gateway::store::{NewGuardrail, RouteSettings, TargetsInput};
+use ufaigw_gateway::cache::CacheScope;
+use ufaigw_gateway::limits::{LimitScope, RateLimit};
+use ufaigw_gateway::store::{NewGuardrail, RouteSettings, TargetsInput};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -345,7 +345,7 @@ async fn route_to_m_scoped(h: &Harness, cache: bool, scope: CacheScope) -> i64 {
     if cache {
         tx.set_route_cache(
             id,
-            &ultrafast_gateway::cache::RouteCache {
+            &ufaigw_gateway::cache::RouteCache {
                 enabled: true,
                 ttl_s: 300,
                 scope,
@@ -515,8 +515,8 @@ async fn keys_with_different_guardrails_do_not_share_cached_answers() {
     route_to_m_scoped(&h, true, CacheScope::Team).await;
     // Two keys of one team share a cache; only one carries the guardrail.
     let team = common::seed_team(&h.store, "T", &[]).await;
-    let plain = ultrafast_gateway::secrets::generate_key();
-    let strict = ultrafast_gateway::secrets::generate_key();
+    let plain = ufaigw_gateway::secrets::generate_key();
+    let strict = ufaigw_gateway::secrets::generate_key();
     let mut tx = h.store.begin().await.unwrap();
     tx.insert_key("plain", &plain.hash, &plain.display, None, None, Some(team))
         .await
@@ -687,8 +687,8 @@ async fn tool_call_arguments_in_a_stream_are_scanned_per_call() {
 
 // ---- what the record says ---------------------------------------------------
 
-use ultrafast_gateway::guardrails::log::{GuardrailLog, LoggedAction};
-use ultrafast_gateway::logs::{row_of, PriceLookup};
+use ufaigw_gateway::guardrails::log::{GuardrailLog, LoggedAction};
+use ufaigw_gateway::logs::{row_of, PriceLookup};
 
 fn no_prices() -> PriceLookup {
     std::sync::Arc::new(|_, _| None)
@@ -893,7 +893,7 @@ async fn guardrails_of_a_key_apply_to_its_calls_only() {
         false,
     )
     .await;
-    let other = ultrafast_gateway::secrets::generate_key();
+    let other = ufaigw_gateway::secrets::generate_key();
     let mut tx = h.store.begin().await.unwrap();
     let id = tx
         .insert_key("other", &other.hash, &other.display, None, None, None)

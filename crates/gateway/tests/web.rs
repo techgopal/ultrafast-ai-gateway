@@ -11,7 +11,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::Router;
 use tower::ServiceExt;
-use ultrafast_gateway::web::CONSOLE_BUILT;
+use ufaigw_gateway::web::CONSOLE_BUILT;
 
 const POLICY_BEFORE_NONCE: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'nonce-";
 const POLICY_AFTER_NONCE: &str = "'; style-src-attr 'unsafe-inline'; img-src 'self' data:; \

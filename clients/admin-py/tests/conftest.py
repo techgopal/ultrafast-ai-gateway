@@ -4,7 +4,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from ultrafast_admin import AdminClient
+from ufaigw_admin import AdminClient
 
 from .gateway import Gateway, start_gateway
 from .session import member_token, mint_token

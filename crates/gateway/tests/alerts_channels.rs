@@ -13,12 +13,12 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use ultrafast_gateway::alerts::{Deliverer, DeliveryConfig};
-use ultrafast_gateway::app::{router, AppState};
-use ultrafast_gateway::identity::password::warm_up;
-use ultrafast_gateway::identity::Role;
-use ultrafast_gateway::secrets::Cipher;
-use ultrafast_gateway::store::{NewAlertEvent, Store};
+use ufaigw_gateway::alerts::{Deliverer, DeliveryConfig};
+use ufaigw_gateway::app::{router, AppState};
+use ufaigw_gateway::identity::password::warm_up;
+use ufaigw_gateway::identity::Role;
+use ufaigw_gateway::secrets::Cipher;
+use ufaigw_gateway::store::{NewAlertEvent, Store};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -37,8 +37,8 @@ fn fast() -> DeliveryConfig {
         retry_delays: vec![Duration::from_millis(50), Duration::from_millis(100)],
         timeout: Duration::from_secs(5),
         shutdown_cap: Duration::from_millis(300),
-        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
-        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+        queue_capacity: ufaigw_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ufaigw_gateway::alerts::MAX_PENDING,
     }
 }
 
@@ -62,7 +62,7 @@ async fn env(cfg: DeliveryConfig) -> Env {
     let app = router(state.clone());
     let admin_id = seed_user(&store, "maya@example.com", Role::Admin, ORG_PASSWORD).await;
     let member_id = seed_user(&store, "lena@example.com", Role::Member, ORG_PASSWORD).await;
-    let session = |id: i64, s: ultrafast_gateway::store::NewSession| Signed {
+    let session = |id: i64, s: ufaigw_gateway::store::NewSession| Signed {
         cookie: format!("uf_session={}", s.id),
         csrf: s.csrf_token,
         user_id: id,
@@ -470,10 +470,7 @@ async fn the_test_delivery_is_signed_and_stored_as_a_test_event() {
     assert!(payload["details"].is_object());
     let at = payload["at"].as_str().unwrap();
     assert!(at.ends_with('Z') && at.contains('T'), "{at}");
-    assert!(payload["gateway"]
-        .as_str()
-        .unwrap()
-        .starts_with("ultrafast "));
+    assert!(payload["gateway"].as_str().unwrap().starts_with("ufaigw "));
 
     let events = env.store.alert_events(10).await.unwrap();
     assert_eq!(events.len(), 1);
@@ -656,8 +653,8 @@ async fn a_dead_host_does_not_hold_up_a_healthy_one() {
         retry_delays: vec![Duration::from_millis(400), Duration::from_millis(400)],
         timeout: Duration::from_millis(400),
         shutdown_cap: Duration::from_millis(300),
-        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
-        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+        queue_capacity: ufaigw_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ufaigw_gateway::alerts::MAX_PENDING,
     })
     .await;
     // Answers only after the timeout.
@@ -753,8 +750,8 @@ async fn a_full_queue_drops_and_counts_and_never_blocks() {
         retry_delays: vec![],
         timeout: Duration::from_secs(60),
         shutdown_cap: Duration::from_millis(200),
-        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
-        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+        queue_capacity: ufaigw_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ufaigw_gateway::alerts::MAX_PENDING,
     })
     .await;
     let hung = MockServer::start().await;
@@ -771,7 +768,7 @@ async fn a_full_queue_drops_and_counts_and_never_blocks() {
     assert!(started.elapsed() < Duration::from_secs(2), "offer blocked");
     let dropped = counter(&env.metrics(), "dropped");
     assert!(dropped > 0, "nothing was dropped");
-    assert!(env.deliverer().queued() <= ultrafast_gateway::alerts::QUEUE_CAPACITY);
+    assert!(env.deliverer().queued() <= ufaigw_gateway::alerts::QUEUE_CAPACITY);
 }
 
 #[tokio::test]
@@ -780,8 +777,8 @@ async fn shutdown_ends_the_deliverer_even_with_a_delivery_in_flight() {
         retry_delays: vec![],
         timeout: Duration::from_secs(60),
         shutdown_cap: Duration::from_millis(200),
-        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
-        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+        queue_capacity: ufaigw_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ufaigw_gateway::alerts::MAX_PENDING,
     })
     .await;
     let hung = MockServer::start().await;
@@ -825,8 +822,8 @@ async fn many_events_to_a_dead_host_do_not_starve_a_healthy_channel() {
         retry_delays: vec![Duration::from_millis(500), Duration::from_millis(500)],
         timeout: Duration::from_secs(10),
         shutdown_cap: Duration::from_millis(300),
-        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
-        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+        queue_capacity: ufaigw_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ufaigw_gateway::alerts::MAX_PENDING,
     })
     .await;
     let dead = hung_server().await;
@@ -856,8 +853,8 @@ async fn at_most_four_deliveries_to_one_channel_are_in_progress() {
         retry_delays: vec![],
         timeout: Duration::from_secs(30),
         shutdown_cap: Duration::from_millis(200),
-        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
-        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+        queue_capacity: ufaigw_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ufaigw_gateway::alerts::MAX_PENDING,
     })
     .await;
     let hung = hung_server().await;
@@ -875,7 +872,7 @@ async fn at_most_four_deliveries_to_one_channel_are_in_progress() {
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert_eq!(
         hung.received_requests().await.unwrap().len(),
-        ultrafast_gateway::alerts::CHANNEL_CONCURRENCY
+        ufaigw_gateway::alerts::CHANNEL_CONCURRENCY
     );
 }
 
@@ -885,16 +882,16 @@ async fn deliveries_beyond_a_channels_backlog_are_dropped_and_recorded() {
         retry_delays: vec![],
         timeout: Duration::from_secs(30),
         shutdown_cap: Duration::from_millis(200),
-        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
-        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+        queue_capacity: ufaigw_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ufaigw_gateway::alerts::MAX_PENDING,
     })
     .await;
     let hung = hung_server().await;
     let (id, _) = env.create("hung", "webhook", &hook(&hung)).await;
     let event = env.event("x").await;
     let over = 40;
-    let total = ultrafast_gateway::alerts::CHANNEL_BACKLOG
-        + ultrafast_gateway::alerts::CHANNEL_CONCURRENCY
+    let total = ufaigw_gateway::alerts::CHANNEL_BACKLOG
+        + ufaigw_gateway::alerts::CHANNEL_CONCURRENCY
         + over;
     for _ in 0..total {
         env.deliverer().offer(event, vec![id]);
@@ -919,7 +916,7 @@ async fn a_job_dropped_on_a_full_queue_is_recorded_on_its_event() {
         timeout: Duration::from_secs(5),
         shutdown_cap: Duration::from_millis(200),
         queue_capacity: 2,
-        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+        max_pending: ufaigw_gateway::alerts::MAX_PENDING,
     })
     .await;
     let server = receiver(200).await;
@@ -1000,7 +997,7 @@ async fn a_flood_to_dead_hosts_backs_up_into_the_queue_which_drops_and_records()
         timeout: Duration::from_secs(30),
         shutdown_cap: Duration::from_millis(200),
         queue_capacity: 8,
-        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+        max_pending: ufaigw_gateway::alerts::MAX_PENDING,
     })
     .await;
     let mut servers = Vec::new();
@@ -1015,7 +1012,7 @@ async fn a_flood_to_dead_hosts_backs_up_into_the_queue_which_drops_and_records()
         servers.push(hung);
     }
     let event = env.event("x").await;
-    let per_channel = ultrafast_gateway::alerts::CHANNEL_BACKLOG + 40;
+    let per_channel = ufaigw_gateway::alerts::CHANNEL_BACKLOG + 40;
     for _ in 0..per_channel {
         for id in &ids {
             env.deliverer().offer(event, vec![*id]);
@@ -1039,7 +1036,7 @@ async fn a_flood_to_dead_hosts_backs_up_into_the_queue_which_drops_and_records()
     for s in &servers {
         assert!(
             s.received_requests().await.unwrap().len()
-                <= ultrafast_gateway::alerts::CHANNEL_CONCURRENCY
+                <= ufaigw_gateway::alerts::CHANNEL_CONCURRENCY
         );
     }
 }
@@ -1105,7 +1102,7 @@ async fn waiting_for_a_dead_channels_gate_does_not_count_toward_max_pending() {
         retry_delays: vec![],
         timeout: Duration::from_secs(60),
         shutdown_cap: Duration::from_millis(200),
-        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
+        queue_capacity: ufaigw_gateway::alerts::QUEUE_CAPACITY,
         max_pending: 9,
     })
     .await;
@@ -1143,8 +1140,8 @@ async fn a_send_permit_is_not_held_while_a_delivery_waits_to_retry() {
         retry_delays: vec![Duration::from_secs(3), Duration::from_secs(3)],
         timeout: Duration::from_secs(5),
         shutdown_cap: Duration::from_millis(200),
-        queue_capacity: ultrafast_gateway::alerts::QUEUE_CAPACITY,
-        max_pending: ultrafast_gateway::alerts::MAX_PENDING,
+        queue_capacity: ufaigw_gateway::alerts::QUEUE_CAPACITY,
+        max_pending: ufaigw_gateway::alerts::MAX_PENDING,
     })
     .await;
     let failing = receiver(500).await;

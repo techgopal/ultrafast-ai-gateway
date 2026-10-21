@@ -14,8 +14,8 @@ use common::{error_code, org_tweaked, Org, Signed};
 use ed25519_dalek::{Signer, SigningKey};
 use mock_mcp::{tool, MockMcp};
 use serde_json::{json, Value};
-use ultrafast_gateway::mcp::catalog::{Catalog, Config};
-use ultrafast_gateway::mcp::local::{Config as LocalConfig, Supervisor};
+use ufaigw_gateway::mcp::catalog::{Catalog, Config};
+use ufaigw_gateway::mcp::local::{Config as LocalConfig, Supervisor};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

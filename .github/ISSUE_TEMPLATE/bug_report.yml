@@ -10,8 +10,8 @@ body:
     id: version
     attributes:
       label: Version
-      description: Output of `ultrafast --version`, or the image tag.
-      placeholder: 2.1.1
+      description: Output of `ufaigw --version`, or the image tag.
+      placeholder: 3.0.0
     validations:
       required: true
   - type: dropdown
