@@ -96,7 +96,8 @@ fn is_session_value(value: &str) -> bool {
 impl Store {
     /// Creates a session; see `Tx::create_session`.
     pub async fn create_session(&self, user_id: i64) -> Result<NewSession> {
-        let mut tx = self.begin().await?;
+        // It reads the session length before it writes.
+        let mut tx = self.begin_immediate().await?;
         let session = tx.create_session(user_id).await?;
         tx.commit().await?;
         Ok(session)
@@ -791,6 +792,37 @@ mod tests {
             s.token_by_id(three).await.unwrap().unwrap().last_used_at,
             None
         );
+    }
+
+    /// A sign-in reads the session length and then writes: started while
+    /// another request holds the write lock, it waits for it instead of
+    /// failing with SQLITE_BUSY_SNAPSHOT once that request commits.
+    #[tokio::test]
+    async fn a_session_is_created_while_another_write_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("gateway.db")).await.unwrap();
+        let maya = add_user(&s, "maya@example.com").await;
+
+        let mut other = s.begin_immediate().await.unwrap();
+        other
+            .insert_user(NewUser {
+                email: "omar@example.com",
+                name: "Someone",
+                role: Role::Member,
+                status: UserStatus::Active,
+                password_hash: None,
+            })
+            .await
+            .unwrap();
+        let signing_in = {
+            let s = s.clone();
+            tokio::spawn(async move { s.create_session(maya).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        other.commit().await.unwrap();
+
+        let session = signing_in.await.unwrap().unwrap();
+        assert!(s.live_session(&session.id).await.unwrap().is_some());
     }
 
     #[tokio::test]
