@@ -370,7 +370,7 @@ async fn refusals_are_openai_errors_and_no_provider_is_called() {
         ),
         (json!({"conversation":"c"}), "conversation"),
         (json!({"background":true}), "background"),
-        (json!({"tools":[{"type":"web_search"}]}), "web_search"),
+        (json!({"truncation":"auto"}), "truncation"),
         // A prompt is applied now (see tests/prompts.rs); a malformed one is refused.
         (json!({"prompt":{"id":"greet","version":"x"}}), "version"),
         (
@@ -429,7 +429,7 @@ async fn reasoning_effort_reaches_an_openai_provider_and_reasoning_items_are_dro
 
 #[tokio::test]
 async fn reasoning_effort_is_a_400_for_a_provider_that_cannot_take_it() {
-    for kind in ["anthropic", "gemini"] {
+    for kind in ["gemini"] {
         let h = harness(kind).await;
         let body = json!({"model":"p/m","input":"x","reasoning":{"effort":"high"}});
         let (status, _, text) = responses(&h, &body).await;

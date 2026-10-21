@@ -197,6 +197,7 @@ fn weather() -> ufaigw_client::Tool {
         description: Some("Current weather".into()),
         parameters: serde_json::json!({"type":"object","properties":{"city":{"type":"string"}}}),
         strict: None,
+        freeform: false,
     }
 }
 

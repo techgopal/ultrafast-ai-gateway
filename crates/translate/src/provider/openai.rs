@@ -107,7 +107,7 @@ fn message_value(m: &Message) -> Value {
 }
 
 fn tool_value(t: &Tool) -> Value {
-    let mut f = json!({ "name": t.name, "parameters": t.parameters });
+    let mut f = json!({ "name": t.name, "parameters": t.wire_parameters() });
     if let Some(d) = &t.description {
         f["description"] = json!(d);
     }
@@ -767,7 +767,21 @@ mod tests {
             description: Some("d".into()),
             parameters: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}),
             strict: None,
+            freeform: false,
         }
+    }
+
+    #[test]
+    fn a_freeform_tool_is_a_function_with_one_string_input() {
+        let mut t = tool("apply_patch");
+        t.freeform = true;
+        let mut req = request(false);
+        req.tools = vec![t];
+        let v = body_of(&req);
+        assert_eq!(
+            v["tools"][0]["function"]["parameters"],
+            serde_json::json!({"type":"object","properties":{"input":{"type":"string"}},"required":["input"]})
+        );
     }
 
     fn body_of(req: &ChatRequest) -> serde_json::Value {

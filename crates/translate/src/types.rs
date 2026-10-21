@@ -44,6 +44,32 @@ pub struct Tool {
     /// ignore it.
     #[serde(default)]
     pub strict: Option<bool>,
+    /// A freeform (Codex `custom`) tool: its input is one text, not a JSON
+    /// object. Every provider is given it as a function with one string
+    /// parameter, `input`.
+    #[serde(default)]
+    pub freeform: bool,
+}
+
+impl Tool {
+    /// The parameter schema of a freeform tool.
+    pub fn freeform_parameters() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {"input": {"type": "string"}},
+            "required": ["input"],
+        })
+    }
+
+    /// The JSON Schema the provider is given: the tool's own, or the one
+    /// string parameter of a freeform tool.
+    pub fn wire_parameters(&self) -> std::borrow::Cow<'_, serde_json::Value> {
+        if self.freeform {
+            std::borrow::Cow::Owned(Self::freeform_parameters())
+        } else {
+            std::borrow::Cow::Borrowed(&self.parameters)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

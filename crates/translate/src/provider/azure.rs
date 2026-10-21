@@ -194,6 +194,7 @@ mod tests {
             description: None,
             parameters: serde_json::json!({"type": "object"}),
             strict: None,
+            freeform: false,
         }];
         req.tool_choice = Some(ToolChoice::Required);
         let r = build_request(&target(None), &req).unwrap();

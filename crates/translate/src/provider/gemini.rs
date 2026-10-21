@@ -161,7 +161,7 @@ fn contents_value(req: &ChatRequest) -> Result<Vec<Value>, TranslateError> {
 fn declaration(t: &Tool) -> Value {
     // `parametersJsonSchema` takes a full JSON Schema; `parameters` is an
     // OpenAPI subset that rejects what OpenAI-style schemas carry (additionalProperties, ...).
-    let mut o = json!({ "name": t.name, "parametersJsonSchema": t.parameters });
+    let mut o = json!({ "name": t.name, "parametersJsonSchema": t.wire_parameters() });
     if let Some(d) = &t.description {
         o["description"] = json!(d);
     }
@@ -1006,6 +1006,7 @@ mod tests {
             description: Some("Weather".into()),
             parameters: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}),
             strict: None,
+            freeform: false,
         }
     }
 
@@ -1013,6 +1014,18 @@ mod tests {
         let mut req = request(false);
         req.tools = vec![weather_tool()];
         req
+    }
+
+    #[test]
+    fn a_freeform_tool_is_a_function_with_one_string_input() {
+        let mut req = with_tools();
+        req.tools[0].freeform = true;
+        let r = build_request(&target(), &req).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(
+            v["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"],
+            serde_json::json!({"type":"object","properties":{"input":{"type":"string"}},"required":["input"]})
+        );
     }
 
     #[test]

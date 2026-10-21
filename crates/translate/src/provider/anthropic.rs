@@ -77,7 +77,7 @@ fn tool_use_block(c: &ToolCall) -> Result<Value, TranslateError> {
 }
 
 fn tool_value(t: &Tool) -> Value {
-    let mut o = json!({"name": t.name, "input_schema": t.parameters});
+    let mut o = json!({"name": t.name, "input_schema": t.wire_parameters()});
     if let Some(d) = &t.description {
         o["description"] = json!(d);
     }
@@ -183,11 +183,6 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
     super::check_tool_choice(req)?;
     // A tool message's `name` (OpenAI's older form) is not needed: the id
     // names the call.
-    if req.reasoning_effort.is_some() {
-        return Err(TranslateError::Unsupported(
-            "reasoning effort is not supported by this provider".into(),
-        ));
-    }
     if req
         .messages
         .iter()
@@ -250,6 +245,16 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
         Some(ResponseFormat::JsonSchema { schema, .. }) => {
             body["output_config"] =
                 json!({ "format": { "type": "json_schema", "schema": schema } });
+        }
+    }
+    // A reasoning effort is adaptive thinking at that effort. `none` asks for
+    // no reasoning; Anthropic has no `minimal`, its lowest is `low`.
+    match req.reasoning_effort.as_deref() {
+        None | Some("none") => {}
+        Some(effort) => {
+            body["thinking"] = json!({"type": "adaptive"});
+            body["output_config"]["effort"] =
+                json!(if effort == "minimal" { "low" } else { effort });
         }
     }
     if req.stream {
@@ -555,14 +560,47 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_is_refused() {
+    fn reasoning_effort_becomes_adaptive_thinking_and_effort() {
+        let body = |effort: Option<&str>, format: bool| {
+            let mut req = request(vec![Message::text(Role::User, "hi")]);
+            req.reasoning_effort = effort.map(str::to_string);
+            if format {
+                req.response_format = Some(ResponseFormat::JsonObject);
+            }
+            let r = build_request(&target(), &req).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&r.body).unwrap()
+        };
+        let v = body(Some("high"), false);
+        assert_eq!(v["thinking"], serde_json::json!({"type": "adaptive"}));
+        assert_eq!(v["output_config"], serde_json::json!({"effort": "high"}));
+        // next to a structured output
+        let v = body(Some("medium"), true);
+        assert_eq!(v["output_config"]["effort"], "medium");
+        assert_eq!(v["output_config"]["format"]["type"], "json_schema");
+        // minimal has no Anthropic name; none and nothing ask for no thinking
+        assert_eq!(
+            body(Some("minimal"), false)["output_config"]["effort"],
+            "low"
+        );
+        for e in [None, Some("none")] {
+            let v = body(e, false);
+            assert!(v.get("thinking").is_none() && v.get("output_config").is_none());
+        }
+    }
+
+    #[test]
+    fn a_freeform_tool_is_a_function_with_one_string_input() {
         let mut req = request(vec![Message::text(Role::User, "hi")]);
-        assert!(build_request(&target(), &req).is_ok());
-        req.reasoning_effort = Some("low".into());
-        assert!(matches!(
-            build_request(&target(), &req),
-            Err(TranslateError::Unsupported(m)) if m.contains("reasoning")
-        ));
+        let mut t = tool("apply_patch");
+        t.freeform = true;
+        t.parameters = serde_json::json!({"type": "object", "properties": {"zzz": {}}});
+        req.tools = vec![t];
+        let r = build_request(&target(), &req).unwrap();
+        let v: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(
+            v["tools"][0]["input_schema"],
+            serde_json::json!({"type":"object","properties":{"input":{"type":"string"}},"required":["input"]})
+        );
     }
 
     #[test]
@@ -698,6 +736,7 @@ mod tests {
             description: Some("d".into()),
             parameters: serde_json::json!({"type": "object"}),
             strict: None,
+            freeform: false,
         }
     }
 

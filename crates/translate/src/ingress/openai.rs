@@ -195,6 +195,7 @@ pub fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
             description,
             parameters,
             strict,
+            freeform: false,
         });
     }
     Ok(out)

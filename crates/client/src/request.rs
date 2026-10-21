@@ -230,6 +230,7 @@ mod tests {
             description: Some("Current weather".into()),
             parameters: json!({"type": "object"}),
             strict: None,
+            freeform: false,
         }
     }
 

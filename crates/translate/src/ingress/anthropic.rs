@@ -150,6 +150,7 @@ fn parse_tools(tools: Vec<Value>, dropped: &mut Dropped) -> Result<Vec<Tool>, Tr
                 _ => return Err(invalid("tool 'input_schema' must be an object")),
             },
             strict: None,
+            freeform: false,
         });
     }
     Ok(out)

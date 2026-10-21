@@ -115,6 +115,7 @@ impl Encoder {
             description,
             parameters,
             strict,
+            freeform,
         } in tools
         {
             self.field(31, name.as_bytes());
@@ -123,6 +124,8 @@ impl Encoder {
             let schema = serde_json::to_vec(parameters).unwrap_or_default();
             self.field(33, &schema);
             self.optional(36, strict.map(|b| [u8::from(b)]).as_ref().map(|b| &b[..]));
+            // Left out when false, so the keys of ordinary tools are unchanged.
+            self.optional(43, freeform.then_some(&b"1"[..]));
         }
     }
 
@@ -453,7 +456,17 @@ mod tests {
             description: Some("d".into()),
             parameters: serde_json::json!({"type": "object", "properties": {"a": {"type": "string"}}}),
             strict: None,
+            freeform: false,
         }
+    }
+
+    #[test]
+    fn a_freeform_tool_changes_the_key() {
+        let mut a = base();
+        a.tools = vec![tool("t")];
+        let mut b = a.clone();
+        b.tools[0].freeform = true;
+        assert_ne!(key_of(&a), key_of(&b));
     }
 
     fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
