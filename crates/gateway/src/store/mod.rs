@@ -516,9 +516,18 @@ impl Store {
         Ok(tx)
     }
 
+    /// On SQLite it takes the write lock at once (`BEGIN IMMEDIATE`): a
+    /// transaction here writes, and a deferred one that reads first fails
+    /// with SQLITE_BUSY_SNAPSHOT, which the busy timeout does not retry,
+    /// when another write commits in between. One writer at a time is all
+    /// SQLite allows anyway.
     pub async fn begin(&self) -> Result<Tx<'_>> {
+        let inner = match self.dialect {
+            Dialect::Sqlite => self.pool.begin_with("BEGIN IMMEDIATE").await?,
+            Dialect::Postgres => self.pool.begin().await?,
+        };
         Ok(Tx {
-            inner: self.pool.begin().await?,
+            inner,
             dialect: self.dialect,
         })
     }
@@ -564,6 +573,32 @@ impl Store {
 mod tests {
     use super::*;
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+
+    /// A transaction that reads and then writes, begun while another
+    /// request holds the write lock: on SQLite it waits for the lock instead
+    /// of failing with SQLITE_BUSY_SNAPSHOT once that request commits.
+    #[tokio::test]
+    async fn a_transaction_that_reads_first_writes_after_a_concurrent_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("gateway.db")).await.unwrap();
+
+        let mut other = s.begin_immediate().await.unwrap();
+        other.insert_team("Platform").await.unwrap();
+        let reads_then_writes = {
+            let s = s.clone();
+            tokio::spawn(async move {
+                let mut tx = s.begin().await?;
+                tx.team_by_id(1).await?;
+                tx.insert_team("Search").await?;
+                tx.commit().await?;
+                anyhow::Ok(())
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        other.commit().await.unwrap();
+
+        reads_then_writes.await.unwrap().unwrap();
+    }
 
     const MALFORMED: [&str; 16] = [
         "",

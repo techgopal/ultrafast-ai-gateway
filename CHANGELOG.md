@@ -31,8 +31,9 @@ database migration.
 
 ### Fixed
 
-- A sign-in while another request writes no longer fails with "database is
-  locked".
+- On SQLite, a change made while another request writes (a sign-in, model
+  grants, and any other write that reads first) no longer fails with
+  "database is locked": every transaction takes the write lock at once.
 
 ## [2.1.1] - 2026-10-16
 
