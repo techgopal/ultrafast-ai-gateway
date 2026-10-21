@@ -171,6 +171,7 @@ async fn a_translate_request_converts() {
         parallel_tool_calls: None,
         response_format: None,
         reasoning_effort: None,
+        dropped: Vec::new(),
     };
     check(&c.chat(t).await.unwrap());
 }

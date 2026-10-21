@@ -200,6 +200,8 @@ impl CacheKey {
             parallel_tool_calls,
             response_format,
             reasoning_effort,
+            // What translation left out is a result of the request, not part of it.
+            dropped: _,
         } = request;
         let mut e = Encoder::new("chat");
         e.parts(parts);
@@ -312,6 +314,7 @@ mod tests {
             parallel_tool_calls: None,
             response_format: None,
             reasoning_effort: None,
+            dropped: Vec::new(),
         }
     }
 

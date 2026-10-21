@@ -339,6 +339,7 @@ mod tests {
             parallel_tool_calls: None,
             response_format: None,
             reasoning_effort: None,
+            dropped: Vec::new(),
         };
         CacheKey::chat(
             &KeyParts {

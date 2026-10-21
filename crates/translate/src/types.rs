@@ -155,7 +155,7 @@ pub fn image_source(url: &str) -> Result<ImageSource, TranslateError> {
     Err(bad("image url must be an http(s) URL or a base64 data URL"))
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -174,6 +174,12 @@ pub struct ChatRequest {
     /// can express it; the other providers refuse a call that sets it.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Names of what translation left out of the caller's request (fields,
+    /// tools, content blocks), for the call's log row. Empty for a request
+    /// that was taken whole. Forms: `context_management`, `cache_control`,
+    /// `tools[2]:web_search_20250305`, `messages[1].content[0]:thinking`.
+    #[serde(default)]
+    pub dropped: Vec<String>,
 }
 
 /// OpenAI's `response_format`.

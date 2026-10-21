@@ -504,6 +504,7 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
             parallel_tool_calls,
             response_format,
             reasoning_effort,
+            dropped: Vec::new(),
         },
         prompt,
     })

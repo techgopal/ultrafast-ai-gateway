@@ -6,12 +6,11 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::error::TranslateError;
+use crate::ingress::openai::REASONING_EFFORTS;
 use crate::types::{
     base64_source, image_source, ChatRequest, ChatResponse, FinishReason, ImageSource, Message,
     Part, ResponseFormat, Role, StreamEvent, Tool, ToolCall, ToolChoice, Usage,
 };
-
-const ONLY_TEXT: &str = "Only text content is supported.";
 
 #[derive(Deserialize)]
 struct WireRequest {
@@ -34,10 +33,13 @@ struct WireRequest {
     tool_choice: Option<Value>,
     #[serde(default)]
     output_config: Option<Value>,
+    #[serde(default)]
+    thinking: Option<Value>,
     /// Accepted and not used.
     #[serde(default)]
     #[allow(dead_code)]
     metadata: Option<Value>,
+    /// Every field that is not named above: dropped, and named.
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
@@ -55,32 +57,63 @@ enum WireContent {
     Blocks(Vec<Value>),
 }
 
-fn text_of(content: WireContent) -> Result<String, TranslateError> {
+/// What translation leaves out, in the order it is met. `cache_control` and
+/// `defer_loading` are named once however often they occur.
+#[derive(Default)]
+struct Dropped(Vec<String>);
+
+impl Dropped {
+    fn once(&mut self, name: &str) {
+        if !self.0.iter().any(|d| d == name) {
+            self.0.push(name.to_string());
+        }
+    }
+
+    fn add(&mut self, name: String) {
+        self.0.push(name);
+    }
+
+    /// `cache_control` on a block or a tool changes nothing in the text.
+    fn cache_control(&mut self, block: &Value) {
+        if block.get("cache_control").is_some_and(|c| !c.is_null()) {
+            self.once("cache_control");
+        }
+    }
+}
+
+/// The text blocks of `blocks` joined by newlines (separate texts must not
+/// run together); any other block is dropped and named `{at}[i]:{type}`.
+fn blocks_text(
+    blocks: &[Value],
+    at: &str,
+    dropped: &mut Dropped,
+) -> Result<String, TranslateError> {
+    let mut out = String::new();
+    for (i, b) in blocks.iter().enumerate() {
+        dropped.cache_control(b);
+        if b["type"] != "text" {
+            dropped.add(format!("{at}[{i}]:{}", b["type"].as_str().unwrap_or("?")));
+            continue;
+        }
+        let Some(t) = b["text"].as_str() else {
+            return Err(invalid("content block 'text' must be a string"));
+        };
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(t);
+    }
+    Ok(out)
+}
+
+fn text_of(
+    content: WireContent,
+    at: &str,
+    dropped: &mut Dropped,
+) -> Result<String, TranslateError> {
     match content {
         WireContent::Text(t) => Ok(t),
-        WireContent::Blocks(blocks) => {
-            let mut out = String::new();
-            for b in &blocks {
-                // Blocks are separate texts: a newline keeps the end of one
-                // from running into the start of the next.
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                if b["type"] != "text" {
-                    return Err(TranslateError::InvalidRequest(ONLY_TEXT.into()));
-                }
-                // Citations and cache hints change nothing in the text.
-                match b["text"].as_str() {
-                    Some(t) => out.push_str(t),
-                    None => {
-                        return Err(TranslateError::InvalidRequest(
-                            "content block 'text' must be a string".into(),
-                        ))
-                    }
-                }
-            }
-            Ok(out)
-        }
+        WireContent::Blocks(blocks) => blocks_text(&blocks, at, dropped),
     }
 }
 
@@ -88,40 +121,44 @@ fn invalid(m: impl Into<String>) -> TranslateError {
     TranslateError::InvalidRequest(m.into())
 }
 
-fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
-    tools
-        .into_iter()
-        .map(|t| {
-            // Server tools (web_search_*, bash_*, ...) run at Anthropic, not here.
-            // "custom" is the explicit form of a normal client tool.
-            if let Some(kind) = t
-                .get("type")
-                .filter(|k| !k.is_null() && k.as_str() != Some("custom"))
-            {
-                return Err(invalid(format!(
-                    "server tool '{}' is not supported",
-                    kind.as_str().unwrap_or("?")
-                )));
-            }
-            let name = t["name"]
-                .as_str()
-                .ok_or_else(|| invalid("tool 'name' must be a string"))?;
-            // `cache_control` is accepted and ignored.
-            Ok(Tool {
-                name: name.to_string(),
-                description: t["description"].as_str().map(str::to_string),
-                parameters: match &t["input_schema"] {
-                    Value::Null => json!({ "type": "object" }),
-                    v @ Value::Object(_) => v.clone(),
-                    _ => return Err(invalid("tool 'input_schema' must be an object")),
-                },
-                strict: None,
-            })
-        })
-        .collect()
+fn parse_tools(tools: Vec<Value>, dropped: &mut Dropped) -> Result<Vec<Tool>, TranslateError> {
+    let mut out = Vec::with_capacity(tools.len());
+    for (i, t) in tools.into_iter().enumerate() {
+        // Server tools (web_search_*, bash_*, tool_search_*, ...) run at
+        // Anthropic, not here. "custom" is the explicit form of a normal
+        // client tool.
+        if let Some(kind) = t
+            .get("type")
+            .filter(|k| !k.is_null() && k.as_str() != Some("custom"))
+        {
+            dropped.add(format!("tools[{i}]:{}", kind.as_str().unwrap_or("?")));
+            continue;
+        }
+        let name = t["name"]
+            .as_str()
+            .ok_or_else(|| invalid("tool 'name' must be a string"))?;
+        dropped.cache_control(&t);
+        if t.get("defer_loading").is_some() {
+            dropped.once("defer_loading");
+        }
+        out.push(Tool {
+            name: name.to_string(),
+            description: t["description"].as_str().map(str::to_string),
+            parameters: match &t["input_schema"] {
+                Value::Null => json!({ "type": "object" }),
+                v @ Value::Object(_) => v.clone(),
+                _ => return Err(invalid("tool 'input_schema' must be an object")),
+            },
+            strict: None,
+        });
+    }
+    Ok(out)
 }
 
-fn parse_tool_choice(v: &Value) -> Result<(ToolChoice, Option<bool>), TranslateError> {
+fn parse_tool_choice(
+    v: &Value,
+    dropped: &mut Dropped,
+) -> Result<(ToolChoice, Option<bool>), TranslateError> {
     let choice = match v["type"].as_str() {
         Some("auto") => ToolChoice::Auto,
         Some("any") => ToolChoice::Required,
@@ -132,7 +169,11 @@ fn parse_tool_choice(v: &Value) -> Result<(ToolChoice, Option<bool>), TranslateE
                 .ok_or_else(|| invalid("tool_choice 'name' must be a string"))?
                 .to_string(),
         ),
-        _ => return Err(invalid("tool_choice 'type' is not supported")),
+        other => {
+            // A kind the gateway does not know leaves the model to choose.
+            dropped.add(format!("tool_choice:{}", other.unwrap_or("?")));
+            ToolChoice::Auto
+        }
     };
     let parallel = (v["disable_parallel_tool_use"] == true).then_some(false);
     Ok((choice, parallel))
@@ -164,26 +205,30 @@ fn text_block(b: &Value) -> Result<String, TranslateError> {
         .ok_or_else(|| invalid("content block 'text' must be a string"))
 }
 
-/// The text of a `tool_result` body. The error flag (`is_error`) does not
-/// survive into other formats: the text is kept as it is.
-fn tool_result_text(content: &Value) -> Result<String, TranslateError> {
+/// The text of a `tool_result` body, and the images in it (which the target
+/// receives as a user message after the result). The error flag (`is_error`)
+/// does not survive into other formats: the text is kept as it is. Other
+/// blocks (`tool_reference`, documents) are dropped and named.
+fn tool_result(
+    content: &Value,
+    at: &str,
+    dropped: &mut Dropped,
+) -> Result<(String, Vec<Part>), TranslateError> {
     match content {
-        Value::Null => Ok(String::new()),
-        Value::String(t) => Ok(t.clone()),
+        Value::Null => Ok((String::new(), Vec::new())),
+        Value::String(t) => Ok((t.clone(), Vec::new())),
         Value::Array(blocks) => {
-            let mut out = String::new();
-            for b in blocks {
+            let mut text = String::new();
+            let mut images = Vec::new();
+            for (i, b) in blocks.iter().enumerate() {
+                dropped.cache_control(b);
                 match b["type"].as_str() {
-                    Some("text") => out.push_str(&text_block(b)?),
-                    Some("image") => {
-                        return Err(TranslateError::Unsupported(
-                            "images inside a tool result are not supported".into(),
-                        ))
-                    }
-                    _ => return Err(invalid(ONLY_TEXT)),
+                    Some("text") => text.push_str(&text_block(b)?),
+                    Some("image") => images.push(image_block(b)?),
+                    other => dropped.add(format!("{at}.content[{i}]:{}", other.unwrap_or("?"))),
                 }
             }
-            Ok(out)
+            Ok((text, images))
         }
         _ => Err(invalid("tool_result 'content' must be a string or blocks")),
     }
@@ -192,7 +237,9 @@ fn tool_result_text(content: &Value) -> Result<String, TranslateError> {
 fn parse_message(
     role: Role,
     content: WireContent,
+    at: usize,
     out: &mut Vec<Message>,
+    dropped: &mut Dropped,
 ) -> Result<(), TranslateError> {
     let blocks = match content {
         WireContent::Text(t) => {
@@ -201,10 +248,21 @@ fn parse_message(
         }
         WireContent::Blocks(b) => b,
     };
+    if role == Role::System {
+        let at = format!("messages[{at}].content");
+        let text = blocks_text(&blocks, &at, dropped)?;
+        if !text.is_empty() {
+            out.push(Message::text(role, text));
+        }
+        return Ok(());
+    }
     let mut parts = Vec::new();
+    let mut result_images = Vec::new();
     let mut calls = Vec::new();
     let mut results = Vec::new();
-    for b in &blocks {
+    for (i, b) in blocks.iter().enumerate() {
+        dropped.cache_control(b);
+        let here = format!("messages[{at}].content[{i}]");
         match (b["type"].as_str(), role) {
             (Some("text"), _) => parts.push(Part::Text(text_block(b)?)),
             (Some("image"), Role::User) => parts.push(image_block(b)?),
@@ -226,24 +284,33 @@ fn parse_message(
                 let id = b["tool_use_id"]
                     .as_str()
                     .ok_or_else(|| invalid("tool_result 'tool_use_id' must be a string"))?;
-                let mut m = Message::text(Role::Tool, tool_result_text(&b["content"])?);
+                let (text, images) = tool_result(&b["content"], &here, dropped)?;
+                let mut m = Message::text(Role::Tool, text);
                 m.tool_call_id = Some(id.to_string());
                 results.push(m);
+                result_images.extend(images);
             }
-            (other, _) => {
+            // Known blocks in the wrong place are malformed.
+            (Some(kind @ ("image" | "tool_use" | "tool_result")), _) => {
                 let role = match role {
                     Role::Assistant => "an assistant",
                     _ => "a user",
                 };
                 return Err(invalid(format!(
-                    "content block '{}' is not supported in {role} message",
-                    other.unwrap_or("(no type)")
+                    "content block '{kind}' is not supported in {role} message"
                 )));
             }
+            // Thinking, documents, server tool blocks and whatever comes
+            // next: not carried, and named.
+            (other, _) => dropped.add(format!("{here}:{}", other.unwrap_or("?"))),
         }
     }
     // Tool results come first: they answer the assistant message before this one.
     out.extend(results);
+    if !result_images.is_empty() {
+        result_images.append(&mut parts);
+        parts = result_images;
+    }
     if !parts.is_empty() || !calls.is_empty() {
         let mut m = Message::text(role, "");
         m.content = parts;
@@ -253,36 +320,49 @@ fn parse_message(
     Ok(())
 }
 
-/// Anthropic's `output_config.format` (`{type:"json_schema", schema}`) as a
-/// response format. Other `output_config` settings are not supported.
-fn parse_output_config(oc: Option<&Value>) -> Result<Option<ResponseFormat>, TranslateError> {
+/// Anthropic's `output_config`: `format` (`{type:"json_schema", schema}`) is a
+/// response format, `effort` the reasoning effort. Other settings are
+/// dropped and named.
+fn parse_output_config(
+    oc: Option<&Value>,
+    dropped: &mut Dropped,
+) -> Result<(Option<ResponseFormat>, Option<String>), TranslateError> {
     let Some(oc) = oc.filter(|v| !v.is_null()) else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let fields = oc
         .as_object()
         .ok_or_else(|| invalid("output_config must be an object"))?;
-    if let Some(other) = fields.keys().find(|k| *k != "format") {
-        return Err(invalid(format!(
-            "output_config field '{other}' is not supported"
-        )));
+    let mut effort = None;
+    for (k, v) in fields {
+        match k.as_str() {
+            "format" => {}
+            "effort" => match v.as_str() {
+                Some(e) if REASONING_EFFORTS.contains(&e) => effort = Some(e.to_string()),
+                _ => dropped.add("output_config.effort".into()),
+            },
+            other => dropped.add(format!("output_config.{other}")),
+        }
     }
     let Some(format) = fields.get("format").filter(|v| !v.is_null()) else {
-        return Ok(None);
+        return Ok((None, effort));
     };
     if format["type"] != "json_schema" {
         return Err(invalid("output_config format 'type' must be json_schema"));
     }
     match &format["schema"] {
-        s @ Value::Object(_) => Ok(Some(ResponseFormat::JsonSchema {
-            name: "response".into(),
-            schema: s.clone(),
-            // Anthropic always enforces the schema; OpenAI and Azure treat a
-            // schema without `strict` as best effort, so a caller of this
-            // format keeps its enforcement on any provider.
-            strict: Some(true),
-            description: None,
-        })),
+        s @ Value::Object(_) => Ok((
+            Some(ResponseFormat::JsonSchema {
+                name: "response".into(),
+                schema: s.clone(),
+                // Anthropic always enforces the schema; OpenAI and Azure treat a
+                // schema without `strict` as best effort, so a caller of this
+                // format keeps its enforcement on any provider.
+                strict: Some(true),
+                description: None,
+            }),
+            effort,
+        )),
         _ => Err(invalid("output_config format 'schema' must be an object")),
     }
 }
@@ -290,41 +370,59 @@ fn parse_output_config(oc: Option<&Value>) -> Result<Option<ResponseFormat>, Tra
 pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
     let wire: WireRequest =
         serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
-    if let Some((field, _)) = wire.extra.iter().find(|(_, v)| !v.is_null()) {
-        return Err(TranslateError::InvalidRequest(format!(
-            "field '{field}' is not supported"
-        )));
-    }
     if wire.messages.is_empty() {
         return Err(TranslateError::InvalidRequest(
             "messages must not be empty".into(),
         ));
     }
-    let tools = parse_tools(wire.tools.unwrap_or_default())?;
-    let (tool_choice, parallel_tool_calls) =
+    let mut dropped = Dropped::default();
+    // Unknown top-level fields (context_management, top_k, ...): named.
+    for (field, _) in wire.extra.iter().filter(|(_, v)| !v.is_null()) {
+        dropped.add(field.clone());
+    }
+    // `thinking` has no setting of its own here: the effort comes from
+    // `output_config.effort`. It must still be well formed.
+    if let Some(t) = wire.thinking.as_ref().filter(|t| !t.is_null()) {
+        if !t.is_object() {
+            return Err(invalid("thinking must be an object"));
+        }
+    }
+    let tools = parse_tools(wire.tools.unwrap_or_default(), &mut dropped)?;
+    let (mut tool_choice, mut parallel_tool_calls) =
         match wire.tool_choice.as_ref().filter(|v| !v.is_null()) {
             Some(v) => {
-                let (c, p) = parse_tool_choice(v)?;
+                let (c, p) = parse_tool_choice(v, &mut dropped)?;
                 (Some(c), p)
             }
             None => (None, None),
         };
+    if tools.is_empty() && tool_choice.is_some() {
+        // Every tool was one the gateway cannot carry: nothing to choose from.
+        tool_choice = None;
+        parallel_tool_calls = None;
+        dropped.once("tool_choice");
+    }
     let mut messages = Vec::with_capacity(wire.messages.len() + 1);
     if let Some(system) = wire.system {
-        messages.push(Message::text(Role::System, text_of(system)?));
+        let text = text_of(system, "system", &mut dropped)?;
+        messages.push(Message::text(Role::System, text));
     }
-    for m in wire.messages {
+    for (at, m) in wire.messages.into_iter().enumerate() {
         let role = match m.role.as_str() {
             "user" => Role::User,
             "assistant" => Role::Assistant,
+            // Claude Code puts system messages among the others.
+            "system" => Role::System,
             other => {
                 return Err(TranslateError::InvalidRequest(format!(
                     "message role '{other}' is not supported"
                 )))
             }
         };
-        parse_message(role, m.content, &mut messages)?;
+        parse_message(role, m.content, at, &mut messages, &mut dropped)?;
     }
+    let (response_format, reasoning_effort) =
+        parse_output_config(wire.output_config.as_ref(), &mut dropped)?;
     Ok(ChatRequest {
         model: wire.model,
         messages,
@@ -336,8 +434,9 @@ pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
         tools,
         tool_choice,
         parallel_tool_calls,
-        response_format: parse_output_config(wire.output_config.as_ref())?,
-        reasoning_effort: None,
+        response_format,
+        reasoning_effort,
+        dropped: dropped.0,
     })
 }
 
@@ -643,32 +742,47 @@ mod tests {
     }
 
     #[test]
-    fn max_tokens_is_required_and_unknown_fields_are_refused() {
+    fn max_tokens_is_required() {
         assert!(matches!(
             parse_request(br#"{"model":"m","messages":[{"role":"user","content":"x"}]}"#),
             Err(TranslateError::InvalidRequest(_))
         ));
-        let m = invalid(
-            br#"{"model":"m","max_tokens":1,"top_k":1,"messages":[{"role":"user","content":"x"}]}"#,
-        );
-        assert!(m.contains("top_k"), "{m}");
         invalid(br#"{"model":"m","max_tokens":1,"messages":[]}"#);
-        invalid(br#"{"model":"m","max_tokens":1,"messages":[{"role":"system","content":"x"}]}"#);
+        invalid(br#"{"model":"m","max_tokens":1,"messages":[{"role":"tool","content":"x"}]}"#);
     }
 
     #[test]
-    fn non_text_blocks_are_refused() {
-        let m = invalid(
-            br#"{"model":"m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"thinking","thinking":"t"}]}]}"#,
-        );
+    fn unknown_top_level_fields_are_dropped_not_refused() {
+        let r = parse_request(
+            br#"{"model":"m","max_tokens":1,"top_k":1,"service_tier":null,"container":"c","messages":[{"role":"user","content":"x"}]}"#,
+        )
+        .unwrap();
         assert_eq!(
-            m,
-            "content block 'thinking' is not supported in a user message"
+            r.dropped,
+            vec!["container".to_string(), "top_k".to_string()]
         );
-        let m = invalid(
-            br#"{"model":"m","max_tokens":1,"system":[{"type":"tool_use"}],"messages":[{"role":"user","content":"x"}]}"#,
+        // A known field that is malformed is still refused.
+        invalid(br#"{"model":"m","max_tokens":1,"thinking":"yes","messages":[{"role":"user","content":"x"}]}"#);
+    }
+
+    #[test]
+    fn unknown_blocks_are_dropped_and_named() {
+        let r = parse_request(
+            br#"{"model":"m","max_tokens":1,"system":[{"type":"text","text":"s"},{"type":"tool_use"}],
+                "messages":[{"role":"user","content":[{"type":"thinking","thinking":"t"},{"type":"document","source":{}},{"type":"text","text":"x"}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.messages.len(), 2);
+        assert_eq!(r.messages[0].joined_text(), "s");
+        assert_eq!(r.messages[1].joined_text(), "x");
+        assert_eq!(
+            r.dropped,
+            vec![
+                "system[1]:tool_use".to_string(),
+                "messages[0].content[0]:thinking".to_string(),
+                "messages[0].content[1]:document".to_string(),
+            ]
         );
-        assert_eq!(m, "Only text content is supported.");
     }
 
     #[test]
@@ -687,10 +801,166 @@ mod tests {
             m,
             "content block 'image' is not supported in an assistant message"
         );
-        let m = invalid(
-            br#"{"model":"m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"document"}]}]}"#,
+    }
+
+    const FIXTURE: &str =
+        include_str!("../../../gateway/tests/fixtures/agents/claude-code-2.1.305.json");
+
+    #[test]
+    fn claude_code_request_parses() {
+        let r = parse_request(FIXTURE.as_bytes()).unwrap();
+        assert!(r.dropped.contains(&"context_management".to_string()));
+        assert!(r.dropped.contains(&"cache_control".to_string()));
+        assert!(r.dropped.contains(&"defer_loading".to_string()));
+        // `metadata` is a known field and is not listed.
+        assert!(!r.dropped.iter().any(|d| d == "metadata"));
+        assert_eq!(r.reasoning_effort.as_deref(), Some("medium"));
+        assert!(r.stream);
+        assert!(r.tools.len() >= 10);
+        // the system message of the first request stays at its position
+        assert!(r.messages.iter().any(|m| m.role == Role::System));
+    }
+
+    #[test]
+    fn system_role_messages_stay_in_place() {
+        let r = req(
+            r#"[{"role":"user","content":"a"},{"role":"system","content":"b"},{"role":"user","content":[{"type":"text","text":"c"}]}]"#,
+            "",
+        )
+        .unwrap();
+        let roles: Vec<_> = r
+            .messages
+            .iter()
+            .map(|m| (m.role, m.joined_text()))
+            .collect();
+        assert_eq!(
+            roles,
+            vec![
+                (Role::User, "a".to_string()),
+                (Role::System, "b".to_string()),
+                (Role::User, "c".to_string())
+            ]
         );
-        assert!(m.contains("'document'"), "{m}");
+    }
+
+    #[test]
+    fn thinking_blocks_in_history_are_dropped() {
+        let r = req(
+            r#"[{"role":"user","content":"a"},
+                {"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"redacted_thinking","data":"d"},{"type":"text","text":"b"}]}]"#,
+            "",
+        )
+        .unwrap();
+        assert_eq!(r.messages.len(), 2);
+        assert_eq!(r.messages[1].joined_text(), "b");
+        assert_eq!(
+            r.dropped,
+            vec![
+                "messages[1].content[0]:thinking".to_string(),
+                "messages[1].content[1]:redacted_thinking".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn server_tools_are_dropped() {
+        let r = req(
+            r#"[{"role":"user","content":"x"}]"#,
+            r#""tools":[{"name":"f","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"auto"},"#,
+        )
+        .unwrap();
+        assert_eq!(r.tools.len(), 1);
+        assert_eq!(r.tools[0].name, "f");
+        assert_eq!(r.dropped, vec!["tools[1]:web_search_20250305".to_string()]);
+        // Nothing left to choose from.
+        let r = req(
+            r#"[{"role":"user","content":"x"}]"#,
+            r#""tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"any"},"#,
+        )
+        .unwrap();
+        assert!(r.tools.is_empty());
+        assert_eq!(r.tool_choice, None);
+    }
+
+    #[test]
+    fn effort_comes_from_output_config() {
+        let eff = |oc: &str, thinking: &str| {
+            req(
+                r#"[{"role":"user","content":"x"}]"#,
+                &format!(r#""output_config":{oc},"thinking":{thinking},"#),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            eff(r#"{"effort":"high"}"#, r#"{"type":"adaptive"}"#)
+                .reasoning_effort
+                .as_deref(),
+            Some("high")
+        );
+        // adaptive thinking without an effort leaves the provider default
+        let r = eff("{}", r#"{"type":"adaptive"}"#);
+        assert_eq!(r.reasoning_effort, None);
+        assert!(r.dropped.is_empty());
+        // enabled thinking with a budget and no effort: no effort
+        assert_eq!(
+            eff("null", r#"{"type":"enabled","budget_tokens":2000}"#).reasoning_effort,
+            None
+        );
+        // an effort the gateway does not know is dropped and named
+        let r = eff(r#"{"effort":"turbo"}"#, "null");
+        assert_eq!(r.reasoning_effort, None);
+        assert_eq!(r.dropped, vec!["output_config.effort".to_string()]);
+        // format keeps its meaning next to effort; other fields are named
+        let r = eff(
+            r#"{"effort":"low","format":{"type":"json_schema","schema":{"type":"object"}},"zzz":1}"#,
+            "null",
+        );
+        assert!(r.response_format.is_some());
+        assert_eq!(r.dropped, vec!["output_config.zzz".to_string()]);
+    }
+
+    #[test]
+    fn an_unknown_tool_choice_falls_back_to_auto() {
+        let r = req(
+            r#"[{"role":"user","content":"x"}]"#,
+            r#""tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"x"},"#,
+        )
+        .unwrap();
+        assert_eq!(r.tool_choice, Some(ToolChoice::Auto));
+        assert_eq!(r.dropped, vec!["tool_choice:x".to_string()]);
+    }
+
+    #[test]
+    fn claude_code_history_blocks_translate() {
+        let r = req(
+            r#"[{"role":"user","content":"go"},
+              {"role":"assistant","content":[{"type":"text","text":"a"},{"type":"tool_use","id":"t1","name":"w","input":{}},
+                 {"type":"server_tool_use","id":"s1","name":"web_search","input":{}},
+                 {"type":"web_search_tool_result","tool_use_id":"s1","content":[]}]},
+              {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[
+                  {"type":"text","text":"r"},
+                  {"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}},
+                  {"type":"tool_reference","tool_name":"x"}]},
+                 {"type":"text","text":"next","cache_control":{"type":"ephemeral"}}]}]"#,
+            "",
+        )
+        .unwrap();
+        // user, assistant (text + call), tool result, user (image + text)
+        assert_eq!(r.messages.len(), 4);
+        assert_eq!(r.messages[2].role, Role::Tool);
+        assert_eq!(r.messages[2].joined_text(), "r");
+        assert_eq!(r.messages[3].role, Role::User);
+        assert!(r.messages[3].has_images());
+        assert_eq!(r.messages[3].joined_text(), "next");
+        assert_eq!(
+            r.dropped,
+            vec![
+                "messages[1].content[2]:server_tool_use".to_string(),
+                "messages[1].content[3]:web_search_tool_result".to_string(),
+                "messages[2].content[0].content[2]:tool_reference".to_string(),
+                "cache_control".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -876,13 +1146,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.parallel_tool_calls, Some(false));
-        let m = invalid(
-            format!(
-                r#"{{"model":"m","max_tokens":1,{tools}"tool_choice":{{"type":"x"}},"messages":[{{"role":"user","content":"x"}}]}}"#
-            )
-            .as_bytes(),
-        );
-        assert!(m.contains("tool_choice"), "{m}");
     }
 
     #[test]
@@ -893,14 +1156,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.tools[0].name, "w");
-    }
-
-    #[test]
-    fn server_tools_are_invalid() {
-        let m = invalid(
-            br#"{"model":"m","max_tokens":1,"tools":[{"type":"web_search_20250305","name":"web_search"}],"messages":[{"role":"user","content":"x"}]}"#,
-        );
-        assert_eq!(m, "server tool 'web_search_20250305' is not supported");
     }
 
     #[test]
@@ -994,13 +1249,16 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_with_image_is_unsupported() {
-        let e = req(
+    fn a_tool_result_image_follows_as_a_user_image() {
+        let r = req(
             r#"[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"url","url":"https://x/a.png"}}]}]}]"#,
             "",
         )
-        .unwrap_err();
-        assert!(matches!(e, TranslateError::Unsupported(_)), "{e:?}");
+        .unwrap();
+        assert_eq!(r.messages[0].role, Role::Tool);
+        assert_eq!(r.messages[0].joined_text(), "");
+        assert_eq!(r.messages[1].role, Role::User);
+        assert!(r.messages[1].has_images());
     }
 
     fn call(id: &str, name: &str, arguments: &str) -> ToolCall {
@@ -1351,7 +1609,6 @@ mod tests {
             r#"{"format":{"type":"text"}}"#,
             r#"{"format":{"type":"json_schema"}}"#,
             r#"{"format":{"type":"json_schema","schema":[]}}"#,
-            r#"{"effort":"high"}"#,
             r#"[]"#,
         ] {
             assert!(

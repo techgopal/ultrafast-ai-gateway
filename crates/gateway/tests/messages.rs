@@ -84,7 +84,10 @@ async fn an_openai_provider_serves_a_message() {
     assert_eq!(v["role"], "assistant");
     assert_eq!(v["content"], json!([{ "type": "text", "text": "hello" }]));
     assert_eq!(v["stop_reason"], "max_tokens");
-    assert_eq!(v["usage"], json!({ "input_tokens": 4, "output_tokens": 2 }));
+    assert_eq!(
+        v["usage"],
+        json!({ "input_tokens": 4, "output_tokens": 2, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0 })
+    );
     let r = &h.sink.records()[0];
     assert_eq!(r.endpoint, "messages");
     assert_eq!(r.status, 200);
@@ -111,7 +114,10 @@ async fn an_anthropic_provider_serves_a_message_with_x_api_key() {
     let v = json_of(&body);
     assert_eq!(v["content"][0]["text"], "salut");
     assert_eq!(v["stop_reason"], "end_turn");
-    assert_eq!(v["usage"], json!({ "input_tokens": 5, "output_tokens": 3 }));
+    assert_eq!(
+        v["usage"],
+        json!({ "input_tokens": 5, "output_tokens": 3, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0 })
+    );
     // The caller's key is not what the provider is given.
     assert!(!body.contains(&h.key));
 }
@@ -272,11 +278,11 @@ async fn errors_are_in_the_anthropic_shape() {
     assert_eq!(s, StatusCode::FORBIDDEN);
     check(s, &body, "permission_error");
 
-    // 400: a block that is not text, no max_tokens, an unknown field.
+    // 400: a malformed block, no max_tokens, an unknown role.
     for bad in [
         r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"image","source":{}}]}]}"#,
         r#"{"model":"p/m","messages":[{"role":"user","content":"x"}]}"#,
-        r#"{"model":"p/m","max_tokens":1,"top_k":1,"messages":[{"role":"user","content":"x"}]}"#,
+        r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"tool","content":"x"}]}"#,
     ] {
         let (s, _, body) = messages(&h, bad).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
@@ -284,12 +290,12 @@ async fn errors_are_in_the_anthropic_shape() {
     }
     let (_, _, body) = messages(
         &h,
-        r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"thinking"}]}]}"#,
+        r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"tool_use","id":"a","name":"n","input":{}}]}]}"#,
     )
     .await;
     assert_eq!(
         json_of(&body)["error"]["message"],
-        "content block 'thinking' is not supported in a user message"
+        "content block 'tool_use' is not supported in a user message"
     );
 
     // 503: the provider is down.

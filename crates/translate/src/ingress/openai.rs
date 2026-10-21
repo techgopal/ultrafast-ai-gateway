@@ -497,6 +497,7 @@ pub fn parse_prompted(body: &[u8]) -> Result<(ChatRequest, Option<PromptRef>), T
             None => None,
             Some(v) => parse_reasoning_effort(v)?,
         },
+        dropped: Vec::new(),
     };
     Ok((request, prompt))
 }

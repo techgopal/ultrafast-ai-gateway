@@ -34,6 +34,7 @@ impl ChatRequest {
                 parallel_tool_calls: None,
                 response_format: None,
                 reasoning_effort: None,
+                dropped: Vec::new(),
             },
             tags: BTreeMap::new(),
         }
