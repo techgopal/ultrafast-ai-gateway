@@ -4,6 +4,8 @@ mod anthropic;
 mod azure;
 mod gemini;
 mod openai;
+mod responses;
+pub use responses::parse_responses_usage;
 
 use std::fmt;
 
@@ -248,6 +250,8 @@ impl StreamState {
 
 pub struct StreamDecoder {
     kind: ProviderKind,
+    /// Reads a Responses stream (OpenAI, Azure) rather than Chat Completions.
+    responses: bool,
     sse: SseParser,
     state: StreamState,
     /// Set once an error has been hit; nothing is decoded afterwards.
@@ -260,10 +264,19 @@ impl StreamDecoder {
     pub fn new(kind: ProviderKind) -> Self {
         Self {
             kind,
+            responses: false,
             sse: SseParser::new(),
             state: StreamState::default(),
             failed: false,
             pending_error: None,
+        }
+    }
+
+    /// A decoder for the Responses API stream of OpenAI and Azure.
+    pub fn responses() -> Self {
+        Self {
+            responses: true,
+            ..Self::new(ProviderKind::OpenAi)
         }
     }
 
@@ -286,6 +299,7 @@ impl StreamDecoder {
             // A failed decode must not leave partial output behind.
             let produced = out.len();
             let result = match self.kind {
+                _ if self.responses => responses::decode(&mut self.state, &ev, &mut out),
                 ProviderKind::OpenAi | ProviderKind::Azure => {
                     openai::decode(&mut self.state, &ev, &mut out)
                 }
