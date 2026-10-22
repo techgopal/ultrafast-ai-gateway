@@ -262,6 +262,16 @@ impl Scope {
         self.record_mut().prompt = Some(format!("{name}@{version}"));
     }
 
+    /// What the calling agent said about itself.
+    pub fn agent(&mut self, info: crate::agents::AgentInfo) {
+        self.record_mut().agent = info;
+    }
+
+    /// Names of what translation left out of the request.
+    pub fn dropped(&mut self, names: Vec<String>) {
+        self.record_mut().dropped = names;
+    }
+
     /// What the guardrails found in the output of the call so far.
     pub fn output_guardrails(&self) -> Option<SideLog> {
         self.record.as_ref()?.guardrails.as_ref()?.output.clone()

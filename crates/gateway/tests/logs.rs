@@ -733,3 +733,50 @@ async fn a_batch_the_writer_holds_when_stop_arrives_is_written() {
     assert_eq!(store.recent_logs(10).await.unwrap().len(), 1);
     assert_eq!(stats.written.load(Ordering::Relaxed), 1);
 }
+
+#[tokio::test]
+async fn a_call_records_its_agent_and_what_was_dropped() {
+    use common::{harness, post_to};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "c1", "model": "m",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 2,
+                      "prompt_tokens_details": {"cached_tokens": 100}}
+        })))
+        .mount(&h.upstream)
+        .await;
+    let mut body: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/agents/claude-code-2.1.305.json")).unwrap();
+    body["model"] = "p/m".into();
+    body["stream"] = false.into();
+    let bearer = format!("Bearer {}", h.key);
+    let (status, _, text) = post_to(
+        &h.app,
+        "/v1/messages?beta=true",
+        &[
+            ("authorization", &bearer),
+            ("anthropic-version", "2023-06-01"),
+            ("x-claude-code-session-id", "sess-42"),
+            ("x-claude-code-prompt-id", "prompt-7"),
+        ],
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+    let r = &h.sink.wait_for(1).await[0];
+    assert_eq!(r.agent.session.as_deref(), Some("sess-42"));
+    assert_eq!(r.agent.prompt.as_deref(), Some("prompt-7"));
+    assert_eq!(r.agent.client, Some("claude-code"));
+    assert!(
+        r.dropped.iter().any(|d| d == "context_management"),
+        "{:?}",
+        r.dropped
+    );
+    let u = r.usage.unwrap();
+    assert_eq!((u.input_tokens, u.cache_read_input_tokens), (20, 100));
+}

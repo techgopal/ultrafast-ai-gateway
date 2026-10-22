@@ -536,6 +536,9 @@ async fn run(
     begun.metered(state.metrics.clone());
     begun.traced(state.otel.clone());
     begun.watched(state.alert_engine.clone());
+    if let Some(h) = headers {
+        begun.agent(crate::agents::agent_info(h));
+    }
     // Only the `/v1` handlers pass headers: the playground has no parent.
     if let Some(parent) = headers
         .and_then(|h| h.get("traceparent"))
@@ -1131,6 +1134,11 @@ async fn dispatch(
         }
     }
     record.requested(call.model(), call.stream());
+    if let Call::Chat(r) = &call {
+        if !r.dropped.is_empty() {
+            record.dropped(r.dropped.clone());
+        }
+    }
 
     // 3. Resolve the name to something this key may call.
     let resolved = match access::resolve(snapshot, key, call.model()) {
