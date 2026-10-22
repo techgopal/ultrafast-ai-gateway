@@ -553,3 +553,243 @@ async fn an_output_block_refuses_a_native_answer() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(!body.contains("swordfish"), "{body}");
 }
+
+// ------------------------------------------------------------------ streams
+
+const ANTHROPIC_STREAM: &str = concat!(
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"m\",\"content\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":1,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":20}}}\n\n",
+    "event: ping\ndata: {\"type\": \"ping\"}\n\n",
+    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello \"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"world\"}}\n\n",
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+);
+
+fn anthropic_stream_of(texts: &[&str]) -> String {
+    let mut s = String::new();
+    s.push_str(
+        ANTHROPIC_STREAM
+            .split("event: content_block_delta")
+            .next()
+            .unwrap(),
+    );
+    for t in texts {
+        s.push_str(&format!(
+            "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{}}}}}\n\n",
+            json!(t)
+        ));
+    }
+    s.push_str(
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    );
+    s.push_str(
+        ANTHROPIC_STREAM
+            .split("event: content_block_stop\n")
+            .nth(1)
+            .unwrap()
+            .split_once("\n\n")
+            .unwrap()
+            .1,
+    );
+    s
+}
+
+fn sse_answer(body: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_raw(body.to_string(), "text/event-stream")
+}
+
+fn streaming(mut v: Value) -> Value {
+    v["stream"] = json!(true);
+    v
+}
+
+/// The text of every `text_delta` of an Anthropic stream.
+fn delta_text(stream: &str) -> String {
+    stream
+        .split("\n\n")
+        .filter_map(|e| e.lines().find_map(|l| l.strip_prefix("data: ")))
+        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+        .filter_map(|v| v["delta"]["text"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[tokio::test]
+async fn anthropic_stream_is_relayed_as_sent() {
+    let h = harness("anthropic").await;
+    mock_anthropic(&h, sse_answer(ANTHROPIC_STREAM)).await;
+    let (status, headers, body) = claude_code(
+        &h,
+        "/v1/messages?beta=true",
+        &[],
+        &streaming(recorded(CLAUDE_CODE, "p/m")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, ANTHROPIC_STREAM);
+    assert!(headers["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/event-stream"));
+    let records = h.sink.wait_for(1).await;
+    let u = records[0].usage.unwrap();
+    assert_eq!(
+        (
+            u.input_tokens,
+            u.output_tokens,
+            u.cache_read_input_tokens,
+            u.cache_write_input_tokens
+        ),
+        (7, 5, 100, 20)
+    );
+    assert!(!records[0].estimated);
+    assert!(records[0].stream);
+}
+
+const RESPONSES_STREAM: &str = concat!(
+    "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"m\",\"output\":[]}}\n\n",
+    "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hi \"}\n\n",
+    "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":2,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"there\"}\n\n",
+    "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":3,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"m\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12,\"input_tokens_details\":{\"cached_tokens\":4},\"output_tokens_details\":{\"reasoning_tokens\":0}}}}\n\n",
+);
+
+#[tokio::test]
+async fn responses_stream_is_relayed_as_sent() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(sse_answer(RESPONSES_STREAM))
+        .mount(&h.upstream)
+        .await;
+    let (status, _, body) = codex(&h, &[], &streaming(recorded(CODEX, "p/m"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, RESPONSES_STREAM);
+    let records = h.sink.wait_for(1).await;
+    let u = records[0].usage.unwrap();
+    assert_eq!(
+        (u.input_tokens, u.output_tokens, u.cache_read_input_tokens),
+        (6, 2, 4)
+    );
+    assert!(!records[0].estimated);
+}
+
+#[tokio::test]
+async fn an_output_block_ends_a_native_stream_with_an_error_event() {
+    let h = harness("anthropic").await;
+    mock_anthropic(
+        &h,
+        sse_answer(&anthropic_stream_of(&[
+            "the sword",
+            "fish is here",
+            " and more",
+        ])),
+    )
+    .await;
+    guardrail(
+        &h,
+        "words",
+        json!([{ "id": "w", "matcher": { "keywords": { "words": ["swordfish"] } },
+                 "action": "block", "directions": "output" }]),
+    )
+    .await;
+    let (status, _, body) = claude_code(
+        &h,
+        "/v1/messages",
+        &[],
+        &streaming(recorded(CLAUDE_CODE, "p/m")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("swordfish"), "{body}");
+    assert!(body.contains("event: error\n"), "{body}");
+    assert!(!body.contains("message_stop"), "{body}");
+    assert!(body.ends_with("\n\n"));
+    let records = h.sink.wait_for(1).await;
+    assert!(records[0].guardrails.is_some());
+}
+
+#[tokio::test]
+async fn output_redaction_rewrites_only_text_deltas() {
+    let h = harness("anthropic").await;
+    let upstream = anthropic_stream_of(&["mail ada@exa", "mple.com now", " thanks"]);
+    mock_anthropic(&h, sse_answer(&upstream)).await;
+    guardrail(
+        &h,
+        "pii",
+        json!([{ "id": "email", "matcher": { "pii": ["EMAIL"] },
+                 "action": "redact", "directions": "output" }]),
+    )
+    .await;
+    let (status, _, body) = claude_code(
+        &h,
+        "/v1/messages",
+        &[],
+        &streaming(recorded(CLAUDE_CODE, "p/m")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = delta_text(&body);
+    assert!(
+        !text.contains("ada@example.com") && !text.contains("example.com"),
+        "{text}"
+    );
+    assert!(
+        text.contains("mail ") && text.contains("now thanks"),
+        "{text}"
+    );
+    // Every event that is not a text delta arrives byte for byte.
+    for block in upstream
+        .split_inclusive("\n\n")
+        .filter(|b| !b.contains("text_delta"))
+    {
+        assert!(body.contains(block), "missing {block}");
+    }
+    assert!(body.ends_with(
+        upstream
+            .rsplit_once("event: message_delta")
+            .map(|(_, t)| format!("event: message_delta{t}"))
+            .unwrap()
+            .as_str()
+    ));
+}
+
+#[tokio::test]
+async fn a_caller_gone_mid_stream_is_still_recorded() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use futures::StreamExt;
+    use tower::ServiceExt;
+    let h = harness("anthropic").await;
+    // The answer is not finished: the caller leaves before the end.
+    let unfinished = ANTHROPIC_STREAM
+        .split("event: message_delta")
+        .next()
+        .unwrap();
+    mock_anthropic(&h, sse_answer(unfinished)).await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("authorization", format!("Bearer {}", h.key))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    streaming(recorded(CLAUDE_CODE, "p/m")).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut stream = resp.into_body().into_data_stream();
+    stream.next().await.unwrap().unwrap();
+    drop(stream);
+    let records = h.sink.wait_for(1).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(h.sink.records().len(), 1);
+    assert!(records[0].estimated);
+    assert_eq!(records[0].status, 499);
+}

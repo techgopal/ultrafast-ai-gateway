@@ -39,7 +39,7 @@ use ufaigw_translate::images::{self, ImageRequest, ImageResponse};
 use ufaigw_translate::ingress::prompt::PromptRef;
 use ufaigw_translate::ingress::{anthropic, openai, responses};
 use ufaigw_translate::provider::{
-    build_request, parse_response, HttpRequest, StreamDecoder, Target,
+    build_request, parse_response, HttpRequest, ProviderKind, StreamDecoder, Target,
 };
 use ufaigw_translate::types::{ChatRequest, ChatResponse, FinishReason, Part, StreamEvent, Usage};
 
@@ -329,8 +329,7 @@ impl Call {
     /// Whether an attempt on a provider of `kind` forwards the agent's own
     /// body instead of translating it.
     fn passes_to(&self, kind: ufaigw_translate::provider::ProviderKind) -> bool {
-        // Streams are relayed from the next step on.
-        matches!(self, Call::Chat(r, Some(n)) if !r.stream && native::matches(n.api, kind))
+        matches!(self, Call::Chat(_, Some(n)) if native::matches(n.api, kind))
     }
 
     /// What the call is expected to use, for the rate limit: the most it may
@@ -1311,6 +1310,16 @@ async fn dispatch(
             }),
         });
     let guard = Active::of(&effective, hooks);
+    // An answer held for an external guardrail is rewritten as a whole, which
+    // a stream relayed as sent cannot be: that call is translated.
+    if call.stream() && guard.holds_streams() {
+        if let Call::Chat(_, native) = &mut call {
+            if let Some(e) = native.take().and_then(|n| n.parse_error) {
+                record.refund_permit();
+                return shape.translate_error(&e);
+            }
+        }
+    }
     let input_rules = match check_input_rules(&guard, &mut call, record, shape).await {
         Ok(outcome) => outcome,
         Err(refusal) => {
@@ -1602,6 +1611,9 @@ async fn dispatch(
                 target: committed.target.clone(),
                 breaker: settings.breaker,
             };
+            if committed.native.is_some() {
+                return native_stream(*committed, guard);
+            }
             stream_to_caller(*committed, guard, endpoint, stream_echo(endpoint, &call))
         }
         Err(Stop::Fatal(e)) => {
@@ -2114,6 +2126,9 @@ struct Committed {
     /// Decoded from the chunks read to find the first event.
     events: Vec<StreamEvent>,
     error: Option<TranslateError>,
+    /// Set for a pass-through stream, which is relayed as the provider sent
+    /// it: `first` holds the bytes read to find the first event.
+    native: Option<(NativeApi, Vec<Bytes>)>,
 }
 
 fn retryable<E>(error: E, status: Option<u16>) -> Failure<E> {
@@ -2251,7 +2266,17 @@ async fn try_target_once(
     };
     if let Call::Chat(_, Some(native)) = call {
         if call.passes_to(provider.kind) {
-            return try_native(http, native, provider, target, limits, max_response, sent).await;
+            return try_native(
+                http,
+                call.stream(),
+                native,
+                provider,
+                target,
+                limits,
+                max_response,
+                sent,
+            )
+            .await;
         }
         // A target that does not speak the agent's API gets the translation,
         // which the body may not have.
@@ -2413,8 +2438,10 @@ async fn try_target_once(
 
 /// One try of a target that speaks the agent's API: its body forwarded as it
 /// came, the provider's answer passed on as it came.
+#[allow(clippy::too_many_arguments)]
 async fn try_native(
     http: &reqwest::Client,
+    native_call_streams: bool,
     native: &Native,
     provider: &SnapProvider,
     target: TargetRef,
@@ -2422,6 +2449,7 @@ async fn try_native(
     max_response: usize,
     sent: &AtomicBool,
 ) -> Result<Success<Served>, Failure<CallError>> {
+    let started = Instant::now();
     let first_by = tokio::time::Instant::now() + limits.first_token;
     let wire = Target {
         kind: provider.kind,
@@ -2452,6 +2480,19 @@ async fn try_native(
             error: CallError::Redirect(provider.name.clone()),
             status: Some(status),
         });
+    }
+    if native_call_streams && status < 400 {
+        return first_native_chunk(
+            upstream,
+            native.api,
+            provider,
+            target,
+            started,
+            first_by,
+            limits.deadline,
+            status,
+        )
+        .await;
     }
     let headers = native::keep_response_headers(upstream.headers());
     let bytes = match timeout_at(
@@ -2515,6 +2556,65 @@ async fn try_native(
     })
 }
 
+/// Reads a pass-through stream until its first bytes, which commit the
+/// target. A provider error in them is a failure of the try, as in
+/// [`first_event`]; anything the decoder cannot read is not: the stream is
+/// the provider's own and is relayed.
+#[allow(clippy::too_many_arguments)]
+async fn first_native_chunk(
+    upstream: reqwest::Response,
+    api: NativeApi,
+    provider: &SnapProvider,
+    target: TargetRef,
+    started: Instant,
+    first_by: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+    status: u16,
+) -> Result<Success<Served>, Failure<CallError>> {
+    let mut chunks = upstream.bytes_stream().boxed();
+    let first = match timeout_at(first_by, chunks.next()).await {
+        Err(_) => {
+            tracing::warn!(provider = %provider.name, "provider sent no event in time");
+            return Err(retryable(CallError::Lost, Some(status)));
+        }
+        Ok(None) | Ok(Some(Err(_))) => {
+            tracing::warn!(provider = %provider.name, "provider stream was lost");
+            return Err(retryable(CallError::Lost, Some(status)));
+        }
+        Ok(Some(Ok(bytes))) => bytes,
+    };
+    if let Err(e) = native_decoder(api, provider.kind).feed(&first) {
+        if matches!(e, TranslateError::Provider { .. }) {
+            log_stream_error(&provider.name, &e);
+            return Err(if stream_error_is_retryable(&e) {
+                retryable(CallError::Lost, Some(status))
+            } else {
+                failure_of(e, Some(status), None)
+            });
+        }
+    }
+    Ok(Success {
+        value: Served::Stream(Box::new(Committed {
+            target,
+            started,
+            deadline,
+            chunks,
+            decoder: native_decoder(api, provider.kind),
+            events: Vec::new(),
+            error: None,
+            native: Some((api, vec![first])),
+        })),
+        status: Some(status),
+    })
+}
+
+fn native_decoder(api: NativeApi, kind: ProviderKind) -> StreamDecoder {
+    match api {
+        NativeApi::Responses => StreamDecoder::responses(),
+        NativeApi::Messages => StreamDecoder::new(kind),
+    }
+}
+
 /// The failure of a call that is paid for once and was sent: no retry.
 fn unfinished(status: Option<u16>) -> Failure<CallError> {
     Failure::Fatal {
@@ -2557,6 +2657,7 @@ async fn first_event(
                         decoder,
                         events,
                         error: None,
+                        native: None,
                     })),
                     status: Some(status),
                 });
@@ -2589,6 +2690,7 @@ async fn first_event(
                         decoder,
                         events,
                         error,
+                        native: None,
                     })),
                     status: Some(status),
                 });
@@ -3296,6 +3398,7 @@ fn stream_to_caller(
             mut decoder,
             events,
             error,
+            native: _,
         } = committed;
         let provider = target.provider.clone();
         let mut format = StreamFormat::new(endpoint, &target.model, echo);
@@ -3430,6 +3533,195 @@ fn stream_to_caller(
                 record.end(outcome_of_error(&e), None);
                 yield Ok(stream_failure(&format, &provider, &e));
                 return;
+            }
+        }
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/event-stream")
+        .header(CACHE_CONTROL, "no-cache")
+        .body(Body::from_stream(body))
+        .expect("static headers are valid")
+}
+
+/// What the guardrails tell a caller whose pass-through stream they cut.
+const STREAM_BLOCKED: &str = "The response was blocked by a guardrail.";
+
+/// The last delta events seen, which the text a scanner held back is sent in.
+#[derive(Default)]
+struct Deltas {
+    text: Option<(Vec<u8>, Value)>,
+    tools: std::collections::BTreeMap<u32, (Vec<u8>, Value)>,
+}
+
+/// A pass-through stream: the provider's bytes as they arrive. They are also
+/// decoded, for the usage, the characters streamed and the end of the
+/// answer. With a rules guardrail on the output the stream is read event by
+/// event: only the text of a delta is rewritten, every other event goes as it
+/// came, and a block ends the stream with the API's own error event.
+fn native_stream(committed: Committed, record: StreamRecord) -> Response {
+    let body = async_stream::stream! {
+        let mut record = record;
+        let Committed { target, deadline, mut chunks, mut decoder, native, .. } = committed;
+        let (api, first) = native.expect("a pass-through stream");
+        let provider = target.provider.clone();
+        let mut pending: std::collections::VecDeque<Bytes> = first.into();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut deltas = Deltas::default();
+        let mut decoding = true;
+        let scanning = record.guard.as_ref().is_some_and(|g| g.scanner.is_some());
+        loop {
+            let chunk = match pending.pop_front() {
+                Some(chunk) => chunk,
+                None => match timeout_at(deadline, chunks.next()).await {
+                    Err(_) => {
+                        tracing::warn!(provider = %provider, "request ran out of time during the stream");
+                        record.end_out_of_time();
+                        yield Ok::<Bytes, Infallible>(Bytes::from(native::error_event(api, TIMED_OUT)));
+                        return;
+                    }
+                    Ok(None) => {
+                        if !buf.is_empty() {
+                            yield Ok(Bytes::from(std::mem::take(&mut buf)));
+                        }
+                        let done = decoder.finish().into_iter().find_map(|ev| match ev {
+                            StreamEvent::Done { usage, .. } => Some(usage),
+                            _ => None,
+                        });
+                        match done {
+                            Some(usage) => record.end(AttemptOutcome::Ok, usage),
+                            None => {
+                                tracing::warn!(provider = %provider, "provider stream ended before completion");
+                                record.end(AttemptOutcome::Retryable, None);
+                                yield Ok(Bytes::from(native::error_event(
+                                    api,
+                                    "The provider stream ended before completion.",
+                                )));
+                            }
+                        }
+                        return;
+                    }
+                    Ok(Some(Err(e))) => {
+                        let e = e.without_url();
+                        tracing::warn!(provider = %provider, error = %e, "provider stream was lost");
+                        record.end(AttemptOutcome::Retryable, None);
+                        yield Ok(Bytes::from(native::error_event(
+                            api,
+                            "The connection to the provider was lost.",
+                        )));
+                        return;
+                    }
+                    Ok(Some(Ok(bytes))) => bytes,
+                },
+            };
+            let units: Vec<Vec<u8>> = if scanning {
+                buf.extend_from_slice(&chunk);
+                native::split_events(&mut buf)
+            } else {
+                vec![chunk.to_vec()]
+            };
+            for unit in units {
+                let mut done = None;
+                let mut failed = None;
+                if decoding {
+                    let fed = decoder.feed(&unit);
+                    let (events, error) = match fed {
+                        Ok(events) => (events, decoder.take_error()),
+                        Err(e) => (Vec::new(), Some(e)),
+                    };
+                    for ev in events {
+                        match ev {
+                            StreamEvent::Delta { text } => record.streamed(text.chars().count()),
+                            StreamEvent::ToolCallDelta { arguments, .. } => {
+                                record.streamed(arguments.chars().count());
+                            }
+                            StreamEvent::Done { usage, .. } => done = Some(usage),
+                            _ => {}
+                        }
+                    }
+                    if let Some(e) = error {
+                        decoding = false;
+                        if matches!(e, TranslateError::Provider { .. }) {
+                            failed = Some(e);
+                        }
+                    }
+                }
+                // What goes to the caller for this unit.
+                let mut out: Vec<Vec<u8>> = Vec::new();
+                let mut cut = false;
+                if scanning {
+                    let parsed = native::data_of(&unit).map(|v| (native::kind_of(api, &v), v));
+                    let scanner = record.guard.as_mut().and_then(|g| g.scanner.as_mut());
+                    match (scanner, parsed) {
+                        (Some(scanner), Some((kind @ (native::Kind::Text | native::Kind::Tool(_)), v))) => {
+                            let text = native::delta_of(api, &v).unwrap_or_default();
+                            let release = match kind {
+                                native::Kind::Tool(i) => scanner.push_tool_args(i, &text),
+                                _ => scanner.push_text(&text),
+                            };
+                            if release.blocked.is_some() {
+                                cut = true;
+                            } else if release.text == text {
+                                out.push(unit.clone());
+                            } else {
+                                out.push(native::rewritten(api, &unit, &v, &release.text));
+                            }
+                            match kind {
+                                native::Kind::Tool(i) => {
+                                    deltas.tools.insert(i, (unit.clone(), v));
+                                }
+                                _ => deltas.text = Some((unit.clone(), v)),
+                            }
+                        }
+                        (Some(scanner), Some((native::Kind::End, _))) => {
+                            let tail = scanner.finish();
+                            if tail.blocked.is_some() {
+                                cut = true;
+                            } else {
+                                if !tail.text.is_empty() {
+                                    if let Some((raw, v)) = &deltas.text {
+                                        out.push(native::rewritten(api, raw, v, &tail.text));
+                                    }
+                                }
+                                for (i, text) in tail.tools {
+                                    if let Some((raw, v)) = deltas.tools.get(&i) {
+                                        out.push(native::rewritten(api, raw, v, &text));
+                                    }
+                                }
+                                out.push(unit.clone());
+                            }
+                        }
+                        _ => out.push(unit.clone()),
+                    }
+                } else {
+                    out.push(unit);
+                }
+                if cut {
+                    record.cut_short();
+                    record.end(AttemptOutcome::Ok, None);
+                    yield Ok(Bytes::from(native::error_event(api, STREAM_BLOCKED)));
+                    return;
+                }
+                if let Some(e) = failed {
+                    // The provider's own error event is relayed; it ends the answer.
+                    for piece in out {
+                        yield Ok(Bytes::from(piece));
+                    }
+                    record.end(outcome_of_error(&e), None);
+                    return;
+                }
+                if let Some(usage) = done {
+                    // Recorded before the last bytes are handed over, so a
+                    // caller that leaves right after them is not a lost call.
+                    record.end(AttemptOutcome::Ok, usage);
+                    for piece in out {
+                        yield Ok(Bytes::from(piece));
+                    }
+                    return;
+                }
+                for piece in out {
+                    yield Ok(Bytes::from(piece));
+                }
             }
         }
     };

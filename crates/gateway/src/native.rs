@@ -229,6 +229,140 @@ pub fn keep_response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(Strin
         .collect()
 }
 
+// ------------------------------------------------------------------ streams
+
+/// Splits the complete SSE events off the front of `buf`: each is returned
+/// with its own delimiter, byte for byte. A partial event stays in `buf`.
+pub fn split_events(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        let found = (0..buf.len()).find_map(|i| {
+            if buf[i..].starts_with(b"\n\n") {
+                Some(i + 2)
+            } else if buf[i..].starts_with(b"\r\n\r\n") {
+                Some(i + 4)
+            } else {
+                None
+            }
+        });
+        let Some(end) = found else { return out };
+        out.push(buf.drain(..end).collect());
+    }
+}
+
+/// What an event of a pass-through stream is, for the guardrails.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Kind {
+    /// A piece of the model's text.
+    Text,
+    /// A piece of the arguments of tool call `index`.
+    Tool(u32),
+    /// The end of a content block or of the answer: what a scanner holds
+    /// back is released before it.
+    End,
+    Other,
+}
+
+/// The JSON of the `data:` lines of an event.
+pub fn data_of(event: &[u8]) -> Option<Value> {
+    let text = std::str::from_utf8(event).ok()?;
+    let data: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("data:"))
+        .map(|d| d.strip_prefix(' ').unwrap_or(d))
+        .collect();
+    if data.is_empty() {
+        return None;
+    }
+    serde_json::from_str(&data.join("\n")).ok()
+}
+
+pub fn kind_of(api: NativeApi, v: &Value) -> Kind {
+    let ty = v["type"].as_str().unwrap_or("");
+    match api {
+        NativeApi::Messages => match (ty, v["delta"]["type"].as_str()) {
+            ("content_block_delta", Some("text_delta")) => Kind::Text,
+            ("content_block_delta", Some("input_json_delta")) => {
+                Kind::Tool(u32::try_from(v["index"].as_u64().unwrap_or(0)).unwrap_or(0))
+            }
+            ("content_block_stop" | "message_delta" | "message_stop", _) => Kind::End,
+            _ => Kind::Other,
+        },
+        NativeApi::Responses => match ty {
+            "response.output_text.delta" => Kind::Text,
+            "response.function_call_arguments.delta" => {
+                Kind::Tool(u32::try_from(v["output_index"].as_u64().unwrap_or(0)).unwrap_or(0))
+            }
+            t if t.ends_with(".done")
+                || matches!(
+                    t,
+                    "response.completed" | "response.incomplete" | "response.failed"
+                ) =>
+            {
+                Kind::End
+            }
+            _ => Kind::Other,
+        },
+    }
+}
+
+fn text_slot(api: NativeApi, v: &mut Value) -> Option<&mut Value> {
+    match api {
+        NativeApi::Messages => {
+            let delta = v.get_mut("delta")?;
+            if delta["type"] == "input_json_delta" {
+                delta.get_mut("partial_json")
+            } else {
+                delta.get_mut("text")
+            }
+        }
+        NativeApi::Responses => v.get_mut("delta"),
+    }
+}
+
+/// The text of a delta event.
+pub fn delta_of(api: NativeApi, v: &Value) -> Option<String> {
+    let mut v = v.clone();
+    text_slot(api, &mut v)?.as_str().map(str::to_string)
+}
+
+/// The event with `text` in place of the text of its delta; everything else
+/// in the event is as it was. Only this event is re-serialised.
+pub fn rewritten(api: NativeApi, event: &[u8], v: &Value, text: &str) -> Vec<u8> {
+    let mut v = v.clone();
+    if let Some(slot) = text_slot(api, &mut v) {
+        *slot = Value::String(text.to_string());
+    }
+    let name = std::str::from_utf8(event)
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("event:")))
+        .map(|n| n.trim().to_string());
+    let mut out = String::new();
+    if let Some(name) = name {
+        out.push_str(&format!("event: {name}\n"));
+    }
+    out.push_str(&format!(
+        "data: {}\n\n",
+        serde_json::to_string(&v).unwrap_or_default()
+    ));
+    out.into_bytes()
+}
+
+/// The API's own error event.
+pub fn error_event(api: NativeApi, message: &str) -> String {
+    let data = match api {
+        NativeApi::Messages => serde_json::json!({
+            "type": "error",
+            "error": { "type": "api_error", "message": message }
+        }),
+        NativeApi::Responses => serde_json::json!({
+            "type": "error", "code": "upstream_error", "message": message, "param": null,
+            "sequence_number": 0
+        }),
+    };
+    format!("event: error\ndata: {data}\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +454,33 @@ mod tests {
             "https://x.example/openai/responses?api-version=2025-03-01-preview"
         );
         assert!(r.headers.contains(&("api-key".into(), "k".into())));
+    }
+
+    #[test]
+    fn events_split_with_their_delimiters_and_a_partial_one_waits() {
+        let mut buf = b"event: a\ndata: {}\n\nevent: b\r\n\r\nevent: c\nda".to_vec();
+        let got = split_events(&mut buf);
+        assert_eq!(
+            got,
+            [
+                b"event: a\ndata: {}\n\n".to_vec(),
+                b"event: b\r\n\r\n".to_vec()
+            ]
+        );
+        assert_eq!(buf, b"event: c\nda");
+    }
+
+    #[test]
+    fn a_delta_is_rewritten_and_nothing_else_changes() {
+        let ev = b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"a@b.c\"}}\n\n";
+        let v = data_of(ev).unwrap();
+        assert_eq!(kind_of(NativeApi::Messages, &v), Kind::Text);
+        assert_eq!(delta_of(NativeApi::Messages, &v).as_deref(), Some("a@b.c"));
+        let out = rewritten(NativeApi::Messages, ev, &v, "[x]");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"[x]\"}}\n\n"
+        );
     }
 
     #[test]
