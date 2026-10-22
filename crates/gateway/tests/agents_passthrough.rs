@@ -793,3 +793,141 @@ async fn a_caller_gone_mid_stream_is_still_recorded() {
     assert!(records[0].estimated);
     assert_eq!(records[0].status, 499);
 }
+
+// -------------------------------------------------- input guardrails
+
+const MAIL: &str = "ada@example.com";
+
+async fn input_guardrail(h: &Harness, action: &str) {
+    guardrail(
+        h,
+        "pii-in",
+        json!([{ "id": "email", "matcher": { "pii": ["EMAIL"] },
+                 "action": action, "directions": "input" }]),
+    )
+    .await;
+}
+
+/// The recorded Claude Code request with a user block, a tool result with
+/// text blocks, and a system block that carry the address.
+fn with_mail(model: &str) -> Value {
+    let mut v = recorded(CLAUDE_CODE, model);
+    v["messages"] = json!([
+        { "role": "user", "content": [
+            { "type": "text", "text": format!("write to {MAIL} now") }
+        ] },
+        { "role": "assistant", "content": [
+            { "type": "tool_use", "id": "tu_1", "name": "Read", "input": {} }
+        ] },
+        { "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "tu_1", "content": [
+                { "type": "text", "text": format!("file says {MAIL}") },
+                { "type": "text", "text": "plain" }
+            ] }
+        ] }
+    ]);
+    v
+}
+
+#[tokio::test]
+async fn input_block_refuses_a_native_call() {
+    let h = harness("anthropic").await;
+    mock_anthropic(&h, json_answer(ANTHROPIC_ANSWER)).await;
+    input_guardrail(&h, "block").await;
+    let (status, _, body) = claude_code(&h, "/v1/messages", &[], &with_mail("p/m")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(!body.contains(MAIL), "{body}");
+    assert!(received(&h.upstream).await.is_empty());
+}
+
+#[tokio::test]
+async fn input_redaction_edits_only_text() {
+    let h = harness("anthropic").await;
+    mock_anthropic(&h, json_answer(ANTHROPIC_ANSWER)).await;
+    input_guardrail(&h, "redact").await;
+    let sent = with_mail("p/m");
+    let (status, _, body) = claude_code(&h, "/v1/messages", &[], &sent).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let got: Value = serde_json::from_slice(&received(&h.upstream).await[0].body).unwrap();
+    let raw = got.to_string();
+    assert!(!raw.contains(MAIL), "{raw}");
+    // Put the original text back: nothing else differs.
+    let mut restored = got.clone();
+    restored["messages"][0]["content"][0]["text"] =
+        sent["messages"][0]["content"][0]["text"].clone();
+    restored["messages"][2]["content"][0]["content"][0]["text"] =
+        sent["messages"][2]["content"][0]["content"][0]["text"].clone();
+    let mut want = sent.clone();
+    want["model"] = json!("m");
+    assert_eq!(restored, want);
+    assert_ne!(got["messages"][0], sent["messages"][0]);
+}
+
+#[tokio::test]
+async fn redaction_reaches_tool_result_text_blocks() {
+    let h = harness("anthropic").await;
+    mock_anthropic(&h, json_answer(ANTHROPIC_ANSWER)).await;
+    input_guardrail(&h, "redact").await;
+    claude_code(&h, "/v1/messages", &[], &with_mail("p/m")).await;
+    let got: Value = serde_json::from_slice(&received(&h.upstream).await[0].body).unwrap();
+    let block = got["messages"][2]["content"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        block.starts_with("file says ") && !block.contains(MAIL),
+        "{block}"
+    );
+    assert_eq!(
+        got["messages"][2]["content"][0]["content"][1]["text"],
+        "plain"
+    );
+}
+
+#[tokio::test]
+async fn redaction_applies_on_translation_too() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "c1", "model": "m",
+            "choices": [{ "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 4, "completion_tokens": 2 }
+        })))
+        .mount(&h.upstream)
+        .await;
+    input_guardrail(&h, "redact").await;
+    let (status, _, body) = claude_code(&h, "/v1/messages", &[], &with_mail("p/m")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let sent = String::from_utf8(received(&h.upstream).await[0].body.clone()).unwrap();
+    assert!(!sent.contains(MAIL), "{sent}");
+    assert!(sent.contains("file says"), "{sent}");
+}
+
+#[tokio::test]
+async fn redaction_reaches_a_codex_input_and_tool_output() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(json_answer(RESPONSES_ANSWER))
+        .mount(&h.upstream)
+        .await;
+    input_guardrail(&h, "redact").await;
+    let mut sent = recorded(CODEX, "p/m");
+    sent["instructions"] = json!(format!("contact {MAIL}"));
+    sent["input"] = json!([
+        { "type": "message", "role": "user", "content": [
+            { "type": "input_text", "text": format!("hi {MAIL}") } ] },
+        { "type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}" },
+        { "type": "function_call_output", "call_id": "c1", "output": format!("out {MAIL}") }
+    ]);
+    let (status, _, body) = codex(&h, &[], &sent).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let got = String::from_utf8(received(&h.upstream).await[0].body.clone()).unwrap();
+    assert!(!got.contains(MAIL), "{got}");
+    let v: Value = serde_json::from_str(&got).unwrap();
+    assert_eq!(v["input"][1], sent["input"][1]);
+    assert!(v["input"][2]["output"]
+        .as_str()
+        .unwrap()
+        .starts_with("out "));
+}

@@ -141,6 +141,108 @@ pub fn build(native: &Native, target: &Target) -> HttpRequest {
     }
 }
 
+/// Pushes the strings of `v`: itself when a string, or the `text` of its
+/// blocks of type `block` when an array.
+fn strings_of<'a>(v: &'a mut Value, block: &str, slots: &mut Vec<&'a mut String>) {
+    match v {
+        Value::String(s) => slots.push(s),
+        Value::Array(blocks) => {
+            for b in blocks {
+                if b["type"] == block {
+                    if let Some(Value::String(t)) = b.get_mut("text") {
+                        slots.push(t);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The text of the agent's request that input guardrails read and may
+/// rewrite, in the body itself. Anthropic: `system`, the text blocks of user
+/// messages and the text of `tool_result` content. Responses: `instructions`,
+/// the input string, `input_text` parts of user, developer and system
+/// messages, and the output of function and custom tool calls. Nothing else
+/// is touched: not the assistant's own words, tool definitions, or signed
+/// thinking.
+pub fn text_slots(native: &mut Native) -> Vec<&mut String> {
+    let mut slots = Vec::new();
+    let api = native.api;
+    for (key, value) in native.body.iter_mut() {
+        match (api, key.as_str()) {
+            (NativeApi::Messages, "system") => strings_of(value, "text", &mut slots),
+            (NativeApi::Messages, "messages") => {
+                for m in value.as_array_mut().into_iter().flatten() {
+                    if m["role"] == "user" {
+                        if let Some(content) = m.get_mut("content") {
+                            anthropic_content(content, &mut slots);
+                        }
+                    }
+                }
+            }
+            (NativeApi::Responses, "instructions") => {
+                if let Value::String(s) = value {
+                    slots.push(s);
+                }
+            }
+            (NativeApi::Responses, "input") => match value {
+                Value::String(s) => slots.push(s),
+                Value::Array(items) => {
+                    for item in items {
+                        responses_item(item, &mut slots);
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    slots
+}
+
+fn anthropic_content<'a>(content: &'a mut Value, slots: &mut Vec<&'a mut String>) {
+    match content {
+        Value::String(s) => slots.push(s),
+        Value::Array(blocks) => {
+            for b in blocks {
+                match b["type"].as_str() {
+                    Some("text") => {
+                        if let Some(Value::String(t)) = b.get_mut("text") {
+                            slots.push(t);
+                        }
+                    }
+                    Some("tool_result") => {
+                        if let Some(c) = b.get_mut("content") {
+                            strings_of(c, "text", slots);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn responses_item<'a>(item: &'a mut Value, slots: &mut Vec<&'a mut String>) {
+    match item["type"].as_str() {
+        Some("function_call_output" | "custom_tool_call_output") => {
+            if let Some(Value::String(s)) = item.get_mut("output") {
+                slots.push(s);
+            }
+        }
+        Some("message") | None => {
+            if matches!(item["role"].as_str(), Some("user" | "developer" | "system")) {
+                if let Some(content) = item.get_mut("content") {
+                    strings_of(content, "input_text", slots);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The text of a whole answer that guardrails read and may rewrite: the text
 /// of the model and the arguments of the calls it makes.
 pub fn answer_slots(api: NativeApi, answer: &mut Value) -> Vec<&mut String> {

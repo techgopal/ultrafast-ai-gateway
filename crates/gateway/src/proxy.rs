@@ -1320,6 +1320,10 @@ async fn dispatch(
             }
         }
     }
+    let before = guard
+        .covers(Direction::Input)
+        .then(|| native_snapshot(&call))
+        .flatten();
     let input_rules = match check_input_rules(&guard, &mut call, record, shape).await {
         Ok(outcome) => outcome,
         Err(refusal) => {
@@ -1346,6 +1350,7 @@ async fn dispatch(
         record.refund_permit();
         return refusal;
     }
+    rederive(&mut call, &before);
     // Seeded from the thread's generator (itself seeded once per thread), not
     // from the operating system on every request. It is `Send`: it lives
     // across awaits.
@@ -1706,6 +1711,9 @@ const SCAN_BUSY: &str = "The guardrails are busy checking other requests. Try ag
 /// The chat or embeddings text slots of a call, joined text parts first.
 fn input_slots(call: &mut Call) -> Vec<&mut String> {
     match call {
+        // The agent's own body is what is checked and edited; the common
+        // request is derived from it again afterwards (`rederive`).
+        Call::Chat(_, Some(native)) if native.parse_error.is_none() => native::text_slots(native),
         Call::Chat(r, _) => {
             merge_text_parts(r);
             chat_slots(r)
@@ -1753,6 +1761,36 @@ async fn check_input_rules(
     match outcome.blocked_by {
         Some((_, name)) => Err(shape.guardrail_blocked(&name)),
         None => Ok(outcome),
+    }
+}
+
+/// Parses the common request again from the agent's body after guardrails
+/// edited its text, so that translation and pass-through send the same text.
+fn rederive(call: &mut Call, before: &Option<Vec<u8>>) {
+    let Call::Chat(request, Some(native)) = call else {
+        return;
+    };
+    let Some(before) = before else { return };
+    let body = serde_json::to_vec(&native.body).unwrap_or_default();
+    if &body == before {
+        return;
+    }
+    let parsed = match native.api {
+        NativeApi::Messages => anthropic::parse_request(&body),
+        NativeApi::Responses => responses::parse_request(&body).map(|p| p.request),
+    };
+    if let Ok(parsed) = parsed {
+        *request = parsed;
+    }
+}
+
+/// The agent's body as it is now, when a guardrail may edit it.
+fn native_snapshot(call: &Call) -> Option<Vec<u8>> {
+    match call {
+        Call::Chat(_, Some(native)) if native.parse_error.is_none() => {
+            Some(serde_json::to_vec(&native.body).unwrap_or_default())
+        }
+        _ => None,
     }
 }
 
