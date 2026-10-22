@@ -153,6 +153,10 @@ pub struct AppState {
     /// How often a stream held for an external guardrail sends an SSE
     /// comment so a proxy in front does not cut it for being idle.
     pub stream_keepalive: Duration,
+    /// Whether a call in a provider's own API (`/v1/messages` to Anthropic,
+    /// `/v1/responses` to OpenAI and Azure) is forwarded as it came. Tests
+    /// of the translators turn it off so that those calls are translated.
+    pub passthrough: bool,
     /// The circuit breaker of every target that was called.
     pub health: Arc<dyn HealthStore>,
     /// The counters `/metrics` shows.
@@ -213,6 +217,7 @@ impl AppState {
             hook_gates: Arc::default(),
             old_prompts: Arc::default(),
             stream_keepalive: DEFAULT_STREAM_KEEPALIVE,
+            passthrough: true,
             budgets: Arc::new(MemoryBudgets::new()),
             health: Arc::new(InMemoryHealth::new()),
             metrics: Arc::new(Metrics::new()),

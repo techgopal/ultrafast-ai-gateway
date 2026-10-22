@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use common::{
-    allow_model, call, error_code, org_tweaked, org_with_sink, post_to, seed_team, seed_user,
-    MemorySink, Org, Signed, ORG_PASSWORD,
+    allow_model, call, error_code, org_tweaked, post_to, seed_team, seed_user, MemorySink, Org,
+    Signed, ORG_PASSWORD,
 };
 use serde_json::{json, Value};
 use ufaigw_gateway::identity::{Role, TeamRole};
@@ -52,7 +52,7 @@ fn ok() -> ResponseTemplate {
 
 async fn world() -> World {
     let sink = Arc::new(MemorySink::default());
-    let org = org_with_sink(Some(sink.clone())).await;
+    let org = org_tweaked(Some(sink.clone()), |s| s.passthrough = false).await;
     world_of(org, sink).await
 }
 

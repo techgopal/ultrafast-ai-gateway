@@ -17,6 +17,7 @@ pub mod limits;
 pub mod logs;
 pub mod mcp;
 pub mod metrics;
+pub mod native;
 pub mod otel;
 pub mod portable;
 pub mod prompts;

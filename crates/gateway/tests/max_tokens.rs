@@ -4,7 +4,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{harness, post_to, Harness};
+use common::{harness_translating, post_to, Harness};
 use serde_json::{json, Value};
 use wiremock::matchers::method;
 use wiremock::{Mock, ResponseTemplate};
@@ -46,7 +46,7 @@ async fn an_azure_target_gets_max_completion_tokens_from_chat_and_responses() {
             json!({"model":"p/m","max_output_tokens":7,"input":"hi"}),
         ),
     ] {
-        let h = harness("azure").await;
+        let h = harness_translating("azure").await;
         Mock::given(method("POST"))
             .respond_with(answer())
             .mount(&h.upstream)
@@ -71,7 +71,7 @@ async fn another_openai_compatible_host_keeps_max_tokens() {
             json!({"model":"p/m","max_output_tokens":7,"input":"hi"}),
         ),
     ] {
-        let h = harness("openai").await;
+        let h = harness_translating("openai").await;
         Mock::given(method("POST"))
             .respond_with(answer())
             .mount(&h.upstream)

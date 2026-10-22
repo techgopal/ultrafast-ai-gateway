@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{allow_model, harness, post_to, Harness};
+use common::{allow_model, harness_translating, post_to, Harness};
 use serde_json::{json, Value};
 use ufaigw_gateway::store::{Grants, RouteSettings, TargetsInput};
 use ufaigw_gateway::telemetry::AttemptOutcome;
@@ -63,7 +63,7 @@ fn events(body: &str) -> Vec<(String, Value)> {
 
 #[tokio::test]
 async fn an_openai_provider_serves_a_message() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(body_partial_json(json!({
@@ -95,7 +95,7 @@ async fn an_openai_provider_serves_a_message() {
 
 #[tokio::test]
 async fn an_anthropic_provider_serves_a_message_with_x_api_key() {
-    let h = harness("anthropic").await;
+    let h = harness_translating("anthropic").await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(header("x-api-key", "provider-secret"))
@@ -124,7 +124,7 @@ async fn an_anthropic_provider_serves_a_message_with_x_api_key() {
 
 #[tokio::test]
 async fn x_api_key_also_works_on_chat_and_models() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .respond_with(openai_ok())
         .mount(&h.upstream)
@@ -161,7 +161,7 @@ async fn x_api_key_also_works_on_chat_and_models() {
 
 #[tokio::test]
 async fn a_stream_from_an_openai_provider_becomes_anthropic_events() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     let upstream = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"sal\"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"content\":\"ut\"},\"finish_reason\":null}]}\n\n",
@@ -184,7 +184,7 @@ async fn a_stream_from_an_openai_provider_becomes_anthropic_events() {
 
 #[tokio::test]
 async fn a_stream_from_an_anthropic_provider_becomes_anthropic_events() {
-    let h = harness("anthropic").await;
+    let h = harness_translating("anthropic").await;
     let upstream = concat!(
         "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
         "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"sal\"}}\n\n",
@@ -230,7 +230,7 @@ fn assert_anthropic_stream(text: &str, want: &str, stop: &str, output_tokens: u6
 
 #[tokio::test]
 async fn an_error_inside_a_stream_is_an_error_event() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     let upstream = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}\n\n",
         "data: {\"error\":{\"message\":\"overloaded\"}}\n\n",
@@ -251,7 +251,7 @@ async fn an_error_inside_a_stream_is_an_error_event() {
 
 #[tokio::test]
 async fn errors_are_in_the_anthropic_shape() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     let check = |status: StatusCode, body: &str, kind: &str| {
         assert_eq!(json_of(body)["type"], "error", "{status}: {body}");
         assert_eq!(json_of(body)["error"]["type"], kind, "{status}: {body}");
@@ -310,7 +310,7 @@ async fn errors_are_in_the_anthropic_shape() {
 
 #[tokio::test]
 async fn a_rate_limited_provider_is_a_429_with_retry_after() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "3"))
         .mount(&h.upstream)
@@ -323,7 +323,7 @@ async fn a_rate_limited_provider_is_a_429_with_retry_after() {
 
 #[tokio::test]
 async fn a_rejected_provider_credential_is_an_api_error_not_the_callers() {
-    let h = harness("anthropic").await;
+    let h = harness_translating("anthropic").await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(401).set_body_json(
             json!({ "type": "error", "error": { "type": "authentication_error", "message": "bad key sk-abc" } }),
@@ -338,7 +338,7 @@ async fn a_rejected_provider_credential_is_an_api_error_not_the_callers() {
 
 #[tokio::test]
 async fn a_route_skips_a_target_the_key_may_not_call() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(openai_ok())
@@ -417,7 +417,7 @@ mod tools {
 
     #[tokio::test]
     async fn anthropic_ingress_tool_call_to_openai_provider() {
-        let h = harness("openai").await;
+        let h = harness_translating("openai").await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .and(body_partial_json(json!({
@@ -453,7 +453,7 @@ mod tools {
 
     #[tokio::test]
     async fn anthropic_ingress_streamed_tool_call_from_openai_provider() {
-        let h = harness("openai").await;
+        let h = harness_translating("openai").await;
         let chunks = concat!(
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null}]}\n\n",
