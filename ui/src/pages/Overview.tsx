@@ -275,6 +275,11 @@ function Usage({ me }: { me: Me }) {
               <p className="text-sm text-muted-foreground tabular-nums">
                 {formatTokens(page.total.output_tokens)} out
               </p>
+              {page.total.cache_read_tokens > 0 ? (
+                <p className="text-sm text-muted-foreground tabular-nums">
+                  {formatTokens(page.total.cache_read_tokens)} from cache
+                </p>
+              ) : null}
               <Series
                 label="Tokens"
                 page={page}

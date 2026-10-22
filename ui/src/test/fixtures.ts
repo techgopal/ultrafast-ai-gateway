@@ -814,6 +814,45 @@ export function logDetail(id: number): LogDetail | undefined {
   return row === undefined ? undefined : { ...row, attempts: logAttempts[id] ?? [] };
 }
 
+/** The calls of one agent session, newest first, as `GET /api/logs?agent_session=` gives them. */
+export const agentSession = "sess-claude-1";
+export const agentLogs: Log[] = [
+  log(
+    21,
+    "2026-09-30 11:58:00",
+    platformCall,
+    {
+      requested: "claude-opus-5-5",
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      input_tokens: 1_200,
+      output_tokens: 300,
+      cache_read_tokens: 900,
+      cache_write_tokens: 100,
+      cost_micros: 2_000_000,
+      agent_session: agentSession,
+      agent_client: "claude-code",
+    },
+  ),
+  log(
+    20,
+    "2026-09-30 11:57:00",
+    platformCall,
+    {
+      requested: "claude-opus-5-5",
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      input_tokens: 1_000,
+      output_tokens: 200,
+      cache_read_tokens: 0,
+      cache_write_tokens: 800,
+      cost_micros: 1_500_000,
+      agent_session: agentSession,
+      agent_client: "claude-code",
+    },
+  ),
+];
+
 function usageRow(group: string, label: string, rest: Partial<UsageRow>): UsageRow {
   return {
     group,

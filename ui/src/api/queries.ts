@@ -168,6 +168,8 @@ export interface LogsFilter {
   errors?: boolean;
   /** The worst thing the guardrails did to the call. */
   guardrail?: "blocked" | "redacted" | "flagged";
+  /** The calls of one coding-agent session. */
+  agent_session?: string;
   /** `name:value`, once for each tag the calls must carry. */
   tag?: string[];
 }

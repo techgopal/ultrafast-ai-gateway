@@ -35,6 +35,7 @@ const page = {
   Limits: lazyRouteComponent(() => import("@/pages/Limits"), "Limits"),
   Logs: lazyRouteComponent(() => import("@/pages/Logs"), "Logs"),
   LogsDetail: lazyRouteComponent(() => import("@/pages/LogsDetail"), "LogsDetail"),
+  LogsSession: lazyRouteComponent(() => import("@/pages/LogsSession"), "LogsSession"),
   Models: lazyRouteComponent(() => import("@/pages/Models"), "Models"),
   Mcp: lazyRouteComponent(() => import("@/pages/Mcp"), "Mcp"),
   McpCatalog: lazyRouteComponent(() => import("@/pages/McpCatalog"), "McpCatalog"),
@@ -251,6 +252,17 @@ const logRoute = createRoute({
   component: function LogRoute() {
     const { id } = logRoute.useParams();
     return <page.LogsDetail key={id} id={id} />;
+  },
+});
+
+const logSessionRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/logs/session/$id",
+  staticData: { title: "Session" },
+  loader: () => page.LogsSession.preload?.(),
+  component: function LogSessionRoute() {
+    const { id } = logSessionRoute.useParams();
+    return <page.LogsSession key={id} id={id} />;
   },
 });
 
@@ -503,6 +515,7 @@ const routeTree = rootRoute.addChildren([
   shellRoute.addChildren([
     overviewRoute,
     logsRoute,
+    logSessionRoute,
     logRoute,
     alertsRoute,
     playgroundRoute,

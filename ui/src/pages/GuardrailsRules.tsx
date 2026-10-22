@@ -38,6 +38,10 @@ export const REGEX_HINT =
 export const ACTION_HINT =
   "Redact replaces the match with a placeholder, Block refuses the call, Flag only records it.";
 
+/** What redaction costs a coding agent: its prompt cache, and Claude Code its earlier thinking. */
+const REDACT_NOTE =
+  "Redaction rewrites the prompt. For coding agents this costs prompt-cache hits, and Claude Code drops earlier thinking from the conversation.";
+
 function RowError({ id, message }: { id: string; message: string | undefined }) {
   if (message === undefined) return null;
   return (
@@ -125,6 +129,9 @@ function Rule({ row, index, error, onChange, onRemove }: RowProps) {
               ))}
             </SelectContent>
           </Select>
+          {row.action === "redact" ? (
+            <p className="text-sm text-muted-foreground">{REDACT_NOTE}</p>
+          ) : null}
         </div>
         <div className="flex flex-col gap-2">
           <Label htmlFor={`${base}-directions`}>Applies to</Label>

@@ -836,3 +836,17 @@ describe("usage on the overview", () => {
     }
   });
 });
+
+describe("cache reads in the tokens tile", () => {
+  test("a gateway whose calls read the prompt cache says how much", async () => {
+    const withCache = {
+      ...fixtures.usageByDay,
+      total: { ...fixtures.usageByDay.total, cache_read_tokens: 9_000, cache_write_tokens: 500 },
+    };
+    override("get", "/api/usage", () => ok("get", "/api/usage", 200, withCache));
+    await page();
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("9,000 from cache");
+    });
+  });
+});

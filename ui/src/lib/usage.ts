@@ -117,3 +117,10 @@ export const ENDPOINTS: readonly (readonly [value: string, label: string])[] = [
 export function endpointLabel(endpoint: string): string {
   return ENDPOINTS.find(([value]) => value === endpoint)?.[1] ?? endpoint;
 }
+
+/** The coding agent a call came from, as the console names it. */
+export function agentLabel(client: string | null): string {
+  if (client === "claude-code") return "Claude Code";
+  if (client === "codex") return "Codex";
+  return client ?? "Unknown";
+}

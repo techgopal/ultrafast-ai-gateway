@@ -87,7 +87,7 @@ describe("the list", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Logs" })).toBeInTheDocument();
     const found = rows();
     expect(found).toHaveLength(5);
-    // time, key, user, model, status, tokens, cost, duration, tags, endpoint, prompt
+    // time, key, user, model, status, tokens, cost, duration, tags, endpoint, prompt, cache reads, session
     expect(found[0]?.slice(1)).toEqual([
       "platform-prod",
       "arjun@example.test",
@@ -98,6 +98,8 @@ describe("the list", () => {
       "850 ms",
       "No tags",
       "Chat completions",
+      "—",
+      "—",
       "—",
     ]);
     // The model that answered, or the name asked for when none did.
@@ -467,6 +469,8 @@ describe("states", () => {
       "Tags",
       "Endpoint",
       "Prompt",
+      "Cache reads",
+      "Session",
     ]);
     const buttons = [
       screen.getByRole("button", { name: "Refresh" }),
@@ -602,5 +606,115 @@ describe("the detail", () => {
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expectOneH1();
+  });
+});
+
+describe("coding agents", () => {
+  test("the cache reads and the session of a call are in the list, and the session leads to its view", async () => {
+    logsAre(fixtures.agentLogs);
+    await page();
+    await table();
+    const found = rows();
+    // ..., prompt, cache reads, session
+    expect(found[0]?.slice(-2)).toEqual(["900", fixtures.agentSession]);
+    expect(found[1]?.slice(-2)).toEqual(["—", fixtures.agentSession]);
+    const link = within(await table()).getAllByRole("link", { name: fixtures.agentSession })[0];
+    expect(link).toHaveAttribute("href", `/logs/session/${fixtures.agentSession}`);
+    // A call from no agent has no session.
+    logsAre(fixtures.logList);
+  });
+
+  test("the agent session narrows the request, and is never sent when empty", async () => {
+    const asked = logsAre(fixtures.agentLogs);
+    await page();
+    await table();
+    expect(asked.asked[0]?.has("agent_session")).toBe(false);
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Agent session" }),
+      `${fixtures.agentSession}{Enter}`,
+    );
+    await waitFor(() => {
+      expect(asked.asked.at(-1)?.get("agent_session")).toBe(fixtures.agentSession);
+    });
+  });
+
+  test("the detail names the agent, its session and the cache counts", async () => {
+    override("get", "/api/logs/{id}", () =>
+      ok("get", "/api/logs/{id}", 200, { ...(fixtures.agentLogs[0] as fixtures.Log), attempts: [] }),
+    );
+    await page({ route: "/logs/21" });
+    const details = await screen.findByLabelText("Details");
+    expect(details.textContent).toContain("Claude Code");
+    expect(details.textContent).toContain("900 / 100");
+    expect(within(details).getByRole("link", { name: fixtures.agentSession })).toHaveAttribute(
+      "href",
+      `/logs/session/${fixtures.agentSession}`,
+    );
+  });
+});
+
+describe("the session view", () => {
+  function sessionIs(all: readonly fixtures.Log[]) {
+    const state = { asked: [] as URLSearchParams[] };
+    override("get", "/api/logs", ({ request }) => {
+      const query = new URL(request.url).searchParams;
+      state.asked.push(query);
+      const before = query.get("before");
+      const logs = all
+        .filter((row) => row.agent_session === query.get("agent_session"))
+        .filter((row) => before === null || row.id < Number(before))
+        .slice(0, Number(query.get("limit") ?? 50));
+      return ok("get", "/api/logs", 200, { logs });
+    });
+    return state;
+  }
+
+  test("lists the calls of the session in order, with their cache reads, and the totals", async () => {
+    const asked = sessionIs(fixtures.agentLogs);
+    await page({ route: `/logs/session/${fixtures.agentSession}` });
+    expect(
+      await screen.findByRole("heading", { level: 1, name: `Session ${fixtures.agentSession}` }),
+    ).toBeInTheDocument();
+    const found = await screen.findByRole("table", { name: "Session calls" });
+    await waitFor(() => {
+      expect(found).toHaveAttribute("aria-busy", "false");
+    });
+    const body = [...found.querySelectorAll("tbody tr")].map((row) =>
+      [...row.querySelectorAll("td")].map((cell) => cell.textContent.trim()),
+    );
+    // Oldest first: time, model, tokens in / out, cache reads / writes, cost.
+    expect(body.map((row) => row.slice(1))).toEqual([
+      ["anthropic/claude-opus-5-5", "1,000 / 200", "0 / 800", "$1.50"],
+      ["anthropic/claude-opus-5-5", "1,200 / 300", "900 / 100", "$2.00"],
+    ]);
+    const totals = screen.getByLabelText("Totals");
+    expect(totals.textContent).toContain("2");
+    expect(totals.textContent).toContain("2,200 / 500");
+    expect(totals.textContent).toContain("900 / 900");
+    expect(totals.textContent).toContain("$3.50");
+    expect(asked.asked[0]?.get("agent_session")).toBe(fixtures.agentSession);
+    expect(screen.getByRole("link", { name: "Back to logs" })).toHaveAttribute("href", "/logs");
+    expectOneMain();
+    expectOneH1(`Session ${fixtures.agentSession}`);
+  });
+
+  test("reads every page of a long session", async () => {
+    const many = Array.from({ length: 60 }, (_, index) => ({
+      ...fixtures.agentLogs[0],
+      id: 100 - index,
+    })) as fixtures.Log[];
+    const asked = sessionIs(many);
+    await page({ route: `/logs/session/${fixtures.agentSession}` });
+    const found = await screen.findByRole("table", { name: "Session calls" });
+    await waitFor(() => {
+      expect(found.querySelectorAll("tbody tr")).toHaveLength(60);
+    });
+    expect(asked.asked).toHaveLength(2);
+  });
+
+  test("a session with no calls says so", async () => {
+    sessionIs([]);
+    await page({ route: "/logs/session/nothing" });
+    expect(await screen.findByText("No calls were logged for this session.")).toBeInTheDocument();
   });
 });

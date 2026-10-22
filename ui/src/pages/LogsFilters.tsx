@@ -53,6 +53,8 @@ export interface Filters {
   guardrail: string;
   /** `name:value` as it was applied, or empty. */
   tag: string;
+  /** The id of a coding-agent session, or empty. */
+  agentSession: string;
 }
 
 export const NO_FILTERS: Filters = {
@@ -67,6 +69,7 @@ export const NO_FILTERS: Filters = {
   errorsOnly: false,
   guardrail: ANY,
   tag: "",
+  agentSession: "",
 };
 
 /** What is chosen, when it is still offered; otherwise nothing is left out. */
@@ -112,12 +115,22 @@ interface LogsFiltersProps {
   onChange: (patch: Partial<Filters>) => void;
 }
 
-/** The model is applied when it is entered or left, not at every key. */
-function ModelField({ value, onApply }: { value: string; onApply: (model: string) => void }) {
+/** A text applied when it is entered or left, not at every key. */
+function TextField({
+  value,
+  label,
+  placeholder,
+  onApply,
+}: {
+  value: string;
+  label: string;
+  placeholder: string;
+  onApply: (text: string) => void;
+}) {
   const [draft, setDraft] = useState(value);
   const apply = () => {
-    const model = draft.trim();
-    if (model !== value) onApply(model);
+    const text = draft.trim();
+    if (text !== value) onApply(text);
   };
   return (
     <form
@@ -128,8 +141,8 @@ function ModelField({ value, onApply }: { value: string; onApply: (model: string
     >
       <Input
         type="text"
-        aria-label="Model"
-        placeholder="Model name"
+        aria-label={label}
+        placeholder={placeholder}
         autoComplete="off"
         className={`${control} w-full sm:w-48`}
         value={draft}
@@ -252,10 +265,20 @@ export function LogsFilters({ filters, offered, others, onChange }: LogsFiltersP
           />
         </>
       ) : null}
-      <ModelField
+      <TextField
         value={filters.model}
+        label="Model"
+        placeholder="Model name"
         onApply={(model) => {
           onChange({ model });
+        }}
+      />
+      <TextField
+        value={filters.agentSession}
+        label="Agent session"
+        placeholder="Agent session"
+        onApply={(agentSession) => {
+          onChange({ agentSession });
         }}
       />
       <TagField

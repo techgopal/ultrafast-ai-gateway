@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { idOf } from "@/lib/id";
 import { sideLines } from "@/lib/guardrails";
-import { endpointLabel, formatDuration, outcomeLabel } from "@/lib/usage";
+import { agentLabel, endpointLabel, formatDuration, formatTokens, outcomeLabel } from "@/lib/usage";
 import { costOf, GuardrailBadge, modelOf, tokensOf } from "@/pages/Logs";
 
 /** An attempt, with its place in the order: two attempts can be alike. */
@@ -107,6 +107,30 @@ function Details({ id }: { id: number }) {
     ["User", log.user_email ?? NONE],
     ["Team", log.team_name ?? NONE],
     ["Tokens in / out", tokensOf(log)],
+    ...(log.cache_read_tokens === null && log.cache_write_tokens === null
+      ? []
+      : ([
+          [
+            "Cache read / write",
+            `${formatTokens(log.cache_read_tokens ?? 0)} / ${formatTokens(log.cache_write_tokens ?? 0)}`,
+          ],
+        ] as [string, ReactNode][])),
+    ...(log.agent_session === null
+      ? []
+      : ([
+          ["Agent", agentLabel(log.agent_client)],
+          [
+            "Session",
+            <Link
+              key="session"
+              to="/logs/session/$id"
+              params={{ id: log.agent_session }}
+              className="break-all underline-offset-4 hover:underline"
+            >
+              {log.agent_session}
+            </Link>,
+          ],
+        ] as [string, ReactNode][])),
     ["Cost", costOf(log)],
     ["Duration", formatDuration(log.duration_ms)],
     ["Tags", <TagChips key="g" tags={log.tags} />],
