@@ -9,7 +9,7 @@ use axum::http::header::{CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::map_response;
 use axum::response::Response;
-use axum::routing::{any, get, post};
+use axum::routing::{any, get, head, post};
 use axum::{Json, Router};
 use ipnet::IpNet;
 use serde_json::json;
@@ -441,6 +441,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     }
     app.route("/v1/chat/completions", post(proxy::chat_completions))
         .route("/v1/messages", post(proxy::messages))
+        .route("/v1/messages/count_tokens", post(proxy::count_tokens))
         .route("/v1/responses", post(proxy::responses))
         .route("/v1/embeddings", post(proxy::embeddings))
         .route("/v1/images/generations", post(proxy::images))
@@ -457,6 +458,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1", any(v1_not_found))
         .route("/v1/", any(v1_not_found))
         .route("/v1/{*rest}", any(v1_not_found))
+        // Claude Code probes the gateway here before it starts.
+        .route(
+            "/api/hello",
+            head(|| async { StatusCode::OK })
+                .get(|| async { StatusCode::OK })
+                .layer(map_response(api_headers)),
+        )
         .nest("/api", api::router().layer(map_response(api_headers)))
         // The nested router does not see this path.
         .route(

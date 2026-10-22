@@ -1012,7 +1012,7 @@ mod tests {
         let r = build_request(&target(), &req).unwrap();
         assert_eq!(
             String::from_utf8(r.body).unwrap(),
-            r#"{"max_tokens":10,"messages":[{"content":"hi","role":"user"}],"model":"claude-sonnet-5","stop_sequences":["END"],"stream":true,"system":"s","temperature":0.5}"#
+            r#"{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}],"max_tokens":10,"system":"s","temperature":0.5,"stop_sequences":["END"],"stream":true}"#
         );
     }
 

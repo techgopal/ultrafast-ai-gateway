@@ -931,3 +931,131 @@ async fn redaction_reaches_a_codex_input_and_tool_output() {
         .unwrap()
         .starts_with("out "));
 }
+
+// ------------------------------------------------- count_tokens, hello, models
+
+const COUNT: &str = r#"{"input_tokens": 42}"#;
+
+async fn count_tokens(h: &Harness, body: &Value) -> (StatusCode, axum::http::HeaderMap, String) {
+    let bearer = format!("Bearer {}", h.key);
+    post_to(
+        &h.app,
+        "/v1/messages/count_tokens?beta=true",
+        &[
+            ("authorization", &bearer),
+            ("anthropic-version", "2023-06-01"),
+            ("anthropic-beta", "token-counting-2024-11-01"),
+            ("x-claude-code-session-id", "s-1"),
+        ],
+        &body.to_string(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn count_tokens_passes_through() {
+    let h = harness("anthropic").await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages/count_tokens"))
+        .respond_with(json_answer(COUNT))
+        .mount(&h.upstream)
+        .await;
+    let (status, _, body) = count_tokens(
+        &h,
+        &json!({"model":"p/m","messages":[{"role":"user","content":"hi"}]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, COUNT);
+    let seen = received(&h.upstream).await;
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].url.query(), Some("beta=true"));
+    let got: Value = serde_json::from_slice(&seen[0].body).unwrap();
+    assert_eq!(got["model"], "m");
+    assert_eq!(got["messages"][0]["content"], "hi");
+    assert_eq!(
+        seen[0].headers.get("anthropic-beta").unwrap(),
+        "token-counting-2024-11-01"
+    );
+    assert_eq!(seen[0].headers.get("x-api-key").unwrap(), "provider-secret");
+    assert!(seen[0].headers.get("x-claude-code-session-id").is_none());
+    // Counting is not a call: no log row.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(h.sink.records().is_empty());
+}
+
+#[tokio::test]
+async fn count_tokens_without_an_anthropic_target_is_404() {
+    let h = harness("openai").await;
+    let (status, _, body) = count_tokens(&h, &json!({"model":"p/m","messages":[]})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["type"], "error");
+    assert_eq!(v["error"]["type"], "not_found_error");
+    assert!(received(&h.upstream).await.is_empty());
+}
+
+#[tokio::test]
+async fn hello_answers() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+    let h = harness("openai").await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("HEAD")
+                .uri("/api/hello")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(bytes.is_empty());
+}
+
+#[tokio::test]
+async fn models_list_has_display_names_and_takes_a_limit() {
+    let h = harness("openai").await;
+    let bearer = format!("Bearer {}", h.key);
+    let get = |uri: &'static str| {
+        let app = h.app.clone();
+        let bearer = bearer.clone();
+        async move {
+            use axum::body::Body;
+            use axum::http::Request;
+            use tower::ServiceExt;
+            let resp = app
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("authorization", bearer)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+        }
+    };
+    let (status, plain) = get("/v1/models").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, limited) = get("/v1/models?limit=1000").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(plain, limited);
+    let data = plain["data"].as_array().unwrap();
+    assert!(!data.is_empty());
+    for m in data {
+        assert_eq!(m["display_name"], m["id"], "{m}");
+    }
+}

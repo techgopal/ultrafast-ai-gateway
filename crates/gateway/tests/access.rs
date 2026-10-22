@@ -651,11 +651,11 @@ async fn v1_models_lists_only_callable() {
     assert_eq!(body["object"], "list");
     assert_eq!(
         body["data"][0],
-        json!({ "id": "everyone", "object": "model", "created": 0, "owned_by": "ultrafast-route" })
+        json!({ "id": "everyone", "object": "model", "created": 0, "owned_by": "ultrafast-route", "display_name": "everyone" })
     );
     assert_eq!(
         body["data"][1],
-        json!({ "id": "p/open", "object": "model", "created": 0, "owned_by": "p" })
+        json!({ "id": "p/open", "object": "model", "created": 0, "owned_by": "p", "display_name": "p/open" })
     );
 
     // Everything listed can be called, and nothing else.

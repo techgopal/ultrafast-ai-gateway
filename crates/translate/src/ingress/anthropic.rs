@@ -760,7 +760,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             r.dropped,
-            vec!["container".to_string(), "top_k".to_string()]
+            vec!["top_k".to_string(), "container".to_string()]
         );
         // A known field that is malformed is still refused.
         invalid(br#"{"model":"m","max_tokens":1,"thinking":"yes","messages":[{"role":"user","content":"x"}]}"#);
@@ -1101,7 +1101,7 @@ mod tests {
         let stop = c.find("event: content_block_stop").expect(&c);
         assert!(start < stop, "{c}");
         assert!(
-            c.contains(r#""content_block":{"text":"","type":"text"}"#),
+            c.contains(r#""content_block":{"type":"text","text":""}"#),
             "{c}"
         );
         assert_eq!(c.matches("event: content_block_start").count(), 1, "{c}");

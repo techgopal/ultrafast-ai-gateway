@@ -95,12 +95,133 @@ pub async fn list_models(State(state): State<Arc<AppState>>, request: Request) -
         .into_iter()
         .map(|(id, owned_by)| {
             serde_json::json!({
-                "id": id, "object": "model", "created": 0, "owned_by": owned_by
+                "id": id, "object": "model", "created": 0, "owned_by": owned_by,
+                "display_name": id
             })
         })
         .collect();
     Json(serde_json::json!({ "object": "list", "data": data })).into_response()
 }
+
+/// `POST /v1/messages/count_tokens`: Claude Code's count of a prompt, asked
+/// of the first Anthropic target of the model. It is not a call: no limit, no
+/// budget, no log row.
+pub async fn count_tokens(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let shape = Shape::Anthropic;
+    let (parts, body) = request.into_parts();
+    let snapshot = state.snapshot.load_full();
+    let key = match authenticate(&snapshot, &parts.headers, shape) {
+        Ok(key) => key,
+        Err(resp) => return resp,
+    };
+    let bytes = match axum::body::to_bytes(body, state.max_body_bytes).await {
+        Ok(b) => b,
+        Err(_) => {
+            return shape.error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid_request_error",
+                "Request body is too large or could not be read.",
+            )
+        }
+    };
+    let Ok(Value::Object(mut map)) = serde_json::from_slice::<Value>(&bytes) else {
+        return shape.error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "The request body must be a JSON object.",
+        );
+    };
+    let Some(model) = map.get("model").and_then(Value::as_str).map(str::to_string) else {
+        return shape.error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "model is required.",
+        );
+    };
+    let resolved = match access::resolve(&snapshot, &key, &model) {
+        Ok(r) => r,
+        Err(Denied::Unknown) => return not_found(shape, &model),
+        Err(Denied::Forbidden) => return forbidden(shape, &model),
+    };
+    let order = match &resolved {
+        Resolved::Model(m) => vec![TargetRef {
+            provider: m.provider.clone(),
+            model: m.name.clone(),
+            model_id: m.id,
+        }],
+        Resolved::Route(route) => {
+            let mut rng = StdRng::from_rng(&mut rand::rng());
+            routing::plan(route, &mut rng)
+        }
+    };
+    let found = order.into_iter().find_map(|t| {
+        let provider = snapshot.provider(&t.provider)?;
+        let callable = snapshot
+            .model(&t.provider, &t.model)
+            .is_some_and(|m| access::may_call_model(&snapshot, &key, m));
+        (provider.kind == ProviderKind::Anthropic && callable).then_some((t, provider))
+    });
+    let Some((target, provider)) = found else {
+        return shape.error(
+            StatusCode::NOT_FOUND,
+            "not_found_error",
+            "No Anthropic provider can count the tokens of this model.",
+        );
+    };
+    let wire = Target {
+        kind: provider.kind,
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        model: target.model.clone(),
+        api_version: provider.api_version.clone(),
+    };
+    map.insert("model".into(), Value::String(target.model.clone()));
+    let native = Native {
+        api: NativeApi::Messages,
+        body: map,
+        headers: native::forwardable(NativeApi::Messages, &parts.headers),
+        query: parts.uri.query().map(str::to_string),
+        parse_error: None,
+    };
+    let mut out = native::build(&native, &wire);
+    out.url = out
+        .url
+        .replacen("/v1/messages", "/v1/messages/count_tokens", 1);
+    let sent = timeout_at(
+        tokio::time::Instant::now() + COUNT_TOKENS_TIMEOUT,
+        send(&state.http, Outgoing::Json(out)),
+    )
+    .await;
+    let upstream = match sent {
+        Ok(Ok(r)) => r,
+        _ => {
+            return shape.error(
+                StatusCode::BAD_GATEWAY,
+                "api_error",
+                "The provider could not be reached.",
+            )
+        }
+    };
+    let status = upstream.status().as_u16();
+    let headers = native::keep_response_headers(upstream.headers());
+    match read_capped(
+        upstream,
+        state.max_provider_response_bytes,
+        COUNT_TOKENS_TIMEOUT,
+    )
+    .await
+    {
+        Ok(bytes) => native_response(status, headers, Bytes::from(bytes)),
+        Err(_) => shape.error(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            "The provider response could not be read.",
+        ),
+    }
+}
+
+/// How long the count of a prompt may take.
+const COUNT_TOKENS_TIMEOUT: Duration = Duration::from_secs(30);
 
 const NO_PROVIDER: &str = "No provider could serve this request.";
 const NO_MODEL: &str = "No model is available for this request.";
