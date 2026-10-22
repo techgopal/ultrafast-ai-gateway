@@ -39,6 +39,7 @@ pub struct LogsQuery {
     endpoint: Option<String>,
     errors: Option<String>,
     guardrail: Option<String>,
+    agent_session: Option<String>,
 }
 
 /// One logged call, as `/api` shows it.
@@ -71,10 +72,18 @@ pub struct LogView {
     pub provider: Option<String>,
     #[schema(required)]
     pub model: Option<String>,
+    /// The input tokens that were not read from or written to the provider's
+    /// prompt cache; those are `cache_read_tokens` and `cache_write_tokens`.
     #[schema(required)]
     pub input_tokens: Option<i64>,
     #[schema(required)]
     pub output_tokens: Option<i64>,
+    /// Input tokens read from the provider's prompt cache (`null` without usage).
+    #[schema(required)]
+    pub cache_read_tokens: Option<i64>,
+    /// Input tokens written to the provider's prompt cache (`null` without usage).
+    #[schema(required)]
+    pub cache_write_tokens: Option<i64>,
     /// Cost in millionths of a dollar; 0 when `priced` is false.
     pub cost_micros: i64,
     pub priced: bool,
@@ -105,6 +114,30 @@ pub struct LogView {
     /// It is text: it stays when the template is deleted.
     #[schema(required)]
     pub prompt: Option<String>,
+    /// The id the calling agent (Claude Code, Codex) gave its session, or
+    /// `null`. Calls of one session share it.
+    #[schema(required)]
+    pub agent_session: Option<String>,
+    /// The agent's id for the agent that made the call (a subagent has its
+    /// own), or `null`.
+    #[schema(required)]
+    pub agent_id: Option<String>,
+    /// The agent's id for the prompt (one user message and what follows from
+    /// it), or `null`.
+    #[schema(required)]
+    pub agent_prompt: Option<String>,
+    /// The agent's name for the kind of request (a main turn, a title, a
+    /// compaction), or `null`.
+    #[schema(required)]
+    pub agent_class: Option<String>,
+    /// `claude-code` or `codex` when the headers say which agent it is, else `null`.
+    #[schema(required)]
+    pub agent_client: Option<String>,
+    /// What translation left out of the request: names of fields, tools and
+    /// content blocks (for example `context_management`,
+    /// `tools[8]:tool_search`). Empty when the request was taken whole, and
+    /// for a pass-through call.
+    pub dropped: Vec<String>,
 }
 
 /// One target tried for a call.
@@ -155,10 +188,18 @@ pub struct LogDetailView {
     pub provider: Option<String>,
     #[schema(required)]
     pub model: Option<String>,
+    /// The input tokens that were not read from or written to the provider's
+    /// prompt cache; those are `cache_read_tokens` and `cache_write_tokens`.
     #[schema(required)]
     pub input_tokens: Option<i64>,
     #[schema(required)]
     pub output_tokens: Option<i64>,
+    /// Input tokens read from the provider's prompt cache (`null` without usage).
+    #[schema(required)]
+    pub cache_read_tokens: Option<i64>,
+    /// Input tokens written to the provider's prompt cache (`null` without usage).
+    #[schema(required)]
+    pub cache_write_tokens: Option<i64>,
     /// Cost in millionths of a dollar; 0 when `priced` is false.
     pub cost_micros: i64,
     pub priced: bool,
@@ -189,6 +230,30 @@ pub struct LogDetailView {
     /// It is text: it stays when the template is deleted.
     #[schema(required)]
     pub prompt: Option<String>,
+    /// The id the calling agent (Claude Code, Codex) gave its session, or
+    /// `null`. Calls of one session share it.
+    #[schema(required)]
+    pub agent_session: Option<String>,
+    /// The agent's id for the agent that made the call (a subagent has its
+    /// own), or `null`.
+    #[schema(required)]
+    pub agent_id: Option<String>,
+    /// The agent's id for the prompt (one user message and what follows from
+    /// it), or `null`.
+    #[schema(required)]
+    pub agent_prompt: Option<String>,
+    /// The agent's name for the kind of request (a main turn, a title, a
+    /// compaction), or `null`.
+    #[schema(required)]
+    pub agent_class: Option<String>,
+    /// `claude-code` or `codex` when the headers say which agent it is, else `null`.
+    #[schema(required)]
+    pub agent_client: Option<String>,
+    /// What translation left out of the request: names of fields, tools and
+    /// content blocks (for example `context_management`,
+    /// `tools[8]:tool_search`). Empty when the request was taken whole, and
+    /// for a pass-through call.
+    pub dropped: Vec<String>,
     pub attempts: Vec<LogAttempt>,
 }
 
@@ -211,6 +276,8 @@ impl LogDetailView {
             model: l.model,
             input_tokens: l.input_tokens,
             output_tokens: l.output_tokens,
+            cache_read_tokens: l.cache_read_tokens,
+            cache_write_tokens: l.cache_write_tokens,
             cost_micros: l.cost_micros,
             priced: l.priced,
             cached: l.cached,
@@ -219,6 +286,12 @@ impl LogDetailView {
             tags: l.tags,
             guardrails: l.guardrails,
             prompt: l.prompt,
+            agent_session: l.agent_session,
+            agent_id: l.agent_id,
+            agent_prompt: l.agent_prompt,
+            agent_class: l.agent_class,
+            agent_client: l.agent_client,
+            dropped: l.dropped,
             attempts,
         }
     }
@@ -255,6 +328,8 @@ impl From<&LogDetail> for LogView {
             model: r.model,
             input_tokens: r.input_tokens,
             output_tokens: r.output_tokens,
+            cache_read_tokens: r.cache_read_tokens,
+            cache_write_tokens: r.cache_write_tokens,
             cost_micros: r.cost_micros,
             priced: r.priced,
             cached: r.cached,
@@ -263,6 +338,16 @@ impl From<&LogDetail> for LogView {
             tags: tags::parse_stored(r.tags.as_deref()),
             guardrails: r.guardrails.as_deref().and_then(GuardrailLog::from_stored),
             prompt: r.prompt,
+            agent_session: r.agent_session,
+            agent_id: r.agent_id,
+            agent_prompt: r.agent_prompt,
+            agent_class: r.agent_class,
+            agent_client: r.agent_client,
+            dropped: r
+                .dropped
+                .as_deref()
+                .and_then(|d| serde_json::from_str(d).ok())
+                .unwrap_or_default(),
         }
     }
 }
@@ -346,6 +431,7 @@ pub(super) fn store_scope(scope: Scope) -> LogScope {
         ("endpoint" = Option<String>, Query, description = "Only calls on this endpoint, as the row names it: `chat`, `messages`, `responses`, `embeddings`, `images`, `transcriptions`, `translations`, `speech` or `playground`. Combines with the other filters."),
         ("errors" = Option<bool>, Query, description = "`true`: only calls answered with a status of 400 or more. Combines with the other filters."),
         ("guardrail" = Option<String>, Query, description = "Only calls whose worst guardrail action was this: `blocked`, `redacted` or `flagged` (a block is worse than a redaction, a redaction worse than a flag). Combines with the other filters."),
+        ("agent_session" = Option<String>, Query, description = "Only calls of this agent session: the id a coding agent (Claude Code, Codex) sends with its requests, as `agent_session` shows it. Combines with the other filters."),
         ("tag" = Option<Vec<String>>, Query, description = "Only calls with this tag, written `name:value` (the name ends at the first colon). Repeat it to require several tags: all must match."),
     ),
     responses(
@@ -447,6 +533,19 @@ pub async fn list(
             None
         }
     };
+    let agent_session = match q.agent_session.as_deref() {
+        None | Some("") => None,
+        Some(raw) if raw.len() <= 128 && raw.bytes().all(|b| b.is_ascii_graphic()) => {
+            Some(raw.to_string())
+        }
+        Some(_) => {
+            fields.insert(
+                "agent_session".into(),
+                "must be 1 to 128 printable characters".into(),
+            );
+            None
+        }
+    };
     // `tag` may be repeated, which a struct cannot take.
     let mut tag_filters = Vec::new();
     for (_, raw) in pairs.iter().filter(|(name, _)| name == "tag") {
@@ -477,6 +576,7 @@ pub async fn list(
         model: q.model.filter(|m| !m.is_empty()),
         status,
         endpoint,
+        agent_session,
     };
     let rows = state
         .store

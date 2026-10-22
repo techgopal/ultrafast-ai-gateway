@@ -221,6 +221,8 @@ async fn world() -> World {
             model: Some("gpt-4o".into()),
             input_tokens: Some(1),
             output_tokens: Some(1),
+            cache_read_tokens: None,
+            cache_write_tokens: None,
             cost_micros: 0,
             priced: false,
             cached: false,
@@ -229,6 +231,12 @@ async fn world() -> World {
             attempts: "[]".into(),
             guardrails: None,
             prompt: None,
+            agent_session: None,
+            agent_id: None,
+            agent_prompt: None,
+            agent_class: None,
+            agent_client: None,
+            dropped: None,
         }])
         .await
         .unwrap();
@@ -287,13 +295,13 @@ fn expected_export() -> Value {
         ],
         "models": [
             { "provider": "azure1", "name": "dep1", "enabled": false,
-              "input_price_micros": null, "output_price_micros": null,
+              "input_price_micros": null, "output_price_micros": null, "cache_read_price_micros": null, "cache_write_price_micros": null,
               "grants": { "everyone": false, "teams": [], "users": [] } },
             { "provider": "main", "name": "gpt-4o", "enabled": true,
-              "input_price_micros": 2_500_000, "output_price_micros": 10_000_000,
+              "input_price_micros": 2_500_000, "output_price_micros": 10_000_000, "cache_read_price_micros": null, "cache_write_price_micros": null,
               "grants": { "everyone": false, "teams": ["Platform"], "users": ["tomas@example.com"] } },
             { "provider": "main", "name": "gpt-4o-mini", "enabled": true,
-              "input_price_micros": null, "output_price_micros": null,
+              "input_price_micros": null, "output_price_micros": null, "cache_read_price_micros": null, "cache_write_price_micros": null,
               "grants": { "everyone": true, "teams": [], "users": [] } },
         ],
         "teams": [

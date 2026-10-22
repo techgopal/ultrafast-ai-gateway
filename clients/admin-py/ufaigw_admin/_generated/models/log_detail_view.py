@@ -22,12 +22,27 @@ class LogDetailView:
     [`LogView`], and `attempts`.
 
         Attributes:
+            agent_class (None | str): The agent's name for the kind of request (a main turn, a title, a
+                compaction), or `null`.
+            agent_client (None | str): `claude-code` or `codex` when the headers say which agent it is, else `null`.
+            agent_id (None | str): The agent's id for the agent that made the call (a subagent has its
+                own), or `null`.
+            agent_prompt (None | str): The agent's id for the prompt (one user message and what follows from
+                it), or `null`.
+            agent_session (None | str): The id the calling agent (Claude Code, Codex) gave its session, or
+                `null`. Calls of one session share it.
             at (str): UTC, `YYYY-MM-DD HH:MM:SS`.
             attempts (list[LogAttempt]):
+            cache_read_tokens (int | None): Input tokens read from the provider's prompt cache (`null` without usage).
+            cache_write_tokens (int | None): Input tokens written to the provider's prompt cache (`null` without usage).
             cached (bool): Answered from the response cache: `cost_micros` is 0 and `priced`
                 is true, and the tokens are those of the cached answer, so usage
                 reports count them; no provider was called.
             cost_micros (int): Cost in millionths of a dollar; 0 when `priced` is false.
+            dropped (list[str]): What translation left out of the request: names of fields, tools and
+                content blocks (for example `context_management`,
+                `tools[8]:tool_search`). Empty when the request was taken whole, and
+                for a pass-through call.
             duration_ms (int):
             endpoint (str):
             estimated (bool): The tokens and cost are an estimate: a stream that ended without the
@@ -36,7 +51,8 @@ class LogDetailView:
                 characters / 4, and `priced` stays true when the model has a price.
             guardrails (GuardrailLog | None):
             id (int):
-            input_tokens (int | None):
+            input_tokens (int | None): The input tokens that were not read from or written to the provider's
+                prompt cache; those are `cache_read_tokens` and `cache_write_tokens`.
             key_id (int | None):
             key_name (None | str): `null` when the key was deleted.
             model (None | str):
@@ -56,10 +72,18 @@ class LogDetailView:
             user_id (int | None):
     """
 
+    agent_class: None | str
+    agent_client: None | str
+    agent_id: None | str
+    agent_prompt: None | str
+    agent_session: None | str
     at: str
     attempts: list[LogAttempt]
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
     cached: bool
     cost_micros: int
+    dropped: list[str]
     duration_ms: int
     endpoint: str
     estimated: bool
@@ -86,6 +110,21 @@ class LogDetailView:
     def to_dict(self) -> dict[str, Any]:
         from ..models.guardrail_log import GuardrailLog
 
+        agent_class: None | str
+        agent_class = self.agent_class
+
+        agent_client: None | str
+        agent_client = self.agent_client
+
+        agent_id: None | str
+        agent_id = self.agent_id
+
+        agent_prompt: None | str
+        agent_prompt = self.agent_prompt
+
+        agent_session: None | str
+        agent_session = self.agent_session
+
         at = self.at
 
         attempts = []
@@ -93,9 +132,17 @@ class LogDetailView:
             attempts_item = attempts_item_data.to_dict()
             attempts.append(attempts_item)
 
+        cache_read_tokens: int | None
+        cache_read_tokens = self.cache_read_tokens
+
+        cache_write_tokens: int | None
+        cache_write_tokens = self.cache_write_tokens
+
         cached = self.cached
 
         cost_micros = self.cost_micros
+
+        dropped = self.dropped
 
         duration_ms = self.duration_ms
 
@@ -158,10 +205,18 @@ class LogDetailView:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "agent_class": agent_class,
+                "agent_client": agent_client,
+                "agent_id": agent_id,
+                "agent_prompt": agent_prompt,
+                "agent_session": agent_session,
                 "at": at,
                 "attempts": attempts,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
                 "cached": cached,
                 "cost_micros": cost_micros,
+                "dropped": dropped,
                 "duration_ms": duration_ms,
                 "endpoint": endpoint,
                 "estimated": estimated,
@@ -195,6 +250,42 @@ class LogDetailView:
         from ..models.log_detail_view_tags import LogDetailViewTags
 
         d = dict(src_dict)
+
+        def _parse_agent_class(data: object) -> None | str:
+            if data is None:
+                return data
+            return cast(None | str, data)
+
+        agent_class = _parse_agent_class(d.pop("agent_class"))
+
+        def _parse_agent_client(data: object) -> None | str:
+            if data is None:
+                return data
+            return cast(None | str, data)
+
+        agent_client = _parse_agent_client(d.pop("agent_client"))
+
+        def _parse_agent_id(data: object) -> None | str:
+            if data is None:
+                return data
+            return cast(None | str, data)
+
+        agent_id = _parse_agent_id(d.pop("agent_id"))
+
+        def _parse_agent_prompt(data: object) -> None | str:
+            if data is None:
+                return data
+            return cast(None | str, data)
+
+        agent_prompt = _parse_agent_prompt(d.pop("agent_prompt"))
+
+        def _parse_agent_session(data: object) -> None | str:
+            if data is None:
+                return data
+            return cast(None | str, data)
+
+        agent_session = _parse_agent_session(d.pop("agent_session"))
+
         at = d.pop("at")
 
         attempts = []
@@ -204,9 +295,25 @@ class LogDetailView:
 
             attempts.append(attempts_item)
 
+        def _parse_cache_read_tokens(data: object) -> int | None:
+            if data is None:
+                return data
+            return cast(int | None, data)
+
+        cache_read_tokens = _parse_cache_read_tokens(d.pop("cache_read_tokens"))
+
+        def _parse_cache_write_tokens(data: object) -> int | None:
+            if data is None:
+                return data
+            return cast(int | None, data)
+
+        cache_write_tokens = _parse_cache_write_tokens(d.pop("cache_write_tokens"))
+
         cached = d.pop("cached")
 
         cost_micros = d.pop("cost_micros")
+
+        dropped = cast(list[str], d.pop("dropped"))
 
         duration_ms = d.pop("duration_ms")
 
@@ -319,10 +426,18 @@ class LogDetailView:
         user_id = _parse_user_id(d.pop("user_id"))
 
         log_detail_view = cls(
+            agent_class=agent_class,
+            agent_client=agent_client,
+            agent_id=agent_id,
+            agent_prompt=agent_prompt,
+            agent_session=agent_session,
             at=at,
             attempts=attempts,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
             cached=cached,
             cost_micros=cost_micros,
+            dropped=dropped,
             duration_ms=duration_ms,
             endpoint=endpoint,
             estimated=estimated,

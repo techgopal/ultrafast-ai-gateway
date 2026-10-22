@@ -24,6 +24,7 @@ def _get_kwargs(
     endpoint: str | Unset = UNSET,
     errors: bool | Unset = UNSET,
     guardrail: str | Unset = UNSET,
+    agent_session: str | Unset = UNSET,
     tag: list[str] | Unset = UNSET,
 ) -> dict[str, Any]:
 
@@ -52,6 +53,8 @@ def _get_kwargs(
     params["errors"] = errors
 
     params["guardrail"] = guardrail
+
+    params["agent_session"] = agent_session
 
     json_tag: list[str] | Unset = UNSET
     if not isinstance(tag, Unset):
@@ -130,6 +133,7 @@ def sync_detailed(
     endpoint: str | Unset = UNSET,
     errors: bool | Unset = UNSET,
     guardrail: str | Unset = UNSET,
+    agent_session: str | Unset = UNSET,
     tag: list[str] | Unset = UNSET,
 ) -> Response[ApiErrorBody | LogPage]:
     """Newest first. `before` is the id of the last row of the page before.
@@ -155,6 +159,7 @@ def sync_detailed(
         endpoint (str | Unset):
         errors (bool | Unset):
         guardrail (str | Unset):
+        agent_session (str | Unset):
         tag (list[str] | Unset):
 
     Raises:
@@ -178,6 +183,7 @@ def sync_detailed(
         endpoint=endpoint,
         errors=errors,
         guardrail=guardrail,
+        agent_session=agent_session,
         tag=tag,
     )
 
@@ -203,6 +209,7 @@ def sync(
     endpoint: str | Unset = UNSET,
     errors: bool | Unset = UNSET,
     guardrail: str | Unset = UNSET,
+    agent_session: str | Unset = UNSET,
     tag: list[str] | Unset = UNSET,
 ) -> ApiErrorBody | LogPage | None:
     """Newest first. `before` is the id of the last row of the page before.
@@ -228,6 +235,7 @@ def sync(
         endpoint (str | Unset):
         errors (bool | Unset):
         guardrail (str | Unset):
+        agent_session (str | Unset):
         tag (list[str] | Unset):
 
     Raises:
@@ -252,6 +260,7 @@ def sync(
         endpoint=endpoint,
         errors=errors,
         guardrail=guardrail,
+        agent_session=agent_session,
         tag=tag,
     ).parsed
 
@@ -271,6 +280,7 @@ async def asyncio_detailed(
     endpoint: str | Unset = UNSET,
     errors: bool | Unset = UNSET,
     guardrail: str | Unset = UNSET,
+    agent_session: str | Unset = UNSET,
     tag: list[str] | Unset = UNSET,
 ) -> Response[ApiErrorBody | LogPage]:
     """Newest first. `before` is the id of the last row of the page before.
@@ -296,6 +306,7 @@ async def asyncio_detailed(
         endpoint (str | Unset):
         errors (bool | Unset):
         guardrail (str | Unset):
+        agent_session (str | Unset):
         tag (list[str] | Unset):
 
     Raises:
@@ -319,6 +330,7 @@ async def asyncio_detailed(
         endpoint=endpoint,
         errors=errors,
         guardrail=guardrail,
+        agent_session=agent_session,
         tag=tag,
     )
 
@@ -342,6 +354,7 @@ async def asyncio(
     endpoint: str | Unset = UNSET,
     errors: bool | Unset = UNSET,
     guardrail: str | Unset = UNSET,
+    agent_session: str | Unset = UNSET,
     tag: list[str] | Unset = UNSET,
 ) -> ApiErrorBody | LogPage | None:
     """Newest first. `before` is the id of the last row of the page before.
@@ -367,6 +380,7 @@ async def asyncio(
         endpoint (str | Unset):
         errors (bool | Unset):
         guardrail (str | Unset):
+        agent_session (str | Unset):
         tag (list[str] | Unset):
 
     Raises:
@@ -392,6 +406,7 @@ async def asyncio(
             endpoint=endpoint,
             errors=errors,
             guardrail=guardrail,
+            agent_session=agent_session,
             tag=tag,
         )
     ).parsed

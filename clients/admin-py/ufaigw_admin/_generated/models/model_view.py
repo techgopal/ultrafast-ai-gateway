@@ -18,6 +18,10 @@ T = TypeVar("T", bound="ModelView")
 class ModelView:
     """
     Attributes:
+        cache_read_price_micros (int | None): What a million tokens read from the provider's prompt cache cost, in
+            millionths of a dollar. `null`: the input price is used.
+        cache_write_price_micros (int | None): What a million tokens written to the prompt cache cost, in millionths
+            of a dollar. `null`: the input price is used.
         created_at (str):
         enabled (bool):
         grants (GrantsView): Who may call a model. For everyone who is not an admin it is always
@@ -31,6 +35,8 @@ class ModelView:
         provider_name (str):
     """
 
+    cache_read_price_micros: int | None
+    cache_write_price_micros: int | None
     created_at: str
     enabled: bool
     grants: GrantsView
@@ -43,6 +49,12 @@ class ModelView:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        cache_read_price_micros: int | None
+        cache_read_price_micros = self.cache_read_price_micros
+
+        cache_write_price_micros: int | None
+        cache_write_price_micros = self.cache_write_price_micros
+
         created_at = self.created_at
 
         enabled = self.enabled
@@ -67,6 +79,8 @@ class ModelView:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "cache_read_price_micros": cache_read_price_micros,
+                "cache_write_price_micros": cache_write_price_micros,
                 "created_at": created_at,
                 "enabled": enabled,
                 "grants": grants,
@@ -86,6 +100,25 @@ class ModelView:
         from ..models.grants_view import GrantsView
 
         d = dict(src_dict)
+
+        def _parse_cache_read_price_micros(data: object) -> int | None:
+            if data is None:
+                return data
+            return cast(int | None, data)
+
+        cache_read_price_micros = _parse_cache_read_price_micros(
+            d.pop("cache_read_price_micros")
+        )
+
+        def _parse_cache_write_price_micros(data: object) -> int | None:
+            if data is None:
+                return data
+            return cast(int | None, data)
+
+        cache_write_price_micros = _parse_cache_write_price_micros(
+            d.pop("cache_write_price_micros")
+        )
+
         created_at = d.pop("created_at")
 
         enabled = d.pop("enabled")
@@ -115,6 +148,8 @@ class ModelView:
         provider_name = d.pop("provider_name")
 
         model_view = cls(
+            cache_read_price_micros=cache_read_price_micros,
+            cache_write_price_micros=cache_write_price_micros,
             created_at=created_at,
             enabled=enabled,
             grants=grants,

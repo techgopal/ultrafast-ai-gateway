@@ -1089,6 +1089,8 @@ fn log(prompt: Option<&str>) -> NewLog {
         model: Some("m".into()),
         input_tokens: Some(1),
         output_tokens: Some(1),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: 0,
         priced: false,
         cached: false,
@@ -1098,6 +1100,12 @@ fn log(prompt: Option<&str>) -> NewLog {
         tags: None,
         guardrails: None,
         prompt: prompt.map(str::to_string),
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     }
 }
 

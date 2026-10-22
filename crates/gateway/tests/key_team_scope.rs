@@ -142,6 +142,8 @@ fn log(user: i64, team: Option<i64>, cost: i64) -> NewLog {
         model: Some("m".into()),
         input_tokens: Some(1),
         output_tokens: Some(1),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: cost,
         priced: true,
         cached: false,
@@ -150,6 +152,12 @@ fn log(user: i64, team: Option<i64>, cost: i64) -> NewLog {
         attempts: "[]".into(),
         guardrails: None,
         prompt: None,
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     }
 }
 

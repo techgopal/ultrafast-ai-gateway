@@ -52,6 +52,8 @@ fn record(requested: &str) -> RequestRecord {
         started_unix_ms: 0,
         guardrails: None,
         prompt: None,
+        agent: Default::default(),
+        dropped: Vec::new(),
     }
 }
 
@@ -60,6 +62,8 @@ fn prices(input: Option<i64>, output: Option<i64>) -> PriceLookup {
         (provider == "p" && model == "m").then_some(Price {
             input_micros: input,
             output_micros: output,
+            cache_read_micros: None,
+            cache_write_micros: None,
         })
     })
 }
@@ -493,6 +497,8 @@ fn log_at(at: &str, requested: &str) -> NewLog {
         model: None,
         input_tokens: None,
         output_tokens: None,
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: 0,
         priced: false,
         cached: false,
@@ -501,6 +507,12 @@ fn log_at(at: &str, requested: &str) -> NewLog {
         attempts: "[]".into(),
         guardrails: None,
         prompt: None,
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     }
 }
 

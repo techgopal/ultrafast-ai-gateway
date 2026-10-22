@@ -256,6 +256,8 @@ async fn spent_is_shown_only_where_the_caller_may_see_it() {
         started_unix_ms: 0,
         guardrails: None,
         prompt: None,
+        agent: Default::default(),
+        dropped: Vec::new(),
     };
     ufaigw_gateway::budgets::account(
         &w.org.api.state,
@@ -428,6 +430,8 @@ fn log(at: &str, key_id: i64, user_id: i64, team_id: i64, cost: i64) -> NewLog {
         model: Some("m".into()),
         input_tokens: Some(1),
         output_tokens: Some(1),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: cost,
         priced: true,
         cached: false,
@@ -436,6 +440,12 @@ fn log(at: &str, key_id: i64, user_id: i64, team_id: i64, cost: i64) -> NewLog {
         attempts: "[]".into(),
         guardrails: None,
         prompt: None,
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     }
 }
 

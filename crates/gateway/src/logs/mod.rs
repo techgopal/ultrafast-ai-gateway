@@ -80,6 +80,10 @@ impl RequestSink for LogSink {
 pub struct Price {
     pub input_micros: Option<i64>,
     pub output_micros: Option<i64>,
+    /// Cache reads and writes; unknown is priced at the input price, so a
+    /// missing price never under-counts.
+    pub cache_read_micros: Option<i64>,
+    pub cache_write_micros: Option<i64>,
 }
 
 /// The price of `(provider, model)` as of now; `None` when the catalog does
@@ -93,6 +97,8 @@ pub fn snapshot_prices(state: Arc<AppState>) -> PriceLookup {
         state.snapshot.load().model(provider, model).map(|m| Price {
             input_micros: m.input_price_micros,
             output_micros: m.output_price_micros,
+            cache_read_micros: m.cache_read_price_micros,
+            cache_write_micros: m.cache_write_price_micros,
         })
     })
 }
@@ -101,8 +107,10 @@ pub fn snapshot_prices(state: Arc<AppState>) -> PriceLookup {
 ///
 /// Known (`priced`) means there is usage, the model has a price, and every
 /// side that used tokens has a price (an embeddings model has no output
-/// price and no output tokens). Otherwise the cost is 0 and `priced` is
-/// false. The sum is rounded half up, once.
+/// price and no output tokens). Four sides are priced: uncached input,
+/// output, cache reads and cache writes; a cache side without a price of its
+/// own costs the input price. Otherwise the cost is 0 and `priced` is false.
+/// The sum is rounded half up, once.
 pub fn cost(usage: Option<Usage>, price: Option<Price>) -> (i64, bool) {
     let (Some(usage), Some(price)) = (usage, price) else {
         return (0, false);
@@ -110,6 +118,14 @@ pub fn cost(usage: Option<Usage>, price: Option<Price>) -> (i64, bool) {
     let sides = [
         (u128::from(usage.input_tokens), price.input_micros),
         (u128::from(usage.output_tokens), price.output_micros),
+        (
+            u128::from(usage.cache_read_input_tokens),
+            price.cache_read_micros.or(price.input_micros),
+        ),
+        (
+            u128::from(usage.cache_write_input_tokens),
+            price.cache_write_micros.or(price.input_micros),
+        ),
     ];
     if sides.iter().all(|(tokens, _)| *tokens == 0) {
         return (0, false);
@@ -188,6 +204,8 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
         model: answered.map(|a| a.model.clone()),
         input_tokens: record.usage.map(|u| i64::from(u.input_tokens)),
         output_tokens: record.usage.map(|u| i64::from(u.output_tokens)),
+        cache_read_tokens: record.usage.map(|u| i64::from(u.cache_read_input_tokens)),
+        cache_write_tokens: record.usage.map(|u| i64::from(u.cache_write_input_tokens)),
         cost_micros,
         priced,
         cached: record.cached,
@@ -200,6 +218,13 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
             .as_ref()
             .map(crate::guardrails::log::GuardrailLog::to_stored),
         prompt: record.prompt.clone(),
+        agent_session: record.agent.session.clone(),
+        agent_id: record.agent.agent.clone(),
+        agent_prompt: record.agent.prompt.clone(),
+        agent_class: record.agent.class.clone(),
+        agent_client: record.agent.client.map(str::to_string),
+        dropped: (!record.dropped.is_empty())
+            .then(|| serde_json::to_string(&record.dropped).unwrap_or_default()),
     }
 }
 
@@ -219,7 +244,54 @@ mod tests {
         Some(Price {
             input_micros: input,
             output_micros: output,
+            cache_read_micros: None,
+            cache_write_micros: None,
         })
+    }
+
+    #[test]
+    fn cache_tokens_are_priced() {
+        // 7 in at 3/M, 3 out at 15/M, 100 read at 0.3/M, 20 written at 3.75/M.
+        let usage = Some(Usage {
+            input_tokens: 7,
+            output_tokens: 3,
+            cache_read_input_tokens: 100,
+            cache_write_input_tokens: 20,
+        });
+        let price = Some(Price {
+            input_micros: Some(3_000_000),
+            output_micros: Some(15_000_000),
+            cache_read_micros: Some(300_000),
+            cache_write_micros: Some(3_750_000),
+        });
+        // 21 + 45 + 30 + 75 millionths of a dollar, rounded once.
+        assert_eq!(cost(usage, price), (171, true));
+    }
+
+    #[test]
+    fn missing_cache_prices_use_the_input_price() {
+        let usage = Some(Usage {
+            input_tokens: 7,
+            output_tokens: 0,
+            cache_read_input_tokens: 100,
+            cache_write_input_tokens: 20,
+        });
+        // 127 tokens at 3/M each.
+        assert_eq!(cost(usage, price(Some(3_000_000), None)), (381, true));
+        // Only cache tokens, and no input price at all: not known.
+        let cached_only = Some(Usage {
+            cache_read_input_tokens: 5,
+            ..Default::default()
+        });
+        assert_eq!(cost(cached_only, price(None, Some(1))), (0, false));
+        // A cache side with a price of its own needs no input price.
+        let p = Some(Price {
+            input_micros: None,
+            output_micros: None,
+            cache_read_micros: Some(1_000_000),
+            cache_write_micros: None,
+        });
+        assert_eq!(cost(cached_only, p), (5, true));
     }
 
     #[test]
@@ -283,6 +355,8 @@ mod tests {
             started_unix_ms: 0,
             guardrails: None,
             prompt: Some("greet@2".into()),
+            agent: Default::default(),
+            dropped: Vec::new(),
         };
         let prices: PriceLookup = Arc::new(|_, _| price(Some(2_000_000), Some(4_000_000)));
         let row = row_of(&record, &prices);
@@ -299,5 +373,82 @@ mod tests {
             ..record
         };
         assert!(!row_of(&reported, &prices).estimated);
+    }
+
+    #[test]
+    fn a_row_carries_cache_tokens_the_agent_and_what_was_dropped() {
+        use crate::telemetry::{Attempt, AttemptOutcome};
+        let record = RequestRecord {
+            key_id: Some(1),
+            user_id: None,
+            team_id: None,
+            requested: "claude-opus-5-5".into(),
+            endpoint: "messages",
+            stream: true,
+            status: 200,
+            usage: Some(Usage {
+                input_tokens: 7,
+                output_tokens: 3,
+                cache_read_input_tokens: 100,
+                cache_write_input_tokens: 20,
+            }),
+            attempts: vec![Attempt {
+                provider: "p".into(),
+                model: "m".into(),
+                outcome: AttemptOutcome::Ok,
+                status: Some(200),
+                duration_ms: 1,
+                offset_ms: 0,
+                skipped: None,
+                projected_bytes: None,
+            }],
+            cached: false,
+            estimated: false,
+            started_at: "2999-01-01 00:00:00".into(),
+            duration_ms: 1,
+            tags: Default::default(),
+            trace_parent: None,
+            provider_kinds: Vec::new(),
+            started_unix_ms: 0,
+            guardrails: None,
+            prompt: None,
+            agent: crate::agents::AgentInfo {
+                session: Some("s".into()),
+                agent: Some("a".into()),
+                prompt: Some("p".into()),
+                class: Some("main".into()),
+                client: Some("claude-code"),
+            },
+            dropped: vec!["context_management".into()],
+        };
+        let prices: PriceLookup = Arc::new(|_, _| {
+            Some(Price {
+                input_micros: Some(3_000_000),
+                output_micros: Some(15_000_000),
+                cache_read_micros: Some(300_000),
+                cache_write_micros: Some(3_750_000),
+            })
+        });
+        let row = row_of(&record, &prices);
+        assert_eq!((row.input_tokens, row.output_tokens), (Some(7), Some(3)));
+        assert_eq!(
+            (row.cache_read_tokens, row.cache_write_tokens),
+            (Some(100), Some(20))
+        );
+        assert_eq!(row.cost_micros, 171);
+        assert_eq!(row.agent_session.as_deref(), Some("s"));
+        assert_eq!(row.agent_id.as_deref(), Some("a"));
+        assert_eq!(row.agent_prompt.as_deref(), Some("p"));
+        assert_eq!(row.agent_class.as_deref(), Some("main"));
+        assert_eq!(row.agent_client.as_deref(), Some("claude-code"));
+        assert_eq!(row.dropped.as_deref(), Some("[\"context_management\"]"));
+        let plain = RequestRecord {
+            agent: Default::default(),
+            dropped: Vec::new(),
+            ..record
+        };
+        let row = row_of(&plain, &prices);
+        assert_eq!(row.agent_session, None);
+        assert_eq!(row.dropped, None);
     }
 }

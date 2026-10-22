@@ -236,6 +236,21 @@ pub struct Usage {
     pub cache_write_input_tokens: u32,
 }
 
+impl Usage {
+    /// Every token the call sent in, cached or not: what limits, budgets
+    /// and counters see as input volume.
+    pub fn input_volume(&self) -> u64 {
+        u64::from(self.input_tokens)
+            + u64::from(self.cache_read_input_tokens)
+            + u64::from(self.cache_write_input_tokens)
+    }
+
+    /// Input volume plus output.
+    pub fn total_volume(&self) -> u64 {
+        self.input_volume() + u64::from(self.output_tokens)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinishReason {
     Stop,

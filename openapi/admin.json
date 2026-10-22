@@ -3729,6 +3729,15 @@
             }
           },
           {
+            "name": "agent_session",
+            "in": "query",
+            "description": "Only calls of this agent session: the id a coding agent (Claude Code, Codex) sends with its requests, as `agent_session` shows it. Combines with the other filters.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "tag",
             "in": "query",
             "description": "Only calls with this tag, written `name:value` (the name ends at the first colon). Repeat it to require several tags: all must match.",
@@ -13129,6 +13138,8 @@
           "model",
           "input_tokens",
           "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
           "cost_micros",
           "priced",
           "cached",
@@ -13137,9 +13148,50 @@
           "tags",
           "guardrails",
           "prompt",
+          "agent_session",
+          "agent_id",
+          "agent_prompt",
+          "agent_class",
+          "agent_client",
+          "dropped",
           "attempts"
         ],
         "properties": {
+          "agent_class": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The agent's name for the kind of request (a main turn, a title, a\ncompaction), or `null`."
+          },
+          "agent_client": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`claude-code` or `codex` when the headers say which agent it is, else `null`."
+          },
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The agent's id for the agent that made the call (a subagent has its\nown), or `null`."
+          },
+          "agent_prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The agent's id for the prompt (one user message and what follows from\nit), or `null`."
+          },
+          "agent_session": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The id the calling agent (Claude Code, Codex) gave its session, or\n`null`. Calls of one session share it."
+          },
           "at": {
             "type": "string",
             "description": "UTC, `YYYY-MM-DD HH:MM:SS`."
@@ -13150,6 +13202,22 @@
               "$ref": "#/components/schemas/LogAttempt"
             }
           },
+          "cache_read_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Input tokens read from the provider's prompt cache (`null` without usage)."
+          },
+          "cache_write_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Input tokens written to the provider's prompt cache (`null` without usage)."
+          },
           "cached": {
             "type": "boolean",
             "description": "Answered from the response cache: `cost_micros` is 0 and `priced`\nis true, and the tokens are those of the cached answer, so usage\nreports count them; no provider was called."
@@ -13158,6 +13226,13 @@
             "type": "integer",
             "format": "int64",
             "description": "Cost in millionths of a dollar; 0 when `priced` is false."
+          },
+          "dropped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What translation left out of the request: names of fields, tools and\ncontent blocks (for example `context_management`,\n`tools[8]:tool_search`). Empty when the request was taken whole, and\nfor a pass-through call."
           },
           "duration_ms": {
             "type": "integer",
@@ -13190,7 +13265,8 @@
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "The input tokens that were not read from or written to the provider's\nprompt cache; those are `cache_read_tokens` and `cache_write_tokens`."
           },
           "key_id": {
             "type": [
@@ -13320,6 +13396,8 @@
           "model",
           "input_tokens",
           "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
           "cost_micros",
           "priced",
           "cached",
@@ -13327,12 +13405,69 @@
           "duration_ms",
           "tags",
           "guardrails",
-          "prompt"
+          "prompt",
+          "agent_session",
+          "agent_id",
+          "agent_prompt",
+          "agent_class",
+          "agent_client",
+          "dropped"
         ],
         "properties": {
+          "agent_class": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The agent's name for the kind of request (a main turn, a title, a\ncompaction), or `null`."
+          },
+          "agent_client": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`claude-code` or `codex` when the headers say which agent it is, else `null`."
+          },
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The agent's id for the agent that made the call (a subagent has its\nown), or `null`."
+          },
+          "agent_prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The agent's id for the prompt (one user message and what follows from\nit), or `null`."
+          },
+          "agent_session": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The id the calling agent (Claude Code, Codex) gave its session, or\n`null`. Calls of one session share it."
+          },
           "at": {
             "type": "string",
             "description": "UTC, `YYYY-MM-DD HH:MM:SS`."
+          },
+          "cache_read_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Input tokens read from the provider's prompt cache (`null` without usage)."
+          },
+          "cache_write_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Input tokens written to the provider's prompt cache (`null` without usage)."
           },
           "cached": {
             "type": "boolean",
@@ -13342,6 +13477,13 @@
             "type": "integer",
             "format": "int64",
             "description": "Cost in millionths of a dollar; 0 when `priced` is false."
+          },
+          "dropped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What translation left out of the request: names of fields, tools and\ncontent blocks (for example `context_management`,\n`tools[8]:tool_search`). Empty when the request was taken whole, and\nfor a pass-through call."
           },
           "duration_ms": {
             "type": "integer",
@@ -13374,7 +13516,8 @@
               "integer",
               "null"
             ],
-            "format": "int64"
+            "format": "int64",
+            "description": "The input tokens that were not read from or written to the provider's\nprompt cache; those are `cache_read_tokens` and `cache_write_tokens`."
           },
           "key_id": {
             "type": [
@@ -14172,9 +14315,26 @@
           "name",
           "enabled",
           "input_price_micros",
-          "output_price_micros"
+          "output_price_micros",
+          "cache_read_price_micros",
+          "cache_write_price_micros"
         ],
         "properties": {
+          "cache_read_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Per million tokens read from or written to the provider's prompt\ncache. `null`: the input price is used."
+          },
+          "cache_write_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -14231,9 +14391,27 @@
           "grants",
           "created_at",
           "input_price_micros",
-          "output_price_micros"
+          "output_price_micros",
+          "cache_read_price_micros",
+          "cache_write_price_micros"
         ],
         "properties": {
+          "cache_read_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What a million tokens read from the provider's prompt cache cost, in\nmillionths of a dollar. `null`: the input price is used."
+          },
+          "cache_write_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What a million tokens written to the prompt cache cost, in millionths\nof a dollar. `null`: the input price is used."
+          },
           "created_at": {
             "type": "string"
           },
@@ -16904,6 +17082,24 @@
       "UpdateModelRequest": {
         "type": "object",
         "properties": {
+          "cache_read_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Like `input_price_micros`, for tokens read from the prompt cache.\n`null` prices them at the input price.",
+            "minimum": 0
+          },
+          "cache_write_price_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Like `cache_read_price_micros`, for tokens written to the prompt cache.",
+            "minimum": 0
+          },
           "enabled": {
             "type": [
               "boolean",
@@ -17091,10 +17287,22 @@
           "cancelled",
           "input_tokens",
           "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
           "cost_micros",
           "unpriced_requests"
         ],
         "properties": {
+          "cache_read_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Of `input_tokens`: those read from the providers' prompt caches."
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Of `input_tokens`: those written to the providers' prompt caches."
+          },
           "cancelled": {
             "type": "integer",
             "format": "int64",
@@ -17117,7 +17325,7 @@
           "input_tokens": {
             "type": "integer",
             "format": "int64",
-            "description": "Includes the tokens of cached answers (`cached` rows of the logs),\nwhich cost nothing."
+            "description": "Every token sent in, including those read from or written to the\nproviders' prompt caches, and the tokens of cached answers (`cached`\nrows of the logs), which cost nothing."
           },
           "label": {
             "type": "string",

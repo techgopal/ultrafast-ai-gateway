@@ -34,6 +34,8 @@ fn log(
         model: model.map(str::to_string),
         input_tokens: tokens.map(|t| t.0),
         output_tokens: tokens.map(|t| t.1),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: cost,
         priced,
         cached: false,
@@ -42,6 +44,12 @@ fn log(
         attempts: "[]".into(),
         guardrails: None,
         prompt: None,
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     }
 }
 
@@ -184,6 +192,7 @@ fn row(group: &str, label: &str, v: [i64; 6]) -> Value {
         "group": group, "label": label,
         "requests": v[0], "errors": v[1], "input_tokens": v[2], "output_tokens": v[3],
         "cost_micros": v[4], "unpriced_requests": v[5], "cancelled": 0,
+        "cache_read_tokens": 0, "cache_write_tokens": 0,
     })
 }
 
@@ -204,6 +213,47 @@ async fn totals_are_exact_by_day() {
         ])
     );
     assert_eq!(body["total"], row("total", "Total", [7, 2, 40, 21, 184, 1]));
+}
+
+#[tokio::test]
+async fn input_tokens_count_cache_reads_and_writes_and_show_them_apart() {
+    let org = org().await;
+    let mut a = log(
+        "2026-01-01 10:00:00",
+        Some(org.lena),
+        None,
+        "a",
+        200,
+        Some("m"),
+        Some((7, 3)),
+        10,
+        true,
+    );
+    a.cache_read_tokens = Some(100);
+    a.cache_write_tokens = Some(20);
+    let b = log(
+        "2026-01-02 10:00:00",
+        Some(org.lena),
+        None,
+        "b",
+        200,
+        Some("m"),
+        Some((5, 1)),
+        5,
+        true,
+    );
+    org.api.store.insert_logs(&[a, b]).await.unwrap();
+    let body = usage(&org, "maya", &format!("?{JAN}&group=day")).await;
+    let first = &body["rows"][0];
+    // 7 uncached + 100 read + 20 written
+    assert_eq!(first["input_tokens"], 127);
+    assert_eq!(first["output_tokens"], 3);
+    assert_eq!(first["cache_read_tokens"], 100);
+    assert_eq!(first["cache_write_tokens"], 20);
+    assert_eq!(body["rows"][1]["input_tokens"], 5);
+    assert_eq!(body["total"]["input_tokens"], 132);
+    assert_eq!(body["total"]["cache_read_tokens"], 100);
+    assert_eq!(body["total"]["cache_write_tokens"], 20);
 }
 
 #[tokio::test]

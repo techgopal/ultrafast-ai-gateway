@@ -23,6 +23,8 @@ fn log(at: &str, user: Option<i64>, team: Option<i64>, requested: &str) -> NewLo
         model: Some("gpt-4o".into()),
         input_tokens: Some(10),
         output_tokens: Some(5),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: 70,
         priced: true,
         cached: false,
@@ -35,6 +37,12 @@ fn log(at: &str, user: Option<i64>, team: Option<i64>, requested: &str) -> NewLo
         .to_string(),
         guardrails: None,
         prompt: None,
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     }
 }
 
@@ -129,7 +137,10 @@ async fn the_row_has_names_and_every_field() {
             "requested": "r1", "endpoint": "chat", "stream": false, "status": 200,
             "provider": "main", "model": "gpt-4o",
             "input_tokens": 10, "output_tokens": 5,
+            "cache_read_tokens": null, "cache_write_tokens": null,
             "cost_micros": 70, "priced": true, "cached": false, "estimated": false, "duration_ms": 12, "tags": {}, "guardrails": null, "prompt": null,
+            "agent_session": null, "agent_id": null, "agent_prompt": null,
+            "agent_class": null, "agent_client": null, "dropped": [],
         })
     );
     // A key that is gone and a row without user or team: ids stay, names are null.
@@ -138,6 +149,67 @@ async fn the_row_has_names_and_every_field() {
     for field in ["key_name", "user_id", "user_email", "team_id", "team_name"] {
         assert_eq!(r7[field], Value::Null, "{field}");
     }
+}
+
+#[tokio::test]
+async fn logs_filter_by_agent_session() {
+    let org = org().await;
+    let mut a = log("2026-01-01 10:00:00", Some(org.lena), None, "a1");
+    a.agent_session = Some("sess-1".into());
+    a.agent_id = Some("agent-9".into());
+    a.agent_prompt = Some("prompt-3".into());
+    a.agent_class = Some("main".into());
+    a.agent_client = Some("claude-code".into());
+    a.cache_read_tokens = Some(100);
+    a.cache_write_tokens = Some(20);
+    a.dropped = Some(json!(["context_management", "cache_control"]).to_string());
+    let mut b = log("2026-01-02 10:00:00", Some(org.lena), None, "b1");
+    b.agent_session = Some("sess-2".into());
+    let c = log("2026-01-03 10:00:00", Some(org.lena), None, "c1");
+    org.api.store.insert_logs(&[a, b, c]).await.unwrap();
+    assert_eq!(ids(&org, "maya", "").await, vec![3, 2, 1]);
+    assert_eq!(ids(&org, "maya", "?agent_session=sess-1").await, vec![1]);
+    assert_eq!(ids(&org, "maya", "?agent_session=sess-2").await, vec![2]);
+    assert_eq!(
+        ids(&org, "maya", "?agent_session=nobody").await,
+        Vec::<i64>::new()
+    );
+    // The scope still narrows it: lena sees her own rows only.
+    assert_eq!(ids(&org, "lena", "?agent_session=sess-1").await, vec![1]);
+    assert_eq!(
+        ids(&org, "priya", "?agent_session=sess-1").await,
+        Vec::<i64>::new()
+    );
+    // The row and the detail carry what the agent said and what was dropped.
+    let maya = org.sign_in("maya").await;
+    let (_, body) = org
+        .call(Some(&maya), "GET", "/api/logs?agent_session=sess-1", None)
+        .await;
+    let row = &body["logs"][0];
+    assert_eq!(row["agent_session"], "sess-1");
+    assert_eq!(row["agent_id"], "agent-9");
+    assert_eq!(row["agent_prompt"], "prompt-3");
+    assert_eq!(row["agent_class"], "main");
+    assert_eq!(row["agent_client"], "claude-code");
+    assert_eq!(row["cache_read_tokens"], 100);
+    assert_eq!(row["cache_write_tokens"], 20);
+    assert_eq!(
+        row["dropped"],
+        json!(["context_management", "cache_control"])
+    );
+    let (status, detail) = org.call(Some(&maya), "GET", "/api/logs/1", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["agent_session"], "sess-1");
+    assert_eq!(
+        detail["dropped"],
+        json!(["context_management", "cache_control"])
+    );
+    // A value that cannot be a session id is a validation error.
+    let (status, body) = org
+        .call(Some(&maya), "GET", "/api/logs?agent_session=a%20b", None)
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["fields"]["agent_session"].is_string());
 }
 
 #[tokio::test]

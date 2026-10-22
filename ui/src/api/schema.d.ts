@@ -2256,9 +2256,41 @@ export interface components {
          *     [`LogView`], and `attempts`.
          */
         LogDetailView: {
+            /**
+             * @description The agent's name for the kind of request (a main turn, a title, a
+             *     compaction), or `null`.
+             */
+            agent_class: string | null;
+            /** @description `claude-code` or `codex` when the headers say which agent it is, else `null`. */
+            agent_client: string | null;
+            /**
+             * @description The agent's id for the agent that made the call (a subagent has its
+             *     own), or `null`.
+             */
+            agent_id: string | null;
+            /**
+             * @description The agent's id for the prompt (one user message and what follows from
+             *     it), or `null`.
+             */
+            agent_prompt: string | null;
+            /**
+             * @description The id the calling agent (Claude Code, Codex) gave its session, or
+             *     `null`. Calls of one session share it.
+             */
+            agent_session: string | null;
             /** @description UTC, `YYYY-MM-DD HH:MM:SS`. */
             at: string;
             attempts: components["schemas"]["LogAttempt"][];
+            /**
+             * Format: int64
+             * @description Input tokens read from the provider's prompt cache (`null` without usage).
+             */
+            cache_read_tokens: number | null;
+            /**
+             * Format: int64
+             * @description Input tokens written to the provider's prompt cache (`null` without usage).
+             */
+            cache_write_tokens: number | null;
             /**
              * @description Answered from the response cache: `cost_micros` is 0 and `priced`
              *     is true, and the tokens are those of the cached answer, so usage
@@ -2270,6 +2302,13 @@ export interface components {
              * @description Cost in millionths of a dollar; 0 when `priced` is false.
              */
             cost_micros: number;
+            /**
+             * @description What translation left out of the request: names of fields, tools and
+             *     content blocks (for example `context_management`,
+             *     `tools[8]:tool_search`). Empty when the request was taken whole, and
+             *     for a pass-through call.
+             */
+            dropped: string[];
             /** Format: int64 */
             duration_ms: number;
             endpoint: string;
@@ -2283,7 +2322,11 @@ export interface components {
             guardrails: components["schemas"]["GuardrailLog"] | null;
             /** Format: int64 */
             id: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description The input tokens that were not read from or written to the provider's
+             *     prompt cache; those are `cache_read_tokens` and `cache_write_tokens`.
+             */
             input_tokens: number | null;
             /** Format: int64 */
             key_id: number | null;
@@ -2327,8 +2370,40 @@ export interface components {
         };
         /** @description One logged call, as `/api` shows it. */
         LogView: {
+            /**
+             * @description The agent's name for the kind of request (a main turn, a title, a
+             *     compaction), or `null`.
+             */
+            agent_class: string | null;
+            /** @description `claude-code` or `codex` when the headers say which agent it is, else `null`. */
+            agent_client: string | null;
+            /**
+             * @description The agent's id for the agent that made the call (a subagent has its
+             *     own), or `null`.
+             */
+            agent_id: string | null;
+            /**
+             * @description The agent's id for the prompt (one user message and what follows from
+             *     it), or `null`.
+             */
+            agent_prompt: string | null;
+            /**
+             * @description The id the calling agent (Claude Code, Codex) gave its session, or
+             *     `null`. Calls of one session share it.
+             */
+            agent_session: string | null;
             /** @description UTC, `YYYY-MM-DD HH:MM:SS`. */
             at: string;
+            /**
+             * Format: int64
+             * @description Input tokens read from the provider's prompt cache (`null` without usage).
+             */
+            cache_read_tokens: number | null;
+            /**
+             * Format: int64
+             * @description Input tokens written to the provider's prompt cache (`null` without usage).
+             */
+            cache_write_tokens: number | null;
             /**
              * @description Answered from the response cache: `cost_micros` is 0 and `priced`
              *     is true, and the tokens are those of the cached answer, so usage
@@ -2340,6 +2415,13 @@ export interface components {
              * @description Cost in millionths of a dollar; 0 when `priced` is false.
              */
             cost_micros: number;
+            /**
+             * @description What translation left out of the request: names of fields, tools and
+             *     content blocks (for example `context_management`,
+             *     `tools[8]:tool_search`). Empty when the request was taken whole, and
+             *     for a pass-through call.
+             */
+            dropped: string[];
             /** Format: int64 */
             duration_ms: number;
             endpoint: string;
@@ -2353,7 +2435,11 @@ export interface components {
             guardrails: components["schemas"]["GuardrailLog"] | null;
             /** Format: int64 */
             id: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description The input tokens that were not read from or written to the provider's
+             *     prompt cache; those are `cache_read_tokens` and `cache_write_tokens`.
+             */
             input_tokens: number | null;
             /** Format: int64 */
             key_id: number | null;
@@ -2636,6 +2722,14 @@ export interface components {
             role: string;
         };
         ModelEntry: {
+            /**
+             * Format: int64
+             * @description Per million tokens read from or written to the provider's prompt
+             *     cache. `null`: the input price is used.
+             */
+            cache_read_price_micros: number | null;
+            /** Format: int64 */
+            cache_write_price_micros: number | null;
             enabled: boolean;
             grants?: components["schemas"]["GrantEntry"];
             /**
@@ -2653,6 +2747,18 @@ export interface components {
             models: components["schemas"]["ModelView"][];
         };
         ModelView: {
+            /**
+             * Format: int64
+             * @description What a million tokens read from the provider's prompt cache cost, in
+             *     millionths of a dollar. `null`: the input price is used.
+             */
+            cache_read_price_micros: number | null;
+            /**
+             * Format: int64
+             * @description What a million tokens written to the prompt cache cost, in millionths
+             *     of a dollar. `null`: the input price is used.
+             */
+            cache_write_price_micros: number | null;
             created_at: string;
             enabled: boolean;
             grants: components["schemas"]["GrantsView"];
@@ -3781,6 +3887,17 @@ export interface components {
             enabled: boolean;
         };
         UpdateModelRequest: {
+            /**
+             * Format: int64
+             * @description Like `input_price_micros`, for tokens read from the prompt cache.
+             *     `null` prices them at the input price.
+             */
+            cache_read_price_micros?: number | null;
+            /**
+             * Format: int64
+             * @description Like `cache_read_price_micros`, for tokens written to the prompt cache.
+             */
+            cache_write_price_micros?: number | null;
             /** @description Left out, the model stays as it is. */
             enabled?: boolean | null;
             /**
@@ -3843,6 +3960,16 @@ export interface components {
         UsageRow: {
             /**
              * Format: int64
+             * @description Of `input_tokens`: those read from the providers' prompt caches.
+             */
+            cache_read_tokens: number;
+            /**
+             * Format: int64
+             * @description Of `input_tokens`: those written to the providers' prompt caches.
+             */
+            cache_write_tokens: number;
+            /**
+             * Format: int64
              * @description Calls the caller abandoned before they were answered (status 499): not
              *     errors of the gateway or of a provider.
              */
@@ -3865,8 +3992,9 @@ export interface components {
             group: string;
             /**
              * Format: int64
-             * @description Includes the tokens of cached answers (`cached` rows of the logs),
-             *     which cost nothing.
+             * @description Every token sent in, including those read from or written to the
+             *     providers' prompt caches, and the tokens of cached answers (`cached`
+             *     rows of the logs), which cost nothing.
              */
             input_tokens: number;
             /**
@@ -6676,6 +6804,8 @@ export interface operations {
                 errors?: boolean;
                 /** @description Only calls whose worst guardrail action was this: `blocked`, `redacted` or `flagged` (a block is worse than a redaction, a redaction worse than a flag). Combines with the other filters. */
                 guardrail?: string;
+                /** @description Only calls of this agent session: the id a coding agent (Claude Code, Codex) sends with its requests, as `agent_session` shows it. Combines with the other filters. */
+                agent_session?: string;
                 /** @description Only calls with this tag, written `name:value` (the name ends at the first colon). Repeat it to require several tags: all must match. */
                 tag?: string[];
             };

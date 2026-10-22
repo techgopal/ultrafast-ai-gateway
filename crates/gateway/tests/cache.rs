@@ -507,6 +507,8 @@ async fn a_hit_still_passes_the_budgets() {
         started_unix_ms: 0,
         guardrails: None,
         prompt: None,
+        agent: Default::default(),
+        dropped: Vec::new(),
     };
     account(&w.h.state, &spent, 1_000_000, OffsetDateTime::now_utc());
     let (status, _, body) = w.chat_as(&a, BODY).await;

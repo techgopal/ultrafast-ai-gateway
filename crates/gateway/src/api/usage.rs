@@ -49,10 +49,15 @@ pub struct UsageRow {
     /// Calls the caller abandoned before they were answered (status 499): not
     /// errors of the gateway or of a provider.
     pub cancelled: i64,
-    /// Includes the tokens of cached answers (`cached` rows of the logs),
-    /// which cost nothing.
+    /// Every token sent in, including those read from or written to the
+    /// providers' prompt caches, and the tokens of cached answers (`cached`
+    /// rows of the logs), which cost nothing.
     pub input_tokens: i64,
     pub output_tokens: i64,
+    /// Of `input_tokens`: those read from the providers' prompt caches.
+    pub cache_read_tokens: i64,
+    /// Of `input_tokens`: those written to the providers' prompt caches.
+    pub cache_write_tokens: i64,
     /// In millionths of a dollar.
     pub cost_micros: i64,
     /// Calls that reported token usage but could not be priced, so their
@@ -70,6 +75,8 @@ impl From<UsageSums> for UsageRow {
             cancelled: s.cancelled,
             input_tokens: s.input_tokens,
             output_tokens: s.output_tokens,
+            cache_read_tokens: s.cache_read_tokens,
+            cache_write_tokens: s.cache_write_tokens,
             cost_micros: s.cost_micros,
             unpriced_requests: s.unpriced_requests,
         }
@@ -211,6 +218,8 @@ pub async fn usage_view(
         cancelled: 0,
         input_tokens: 0,
         output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
         cost_micros: 0,
         unpriced_requests: 0,
     };
@@ -220,6 +229,8 @@ pub async fn usage_view(
         total.cancelled += s.cancelled;
         total.input_tokens += s.input_tokens;
         total.output_tokens += s.output_tokens;
+        total.cache_read_tokens += s.cache_read_tokens;
+        total.cache_write_tokens += s.cache_write_tokens;
         total.cost_micros += s.cost_micros;
         total.unpriced_requests += s.unpriced_requests;
     }

@@ -98,6 +98,10 @@ pub struct RequestRecord {
     /// The prompt template the call used, as `name@version`: set once the
     /// template and its version were found.
     pub prompt: Option<String>,
+    /// What the calling agent said about itself (session, agent, client).
+    pub agent: crate::agents::AgentInfo,
+    /// Names of what translation left out of the request.
+    pub dropped: Vec<String>,
 }
 
 /// The longest `requested` a record keeps, in bytes. The name is whatever the
@@ -207,6 +211,8 @@ impl Scope {
                 started_unix_ms: unix_ms_now(),
                 guardrails: None,
                 prompt: None,
+                agent: Default::default(),
+                dropped: Vec::new(),
             }),
         }
     }
@@ -400,7 +406,7 @@ impl Scope {
     pub fn usage(&mut self, usage: Option<Usage>) {
         // The tokens the call used replace the estimate it was charged.
         if let (Some(permit), Some(u)) = (self.permit.as_mut(), usage) {
-            permit.settle(u64::from(u.input_tokens) + u64::from(u.output_tokens));
+            permit.settle(u.total_volume());
         }
         self.record_mut().usage = usage;
     }
@@ -503,8 +509,7 @@ impl Scope {
                     record.usage = Some(usage);
                     record.estimated = true;
                     if let Some(permit) = self.permit.as_mut() {
-                        permit
-                            .settle(u64::from(usage.input_tokens) + u64::from(usage.output_tokens));
+                        permit.settle(usage.total_volume());
                     }
                 }
             }

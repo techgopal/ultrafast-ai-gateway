@@ -595,6 +595,8 @@ fn spent_record() -> RequestRecord {
         started_unix_ms: 0,
         guardrails: None,
         prompt: None,
+        agent: Default::default(),
+        dropped: Vec::new(),
     }
 }
 

@@ -91,8 +91,18 @@ pub fn spans_of(
         }
     }
     if let Some(u) = record.usage {
-        attributes.push(int("gen_ai.usage.input_tokens", u.input_tokens));
+        // The input is every token sent in, cached or not (OpenTelemetry's
+        // meaning); the cached ones are also given apart.
+        attributes.push(int("gen_ai.usage.input_tokens", u.input_volume()));
         attributes.push(int("gen_ai.usage.output_tokens", u.output_tokens));
+        attributes.push(int(
+            "gen_ai.usage.cache_read.input_tokens",
+            u.cache_read_input_tokens,
+        ));
+        attributes.push(int(
+            "gen_ai.usage.cache_creation.input_tokens",
+            u.cache_write_input_tokens,
+        ));
     }
     for (name, value) in &record.tags {
         attributes.push(string(&format!("uf.tags.{name}"), value));
@@ -285,6 +295,8 @@ mod tests {
             started_unix_ms: 32_472_144_000_000,
             guardrails: None,
             prompt: None,
+            agent: Default::default(),
+            dropped: Vec::new(),
         }
     }
 

@@ -316,6 +316,8 @@ async fn world() -> World {
         model: Some("gpt-4o".into()),
         input_tokens: Some(1),
         output_tokens: Some(1),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: 0,
         priced: false,
         cached: false,
@@ -324,6 +326,12 @@ async fn world() -> World {
         attempts: "[]".into(),
         guardrails: None,
         prompt: None,
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     };
     org.api
         .store
