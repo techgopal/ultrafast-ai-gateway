@@ -1,6 +1,6 @@
 {
   "name": "@ufaigw/admin",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "TypeScript SDK for the Ultrafast gateway admin API (/api): a typed openapi-fetch client generated from openapi/admin.json, with an access-token wrapper and a typed error.",
   "type": "module",
   "license": "MIT",

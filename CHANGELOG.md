@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-22
+
+Claude Code and Codex work through the gateway. One additive database
+migration (SQLite 0025, PostgreSQL 0011): older rows are unchanged.
+
+### Added
+
+- Same-family calls are passed through as the agent sent them: `/v1/messages`
+  to an Anthropic provider, `/v1/responses` to an OpenAI or Azure provider
+  (body, `anthropic-*` / `openai-*` headers, query, answers, streams and
+  errors). Other families are translated, and what a target cannot express is
+  dropped and named in the log row.
+- Input guardrails read and redact the text of the agent's own request; output
+  rules redact answers and the text deltas of a passed-through stream.
+- `POST /v1/messages/count_tokens`, `HEAD /api/hello`, and a `display_name` in
+  `GET /v1/models`, which Claude Code uses.
+- Log rows record the agent's session, agent, prompt, request class and client,
+  the tokens read from and written to the prompt cache, and the names
+  translation dropped. `GET /api/logs?agent_session=` filters by session.
+- Models have a cache read and a cache write price (empty: the input price).
+- Console: a Session column and filter in Logs, a session view, cache reads in
+  the Overview, cache prices in the price dialog, and a note on what redaction
+  costs a coding agent.
+- `scripts/record-agents.sh` runs the installed agents through a throwaway
+  gateway and a fake provider.
+
+### Changed
+
+- Cost prices uncached input, cache reads, cache writes and output. Rate-limit
+  tokens, budgets, metrics, spans and the usage API count cache reads and
+  writes as input; the usage API shows them apart as well.
+- A `/v1/messages` call to an Anthropic provider and a `/v1/responses` call to
+  an OpenAI or Azure provider reach the provider as sent, so the response cache
+  does not apply to them and a prompt template is refused on them (400).
+
 ## [3.0.0] - 2026-10-21
 
 The command, the image, the release archives and the client packages are

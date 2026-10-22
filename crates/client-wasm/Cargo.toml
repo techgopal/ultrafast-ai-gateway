@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ufaigw-translate = { version = "3.0.0", path = "../translate" }
+ufaigw-translate = { version = "3.1.0", path = "../translate" }
 serde.workspace = true
 serde_json.workspace = true
 # Pinned: the wasm-bindgen CLI that builds the package must be this version.
