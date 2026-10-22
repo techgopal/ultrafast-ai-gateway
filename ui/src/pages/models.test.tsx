@@ -109,6 +109,8 @@ function keeps(start: readonly fixtures.Model[] = fixtures.modelList) {
       created_at: "2026-09-30 09:00:00",
       input_price_micros: null,
       output_price_micros: null,
+      cache_read_price_micros: null,
+      cache_write_price_micros: null,
     };
     state.models = [...state.models, model];
     return ok("post", "/api/models", 201, model);

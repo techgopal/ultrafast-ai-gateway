@@ -323,6 +323,8 @@ export const models = {
     created_at: "2026-09-01 10:00:00",
     input_price_micros: 150_000,
     output_price_micros: 600_000,
+    cache_read_price_micros: null,
+    cache_write_price_micros: null,
   },
   /** Enabled, granted to two teams and a user. */
   openaiFull: {
@@ -335,6 +337,8 @@ export const models = {
     created_at: "2026-09-01 10:00:01",
     input_price_micros: 2_500_000,
     output_price_micros: 10_000_000,
+    cache_read_price_micros: null,
+    cache_write_price_micros: null,
   },
   /** Disabled, as a synced model starts: granted to nobody. */
   openaiDisabled: {
@@ -347,6 +351,8 @@ export const models = {
     created_at: "2026-09-01 10:00:02",
     input_price_micros: null,
     output_price_micros: null,
+    cache_read_price_micros: null,
+    cache_write_price_micros: null,
   },
   /** Enabled, and nobody has access: only an admin can call it. */
   localLlama: {
@@ -359,6 +365,8 @@ export const models = {
     created_at: "2026-09-02 08:00:00",
     input_price_micros: null,
     output_price_micros: null,
+    cache_read_price_micros: null,
+    cache_write_price_micros: null,
   },
 } satisfies Record<string, Model>;
 
@@ -653,6 +661,8 @@ function log(
     model: "gpt-4o",
     input_tokens: 120,
     output_tokens: 48,
+    cache_read_tokens: null,
+    cache_write_tokens: null,
     cost_micros: 1_250_000,
     priced: true,
     cached: false,
@@ -661,6 +671,12 @@ function log(
     tags: {},
     guardrails: null,
     prompt: null,
+    agent_session: null,
+    agent_id: null,
+    agent_prompt: null,
+    agent_class: null,
+    agent_client: null,
+    dropped: [],
     ...call,
   };
 }
@@ -807,6 +823,8 @@ function usageRow(group: string, label: string, rest: Partial<UsageRow>): UsageR
     cancelled: 0,
     input_tokens: 0,
     output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
     cost_micros: 0,
     unpriced_requests: 0,
     ...rest,
@@ -1082,6 +1100,8 @@ export const configFile = {
       enabled: true,
       input_price_micros: 150_000,
       output_price_micros: 600_000,
+      cache_read_price_micros: null,
+      cache_write_price_micros: null,
       grants: { everyone: true, teams: [], users: [] },
     },
   ],

@@ -72,6 +72,8 @@ export function perDay(from: string, to: string, rows: readonly UsageRow[]): Usa
         cancelled: 0,
         input_tokens: 0,
         output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
         cost_micros: 0,
         unpriced_requests: 0,
       },

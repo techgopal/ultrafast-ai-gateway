@@ -19,6 +19,28 @@ impl std::fmt::Debug for CacheKey {
     }
 }
 
+/// A JSON value as bytes with every object's keys in sorted order: the same
+/// schema written in another key order is the same key (serde_json keeps
+/// insertion order here).
+fn canonical_json(v: &serde_json::Value) -> Vec<u8> {
+    fn sorted(v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(m) => {
+                let mut keys: Vec<&String> = m.keys().collect();
+                keys.sort();
+                serde_json::Value::Object(
+                    keys.into_iter()
+                        .map(|k| (k.clone(), sorted(&m[k])))
+                        .collect(),
+                )
+            }
+            serde_json::Value::Array(a) => serde_json::Value::Array(a.iter().map(sorted).collect()),
+            other => other.clone(),
+        }
+    }
+    serde_json::to_vec(&sorted(v)).unwrap_or_default()
+}
+
 #[cfg(test)]
 impl CacheKey {
     /// A key of its own for every `name`, for tests of the code around keys.
@@ -120,8 +142,7 @@ impl Encoder {
         {
             self.field(31, name.as_bytes());
             self.optional(32, description.as_deref().map(str::as_bytes));
-            // `serde_json::Map` is ordered by key, so this is canonical.
-            let schema = serde_json::to_vec(parameters).unwrap_or_default();
+            let schema = canonical_json(parameters);
             self.field(33, &schema);
             self.optional(36, strict.map(|b| [u8::from(b)]).as_ref().map(|b| &b[..]));
             // Left out when false, so the keys of ordinary tools are unchanged.
@@ -142,8 +163,7 @@ impl Encoder {
             }) => {
                 self.optional(37, Some(b"json_schema"));
                 self.field(38, name.as_bytes());
-                // `serde_json::Map` is ordered by key, so this is canonical.
-                self.field(39, &serde_json::to_vec(schema).unwrap_or_default());
+                self.field(39, &canonical_json(schema));
                 self.optional(40, strict.map(|b| [u8::from(b)]).as_ref().map(|b| &b[..]));
                 self.optional(41, description.as_deref().map(str::as_bytes));
             }
@@ -458,6 +478,18 @@ mod tests {
             strict: None,
             freeform: false,
         }
+    }
+
+    #[test]
+    fn a_schema_in_another_key_order_is_the_same_key() {
+        let mut a = base();
+        a.tools = vec![tool("t")];
+        a.tools[0].parameters =
+            serde_json::from_str(r#"{"type":"object","properties":{"a":1,"b":2}}"#).unwrap();
+        let mut b = a.clone();
+        b.tools[0].parameters =
+            serde_json::from_str(r#"{"properties":{"b":2,"a":1},"type":"object"}"#).unwrap();
+        assert_eq!(key_of(&a), key_of(&b));
     }
 
     #[test]
