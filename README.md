@@ -622,8 +622,9 @@ Create a route named `claude-opus-5-5` (its targets may be any provider), or
 open the model of an Anthropic provider under that name. `GET /v1/models` lists
 what the key may call, each with a `display_name`; `POST
 /v1/messages/count_tokens` goes to the first Anthropic target of the model (it
-is not a call: no limit, no budget, no log row); `HEAD /api/hello` answers 200
-for the probe Claude Code makes at startup.
+is not a call for the books: it takes a request-rate permit like any call (no
+token charge), the input guardrails read it, and it has no budget and no log
+row); `HEAD /api/hello` answers 200 for the probe Claude Code makes at startup.
 
 **Codex.** In `~/.codex/config.toml`:
 
@@ -649,6 +650,27 @@ provider's key is the gateway's. Nothing the provider supports is lost to a
 translation, such as thinking blocks, server tools or `context_management`.
 The response cache is not used on such a call, and a prompt template cannot be
 (400). A stream held for an external output guardrail is translated instead.
+Calls of the provider's web search (Anthropic's `server_tool_use.web_search_requests`,
+OpenAI's `web_search_call` items) are priced at a flat $0.01 each on top of the
+tokens, for every model, and count in spend and budgets. An Azure Responses call
+uses the provider's `api_version` when it is 2025-03-01 or later, else
+`2025-03-01-preview`. A stream a guardrail cuts, or whose caller leaves,
+records the usage the provider had reported by then.
+A provider's 429 or 5xx is retried and failed over like any; when the last try
+was a passed-through one, the caller gets that provider's own status, headers
+and body.
+
+**State of the provider account is refused.** A passed-through call acts with
+the gateway's credential, which every key shares, so a call that reads or
+writes what is stored in the provider account is refused with a 400 naming the
+field: on `/v1/responses` `store: true`, `previous_response_id`,
+`conversation`, `background: true`, a `file_id` (in a file or an image),
+`vector_store_ids`, and the hosted tools `file_search`, `code_interpreter`,
+`computer*`, `mcp` and `image_generation`; on `/v1/messages` a `file_id`
+source, `container` and `mcp_servers`. What Claude Code and Codex send is not
+affected (Codex sends `store: false`; the web search and web fetch tools are
+allowed). A Responses call that leaves `store` out is forwarded as it is, and
+OpenAI then keeps it, which is its default: have Codex send `store = false`.
 
 **Other family: translated.** Claude Code to an OpenAI, Azure or Gemini
 provider, and Codex to an Anthropic provider, are translated as every
@@ -659,12 +681,16 @@ a target cannot take at all (for instance reasoning effort on Gemini) is
 refused with a 400.
 
 **Guardrails.** Input rules read, and redact, the text of the agent's own
-request: system text, user text, tool results (Claude Code); instructions,
-input text, tool outputs (Codex). Redaction rewrites the prompt: for a coding
-agent this costs prompt-cache hits, and Claude Code drops earlier thinking
-from the conversation, so prefer Block or Flag for coding agents. Output
-rules redact the text of an answer and of a stream's text deltas; a block
-ends a stream with the API's own error event.
+request, whether the translator accepts it or not: system text, user and
+assistant text, tool calls' input and tool results, document text (Claude
+Code); instructions, input and output text, function and custom tool calls and
+their outputs (Codex). Redaction rewrites the prompt: for a coding agent this
+costs prompt-cache hits, and Claude Code drops earlier thinking from the
+conversation, so prefer Block or Flag for coding agents. Output rules redact
+the text of an answer, the inputs of the tool calls in it, and a stream's text
+and tool-call deltas, and on a Responses stream the `.done` and `completed`
+events that repeat the whole text; a block ends a stream with the API's own
+error event.
 
 **Sessions and cache.** A log row records the agent's session, agent, prompt
 and request class (from `x-claude-code-*` headers, or Codex's `session-id`),
@@ -1826,10 +1852,9 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
 - A `block` budget can be overshot: spend is counted when the log writer
   prices a call (batches of about a second), and a long call is charged when
   it ends.
-- Coding agents: on a passed-through Responses stream, the events that repeat
-  the whole text (`response.output_text.done`, `response.completed`) are not
-  redacted by an output rule, only the deltas are. A Claude Code to Gemini call
-  that sets a reasoning effort is refused.
+- Coding agents: a Claude Code to Gemini call that sets a reasoning effort is
+  refused. A passed-through stream is read event by event only while an output
+  rule applies; one event over 1 MiB then ends the stream with an error.
 - A stream whose caller left, or that failed midway, is charged an estimate
   (marked Estimated in the logs).
 - Creating or revoking a key, or changing teams, users, routes, providers,

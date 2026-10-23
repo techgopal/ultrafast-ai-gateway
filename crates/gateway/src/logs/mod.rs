@@ -111,6 +111,11 @@ pub fn snapshot_prices(state: Arc<AppState>) -> PriceLookup {
 /// output, cache reads and cache writes; a cache side without a price of its
 /// own costs the input price. Otherwise the cost is 0 and `priced` is false.
 /// The sum is rounded half up, once.
+/// What one call of a provider's hosted tool (a web search) is priced at, in
+/// millionths of a dollar: $10 per 1 000 searches, the list price of both
+/// Anthropic and OpenAI. One price for every model.
+pub const HOSTED_CALL_MICROS: i64 = 10_000;
+
 pub fn cost(usage: Option<Usage>, price: Option<Price>) -> (i64, bool) {
     let (Some(usage), Some(price)) = (usage, price) else {
         return (0, false);
@@ -169,7 +174,10 @@ pub fn row_of(record: &RequestRecord, prices: &PriceLookup) -> NewLog {
     let (cost_micros, priced) = if record.cached {
         (0, true)
     } else {
-        cost(record.usage, price)
+        let (micros, priced) = cost(record.usage, price);
+        // A hosted tool is billed per call, whatever the tokens cost.
+        let fee = i64::from(record.hosted_calls).saturating_mul(HOSTED_CALL_MICROS);
+        (micros.saturating_add(fee), priced)
     };
     let attempts: Vec<serde_json::Value> = record
         .attempts
@@ -327,6 +335,7 @@ mod tests {
     fn an_estimated_record_is_priced_like_a_reported_one_and_marked() {
         use crate::telemetry::{Attempt, AttemptOutcome};
         let record = RequestRecord {
+            hosted_calls: 0,
             key_id: Some(1),
             user_id: None,
             team_id: None,
@@ -368,7 +377,17 @@ mod tests {
             (row.input_tokens, row.output_tokens),
             (Some(1_000), Some(500))
         );
+        // A hosted tool is billed per call on top of the tokens.
+        let searched = RequestRecord {
+            hosted_calls: 2,
+            ..record.clone()
+        };
+        assert_eq!(
+            row_of(&searched, &prices).cost_micros,
+            4_000 + 2 * HOSTED_CALL_MICROS
+        );
         let reported = RequestRecord {
+            hosted_calls: 0,
             estimated: false,
             ..record
         };
@@ -379,6 +398,7 @@ mod tests {
     fn a_row_carries_cache_tokens_the_agent_and_what_was_dropped() {
         use crate::telemetry::{Attempt, AttemptOutcome};
         let record = RequestRecord {
+            hosted_calls: 0,
             key_id: Some(1),
             user_id: None,
             team_id: None,
@@ -443,6 +463,7 @@ mod tests {
         assert_eq!(row.agent_client.as_deref(), Some("claude-code"));
         assert_eq!(row.dropped.as_deref(), Some("[\"context_management\"]"));
         let plain = RequestRecord {
+            hosted_calls: 0,
             agent: Default::default(),
             dropped: Vec::new(),
             ..record

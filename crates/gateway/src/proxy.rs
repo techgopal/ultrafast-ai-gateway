@@ -104,8 +104,10 @@ pub async fn list_models(State(state): State<Arc<AppState>>, request: Request) -
 }
 
 /// `POST /v1/messages/count_tokens`: Claude Code's count of a prompt, asked
-/// of the first Anthropic target of the model. It is not a call: no limit, no
-/// budget, no log row.
+/// of the first Anthropic target of the model. It is not a call for the
+/// books: no token charge, no budget, no log row. It does cost the provider a
+/// request and carries the whole conversation, so it takes a request permit
+/// like any call and the input guardrails read it.
 pub async fn count_tokens(State(state): State<Arc<AppState>>, request: Request) -> Response {
     let shape = Shape::Anthropic;
     let (parts, body) = request.into_parts();
@@ -124,7 +126,7 @@ pub async fn count_tokens(State(state): State<Arc<AppState>>, request: Request) 
             )
         }
     };
-    let Ok(Value::Object(mut map)) = serde_json::from_slice::<Value>(&bytes) else {
+    let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(&bytes) else {
         return shape.error(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
@@ -143,6 +145,72 @@ pub async fn count_tokens(State(state): State<Arc<AppState>>, request: Request) 
         Err(Denied::Unknown) => return not_found(shape, &model),
         Err(Denied::Forbidden) => return forbidden(shape, &model),
     };
+    // The rate limits of the key, its owner, their teams and the gateway: one
+    // request, no tokens. The permit goes back when the answer is out.
+    let actor = Actor::of_key(&key);
+    let subjects = snapshot.subjects_of(actor.key_id, key.user_id, key.team_id);
+    let _permit = match state.rate.acquire(&subjects, 0, Instant::now()) {
+        Ok(permit) => permit,
+        Err(refusal) => {
+            state.metrics.rate_limited(refusal.limit_name);
+            return shape.rate_limited(&refusal);
+        }
+    };
+    let mut native = Native {
+        api: NativeApi::Messages,
+        body: map,
+        headers: native::forwardable(NativeApi::Messages, &parts.headers),
+        query: parts.uri.query().map(str::to_string),
+        parse_error: None,
+    };
+    if let Some(message) = native::stored_state(&native) {
+        return shape.error(StatusCode::BAD_REQUEST, "invalid_request_error", &message);
+    }
+    let effective = snapshot.effective_guardrails(
+        match &resolved {
+            Resolved::Route(route) => Some(route),
+            Resolved::Model(_) => None,
+        },
+        Some(&key),
+    );
+    let hooks = effective
+        .iter()
+        .any(|g| g.external.is_some())
+        .then(|| Hooks {
+            http: state.http.clone(),
+            gates: state.hook_gates.clone(),
+            meta: Arc::new(CallMeta {
+                endpoint: Endpoint::Messages.name(),
+                model: model.clone(),
+                route: match &resolved {
+                    Resolved::Route(route) => Some(route.name.clone()),
+                    Resolved::Model(_) => None,
+                },
+                key_id: actor.key_id,
+                team_id: key.team_id,
+                user_id: key.user_id,
+            }),
+        });
+    let guard = Active::of(&effective, hooks);
+    if guard.covers(Direction::Input) {
+        let mut slots = native::text_slots(&mut native);
+        let blocked = match guard.check_rules(Direction::Input, &mut slots, None).await {
+            Ok(outcome) => outcome.blocked_by,
+            Err(failed) => return scan_failed(shape, failed),
+        };
+        if let Some((_, name)) = blocked {
+            return shape.guardrail_blocked(&name);
+        }
+        if guard.has_hooks(Direction::Input) {
+            if let Some((_, name)) = guard
+                .check_hooks(Direction::Input, &mut slots, None)
+                .await
+                .blocked_by
+            {
+                return shape.guardrail_blocked(&name);
+            }
+        }
+    }
     let order = match &resolved {
         Resolved::Model(m) => vec![TargetRef {
             provider: m.provider.clone(),
@@ -175,14 +243,9 @@ pub async fn count_tokens(State(state): State<Arc<AppState>>, request: Request) 
         model: target.model.clone(),
         api_version: provider.api_version.clone(),
     };
-    map.insert("model".into(), Value::String(target.model.clone()));
-    let native = Native {
-        api: NativeApi::Messages,
-        body: map,
-        headers: native::forwardable(NativeApi::Messages, &parts.headers),
-        query: parts.uri.query().map(str::to_string),
-        parse_error: None,
-    };
+    native
+        .body
+        .insert("model".into(), Value::String(target.model.clone()));
     let mut out = native::build(&native, &wire);
     out.url = out
         .url
@@ -314,14 +377,8 @@ impl Endpoint {
                 let (request, prompt) = openai::parse_prompted(body)?;
                 Ok((Call::Chat(request, None), prompt))
             }
-            Endpoint::Messages => {
-                let parsed = anthropic::parse_request(body).map(|r| (r, None));
-                chat_call(NativeApi::Messages, body, inbound, parsed)
-            }
-            Endpoint::Responses => {
-                let parsed = responses::parse_request(body).map(|p| (p.request, p.prompt));
-                chat_call(NativeApi::Responses, body, inbound, parsed)
-            }
+            Endpoint::Messages => chat_call(NativeApi::Messages, body, inbound),
+            Endpoint::Responses => chat_call(NativeApi::Responses, body, inbound),
             Endpoint::Embeddings => embeddings::parse_request(body).map(|r| plain(Call::Embed(r))),
             Endpoint::Images | Endpoint::PlaygroundImages => {
                 images::parse_request(body).map(|r| plain(Call::Image(r)))
@@ -372,15 +429,27 @@ fn chat_call(
     api: NativeApi,
     body: &[u8],
     inbound: Option<&Inbound<'_>>,
-    parsed: Result<(ChatRequest, Option<PromptRef>), TranslateError>,
 ) -> Result<(Call, Option<PromptRef>), TranslateError> {
+    type Parsed = Result<(ChatRequest, Option<PromptRef>), TranslateError>;
+    let from_bytes = || -> Parsed {
+        match api {
+            NativeApi::Messages => anthropic::parse_request(body).map(|r| (r, None)),
+            NativeApi::Responses => responses::parse_request(body).map(|p| (p.request, p.prompt)),
+        }
+    };
+    let from_value = |v: &Value| -> Parsed {
+        match api {
+            NativeApi::Messages => anthropic::parse_request_value(v).map(|r| (r, None)),
+            NativeApi::Responses => {
+                responses::parse_request_value(v).map(|p| (p.request, p.prompt))
+            }
+        }
+    };
     let Some(inbound) = inbound else {
-        return parsed.map(|(request, prompt)| (Call::Chat(request, None), prompt));
+        return from_bytes().map(|(request, prompt)| (Call::Chat(request, None), prompt));
     };
-    let object = || match serde_json::from_slice::<Value>(body) {
-        Ok(Value::Object(map)) => Some(map),
-        _ => None,
-    };
+    // The body is read as JSON once: the common request is derived from that
+    // reading, and the agent's own body is what was read.
     let native = |map, parse_error| {
         Box::new(Native {
             api,
@@ -390,13 +459,19 @@ fn chat_call(
             parse_error,
         })
     };
+    let value = match serde_json::from_slice::<Value>(body) {
+        Ok(v @ Value::Object(_)) => v,
+        // Not an object: the translator says what is wrong with it.
+        _ => return from_bytes().map(|(r, prompt)| (Call::Chat(r, None), prompt)),
+    };
+    let parsed = from_value(&value);
+    let Value::Object(map) = value else {
+        unreachable!("matched as an object above")
+    };
     match parsed {
-        Ok((request, prompt)) => match object() {
-            Some(map) => Ok((Call::Chat(request, Some(native(map, None))), prompt)),
-            None => Ok((Call::Chat(request, None), prompt)),
-        },
-        Err(e) => match object() {
-            Some(map) if map.get("model").is_some_and(Value::is_string) => {
+        Ok((request, prompt)) => Ok((Call::Chat(request, Some(native(map, None))), prompt)),
+        Err(e) => {
+            if map.get("model").is_some_and(Value::is_string) {
                 let mut request = empty_request();
                 request.model = map["model"].as_str().unwrap_or_default().to_string();
                 request.stream = map.get("stream").and_then(Value::as_bool).unwrap_or(false);
@@ -405,9 +480,10 @@ fn chat_call(
                     .find_map(|k| map.get(*k).and_then(Value::as_u64))
                     .and_then(|n| u32::try_from(n).ok());
                 Ok((Call::Chat(request, Some(native(map, Some(e)))), None))
+            } else {
+                Err(e)
             }
-            _ => Err(e),
-        },
+        }
     }
 }
 
@@ -477,9 +553,11 @@ impl Call {
             chars.div_ceil(4) as u64
         }
         match self {
-            // A body the translator could not read is counted by its size.
-            Call::Chat(_, Some(n)) if n.parse_error.is_some() => {
-                tokens(serde_json::to_string(&n.body).map_or(0, |s| s.len()))
+            // The agent's own body is counted whole: documents, server tool
+            // results and the rest of what translation would drop count too.
+            Call::Chat(_, Some(n)) => {
+                let (chars, media) = native::input_size(n);
+                tokens(chars) + media * IMAGE_TOKEN_ESTIMATE
             }
             Call::Chat(r, _) => {
                 let mut chars = 0usize;
@@ -1443,7 +1521,7 @@ async fn dispatch(
     }
     let before = guard
         .covers(Direction::Input)
-        .then(|| native_snapshot(&call))
+        .then(|| native_snapshot(&mut call))
         .flatten();
     let input_rules = match check_input_rules(&guard, &mut call, record, shape).await {
         Ok(outcome) => outcome,
@@ -1562,6 +1640,7 @@ async fn dispatch(
                     rate_limited: 0,
                     retry_after: None,
                     refused: None,
+                    last_retryable: None,
                 },
             );
         };
@@ -1639,9 +1718,11 @@ async fn dispatch(
             headers,
             body,
             usage,
+            hosted,
         }) => {
             let record = scope.as_mut().expect("a whole answer keeps the scope");
             record.usage(usage);
+            record.hosted_calls(hosted);
             let api = match &call {
                 Call::Chat(_, Some(n)) => Some(n.api),
                 _ => None,
@@ -1834,7 +1915,7 @@ fn input_slots(call: &mut Call) -> Vec<&mut String> {
     match call {
         // The agent's own body is what is checked and edited; the common
         // request is derived from it again afterwards (`rederive`).
-        Call::Chat(_, Some(native)) if native.parse_error.is_none() => native::text_slots(native),
+        Call::Chat(_, Some(native)) => native::text_slots(native),
         Call::Chat(r, _) => {
             merge_text_parts(r);
             chat_slots(r)
@@ -1887,15 +1968,20 @@ async fn check_input_rules(
 
 /// Parses the common request again from the agent's body after guardrails
 /// edited its text, so that translation and pass-through send the same text.
-fn rederive(call: &mut Call, before: &Option<Vec<u8>>) {
+/// The body is only written out and read again when a slot changed.
+fn rederive(call: &mut Call, before: &Option<Vec<String>>) {
     let Call::Chat(request, Some(native)) = call else {
         return;
     };
     let Some(before) = before else { return };
-    let body = serde_json::to_vec(&native.body).unwrap_or_default();
-    if &body == before {
+    let unchanged = {
+        let now = native::text_slots(native);
+        now.len() == before.len() && now.iter().zip(before).all(|(a, b)| **a == *b)
+    };
+    if unchanged {
         return;
     }
+    let body = serde_json::to_vec(&native.body).unwrap_or_default();
     let parsed = match native.api {
         NativeApi::Messages => anthropic::parse_request(&body),
         NativeApi::Responses => responses::parse_request(&body).map(|p| p.request),
@@ -1905,12 +1991,15 @@ fn rederive(call: &mut Call, before: &Option<Vec<u8>>) {
     }
 }
 
-/// The agent's body as it is now, when a guardrail may edit it.
-fn native_snapshot(call: &Call) -> Option<Vec<u8>> {
+/// The text the guardrails may edit in the agent's body, as it is now.
+fn native_snapshot(call: &mut Call) -> Option<Vec<String>> {
     match call {
-        Call::Chat(_, Some(native)) if native.parse_error.is_none() => {
-            Some(serde_json::to_vec(&native.body).unwrap_or_default())
-        }
+        Call::Chat(_, Some(native)) => Some(
+            native::text_slots(native)
+                .into_iter()
+                .map(|s| s.clone())
+                .collect(),
+        ),
         _ => None,
     }
 }
@@ -2123,6 +2212,11 @@ fn exhausted_response(shape: Shape, ex: Exhausted<CallError>) -> Response {
     if let Some(refused) = ex.refused {
         return refused.into_response(shape);
     }
+    // The last try was a pass-through one and the provider answered it: its
+    // answer is the caller's, as it is when the provider refuses the call.
+    if let Some(upstream @ CallError::Upstream { .. }) = ex.last_retryable {
+        return upstream.into_response(shape);
+    }
     let seconds = |d: Duration| d.min(RETRY_AFTER_CAP).as_secs_f64().ceil() as u64;
     let response = if ex.attempts > 0 && ex.rate_limited == ex.attempts {
         let mut r = shape.error(
@@ -2251,6 +2345,8 @@ enum Served {
         headers: Vec<(String, String)>,
         body: Bytes,
         usage: Option<Usage>,
+        /// Calls of hosted tools the answer reports.
+        hosted: u32,
     },
     Embeddings(EmbeddingsResponse),
     Image(ImageResponse),
@@ -2425,6 +2521,14 @@ async fn try_target_once(
     };
     if let Call::Chat(_, Some(native)) = call {
         if call.passes_to(provider.kind) {
+            // What would read or write the state of the account the gateway
+            // holds for everyone is refused before anything is sent.
+            if let Some(message) = native::stored_state(native) {
+                return Err(Failure::Fatal {
+                    error: CallError::Translate(TranslateError::InvalidRequest(message)),
+                    status: None,
+                });
+            }
             return try_native(
                 http,
                 call.stream(),
@@ -2678,6 +2782,7 @@ async fn try_native(
                 status,
                 headers,
                 usage: native::usage_of(native.api, &bytes),
+                hosted: native::hosted_calls_of(native.api, &bytes),
                 body: bytes,
             },
             status: Some(status),
@@ -2688,7 +2793,11 @@ async fn try_native(
     // the provider's own words.
     Err(match status {
         408 | 429 | 500..=599 => Failure::Retryable {
-            error: CallError::Lost,
+            error: CallError::Upstream {
+                status,
+                headers,
+                body: bytes,
+            },
             status: Some(status),
             retry_after,
         },
@@ -3491,6 +3600,17 @@ impl StreamRecord {
         }
     }
 
+    /// What the provider has reported so far: kept for a stream that ends
+    /// before its last event.
+    fn partial(&mut self, usage: Option<Usage>, hosted: u32) {
+        if let Some(scope) = self.scope.as_mut() {
+            scope.partial_usage(usage);
+            if hosted > 0 {
+                scope.hosted_calls(hosted);
+            }
+        }
+    }
+
     fn end(self, outcome: AttemptOutcome, usage: Option<Usage>) {
         self.finish(outcome, usage, true);
     }
@@ -3626,10 +3746,12 @@ fn stream_to_caller(
                         }
                         Ok(Some(Ok(bytes))) => bytes,
                     };
-                    match decoder.feed(&chunk) {
+                    let fed = match decoder.feed(&chunk) {
                         Ok(events) => (events, decoder.take_error()),
                         Err(e) => (Vec::new(), Some(e)),
-                    }
+                    };
+                    record.partial(decoder.usage_so_far(), 0);
+                    fed
                 }
             };
             for ev in events {
@@ -3714,20 +3836,24 @@ struct Deltas {
 }
 
 /// A pass-through stream: the provider's bytes as they arrive. They are also
-/// decoded, for the usage, the characters streamed and the end of the
-/// answer. With a rules guardrail on the output the stream is read event by
-/// event: only the text of a delta is rewritten, every other event goes as it
-/// came, and a block ends the stream with the API's own error event.
+/// read, for the usage, the characters streamed and the end of the answer, by
+/// a reader that skips what it does not know. With a rules guardrail on the
+/// output the stream is read event by event: only the text of a delta is
+/// rewritten (and the full text the `.done` events of a Responses stream
+/// repeat), every other event goes as it came, and a block ends the stream
+/// with the API's own error event.
 fn native_stream(committed: Committed, record: StreamRecord) -> Response {
     let body = async_stream::stream! {
         let mut record = record;
-        let Committed { target, deadline, mut chunks, mut decoder, native, .. } = committed;
+        let Committed { target, deadline, mut chunks, native, .. } = committed;
         let (api, first) = native.expect("a pass-through stream");
         let provider = target.provider.clone();
         let mut pending: std::collections::VecDeque<Bytes> = first.into();
         let mut buf: Vec<u8> = Vec::new();
         let mut deltas = Deltas::default();
-        let mut decoding = true;
+        let mut reader = native::StreamReader::new(api);
+        // The last `sequence_number` let out, for text let out a second time.
+        let mut last_seq: Option<u64> = None;
         let scanning = record.guard.as_ref().is_some_and(|g| g.scanner.is_some());
         loop {
             let chunk = match pending.pop_front() {
@@ -3743,20 +3869,17 @@ fn native_stream(committed: Committed, record: StreamRecord) -> Response {
                         if !buf.is_empty() {
                             yield Ok(Bytes::from(std::mem::take(&mut buf)));
                         }
-                        let done = decoder.finish().into_iter().find_map(|ev| match ev {
-                            StreamEvent::Done { usage, .. } => Some(usage),
-                            _ => None,
-                        });
-                        match done {
-                            Some(usage) => record.end(AttemptOutcome::Ok, usage),
-                            None => {
-                                tracing::warn!(provider = %provider, "provider stream ended before completion");
-                                record.end(AttemptOutcome::Retryable, None);
-                                yield Ok(Bytes::from(native::error_event(
-                                    api,
-                                    "The provider stream ended before completion.",
-                                )));
-                            }
+                        // The provider's own last event ended the answer, and
+                        // its usage was read with it: nothing is added after it.
+                        if reader.ended() {
+                            record.end(AttemptOutcome::Ok, None);
+                        } else {
+                            tracing::warn!(provider = %provider, "provider stream ended before completion");
+                            record.end(AttemptOutcome::Retryable, None);
+                            yield Ok(Bytes::from(native::error_event(
+                                api,
+                                "The provider stream ended before completion.",
+                            )));
                         }
                         return;
                     }
@@ -3774,35 +3897,45 @@ fn native_stream(committed: Committed, record: StreamRecord) -> Response {
                 },
             };
             let units: Vec<Vec<u8>> = if scanning {
+                let from = buf.len().saturating_sub(3);
                 buf.extend_from_slice(&chunk);
-                native::split_events(&mut buf)
+                let units = native::split_events_from(&mut buf, from);
+                if buf.len() > native::MAX_EVENT_BYTES {
+                    // An event too large to be one cannot be scanned: what
+                    // came before it is let out, it is not.
+                    for unit in units {
+                        yield Ok(Bytes::from(unit));
+                    }
+                    tracing::warn!(provider = %provider, "provider stream event is over the size limit");
+                    record.end(AttemptOutcome::Fatal, None);
+                    yield Ok(Bytes::from(native::error_event(
+                        api,
+                        "The provider stream sent an event over the size limit.",
+                    )));
+                    return;
+                }
+                units
             } else {
                 vec![chunk.to_vec()]
             };
             for unit in units {
                 let mut done = None;
                 let mut failed = None;
-                if decoding {
-                    let fed = decoder.feed(&unit);
-                    let (events, error) = match fed {
-                        Ok(events) => (events, decoder.take_error()),
-                        Err(e) => (Vec::new(), Some(e)),
-                    };
-                    for ev in events {
-                        match ev {
-                            StreamEvent::Delta { text } => record.streamed(text.chars().count()),
-                            StreamEvent::ToolCallDelta { arguments, .. } => {
-                                record.streamed(arguments.chars().count());
-                            }
-                            StreamEvent::Done { usage, .. } => done = Some(usage),
-                            _ => {}
+                let read = reader.feed(&unit);
+                record.partial(reader.usage_so_far(), reader.hosted_calls());
+                for ev in read.events {
+                    match ev {
+                        StreamEvent::Delta { text } => record.streamed(text.chars().count()),
+                        StreamEvent::ToolCallDelta { arguments, .. } => {
+                            record.streamed(arguments.chars().count());
                         }
+                        StreamEvent::Done { usage, .. } => done = Some(usage),
+                        _ => {}
                     }
-                    if let Some(e) = error {
-                        decoding = false;
-                        if matches!(e, TranslateError::Provider { .. }) {
-                            failed = Some(e);
-                        }
+                }
+                if let Some(e) = read.error {
+                    if matches!(e, TranslateError::Provider { .. }) {
+                        failed = Some(e);
                     }
                 }
                 // What goes to the caller for this unit.
@@ -3832,7 +3965,7 @@ fn native_stream(committed: Committed, record: StreamRecord) -> Response {
                                 _ => deltas.text = Some((unit.clone(), v)),
                             }
                         }
-                        (Some(scanner), Some((native::Kind::End, _))) => {
+                        (Some(scanner), Some((native::Kind::End, mut v))) => {
                             let tail = scanner.finish();
                             if tail.blocked.is_some() {
                                 cut = true;
@@ -3847,10 +3980,42 @@ fn native_stream(committed: Committed, record: StreamRecord) -> Response {
                                         out.push(native::rewritten(api, raw, v, &text));
                                     }
                                 }
-                                out.push(unit.clone());
+                                // The events that repeat the whole text carry
+                                // the same words as the deltas did.
+                                let mut copies: Vec<String> = Vec::new();
+                                if api == NativeApi::Responses {
+                                    copies = native::repeated_slots(&mut v)
+                                        .into_iter()
+                                        .map(std::mem::take)
+                                        .collect();
+                                }
+                                if copies.is_empty() {
+                                    out.push(unit.clone());
+                                } else {
+                                    let before = copies.clone();
+                                    if scanner.redact_copies(&mut copies).is_some() {
+                                        cut = true;
+                                    } else if copies == before {
+                                        out.push(unit.clone());
+                                    } else {
+                                        let mut now = copies.into_iter();
+                                        for slot in native::repeated_slots(&mut v) {
+                                            if let Some(text) = now.next() {
+                                                *slot = text;
+                                            }
+                                        }
+                                        out.push(native::reserialized(&unit, &v));
+                                    }
+                                }
                             }
                         }
                         _ => out.push(unit.clone()),
+                    }
+                    if api == NativeApi::Responses {
+                        out = out
+                            .into_iter()
+                            .map(|piece| native::resequenced(piece, &mut last_seq))
+                            .collect();
                     }
                 } else {
                     out.push(unit);

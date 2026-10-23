@@ -5,8 +5,10 @@
 use axum::http::HeaderMap;
 use serde_json::{Map, Value};
 use ufaigw_translate::error::TranslateError;
-use ufaigw_translate::provider::{parse_responses_usage, HttpRequest, ProviderKind, Target};
-use ufaigw_translate::types::Usage;
+use ufaigw_translate::provider::{
+    parse_responses_usage, HttpRequest, ProviderKind, StreamDecoder, Target,
+};
+use ufaigw_translate::types::{StreamEvent, Usage};
 
 /// The API a request was made in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +89,24 @@ pub fn matches(api: NativeApi, kind: ProviderKind) -> bool {
 /// default of the chat adapter predates the API).
 const AZURE_RESPONSES_API_VERSION: &str = "2025-03-01-preview";
 
+/// The `api-version` for an Azure Responses call: the provider's own when it
+/// is at least the first one that has the API, else that one (a provider set
+/// up for chat completions often carries an older version). A version that
+/// is not a date (`v1`, `preview`) is the provider's choice and is kept.
+fn responses_api_version(configured: Option<&str>) -> &str {
+    let Some(version) = configured.filter(|v| !v.is_empty()) else {
+        return AZURE_RESPONSES_API_VERSION;
+    };
+    let is_date = version.len() >= 10
+        && version.as_bytes()[..4].iter().all(u8::is_ascii_digit)
+        && version.as_bytes()[4] == b'-';
+    if is_date && version[..10] < AZURE_RESPONSES_API_VERSION[..10] {
+        AZURE_RESPONSES_API_VERSION
+    } else {
+        version
+    }
+}
+
 /// The request to send to `target`: its URL for the API, its credential,
 /// the forwarded headers, and the agent's body with the model replaced.
 pub fn build(native: &Native, target: &Target) -> HttpRequest {
@@ -108,10 +128,7 @@ pub fn build(native: &Native, target: &Target) -> HttpRequest {
             if let Some(k) = &target.api_key {
                 headers.push(("api-key".to_string(), k.clone()));
             }
-            let version = target
-                .api_version
-                .as_deref()
-                .unwrap_or(AZURE_RESPONSES_API_VERSION);
+            let version = responses_api_version(target.api_version.as_deref());
             format!("{base}/openai/responses?api-version={version}")
         }
         ProviderKind::OpenAi | ProviderKind::Gemini => {
@@ -131,24 +148,52 @@ pub fn build(native: &Native, target: &Target) -> HttpRequest {
         headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
     }
     headers.extend(native.headers.iter().cloned());
-    let mut body = native.body.clone();
-    body.insert("model".to_string(), Value::String(target.model.clone()));
     HttpRequest {
         method: "POST",
         url,
         headers,
-        body: serde_json::to_vec(&body).unwrap_or_default(),
+        body: serde_json::to_vec(&WithModel {
+            body: &native.body,
+            model: &target.model,
+        })
+        .unwrap_or_default(),
+    }
+}
+
+/// The agent's body with its `model` replaced, written without copying the
+/// body: the other members are in their places, and `model` goes at the end
+/// when the body had none.
+struct WithModel<'a> {
+    body: &'a Map<String, Value>,
+    model: &'a str,
+}
+
+impl serde::Serialize for WithModel<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        for (k, v) in self.body {
+            if k == "model" {
+                map.serialize_entry(k, self.model)?;
+            } else {
+                map.serialize_entry(k, v)?;
+            }
+        }
+        if !self.body.contains_key("model") {
+            map.serialize_entry("model", self.model)?;
+        }
+        map.end()
     }
 }
 
 /// Pushes the strings of `v`: itself when a string, or the `text` of its
-/// blocks of type `block` when an array.
-fn strings_of<'a>(v: &'a mut Value, block: &str, slots: &mut Vec<&'a mut String>) {
+/// blocks whose type is one of `blocks` when an array.
+fn strings_of<'a>(v: &'a mut Value, blocks: &[&str], slots: &mut Vec<&'a mut String>) {
     match v {
         Value::String(s) => slots.push(s),
-        Value::Array(blocks) => {
-            for b in blocks {
-                if b["type"] == block {
+        Value::Array(parts) => {
+            for b in parts {
+                if b["type"].as_str().is_some_and(|t| blocks.contains(&t)) {
                     if let Some(Value::String(t)) = b.get_mut("text") {
                         slots.push(t);
                     }
@@ -159,25 +204,52 @@ fn strings_of<'a>(v: &'a mut Value, block: &str, slots: &mut Vec<&'a mut String>
     }
 }
 
+/// Pushes every string a value holds, at any depth (not the keys).
+fn leaves<'a>(v: &'a mut Value, slots: &mut Vec<&'a mut String>) {
+    match v {
+        Value::String(s) => slots.push(s),
+        Value::Array(items) => {
+            for x in items {
+                leaves(x, slots);
+            }
+        }
+        Value::Object(map) => {
+            for (_, x) in map.iter_mut() {
+                leaves(x, slots);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Pushes the string in field `key` of `v`, when it is one.
+fn field<'a>(v: &'a mut Value, key: &str, slots: &mut Vec<&'a mut String>) {
+    if let Some(Value::String(s)) = v.get_mut(key) {
+        slots.push(s);
+    }
+}
+
 /// The text of the agent's request that input guardrails read and may
-/// rewrite, in the body itself. Anthropic: `system`, the text blocks of user
-/// messages and the text of `tool_result` content. Responses: `instructions`,
-/// the input string, `input_text` parts of user, developer and system
-/// messages, and the output of function and custom tool calls. Nothing else
-/// is touched: not the assistant's own words, tool definitions, or signed
-/// thinking.
+/// rewrite, in the body itself, whatever the translator makes of it.
+/// Everything the common request of 3.0 was scanned for, and what only the
+/// agent's own body has. Anthropic: `system`, and in every message, of any
+/// role (a `system` one included), text blocks, the strings of `tool_use`
+/// input, `tool_result` content and the text of `document` sources.
+/// Responses: `instructions`, the input string, the text parts of messages of
+/// any role (assistant ones included), the arguments of function calls, the
+/// input of custom tool calls, and the output of both kinds of call, as a
+/// string or in parts. Not touched: tool definitions, signed thinking and
+/// encrypted reasoning.
 pub fn text_slots(native: &mut Native) -> Vec<&mut String> {
     let mut slots = Vec::new();
     let api = native.api;
     for (key, value) in native.body.iter_mut() {
         match (api, key.as_str()) {
-            (NativeApi::Messages, "system") => strings_of(value, "text", &mut slots),
+            (NativeApi::Messages, "system") => strings_of(value, &["text"], &mut slots),
             (NativeApi::Messages, "messages") => {
                 for m in value.as_array_mut().into_iter().flatten() {
-                    if m["role"] == "user" {
-                        if let Some(content) = m.get_mut("content") {
-                            anthropic_content(content, &mut slots);
-                        }
+                    if let Some(content) = m.get_mut("content") {
+                        anthropic_content(content, &mut slots);
                     }
                 }
             }
@@ -207,14 +279,28 @@ fn anthropic_content<'a>(content: &'a mut Value, slots: &mut Vec<&'a mut String>
         Value::Array(blocks) => {
             for b in blocks {
                 match b["type"].as_str() {
-                    Some("text") => {
-                        if let Some(Value::String(t)) = b.get_mut("text") {
-                            slots.push(t);
+                    Some("text") => field(b, "text", slots),
+                    Some("tool_use") => {
+                        if let Some(input) = b.get_mut("input") {
+                            leaves(input, slots);
                         }
                     }
                     Some("tool_result") => {
                         if let Some(c) = b.get_mut("content") {
-                            strings_of(c, "text", slots);
+                            strings_of(c, &["text"], slots);
+                        }
+                    }
+                    Some("document") => {
+                        if let Some(source) = b.get_mut("source") {
+                            match source["type"].as_str() {
+                                Some("text") => field(source, "data", slots),
+                                Some("content") => {
+                                    if let Some(c) = source.get_mut("content") {
+                                        strings_of(c, &["text"], slots);
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     _ => {}
@@ -226,60 +312,139 @@ fn anthropic_content<'a>(content: &'a mut Value, slots: &mut Vec<&'a mut String>
 }
 
 fn responses_item<'a>(item: &'a mut Value, slots: &mut Vec<&'a mut String>) {
+    const TEXT: &[&str] = &["input_text", "output_text", "text"];
     match item["type"].as_str() {
+        Some("function_call") => field(item, "arguments", slots),
+        Some("custom_tool_call") => field(item, "input", slots),
         Some("function_call_output" | "custom_tool_call_output") => {
-            if let Some(Value::String(s)) = item.get_mut("output") {
-                slots.push(s);
+            if let Some(out) = item.get_mut("output") {
+                strings_of(out, TEXT, slots);
             }
         }
         Some("message") | None => {
-            if matches!(item["role"].as_str(), Some("user" | "developer" | "system")) {
-                if let Some(content) = item.get_mut("content") {
-                    strings_of(content, "input_text", slots);
-                }
+            if let Some(content) = item.get_mut("content") {
+                strings_of(content, TEXT, slots);
             }
         }
         _ => {}
     }
 }
 
+/// The text of one item of a Responses answer that guardrails read and may
+/// rewrite: the words of the model and the arguments or input of its calls.
+fn response_item_slots<'a>(item: &'a mut Value, slots: &mut Vec<&'a mut String>) {
+    match item["type"].as_str() {
+        Some("message") => {
+            if let Some(content) = item.get_mut("content") {
+                strings_of(content, &["output_text"], slots);
+            }
+        }
+        Some("function_call") => field(item, "arguments", slots),
+        Some("custom_tool_call") => field(item, "input", slots),
+        _ => {}
+    }
+}
+
 /// The text of a whole answer that guardrails read and may rewrite: the text
-/// of the model and the arguments of the calls it makes.
+/// of the model and the inputs of the calls it makes.
 pub fn answer_slots(api: NativeApi, answer: &mut Value) -> Vec<&mut String> {
     let mut slots = Vec::new();
     match api {
         NativeApi::Messages => {
             for block in answer["content"].as_array_mut().into_iter().flatten() {
-                if block["type"] == "text" {
-                    if let Some(Value::String(text)) = block.get_mut("text") {
-                        slots.push(text);
-                    }
-                }
-            }
-        }
-        NativeApi::Responses => {
-            for item in answer["output"].as_array_mut().into_iter().flatten() {
-                match item["type"].as_str() {
-                    Some("message") => {
-                        for part in item["content"].as_array_mut().into_iter().flatten() {
-                            if part["type"] == "output_text" {
-                                if let Some(Value::String(text)) = part.get_mut("text") {
-                                    slots.push(text);
-                                }
-                            }
-                        }
-                    }
-                    Some("function_call") => {
-                        if let Some(Value::String(args)) = item.get_mut("arguments") {
-                            slots.push(args);
+                match block["type"].as_str() {
+                    Some("text") => field(block, "text", &mut slots),
+                    Some("tool_use") => {
+                        if let Some(input) = block.get_mut("input") {
+                            leaves(input, &mut slots);
                         }
                     }
                     _ => {}
                 }
             }
         }
+        NativeApi::Responses => {
+            for item in answer["output"].as_array_mut().into_iter().flatten() {
+                response_item_slots(item, &mut slots);
+            }
+        }
     }
     slots
+}
+
+/// The full-text fields of a Responses stream event that repeat what the
+/// deltas carried: the `.done` events and the final response. Empty for any
+/// other event.
+pub fn repeated_slots(v: &mut Value) -> Vec<&mut String> {
+    let mut slots = Vec::new();
+    let ty = v["type"].as_str().unwrap_or("").to_string();
+    match ty.as_str() {
+        "response.output_text.done" => field(v, "text", &mut slots),
+        "response.function_call_arguments.done" => field(v, "arguments", &mut slots),
+        "response.custom_tool_call_input.done" => field(v, "input", &mut slots),
+        "response.content_part.done" => {
+            if let Some(part) = v.get_mut("part") {
+                field(part, "text", &mut slots);
+            }
+        }
+        "response.output_item.done" => {
+            if let Some(item) = v.get_mut("item") {
+                response_item_slots(item, &mut slots);
+            }
+        }
+        "response.completed" | "response.incomplete" => {
+            if let Some(items) = v
+                .get_mut("response")
+                .and_then(|r| r.get_mut("output"))
+                .and_then(Value::as_array_mut)
+            {
+                for item in items {
+                    response_item_slots(item, &mut slots);
+                }
+            }
+        }
+        _ => {}
+    }
+    slots
+}
+
+/// What the agent's own body is worth as input, in characters of text and a
+/// count of images and documents: everything in it, whatever translation would
+/// have dropped. Encoded media are counted as one each, not by their size.
+pub fn input_size(native: &Native) -> (usize, u64) {
+    fn walk(v: &Value, chars: &mut usize, media: &mut u64) {
+        match v {
+            Value::String(s) => *chars += s.chars().count(),
+            Value::Array(a) => a.iter().for_each(|x| walk(x, chars, media)),
+            Value::Object(m) => {
+                let ty = m.get("type").and_then(Value::as_str);
+                let inline = m.get("source").is_some_and(|s| s["type"] == "base64")
+                    || m.get("image_url")
+                        .and_then(Value::as_str)
+                        .is_some_and(|u| u.starts_with("data:"))
+                    || m.get("file_data").is_some();
+                if matches!(
+                    ty,
+                    Some("image" | "input_image" | "document" | "input_file")
+                ) && inline
+                {
+                    *media += 1;
+                    return;
+                }
+                if matches!(ty, Some("image" | "input_image")) {
+                    *media += 1;
+                }
+                m.values().for_each(|x| walk(x, chars, media));
+            }
+            _ => {}
+        }
+    }
+    let (mut chars, mut media) = (0, 0);
+    native
+        .body
+        .values()
+        .for_each(|v| walk(v, &mut chars, &mut media));
+    (chars, media)
 }
 
 /// The usage of a whole answer, read from its bytes; `None` when it has none.
@@ -298,6 +463,22 @@ pub fn usage_of(api: NativeApi, body: &[u8]) -> Option<Usage> {
             })
         }
     }
+}
+
+/// The calls of hosted tools (web searches) a whole answer reports.
+pub fn hosted_calls_of(api: NativeApi, body: &[u8]) -> u32 {
+    let Ok(v) = serde_json::from_slice::<Value>(body) else {
+        return 0;
+    };
+    let n = match api {
+        NativeApi::Messages => v["usage"]["server_tool_use"]["web_search_requests"]
+            .as_u64()
+            .unwrap_or(0),
+        NativeApi::Responses => v["output"].as_array().map_or(0, |o| {
+            o.iter().filter(|i| i["type"] == "web_search_call").count() as u64
+        }),
+    };
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// The message of a provider's error body, for the gateway's own record.
@@ -336,9 +517,16 @@ pub fn keep_response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(Strin
 /// Splits the complete SSE events off the front of `buf`: each is returned
 /// with its own delimiter, byte for byte. A partial event stays in `buf`.
 pub fn split_events(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    split_events_from(buf, 0)
+}
+
+/// [`split_events`] for a buffer whose first `from` bytes are known to hold
+/// no delimiter (it may start in the last three of them): a partial event is
+/// not searched again each time more of it arrives.
+pub fn split_events_from(buf: &mut Vec<u8>, mut from: usize) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     loop {
-        let found = (0..buf.len()).find_map(|i| {
+        let found = (from..buf.len()).find_map(|i| {
             if buf[i..].starts_with(b"\n\n") {
                 Some(i + 2)
             } else if buf[i..].starts_with(b"\r\n\r\n") {
@@ -349,8 +537,13 @@ pub fn split_events(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
         });
         let Some(end) = found else { return out };
         out.push(buf.drain(..end).collect());
+        from = 0;
     }
 }
+
+/// The largest event a pass-through stream may hold while it is read: that
+/// of the translated path's parser.
+pub const MAX_EVENT_BYTES: usize = ufaigw_translate::sse::MAX_EVENT_BYTES;
 
 /// What an event of a pass-through stream is, for the guardrails.
 #[derive(Debug, Clone, PartialEq)]
@@ -392,7 +585,7 @@ pub fn kind_of(api: NativeApi, v: &Value) -> Kind {
         },
         NativeApi::Responses => match ty {
             "response.output_text.delta" => Kind::Text,
-            "response.function_call_arguments.delta" => {
+            "response.function_call_arguments.delta" | "response.custom_tool_call_input.delta" => {
                 Kind::Tool(u32::try_from(v["output_index"].as_u64().unwrap_or(0)).unwrap_or(0))
             }
             t if t.ends_with(".done")
@@ -435,6 +628,11 @@ pub fn rewritten(api: NativeApi, event: &[u8], v: &Value, text: &str) -> Vec<u8>
     if let Some(slot) = text_slot(api, &mut v) {
         *slot = Value::String(text.to_string());
     }
+    reserialized(event, &v)
+}
+
+/// `v` as the event `event` was: the same `event:` line, one `data:` line.
+pub fn reserialized(event: &[u8], v: &Value) -> Vec<u8> {
     let name = std::str::from_utf8(event)
         .ok()
         .and_then(|t| t.lines().find_map(|l| l.strip_prefix("event:")))
@@ -445,9 +643,32 @@ pub fn rewritten(api: NativeApi, event: &[u8], v: &Value, text: &str) -> Vec<u8>
     }
     out.push_str(&format!(
         "data: {}\n\n",
-        serde_json::to_string(&v).unwrap_or_default()
+        serde_json::to_string(v).unwrap_or_default()
     ));
     out.into_bytes()
+}
+
+/// A Responses event whose `sequence_number` does not rise past the last one
+/// let out (`last`) is given the next number: text held back and let out
+/// again is a copy of an earlier event. Events that already rise, and events
+/// with no number, are as they were.
+pub fn resequenced(event: Vec<u8>, last: &mut Option<u64>) -> Vec<u8> {
+    let Some(mut v) = data_of(&event) else {
+        return event;
+    };
+    let Some(seq) = v["sequence_number"].as_u64() else {
+        return event;
+    };
+    let next = match *last {
+        Some(l) if seq <= l => l + 1,
+        _ => seq,
+    };
+    *last = Some(next);
+    if next == seq {
+        return event;
+    }
+    v["sequence_number"] = Value::from(next);
+    reserialized(&event, &v)
 }
 
 /// The API's own error event.
@@ -463,6 +684,253 @@ pub fn error_event(api: NativeApi, message: &str) -> String {
         }),
     };
     format!("event: error\ndata: {data}\n\n")
+}
+
+/// What reads a pass-through stream for what the gateway records: the usage,
+/// the characters streamed, the end of the answer and the provider's own
+/// error. It reads the events, never the bytes, and relays nothing: the
+/// stream is the provider's own. Blocks and events it does not know (server
+/// tools, search results, citations, whatever comes next) are skipped; they
+/// are the provider's business and never end the reading.
+pub struct StreamReader {
+    decoder: StreamDecoder,
+    api: NativeApi,
+    buf: Vec<u8>,
+    /// Content blocks (by index) of a type the common decoder cannot hold.
+    skipped: std::collections::HashSet<u64>,
+    /// The decoder met an error: nothing more is read.
+    stopped: bool,
+    /// The provider's last event of the answer was seen.
+    ended: bool,
+    overflowed: bool,
+    hosted: u32,
+}
+
+/// What a feed of bytes to a [`StreamReader`] came to.
+#[derive(Default)]
+pub struct Read {
+    pub events: Vec<StreamEvent>,
+    /// The provider's own error event, or an event the decoder could not read.
+    pub error: Option<TranslateError>,
+}
+
+impl StreamReader {
+    pub fn new(api: NativeApi) -> Self {
+        Self {
+            decoder: match api {
+                NativeApi::Responses => StreamDecoder::responses(),
+                NativeApi::Messages => StreamDecoder::new(ProviderKind::Anthropic),
+            },
+            api,
+            buf: Vec::new(),
+            skipped: std::collections::HashSet::new(),
+            stopped: false,
+            ended: false,
+            overflowed: false,
+            hosted: 0,
+        }
+    }
+
+    /// Whether the provider's final event of the answer has been seen
+    /// (`message_stop`, `response.completed`, a failure or an error).
+    pub fn ended(&self) -> bool {
+        self.ended
+    }
+
+    /// The calls of hosted tools (web searches) the provider reported so far.
+    pub fn hosted_calls(&self) -> u32 {
+        self.hosted
+    }
+
+    /// The usage reported so far.
+    pub fn usage_so_far(&self) -> Option<Usage> {
+        self.decoder.usage_so_far()
+    }
+
+    /// Whether an event grew past the limit: nothing more is read.
+    pub fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    pub fn feed(&mut self, chunk: &[u8]) -> Read {
+        let mut read = Read::default();
+        if self.overflowed {
+            return read;
+        }
+        let from = self.buf.len().saturating_sub(3);
+        self.buf.extend_from_slice(chunk);
+        for event in split_events_from(&mut self.buf, from) {
+            self.event(&event, &mut read);
+        }
+        if self.buf.len() > MAX_EVENT_BYTES {
+            self.overflowed = true;
+            self.buf = Vec::new();
+        }
+        read
+    }
+
+    fn hosted_of(&mut self, usage: &Value) {
+        if let Some(n) = usage["server_tool_use"]["web_search_requests"].as_u64() {
+            self.hosted = u32::try_from(n).unwrap_or(u32::MAX);
+        }
+    }
+
+    fn event(&mut self, event: &[u8], read: &mut Read) {
+        // What is not JSON is not an event of the answer.
+        let Some(v) = data_of(event) else { return };
+        let ty = v["type"].as_str().unwrap_or("");
+        match (self.api, ty) {
+            (NativeApi::Messages, "message_start") => {
+                self.hosted_of(&v["message"]["usage"]);
+            }
+            (NativeApi::Messages, "message_delta") => {
+                self.hosted_of(&v["usage"]);
+            }
+            (NativeApi::Responses, "response.output_item.done") => {
+                if v["item"]["type"] == "web_search_call" {
+                    self.hosted += 1;
+                }
+            }
+            _ => {}
+        }
+        match (self.api, ty) {
+            (NativeApi::Messages, "content_block_start") => {
+                let known = matches!(
+                    v["content_block"]["type"].as_str(),
+                    Some("text" | "thinking" | "redacted_thinking" | "tool_use")
+                );
+                if !known {
+                    self.skipped.extend(v["index"].as_u64());
+                    return;
+                }
+            }
+            (NativeApi::Messages, "content_block_delta" | "content_block_stop") => {
+                if v["index"]
+                    .as_u64()
+                    .is_some_and(|i| self.skipped.contains(&i))
+                {
+                    return;
+                }
+            }
+            (NativeApi::Messages, "message_stop" | "error") => self.ended = true,
+            (
+                NativeApi::Responses,
+                "response.completed" | "response.incomplete" | "response.failed" | "error",
+            ) => {
+                self.ended = true;
+                let searches = v["response"]["output"].as_array().map_or(0, |o| {
+                    o.iter().filter(|i| i["type"] == "web_search_call").count()
+                });
+                self.hosted = self.hosted.max(u32::try_from(searches).unwrap_or(u32::MAX));
+            }
+            _ => {}
+        }
+        if self.stopped {
+            return;
+        }
+        match self.decoder.feed(event) {
+            Ok(events) => {
+                read.events.extend(events);
+                if let Some(e) = self.decoder.take_error() {
+                    self.stopped = true;
+                    read.error = Some(e);
+                }
+            }
+            Err(e) => {
+                self.stopped = true;
+                read.error = Some(e);
+            }
+        }
+    }
+}
+
+const STATE_REFUSAL: &str =
+    "is not supported through the gateway: it reads or writes state kept in the shared provider account.";
+
+/// Keys whose contents are the caller's own schemas, not the request's.
+const OPAQUE: &[&str] = &["parameters", "input_schema", "schema", "format"];
+
+/// Looks for a `file_id` (a string) at any depth outside the schemas.
+fn has_file_id(v: &Value) -> bool {
+    match v {
+        Value::Object(map) => map.iter().any(|(k, x)| {
+            if OPAQUE.contains(&k.as_str()) {
+                return false;
+            }
+            (k == "file_id" && x.is_string()) || has_file_id(x)
+        }),
+        Value::Array(items) => items.iter().any(has_file_id),
+        _ => false,
+    }
+}
+
+fn set(v: Option<&Value>) -> bool {
+    !matches!(v, None | Some(Value::Null) | Some(Value::Bool(false)))
+}
+
+/// The hosted tools of the Responses API other than the web search: they run
+/// in the provider's account, on its files, vector stores and connectors, and
+/// are billed per call.
+fn hosted_tool(ty: &str) -> bool {
+    [
+        "file_search",
+        "code_interpreter",
+        "computer",
+        "mcp",
+        "image_generation",
+    ]
+    .iter()
+    .any(|p| ty == *p || ty.starts_with(&format!("{p}_")))
+}
+
+/// The message that refuses a pass-through request which reads or writes the
+/// state of the provider account the gateway holds a credential for, naming
+/// the field, or `None` when there is nothing of the kind in it. What
+/// Claude Code and Codex send is not in it: Codex sends `store: false`, and
+/// the web search tools of both are the provider's own business.
+pub fn stored_state(native: &Native) -> Option<String> {
+    let body = &native.body;
+    let refuse = |field: &str| Some(format!("'{field}' {STATE_REFUSAL}"));
+    match native.api {
+        NativeApi::Responses => {
+            if body.get("store") == Some(&Value::Bool(true)) {
+                return refuse("store");
+            }
+            for field in ["previous_response_id", "conversation", "background"] {
+                if set(body.get(field)) {
+                    return refuse(field);
+                }
+            }
+            for tool in body
+                .get("tools")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if set(tool.get("vector_store_ids")) {
+                    return refuse("vector_store_ids");
+                }
+                if let Some(ty) = tool["type"].as_str().filter(|t| hosted_tool(t)) {
+                    return refuse(&format!("tools[].type {ty}"));
+                }
+            }
+        }
+        NativeApi::Messages => {
+            for field in ["container", "mcp_servers"] {
+                let given = match body.get(field) {
+                    Some(Value::Array(a)) => !a.is_empty(),
+                    other => set(other),
+                };
+                if given {
+                    return refuse(field);
+                }
+            }
+        }
+    }
+    body.iter()
+        .filter(|(k, _)| !OPAQUE.contains(&k.as_str()))
+        .any(|(_, v)| has_file_id(v))
+        .then(|| format!("'file_id' {STATE_REFUSAL}"))
 }
 
 #[cfg(test)]
@@ -601,5 +1069,127 @@ mod tests {
             (7, 100, 20)
         );
         assert_eq!(usage_of(NativeApi::Messages, b"{}"), None);
+    }
+
+    #[test]
+    fn the_reader_skips_what_it_does_not_know_and_still_ends_on_the_last_event() {
+        let mut r = StreamReader::new(NativeApi::Messages);
+        let events = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":1}}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"mcp_tool_use\",\"id\":\"x\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\n",
+            ": a comment\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"output_tokens\":5}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        );
+        // Fed in pieces that split events.
+        let mut got = Read::default();
+        for chunk in events.as_bytes().chunks(37) {
+            let read = r.feed(chunk);
+            got.events.extend(read.events);
+            assert!(read.error.is_none());
+        }
+        assert!(r.ended());
+        let done = got.events.iter().find_map(|e| match e {
+            StreamEvent::Done { usage, .. } => *usage,
+            _ => None,
+        });
+        let u = done.unwrap();
+        assert_eq!((u.input_tokens, u.output_tokens), (7, 5));
+    }
+
+    #[test]
+    fn a_reader_passes_the_providers_own_error_on() {
+        let mut r = StreamReader::new(NativeApi::Messages);
+        let read = r.feed(
+            b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+        );
+        assert!(matches!(read.error, Some(TranslateError::Provider { .. })));
+        assert!(r.ended());
+    }
+
+    #[test]
+    fn a_sequence_number_never_repeats_or_goes_back() {
+        let ev = |n: u64| {
+            format!("event: e\ndata: {{\"type\":\"e\",\"sequence_number\":{n}}}\n\n").into_bytes()
+        };
+        let mut last = None;
+        let got: Vec<u64> = [1, 2, 2, 3, 4, 9]
+            .into_iter()
+            .map(|n| {
+                data_of(&resequenced(ev(n), &mut last)).unwrap()["sequence_number"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(got, [1, 2, 3, 4, 5, 9]);
+    }
+
+    #[test]
+    fn state_of_the_provider_account_is_found_and_the_agents_own_are_not() {
+        let check = |api, body: Value| {
+            stored_state(&Native {
+                api,
+                body: body.as_object().unwrap().clone(),
+                headers: Vec::new(),
+                query: None,
+                parse_error: None,
+            })
+        };
+        let r = NativeApi::Responses;
+        assert!(check(r, serde_json::json!({"store": true})).is_some());
+        assert!(check(
+            r,
+            serde_json::json!({"store": false, "include": ["reasoning.encrypted_content"],
+            "tools": [{"type": "web_search"}, {"type": "tool_search"}, {"type": "custom"},
+                      {"type": "function", "parameters": {"properties": {"file_id": {}}}}]})
+        )
+        .is_none());
+        assert!(check(r, serde_json::json!({"tools": [{"type": "mcp"}]})).is_some());
+        let m = NativeApi::Messages;
+        assert!(check(m, serde_json::json!({"container": "c"})).is_some());
+        assert!(check(m, serde_json::json!({"container": null, "mcp_servers": []})).is_none());
+        assert!(check(
+            m,
+            serde_json::json!({"tools": [{"type": "web_search_20250305"}]})
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn azure_gets_a_version_that_has_the_responses_api() {
+        assert_eq!(responses_api_version(None), "2025-03-01-preview");
+        assert_eq!(
+            responses_api_version(Some("2024-06-01")),
+            "2025-03-01-preview"
+        );
+        assert_eq!(
+            responses_api_version(Some("2025-03-01-preview")),
+            "2025-03-01-preview"
+        );
+        assert_eq!(
+            responses_api_version(Some("2025-04-01-preview")),
+            "2025-04-01-preview"
+        );
+        assert_eq!(responses_api_version(Some("v1")), "v1");
+        let mut t = target(ProviderKind::Azure);
+        t.api_version = Some("2023-05-15".into());
+        let r = build(&native(NativeApi::Responses, None), &t);
+        assert!(
+            r.url.ends_with("api-version=2025-03-01-preview"),
+            "{}",
+            r.url
+        );
+    }
+
+    #[test]
+    fn a_body_without_a_model_gets_one_and_the_rest_keeps_its_place() {
+        let mut n = native(NativeApi::Messages, None);
+        n.body.shift_remove("model");
+        let r = build(&n, &target(ProviderKind::Anthropic));
+        assert_eq!(
+            String::from_utf8(r.body).unwrap(),
+            r#"{"zeta":1,"alpha":[true],"model":"m"}"#
+        );
     }
 }

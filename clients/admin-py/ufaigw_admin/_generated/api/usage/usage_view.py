@@ -15,6 +15,7 @@ def _get_kwargs(
     from_: str | Unset = UNSET,
     to: str | Unset = UNSET,
     group: str | Unset = UNSET,
+    agent_session: str | Unset = UNSET,
 ) -> dict[str, Any]:
 
     params: dict[str, Any] = {}
@@ -24,6 +25,8 @@ def _get_kwargs(
     params["to"] = to
 
     params["group"] = group
+
+    params["agent_session"] = agent_session
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -87,6 +90,7 @@ def sync_detailed(
     from_: str | Unset = UNSET,
     to: str | Unset = UNSET,
     group: str | Unset = UNSET,
+    agent_session: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | UsagePage]:
     """Sums of the calls in a range of days, by day, model, key, user or team.
 
@@ -104,6 +108,7 @@ def sync_detailed(
         from_ (str | Unset):
         to (str | Unset):
         group (str | Unset):
+        agent_session (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -117,6 +122,7 @@ def sync_detailed(
         from_=from_,
         to=to,
         group=group,
+        agent_session=agent_session,
     )
 
     response = client.get_httpx_client().request(
@@ -132,6 +138,7 @@ def sync(
     from_: str | Unset = UNSET,
     to: str | Unset = UNSET,
     group: str | Unset = UNSET,
+    agent_session: str | Unset = UNSET,
 ) -> ApiErrorBody | UsagePage | None:
     """Sums of the calls in a range of days, by day, model, key, user or team.
 
@@ -149,6 +156,7 @@ def sync(
         from_ (str | Unset):
         to (str | Unset):
         group (str | Unset):
+        agent_session (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -163,6 +171,7 @@ def sync(
         from_=from_,
         to=to,
         group=group,
+        agent_session=agent_session,
     ).parsed
 
 
@@ -172,6 +181,7 @@ async def asyncio_detailed(
     from_: str | Unset = UNSET,
     to: str | Unset = UNSET,
     group: str | Unset = UNSET,
+    agent_session: str | Unset = UNSET,
 ) -> Response[ApiErrorBody | UsagePage]:
     """Sums of the calls in a range of days, by day, model, key, user or team.
 
@@ -189,6 +199,7 @@ async def asyncio_detailed(
         from_ (str | Unset):
         to (str | Unset):
         group (str | Unset):
+        agent_session (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -202,6 +213,7 @@ async def asyncio_detailed(
         from_=from_,
         to=to,
         group=group,
+        agent_session=agent_session,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -215,6 +227,7 @@ async def asyncio(
     from_: str | Unset = UNSET,
     to: str | Unset = UNSET,
     group: str | Unset = UNSET,
+    agent_session: str | Unset = UNSET,
 ) -> ApiErrorBody | UsagePage | None:
     """Sums of the calls in a range of days, by day, model, key, user or team.
 
@@ -232,6 +245,7 @@ async def asyncio(
         from_ (str | Unset):
         to (str | Unset):
         group (str | Unset):
+        agent_session (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -247,5 +261,6 @@ async def asyncio(
             from_=from_,
             to=to,
             group=group,
+            agent_session=agent_session,
         )
     ).parsed

@@ -340,6 +340,12 @@ impl StreamDecoder {
         }]
     }
 
+    /// The usage reported so far (the input side usually comes first), for a
+    /// stream that ends before its last event.
+    pub fn usage_so_far(&self) -> Option<Usage> {
+        self.state.usage()
+    }
+
     /// Returns the error that ended the stream, once, if `feed` did not
     /// return it directly.
     pub fn take_error(&mut self) -> Option<TranslateError> {

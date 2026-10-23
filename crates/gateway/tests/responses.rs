@@ -4,7 +4,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{harness_translating, post_to, seed_team, seed_user, Harness};
+use common::{harness, harness_translating, post_to, seed_team, seed_user, Harness};
 use serde_json::{json, Value};
 use ufaigw_gateway::cache::{CacheScope, RouteCache};
 use ufaigw_gateway::store::{NewGuardrail, RouteSettings, TargetsInput};
@@ -632,4 +632,104 @@ async fn the_official_openai_sdk_parses_the_stream() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+// ------------------------------------------------------------------
+// The same questions on the production harness: an OpenAI provider is
+// passed through, so these are what a Codex user gets.
+
+fn responses_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_raw(
+        r#"{"id":"resp_1","object":"response","status":"completed","model":"m","output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"write to ada@example.com now"}]}],"usage":{"input_tokens":1,"output_tokens":2}}"#,
+        "application/json",
+    )
+}
+
+#[tokio::test]
+async fn refusals_are_openai_errors_and_no_provider_is_called_on_pass_through() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(responses_ok())
+        .mount(&h.upstream)
+        .await;
+    let cases = [
+        (json!({"store":true}), "store"),
+        (
+            json!({"previous_response_id":"resp_1"}),
+            "previous_response_id",
+        ),
+        (json!({"conversation":"c"}), "conversation"),
+        (json!({"background":true}), "background"),
+    ];
+    for (extra, want) in cases {
+        let mut body = json!({"model":"p/m","input":"x"});
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        let (status, _, text) = responses(&h, &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {text}");
+        let v = json_of(&text);
+        assert_eq!(v["error"]["type"], "invalid_request_error", "{text}");
+        assert!(
+            v["error"]["message"].as_str().unwrap().contains(want),
+            "{text}"
+        );
+    }
+    let (s, _, text) = post_to(&h.app, "/v1/responses", &[], BODY).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(json_of(&text)["error"]["message"].is_string());
+    let (s, _, _) = responses(&h, &json!({"model":"p/nope","input":"x"})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_guardrail_blocks_the_input_of_a_response_call_on_pass_through() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(responses_ok())
+        .mount(&h.upstream)
+        .await;
+    guardrail(
+        &h,
+        "no-secrets",
+        json!([{ "id": "w", "matcher": { "keywords": { "words": ["swordfish"] } },
+                 "action": "block", "directions": "input" }]),
+    )
+    .await;
+    for input in [
+        json!("the word is swordfish"),
+        json!([{"role":"user","content":[{"type":"input_text","text":"the word is swordfish"}]}]),
+        json!([{"role":"user","content":"x"},
+               {"type":"function_call","call_id":"c","name":"w","arguments":"{}"},
+               {"type":"function_call_output","call_id":"c","output":"swordfish"}]),
+    ] {
+        let (status, _, body) =
+            responses(&h, &json!({"model":"p/m","store":false,"input":input})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let v = json_of(&body);
+        assert_eq!(v["error"]["code"], "guardrail_blocked");
+        assert!(!body.contains("swordfish"));
+    }
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_guardrail_redacts_the_output_of_a_response_call_on_pass_through() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(responses_ok())
+        .mount(&h.upstream)
+        .await;
+    guardrail(
+        &h,
+        "pii",
+        json!([{ "id": "email", "matcher": { "pii": ["EMAIL"] },
+                 "action": "redact", "directions": "output" }]),
+    )
+    .await;
+    let (status, _, body) = responses(&h, &json!({"model":"p/m","store":false,"input":"x"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("ada@example.com"), "{body}");
+    assert_eq!(json_of(&body)["id"], "resp_1");
 }

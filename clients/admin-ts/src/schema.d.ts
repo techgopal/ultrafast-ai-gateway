@@ -11533,6 +11533,8 @@ export interface operations {
                 to?: string;
                 /** @description `day` (the default), `model`, `key`, `user`, `team`, or `tag:<name>` to group by the value of that tag (calls without it are `(none)`). */
                 group?: string;
+                /** @description Only calls of this agent session: the id a coding agent (Claude Code, Codex) sends with its requests, as `agent_session` shows it in the logs. Combines with the other parameters. */
+                agent_session?: string;
             };
             header?: never;
             path?: never;

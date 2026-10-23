@@ -377,6 +377,7 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         projected_bytes: None,
     };
     let mut record = RequestRecord {
+        hosted_calls: 0,
         tags: Default::default(),
         key_id: Some(1),
         user_id: None,
@@ -586,6 +587,7 @@ async fn a_budget_refusal_is_counted() {
         StatusCode::OK
     );
     let record = RequestRecord {
+        hosted_calls: 0,
         tags: Default::default(),
         key_id: Some(1),
         user_id: None,

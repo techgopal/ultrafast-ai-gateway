@@ -72,6 +72,9 @@ pub struct RequestRecord {
     /// answer ended is recorded as 499.
     pub status: u16,
     pub usage: Option<Usage>,
+    /// Calls of the provider's hosted tools (web searches) the answer
+    /// reports, which are priced apart from the tokens.
+    pub hosted_calls: u32,
     pub attempts: Vec<Attempt>,
     /// Answered from the response cache: the usage is that of the answer
     /// that was kept, and the call cost nothing.
@@ -156,6 +159,8 @@ pub struct Scope {
     stream_input: Option<u64>,
     /// Characters of answer streamed to the caller so far.
     streamed_chars: u64,
+    /// The usage the provider had reported when the stream ended early.
+    partial_usage: Option<Usage>,
     /// Where a copy of the record goes to become a trace, when enabled.
     otel: Option<Exporter>,
     /// Counts the call toward error rates, when alert rules exist.
@@ -186,12 +191,14 @@ impl Scope {
             metrics: None,
             stream_input: None,
             streamed_chars: 0,
+            partial_usage: None,
             otel: None,
             alerts: None,
             resolved: false,
             resolved_route: None,
             cut_short: false,
             record: Some(RequestRecord {
+                hosted_calls: 0,
                 key_id,
                 user_id,
                 team_id,
@@ -413,6 +420,20 @@ impl Scope {
         self.streamed_chars = self.streamed_chars.saturating_add(chars as u64);
     }
 
+    /// What the provider has reported of a stream so far. If the stream ends
+    /// early (a guardrail cut it, the caller left), this is what is recorded,
+    /// as read and not as an estimate.
+    pub fn partial_usage(&mut self, usage: Option<Usage>) {
+        if usage.is_some() {
+            self.partial_usage = usage;
+        }
+    }
+
+    /// The calls of hosted tools (web searches) the provider reports.
+    pub fn hosted_calls(&mut self, calls: u32) {
+        self.record_mut().hosted_calls = calls;
+    }
+
     pub fn usage(&mut self, usage: Option<Usage>) {
         // The tokens the call used replace the estimate it was charged.
         if let (Some(permit), Some(u)) = (self.permit.as_mut(), usage) {
@@ -500,6 +521,20 @@ impl Scope {
             // A stream that ended without the provider's report, because the
             // caller left or an error came after content, was still paid for:
             // it is charged an estimate, marked as one.
+            if let (None, Some(partial)) = (record.usage, self.partial_usage) {
+                let ended_early = status == CALLER_GONE
+                    || self.cut_short
+                    || record
+                        .attempts
+                        .last()
+                        .is_some_and(|a| a.outcome != AttemptOutcome::Ok);
+                if ended_early {
+                    record.usage = Some(partial);
+                    if let Some(permit) = self.permit.as_mut() {
+                        permit.settle(partial.total_volume());
+                    }
+                }
+            }
             if let (None, Some(input)) = (record.usage, self.stream_input) {
                 let ended_early = status == CALLER_GONE
                     || self.cut_short

@@ -272,6 +272,7 @@ mod tests {
 
     fn base() -> RequestRecord {
         RequestRecord {
+            hosted_calls: 0,
             key_id: Some(7),
             user_id: Some(1),
             team_id: None,

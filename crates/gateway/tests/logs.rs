@@ -20,6 +20,7 @@ use wiremock::{Mock, ResponseTemplate};
 
 fn record(requested: &str) -> RequestRecord {
     RequestRecord {
+        hosted_calls: 0,
         tags: Default::default(),
         key_id: Some(1),
         user_id: Some(2),

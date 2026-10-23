@@ -1903,3 +1903,46 @@ async fn templates_travel_in_the_configuration_file_with_all_their_versions() {
         1
     );
 }
+
+// ------------------------------------------------- pass-through (production)
+
+#[tokio::test]
+async fn on_the_production_harness_chat_renders_templates_and_responses_refuses_them() {
+    // An OpenAI provider passes /v1/responses through, which has no template
+    // to render; /v1/chat/completions is translated as ever.
+    let sink = Arc::new(MemorySink::default());
+    let w = world_of(org_tweaked(Some(sink.clone()), |_| {}).await, sink).await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "r", "object": "response", "status": "completed", "model": "m",
+            "output": [], "usage": { "input_tokens": 1, "output_tokens": 1 }
+        })))
+        .mount(&w.upstream)
+        .await;
+    let (_, _maya) = greet(&w).await;
+    let (status, v) = w
+        .chat(json!({
+            "prompt": { "id": "greet", "variables": { "tone": "calm", "name": "Ada" } },
+            "messages": [{ "role": "user", "content": "next" }],
+        }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        w.sent().await.last().unwrap()["messages"][1],
+        json!({ "role": "user", "content": "Hello Ada" })
+    );
+    let before = w.sent().await.len();
+    let (status, v) = w
+        .responses(json!({
+            "prompt": { "id": "greet", "variables": { "tone": "calm", "name": "Ada" } },
+            "input": "next",
+        }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(
+        v["error"]["message"],
+        "Prompt templates cannot be used with a pass-through call."
+    );
+    assert_eq!(w.sent().await.len(), before);
+}

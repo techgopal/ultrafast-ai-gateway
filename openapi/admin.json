@@ -10090,6 +10090,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "agent_session",
+            "in": "query",
+            "description": "Only calls of this agent session: the id a coding agent (Claude Code, Codex) sends with its requests, as `agent_session` shows it in the logs. Combines with the other parameters.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

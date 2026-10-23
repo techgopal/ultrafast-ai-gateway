@@ -237,6 +237,7 @@ async fn spent_is_shown_only_where_the_caller_may_see_it() {
     }
     // Everything lena's key spent is counted by every budget.
     let record = ufaigw_gateway::telemetry::RequestRecord {
+        hosted_calls: 0,
         tags: Default::default(),
         key_id: Some(w.lena_key),
         user_id: Some(w.org.lena),

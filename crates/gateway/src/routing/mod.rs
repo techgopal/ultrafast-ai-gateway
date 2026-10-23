@@ -113,6 +113,10 @@ pub struct Exhausted<E> {
     pub retry_after: Option<StdDuration>,
     /// The last refusal, when every try was a refusal of the credential.
     pub refused: Option<E>,
+    /// The error of the last try made, when that try failed in a way
+    /// another try could help (it is the provider's own answer to relay when
+    /// it has no one else to blame).
+    pub last_retryable: Option<E>,
 }
 
 /// The wait before retry number `retry` (0 for the first): up to 250 ms,
@@ -145,6 +149,7 @@ where
     let (mut attempts, mut rate_limited, mut refusals) = (0u32, 0u32, 0u32);
     let mut retry_after_max: Option<StdDuration> = None;
     let mut last_refusal: Option<E> = None;
+    let mut last_retryable: Option<E> = None;
     let mut first_unsupported: Option<E> = None;
     for candidate in plan {
         let t = &candidate.target;
@@ -215,18 +220,23 @@ where
                     health.report(t, false, true, status, Instant::now(), &settings.breaker);
                     refusals += 1;
                     last_refusal = Some(error);
+                    last_retryable = None;
                     break;
                 }
                 Ok(Err(Failure::Retryable {
+                    error,
                     status,
                     retry_after,
-                    ..
                 })) => {
                     asked = retry_after;
+                    last_retryable = Some(error);
                     status
                 }
                 // Out of time: a timeout is a retryable failure of the target.
-                Err(_) => None,
+                Err(_) => {
+                    last_retryable = None;
+                    None
+                }
             };
             if status == Some(429) {
                 rate_limited += 1;
@@ -266,6 +276,7 @@ where
         } else {
             None
         },
+        last_retryable,
     }))
 }
 

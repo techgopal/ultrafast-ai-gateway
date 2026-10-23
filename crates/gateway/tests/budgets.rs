@@ -387,6 +387,7 @@ impl World {
 
     fn record(&self) -> RequestRecord {
         RequestRecord {
+            hosted_calls: 0,
             tags: Default::default(),
             key_id: Some(self.key_id),
             user_id: Some(self.user),

@@ -12,7 +12,7 @@ use time::format_description::FormatItem;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime};
 
-use super::logs::store_scope;
+use super::logs::{agent_session_param, store_scope};
 use super::{require, ApiError, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action};
@@ -30,6 +30,7 @@ pub struct UsageQuery {
     from: Option<String>,
     to: Option<String>,
     group: Option<String>,
+    agent_session: Option<String>,
 }
 
 /// Sums over one group of calls.
@@ -118,6 +119,7 @@ fn day(raw: &str) -> Option<Date> {
         ("from" = Option<String>, Query, description = "First day, `YYYY-MM-DD` (UTC). 29 days before `to` when left out."),
         ("to" = Option<String>, Query, description = "Last day, `YYYY-MM-DD` (UTC), counted whole. Today when left out."),
         ("group" = Option<String>, Query, description = "`day` (the default), `model`, `key`, `user`, `team`, or `tag:<name>` to group by the value of that tag (calls without it are `(none)`)."),
+        ("agent_session" = Option<String>, Query, description = "Only calls of this agent session: the id a coding agent (Claude Code, Codex) sends with its requests, as `agent_session` shows it in the logs. Combines with the other parameters."),
     ),
     responses(
         (status = 200, description = "The sums, one row per group, and their total.", body = super::openapi::UsagePage),
@@ -169,6 +171,13 @@ pub async fn usage_view(
     };
     let from = date("from", &q.from);
     let to = date("to", &q.to);
+    let agent_session = match agent_session_param(q.agent_session.as_deref()) {
+        Ok(session) => session,
+        Err(message) => {
+            fields.insert("agent_session".to_string(), message.to_string());
+            None
+        }
+    };
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
@@ -208,7 +217,13 @@ pub async fn usage_view(
 
     let sums = state
         .store
-        .usage(&store_scope(list_scope(me)), &from, &to, group)
+        .usage_in_session(
+            &store_scope(list_scope(me)),
+            &from,
+            &to,
+            group,
+            agent_session.as_deref(),
+        )
         .await?;
     let mut total = UsageRow {
         group: "total".into(),

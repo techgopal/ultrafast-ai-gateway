@@ -790,7 +790,18 @@ async fn a_caller_gone_mid_stream_is_still_recorded() {
     let records = h.sink.wait_for(1).await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert_eq!(h.sink.records().len(), 1);
-    assert!(records[0].estimated);
+    // What the provider had reported (the input side, from message_start) is
+    // recorded as it was read, not as an estimate.
+    assert!(!records[0].estimated);
+    let u = records[0].usage.unwrap();
+    assert_eq!(
+        (
+            u.input_tokens,
+            u.cache_read_input_tokens,
+            u.cache_write_input_tokens
+        ),
+        (7, 100, 20)
+    );
     assert_eq!(records[0].status, 499);
 }
 

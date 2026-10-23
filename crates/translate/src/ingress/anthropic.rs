@@ -371,6 +371,17 @@ fn parse_output_config(
 pub fn parse_request(body: &[u8]) -> Result<ChatRequest, TranslateError> {
     let wire: WireRequest =
         serde_json::from_slice(body).map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
+    parse_wire(wire)
+}
+
+/// [`parse_request`] for a body that is already read as JSON.
+pub fn parse_request_value(body: &serde_json::Value) -> Result<ChatRequest, TranslateError> {
+    let wire = WireRequest::deserialize(body)
+        .map_err(|e| TranslateError::InvalidRequest(e.to_string()))?;
+    parse_wire(wire)
+}
+
+fn parse_wire(wire: WireRequest) -> Result<ChatRequest, TranslateError> {
     if wire.messages.is_empty() {
         return Err(TranslateError::InvalidRequest(
             "messages must not be empty".into(),

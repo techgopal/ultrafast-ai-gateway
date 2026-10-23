@@ -441,6 +441,11 @@ fn check_include(v: Option<&Value>) -> Result<(), TranslateError> {
 
 pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
     let v: Value = serde_json::from_slice(body).map_err(|e| invalid(e.to_string()))?;
+    parse_request_value(&v)
+}
+
+/// [`parse_request`] for a body that is already read as JSON.
+pub fn parse_request_value(v: &Value) -> Result<Parsed, TranslateError> {
     let o = v
         .as_object()
         .ok_or_else(|| invalid("the request body must be a JSON object"))?;

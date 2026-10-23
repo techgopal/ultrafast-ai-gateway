@@ -463,6 +463,19 @@ impl Store {
         to: &str,
         group: UsageGroup,
     ) -> Result<Vec<UsageSums>> {
+        self.usage_in_session(scope, from, to, group, None).await
+    }
+
+    /// [`Store::usage`] of the calls of one coding-agent session, when one is
+    /// named.
+    pub async fn usage_in_session(
+        &self,
+        scope: &LogScope,
+        from: &str,
+        to: &str,
+        group: UsageGroup,
+        agent_session: Option<&str>,
+    ) -> Result<Vec<UsageSums>> {
         let (scope_clause, scope_ints) = scope_sql(scope);
         // (group expression, joined table with its name column)
         let json_tag = self.dialect().json_text("l.tags");
@@ -491,6 +504,11 @@ impl Store {
             // NULL sorts last in PostgreSQL).
             "a.requests DESC, (a.gid IS NOT NULL), a.gid"
         };
+        let session_clause = if agent_session.is_some() {
+            " AND l.agent_session = ?"
+        } else {
+            ""
+        };
         // Both bounds are text over the `at` index; the day after `to`
         // is excluded, so a whole last day counts.
         let sql = format!(
@@ -512,7 +530,7 @@ impl Store {
                               (l.input_tokens IS NOT NULL OR l.output_tokens IS NOT NULL)
                               THEN 1 ELSE 0 END), 0) AS BIGINT) AS unpriced
                    FROM request_logs l
-                   WHERE l.org_id = ? AND {scope_clause} AND l.at >= ? AND l.at < ?
+                   WHERE l.org_id = ? AND {scope_clause} AND l.at >= ? AND l.at < ?{session_clause}
                    GROUP BY gid) a
              {join}
              ORDER BY {order}"
@@ -526,11 +544,11 @@ impl Store {
         for v in &scope_ints {
             query = query.bind(*v);
         }
-        let rows = query
-            .bind(from)
-            .bind(next_day(to))
-            .fetch_all(self.pool())
-            .await?;
+        let mut query = query.bind(from).bind(next_day(to));
+        if let Some(session) = agent_session {
+            query = query.bind(session);
+        }
+        let rows = query.fetch_all(self.pool()).await?;
         Ok(rows
             .iter()
             .map(|r| UsageSums {

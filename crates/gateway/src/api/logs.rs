@@ -42,6 +42,18 @@ pub struct LogsQuery {
     agent_session: Option<String>,
 }
 
+/// The `agent_session` filter of a query: none when empty, otherwise 1 to 128
+/// printable characters.
+pub(super) fn agent_session_param(raw: Option<&str>) -> Result<Option<String>, &'static str> {
+    match raw {
+        None | Some("") => Ok(None),
+        Some(raw) if raw.len() <= 128 && raw.bytes().all(|b| b.is_ascii_graphic()) => {
+            Ok(Some(raw.to_string()))
+        }
+        Some(_) => Err("must be 1 to 128 printable characters"),
+    }
+}
+
 /// One logged call, as `/api` shows it.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct LogView {
@@ -533,16 +545,10 @@ pub async fn list(
             None
         }
     };
-    let agent_session = match q.agent_session.as_deref() {
-        None | Some("") => None,
-        Some(raw) if raw.len() <= 128 && raw.bytes().all(|b| b.is_ascii_graphic()) => {
-            Some(raw.to_string())
-        }
-        Some(_) => {
-            fields.insert(
-                "agent_session".into(),
-                "must be 1 to 128 printable characters".into(),
-            );
+    let agent_session = match agent_session_param(q.agent_session.as_deref()) {
+        Ok(session) => session,
+        Err(message) => {
+            fields.insert("agent_session".into(), message.into());
             None
         }
     };
