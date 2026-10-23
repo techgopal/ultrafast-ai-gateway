@@ -1920,8 +1920,9 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
 - A backup restore is manual, and a configuration import never deletes. There
   is no online migration between SQLite and Postgres (see Using PostgreSQL).
 - On Postgres the console and `ufaigw backup` do not back up: use `pg_dump`.
-- The Responses API is stateless: no `store`, `previous_response_id`,
-  conversations, background mode, built-in tools or retrieval of a response.
+- The Responses API is stateless: no stored responses, `previous_response_id`,
+  conversations, background mode or retrieval of a response. A passed-through
+  call may use hosted web search; other built-in tools are refused.
 - Images and audio are served by OpenAI, Azure and OpenAI-compatible providers
   only; there are no image edits or variations, no streamed image or
   transcription events, and no realtime audio. An image answer is buffered whole
