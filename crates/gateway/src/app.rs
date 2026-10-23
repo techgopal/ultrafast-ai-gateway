@@ -9,7 +9,7 @@ use axum::http::header::{CACHE_CONTROL, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::map_response;
 use axum::response::Response;
-use axum::routing::{any, get, post};
+use axum::routing::{any, get, head, post};
 use axum::{Json, Router};
 use ipnet::IpNet;
 use serde_json::json;
@@ -153,6 +153,10 @@ pub struct AppState {
     /// How often a stream held for an external guardrail sends an SSE
     /// comment so a proxy in front does not cut it for being idle.
     pub stream_keepalive: Duration,
+    /// Whether a call in a provider's own API (`/v1/messages` to Anthropic,
+    /// `/v1/responses` to OpenAI and Azure) is forwarded as it came. Tests
+    /// of the translators turn it off so that those calls are translated.
+    pub passthrough: bool,
     /// The circuit breaker of every target that was called.
     pub health: Arc<dyn HealthStore>,
     /// The counters `/metrics` shows.
@@ -213,6 +217,7 @@ impl AppState {
             hook_gates: Arc::default(),
             old_prompts: Arc::default(),
             stream_keepalive: DEFAULT_STREAM_KEEPALIVE,
+            passthrough: true,
             budgets: Arc::new(MemoryBudgets::new()),
             health: Arc::new(InMemoryHealth::new()),
             metrics: Arc::new(Metrics::new()),
@@ -436,6 +441,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     }
     app.route("/v1/chat/completions", post(proxy::chat_completions))
         .route("/v1/messages", post(proxy::messages))
+        .route("/v1/messages/count_tokens", post(proxy::count_tokens))
         .route("/v1/responses", post(proxy::responses))
         .route("/v1/embeddings", post(proxy::embeddings))
         .route("/v1/images/generations", post(proxy::images))
@@ -452,6 +458,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1", any(v1_not_found))
         .route("/v1/", any(v1_not_found))
         .route("/v1/{*rest}", any(v1_not_found))
+        // Claude Code probes the gateway here before it starts.
+        .route(
+            "/api/hello",
+            head(|| async { StatusCode::OK })
+                .get(|| async { StatusCode::OK })
+                .layer(map_response(api_headers)),
+        )
         .nest("/api", api::router().layer(map_response(api_headers)))
         // The nested router does not see this path.
         .route(

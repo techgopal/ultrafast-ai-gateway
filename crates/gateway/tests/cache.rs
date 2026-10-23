@@ -488,6 +488,7 @@ async fn a_hit_still_passes_the_budgets() {
     assert_eq!(w.chat(&a, BODY).await, StatusCode::OK);
     // The log writer prices a call; here the key's budget is spent.
     let spent = RequestRecord {
+        hosted_calls: 0,
         tags: Default::default(),
         key_id: Some(a.id),
         user_id: a.user,
@@ -507,6 +508,8 @@ async fn a_hit_still_passes_the_budgets() {
         started_unix_ms: 0,
         guardrails: None,
         prompt: None,
+        agent: Default::default(),
+        dropped: Vec::new(),
     };
     account(&w.h.state, &spent, 1_000_000, OffsetDateTime::now_utc());
     let (status, _, body) = w.chat_as(&a, BODY).await;

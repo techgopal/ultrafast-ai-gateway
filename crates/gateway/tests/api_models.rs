@@ -775,3 +775,69 @@ async fn a_price_reaches_the_gateway_snapshot() {
         (Some(5), Some(6))
     );
 }
+
+#[tokio::test]
+async fn cache_prices_round_trip() {
+    let org = org().await;
+    let maya = org.sign_in("maya").await;
+    seed_provider(&org, "main", "anthropic", "https://api.anthropic.com").await;
+    let (_, created) = org
+        .call(
+            Some(&maya),
+            "POST",
+            "/api/models",
+            Some(json!({ "provider_id": 1, "name": "claude-opus-5-5" })),
+        )
+        .await;
+    let id = created["id"].as_i64().unwrap();
+    // Unknown until set: the input price is used.
+    assert_eq!(created["cache_read_price_micros"], Value::Null);
+    assert_eq!(created["cache_write_price_micros"], Value::Null);
+    let patch = |body: Value| {
+        let (org, maya) = (&org, &maya);
+        async move {
+            org.call(
+                Some(maya),
+                "PATCH",
+                &format!("/api/models/{id}"),
+                Some(body),
+            )
+            .await
+        }
+    };
+    let (status, body) = patch(json!({
+        "cache_read_price_micros": 300_000, "cache_write_price_micros": 3_750_000
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["cache_read_price_micros"], 300_000);
+    assert_eq!(body["cache_write_price_micros"], 3_750_000);
+    assert_eq!(
+        body["input_price_micros"],
+        Value::Null,
+        "the others are left alone"
+    );
+    assert_eq!(
+        org.last_summary("model.update").await,
+        "Set price of claude-opus-5-5: cache read 300000, cache write 3750000 micro-dollars per million tokens"
+    );
+    let (_, list) = org.call(Some(&maya), "GET", "/api/models", None).await;
+    assert_eq!(list["models"][0]["cache_read_price_micros"], 300_000);
+    // They reach the snapshot the logs are priced from.
+    let snapshot = org.api.state.snapshot.load();
+    let model = snapshot.model("main", "claude-opus-5-5").unwrap();
+    assert_eq!(
+        (
+            model.cache_read_price_micros,
+            model.cache_write_price_micros
+        ),
+        (Some(300_000), Some(3_750_000))
+    );
+    // null clears one; a negative price is refused.
+    let (_, body) = patch(json!({ "cache_read_price_micros": null })).await;
+    assert_eq!(body["cache_read_price_micros"], Value::Null);
+    assert_eq!(body["cache_write_price_micros"], 3_750_000);
+    let (status, body) = patch(json!({ "cache_write_price_micros": -1 })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["fields"]["cache_write_price_micros"].is_string());
+}

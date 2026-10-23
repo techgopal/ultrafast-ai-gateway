@@ -137,13 +137,22 @@ export function priceText(micros: number | null): string {
 export interface PriceForm {
   input_price_micros: string;
   output_price_micros: string;
+  cache_read_price_micros: string;
+  cache_write_price_micros: string;
 }
 
-export function priceFormOf(model: Pick<Model, "input_price_micros" | "output_price_micros">): PriceForm {
+export function priceFormOf(
+  model: Pick<
+    Model,
+    "input_price_micros" | "output_price_micros" | "cache_read_price_micros" | "cache_write_price_micros"
+  >,
+): PriceForm {
   const text = (micros: number | null) => (micros === null ? "" : microsToDollars(micros));
   return {
     input_price_micros: text(model.input_price_micros),
     output_price_micros: text(model.output_price_micros),
+    cache_read_price_micros: text(model.cache_read_price_micros),
+    cache_write_price_micros: text(model.cache_write_price_micros),
   };
 }
 
@@ -155,6 +164,8 @@ export function priceFormOf(model: Pick<Model, "input_price_micros" | "output_pr
 export function pricesRequestOf(form: PriceForm): {
   input_price_micros: number | null;
   output_price_micros: number | null;
+  cache_read_price_micros: number | null;
+  cache_write_price_micros: number | null;
 } {
   const one = (name: keyof PriceForm): number | null => {
     const typed = form[name].trim();
@@ -163,5 +174,10 @@ export function pricesRequestOf(form: PriceForm): {
     if (micros === null) throw new ConsoleRefusal(PRICE_RULE, name);
     return micros;
   };
-  return { input_price_micros: one("input_price_micros"), output_price_micros: one("output_price_micros") };
+  return {
+    input_price_micros: one("input_price_micros"),
+    output_price_micros: one("output_price_micros"),
+    cache_read_price_micros: one("cache_read_price_micros"),
+    cache_write_price_micros: one("cache_write_price_micros"),
+  };
 }

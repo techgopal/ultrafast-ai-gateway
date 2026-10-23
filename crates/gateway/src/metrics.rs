@@ -88,6 +88,9 @@ pub struct Metrics {
     requests: [[AtomicU64; CLASSES.len()]; ENDPOINTS.len()],
     tokens_in: AtomicU64,
     tokens_out: AtomicU64,
+    /// Of the input tokens: those read from and written to a prompt cache.
+    tokens_cache_read: AtomicU64,
+    tokens_cache_write: AtomicU64,
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
     cache_flight_waits: AtomicU64,
@@ -171,7 +174,11 @@ impl Metrics {
         // A cache hit used no provider tokens.
         if let (Some(u), false) = (record.usage, record.cached) {
             self.tokens_in
-                .fetch_add(u64::from(u.input_tokens), Ordering::Relaxed);
+                .fetch_add(u.input_volume(), Ordering::Relaxed);
+            self.tokens_cache_read
+                .fetch_add(u64::from(u.cache_read_input_tokens), Ordering::Relaxed);
+            self.tokens_cache_write
+                .fetch_add(u64::from(u.cache_write_input_tokens), Ordering::Relaxed);
             self.tokens_out
                 .fetch_add(u64::from(u.output_tokens), Ordering::Relaxed);
         }
@@ -318,7 +325,7 @@ impl Metrics {
             &mut out,
             "uf_tokens_total",
             "counter",
-            "Tokens the providers reported, by direction. Answers from the cache are not counted.",
+            "Tokens the providers reported, by direction. Input counts every token sent in, cached or not; cache_read and cache_write are the cached ones, also counted in input. Answers from the response cache are not counted.",
         );
         let _ = writeln!(
             out,
@@ -329,6 +336,16 @@ impl Metrics {
             out,
             "uf_tokens_total{{direction=\"output\"}} {}",
             n(&self.tokens_out)
+        );
+        let _ = writeln!(
+            out,
+            "uf_tokens_total{{direction=\"cache_read\"}} {}",
+            n(&self.tokens_cache_read)
+        );
+        let _ = writeln!(
+            out,
+            "uf_tokens_total{{direction=\"cache_write\"}} {}",
+            n(&self.tokens_cache_write)
         );
 
         header(

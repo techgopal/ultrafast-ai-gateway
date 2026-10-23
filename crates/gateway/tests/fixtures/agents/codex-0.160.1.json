@@ -1,0 +1,352 @@
+{
+  "model": "gpt-5.5",
+  "instructions": "t",
+  "input": [
+    {
+      "type": "message",
+      "id": "msg_00000000-0000-0000-0000-000000000001",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "t"
+        },
+        {
+          "type": "input_text",
+          "text": "t"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_00000000-0000-0000-0000-000000000002",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "t"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_00000000-0000-0000-0000-000000000003",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "t"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "exec_command",
+      "description": "Runs a command in a PTY, returning output or a session ID for ongoing interactio",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "string",
+            "description": "Shell command to execute."
+          },
+          "justification": {
+            "type": "string",
+            "description": "User-facing approval question for `require_escalated`; omit otherwise."
+          },
+          "login": {
+            "type": "boolean",
+            "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true."
+          },
+          "max_output_tokens": {
+            "type": "number",
+            "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by "
+          },
+          "prefix_rule": {
+            "type": "array",
+            "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_esc",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sandbox_permissions": {
+            "type": "string",
+            "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated`",
+            "enum": [
+              "use_default",
+              "require_escalated"
+            ]
+          },
+          "shell": {
+            "type": "string",
+            "description": "Shell binary to launch. Defaults to the user's default shell."
+          },
+          "tty": {
+            "type": "boolean",
+            "description": "True allocates a PTY for the command; false or omitted uses plain pipes."
+          },
+          "workdir": {
+            "type": "string",
+            "description": "Working directory for the command. Defaults to the turn cwd."
+          },
+          "yield_time_ms": {
+            "type": "number",
+            "description": "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 "
+          }
+        },
+        "required": [
+          "cmd"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "write_stdin",
+      "description": "Writes characters to an existing unified exec session and returns recent output.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "chars": {
+            "type": "string",
+            "description": "Bytes to write to stdin. Defaults to empty, which polls without writing."
+          },
+          "max_output_tokens": {
+            "type": "number",
+            "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by "
+          },
+          "session_id": {
+            "type": "number",
+            "description": "Identifier of the running unified exec session."
+          },
+          "yield_time_ms": {
+            "type": "number",
+            "description": "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "request_user_input",
+      "description": "Request user input for one to three short questions and wait for the response. T",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "questions": {
+            "type": "array",
+            "description": "Questions to show the user. Prefer 1 and do not exceed 3",
+            "items": {
+              "type": "object",
+              "properties": {
+                "header": {
+                  "type": "string",
+                  "description": "Short header label shown in the UI (12 or fewer chars)."
+                },
+                "id": {
+                  "type": "string",
+                  "description": "Stable identifier for mapping answers (snake_case)."
+                },
+                "options": {
+                  "type": "array",
+                  "description": "Provide 2-3 mutually exclusive choices. Put the recommended option first and suf",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "description": {
+                        "type": "string",
+                        "description": "One short sentence explaining impact/tradeoff if selected."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "User-facing label (1-5 words)."
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "question": {
+                  "type": "string",
+                  "description": "Single-sentence prompt shown to the user."
+                }
+              },
+              "required": [
+                "id",
+                "header",
+                "question",
+                "options"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "questions"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "custom",
+      "name": "apply_patch",
+      "description": "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do",
+      "format": {
+        "type": "grammar",
+        "syntax": "lark",
+        "definition": "start: begin_patch hunk+ end_patch\nbegin_patch: \"*** Begin Patch\" LF\nend_patch: "
+      }
+    },
+    {
+      "type": "function",
+      "name": "view_image",
+      "description": "View a local image file from the filesystem when visual inspection is needed. Us",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "Image detail level. Defaults to `high`; use `original` to preserve exact resolut",
+            "enum": [
+              "high",
+              "original"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "Local filesystem path to an image file."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "get_goal",
+      "description": "Get the current goal for this thread, including status, budgets, token and elaps",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "create_goal",
+      "description": "Create a goal only when explicitly requested by the user or system/developer ins",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "objective": {
+            "type": "string",
+            "description": "Required. The concrete objective to start pursuing. This starts a new active goa"
+          },
+          "token_budget": {
+            "type": "integer",
+            "description": "Positive token budget for the new goal. Omit unless explicitly requested."
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "function",
+      "name": "update_goal",
+      "description": "Update the existing goal.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Required. `paused` requires an explicit user request. Set to `complete` only whe",
+            "enum": [
+              "complete",
+              "blocked",
+              "paused"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "tool_search",
+      "execution": "client",
+      "description": "# Tool discovery",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of tools to return. Defaults to 8."
+          },
+          "query": {
+            "type": "string",
+            "description": "Search query for deferred tools."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "web_search",
+      "external_web_access": false,
+      "search_content_types": [
+        "text",
+        "image"
+      ]
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "effort": "medium"
+  },
+  "store": false,
+  "stream": true,
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "prompt_cache_key": "00000000-0000-0000-0000-000000000004",
+  "text": {
+    "verbosity": "low"
+  },
+  "client_metadata": {
+    "turn_id": "00000000-0000-0000-0000-000000000005",
+    "root_turn_id": "00000000-0000-0000-0000-000000000005",
+    "x-codex-window-id": "00000000-0000-0000-0000-000000000004:0",
+    "x-codex-turn-metadata": "{\"installation_id\":\"00000000-0000-0000-0000-000000000006\",\"session_id\":\"00000000-0000-0000-0000-000000000004\",\"thread_id\":\"00000000-0000-0000-0000-000000000004\",\"agent_name\":\"/root\",\"turn_id\":\"00000000-0000-0000-0000-000000000005\",\"window_id\":\"00000000-0000-0000-0000-000000000004:0\",\"window_number\":0,\"context_window_id\":\"00000000-0000-0000-0000-000000000007\",\"request_kind\":\"turn\",\"root_turn_id\":\"00000000-0000-0000-0000-000000000005\",\"thread_source\":\"user\",\"turn_trigger\":\"exec\",\"sandbox\":\"seccomp\",\"sandbox_mode\":\"read-only\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":1792587197810,\"analytics_enabled\":true,\"model\":\"gpt-5.5\",\"reasoning_effort\":\"medium\"}",
+    "x-codex-installation-id": "00000000-0000-0000-0000-000000000006",
+    "session_id": "00000000-0000-0000-0000-000000000004",
+    "thread_id": "00000000-0000-0000-0000-000000000004"
+  }
+}

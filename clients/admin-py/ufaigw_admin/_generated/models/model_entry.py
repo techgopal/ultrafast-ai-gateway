@@ -19,6 +19,9 @@ T = TypeVar("T", bound="ModelEntry")
 class ModelEntry:
     """
     Attributes:
+        cache_read_price_micros (int | None): Per million tokens read from or written to the provider's prompt
+            cache. `null`: the input price is used.
+        cache_write_price_micros (int | None):
         enabled (bool):
         input_price_micros (int | None): Per million tokens, in millionths of a dollar. `null`: not known.
         name (str):
@@ -27,6 +30,8 @@ class ModelEntry:
         grants (GrantEntry | Unset):
     """
 
+    cache_read_price_micros: int | None
+    cache_write_price_micros: int | None
     enabled: bool
     input_price_micros: int | None
     name: str
@@ -35,6 +40,12 @@ class ModelEntry:
     grants: GrantEntry | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
+        cache_read_price_micros: int | None
+        cache_read_price_micros = self.cache_read_price_micros
+
+        cache_write_price_micros: int | None
+        cache_write_price_micros = self.cache_write_price_micros
+
         enabled = self.enabled
 
         input_price_micros: int | None
@@ -55,6 +66,8 @@ class ModelEntry:
 
         field_dict.update(
             {
+                "cache_read_price_micros": cache_read_price_micros,
+                "cache_write_price_micros": cache_write_price_micros,
                 "enabled": enabled,
                 "input_price_micros": input_price_micros,
                 "name": name,
@@ -72,6 +85,25 @@ class ModelEntry:
         from ..models.grant_entry import GrantEntry
 
         d = dict(src_dict)
+
+        def _parse_cache_read_price_micros(data: object) -> int | None:
+            if data is None:
+                return data
+            return cast(int | None, data)
+
+        cache_read_price_micros = _parse_cache_read_price_micros(
+            d.pop("cache_read_price_micros")
+        )
+
+        def _parse_cache_write_price_micros(data: object) -> int | None:
+            if data is None:
+                return data
+            return cast(int | None, data)
+
+        cache_write_price_micros = _parse_cache_write_price_micros(
+            d.pop("cache_write_price_micros")
+        )
+
         enabled = d.pop("enabled")
 
         def _parse_input_price_micros(data: object) -> int | None:
@@ -100,6 +132,8 @@ class ModelEntry:
             grants = GrantEntry.from_dict(_grants)
 
         model_entry = cls(
+            cache_read_price_micros=cache_read_price_micros,
+            cache_write_price_micros=cache_write_price_micros,
             enabled=enabled,
             input_price_micros=input_price_micros,
             name=name,

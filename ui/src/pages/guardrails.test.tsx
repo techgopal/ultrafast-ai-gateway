@@ -372,6 +372,19 @@ describe("a new guardrail", () => {
     expect(await screen.findByText("mask-phones")).toBeInTheDocument();
   });
 
+  test("a redact rule says what redaction costs a coding agent; another action does not", async () => {
+    keeps();
+    await page("/guardrails/new");
+    const note =
+      "Redaction rewrites the prompt. For coding agents this costs prompt-cache hits, and Claude Code drops earlier thinking from the conversation.";
+    // A new rule redacts.
+    expect(within(rule(1)).getByText(note)).toBeInTheDocument();
+    await choose(within(rule(1)).getByRole("combobox", { name: "Action" }), "Block");
+    expect(within(rule(1)).queryByText(note)).toBeNull();
+    await choose(within(rule(1)).getByRole("combobox", { name: "Action" }), "Redact");
+    expect(within(rule(1)).getByText(note)).toBeInTheDocument();
+  });
+
   test("keywords and a regular expression are written as the gateway takes them", async () => {
     const state = keeps();
     await page("/guardrails/new");

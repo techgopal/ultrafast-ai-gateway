@@ -3,6 +3,7 @@ import { useId, useState } from "react";
 import { keysOptions, teamsOptions, usersOptions } from "@/api/queries";
 import { control } from "@/components/classes";
 import { FilterSelect, type Choice } from "@/components/FilterSelect";
+import { TextFilter } from "@/components/TextFilter";
 import { Input } from "@/components/ui/input";
 import { LOGGED_ACTIONS } from "@/lib/guardrails";
 import { parseTagFilter } from "@/lib/tags";
@@ -53,6 +54,8 @@ export interface Filters {
   guardrail: string;
   /** `name:value` as it was applied, or empty. */
   tag: string;
+  /** The id of a coding-agent session, or empty. */
+  agentSession: string;
 }
 
 export const NO_FILTERS: Filters = {
@@ -67,6 +70,7 @@ export const NO_FILTERS: Filters = {
   errorsOnly: false,
   guardrail: ANY,
   tag: "",
+  agentSession: "",
 };
 
 /** What is chosen, when it is still offered; otherwise nothing is left out. */
@@ -110,36 +114,6 @@ interface LogsFiltersProps {
   /** Whether the viewer sees more than their own calls: key, user and team are offered. */
   others: boolean;
   onChange: (patch: Partial<Filters>) => void;
-}
-
-/** The model is applied when it is entered or left, not at every key. */
-function ModelField({ value, onApply }: { value: string; onApply: (model: string) => void }) {
-  const [draft, setDraft] = useState(value);
-  const apply = () => {
-    const model = draft.trim();
-    if (model !== value) onApply(model);
-  };
-  return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        apply();
-      }}
-    >
-      <Input
-        type="text"
-        aria-label="Model"
-        placeholder="Model name"
-        autoComplete="off"
-        className={`${control} w-full sm:w-48`}
-        value={draft}
-        onChange={(event) => {
-          setDraft(event.target.value);
-        }}
-        onBlur={apply}
-      />
-    </form>
-  );
 }
 
 /**
@@ -252,10 +226,20 @@ export function LogsFilters({ filters, offered, others, onChange }: LogsFiltersP
           />
         </>
       ) : null}
-      <ModelField
+      <TextFilter
         value={filters.model}
+        label="Model"
+        placeholder="Model name"
         onApply={(model) => {
           onChange({ model });
+        }}
+      />
+      <TextFilter
+        value={filters.agentSession}
+        label="Agent session"
+        placeholder="Agent session"
+        onApply={(agentSession) => {
+          onChange({ agentSession });
         }}
       />
       <TagField

@@ -72,6 +72,8 @@ export function perDay(from: string, to: string, rows: readonly UsageRow[]): Usa
         cancelled: 0,
         input_tokens: 0,
         output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
         cost_micros: 0,
         unpriced_requests: 0,
       },
@@ -114,4 +116,11 @@ export const ENDPOINTS: readonly (readonly [value: string, label: string])[] = [
 /** The words for an endpoint; a name this console does not know is shown as it is. */
 export function endpointLabel(endpoint: string): string {
   return ENDPOINTS.find(([value]) => value === endpoint)?.[1] ?? endpoint;
+}
+
+/** The coding agent a call came from, as the console names it. */
+export function agentLabel(client: string | null): string {
+  if (client === "claude-code") return "Claude Code";
+  if (client === "codex") return "Codex";
+  return client ?? "Unknown";
 }

@@ -34,6 +34,7 @@ impl ChatRequest {
                 parallel_tool_calls: None,
                 response_format: None,
                 reasoning_effort: None,
+                dropped: Vec::new(),
             },
             tags: BTreeMap::new(),
         }
@@ -229,6 +230,7 @@ mod tests {
             description: Some("Current weather".into()),
             parameters: json!({"type": "object"}),
             strict: None,
+            freeform: false,
         }
     }
 

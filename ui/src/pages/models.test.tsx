@@ -109,6 +109,8 @@ function keeps(start: readonly fixtures.Model[] = fixtures.modelList) {
       created_at: "2026-09-30 09:00:00",
       input_price_micros: null,
       output_price_micros: null,
+      cache_read_price_micros: null,
+      cache_write_price_micros: null,
     };
     state.models = [...state.models, model];
     return ok("post", "/api/models", 201, model);
@@ -971,7 +973,7 @@ describe("prices", () => {
     expect(state.patched).toEqual([
       {
         id: String(openaiFull.id),
-        body: { input_price_micros: 1, output_price_micros: 12_345_678 },
+        body: { input_price_micros: 1, output_price_micros: 12_345_678, cache_read_price_micros: null, cache_write_price_micros: null },
       },
     ]);
     expect(toasts()).toEqual(["Price saved."]);
@@ -981,6 +983,34 @@ describe("prices", () => {
     });
     // The model stays as enabled as it was.
     expect(within(rowOf(openaiFull)).getByRole("switch")).toBeChecked();
+  });
+
+  test("the cache prices start empty (the input price is used) and are saved with the others", async () => {
+    const state = keeps();
+    await page();
+    const dialog = await openPrice(openaiFull);
+    const read = within(dialog).getByLabelText("Cache read price ($ per 1M tokens)");
+    const write = within(dialog).getByLabelText("Cache write price ($ per 1M tokens)");
+    expect(read).toHaveValue("");
+    expect(write).toHaveValue("");
+    expect(dialog).toHaveTextContent("An empty cache price uses the input price.");
+    await paste(read, "0.25");
+    await paste(write, "3.125");
+    await press(dialog, "Save price");
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    expect(state.patched).toEqual([
+      {
+        id: String(openaiFull.id),
+        body: {
+          input_price_micros: 2_500_000,
+          output_price_micros: 10_000_000,
+          cache_read_price_micros: 250_000,
+          cache_write_price_micros: 3_125_000,
+        },
+      },
+    ]);
   });
 
   test("an empty price is sent as null: the price becomes unknown", async () => {
@@ -993,7 +1023,7 @@ describe("prices", () => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
     expect(state.patched).toEqual([
-      { id: String(openaiMini.id), body: { input_price_micros: null, output_price_micros: 600_000 } },
+      { id: String(openaiMini.id), body: { input_price_micros: null, output_price_micros: 600_000, cache_read_price_micros: null, cache_write_price_micros: null } },
     ]);
   });
 
@@ -1042,7 +1072,7 @@ describe("prices", () => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
     expect(state.patched).toEqual([
-      { id: String(openaiMini.id), body: { input_price_micros: 1_250_000, output_price_micros: 500_000 } },
+      { id: String(openaiMini.id), body: { input_price_micros: 1_250_000, output_price_micros: 500_000, cache_read_price_micros: null, cache_write_price_micros: null } },
     ]);
   });
 

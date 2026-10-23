@@ -364,6 +364,24 @@ impl StreamScanner {
         }
     }
 
+    /// Redacts, in place, whole texts that repeat what was streamed (the
+    /// `.done` events of a Responses stream): the address is gone from them
+    /// as it is from the deltas. The replacements are not counted again, a
+    /// flag is kept once, and a block ends the scanner as any other. Says
+    /// which guardrail blocked, if one did.
+    pub fn redact_copies(&mut self, texts: &mut [String]) -> Option<(i64, String)> {
+        if let Some(b) = &self.outcome.blocked_by {
+            return Some(b.clone());
+        }
+        let found = super::check_texts(&self.set, Direction::Output, texts);
+        for (guardrail, rule) in &found.flags {
+            self.outcome.add_flag(*guardrail, rule);
+        }
+        found.blocked_by.inspect(|b| {
+            self.block(b.clone());
+        })
+    }
+
     pub fn outcome(&self) -> &Outcome {
         &self.outcome
     }

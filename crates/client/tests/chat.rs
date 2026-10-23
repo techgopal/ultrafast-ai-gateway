@@ -19,7 +19,8 @@ fn check(r: &ufaigw_client::types::ChatResponse) {
         r.usage,
         Some(Usage {
             input_tokens: 3,
-            output_tokens: 2
+            output_tokens: 2,
+            ..Default::default()
         })
     );
 }
@@ -170,6 +171,7 @@ async fn a_translate_request_converts() {
         parallel_tool_calls: None,
         response_format: None,
         reasoning_effort: None,
+        dropped: Vec::new(),
     };
     check(&c.chat(t).await.unwrap());
 }
@@ -195,6 +197,7 @@ fn weather() -> ufaigw_client::Tool {
         description: Some("Current weather".into()),
         parameters: serde_json::json!({"type":"object","properties":{"city":{"type":"string"}}}),
         strict: None,
+        freeform: false,
     }
 }
 

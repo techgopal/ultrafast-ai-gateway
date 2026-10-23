@@ -4,7 +4,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{harness, post_to, seed_team, seed_user, Harness};
+use common::{harness, harness_translating, post_to, seed_team, seed_user, Harness};
 use serde_json::{json, Value};
 use ufaigw_gateway::cache::{CacheScope, RouteCache};
 use ufaigw_gateway::store::{NewGuardrail, RouteSettings, TargetsInput};
@@ -106,7 +106,7 @@ const BODY: &str =
 
 #[tokio::test]
 async fn an_openai_provider_serves_a_response() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(body_partial_json(json!({
@@ -139,7 +139,7 @@ async fn an_openai_provider_serves_a_response() {
 
 #[tokio::test]
 async fn an_anthropic_provider_serves_a_response() {
-    let h = harness("anthropic").await;
+    let h = harness_translating("anthropic").await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
@@ -175,7 +175,7 @@ fn gemini_chunk(text: &str, finish: Option<&str>) -> Value {
 
 #[tokio::test]
 async fn a_gemini_provider_serves_a_response() {
-    let h = harness("gemini").await;
+    let h = harness_translating("gemini").await;
     Mock::given(method("POST"))
         .and(path_regex(r":generateContent$"))
         .respond_with(
@@ -193,7 +193,7 @@ async fn a_gemini_provider_serves_a_response() {
 
 #[tokio::test]
 async fn a_stream_from_an_openai_provider_has_ordered_events() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .respond_with(sse(OPENAI_TEXT_AND_CALLS))
         .mount(&h.upstream)
@@ -211,7 +211,7 @@ async fn a_stream_from_an_openai_provider_has_ordered_events() {
 
 #[tokio::test]
 async fn a_stream_from_an_anthropic_provider_has_ordered_events() {
-    let h = harness("anthropic").await;
+    let h = harness_translating("anthropic").await;
     let upstream = concat!(
         "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
         "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
@@ -240,7 +240,7 @@ async fn a_stream_from_an_anthropic_provider_has_ordered_events() {
 
 #[tokio::test]
 async fn a_stream_from_a_gemini_provider_has_ordered_events() {
-    let h = harness("gemini").await;
+    let h = harness_translating("gemini").await;
     let part = |p: Value| {
         format!(
             "data: {}\n\n",
@@ -278,7 +278,7 @@ async fn a_stream_from_a_gemini_provider_has_ordered_events() {
 
 #[tokio::test]
 async fn a_tool_round_trip_reaches_the_provider_as_chat_messages() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(body_partial_json(json!({
@@ -318,7 +318,7 @@ async fn a_tool_round_trip_reaches_the_provider_as_chat_messages() {
 
 #[tokio::test]
 async fn a_call_the_model_makes_comes_back_as_a_function_call_item() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "c1", "model": "m",
@@ -340,7 +340,7 @@ async fn a_call_the_model_makes_comes_back_as_a_function_call_item() {
 
 #[tokio::test]
 async fn text_format_reaches_the_provider_as_a_response_format() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .and(body_partial_json(json!({ "response_format": {
             "type": "json_schema",
@@ -358,7 +358,7 @@ async fn text_format_reaches_the_provider_as_a_response_format() {
 
 #[tokio::test]
 async fn refusals_are_openai_errors_and_no_provider_is_called() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     let cases = [
         (
             json!({"store":true}),
@@ -370,7 +370,7 @@ async fn refusals_are_openai_errors_and_no_provider_is_called() {
         ),
         (json!({"conversation":"c"}), "conversation"),
         (json!({"background":true}), "background"),
-        (json!({"tools":[{"type":"web_search"}]}), "web_search"),
+        (json!({"truncation":"auto"}), "truncation"),
         // A prompt is applied now (see tests/prompts.rs); a malformed one is refused.
         (json!({"prompt":{"id":"greet","version":"x"}}), "version"),
         (
@@ -402,7 +402,7 @@ async fn refusals_are_openai_errors_and_no_provider_is_called() {
 
 #[tokio::test]
 async fn reasoning_effort_reaches_an_openai_provider_and_reasoning_items_are_dropped() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(body_partial_json(json!({ "reasoning_effort": "low" })))
@@ -429,8 +429,8 @@ async fn reasoning_effort_reaches_an_openai_provider_and_reasoning_items_are_dro
 
 #[tokio::test]
 async fn reasoning_effort_is_a_400_for_a_provider_that_cannot_take_it() {
-    for kind in ["anthropic", "gemini"] {
-        let h = harness(kind).await;
+    for kind in ["gemini"] {
+        let h = harness_translating(kind).await;
         let body = json!({"model":"p/m","input":"x","reasoning":{"effort":"high"}});
         let (status, _, text) = responses(&h, &body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{kind}: {text}");
@@ -473,7 +473,7 @@ async fn guardrail(h: &Harness, name: &str, rules: Value) {
 
 #[tokio::test]
 async fn a_guardrail_blocks_the_input_of_a_response_call() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .respond_with(openai_ok("hello"))
         .mount(&h.upstream)
@@ -504,7 +504,7 @@ async fn a_guardrail_blocks_the_input_of_a_response_call() {
 
 #[tokio::test]
 async fn a_guardrail_redacts_the_output_of_a_response_call() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .respond_with(openai_ok("write to ada@example.com now"))
         .mount(&h.upstream)
@@ -532,7 +532,7 @@ const SETTINGS: RouteSettings = RouteSettings {
 
 #[tokio::test]
 async fn a_cached_answer_is_served_again_as_a_new_response() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     let models = h.store.list_models().await.unwrap();
     let model = models.iter().find(|m| m.name == "gpt-4o").unwrap().id;
     let mut tx = h.store.begin().await.unwrap();
@@ -597,7 +597,7 @@ async fn the_official_openai_sdk_parses_the_stream() {
         eprintln!("skipped: no Python with the openai SDK at {python}");
         return;
     }
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .respond_with(sse(OPENAI_TEXT_AND_CALLS))
         .up_to_n_times(1)
@@ -632,4 +632,104 @@ async fn the_official_openai_sdk_parses_the_stream() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+// ------------------------------------------------------------------
+// The same questions on the production harness: an OpenAI provider is
+// passed through, so these are what a Codex user gets.
+
+fn responses_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_raw(
+        r#"{"id":"resp_1","object":"response","status":"completed","model":"m","output":[{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"write to ada@example.com now"}]}],"usage":{"input_tokens":1,"output_tokens":2}}"#,
+        "application/json",
+    )
+}
+
+#[tokio::test]
+async fn refusals_are_openai_errors_and_no_provider_is_called_on_pass_through() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(responses_ok())
+        .mount(&h.upstream)
+        .await;
+    let cases = [
+        (json!({"store":true}), "store"),
+        (
+            json!({"previous_response_id":"resp_1"}),
+            "previous_response_id",
+        ),
+        (json!({"conversation":"c"}), "conversation"),
+        (json!({"background":true}), "background"),
+    ];
+    for (extra, want) in cases {
+        let mut body = json!({"model":"p/m","input":"x"});
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        let (status, _, text) = responses(&h, &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {text}");
+        let v = json_of(&text);
+        assert_eq!(v["error"]["type"], "invalid_request_error", "{text}");
+        assert!(
+            v["error"]["message"].as_str().unwrap().contains(want),
+            "{text}"
+        );
+    }
+    let (s, _, text) = post_to(&h.app, "/v1/responses", &[], BODY).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(json_of(&text)["error"]["message"].is_string());
+    let (s, _, _) = responses(&h, &json!({"model":"p/nope","input":"x"})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_guardrail_blocks_the_input_of_a_response_call_on_pass_through() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(responses_ok())
+        .mount(&h.upstream)
+        .await;
+    guardrail(
+        &h,
+        "no-secrets",
+        json!([{ "id": "w", "matcher": { "keywords": { "words": ["swordfish"] } },
+                 "action": "block", "directions": "input" }]),
+    )
+    .await;
+    for input in [
+        json!("the word is swordfish"),
+        json!([{"role":"user","content":[{"type":"input_text","text":"the word is swordfish"}]}]),
+        json!([{"role":"user","content":"x"},
+               {"type":"function_call","call_id":"c","name":"w","arguments":"{}"},
+               {"type":"function_call_output","call_id":"c","output":"swordfish"}]),
+    ] {
+        let (status, _, body) =
+            responses(&h, &json!({"model":"p/m","store":false,"input":input})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let v = json_of(&body);
+        assert_eq!(v["error"]["code"], "guardrail_blocked");
+        assert!(!body.contains("swordfish"));
+    }
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_guardrail_redacts_the_output_of_a_response_call_on_pass_through() {
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .respond_with(responses_ok())
+        .mount(&h.upstream)
+        .await;
+    guardrail(
+        &h,
+        "pii",
+        json!([{ "id": "email", "matcher": { "pii": ["EMAIL"] },
+                 "action": "redact", "directions": "output" }]),
+    )
+    .await;
+    let (status, _, body) = responses(&h, &json!({"model":"p/m","store":false,"input":"x"})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("ada@example.com"), "{body}");
+    assert_eq!(json_of(&body)["id"], "resp_1");
 }

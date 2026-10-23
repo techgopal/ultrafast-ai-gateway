@@ -1,9 +1,9 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{allow_model, harness, post_to, Harness};
+use common::{allow_model, harness, harness_translating, post_to, Harness};
 use serde_json::{json, Value};
-use ufaigw_gateway::store::{Grants, RouteSettings, TargetsInput};
+use ufaigw_gateway::store::{Grants, NewGuardrail, RouteSettings, TargetsInput};
 use ufaigw_gateway::telemetry::AttemptOutcome;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, ResponseTemplate};
@@ -63,7 +63,7 @@ fn events(body: &str) -> Vec<(String, Value)> {
 
 #[tokio::test]
 async fn an_openai_provider_serves_a_message() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(body_partial_json(json!({
@@ -84,7 +84,10 @@ async fn an_openai_provider_serves_a_message() {
     assert_eq!(v["role"], "assistant");
     assert_eq!(v["content"], json!([{ "type": "text", "text": "hello" }]));
     assert_eq!(v["stop_reason"], "max_tokens");
-    assert_eq!(v["usage"], json!({ "input_tokens": 4, "output_tokens": 2 }));
+    assert_eq!(
+        v["usage"],
+        json!({ "input_tokens": 4, "output_tokens": 2, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0 })
+    );
     let r = &h.sink.records()[0];
     assert_eq!(r.endpoint, "messages");
     assert_eq!(r.status, 200);
@@ -92,7 +95,7 @@ async fn an_openai_provider_serves_a_message() {
 
 #[tokio::test]
 async fn an_anthropic_provider_serves_a_message_with_x_api_key() {
-    let h = harness("anthropic").await;
+    let h = harness_translating("anthropic").await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(header("x-api-key", "provider-secret"))
@@ -111,14 +114,17 @@ async fn an_anthropic_provider_serves_a_message_with_x_api_key() {
     let v = json_of(&body);
     assert_eq!(v["content"][0]["text"], "salut");
     assert_eq!(v["stop_reason"], "end_turn");
-    assert_eq!(v["usage"], json!({ "input_tokens": 5, "output_tokens": 3 }));
+    assert_eq!(
+        v["usage"],
+        json!({ "input_tokens": 5, "output_tokens": 3, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0 })
+    );
     // The caller's key is not what the provider is given.
     assert!(!body.contains(&h.key));
 }
 
 #[tokio::test]
 async fn x_api_key_also_works_on_chat_and_models() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .respond_with(openai_ok())
         .mount(&h.upstream)
@@ -155,7 +161,7 @@ async fn x_api_key_also_works_on_chat_and_models() {
 
 #[tokio::test]
 async fn a_stream_from_an_openai_provider_becomes_anthropic_events() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     let upstream = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"sal\"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"content\":\"ut\"},\"finish_reason\":null}]}\n\n",
@@ -178,7 +184,7 @@ async fn a_stream_from_an_openai_provider_becomes_anthropic_events() {
 
 #[tokio::test]
 async fn a_stream_from_an_anthropic_provider_becomes_anthropic_events() {
-    let h = harness("anthropic").await;
+    let h = harness_translating("anthropic").await;
     let upstream = concat!(
         "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
         "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"sal\"}}\n\n",
@@ -224,7 +230,7 @@ fn assert_anthropic_stream(text: &str, want: &str, stop: &str, output_tokens: u6
 
 #[tokio::test]
 async fn an_error_inside_a_stream_is_an_error_event() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     let upstream = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"a\"},\"finish_reason\":null}]}\n\n",
         "data: {\"error\":{\"message\":\"overloaded\"}}\n\n",
@@ -245,7 +251,7 @@ async fn an_error_inside_a_stream_is_an_error_event() {
 
 #[tokio::test]
 async fn errors_are_in_the_anthropic_shape() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     let check = |status: StatusCode, body: &str, kind: &str| {
         assert_eq!(json_of(body)["type"], "error", "{status}: {body}");
         assert_eq!(json_of(body)["error"]["type"], kind, "{status}: {body}");
@@ -272,11 +278,11 @@ async fn errors_are_in_the_anthropic_shape() {
     assert_eq!(s, StatusCode::FORBIDDEN);
     check(s, &body, "permission_error");
 
-    // 400: a block that is not text, no max_tokens, an unknown field.
+    // 400: a malformed block, no max_tokens, an unknown role.
     for bad in [
         r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"image","source":{}}]}]}"#,
         r#"{"model":"p/m","messages":[{"role":"user","content":"x"}]}"#,
-        r#"{"model":"p/m","max_tokens":1,"top_k":1,"messages":[{"role":"user","content":"x"}]}"#,
+        r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"tool","content":"x"}]}"#,
     ] {
         let (s, _, body) = messages(&h, bad).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
@@ -284,12 +290,12 @@ async fn errors_are_in_the_anthropic_shape() {
     }
     let (_, _, body) = messages(
         &h,
-        r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"thinking"}]}]}"#,
+        r#"{"model":"p/m","max_tokens":1,"messages":[{"role":"user","content":[{"type":"tool_use","id":"a","name":"n","input":{}}]}]}"#,
     )
     .await;
     assert_eq!(
         json_of(&body)["error"]["message"],
-        "content block 'thinking' is not supported in a user message"
+        "content block 'tool_use' is not supported in a user message"
     );
 
     // 503: the provider is down.
@@ -304,7 +310,7 @@ async fn errors_are_in_the_anthropic_shape() {
 
 #[tokio::test]
 async fn a_rate_limited_provider_is_a_429_with_retry_after() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "3"))
         .mount(&h.upstream)
@@ -317,7 +323,7 @@ async fn a_rate_limited_provider_is_a_429_with_retry_after() {
 
 #[tokio::test]
 async fn a_rejected_provider_credential_is_an_api_error_not_the_callers() {
-    let h = harness("anthropic").await;
+    let h = harness_translating("anthropic").await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(401).set_body_json(
             json!({ "type": "error", "error": { "type": "authentication_error", "message": "bad key sk-abc" } }),
@@ -332,7 +338,7 @@ async fn a_rejected_provider_credential_is_an_api_error_not_the_callers() {
 
 #[tokio::test]
 async fn a_route_skips_a_target_the_key_may_not_call() {
-    let h = harness("openai").await;
+    let h = harness_translating("openai").await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(openai_ok())
@@ -411,7 +417,7 @@ mod tools {
 
     #[tokio::test]
     async fn anthropic_ingress_tool_call_to_openai_provider() {
-        let h = harness("openai").await;
+        let h = harness_translating("openai").await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .and(body_partial_json(json!({
@@ -447,7 +453,7 @@ mod tools {
 
     #[tokio::test]
     async fn anthropic_ingress_streamed_tool_call_from_openai_provider() {
-        let h = harness("openai").await;
+        let h = harness_translating("openai").await;
         let chunks = concat!(
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\"}}]},\"finish_reason\":null}]}\n\n",
@@ -480,4 +486,118 @@ mod tools {
         assert_eq!(records[0].status, 200);
         assert_eq!(records[0].attempts[0].outcome, AttemptOutcome::Ok);
     }
+}
+
+// ------------------------------------------------------------------
+// The same questions on the production harness: an Anthropic provider is
+// passed through, so these are what a Claude Code user gets.
+
+#[tokio::test]
+async fn errors_are_in_the_anthropic_shape_on_pass_through() {
+    let h = harness("anthropic").await;
+    let check = |status: StatusCode, body: &str, kind: &str| {
+        assert_eq!(json_of(body)["type"], "error", "{status}: {body}");
+        assert_eq!(json_of(body)["error"]["type"], kind, "{status}: {body}");
+        assert!(json_of(body)["error"]["message"].is_string());
+    };
+    let (s, _, body) = post_to(&h.app, "/v1/messages", &[], BODY).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    check(s, &body, "authentication_error");
+    let (s, _, body) = messages(&h, &BODY.replace("p/m", "p/nope")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    check(s, &body, "not_found_error");
+    let id = allow_model(&h.store, "p", "hidden").await;
+    let mut tx = h.store.begin().await.unwrap();
+    tx.replace_grants(id, &Grants::default()).await.unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    let (s, _, body) = messages(&h, &BODY.replace("p/m", "p/hidden")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    check(s, &body, "permission_error");
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
+
+    // A body the provider refuses is refused in the provider's own words.
+    let refusal = r#"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: field required"}}"#;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_raw(refusal.to_string(), "application/json"),
+        )
+        .mount(&h.upstream)
+        .await;
+    let (s, _, body) = messages(
+        &h,
+        r#"{"model":"p/m","messages":[{"role":"user","content":"x"}]}"#,
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(body, refusal);
+}
+
+#[tokio::test]
+async fn a_rate_limited_provider_is_relayed_with_retry_after_on_pass_through() {
+    let h = harness("anthropic").await;
+    let limited = r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "3")
+                .set_body_raw(limited.to_string(), "application/json"),
+        )
+        .mount(&h.upstream)
+        .await;
+    let (s, headers, body) = messages(&h, BODY).await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(headers["retry-after"], "3");
+    assert_eq!(body, limited);
+}
+
+#[tokio::test]
+async fn a_rejected_provider_credential_is_an_api_error_not_the_callers_on_pass_through() {
+    let h = harness("anthropic").await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(
+            json!({ "type": "error", "error": { "type": "authentication_error", "message": "bad key sk-abc" } }),
+        ))
+        .mount(&h.upstream)
+        .await;
+    let (s, _, body) = messages(&h, BODY).await;
+    assert_eq!(s, StatusCode::BAD_GATEWAY);
+    assert_eq!(json_of(&body)["error"]["type"], "api_error");
+    assert!(!body.contains("sk-abc"));
+}
+
+#[tokio::test]
+async fn a_guardrail_blocks_a_message_call_in_the_anthropic_shape_on_pass_through() {
+    let h = harness("anthropic").await;
+    Mock::given(method("POST"))
+        .respond_with(anthropic_ok())
+        .mount(&h.upstream)
+        .await;
+    let rules = json!([{ "id": "w", "matcher": { "keywords": { "words": ["swordfish"] } },
+                         "action": "block", "directions": "input" }])
+    .to_string();
+    let mut tx = h.store.begin().await.unwrap();
+    tx.insert_guardrail(NewGuardrail {
+        name: "no-secrets",
+        description: "",
+        kind: "rules",
+        rules: &rules,
+        url: None,
+        secret_enc: None,
+        timeout_ms: 3000,
+        fail_mode: "open",
+        directions: "both",
+        enabled: true,
+        is_default: true,
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    h.state.refresh().await.unwrap();
+    let (s, _, body) = messages(&h, &BODY.replace("hi", "the word is swordfish")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(json_of(&body)["type"], "error");
+    assert!(!body.contains("swordfish"));
+    assert!(h.upstream.received_requests().await.unwrap().is_empty());
 }

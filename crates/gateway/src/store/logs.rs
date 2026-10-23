@@ -25,6 +25,10 @@ pub struct NewLog {
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    /// Tokens read from and written to the provider's prompt cache; `input_tokens`
+    /// is the uncached input.
+    pub cache_read_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
     pub cost_micros: i64,
     pub priced: bool,
     pub cached: bool,
@@ -42,6 +46,16 @@ pub struct NewLog {
     /// The prompt template the call used, as `name@version`; text, so it
     /// outlives the template.
     pub prompt: Option<String>,
+    /// What the calling agent said about itself (its session, agent and
+    /// prompt ids, request class) and which agent it is (`claude-code` or
+    /// `codex`).
+    pub agent_session: Option<String>,
+    pub agent_id: Option<String>,
+    pub agent_prompt: Option<String>,
+    pub agent_class: Option<String>,
+    pub agent_client: Option<String>,
+    /// A JSON array of what translation left out of the request.
+    pub dropped: Option<String>,
 }
 
 /// A stored row.
@@ -60,6 +74,10 @@ pub struct LogRow {
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    /// Tokens read from and written to the provider's prompt cache; `input_tokens`
+    /// is the uncached input.
+    pub cache_read_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
     pub cost_micros: i64,
     pub priced: bool,
     pub cached: bool,
@@ -74,6 +92,14 @@ pub struct LogRow {
     pub guardrails: Option<String>,
     /// See [`NewLog::prompt`].
     pub prompt: Option<String>,
+    /// See [`NewLog::agent_session`].
+    pub agent_session: Option<String>,
+    pub agent_id: Option<String>,
+    pub agent_prompt: Option<String>,
+    pub agent_class: Option<String>,
+    pub agent_client: Option<String>,
+    /// See [`NewLog::dropped`].
+    pub dropped: Option<String>,
 }
 
 /// A stored row with the names of its key, user and team, which are `None`
@@ -123,6 +149,8 @@ pub struct LogFilter {
     /// Only calls whose worst guardrail action was this one (a block is worse
     /// than a redaction, a redaction worse than a flag), in either direction.
     pub guardrail: Option<crate::guardrails::log::LoggedAction>,
+    /// Only the calls of this agent session.
+    pub agent_session: Option<String>,
 }
 
 /// What `usage` groups by.
@@ -151,8 +179,12 @@ pub struct UsageSums {
     pub errors: i64,
     /// Calls the caller abandoned (status 499).
     pub cancelled: i64,
+    /// Every token sent in, cached or not.
     pub input_tokens: i64,
     pub output_tokens: i64,
+    /// Of the input tokens: those read from and written to a prompt cache.
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
     pub cost_micros: i64,
     pub unpriced_requests: i64,
 }
@@ -214,6 +246,8 @@ fn log_from(r: &AnyRow) -> LogRow {
         model: r.get("model"),
         input_tokens: r.get("input_tokens"),
         output_tokens: r.get("output_tokens"),
+        cache_read_tokens: r.get("cache_read_tokens"),
+        cache_write_tokens: r.get("cache_write_tokens"),
         cost_micros: r.get("cost_micros"),
         priced: r.get::<i64, _>("priced") != 0,
         cached: r.get::<i64, _>("cached") != 0,
@@ -223,10 +257,16 @@ fn log_from(r: &AnyRow) -> LogRow {
         tags: r.get("tags"),
         guardrails: r.get("guardrails"),
         prompt: r.get("prompt"),
+        agent_session: r.get("agent_session"),
+        agent_id: r.get("agent_id"),
+        agent_prompt: r.get("agent_prompt"),
+        agent_class: r.get("agent_class"),
+        agent_client: r.get("agent_client"),
+        dropped: r.get("dropped"),
     }
 }
 
-/// Rows per `INSERT`: 22 binds each, so a chunk stays far under the 32766
+/// Rows per `INSERT`: 30 binds each, so a chunk stays far under the 32766
 /// (SQLite) and 65535 (PostgreSQL) parameter limits.
 const LOG_INSERT_CHUNK: usize = 1000;
 
@@ -244,14 +284,19 @@ fn log_insert_sql(dialect: Dialect, rows: usize) -> String {
             let mut sql = String::from(
                 "INSERT INTO request_logs
                  (org_id, at, key_id, user_id, team_id, requested, endpoint, stream, status,
-                  provider, model, input_tokens, output_tokens, cost_micros, priced, cached,
-                  estimated, duration_ms, attempts, tags, guardrails, prompt) VALUES ",
+                  provider, model, input_tokens, output_tokens, cache_read_tokens,
+                  cache_write_tokens, cost_micros, priced, cached,
+                  estimated, duration_ms, attempts, tags, guardrails, prompt,
+                  agent_session, agent_id, agent_prompt, agent_class, agent_client, dropped)
+                 VALUES ",
             );
             for i in 0..rows {
                 if i > 0 {
                     sql.push_str(", ");
                 }
-                sql.push_str("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                sql.push_str(
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                );
             }
             dialect.sql(&sql).into_owned()
         })
@@ -285,6 +330,8 @@ impl Store {
                     .bind(&r.model)
                     .bind(r.input_tokens)
                     .bind(r.output_tokens)
+                    .bind(r.cache_read_tokens)
+                    .bind(r.cache_write_tokens)
                     .bind(r.cost_micros)
                     .bind(flag(r.priced))
                     .bind(flag(r.cached))
@@ -293,7 +340,13 @@ impl Store {
                     .bind(&r.attempts)
                     .bind(&r.tags)
                     .bind(&r.guardrails)
-                    .bind(&r.prompt);
+                    .bind(&r.prompt)
+                    .bind(&r.agent_session)
+                    .bind(&r.agent_id)
+                    .bind(&r.agent_prompt)
+                    .bind(&r.agent_class)
+                    .bind(&r.agent_client)
+                    .bind(&r.dropped);
             }
             query.execute(&mut *tx).await?;
         }
@@ -359,6 +412,10 @@ impl Store {
             clauses.push("l.endpoint = ?".into());
             text_values.push(v);
         }
+        if let Some(v) = &filter.agent_session {
+            clauses.push("l.agent_session = ?".into());
+            text_values.push(v);
+        }
         // The path is bound, never written into the statement.
         let tag_paths: Vec<String> = filter
             .tags
@@ -406,6 +463,19 @@ impl Store {
         to: &str,
         group: UsageGroup,
     ) -> Result<Vec<UsageSums>> {
+        self.usage_in_session(scope, from, to, group, None).await
+    }
+
+    /// [`Store::usage`] of the calls of one coding-agent session, when one is
+    /// named.
+    pub async fn usage_in_session(
+        &self,
+        scope: &LogScope,
+        from: &str,
+        to: &str,
+        group: UsageGroup,
+        agent_session: Option<&str>,
+    ) -> Result<Vec<UsageSums>> {
         let (scope_clause, scope_ints) = scope_sql(scope);
         // (group expression, joined table with its name column)
         let json_tag = self.dialect().json_text("l.tags");
@@ -434,24 +504,33 @@ impl Store {
             // NULL sorts last in PostgreSQL).
             "a.requests DESC, (a.gid IS NOT NULL), a.gid"
         };
+        let session_clause = if agent_session.is_some() {
+            " AND l.agent_session = ?"
+        } else {
+            ""
+        };
         // Both bounds are text over the `at` index; the day after `to`
         // is excluded, so a whole last day counts.
         let sql = format!(
             "SELECT coalesce(CAST(a.gid AS TEXT), '') AS grp, {label} AS label,
                     a.requests, a.errors, a.cancelled, a.input_tokens, a.output_tokens,
-                    a.cost_micros, a.unpriced
+                    a.cache_read_tokens, a.cache_write_tokens, a.cost_micros, a.unpriced
              FROM (SELECT {expr} AS gid,
                           COUNT(*) AS requests,
                           CAST(coalesce(SUM(CASE WHEN l.status >= 400 AND l.status <> 499 THEN 1 ELSE 0 END), 0) AS BIGINT) AS errors,
                           CAST(coalesce(SUM(CASE WHEN l.status = 499 THEN 1 ELSE 0 END), 0) AS BIGINT) AS cancelled,
-                          CAST(coalesce(SUM(l.input_tokens), 0) AS BIGINT) AS input_tokens,
+                          CAST(coalesce(SUM(l.input_tokens), 0)
+                               + coalesce(SUM(l.cache_read_tokens), 0)
+                               + coalesce(SUM(l.cache_write_tokens), 0) AS BIGINT) AS input_tokens,
                           CAST(coalesce(SUM(l.output_tokens), 0) AS BIGINT) AS output_tokens,
+                          CAST(coalesce(SUM(l.cache_read_tokens), 0) AS BIGINT) AS cache_read_tokens,
+                          CAST(coalesce(SUM(l.cache_write_tokens), 0) AS BIGINT) AS cache_write_tokens,
                           CAST(coalesce(SUM(l.cost_micros), 0) AS BIGINT) AS cost_micros,
                           CAST(coalesce(SUM(CASE WHEN l.priced = 0 AND
                               (l.input_tokens IS NOT NULL OR l.output_tokens IS NOT NULL)
                               THEN 1 ELSE 0 END), 0) AS BIGINT) AS unpriced
                    FROM request_logs l
-                   WHERE l.org_id = ? AND {scope_clause} AND l.at >= ? AND l.at < ?
+                   WHERE l.org_id = ? AND {scope_clause} AND l.at >= ? AND l.at < ?{session_clause}
                    GROUP BY gid) a
              {join}
              ORDER BY {order}"
@@ -465,11 +544,11 @@ impl Store {
         for v in &scope_ints {
             query = query.bind(*v);
         }
-        let rows = query
-            .bind(from)
-            .bind(next_day(to))
-            .fetch_all(self.pool())
-            .await?;
+        let mut query = query.bind(from).bind(next_day(to));
+        if let Some(session) = agent_session {
+            query = query.bind(session);
+        }
+        let rows = query.fetch_all(self.pool()).await?;
         Ok(rows
             .iter()
             .map(|r| UsageSums {
@@ -480,6 +559,8 @@ impl Store {
                 cancelled: r.get("cancelled"),
                 input_tokens: r.get("input_tokens"),
                 output_tokens: r.get("output_tokens"),
+                cache_read_tokens: r.get("cache_read_tokens"),
+                cache_write_tokens: r.get("cache_write_tokens"),
                 cost_micros: r.get("cost_micros"),
                 unpriced_requests: r.get("unpriced"),
             })
@@ -551,6 +632,8 @@ mod tests {
             model: None,
             input_tokens: None,
             output_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
             cost_micros: 0,
             priced: false,
             cached: false,
@@ -560,6 +643,12 @@ mod tests {
             tags: None,
             guardrails: None,
             prompt: None,
+            agent_session: None,
+            agent_id: None,
+            agent_prompt: None,
+            agent_class: None,
+            agent_client: None,
+            dropped: None,
         }
     }
 
@@ -616,6 +705,8 @@ mod tests {
                 model: Some(format!("model{i}")),
                 input_tokens: Some(n + 4),
                 output_tokens: Some(n + 5),
+                cache_read_tokens: Some(n + 8),
+                cache_write_tokens: Some(n + 9),
                 cost_micros: n + 6,
                 priced: i.is_multiple_of(3),
                 cached: i % 3 == 1,
@@ -625,6 +716,12 @@ mod tests {
                 tags: Some(format!("{{\"t\":\"{i}\"}}")),
                 guardrails: Some(format!("{{\"g\":{i}}}")),
                 prompt: Some(format!("tmpl{i}@{i}")),
+                agent_session: Some(format!("sess{i}")),
+                agent_id: Some(format!("agent{i}")),
+                agent_prompt: Some(format!("prompt{i}")),
+                agent_class: Some(format!("class{i}")),
+                agent_client: Some(format!("client{i}")),
+                dropped: Some(format!("[\"d{i}\"]")),
             }
         };
         let rows: Vec<NewLog> = (0..total).map(full).collect();
@@ -669,13 +766,21 @@ mod tests {
             assert_eq!(got.tags, want.tags, "{ctx}");
             assert_eq!(got.guardrails, want.guardrails, "{ctx}");
             assert_eq!(got.prompt, want.prompt, "{ctx}");
+            assert_eq!(got.cache_read_tokens, want.cache_read_tokens, "{ctx}");
+            assert_eq!(got.cache_write_tokens, want.cache_write_tokens, "{ctx}");
+            assert_eq!(got.agent_session, want.agent_session, "{ctx}");
+            assert_eq!(got.agent_id, want.agent_id, "{ctx}");
+            assert_eq!(got.agent_prompt, want.agent_prompt, "{ctx}");
+            assert_eq!(got.agent_class, want.agent_class, "{ctx}");
+            assert_eq!(got.agent_client, want.agent_client, "{ctx}");
+            assert_eq!(got.dropped, want.dropped, "{ctx}");
         }
     }
 
     #[test]
     fn the_insert_statement_is_built_once_per_size() {
         let a = log_insert_sql(Dialect::Postgres, 2);
-        assert!(a.contains("$44") && !a.contains("$45"));
+        assert!(a.contains("$60") && !a.contains("$61"));
         assert_eq!(a, log_insert_sql(Dialect::Postgres, 2));
         assert!(!log_insert_sql(Dialect::Sqlite, 2).contains('$'));
     }

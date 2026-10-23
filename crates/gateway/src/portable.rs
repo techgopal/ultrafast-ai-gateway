@@ -92,6 +92,14 @@ pub struct ModelEntry {
     #[serde(default)]
     #[schema(required)]
     pub output_price_micros: Option<i64>,
+    /// Per million tokens read from or written to the provider's prompt
+    /// cache. `null`: the input price is used.
+    #[serde(default)]
+    #[schema(required)]
+    pub cache_read_price_micros: Option<i64>,
+    #[serde(default)]
+    #[schema(required)]
+    pub cache_write_price_micros: Option<i64>,
     #[serde(default)]
     pub grants: GrantEntry,
 }
@@ -855,6 +863,8 @@ pub fn file_of(state: &ConfigState) -> ConfigFile {
             enabled: m.enabled,
             input_price_micros: m.input_price_micros,
             output_price_micros: m.output_price_micros,
+            cache_read_price_micros: m.cache_read_price_micros,
+            cache_write_price_micros: m.cache_write_price_micros,
             grants: grants.remove(&m.id).unwrap_or_default(),
         })
         .collect();
@@ -1089,6 +1099,8 @@ enum Op {
         enabled: Option<bool>,
         input: Option<Option<i64>>,
         output: Option<Option<i64>>,
+        cache_read: Option<Option<i64>>,
+        cache_write: Option<Option<i64>>,
         grants: Option<GrantEntry>,
     },
     CreateGuardrail {
@@ -1405,6 +1417,8 @@ impl Planner<'_> {
             for (field, price) in [
                 ("input_price_micros", entry.input_price_micros),
                 ("output_price_micros", entry.output_price_micros),
+                ("cache_read_price_micros", entry.cache_read_price_micros),
+                ("cache_write_price_micros", entry.cache_write_price_micros),
             ] {
                 if price.is_some_and(|p| p < 0) {
                     self.error(format!("{at}.{field}"), "must not be negative");
@@ -1451,6 +1465,12 @@ impl Planner<'_> {
                     if model.output_price_micros != entry.output_price_micros {
                         changes.push("output_price_micros".to_string());
                     }
+                    if model.cache_read_price_micros != entry.cache_read_price_micros {
+                        changes.push("cache_read_price_micros".to_string());
+                    }
+                    if model.cache_write_price_micros != entry.cache_write_price_micros {
+                        changes.push("cache_write_price_micros".to_string());
+                    }
                     if current != wanted {
                         changes.push("grants".to_string());
                     }
@@ -1464,6 +1484,10 @@ impl Planner<'_> {
                         enabled: has("enabled").then_some(entry.enabled),
                         input: has("input_price_micros").then_some(entry.input_price_micros),
                         output: has("output_price_micros").then_some(entry.output_price_micros),
+                        cache_read: has("cache_read_price_micros")
+                            .then_some(entry.cache_read_price_micros),
+                        cache_write: has("cache_write_price_micros")
+                            .then_some(entry.cache_write_price_micros),
                         grants: has("grants").then_some(wanted),
                     };
                     self.push(op, "model", reference, changes, false);
@@ -2968,6 +2992,10 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                     .await?;
                 tx.set_model_output_price(id, entry.output_price_micros)
                     .await?;
+                tx.set_model_cache_read_price(id, entry.cache_read_price_micros)
+                    .await?;
+                tx.set_model_cache_write_price(id, entry.cache_write_price_micros)
+                    .await?;
                 tx.replace_grants(id, &ids.grants(&entry.grants)?).await?;
                 ids.models
                     .insert(format!("{}/{}", entry.provider, entry.name), id);
@@ -2977,6 +3005,8 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                 enabled,
                 input,
                 output,
+                cache_read,
+                cache_write,
                 grants,
             } => {
                 if let Some(enabled) = enabled {
@@ -2987,6 +3017,12 @@ async fn apply(tx: &mut Tx<'_>, state: &ConfigState, plan: Plan, actor: &Actor<'
                 }
                 if let Some(price) = output {
                     tx.set_model_output_price(id, price).await?;
+                }
+                if let Some(price) = cache_read {
+                    tx.set_model_cache_read_price(id, price).await?;
+                }
+                if let Some(price) = cache_write {
+                    tx.set_model_cache_write_price(id, price).await?;
                 }
                 if let Some(grants) = grants {
                     tx.replace_grants(id, &ids.grants(&grants)?).await?;

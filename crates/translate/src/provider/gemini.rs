@@ -161,7 +161,7 @@ fn contents_value(req: &ChatRequest) -> Result<Vec<Value>, TranslateError> {
 fn declaration(t: &Tool) -> Value {
     // `parametersJsonSchema` takes a full JSON Schema; `parameters` is an
     // OpenAPI subset that rejects what OpenAI-style schemas carry (additionalProperties, ...).
-    let mut o = json!({ "name": t.name, "parametersJsonSchema": t.parameters });
+    let mut o = json!({ "name": t.name, "parametersJsonSchema": t.wire_parameters() });
     if let Some(d) = &t.description {
         o["description"] = json!(d);
     }
@@ -297,8 +297,12 @@ fn output_tokens(u: &Value) -> u32 {
 /// Reads `usageMetadata` into the state, when the chunk has it.
 fn read_usage(state: &mut StreamState, v: &Value) {
     if let Some(u) = v.get("usageMetadata").filter(|u| u.is_object()) {
-        state.input_tokens = u["promptTokenCount"].as_u64().map(saturate);
+        let cached = u["cachedContentTokenCount"].as_u64().unwrap_or(0);
+        state.input_tokens = u["promptTokenCount"]
+            .as_u64()
+            .map(|n| saturate(n.saturating_sub(cached)));
         state.output_tokens = Some(output_tokens(u));
+        state.cache_read_tokens = Some(saturate(cached));
     }
 }
 
@@ -388,13 +392,20 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
             arguments,
         })
         .collect();
-    let usage = v
-        .get("usageMetadata")
-        .filter(|u| u.is_object())
-        .map(|u| Usage {
-            input_tokens: saturate(u["promptTokenCount"].as_u64().unwrap_or(0)),
+    let usage = v.get("usageMetadata").filter(|u| u.is_object()).map(|u| {
+        let cached = u["cachedContentTokenCount"].as_u64().unwrap_or(0);
+        Usage {
+            input_tokens: saturate(
+                u["promptTokenCount"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_sub(cached),
+            ),
             output_tokens: output_tokens(u),
-        });
+            cache_read_input_tokens: saturate(cached),
+            cache_write_input_tokens: 0,
+        }
+    });
     Ok(ChatResponse {
         id: v["responseId"].as_str().unwrap_or_default().to_string(),
         model: v["modelVersion"].as_str().unwrap_or_default().to_string(),
@@ -506,6 +517,7 @@ mod tests {
             parallel_tool_calls: None,
             response_format: None,
             reasoning_effort: None,
+            dropped: Vec::new(),
         }
     }
 
@@ -570,7 +582,8 @@ mod tests {
             r.usage,
             Some(Usage {
                 input_tokens: 7,
-                output_tokens: 14
+                output_tokens: 14,
+                ..Default::default()
             })
         );
     }
@@ -598,6 +611,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 7,
                     output_tokens: 5,
+                    ..Default::default()
                 }),
             },
         ];
@@ -674,7 +688,8 @@ mod tests {
             r.usage,
             Some(Usage {
                 input_tokens: 7,
-                output_tokens: 3
+                output_tokens: 3,
+                ..Default::default()
             })
         );
     }
@@ -838,6 +853,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 7,
                     output_tokens: 2,
+                    ..Default::default()
                 }),
             },
         ]
@@ -893,7 +909,8 @@ mod tests {
                 finish_reason: Some(FinishReason::ContentFilter),
                 usage: Some(Usage {
                     input_tokens: 3,
-                    output_tokens: 0
+                    output_tokens: 0,
+                    ..Default::default()
                 }),
             }]
         );
@@ -936,6 +953,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 7,
                     output_tokens: 5,
+                    ..Default::default()
                 }),
             },
         ];
@@ -988,6 +1006,7 @@ mod tests {
             description: Some("Weather".into()),
             parameters: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}}),
             strict: None,
+            freeform: false,
         }
     }
 
@@ -995,6 +1014,18 @@ mod tests {
         let mut req = request(false);
         req.tools = vec![weather_tool()];
         req
+    }
+
+    #[test]
+    fn a_freeform_tool_is_a_function_with_one_string_input() {
+        let mut req = with_tools();
+        req.tools[0].freeform = true;
+        let r = build_request(&target(), &req).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(
+            v["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"],
+            serde_json::json!({"type":"object","properties":{"input":{"type":"string"}},"required":["input"]})
+        );
     }
 
     #[test]
@@ -1361,6 +1392,35 @@ mod tests {
         assert_eq!(
             v["generationConfig"],
             serde_json::json!({"responseMimeType":"application/json"})
+        );
+    }
+
+    #[test]
+    fn cached_prompt_tokens_are_cache_reads() {
+        let want = Usage {
+            input_tokens: 20,
+            output_tokens: 5,
+            cache_read_input_tokens: 100,
+            cache_write_input_tokens: 0,
+        };
+        let usage = r#""usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":5,"cachedContentTokenCount":100}"#;
+        let body = format!(
+            r#"{{"candidates":[{{"content":{{"parts":[{{"text":"yo"}}]}},"finishReason":"STOP"}}],{usage}}}"#
+        );
+        let r = parse_response(ProviderKind::Gemini, 200, body.as_bytes()).unwrap();
+        assert_eq!(r.usage, Some(want));
+        let mut d = StreamDecoder::new(ProviderKind::Gemini);
+        let mut events = d.feed(format!("data: {body}\n\n").as_bytes()).unwrap();
+        events.extend(d.finish());
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::Delta { text: "yo".into() },
+                StreamEvent::Done {
+                    finish_reason: Some(FinishReason::Stop),
+                    usage: Some(want),
+                }
+            ]
         );
     }
 }

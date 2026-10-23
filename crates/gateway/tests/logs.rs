@@ -20,6 +20,7 @@ use wiremock::{Mock, ResponseTemplate};
 
 fn record(requested: &str) -> RequestRecord {
     RequestRecord {
+        hosted_calls: 0,
         tags: Default::default(),
         key_id: Some(1),
         user_id: Some(2),
@@ -31,6 +32,7 @@ fn record(requested: &str) -> RequestRecord {
         usage: Some(Usage {
             input_tokens: 1_000,
             output_tokens: 500,
+            ..Default::default()
         }),
         attempts: vec![Attempt {
             provider: "p".into(),
@@ -51,6 +53,8 @@ fn record(requested: &str) -> RequestRecord {
         started_unix_ms: 0,
         guardrails: None,
         prompt: None,
+        agent: Default::default(),
+        dropped: Vec::new(),
     }
 }
 
@@ -59,6 +63,8 @@ fn prices(input: Option<i64>, output: Option<i64>) -> PriceLookup {
         (provider == "p" && model == "m").then_some(Price {
             input_micros: input,
             output_micros: output,
+            cache_read_micros: None,
+            cache_write_micros: None,
         })
     })
 }
@@ -148,6 +154,7 @@ async fn cost_is_tokens_times_price_per_million_rounded_half_up() {
     half.usage = Some(Usage {
         input_tokens: 1,
         output_tokens: 0,
+        ..Default::default()
     });
     sink.record(half);
     stop.send(true).unwrap();
@@ -267,6 +274,7 @@ async fn only_a_side_with_tokens_needs_a_price() {
     embedding.usage = Some(Usage {
         input_tokens: 10_000,
         output_tokens: 0,
+        ..Default::default()
     });
     sink.record(embedding);
     sink.record(record("chat"));
@@ -490,6 +498,8 @@ fn log_at(at: &str, requested: &str) -> NewLog {
         model: None,
         input_tokens: None,
         output_tokens: None,
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: 0,
         priced: false,
         cached: false,
@@ -498,6 +508,12 @@ fn log_at(at: &str, requested: &str) -> NewLog {
         attempts: "[]".into(),
         guardrails: None,
         prompt: None,
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     }
 }
 
@@ -717,4 +733,51 @@ async fn a_batch_the_writer_holds_when_stop_arrives_is_written() {
         .unwrap();
     assert_eq!(store.recent_logs(10).await.unwrap().len(), 1);
     assert_eq!(stats.written.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn a_call_records_its_agent_and_what_was_dropped() {
+    use common::{harness, post_to};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+    let h = harness("openai").await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "c1", "model": "m",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 2,
+                      "prompt_tokens_details": {"cached_tokens": 100}}
+        })))
+        .mount(&h.upstream)
+        .await;
+    let mut body: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/agents/claude-code-2.1.305.json")).unwrap();
+    body["model"] = "p/m".into();
+    body["stream"] = false.into();
+    let bearer = format!("Bearer {}", h.key);
+    let (status, _, text) = post_to(
+        &h.app,
+        "/v1/messages?beta=true",
+        &[
+            ("authorization", &bearer),
+            ("anthropic-version", "2023-06-01"),
+            ("x-claude-code-session-id", "sess-42"),
+            ("x-claude-code-prompt-id", "prompt-7"),
+        ],
+        &body.to_string(),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+    let r = &h.sink.wait_for(1).await[0];
+    assert_eq!(r.agent.session.as_deref(), Some("sess-42"));
+    assert_eq!(r.agent.prompt.as_deref(), Some("prompt-7"));
+    assert_eq!(r.agent.client, Some("claude-code"));
+    assert!(
+        r.dropped.iter().any(|d| d == "context_management"),
+        "{:?}",
+        r.dropped
+    );
+    let u = r.usage.unwrap();
+    assert_eq!((u.input_tokens, u.cache_read_input_tokens), (20, 100));
 }

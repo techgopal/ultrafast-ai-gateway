@@ -34,6 +34,8 @@ fn log(
         model: model.map(str::to_string),
         input_tokens: tokens.map(|t| t.0),
         output_tokens: tokens.map(|t| t.1),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: cost,
         priced,
         cached: false,
@@ -42,6 +44,12 @@ fn log(
         attempts: "[]".into(),
         guardrails: None,
         prompt: None,
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     }
 }
 
@@ -184,6 +192,7 @@ fn row(group: &str, label: &str, v: [i64; 6]) -> Value {
         "group": group, "label": label,
         "requests": v[0], "errors": v[1], "input_tokens": v[2], "output_tokens": v[3],
         "cost_micros": v[4], "unpriced_requests": v[5], "cancelled": 0,
+        "cache_read_tokens": 0, "cache_write_tokens": 0,
     })
 }
 
@@ -204,6 +213,47 @@ async fn totals_are_exact_by_day() {
         ])
     );
     assert_eq!(body["total"], row("total", "Total", [7, 2, 40, 21, 184, 1]));
+}
+
+#[tokio::test]
+async fn input_tokens_count_cache_reads_and_writes_and_show_them_apart() {
+    let org = org().await;
+    let mut a = log(
+        "2026-01-01 10:00:00",
+        Some(org.lena),
+        None,
+        "a",
+        200,
+        Some("m"),
+        Some((7, 3)),
+        10,
+        true,
+    );
+    a.cache_read_tokens = Some(100);
+    a.cache_write_tokens = Some(20);
+    let b = log(
+        "2026-01-02 10:00:00",
+        Some(org.lena),
+        None,
+        "b",
+        200,
+        Some("m"),
+        Some((5, 1)),
+        5,
+        true,
+    );
+    org.api.store.insert_logs(&[a, b]).await.unwrap();
+    let body = usage(&org, "maya", &format!("?{JAN}&group=day")).await;
+    let first = &body["rows"][0];
+    // 7 uncached + 100 read + 20 written
+    assert_eq!(first["input_tokens"], 127);
+    assert_eq!(first["output_tokens"], 3);
+    assert_eq!(first["cache_read_tokens"], 100);
+    assert_eq!(first["cache_write_tokens"], 20);
+    assert_eq!(body["rows"][1]["input_tokens"], 5);
+    assert_eq!(body["total"]["input_tokens"], 132);
+    assert_eq!(body["total"]["cache_read_tokens"], 100);
+    assert_eq!(body["total"]["cache_write_tokens"], 20);
 }
 
 #[tokio::test]
@@ -641,4 +691,82 @@ async fn a_bad_tag_group_is_422_on_group() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{group}: {body}");
         assert!(body["error"]["fields"]["group"].is_string(), "{group}");
     }
+}
+
+#[tokio::test]
+async fn usage_can_be_filtered_by_agent_session() {
+    let org = org().await;
+    let g = Some("gpt-4o");
+    let mut rows = Vec::new();
+    for (i, session) in [Some("s-1"), Some("s-1"), Some("s-2"), None]
+        .into_iter()
+        .enumerate()
+    {
+        let mut r = log(
+            "2026-01-01 10:00:00",
+            Some(org.lena),
+            None,
+            "r",
+            if i == 1 { 500 } else { 200 },
+            g,
+            Some((10, 5)),
+            100,
+            true,
+        );
+        r.agent_session = session.map(str::to_string);
+        rows.push(r);
+    }
+    org.api.store.insert_logs(&rows).await.unwrap();
+    let maya = org.sign_in("maya").await;
+    let url = "/api/usage?from=2026-01-01&to=2026-01-02&group=model";
+    let (_, all) = org.call(Some(&maya), "GET", url, None).await;
+    assert_eq!(all["total"]["requests"], 4);
+    let (status, one) = org
+        .call(
+            Some(&maya),
+            "GET",
+            &format!("{url}&agent_session=s-1"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{one}");
+    assert_eq!(one["total"]["requests"], 2);
+    assert_eq!(one["total"]["errors"], 1);
+    assert_eq!(one["total"]["cost_micros"], 200);
+    // A session nobody used sums to nothing; an empty value is no filter.
+    let (_, none) = org
+        .call(
+            Some(&maya),
+            "GET",
+            &format!("{url}&agent_session=nope"),
+            None,
+        )
+        .await;
+    assert_eq!(none["total"]["requests"], 0);
+    let (_, empty) = org
+        .call(Some(&maya), "GET", &format!("{url}&agent_session="), None)
+        .await;
+    assert_eq!(empty["total"]["requests"], 4);
+    // The scope still applies: another member sees none of lena's calls.
+    let tomas = org.sign_in("tomas").await;
+    let (_, theirs) = org
+        .call(
+            Some(&tomas),
+            "GET",
+            &format!("{url}&agent_session=s-1"),
+            None,
+        )
+        .await;
+    assert_eq!(theirs["total"]["requests"], 0);
+    // A value that cannot be a session id is a 422 on the field.
+    let (status, body) = org
+        .call(
+            Some(&maya),
+            "GET",
+            &format!("{url}&agent_session=a%20b"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body["error"]["fields"]["agent_session"].is_string());
 }

@@ -613,6 +613,7 @@ mod tests {
             parallel_tool_calls: None,
             response_format: None,
             reasoning_effort: None,
+            dropped: Vec::new(),
         };
         apply(&v, &reference, &mut r).unwrap();
         assert_eq!(r.model, "p/m");

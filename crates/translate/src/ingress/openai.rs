@@ -195,6 +195,7 @@ pub fn parse_tools(tools: Vec<Value>) -> Result<Vec<Tool>, TranslateError> {
             description,
             parameters,
             strict,
+            freeform: false,
         });
     }
     Ok(out)
@@ -497,16 +498,23 @@ pub fn parse_prompted(body: &[u8]) -> Result<(ChatRequest, Option<PromptRef>), T
             None => None,
             Some(v) => parse_reasoning_effort(v)?,
         },
+        dropped: Vec::new(),
     };
     Ok((request, prompt))
 }
 
-/// The total is 64-bit: both counts may be saturated at `u32::MAX`.
+/// The total is 64-bit: counts may be saturated at `u32::MAX`. `prompt_tokens`
+/// includes the tokens read from or written to a prompt cache (OpenAI's
+/// meaning); `Usage.input_tokens` alone is only the uncached part.
 fn usage_json(u: Usage) -> Value {
+    let prompt = u64::from(u.input_tokens)
+        + u64::from(u.cache_read_input_tokens)
+        + u64::from(u.cache_write_input_tokens);
     json!({
-        "prompt_tokens": u.input_tokens,
+        "prompt_tokens": prompt,
         "completion_tokens": u.output_tokens,
-        "total_tokens": u64::from(u.input_tokens) + u64::from(u.output_tokens),
+        "total_tokens": prompt + u64::from(u.output_tokens),
+        "prompt_tokens_details": {"cached_tokens": u.cache_read_input_tokens},
     })
 }
 
@@ -1028,6 +1036,20 @@ mod tests {
     }
 
     #[test]
+    fn prompt_tokens_include_cached_tokens() {
+        let v = usage_json(Usage {
+            input_tokens: 20,
+            output_tokens: 5,
+            cache_read_input_tokens: 100,
+            cache_write_input_tokens: 10,
+        });
+        assert_eq!(v["prompt_tokens"], 130);
+        assert_eq!(v["prompt_tokens_details"]["cached_tokens"], 100);
+        assert_eq!(v["completion_tokens"], 5);
+        assert_eq!(v["total_tokens"], 135);
+    }
+
+    #[test]
     fn renders_response() {
         let r = ChatResponse {
             id: "id1".into(),
@@ -1038,6 +1060,7 @@ mod tests {
             usage: Some(Usage {
                 input_tokens: 3,
                 output_tokens: 2,
+                ..Default::default()
             }),
         };
         let v = render_response(&r, 100);
@@ -1046,6 +1069,7 @@ mod tests {
         assert_eq!(v["choices"][0]["message"]["content"], "hello");
         assert_eq!(v["choices"][0]["finish_reason"], "stop");
         assert_eq!(v["usage"]["prompt_tokens"], 3);
+        assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 0);
         assert_eq!(v["usage"]["completion_tokens"], 2);
         assert_eq!(v["usage"]["total_tokens"], 5);
     }
@@ -1188,6 +1212,7 @@ mod tests {
         let usage = Some(Usage {
             input_tokens: u32::MAX,
             output_tokens: u32::MAX,
+            ..Default::default()
         });
         let r = ChatResponse {
             id: "id1".into(),

@@ -62,6 +62,8 @@ pub struct SnapModel {
     /// Per million tokens, in millionths of a dollar; `None` is unknown.
     pub input_price_micros: Option<i64>,
     pub output_price_micros: Option<i64>,
+    pub cache_read_price_micros: Option<i64>,
+    pub cache_write_price_micros: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -848,6 +850,8 @@ impl Snapshot {
                 user_ids: Vec::new(),
                 input_price_micros: m.input_price_micros,
                 output_price_micros: m.output_price_micros,
+                cache_read_price_micros: m.cache_read_price_micros,
+                cache_write_price_micros: m.cache_write_price_micros,
             };
             models
                 .entry(m.provider_name)

@@ -1206,11 +1206,11 @@ mod final_wave {
     }
 }
 
-// An Anthropic provider that is never reached: it cannot express some
-// features, and a request it refuses is not sent.
-async fn anthropic(h: &Harness, name: &str) -> i64 {
+// A Gemini provider that is never reached: it cannot express some features
+// (a reasoning effort), and a request it refuses is not sent.
+async fn gemini(h: &Harness, name: &str) -> i64 {
     h.store
-        .insert_provider(name, "anthropic", "http://127.0.0.1:1", None)
+        .insert_provider(name, "gemini", "http://127.0.0.1:1", None)
         .await
         .unwrap();
     allow_model(&h.store, name, "m").await
@@ -1228,7 +1228,7 @@ fn effort(model: &str, stream: bool) -> String {
 async fn a_target_that_lacks_a_feature_is_skipped_for_the_next() {
     for stream in [false, true] {
         let h = harness("openai").await;
-        let first = anthropic(&h, "anth").await;
+        let first = gemini(&h, "anth").await;
         let (b, mb) = provider(&h, "b").await;
         let answer = if stream {
             sse("fine", true)
@@ -1269,8 +1269,8 @@ async fn a_target_that_lacks_a_feature_is_skipped_for_the_next() {
 async fn a_call_no_target_can_express_is_400_with_the_first_message() {
     for stream in [false, true] {
         let h = harness("openai").await;
-        let a = anthropic(&h, "a1").await;
-        let b = anthropic(&h, "a2").await;
+        let a = gemini(&h, "a1").await;
+        let b = gemini(&h, "a2").await;
         route(&h, "r", &[a], &[b], DEFAULTS).await;
         let (s, body) = post_chat(&h.app, Some(&h.key), &effort("r", stream)).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
@@ -1293,7 +1293,7 @@ async fn a_call_no_target_can_express_is_400_with_the_first_message() {
 async fn a_primary_that_has_the_feature_is_not_skipped() {
     let h = harness("openai").await;
     let (a, ma) = provider(&h, "a").await;
-    let fb = anthropic(&h, "anth").await;
+    let fb = gemini(&h, "anth").await;
     Mock::given(method("POST"))
         .respond_with(ok("a"))
         .mount(&a)
@@ -1309,7 +1309,7 @@ async fn a_primary_that_has_the_feature_is_not_skipped() {
 async fn a_skip_leaves_the_cache_key_of_the_request_alone() {
     use ufaigw_gateway::cache::{CacheScope, RouteCache};
     let h = harness("openai").await;
-    let first = anthropic(&h, "anth").await;
+    let first = gemini(&h, "anth").await;
     let (b, mb) = provider(&h, "b").await;
     Mock::given(method("POST"))
         .respond_with(ok("fine"))

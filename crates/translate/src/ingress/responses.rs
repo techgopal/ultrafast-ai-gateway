@@ -34,6 +34,9 @@ pub struct Parsed {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Echo {
     pub tools: Vec<Value>,
+    /// Names of the freeform (`custom`) tools: calls to them are answered as
+    /// `custom_tool_call` items.
+    pub custom: Vec<String>,
     pub tool_choice: Value,
     pub parallel_tool_calls: bool,
     pub temperature: Option<f32>,
@@ -48,11 +51,21 @@ impl Echo {
                 .tools
                 .iter()
                 .map(|t| {
-                    json!({
-                        "type": "function", "name": t.name, "description": t.description,
-                        "parameters": t.parameters, "strict": t.strict,
-                    })
+                    if t.freeform {
+                        json!({"type": "custom", "name": t.name, "description": t.description})
+                    } else {
+                        json!({
+                            "type": "function", "name": t.name, "description": t.description,
+                            "parameters": t.parameters, "strict": t.strict,
+                        })
+                    }
                 })
+                .collect(),
+            custom: r
+                .tools
+                .iter()
+                .filter(|t| t.freeform)
+                .map(|t| t.name.clone())
                 .collect(),
             tool_choice: match &r.tool_choice {
                 None | Some(ToolChoice::Auto) => json!("auto"),
@@ -74,10 +87,6 @@ fn invalid(m: impl Into<String>) -> TranslateError {
 
 fn unsupported(m: impl Into<String>) -> TranslateError {
     TranslateError::Unsupported(m.into())
-}
-
-fn unsupported_field(field: &str) -> TranslateError {
-    unsupported(format!("field '{field}' is not supported yet"))
 }
 
 /// Accepted and not used: they cannot change the generated text.
@@ -186,9 +195,44 @@ fn parse_message(item: &Value, fields: &Map<String, Value>) -> Result<Message, T
     })
 }
 
-fn parse_input(items: &[Value]) -> Result<Vec<Message>, TranslateError> {
+/// The text of a tool output: a string, or content parts (`input_text`).
+fn output_text(item: &Value, what: &str) -> Result<String, TranslateError> {
+    match &item["output"] {
+        Value::String(t) => Ok(t.clone()),
+        Value::Array(parts) => {
+            let mut out = String::new();
+            for p in parts {
+                match (p["type"].as_str(), p["text"].as_str()) {
+                    (Some("input_text" | "output_text" | "text"), Some(t)) => out.push_str(t),
+                    _ => {
+                        return Err(unsupported(format!(
+                            "{what} 'output' holds a part that is not text"
+                        )))
+                    }
+                }
+            }
+            Ok(out)
+        }
+        _ => Err(invalid(format!("{what} 'output' must be a string"))),
+    }
+}
+
+/// Calls in a row, and a call after the assistant's text, are one assistant turn.
+fn push_call(out: &mut Vec<Message>, call: ToolCall) {
+    match out.last_mut() {
+        Some(m) if m.role == Role::Assistant => m.tool_calls.push(call),
+        _ => {
+            let mut m = Message::text(Role::Assistant, "");
+            m.content.clear();
+            m.tool_calls.push(call);
+            out.push(m);
+        }
+    }
+}
+
+fn parse_input(items: &[Value], dropped: &mut Vec<String>) -> Result<Vec<Message>, TranslateError> {
     let mut out: Vec<Message> = Vec::with_capacity(items.len());
-    for item in items {
+    for (at, item) in items.iter().enumerate() {
         let fields = item
             .as_object()
             .ok_or_else(|| invalid("an input item must be an object"))?;
@@ -204,30 +248,35 @@ fn parse_input(items: &[Value]) -> Result<Vec<Message>, TranslateError> {
                     fields,
                     &["type", "id", "call_id", "name", "arguments", "status"],
                 )?;
-                let call = ToolCall {
-                    id: string_field(item, "call_id", "function_call")?,
-                    name: string_field(item, "name", "function_call")?,
-                    arguments: string_field(item, "arguments", "function_call")?,
-                };
-                // Calls in a row, and a call after the assistant's text, are
-                // one assistant turn.
-                match out.last_mut() {
-                    Some(m) if m.role == Role::Assistant => m.tool_calls.push(call),
-                    _ => {
-                        let mut m = Message::text(Role::Assistant, "");
-                        m.content.clear();
-                        m.tool_calls.push(call);
-                        out.push(m);
-                    }
-                }
+                push_call(
+                    &mut out,
+                    ToolCall {
+                        id: string_field(item, "call_id", "function_call")?,
+                        name: string_field(item, "name", "function_call")?,
+                        arguments: string_field(item, "arguments", "function_call")?,
+                    },
+                );
             }
-            "function_call_output" => {
+            // A freeform tool's call: its input text is the one argument.
+            "custom_tool_call" => {
+                reject_unknown(
+                    fields,
+                    &["type", "id", "call_id", "name", "input", "status"],
+                )?;
+                let input = string_field(item, "input", "custom_tool_call")?;
+                push_call(
+                    &mut out,
+                    ToolCall {
+                        id: string_field(item, "call_id", "custom_tool_call")?,
+                        name: string_field(item, "name", "custom_tool_call")?,
+                        arguments: json!({ "input": input }).to_string(),
+                    },
+                );
+            }
+            "function_call_output" | "custom_tool_call_output" => {
                 reject_unknown(fields, &["type", "id", "call_id", "output", "status"])?;
-                let call_id = string_field(item, "call_id", "function_call_output")?;
-                let output = item["output"]
-                    .as_str()
-                    .ok_or_else(|| invalid("function_call_output 'output' must be a string"))?;
-                let mut m = Message::text(Role::Tool, output);
+                let call_id = string_field(item, "call_id", kind)?;
+                let mut m = Message::text(Role::Tool, output_text(item, kind)?);
                 m.tool_call_id = Some(call_id);
                 out.push(m);
             }
@@ -236,47 +285,73 @@ fn parse_input(items: &[Value]) -> Result<Vec<Message>, TranslateError> {
             // The one place the gateway accepts input and ignores it, so that
             // clients which send back what they were given still work.
             "reasoning" => {}
-            other => {
-                return Err(unsupported(format!(
-                    "input item type '{other}' is not supported yet"
-                )))
-            }
+            // Searches, tool search calls and whatever comes next: not
+            // carried, and named.
+            other => dropped.push(format!("input[{at}]:{other}")),
         }
     }
     Ok(out)
 }
 
-fn parse_tools_field(tools: &[Value]) -> Result<Vec<crate::types::Tool>, TranslateError> {
-    let mut wrapped = Vec::with_capacity(tools.len());
-    for t in tools {
-        let kind = t["type"].as_str().unwrap_or("unknown");
-        if kind != "function" {
-            return Err(unsupported(format!(
-                "tool type '{kind}' is not supported yet"
-            )));
-        }
+/// Tools the model can call here: `function`, and `custom` (freeform) as a
+/// function of one string. Hosted tools (`web_search`, `tool_search`,
+/// `namespace`, ...) are dropped and named `tools[N]:<type>`.
+fn parse_tools_field(
+    tools: &[Value],
+    dropped: &mut Vec<String>,
+) -> Result<Vec<crate::types::Tool>, TranslateError> {
+    let mut out = Vec::with_capacity(tools.len());
+    for (at, t) in tools.iter().enumerate() {
         let fields = t
             .as_object()
             .ok_or_else(|| invalid("a tool must be an object"))?;
-        reject_unknown(
-            fields,
-            &["type", "name", "description", "parameters", "strict"],
-        )?;
-        let mut f = fields.clone();
-        f.remove("type");
-        wrapped.push(json!({"type": "function", "function": Value::Object(f)}));
+        match t["type"].as_str().unwrap_or("unknown") {
+            "function" => {
+                let mut f = Map::new();
+                for (k, v) in fields {
+                    match k.as_str() {
+                        "type" => {}
+                        "name" | "description" | "parameters" | "strict" => {
+                            f.insert(k.clone(), v.clone());
+                        }
+                        other => dropped.push(format!("tools[{at}].{other}")),
+                    }
+                }
+                let wrapped = json!({"type": "function", "function": Value::Object(f)});
+                out.extend(parse_tools(vec![wrapped])?);
+            }
+            "custom" => {
+                let name = string_field(t, "name", "custom tool")?;
+                let mut description = t["description"].as_str().unwrap_or_default().to_string();
+                if let Some(grammar) = t["format"]["definition"].as_str() {
+                    if !description.is_empty() {
+                        description.push_str("\n\n");
+                    }
+                    description.push_str("Input grammar:\n");
+                    description.push_str(grammar);
+                }
+                out.push(crate::types::Tool {
+                    name,
+                    description: (!description.is_empty()).then_some(description),
+                    parameters: crate::types::Tool::freeform_parameters(),
+                    strict: None,
+                    freeform: true,
+                });
+            }
+            other => dropped.push(format!("tools[{at}]:{other}")),
+        }
     }
-    parse_tools(wrapped)
+    Ok(out)
 }
 
-fn parse_choice(v: &Value) -> Result<ToolChoice, TranslateError> {
+fn parse_choice(v: &Value, dropped: &mut Vec<String>) -> Result<ToolChoice, TranslateError> {
     match v {
         Value::Object(o) => {
             let kind = v["type"].as_str().unwrap_or("unknown");
-            if kind != "function" {
-                return Err(unsupported(format!(
-                    "tool_choice type '{kind}' is not supported yet"
-                )));
+            if kind != "function" && kind != "custom" {
+                // A choice the gateway cannot express leaves the model to choose.
+                dropped.push(format!("tool_choice:{kind}"));
+                return Ok(ToolChoice::Auto);
             }
             reject_unknown(o, &["type", "name"])?;
             parse_tool_choice(json!({"type": "function", "function": {"name": v["name"]}}))
@@ -285,14 +360,18 @@ fn parse_choice(v: &Value) -> Result<ToolChoice, TranslateError> {
     }
 }
 
-fn parse_text(v: &Value) -> Result<Option<ResponseFormat>, TranslateError> {
+fn parse_text(
+    v: &Value,
+    dropped: &mut Vec<String>,
+) -> Result<Option<ResponseFormat>, TranslateError> {
     let fields = v
         .as_object()
         .ok_or_else(|| invalid("text must be an object"))?;
-    reject_unknown(fields, &["format", "verbosity"])
-        .map_err(|_| unsupported_field("text (only 'format' is supported)"))?;
-    if !fields.get("verbosity").is_none_or(Value::is_null) {
-        return Err(unsupported_field("text.verbosity"));
+    // `verbosity` and whatever else comes: named, not carried.
+    for (k, val) in fields {
+        if k != "format" && !val.is_null() {
+            dropped.push(format!("text.{k}"));
+        }
     }
     let format = match fields.get("format") {
         None | Some(Value::Null) => return Ok(None),
@@ -314,7 +393,7 @@ fn parse_text(v: &Value) -> Result<Option<ResponseFormat>, TranslateError> {
 /// `reasoning`: `effort` goes on to the provider (OpenAI and Azure; the
 /// others refuse it); `summary` and `generate_summary` are checked and
 /// ignored, since no summaries are produced.
-fn parse_reasoning(v: &Value) -> Result<Option<String>, TranslateError> {
+fn parse_reasoning(v: &Value, dropped: &mut Vec<String>) -> Result<Option<String>, TranslateError> {
     let o = v
         .as_object()
         .ok_or_else(|| invalid("reasoning must be an object"))?;
@@ -330,10 +409,8 @@ fn parse_reasoning(v: &Value) -> Result<Option<String>, TranslateError> {
                     )))
                 }
             },
-            other if val.is_null() => {
-                let _ = other;
-            }
-            other => return Err(unsupported_field(&format!("reasoning.{other}"))),
+            _ if val.is_null() => {}
+            other => dropped.push(format!("reasoning.{other}")),
         }
     }
     parse_reasoning_effort(o.get("effort").unwrap_or(&Value::Null))
@@ -364,6 +441,11 @@ fn check_include(v: Option<&Value>) -> Result<(), TranslateError> {
 
 pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
     let v: Value = serde_json::from_slice(body).map_err(|e| invalid(e.to_string()))?;
+    parse_request_value(&v)
+}
+
+/// [`parse_request`] for a body that is already read as JSON.
+pub fn parse_request_value(v: &Value) -> Result<Parsed, TranslateError> {
     let o = v
         .as_object()
         .ok_or_else(|| invalid("the request body must be a JSON object"))?;
@@ -413,9 +495,12 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
         "include",
         "truncation",
     ];
+    // What the agents send next (client_metadata, max_tool_calls, ...) is
+    // named, not refused.
+    let mut dropped = Vec::new();
     for (k, val) in o {
         if !val.is_null() && !KNOWN.contains(&k.as_str()) && !IGNORED_FIELDS.contains(&k.as_str()) {
-            return Err(unsupported_field(k));
+            dropped.push(k.clone());
         }
     }
     let prompt = match o.get("prompt") {
@@ -442,7 +527,7 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
             if items.is_empty() && prompt.is_none() {
                 return Err(invalid("input must not be empty"));
             }
-            let parsed = parse_input(items)?;
+            let parsed = parse_input(items, &mut dropped)?;
             if parsed.is_empty() && prompt.is_none() {
                 return Err(invalid("input has nothing but reasoning items"));
             }
@@ -466,7 +551,7 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
     };
     let reasoning_effort = match o.get("reasoning") {
         None | Some(Value::Null) => None,
-        Some(r) => parse_reasoning(r)?,
+        Some(r) => parse_reasoning(r, &mut dropped)?,
     };
     check_include(o.get("include"))?;
     match o.get("truncation") {
@@ -479,16 +564,27 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
     }
     let tools = match o.get("tools") {
         None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(t)) => parse_tools_field(t)?,
+        Some(Value::Array(t)) => parse_tools_field(t, &mut dropped)?,
         Some(_) => return Err(invalid("tools must be an array")),
     };
-    let tool_choice = match o.get("tool_choice") {
+    let mut tool_choice = match o.get("tool_choice") {
         None | Some(Value::Null) => None,
-        Some(c) => Some(parse_choice(c)?),
+        Some(c) => Some(parse_choice(c, &mut dropped)?),
     };
+    let mut parallel_tool_calls = parallel_tool_calls;
+    let had_tools = o
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|t| !t.is_empty());
+    if had_tools && tools.is_empty() && tool_choice.is_some() {
+        // Every tool was one the gateway cannot carry: nothing to choose from.
+        tool_choice = None;
+        parallel_tool_calls = None;
+        dropped.push("tool_choice".into());
+    }
     let response_format = match o.get("text") {
         None | Some(Value::Null) => None,
-        Some(t) => parse_text(t)?,
+        Some(t) => parse_text(t, &mut dropped)?,
     };
     Ok(Parsed {
         request: ChatRequest {
@@ -504,6 +600,7 @@ pub fn parse_request(body: &[u8]) -> Result<Parsed, TranslateError> {
             parallel_tool_calls,
             response_format,
             reasoning_effort,
+            dropped,
         },
         prompt,
     })
@@ -538,6 +635,25 @@ fn call_item(item_id: &str, call_id: &str, name: &str, arguments: &str, status: 
     })
 }
 
+/// A call to a freeform tool: `input` is the text the model wrote.
+fn custom_item(item_id: &str, call_id: &str, name: &str, input: &str, status: &str) -> Value {
+    json!({
+        "id": item_id, "type": "custom_tool_call", "call_id": call_id, "name": name,
+        "input": input, "status": status,
+    })
+}
+
+/// The `input` of a freeform call's arguments (`{"input": "..."}`); anything
+/// else is passed on as it came.
+fn custom_input(arguments: &str) -> String {
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(v) => v["input"]
+            .as_str()
+            .map_or_else(|| arguments.to_string(), str::to_string),
+        Err(_) => arguments.to_string(),
+    }
+}
+
 fn call_item_id(id: &str, n: usize) -> String {
     format!("fc_{}{n}", suffix(id))
 }
@@ -553,13 +669,22 @@ fn finished_arguments(arguments: &str) -> &str {
 fn usage_json(u: Option<Usage>) -> Value {
     match u {
         None => Value::Null,
-        Some(u) => json!({
-            "input_tokens": u.input_tokens,
-            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
-            "output_tokens": u.output_tokens,
-            "output_tokens_details": {"reasoning_tokens": 0},
-            "total_tokens": u64::from(u.input_tokens) + u64::from(u.output_tokens),
-        }),
+        Some(u) => {
+            // `input_tokens` includes cached tokens, as OpenAI's does.
+            let input = u64::from(u.input_tokens)
+                + u64::from(u.cache_read_input_tokens)
+                + u64::from(u.cache_write_input_tokens);
+            json!({
+                "input_tokens": input,
+                "input_tokens_details": {
+                    "cached_tokens": u.cache_read_input_tokens,
+                    "cache_write_tokens": u.cache_write_input_tokens,
+                },
+                "output_tokens": u.output_tokens,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": input + u64::from(u.output_tokens),
+            })
+        }
     }
 }
 
@@ -602,13 +727,24 @@ pub fn render_response(r: &ChatResponse, id: &str, created: u64, echo: &Echo) ->
         output.push(message_item(id, &r.content, "completed"));
     }
     for (n, c) in r.tool_calls.iter().enumerate() {
-        output.push(call_item(
-            &call_item_id(id, n),
-            &c.id,
-            &c.name,
-            finished_arguments(&c.arguments),
-            "completed",
-        ));
+        let item_id = call_item_id(id, n);
+        output.push(if echo.custom.contains(&c.name) {
+            custom_item(
+                &item_id,
+                &c.id,
+                &c.name,
+                &custom_input(&c.arguments),
+                "completed",
+            )
+        } else {
+            call_item(
+                &item_id,
+                &c.id,
+                &c.name,
+                finished_arguments(&c.arguments),
+                "completed",
+            )
+        });
     }
     Object {
         id,
@@ -626,6 +762,8 @@ struct CallState {
     call_id: String,
     name: String,
     arguments: String,
+    /// A freeform tool: its input is sent once the arguments are complete.
+    custom: bool,
 }
 
 /// Renders the events of one answer as Responses API server-sent events.
@@ -737,12 +875,18 @@ impl StreamRenderer {
                 let output_index = self.next_output;
                 self.next_output += 1;
                 let item_id = call_item_id(&self.id, self.calls.len());
+                let custom = self.echo.custom.contains(name);
+                let item = if custom {
+                    custom_item(&item_id, id, name, "", "in_progress")
+                } else {
+                    call_item(&item_id, id, name, "", "in_progress")
+                };
                 out.push_str(&self.event(
                     "response.output_item.added",
-                    json!({"output_index": output_index,
-                        "item": call_item(&item_id, id, name, "", "in_progress")}),
+                    json!({"output_index": output_index, "item": item}),
                 ));
                 self.calls.push(CallState {
+                    custom,
                     call_index: *index,
                     output_index,
                     item_id,
@@ -758,6 +902,10 @@ impl StreamRenderer {
                     return out;
                 };
                 c.arguments.push_str(arguments);
+                // A freeform call is sent whole, once its JSON is complete.
+                if c.custom {
+                    return out;
+                }
                 let (output_index, item_id) = (c.output_index, c.item_id.clone());
                 out.push_str(&self.event(
                     "response.function_call_arguments.delta",
@@ -813,15 +961,34 @@ impl StreamRenderer {
                     output.push(item);
                 }
                 Open::Call(i) => {
-                    let (item_id, call_id, name, mut arguments) = {
+                    let (item_id, call_id, name, mut arguments, custom) = {
                         let c = &self.calls[i];
                         (
                             c.item_id.clone(),
                             c.call_id.clone(),
                             c.name.clone(),
                             c.arguments.clone(),
+                            c.custom,
                         )
                     };
+                    if custom {
+                        let input = custom_input(&arguments);
+                        out.push_str(&self.event(
+                            "response.custom_tool_call_input.delta",
+                            json!({"output_index": index, "item_id": item_id, "delta": input}),
+                        ));
+                        out.push_str(&self.event(
+                            "response.custom_tool_call_input.done",
+                            json!({"output_index": index, "item_id": item_id, "input": input}),
+                        ));
+                        let item = custom_item(&item_id, &call_id, &name, &input, "completed");
+                        out.push_str(&self.event(
+                            "response.output_item.done",
+                            json!({"output_index": index, "item": item}),
+                        ));
+                        output.push(item);
+                        continue;
+                    }
                     if arguments.is_empty() {
                         // A call with no arguments is an empty object, and
                         // the deltas must add up to what `done` says.
@@ -887,6 +1054,19 @@ mod tests {
             TranslateError::InvalidRequest(m) | TranslateError::Unsupported(m) => m,
             e => panic!("{e}"),
         }
+    }
+
+    #[test]
+    fn input_tokens_include_cached_tokens() {
+        let v = usage_json(Some(Usage {
+            input_tokens: 20,
+            output_tokens: 5,
+            cache_read_input_tokens: 100,
+            cache_write_input_tokens: 10,
+        }));
+        assert_eq!(v["input_tokens"], 130);
+        assert_eq!(v["input_tokens_details"]["cached_tokens"], 100);
+        assert_eq!(v["total_tokens"], 135);
     }
 
     #[test]
@@ -1088,7 +1268,6 @@ mod tests {
             (json!({"reasoning":{"effort":"loud"}}), "reasoning"),
             (json!({"reasoning":{"effort":3}}), "reasoning"),
             (json!({"reasoning":{"summary":"verbose"}}), "summary"),
-            (json!({"reasoning":{"mode":"pro"}}), "mode"),
             (json!({"reasoning":"low"}), "reasoning"),
             (json!({"include":["file_search_call.results"]}), "include"),
             (
@@ -1102,30 +1281,10 @@ mod tests {
             (json!({"store":1}), "store"),
             (json!({"background":"true"}), "background"),
             (json!({"background":0}), "background"),
-            (json!({"max_tool_calls":1}), "max_tool_calls"),
-            (json!({"text":{"verbosity":"low"}}), "verbosity"),
-            (json!({"tools":[{"type":"web_search"}]}), "web_search"),
-            (
-                json!({"tools":[{"type":"file_search","vector_store_ids":[]}]}),
-                "file_search",
-            ),
-            (
-                json!({"tools":[{"type":"computer_use_preview"}]}),
-                "computer_use_preview",
-            ),
-            (
-                json!({"tools":[{"type":"function","name":"w","extra":1}]}),
-                "extra",
-            ),
-            (json!({"tool_choice":{"type":"web_search"}}), "tool_choice"),
             (json!({"tool_choice":"sometimes"}), "sometimes"),
             (
                 json!({"input":[{"type":"reasoning","summary":[]}]}),
                 "reasoning",
-            ),
-            (
-                json!({"input":[{"type":"item_reference","id":"x"}]}),
-                "item_reference",
             ),
             (
                 json!({"input":[{"role":"user","content":[{"type":"input_file","file_id":"f"}]}]}),
@@ -1158,7 +1317,7 @@ mod tests {
                 "call_id",
             ),
             (
-                json!({"input":[{"type":"function_call_output","call_id":"c","output":[{"type":"input_text","text":"x"}]}]}),
+                json!({"input":[{"type":"function_call_output","call_id":"c","output":5}]}),
                 "output",
             ),
             (
@@ -1168,7 +1327,6 @@ mod tests {
             (json!({"input":[]}), "input"),
             (json!({"input":5}), "input"),
             (json!({"input":"x","stream":"yes"}), "stream"),
-            (json!({"input":"x","bogus":1}), "bogus"),
         ];
         for (extra, want) in table {
             let mut body = json!({"model":"m","input":"x"});
@@ -1185,6 +1343,172 @@ mod tests {
         // No model, or no input.
         assert!(refused(json!({"input":"x"})).contains("model"));
         assert!(refused(json!({"model":"m"})).contains("input"));
+    }
+
+    const FIXTURE: &str = include_str!("../../../gateway/tests/fixtures/agents/codex-0.160.1.json");
+
+    #[test]
+    fn codex_request_parses() {
+        let r = ok(serde_json::from_str(FIXTURE).unwrap());
+        assert_eq!(r.reasoning_effort.as_deref(), Some("medium"));
+        assert!(r.stream);
+        for name in [
+            "client_metadata",
+            "text.verbosity",
+            "tools[8]:tool_search",
+            "tools[9]:web_search",
+        ] {
+            assert!(
+                r.dropped.contains(&name.to_string()),
+                "{name}: {:?}",
+                r.dropped
+            );
+        }
+        // function tools and the freeform apply_patch survive
+        assert_eq!(r.tools.len(), 8);
+        let patch = r.tools.iter().find(|t| t.name == "apply_patch").unwrap();
+        assert!(patch.freeform);
+        assert_eq!(patch.parameters, Tool::freeform_parameters());
+        assert!(patch
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("Input grammar:\n"));
+        assert!(r
+            .tools
+            .iter()
+            .filter(|t| !t.freeform)
+            .all(|t| t.strict.is_some()));
+        // the developer message is a system message
+        assert_eq!(r.messages[0].role, Role::System);
+        assert_eq!(r.messages[1].role, Role::System);
+        assert_eq!(r.messages[2].role, Role::User);
+    }
+
+    #[test]
+    fn developer_messages_become_system() {
+        let r = ok(json!({"model":"m","input":[
+            {"type":"message","role":"developer","content":[{"type":"input_text","text":"d"}]},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"u"}]}]}));
+        assert_eq!(r.messages[0], Message::text(Role::System, "d"));
+        assert_eq!(r.messages[1], Message::text(Role::User, "u"));
+    }
+
+    #[test]
+    fn unknown_fields_items_and_tools_are_dropped_and_named() {
+        let r = ok(json!({"model":"m","bogus":1,"nothing":null,
+            "input":[{"type":"item_reference","id":"x"},{"role":"user","content":"hi"}],
+            "tools":[{"type":"function","name":"w","extra":1},{"type":"namespace","name":"n","tools":[]}],
+            "tool_choice":{"type":"allowed_tools"},
+            "reasoning":{"effort":"low","mode":"pro"}}));
+        assert_eq!(
+            r.dropped,
+            vec![
+                "bogus",
+                "input[0]:item_reference",
+                "reasoning.mode",
+                "tools[0].extra",
+                "tools[1]:namespace",
+                "tool_choice:allowed_tools"
+            ]
+        );
+        assert_eq!(r.tool_choice, Some(ToolChoice::Auto));
+        assert_eq!(r.tools.len(), 1);
+        // with no tool left, a choice has nothing to choose from
+        let r = ok(
+            json!({"model":"m","input":"x","tools":[{"type":"web_search"}],"tool_choice":"required"}),
+        );
+        assert_eq!(r.tool_choice, None);
+        assert!(r.dropped.contains(&"tool_choice".to_string()));
+    }
+
+    #[test]
+    fn custom_tool_round_trip() {
+        let body = json!({"model":"m","tools":[{"type":"custom","name":"apply_patch","description":"edit files",
+                "format":{"type":"grammar","syntax":"lark","definition":"start: x"}}],
+            "input":[{"role":"user","content":"go"},
+                {"type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":"*** Begin Patch","status":"completed"},
+                {"type":"custom_tool_call_output","call_id":"c1","output":"done"}]});
+        let r = ok(body);
+        assert!(r.tools[0].freeform);
+        assert_eq!(
+            r.tools[0].description.as_deref(),
+            Some("edit files\n\nInput grammar:\nstart: x")
+        );
+        assert_eq!(r.messages.len(), 3);
+        assert_eq!(r.messages[1].role, Role::Assistant);
+        assert_eq!(r.messages[1].tool_calls[0].id, "c1");
+        assert_eq!(r.messages[1].tool_calls[0].name, "apply_patch");
+        assert_eq!(
+            serde_json::from_str::<Value>(&r.messages[1].tool_calls[0].arguments).unwrap(),
+            json!({"input":"*** Begin Patch"})
+        );
+        assert_eq!(r.messages[2].role, Role::Tool);
+        assert_eq!(r.messages[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(r.messages[2].joined_text(), "done");
+
+        // The answer: a call to the freeform tool is a custom_tool_call item.
+        let echo = Echo::of(&r);
+        let a = answer(
+            "",
+            vec![ToolCall {
+                id: "c2".into(),
+                name: "apply_patch".into(),
+                arguments: r#"{"input":"*** Begin Patch"}"#.into(),
+            }],
+            Some(FinishReason::ToolCalls),
+        );
+        let v = render_response(&a, "resp_a", 1, &echo);
+        let item = &v["output"][0];
+        assert_eq!(item["type"], "custom_tool_call");
+        assert_eq!(item["call_id"], "c2");
+        assert_eq!(item["name"], "apply_patch");
+        assert_eq!(item["input"], "*** Begin Patch");
+        assert_eq!(v["tools"][0]["type"], "custom");
+
+        // Streamed: the input arrives whole once the arguments are complete.
+        let evs = [
+            StreamEvent::ToolCallStart {
+                index: 0,
+                id: "c2".into(),
+                name: "apply_patch".into(),
+            },
+            StreamEvent::ToolCallDelta {
+                index: 0,
+                arguments: r#"{"inp"#.into(),
+            },
+            StreamEvent::ToolCallDelta {
+                index: 0,
+                arguments: r#"ut":"*** Begin Patch"}"#.into(),
+            },
+            StreamEvent::Done {
+                finish_reason: Some(FinishReason::ToolCalls),
+                usage: None,
+            },
+        ];
+        let mut renderer = StreamRenderer::new("resp_a", "m", 1, echo);
+        let out: String = evs.iter().map(|e| renderer.render(e)).collect();
+        assert!(!out.contains("function_call_arguments"), "{out}");
+        assert!(out.contains(r#""type":"custom_tool_call""#));
+        assert_eq!(
+            out.matches("response.custom_tool_call_input.delta").count() / 2,
+            1
+        );
+        assert!(out.contains(r#""delta":"*** Begin Patch""#));
+        assert!(out.contains(r#""input":"*** Begin Patch""#));
+        let done = out
+            .rsplit("event: response.output_item.done\ndata: ")
+            .next()
+            .unwrap();
+        assert!(done.contains(r#""status":"completed""#));
+    }
+
+    #[test]
+    fn tool_output_may_be_text_parts() {
+        let r = ok(json!({"model":"m","input":[
+            {"type":"function_call","call_id":"c","name":"f","arguments":"{}"},
+            {"type":"function_call_output","call_id":"c","output":[{"type":"input_text","text":"a"},{"type":"input_text","text":"b"}]}]}));
+        assert_eq!(r.messages[1].joined_text(), "ab");
     }
 
     #[test]
@@ -1242,6 +1566,7 @@ mod tests {
             usage: Some(Usage {
                 input_tokens: 4,
                 output_tokens: 2,
+                ..Default::default()
             }),
         }
     }
@@ -1421,6 +1746,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 3,
                     output_tokens: 8,
+                    ..Default::default()
                 }),
             },
         ]

@@ -25,6 +25,7 @@ use futures::StreamExt;
 use http_body_util::LengthLimitError;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use ufaigw_translate::audio::{
@@ -38,7 +39,7 @@ use ufaigw_translate::images::{self, ImageRequest, ImageResponse};
 use ufaigw_translate::ingress::prompt::PromptRef;
 use ufaigw_translate::ingress::{anthropic, openai, responses};
 use ufaigw_translate::provider::{
-    build_request, parse_response, HttpRequest, StreamDecoder, Target,
+    build_request, parse_response, HttpRequest, ProviderKind, StreamDecoder, Target,
 };
 use ufaigw_translate::types::{ChatRequest, ChatResponse, FinishReason, Part, StreamEvent, Usage};
 
@@ -51,6 +52,7 @@ use crate::guardrails::external::CallMeta;
 use crate::guardrails::log::{GuardrailRef, SideLog};
 use crate::guardrails::run::{Active, Hooks, ScanFailed};
 use crate::guardrails::{Direction, Outcome, Release, StreamScanner};
+use crate::native::{self, Native, NativeApi};
 use crate::prompts::{self, UseError, Version};
 use crate::routing::{
     self, Candidate, Exhausted, Failure, HealthStore, Limits, Settings, Stop, Success, TargetRef,
@@ -93,16 +95,201 @@ pub async fn list_models(State(state): State<Arc<AppState>>, request: Request) -
         .into_iter()
         .map(|(id, owned_by)| {
             serde_json::json!({
-                "id": id, "object": "model", "created": 0, "owned_by": owned_by
+                "id": id, "object": "model", "created": 0, "owned_by": owned_by,
+                "display_name": id
             })
         })
         .collect();
     Json(serde_json::json!({ "object": "list", "data": data })).into_response()
 }
 
+/// `POST /v1/messages/count_tokens`: Claude Code's count of a prompt, asked
+/// of the first Anthropic target of the model. It is not a call for the
+/// books: no token charge, no budget, no log row. It does cost the provider a
+/// request and carries the whole conversation, so it takes a request permit
+/// like any call and the input guardrails read it.
+pub async fn count_tokens(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let shape = Shape::Anthropic;
+    let (parts, body) = request.into_parts();
+    let snapshot = state.snapshot.load_full();
+    let key = match authenticate(&snapshot, &parts.headers, shape) {
+        Ok(key) => key,
+        Err(resp) => return resp,
+    };
+    let bytes = match axum::body::to_bytes(body, state.max_body_bytes).await {
+        Ok(b) => b,
+        Err(_) => {
+            return shape.error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid_request_error",
+                "Request body is too large or could not be read.",
+            )
+        }
+    };
+    let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(&bytes) else {
+        return shape.error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "The request body must be a JSON object.",
+        );
+    };
+    let Some(model) = map.get("model").and_then(Value::as_str).map(str::to_string) else {
+        return shape.error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "model is required.",
+        );
+    };
+    let resolved = match access::resolve(&snapshot, &key, &model) {
+        Ok(r) => r,
+        Err(Denied::Unknown) => return not_found(shape, &model),
+        Err(Denied::Forbidden) => return forbidden(shape, &model),
+    };
+    // The rate limits of the key, its owner, their teams and the gateway: one
+    // request, no tokens. The permit goes back when the answer is out.
+    let actor = Actor::of_key(&key);
+    let subjects = snapshot.subjects_of(actor.key_id, key.user_id, key.team_id);
+    let _permit = match state.rate.acquire(&subjects, 0, Instant::now()) {
+        Ok(permit) => permit,
+        Err(refusal) => {
+            state.metrics.rate_limited(refusal.limit_name);
+            return shape.rate_limited(&refusal);
+        }
+    };
+    let mut native = Native {
+        api: NativeApi::Messages,
+        body: map,
+        headers: native::forwardable(NativeApi::Messages, &parts.headers),
+        query: parts.uri.query().map(str::to_string),
+        parse_error: None,
+    };
+    if let Some(message) = native::stored_state(&native, ProviderKind::Anthropic) {
+        return shape.error(StatusCode::BAD_REQUEST, "invalid_request_error", &message);
+    }
+    let effective = snapshot.effective_guardrails(
+        match &resolved {
+            Resolved::Route(route) => Some(route),
+            Resolved::Model(_) => None,
+        },
+        Some(&key),
+    );
+    let hooks = effective
+        .iter()
+        .any(|g| g.external.is_some())
+        .then(|| Hooks {
+            http: state.http.clone(),
+            gates: state.hook_gates.clone(),
+            meta: Arc::new(CallMeta {
+                endpoint: Endpoint::Messages.name(),
+                model: model.clone(),
+                route: match &resolved {
+                    Resolved::Route(route) => Some(route.name.clone()),
+                    Resolved::Model(_) => None,
+                },
+                key_id: actor.key_id,
+                team_id: key.team_id,
+                user_id: key.user_id,
+            }),
+        });
+    let guard = Active::of(&effective, hooks);
+    if guard.covers(Direction::Input) {
+        let mut slots = native::text_slots(&mut native);
+        let blocked = match guard.check_rules(Direction::Input, &mut slots, None).await {
+            Ok(outcome) => outcome.blocked_by,
+            Err(failed) => return scan_failed(shape, failed),
+        };
+        if let Some((_, name)) = blocked {
+            return shape.guardrail_blocked(&name);
+        }
+        if guard.has_hooks(Direction::Input) {
+            if let Some((_, name)) = guard
+                .check_hooks(Direction::Input, &mut slots, None)
+                .await
+                .blocked_by
+            {
+                return shape.guardrail_blocked(&name);
+            }
+        }
+    }
+    let order = match &resolved {
+        Resolved::Model(m) => vec![TargetRef {
+            provider: m.provider.clone(),
+            model: m.name.clone(),
+            model_id: m.id,
+        }],
+        Resolved::Route(route) => {
+            let mut rng = StdRng::from_rng(&mut rand::rng());
+            routing::plan(route, &mut rng)
+        }
+    };
+    let found = order.into_iter().find_map(|t| {
+        let provider = snapshot.provider(&t.provider)?;
+        let callable = snapshot
+            .model(&t.provider, &t.model)
+            .is_some_and(|m| access::may_call_model(&snapshot, &key, m));
+        (provider.kind == ProviderKind::Anthropic && callable).then_some((t, provider))
+    });
+    let Some((target, provider)) = found else {
+        return shape.error(
+            StatusCode::NOT_FOUND,
+            "not_found_error",
+            "No Anthropic provider can count the tokens of this model.",
+        );
+    };
+    let wire = Target {
+        kind: provider.kind,
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        model: target.model.clone(),
+        api_version: provider.api_version.clone(),
+    };
+    native
+        .body
+        .insert("model".into(), Value::String(target.model.clone()));
+    let mut out = native::build(&native, &wire);
+    out.url = out
+        .url
+        .replacen("/v1/messages", "/v1/messages/count_tokens", 1);
+    let sent = timeout_at(
+        tokio::time::Instant::now() + COUNT_TOKENS_TIMEOUT,
+        send(&state.http, Outgoing::Json(out)),
+    )
+    .await;
+    let upstream = match sent {
+        Ok(Ok(r)) => r,
+        _ => {
+            return shape.error(
+                StatusCode::BAD_GATEWAY,
+                "api_error",
+                "The provider could not be reached.",
+            )
+        }
+    };
+    let status = upstream.status().as_u16();
+    let headers = native::keep_response_headers(upstream.headers());
+    match read_capped(
+        upstream,
+        state.max_provider_response_bytes,
+        COUNT_TOKENS_TIMEOUT,
+    )
+    .await
+    {
+        Ok(bytes) => native_response(status, headers, Bytes::from(bytes)),
+        Err(_) => shape.error(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            "The provider response could not be read.",
+        ),
+    }
+}
+
+/// How long the count of a prompt may take.
+const COUNT_TOKENS_TIMEOUT: Duration = Duration::from_secs(30);
+
 const NO_PROVIDER: &str = "No provider could serve this request.";
 const NO_MODEL: &str = "No model is available for this request.";
 const TIMED_OUT: &str = "The request timed out.";
+const PROMPT_ON_PASS_THROUGH: &str = "Prompt templates cannot be used with a pass-through call.";
 
 /// What a chat call that names no `max_tokens` is expected to answer with.
 const DEFAULT_MAX_TOKENS_ESTIMATE: u32 = 1_000;
@@ -179,18 +366,19 @@ impl Endpoint {
     /// The call and the prompt template it names, if it names one (only
     /// chat calls may: `/v1/chat/completions`, `/v1/responses` and the
     /// playground). The template is applied by [`use_prompt`].
-    fn parse(self, body: &[u8]) -> Result<(Call, Option<PromptRef>), TranslateError> {
+    fn parse(
+        self,
+        body: &[u8],
+        inbound: Option<&Inbound<'_>>,
+    ) -> Result<(Call, Option<PromptRef>), TranslateError> {
         let plain = |call: Call| (call, None);
         match self {
             Endpoint::Chat | Endpoint::Playground => {
                 let (request, prompt) = openai::parse_prompted(body)?;
-                Ok((Call::Chat(request), prompt))
+                Ok((Call::Chat(request, None), prompt))
             }
-            Endpoint::Messages => anthropic::parse_request(body).map(|r| plain(Call::Chat(r))),
-            Endpoint::Responses => {
-                let parsed = responses::parse_request(body)?;
-                Ok((Call::Chat(parsed.request), parsed.prompt))
-            }
+            Endpoint::Messages => chat_call(NativeApi::Messages, body, inbound),
+            Endpoint::Responses => chat_call(NativeApi::Responses, body, inbound),
             Endpoint::Embeddings => embeddings::parse_request(body).map(|r| plain(Call::Embed(r))),
             Endpoint::Images | Endpoint::PlaygroundImages => {
                 images::parse_request(body).map(|r| plain(Call::Image(r)))
@@ -219,6 +407,86 @@ impl Endpoint {
     }
 }
 
+/// How the body of a call is to be read.
+struct Input<'a> {
+    form_type: Option<&'a str>,
+    inbound: Option<Inbound<'a>>,
+}
+
+/// What a request came in with, for a call that may be passed through.
+#[derive(Clone, Copy)]
+struct Inbound<'a> {
+    headers: &'a HeaderMap,
+    query: Option<&'a str>,
+}
+
+/// A chat call in the agent's API: the common request, and the agent's own
+/// body beside it. A body the translator refuses still makes a call when it
+/// is a JSON object that names a model: a target that speaks the API takes
+/// it as it is, and a target that does not is refused with the translator's
+/// error.
+fn chat_call(
+    api: NativeApi,
+    body: &[u8],
+    inbound: Option<&Inbound<'_>>,
+) -> Result<(Call, Option<PromptRef>), TranslateError> {
+    type Parsed = Result<(ChatRequest, Option<PromptRef>), TranslateError>;
+    let from_bytes = || -> Parsed {
+        match api {
+            NativeApi::Messages => anthropic::parse_request(body).map(|r| (r, None)),
+            NativeApi::Responses => responses::parse_request(body).map(|p| (p.request, p.prompt)),
+        }
+    };
+    let from_value = |v: &Value| -> Parsed {
+        match api {
+            NativeApi::Messages => anthropic::parse_request_value(v).map(|r| (r, None)),
+            NativeApi::Responses => {
+                responses::parse_request_value(v).map(|p| (p.request, p.prompt))
+            }
+        }
+    };
+    let Some(inbound) = inbound else {
+        return from_bytes().map(|(request, prompt)| (Call::Chat(request, None), prompt));
+    };
+    // The body is read as JSON once: the common request is derived from that
+    // reading, and the agent's own body is what was read.
+    let native = |map, parse_error| {
+        Box::new(Native {
+            api,
+            body: map,
+            headers: native::forwardable(api, inbound.headers),
+            query: inbound.query.map(str::to_string),
+            parse_error,
+        })
+    };
+    let value = match serde_json::from_slice::<Value>(body) {
+        Ok(v @ Value::Object(_)) => v,
+        // Not an object: the translator says what is wrong with it.
+        _ => return from_bytes().map(|(r, prompt)| (Call::Chat(r, None), prompt)),
+    };
+    let parsed = from_value(&value);
+    let Value::Object(map) = value else {
+        unreachable!("matched as an object above")
+    };
+    match parsed {
+        Ok((request, prompt)) => Ok((Call::Chat(request, Some(native(map, None))), prompt)),
+        Err(e) => {
+            if map.get("model").is_some_and(Value::is_string) {
+                let mut request = empty_request();
+                request.model = map["model"].as_str().unwrap_or_default().to_string();
+                request.stream = map.get("stream").and_then(Value::as_bool).unwrap_or(false);
+                request.max_tokens = ["max_tokens", "max_output_tokens"]
+                    .iter()
+                    .find_map(|k| map.get(*k).and_then(Value::as_u64))
+                    .and_then(|n| u32::try_from(n).ok());
+                Ok((Call::Chat(request, Some(native(map, Some(e)))), None))
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 /// The audio of an upload as it was read: the chunks as they arrived, so
 /// that holding it takes no more memory than the file and a repeat of the
 /// call shares it.
@@ -226,7 +494,9 @@ type Chunks = Arc<Vec<Bytes>>;
 
 /// What the caller asked for, in the common form.
 enum Call {
-    Chat(ChatRequest),
+    /// The common request, and the agent's own body when the call came in an
+    /// API a provider may speak (`/v1/messages`, `/v1/responses`).
+    Chat(ChatRequest, Option<Box<Native>>),
     Embed(EmbeddingsRequest),
     Image(ImageRequest),
     Transcribe(TranscribeRequest, Chunks),
@@ -241,7 +511,7 @@ const AUDIO_BYTES_PER_TOKEN: usize = 800;
 impl Call {
     fn model(&self) -> &str {
         match self {
-            Call::Chat(r) => &r.model,
+            Call::Chat(r, _) => &r.model,
             Call::Embed(r) => &r.model,
             Call::Image(r) => &r.model,
             Call::Transcribe(r, _) => &r.model,
@@ -250,7 +520,13 @@ impl Call {
     }
 
     fn stream(&self) -> bool {
-        matches!(self, Call::Chat(r) if r.stream)
+        matches!(self, Call::Chat(r, _) if r.stream)
+    }
+
+    /// Whether an attempt on a provider of `kind` forwards the agent's own
+    /// body instead of translating it.
+    fn passes_to(&self, kind: ufaigw_translate::provider::ProviderKind) -> bool {
+        matches!(self, Call::Chat(_, Some(n)) if native::matches(n.api, kind))
     }
 
     /// What the call is expected to use, for the rate limit: the most it may
@@ -258,7 +534,7 @@ impl Call {
     /// four characters to a token. An embedding has no answer to count.
     fn estimated_tokens(&self) -> u64 {
         match self {
-            Call::Chat(r) => {
+            Call::Chat(r, _) => {
                 u64::from(r.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS_ESTIMATE))
                     + self.input_estimate()
             }
@@ -277,7 +553,13 @@ impl Call {
             chars.div_ceil(4) as u64
         }
         match self {
-            Call::Chat(r) => {
+            // The agent's own body is counted whole: documents, server tool
+            // results and the rest of what translation would drop count too.
+            Call::Chat(_, Some(n)) => {
+                let (chars, media) = native::input_size(n);
+                tokens(chars) + media * IMAGE_TOKEN_ESTIMATE
+            }
+            Call::Chat(r, _) => {
                 let mut chars = 0usize;
                 let mut images = 0u64;
                 for m in &r.messages {
@@ -324,7 +606,7 @@ impl Call {
         match self {
             Call::Image(_) => state.max_image_response_bytes,
             Call::Speech(_) => state.max_speech_response_bytes,
-            Call::Chat(_) | Call::Embed(_) | Call::Transcribe(..) => {
+            Call::Chat(..) | Call::Embed(_) | Call::Transcribe(..) => {
                 state.max_provider_response_bytes
             }
         }
@@ -333,7 +615,7 @@ impl Call {
     /// Whether a provider of this kind can serve it.
     fn served_by(&self, kind: ufaigw_translate::provider::ProviderKind) -> bool {
         match self {
-            Call::Chat(_) => true,
+            Call::Chat(..) => true,
             Call::Embed(_) => kind.supports_embeddings(),
             Call::Image(_) => kind.supports_images(),
             Call::Transcribe(..) | Call::Speech(_) => kind.supports_audio(),
@@ -343,7 +625,7 @@ impl Call {
     /// What a caller is told when no target of the plan can serve it.
     fn not_supported(&self) -> &'static str {
         match self {
-            Call::Chat(_) | Call::Embed(_) => EMBEDDINGS_NOT_SUPPORTED,
+            Call::Chat(..) | Call::Embed(_) => EMBEDDINGS_NOT_SUPPORTED,
             Call::Image(_) => images::NOT_SUPPORTED,
             Call::Transcribe(..) | Call::Speech(_) => audio::NOT_SUPPORTED,
         }
@@ -504,7 +786,7 @@ async fn handle(state: Arc<AppState>, request: Request, endpoint: Endpoint) -> R
         &state,
         &snapshot,
         &Actor::of_key(&key),
-        Some(&parts.headers),
+        Some((&parts.headers, parts.uri.query())),
         parts
             .headers
             .get(CONTENT_TYPE)
@@ -519,7 +801,7 @@ async fn run(
     state: &AppState,
     snapshot: &Snapshot,
     actor: &Actor<'_>,
-    headers: Option<&HeaderMap>,
+    headers: Option<(&HeaderMap, Option<&str>)>,
     form_type: Option<&str>,
     body: Body,
     endpoint: Endpoint,
@@ -536,6 +818,11 @@ async fn run(
     begun.metered(state.metrics.clone());
     begun.traced(state.otel.clone());
     begun.watched(state.alert_engine.clone());
+    let query = headers.and_then(|(_, query)| query);
+    let headers = headers.map(|(headers, _)| headers);
+    if let Some(h) = headers {
+        begun.agent(crate::agents::agent_info(h));
+    }
     // Only the `/v1` handlers pass headers: the playground has no parent.
     if let Some(parent) = headers
         .and_then(|h| h.get("traceparent"))
@@ -560,8 +847,17 @@ async fn run(
         }
     }
     let mut scope = Some(begun);
+    let inbound = headers
+        .filter(|_| state.passthrough)
+        .map(|headers| Inbound { headers, query });
     let response = dispatch(
-        state, snapshot, actor, form_type, body, endpoint, &mut scope,
+        state,
+        snapshot,
+        actor,
+        Input { form_type, inbound },
+        body,
+        endpoint,
+        &mut scope,
     )
     .await;
     // A stream took the scope with it and records itself.
@@ -641,10 +937,10 @@ fn cache_plan(
     };
     // An image, a transcript or a speech is never kept: every call is a new
     // one, and the answers are large.
-    if !route.cache.enabled || call.stream() || !matches!(call, Call::Chat(_) | Call::Embed(_)) {
+    if !route.cache.enabled || call.stream() || !matches!(call, Call::Chat(..) | Call::Embed(_)) {
         return None;
     }
-    if let Call::Chat(r) = call {
+    if let Call::Chat(r, _) = call {
         // A temperature that is not a number is not "at most" anything.
         let kept = |t: f32| {
             matches!(
@@ -679,7 +975,7 @@ fn cache_plan(
         config: cache_config(snapshot, guardrails),
     };
     let cache_key = match call {
-        Call::Chat(r) => CacheKey::chat(&parts, r),
+        Call::Chat(r, _) => CacheKey::chat(&parts, r),
         Call::Embed(r) => CacheKey::embeddings(&parts, r),
         Call::Image(_) | Call::Transcribe(..) | Call::Speech(_) => return None,
     };
@@ -745,7 +1041,7 @@ fn wrong_kind(snapshot: &Snapshot, key: &SnapKey, call: &Call, candidates: &[Can
     };
     candidates.iter().any(|c| reachable(&c))
         && !candidates.iter().any(|c| c.callable)
-        && !matches!(call, Call::Chat(_))
+        && !matches!(call, Call::Chat(..))
 }
 
 /// The most the non-file fields of an upload may take together, beyond the
@@ -768,6 +1064,7 @@ async fn read_call(
     form_type: Option<&str>,
     shape: Shape,
     early: Early<'_>,
+    inbound: Option<&Inbound<'_>>,
 ) -> Result<(Call, Option<PromptRef>), Response> {
     if let Some(task) = endpoint.upload_task() {
         return read_upload(state, task, body, form_type, shape, early)
@@ -793,7 +1090,9 @@ async fn read_call(
             });
         }
     };
-    endpoint.parse(&body).map_err(|e| shape.translate_error(&e))
+    endpoint
+        .parse(&body, inbound)
+        .map_err(|e| shape.translate_error(&e))
 }
 
 /// Renders the template a chat call names into the call. A template that
@@ -809,7 +1108,7 @@ async fn use_prompt(
     call: &mut Call,
     record: &mut Scope,
 ) -> Result<(), UseError> {
-    let Call::Chat(request) = call else {
+    let Call::Chat(request, _) = call else {
         return Ok(());
     };
     let template = snapshot
@@ -1054,11 +1353,12 @@ async fn dispatch(
     state: &AppState,
     snapshot: &Snapshot,
     actor: &Actor<'_>,
-    form_type: Option<&str>,
+    input: Input<'_>,
     body: Body,
     endpoint: Endpoint,
     scope: &mut Option<Scope>,
 ) -> Response {
+    let Input { form_type, inbound } = input;
     let key: &SnapKey = &actor.access;
     let shape = endpoint.shape();
     let record = scope.as_mut().expect("the scope is taken only by a stream");
@@ -1096,14 +1396,23 @@ async fn dispatch(
         early_declared = declared;
         Ok(())
     };
-    let (mut call, prompt) =
-        match read_call(state, endpoint, body, form_type, shape, &mut early).await {
-            Ok(read) => read,
-            Err(refusal) => {
-                record.refund_permit();
-                return refusal;
-            }
-        };
+    let (mut call, prompt) = match read_call(
+        state,
+        endpoint,
+        body,
+        form_type,
+        shape,
+        &mut early,
+        inbound.as_ref(),
+    )
+    .await
+    {
+        Ok(read) => read,
+        Err(refusal) => {
+            record.refund_permit();
+            return refusal;
+        }
+    };
     // A file of unknown size was let in on no tokens: the permit is given
     // back and the call charged what the file came to (a limit may refuse it
     // now, as it would a call that named its model last).
@@ -1125,12 +1434,18 @@ async fn dispatch(
     // messages and settings plus its own. Before access (the template may
     // name the model), the limits and the guardrails: they all see what the
     // provider is going to be sent.
+    let had_prompt = prompt.is_some();
     if let Some(reference) = prompt {
         if let Err(e) = use_prompt(state, snapshot, &reference, &mut call, record).await {
             return refuse_prompt(shape, &e);
         }
     }
     record.requested(call.model(), call.stream());
+    if let Call::Chat(r, _) = &call {
+        if !r.dropped.is_empty() {
+            record.dropped(r.dropped.clone());
+        }
+    }
 
     // 3. Resolve the name to something this key may call.
     let resolved = match access::resolve(snapshot, key, call.model()) {
@@ -1142,6 +1457,32 @@ async fn dispatch(
         Resolved::Route(route) => Some(route.name.as_str()),
         _ => None,
     });
+    // The agent's own body is only kept, scanned and rewritten when some target
+    // of the call could be passed it; otherwise the common request stands for
+    // it from here on. A body the translator refused is kept: its error is
+    // what a translated attempt answers with.
+    if let Call::Chat(_, native) = &mut call {
+        if native.as_ref().is_some_and(|n| n.parse_error.is_none())
+            && !native.as_ref().is_some_and(|n| {
+                let speaks = |t: &TargetRef| {
+                    snapshot
+                        .provider(&t.provider)
+                        .is_some_and(|p| native::matches(n.api, p.kind))
+                };
+                match &resolved {
+                    Resolved::Model(m) => snapshot
+                        .provider(&m.provider)
+                        .is_some_and(|p| native::matches(n.api, p.kind)),
+                    Resolved::Route(route) => {
+                        route.primaries.iter().any(|(t, _)| speaks(t))
+                            || route.fallbacks.iter().any(speaks)
+                    }
+                }
+            })
+        {
+            *native = None;
+        }
+    }
     // 3a. The rate limits of the key, its owner, their teams and the gateway.
     // First, so that the work of scanning a body is only done for a call the
     // limits let in. The permit goes with the scope, which a stream carries to
@@ -1194,6 +1535,20 @@ async fn dispatch(
             }),
         });
     let guard = Active::of(&effective, hooks);
+    // An answer held for an external guardrail is rewritten as a whole, which
+    // a stream relayed as sent cannot be: that call is translated.
+    if call.stream() && guard.holds_streams() {
+        if let Call::Chat(_, native) = &mut call {
+            if let Some(e) = native.take().and_then(|n| n.parse_error) {
+                record.refund_permit();
+                return shape.translate_error(&e);
+            }
+        }
+    }
+    let before = guard
+        .covers(Direction::Input)
+        .then(|| native_snapshot(&mut call))
+        .flatten();
     let input_rules = match check_input_rules(&guard, &mut call, record, shape).await {
         Ok(outcome) => outcome,
         Err(refusal) => {
@@ -1220,6 +1575,7 @@ async fn dispatch(
         record.refund_permit();
         return refusal;
     }
+    rederive(&mut call, &before);
     // Seeded from the thread's generator (itself seeded once per thread), not
     // from the operating system on every request. It is `Send`: it lives
     // across awaits.
@@ -1262,7 +1618,26 @@ async fn dispatch(
     // through the provider call and `keep`, released on every exit, an error
     // and a dropped future included. A caller that waited and still misses
     // calls on its own, without the flight.
-    let cache = cache_plan(snapshot, actor, &call, &resolved, &candidates, &guard);
+    // A call that is forwarded as it came is not the one the cache keys.
+    let passes = candidates.iter().any(|c| {
+        c.callable
+            && snapshot
+                .provider(&c.target.provider)
+                .is_some_and(|p| call.passes_to(p.kind))
+    });
+    if passes && had_prompt {
+        record.refund_permit();
+        return shape.error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            PROMPT_ON_PASS_THROUGH,
+        );
+    }
+    let cache = if passes {
+        None
+    } else {
+        cache_plan(snapshot, actor, &call, &resolved, &candidates, &guard)
+    };
     let mut flight = None;
     if let Some(plan) = &cache {
         let answered = |state: &AppState, record: &mut Scope| {
@@ -1291,6 +1666,7 @@ async fn dispatch(
                     rate_limited: 0,
                     retry_after: None,
                     refused: None,
+                    last_retryable: None,
                 },
             );
         };
@@ -1363,11 +1739,39 @@ async fn dispatch(
                 _ => Json(openai::render_response(&response, now_secs())).into_response(),
             }
         }
+        Ok(Served::Native {
+            status,
+            headers,
+            body,
+            usage,
+            hosted,
+        }) => {
+            let record = scope.as_mut().expect("a whole answer keeps the scope");
+            record.usage(usage);
+            record.hosted_calls(hosted);
+            let api = match &call {
+                Call::Chat(_, Some(n)) => Some(n.api),
+                _ => None,
+            };
+            let body = match api {
+                Some(api) => {
+                    match check_native_output(&guard, api, body, record, shape, request_deadline)
+                        .await
+                    {
+                        Ok(body) => body,
+                        Err(refusal) => return refusal,
+                    }
+                }
+                None => body,
+            };
+            native_response(status, headers, body)
+        }
         Ok(Served::Embeddings(response)) => {
             let record = scope.as_mut().expect("a whole answer keeps the scope");
             record.usage(Some(Usage {
                 input_tokens: response.prompt_tokens,
                 output_tokens: 0,
+                ..Default::default()
             }));
             keep(state, &cache, record, Answer::Embeddings(response.clone()));
             Json(embeddings::render_response(&response)).into_response()
@@ -1379,6 +1783,7 @@ async fn dispatch(
             record.usage(response.usage.as_ref().map(|u| Usage {
                 input_tokens: u.input_tokens,
                 output_tokens: u.output_tokens,
+                ..Default::default()
             }));
             Json(images::render_response(&response)).into_response()
         }
@@ -1387,6 +1792,7 @@ async fn dispatch(
             record.usage(answer.usage.map(|(input_tokens, output_tokens)| Usage {
                 input_tokens,
                 output_tokens,
+                ..Default::default()
             }));
             if let Err(refusal) = check_transcript(
                 &guard,
@@ -1438,6 +1844,9 @@ async fn dispatch(
                 target: committed.target.clone(),
                 breaker: settings.breaker,
             };
+            if committed.native.is_some() {
+                return native_stream(*committed, guard);
+            }
             stream_to_caller(*committed, guard, endpoint, stream_echo(endpoint, &call))
         }
         Err(Stop::Fatal(e)) => {
@@ -1530,7 +1939,10 @@ const SCAN_BUSY: &str = "The guardrails are busy checking other requests. Try ag
 /// The chat or embeddings text slots of a call, joined text parts first.
 fn input_slots(call: &mut Call) -> Vec<&mut String> {
     match call {
-        Call::Chat(r) => {
+        // The agent's own body is what is checked and edited; the common
+        // request is derived from it again afterwards (`rederive`).
+        Call::Chat(_, Some(native)) => native::text_slots(native),
+        Call::Chat(r, _) => {
             merge_text_parts(r);
             chat_slots(r)
         }
@@ -1577,6 +1989,44 @@ async fn check_input_rules(
     match outcome.blocked_by {
         Some((_, name)) => Err(shape.guardrail_blocked(&name)),
         None => Ok(outcome),
+    }
+}
+
+/// Parses the common request again from the agent's body after guardrails
+/// edited its text, so that translation and pass-through send the same text.
+/// The body is only written out and read again when a slot changed.
+fn rederive(call: &mut Call, before: &Option<Vec<String>>) {
+    let Call::Chat(request, Some(native)) = call else {
+        return;
+    };
+    let Some(before) = before else { return };
+    let unchanged = {
+        let now = native::text_slots(native);
+        now.len() == before.len() && now.iter().zip(before).all(|(a, b)| **a == *b)
+    };
+    if unchanged {
+        return;
+    }
+    let body = serde_json::to_vec(&native.body).unwrap_or_default();
+    let parsed = match native.api {
+        NativeApi::Messages => anthropic::parse_request(&body),
+        NativeApi::Responses => responses::parse_request(&body).map(|p| p.request),
+    };
+    if let Ok(parsed) = parsed {
+        *request = parsed;
+    }
+}
+
+/// The text the guardrails may edit in the agent's body, as it is now.
+fn native_snapshot(call: &mut Call) -> Option<Vec<String>> {
+    match call {
+        Call::Chat(_, Some(native)) => Some(
+            native::text_slots(native)
+                .into_iter()
+                .map(|s| s.clone())
+                .collect(),
+        ),
+        _ => None,
     }
 }
 
@@ -1641,6 +2091,47 @@ async fn check_output(
     response.tool_calls.clear();
     response.finish_reason = Some(FinishReason::ContentFilter);
     Ok(Kept::No)
+}
+
+/// Checks the answer of a pass-through call against `guard`: what a rule
+/// redacts is rewritten in the answer, every other byte stays as the provider
+/// sent it; a block is refused. An answer that is not JSON is passed on.
+async fn check_native_output(
+    guard: &Active,
+    api: NativeApi,
+    body: Bytes,
+    record: &mut Scope,
+    shape: Shape,
+    deadline: tokio::time::Instant,
+) -> Result<Bytes, Response> {
+    if !guard.covers(Direction::Output) {
+        return Ok(body);
+    }
+    let Ok(mut answer) = serde_json::from_slice::<Value>(&body) else {
+        return Ok(body);
+    };
+    let mut slots = native::answer_slots(api, &mut answer);
+    let before: Vec<String> = slots.iter().map(|s| (**s).clone()).collect();
+    let outcome = match guard
+        .check(
+            Direction::Output,
+            slots.iter_mut().map(|s| &mut **s).collect(),
+            Some(deadline),
+        )
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(failed) => return Err(scan_failed(shape, failed)),
+    };
+    record.guardrails_found(Direction::Output, SideLog::of(guard.refs(), &outcome));
+    if let Some((_, name)) = outcome.blocked_by {
+        return Err(shape.guardrail_blocked(&name));
+    }
+    let changed = slots.iter().zip(&before).any(|(now, was)| **now != *was);
+    if !changed {
+        return Ok(body);
+    }
+    Ok(Bytes::from(serde_json::to_vec(&answer).unwrap_or_default()))
 }
 
 /// Checks the text of a transcript against `guard`, as an answer: redacted
@@ -1747,6 +2238,11 @@ fn exhausted_response(shape: Shape, ex: Exhausted<CallError>) -> Response {
     if let Some(refused) = ex.refused {
         return refused.into_response(shape);
     }
+    // The last try was a pass-through one and the provider answered it: its
+    // answer is the caller's, as it is when the provider refuses the call.
+    if let Some(upstream @ CallError::Upstream { .. }) = ex.last_retryable {
+        return upstream.into_response(shape);
+    }
     let seconds = |d: Duration| d.min(RETRY_AFTER_CAP).as_secs_f64().ceil() as u64;
     let response = if ex.attempts > 0 && ex.rate_limited == ex.attempts {
         let mut r = shape.error(
@@ -1803,11 +2299,38 @@ enum CallError {
     /// A call that is paid for once was sent and not answered in time: it
     /// may still be billed, and it is not repeated.
     Unfinished,
+    /// The provider refused a pass-through call: its status, headers and
+    /// body are the caller's answer.
+    Upstream {
+        status: u16,
+        headers: Vec<(String, String)>,
+        body: Bytes,
+    },
+}
+
+/// A provider's answer, passed on as it came.
+fn native_response(status: u16, headers: Vec<(String, String)>, body: Bytes) -> Response {
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    for (name, value) in headers {
+        if let (Ok(name), Ok(value)) = (
+            axum::http::HeaderName::from_bytes(name.as_bytes()),
+            axum::http::HeaderValue::from_str(&value),
+        ) {
+            response.headers_mut().append(name, value);
+        }
+    }
+    response
 }
 
 impl CallError {
     fn into_response(self, shape: Shape) -> Response {
         match self {
+            CallError::Upstream {
+                status,
+                headers,
+                body,
+            } => native_response(status, headers, body),
             CallError::Translate(e) => shape.translate_error(&e),
             CallError::Redirect(provider) => shape.error(
                 StatusCode::BAD_GATEWAY,
@@ -1842,6 +2365,15 @@ impl CallError {
 /// What a target gave.
 enum Served {
     Whole(ChatResponse),
+    /// A whole answer of the provider, passed on as it came.
+    Native {
+        status: u16,
+        headers: Vec<(String, String)>,
+        body: Bytes,
+        usage: Option<Usage>,
+        /// Calls of hosted tools the answer reports.
+        hosted: u32,
+    },
     Embeddings(EmbeddingsResponse),
     Image(ImageResponse),
     Transcript(TranscriptAnswer),
@@ -1875,6 +2407,9 @@ struct Committed {
     /// Decoded from the chunks read to find the first event.
     events: Vec<StreamEvent>,
     error: Option<TranslateError>,
+    /// Set for a pass-through stream, which is relayed as the provider sent
+    /// it: `first` holds the bytes read to find the first event.
+    native: Option<(NativeApi, Vec<Bytes>)>,
 }
 
 fn retryable<E>(error: E, status: Option<u16>) -> Failure<E> {
@@ -2010,6 +2545,37 @@ async fn try_target_once(
     let Some(provider) = provider else {
         return Err(retryable(CallError::Lost, None));
     };
+    if let Call::Chat(_, Some(native)) = call {
+        if call.passes_to(provider.kind) {
+            // What would read or write the state of the account the gateway
+            // holds for everyone is refused before anything is sent.
+            if let Some(message) = native::stored_state(native, provider.kind) {
+                return Err(Failure::Fatal {
+                    error: CallError::Translate(TranslateError::InvalidRequest(message)),
+                    status: None,
+                });
+            }
+            return try_native(
+                http,
+                call.stream(),
+                native,
+                provider,
+                target,
+                limits,
+                max_response,
+                sent,
+            )
+            .await;
+        }
+        // A target that does not speak the agent's API gets the translation,
+        // which the body may not have.
+        if let Some(e) = &native.parse_error {
+            return Err(Failure::Fatal {
+                error: CallError::Translate(e.clone()),
+                status: None,
+            });
+        }
+    }
     let started = Instant::now();
     let once = call.billed_once();
     let first_by = tokio::time::Instant::now() + limits.first_token;
@@ -2021,7 +2587,7 @@ async fn try_target_once(
         api_version: provider.api_version.clone(),
     };
     let built = match call {
-        Call::Chat(req) => build_request(&wire, req).map(Outgoing::Json),
+        Call::Chat(req, _) => build_request(&wire, req).map(Outgoing::Json),
         Call::Embed(req) => embeddings::build_request(&wire, req).map(Outgoing::Json),
         Call::Image(req) => images::build_request(&wire, req).map(Outgoing::Json),
         Call::Speech(req) => audio::build_speech(&wire, req).map(Outgoing::Json),
@@ -2029,7 +2595,7 @@ async fn try_target_once(
             .map(|upload| Outgoing::Upload(upload, req.file.clone(), chunks.clone())),
     };
     let out = built.map_err(|e| match (&e, call) {
-        (TranslateError::Unsupported(m), Call::Chat(_)) => Failure::Unsupported {
+        (TranslateError::Unsupported(m), Call::Chat(..)) => Failure::Unsupported {
             feature: unsupported_feature(m).to_string(),
             error: CallError::Translate(e),
         },
@@ -2134,7 +2700,7 @@ async fn try_target_once(
         }
     };
     let parsed = match call {
-        Call::Chat(_) => parse_response(provider.kind, status, &bytes).map(Served::Whole),
+        Call::Chat(..) => parse_response(provider.kind, status, &bytes).map(Served::Whole),
         Call::Embed(_) => embeddings::parse_response(provider.kind, status, &bytes, &target.model)
             .map(Served::Embeddings),
         Call::Image(_) => images::parse_response(provider.kind, status, &bytes).map(Served::Image),
@@ -2156,6 +2722,190 @@ async fn try_target_once(
             status: Some(status),
         }),
         Err(e) => Err(failure_of(e, Some(status), retry_after)),
+    }
+}
+
+/// One try of a target that speaks the agent's API: its body forwarded as it
+/// came, the provider's answer passed on as it came.
+#[allow(clippy::too_many_arguments)]
+async fn try_native(
+    http: &reqwest::Client,
+    native_call_streams: bool,
+    native: &Native,
+    provider: &SnapProvider,
+    target: TargetRef,
+    limits: Limits,
+    max_response: usize,
+    sent: &AtomicBool,
+) -> Result<Success<Served>, Failure<CallError>> {
+    let started = Instant::now();
+    let first_by = tokio::time::Instant::now() + limits.first_token;
+    let wire = Target {
+        kind: provider.kind,
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        model: target.model.clone(),
+        api_version: provider.api_version.clone(),
+    };
+    let out = native::build(native, &wire);
+    sent.store(true, AtomicOrdering::Relaxed);
+    let upstream = match timeout_at(first_by, send(http, Outgoing::Json(out))).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            let e = e.without_url();
+            tracing::warn!(provider = %provider.name, error = %e, "provider unreachable");
+            return Err(retryable(CallError::Lost, None));
+        }
+        Err(_) => {
+            tracing::warn!(provider = %provider.name, "provider gave no answer in time");
+            return Err(retryable(CallError::Lost, None));
+        }
+    };
+    let status = upstream.status().as_u16();
+    let retry_after = retry_after_of(upstream.headers());
+    if (300..400).contains(&status) {
+        tracing::warn!(provider = %provider.name, status, "provider answered with a redirect");
+        return Err(Failure::Fatal {
+            error: CallError::Redirect(provider.name.clone()),
+            status: Some(status),
+        });
+    }
+    if native_call_streams && status < 400 {
+        return first_native_chunk(
+            upstream,
+            native.api,
+            provider,
+            target,
+            started,
+            first_by,
+            limits.deadline,
+            status,
+        )
+        .await;
+    }
+    let headers = native::keep_response_headers(upstream.headers());
+    let bytes = match timeout_at(
+        limits.deadline,
+        read_capped(upstream, max_response, limits.first_token),
+    )
+    .await
+    {
+        Ok(Ok(b)) => Bytes::from(b),
+        Ok(Err(ReadError::TooLarge)) => {
+            tracing::warn!(provider = %provider.name, "provider response was too large");
+            return Err(Failure::Fatal {
+                error: CallError::TooLarge,
+                status: Some(status),
+            });
+        }
+        Ok(Err(ReadError::Failed)) | Err(_) => {
+            return Err(retryable(CallError::Lost, Some(status)));
+        }
+    };
+    if status < 400 {
+        return Ok(Success {
+            value: Served::Native {
+                status,
+                headers,
+                usage: native::usage_of(native.api, &bytes),
+                hosted: native::hosted_calls_of(native.api, &bytes),
+                body: bytes,
+            },
+            status: Some(status),
+        });
+    }
+    // The provider's trouble is another target's chance; the credential and
+    // the model are the gateway's; anything else is the caller's to fix, in
+    // the provider's own words.
+    Err(match status {
+        408 | 429 | 500..=599 => Failure::Retryable {
+            error: CallError::Upstream {
+                status,
+                headers,
+                body: bytes,
+            },
+            status: Some(status),
+            retry_after,
+        },
+        401 | 403 => Failure::Failover {
+            error: CallError::Translate(TranslateError::Provider {
+                status,
+                retryable: false,
+                message: native::error_message(&bytes),
+            }),
+            status: Some(status),
+        },
+        404 => Failure::Failover {
+            error: CallError::UnknownModel,
+            status: Some(status),
+        },
+        _ => Failure::Fatal {
+            error: CallError::Upstream {
+                status,
+                headers,
+                body: bytes,
+            },
+            status: Some(status),
+        },
+    })
+}
+
+/// Reads a pass-through stream until its first bytes, which commit the
+/// target. A provider error in them is a failure of the try, as in
+/// [`first_event`]; anything the decoder cannot read is not: the stream is
+/// the provider's own and is relayed.
+#[allow(clippy::too_many_arguments)]
+async fn first_native_chunk(
+    upstream: reqwest::Response,
+    api: NativeApi,
+    provider: &SnapProvider,
+    target: TargetRef,
+    started: Instant,
+    first_by: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+    status: u16,
+) -> Result<Success<Served>, Failure<CallError>> {
+    let mut chunks = upstream.bytes_stream().boxed();
+    let first = match timeout_at(first_by, chunks.next()).await {
+        Err(_) => {
+            tracing::warn!(provider = %provider.name, "provider sent no event in time");
+            return Err(retryable(CallError::Lost, Some(status)));
+        }
+        Ok(None) | Ok(Some(Err(_))) => {
+            tracing::warn!(provider = %provider.name, "provider stream was lost");
+            return Err(retryable(CallError::Lost, Some(status)));
+        }
+        Ok(Some(Ok(bytes))) => bytes,
+    };
+    if let Err(e) = native_decoder(api, provider.kind).feed(&first) {
+        if matches!(e, TranslateError::Provider { .. }) {
+            log_stream_error(&provider.name, &e);
+            return Err(if stream_error_is_retryable(&e) {
+                retryable(CallError::Lost, Some(status))
+            } else {
+                failure_of(e, Some(status), None)
+            });
+        }
+    }
+    Ok(Success {
+        value: Served::Stream(Box::new(Committed {
+            target,
+            started,
+            deadline,
+            chunks,
+            decoder: native_decoder(api, provider.kind),
+            events: Vec::new(),
+            error: None,
+            native: Some((api, vec![first])),
+        })),
+        status: Some(status),
+    })
+}
+
+fn native_decoder(api: NativeApi, kind: ProviderKind) -> StreamDecoder {
+    match api {
+        NativeApi::Responses => StreamDecoder::responses(),
+        NativeApi::Messages => StreamDecoder::new(kind),
     }
 }
 
@@ -2201,6 +2951,7 @@ async fn first_event(
                         decoder,
                         events,
                         error: None,
+                        native: None,
                     })),
                     status: Some(status),
                 });
@@ -2233,6 +2984,7 @@ async fn first_event(
                         decoder,
                         events,
                         error,
+                        native: None,
                     })),
                     status: Some(status),
                 });
@@ -2328,7 +3080,7 @@ fn response_id() -> String {
 /// The settings of the request a response object repeats.
 fn echo_of(call: &Call) -> responses::Echo {
     match call {
-        Call::Chat(r) => responses::Echo::of(r),
+        Call::Chat(r, _) => responses::Echo::of(r),
         // Only a chat call is answered on `/v1/responses`.
         Call::Embed(_) | Call::Image(_) | Call::Transcribe(..) | Call::Speech(_) => no_echo(),
     }
@@ -2352,6 +3104,7 @@ fn empty_request() -> ChatRequest {
         parallel_tool_calls: None,
         response_format: None,
         reasoning_effort: None,
+        dropped: Vec::new(),
     }
 }
 
@@ -2873,6 +3626,17 @@ impl StreamRecord {
         }
     }
 
+    /// What the provider has reported so far: kept for a stream that ends
+    /// before its last event.
+    fn partial(&mut self, usage: Option<Usage>, hosted: u32) {
+        if let Some(scope) = self.scope.as_mut() {
+            scope.partial_usage(usage);
+            if hosted > 0 {
+                scope.hosted_calls(hosted);
+            }
+        }
+    }
+
     fn end(self, outcome: AttemptOutcome, usage: Option<Usage>) {
         self.finish(outcome, usage, true);
     }
@@ -2939,6 +3703,7 @@ fn stream_to_caller(
             mut decoder,
             events,
             error,
+            native: _,
         } = committed;
         let provider = target.provider.clone();
         let mut format = StreamFormat::new(endpoint, &target.model, echo);
@@ -3007,10 +3772,12 @@ fn stream_to_caller(
                         }
                         Ok(Some(Ok(bytes))) => bytes,
                     };
-                    match decoder.feed(&chunk) {
+                    let fed = match decoder.feed(&chunk) {
                         Ok(events) => (events, decoder.take_error()),
                         Err(e) => (Vec::new(), Some(e)),
-                    }
+                    };
+                    record.partial(decoder.usage_so_far(), 0);
+                    fed
                 }
             };
             for ev in events {
@@ -3084,6 +3851,241 @@ fn stream_to_caller(
         .expect("static headers are valid")
 }
 
+/// What the guardrails tell a caller whose pass-through stream they cut.
+const STREAM_BLOCKED: &str = "The response was blocked by a guardrail.";
+
+/// The last delta events seen, which the text a scanner held back is sent in.
+#[derive(Default)]
+struct Deltas {
+    text: Option<(Vec<u8>, Value)>,
+    tools: std::collections::BTreeMap<u32, (Vec<u8>, Value)>,
+}
+
+/// A pass-through stream: the provider's bytes as they arrive. They are also
+/// read, for the usage, the characters streamed and the end of the answer, by
+/// a reader that skips what it does not know. With a rules guardrail on the
+/// output the stream is read event by event: only the text of a delta is
+/// rewritten (and the full text the `.done` events of a Responses stream
+/// repeat), every other event goes as it came, and a block ends the stream
+/// with the API's own error event.
+fn native_stream(committed: Committed, record: StreamRecord) -> Response {
+    let body = async_stream::stream! {
+        let mut record = record;
+        let Committed { target, deadline, mut chunks, native, .. } = committed;
+        let (api, first) = native.expect("a pass-through stream");
+        let provider = target.provider.clone();
+        let mut pending: std::collections::VecDeque<Bytes> = first.into();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut deltas = Deltas::default();
+        let mut reader = native::StreamReader::new(api);
+        // The last `sequence_number` let out, for text let out a second time.
+        let mut last_seq: Option<u64> = None;
+        let scanning = record.guard.as_ref().is_some_and(|g| g.scanner.is_some());
+        loop {
+            let chunk = match pending.pop_front() {
+                Some(chunk) => chunk,
+                None => match timeout_at(deadline, chunks.next()).await {
+                    Err(_) => {
+                        tracing::warn!(provider = %provider, "request ran out of time during the stream");
+                        record.end_out_of_time();
+                        yield Ok::<Bytes, Infallible>(Bytes::from(native::error_event(api, TIMED_OUT)));
+                        return;
+                    }
+                    Ok(None) => {
+                        if !buf.is_empty() {
+                            yield Ok(Bytes::from(std::mem::take(&mut buf)));
+                        }
+                        // The provider's own last event ended the answer, and
+                        // its usage was read with it: nothing is added after it.
+                        if reader.ended() {
+                            record.end(AttemptOutcome::Ok, None);
+                        } else {
+                            tracing::warn!(provider = %provider, "provider stream ended before completion");
+                            record.end(AttemptOutcome::Retryable, None);
+                            yield Ok(Bytes::from(native::error_event(
+                                api,
+                                "The provider stream ended before completion.",
+                            )));
+                        }
+                        return;
+                    }
+                    Ok(Some(Err(e))) => {
+                        let e = e.without_url();
+                        tracing::warn!(provider = %provider, error = %e, "provider stream was lost");
+                        record.end(AttemptOutcome::Retryable, None);
+                        yield Ok(Bytes::from(native::error_event(
+                            api,
+                            "The connection to the provider was lost.",
+                        )));
+                        return;
+                    }
+                    Ok(Some(Ok(bytes))) => bytes,
+                },
+            };
+            let units: Vec<Vec<u8>> = if scanning {
+                let from = buf.len().saturating_sub(3);
+                buf.extend_from_slice(&chunk);
+                let units = native::split_events_from(&mut buf, from);
+                if buf.len() > native::MAX_EVENT_BYTES {
+                    // An event too large to be one cannot be scanned: what
+                    // came before it is let out, it is not.
+                    for unit in units {
+                        yield Ok(Bytes::from(unit));
+                    }
+                    tracing::warn!(provider = %provider, "provider stream event is over the size limit");
+                    // Recorded as a cut, like a guardrail's: the caller's
+                    // answer was ended by the gateway, not by the target.
+                    record.cut_short();
+                    record.end(AttemptOutcome::Ok, None);
+                    yield Ok(Bytes::from(native::error_event(
+                        api,
+                        "The provider stream sent an event over the size limit.",
+                    )));
+                    return;
+                }
+                units
+            } else {
+                vec![chunk.to_vec()]
+            };
+            for unit in units {
+                let mut done = None;
+                let mut failed = None;
+                let read = reader.feed(&unit);
+                record.partial(reader.usage_so_far(), reader.hosted_calls());
+                for ev in read.events {
+                    match ev {
+                        StreamEvent::Delta { text } => record.streamed(text.chars().count()),
+                        StreamEvent::ToolCallDelta { arguments, .. } => {
+                            record.streamed(arguments.chars().count());
+                        }
+                        StreamEvent::Done { usage, .. } => done = Some(usage),
+                        _ => {}
+                    }
+                }
+                if let Some(e) = read.error {
+                    if matches!(e, TranslateError::Provider { .. }) {
+                        failed = Some(e);
+                    }
+                }
+                // What goes to the caller for this unit.
+                let mut out: Vec<Vec<u8>> = Vec::new();
+                let mut cut = false;
+                if scanning {
+                    let parsed = native::data_of(&unit).map(|v| (native::kind_of(api, &v), v));
+                    let scanner = record.guard.as_mut().and_then(|g| g.scanner.as_mut());
+                    match (scanner, parsed) {
+                        (Some(scanner), Some((kind @ (native::Kind::Text | native::Kind::Tool(_)), v))) => {
+                            let text = native::delta_of(api, &v).unwrap_or_default();
+                            let release = match kind {
+                                native::Kind::Tool(i) => scanner.push_tool_args(i, &text),
+                                _ => scanner.push_text(&text),
+                            };
+                            if release.blocked.is_some() {
+                                cut = true;
+                            } else if release.text == text {
+                                out.push(unit.clone());
+                            } else {
+                                out.push(native::rewritten(api, &unit, &v, &release.text));
+                            }
+                            match kind {
+                                native::Kind::Tool(i) => {
+                                    deltas.tools.insert(i, (unit.clone(), v));
+                                }
+                                _ => deltas.text = Some((unit.clone(), v)),
+                            }
+                        }
+                        (Some(scanner), Some((native::Kind::End, mut v))) => {
+                            let tail = scanner.finish();
+                            if tail.blocked.is_some() {
+                                cut = true;
+                            } else {
+                                if !tail.text.is_empty() {
+                                    if let Some((raw, v)) = &deltas.text {
+                                        out.push(native::rewritten(api, raw, v, &tail.text));
+                                    }
+                                }
+                                for (i, text) in tail.tools {
+                                    if let Some((raw, v)) = deltas.tools.get(&i) {
+                                        out.push(native::rewritten(api, raw, v, &text));
+                                    }
+                                }
+                                // The events that repeat the whole text carry
+                                // the same words as the deltas did.
+                                let mut copies: Vec<String> = Vec::new();
+                                if api == NativeApi::Responses {
+                                    copies = native::repeated_slots(&mut v)
+                                        .into_iter()
+                                        .map(std::mem::take)
+                                        .collect();
+                                }
+                                if copies.is_empty() {
+                                    out.push(unit.clone());
+                                } else {
+                                    let before = copies.clone();
+                                    if scanner.redact_copies(&mut copies).is_some() {
+                                        cut = true;
+                                    } else if copies == before {
+                                        out.push(unit.clone());
+                                    } else {
+                                        let mut now = copies.into_iter();
+                                        for slot in native::repeated_slots(&mut v) {
+                                            if let Some(text) = now.next() {
+                                                *slot = text;
+                                            }
+                                        }
+                                        out.push(native::reserialized(&unit, &v));
+                                    }
+                                }
+                            }
+                        }
+                        _ => out.push(unit.clone()),
+                    }
+                    if api == NativeApi::Responses {
+                        out = out
+                            .into_iter()
+                            .map(|piece| native::resequenced(piece, &mut last_seq))
+                            .collect();
+                    }
+                } else {
+                    out.push(unit);
+                }
+                if cut {
+                    record.cut_short();
+                    record.end(AttemptOutcome::Ok, None);
+                    yield Ok(Bytes::from(native::error_event(api, STREAM_BLOCKED)));
+                    return;
+                }
+                if let Some(e) = failed {
+                    // The provider's own error event is relayed; it ends the answer.
+                    for piece in out {
+                        yield Ok(Bytes::from(piece));
+                    }
+                    record.end(outcome_of_error(&e), None);
+                    return;
+                }
+                if let Some(usage) = done {
+                    // Recorded before the last bytes are handed over, so a
+                    // caller that leaves right after them is not a lost call.
+                    record.end(AttemptOutcome::Ok, usage);
+                    for piece in out {
+                        yield Ok(Bytes::from(piece));
+                    }
+                    return;
+                }
+                for piece in out {
+                    yield Ok(Bytes::from(piece));
+                }
+            }
+        }
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, "text/event-stream")
+        .header(CACHE_CONTROL, "no-cache")
+        .body(Body::from_stream(body))
+        .expect("static headers are valid")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3091,7 +4093,7 @@ mod tests {
 
     #[test]
     fn only_a_responses_stream_builds_the_echo_of_the_request() {
-        let call = Call::Chat(empty_request());
+        let call = Call::Chat(empty_request(), None);
         for endpoint in [Endpoint::Chat, Endpoint::Messages, Endpoint::Playground] {
             assert!(stream_echo(endpoint, &call).is_none());
         }

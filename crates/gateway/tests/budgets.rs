@@ -387,6 +387,7 @@ impl World {
 
     fn record(&self) -> RequestRecord {
         RequestRecord {
+            hosted_calls: 0,
             tags: Default::default(),
             key_id: Some(self.key_id),
             user_id: Some(self.user),
@@ -406,6 +407,8 @@ impl World {
             started_unix_ms: 0,
             guardrails: None,
             prompt: None,
+            agent: Default::default(),
+            dropped: Vec::new(),
         }
     }
 
@@ -806,6 +809,8 @@ fn log(at: &str, key_id: i64, user_id: i64, team_id: i64, cost: i64) -> NewLog {
         model: Some("m".into()),
         input_tokens: Some(1),
         output_tokens: Some(1),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: cost,
         priced: true,
         cached: false,
@@ -814,6 +819,12 @@ fn log(at: &str, key_id: i64, user_id: i64, team_id: i64, cost: i64) -> NewLog {
         attempts: "[]".into(),
         guardrails: None,
         prompt: None,
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     }
 }
 

@@ -77,7 +77,7 @@ fn tool_use_block(c: &ToolCall) -> Result<Value, TranslateError> {
 }
 
 fn tool_value(t: &Tool) -> Value {
-    let mut o = json!({"name": t.name, "input_schema": t.parameters});
+    let mut o = json!({"name": t.name, "input_schema": t.wire_parameters()});
     if let Some(d) = &t.description {
         o["description"] = json!(d);
     }
@@ -183,11 +183,6 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
     super::check_tool_choice(req)?;
     // A tool message's `name` (OpenAI's older form) is not needed: the id
     // names the call.
-    if req.reasoning_effort.is_some() {
-        return Err(TranslateError::Unsupported(
-            "reasoning effort is not supported by this provider".into(),
-        ));
-    }
     if req
         .messages
         .iter()
@@ -252,6 +247,16 @@ pub(crate) fn build(target: &Target, req: &ChatRequest) -> Result<HttpRequest, T
                 json!({ "format": { "type": "json_schema", "schema": schema } });
         }
     }
+    // A reasoning effort is adaptive thinking at that effort. `none` asks for
+    // no reasoning; Anthropic has no `minimal`, its lowest is `low`.
+    match req.reasoning_effort.as_deref() {
+        None | Some("none") => {}
+        Some(effort) => {
+            body["thinking"] = json!({"type": "adaptive"});
+            body["output_config"]["effort"] =
+                json!(if effort == "minimal" { "low" } else { effort });
+        }
+    }
     if req.stream {
         body["stream"] = json!(true);
     }
@@ -302,6 +307,8 @@ pub(crate) fn parse(body: &[u8]) -> Result<ChatResponse, TranslateError> {
     let usage = v.get("usage").filter(|u| u.is_object()).map(|u| Usage {
         input_tokens: saturate(u["input_tokens"].as_u64().unwrap_or(0)),
         output_tokens: saturate(u["output_tokens"].as_u64().unwrap_or(0)),
+        cache_read_input_tokens: saturate(u["cache_read_input_tokens"].as_u64().unwrap_or(0)),
+        cache_write_input_tokens: saturate(u["cache_creation_input_tokens"].as_u64().unwrap_or(0)),
     });
     Ok(ChatResponse {
         id: v["id"].as_str().unwrap_or_default().to_string(),
@@ -325,6 +332,8 @@ pub(crate) fn decode(
             let u = &v["message"]["usage"];
             state.input_tokens = u["input_tokens"].as_u64().map(saturate);
             state.output_tokens = u["output_tokens"].as_u64().map(saturate);
+            state.cache_read_tokens = u["cache_read_input_tokens"].as_u64().map(saturate);
+            state.cache_write_tokens = u["cache_creation_input_tokens"].as_u64().map(saturate);
         }
         Some("content_block_start") => {
             let kind = v["content_block"]["type"].as_str();
@@ -407,8 +416,19 @@ pub(crate) fn decode(
             if let Some(s) = v["delta"]["stop_reason"].as_str() {
                 state.finish = finish(s);
             }
-            if let Some(n) = v["usage"]["output_tokens"].as_u64() {
+            let u = &v["usage"];
+            if let Some(n) = u["output_tokens"].as_u64() {
                 state.output_tokens = Some(saturate(n));
+            }
+            // A message_delta may repeat the input side; when it does, it is the newer count.
+            if let Some(n) = u["input_tokens"].as_u64() {
+                state.input_tokens = Some(saturate(n));
+            }
+            if let Some(n) = u["cache_read_input_tokens"].as_u64() {
+                state.cache_read_tokens = Some(saturate(n));
+            }
+            if let Some(n) = u["cache_creation_input_tokens"].as_u64() {
+                state.cache_write_tokens = Some(saturate(n));
             }
         }
         Some("message_stop") => {
@@ -469,7 +489,50 @@ mod tests {
             parallel_tool_calls: None,
             response_format: None,
             reasoning_effort: None,
+            dropped: Vec::new(),
         }
+    }
+
+    #[test]
+    fn usage_carries_cache_reads_and_writes() {
+        let want = Usage {
+            input_tokens: 7,
+            output_tokens: 3,
+            cache_read_input_tokens: 100,
+            cache_write_input_tokens: 20,
+        };
+        let body = br#"{"id":"m1","model":"m","content":[{"type":"text","text":"a"}],"stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":100,"cache_creation_input_tokens":20}}"#;
+        assert_eq!(
+            parse_response(ProviderKind::Anthropic, 200, body)
+                .unwrap()
+                .usage,
+            Some(want)
+        );
+
+        let done = |events: Vec<StreamEvent>| match events.last() {
+            Some(StreamEvent::Done { usage, .. }) => *usage,
+            other => panic!("no done: {other:?}"),
+        };
+        let mut d = StreamDecoder::new(ProviderKind::Anthropic);
+        let ev = d
+            .feed(concat!(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"m\",\"usage\":{\"input_tokens\":7,\"output_tokens\":1,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":20}}}\n\n",
+                "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            ).as_bytes())
+            .unwrap();
+        assert_eq!(done(ev), Some(want));
+
+        // A message_delta that repeats the usage (cache counts included) wins.
+        let mut d = StreamDecoder::new(ProviderKind::Anthropic);
+        let ev = d
+            .feed(concat!(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"m\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":1}}}\n\n",
+                "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"cache_read_input_tokens\":100,\"cache_creation_input_tokens\":20}}\n\n",
+                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            ).as_bytes())
+            .unwrap();
+        assert_eq!(done(ev), Some(want));
     }
 
     #[test]
@@ -497,14 +560,47 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_is_refused() {
+    fn reasoning_effort_becomes_adaptive_thinking_and_effort() {
+        let body = |effort: Option<&str>, format: bool| {
+            let mut req = request(vec![Message::text(Role::User, "hi")]);
+            req.reasoning_effort = effort.map(str::to_string);
+            if format {
+                req.response_format = Some(ResponseFormat::JsonObject);
+            }
+            let r = build_request(&target(), &req).unwrap();
+            serde_json::from_slice::<serde_json::Value>(&r.body).unwrap()
+        };
+        let v = body(Some("high"), false);
+        assert_eq!(v["thinking"], serde_json::json!({"type": "adaptive"}));
+        assert_eq!(v["output_config"], serde_json::json!({"effort": "high"}));
+        // next to a structured output
+        let v = body(Some("medium"), true);
+        assert_eq!(v["output_config"]["effort"], "medium");
+        assert_eq!(v["output_config"]["format"]["type"], "json_schema");
+        // minimal has no Anthropic name; none and nothing ask for no thinking
+        assert_eq!(
+            body(Some("minimal"), false)["output_config"]["effort"],
+            "low"
+        );
+        for e in [None, Some("none")] {
+            let v = body(e, false);
+            assert!(v.get("thinking").is_none() && v.get("output_config").is_none());
+        }
+    }
+
+    #[test]
+    fn a_freeform_tool_is_a_function_with_one_string_input() {
         let mut req = request(vec![Message::text(Role::User, "hi")]);
-        assert!(build_request(&target(), &req).is_ok());
-        req.reasoning_effort = Some("low".into());
-        assert!(matches!(
-            build_request(&target(), &req),
-            Err(TranslateError::Unsupported(m)) if m.contains("reasoning")
-        ));
+        let mut t = tool("apply_patch");
+        t.freeform = true;
+        t.parameters = serde_json::json!({"type": "object", "properties": {"zzz": {}}});
+        req.tools = vec![t];
+        let r = build_request(&target(), &req).unwrap();
+        let v: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(
+            v["tools"][0]["input_schema"],
+            serde_json::json!({"type":"object","properties":{"input":{"type":"string"}},"required":["input"]})
+        );
     }
 
     #[test]
@@ -523,7 +619,8 @@ mod tests {
             r.usage,
             Some(Usage {
                 input_tokens: 7,
-                output_tokens: 3
+                output_tokens: 3,
+                ..Default::default()
             })
         );
     }
@@ -565,6 +662,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 9,
                     output_tokens: 12,
+                    ..Default::default()
                 }),
             },
         ]
@@ -600,7 +698,8 @@ mod tests {
             r.usage,
             Some(Usage {
                 input_tokens: u32::MAX,
-                output_tokens: 3
+                output_tokens: 3,
+                ..Default::default()
             })
         );
     }
@@ -624,7 +723,8 @@ mod tests {
                 finish_reason: Some(FinishReason::Stop),
                 usage: Some(Usage {
                     input_tokens: u32::MAX,
-                    output_tokens: u32::MAX
+                    output_tokens: u32::MAX,
+                    ..Default::default()
                 }),
             }]
         );
@@ -636,6 +736,7 @@ mod tests {
             description: Some("d".into()),
             parameters: serde_json::json!({"type": "object"}),
             strict: None,
+            freeform: false,
         }
     }
 
@@ -911,7 +1012,7 @@ mod tests {
         let r = build_request(&target(), &req).unwrap();
         assert_eq!(
             String::from_utf8(r.body).unwrap(),
-            r#"{"max_tokens":10,"messages":[{"content":"hi","role":"user"}],"model":"claude-sonnet-5","stop_sequences":["END"],"stream":true,"system":"s","temperature":0.5}"#
+            r#"{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}],"max_tokens":10,"system":"s","temperature":0.5,"stop_sequences":["END"],"stream":true}"#
         );
     }
 
@@ -968,6 +1069,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 20,
                     output_tokens: 30,
+                    ..Default::default()
                 }),
             },
         ];

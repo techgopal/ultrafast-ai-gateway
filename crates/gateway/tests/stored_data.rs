@@ -146,6 +146,7 @@ async fn a_database_written_by_the_earlier_build_opens_and_reads() {
             (22, "mcp local", true),
             (23, "mcp scale", true),
             (24, "mcp oauth", true),
+            (25, "agents", true),
         ]
     );
 

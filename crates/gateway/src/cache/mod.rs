@@ -132,6 +132,7 @@ impl Cached {
             Answer::Embeddings(r) => Some(Usage {
                 input_tokens: r.prompt_tokens,
                 output_tokens: 0,
+                ..Default::default()
             }),
         }
     }
@@ -338,6 +339,7 @@ mod tests {
             parallel_tool_calls: None,
             response_format: None,
             reasoning_effort: None,
+            dropped: Vec::new(),
         };
         CacheKey::chat(
             &KeyParts {

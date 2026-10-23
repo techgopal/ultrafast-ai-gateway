@@ -72,6 +72,7 @@ function queryOf(filters: Filters, now: number, offered: ReturnType<typeof useOf
   const guardrail = LOGGED_ACTIONS.find(([value]) => value === filters.guardrail)?.[0];
   if (guardrail !== undefined) query.guardrail = guardrail;
   if (filters.tag !== "") query.tag = [filters.tag];
+  if (filters.agentSession !== "") query.agent_session = filters.agentSession;
   return query;
 }
 
@@ -133,6 +134,33 @@ const columns: Column<Log>[] = [
   { id: "tags", header: "Tags", cell: (log) => <TagChips tags={log.tags} /> },
   { id: "endpoint", header: "Endpoint", cell: (log) => <span>{endpointLabel(log.endpoint)}</span> },
   { id: "prompt", header: "Prompt", cell: (log) => <span className="break-all">{log.prompt ?? NONE}</span> },
+  {
+    id: "cache",
+    header: "Cache reads",
+    cell: (log) => (
+      <span className="tabular-nums">
+        {log.cache_read_tokens === null || log.cache_read_tokens === 0
+          ? NONE
+          : formatTokens(log.cache_read_tokens)}
+      </span>
+    ),
+  },
+  {
+    id: "session",
+    header: "Session",
+    cell: (log) =>
+      log.agent_session === null ? (
+        NONE
+      ) : (
+        <Link
+          to="/logs/session/$id"
+          params={{ id: log.agent_session }}
+          className="inline-flex min-h-11 items-center break-all rounded-sm underline-offset-4 outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-0"
+        >
+          {log.agent_session}
+        </Link>
+      ),
+  },
 ];
 
 function LogsOf({ others }: { others: boolean }) {

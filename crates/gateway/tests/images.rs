@@ -167,6 +167,8 @@ async fn cost_comes_from_usage_when_the_provider_gives_it() {
     let price = Some(Price {
         input_micros: Some(5_000_000),
         output_micros: Some(40_000_000),
+        cache_read_micros: None,
+        cache_write_micros: None,
     });
     let (s, _) = generate(&h, BODY).await;
     assert_eq!(s, StatusCode::OK);

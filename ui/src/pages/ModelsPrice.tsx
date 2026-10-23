@@ -13,7 +13,7 @@ import { priceFormOf, pricesRequestOf } from "@/lib/models";
 type Model = components["schemas"]["ModelView"];
 
 export const PRICE_DESCRIPTION =
-  "Dollars per 1M tokens. Leave a price empty when it is not known: calls of the model are then logged without a cost.";
+  "Dollars per 1M tokens. Leave a price empty when it is not known: calls of the model are then logged without a cost. An empty cache price uses the input price.";
 
 interface FormProps {
   model: Model;
@@ -25,6 +25,8 @@ interface FormProps {
 const FIELDS = [
   ["input_price_micros", "Input price ($ per 1M tokens)"],
   ["output_price_micros", "Output price ($ per 1M tokens)"],
+  ["cache_read_price_micros", "Cache read price ($ per 1M tokens)"],
+  ["cache_write_price_micros", "Cache write price ($ per 1M tokens)"],
 ] as const;
 
 // Mounted while the dialog is open: every opening starts from the prices as they are.

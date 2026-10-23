@@ -12,7 +12,7 @@ keywords = ["llm", "openai", "anthropic", "gateway", "client"]
 categories = ["api-bindings", "web-programming::http-client"]
 
 [dependencies]
-ufaigw-translate = { version = "3.0.0", path = "../translate" }
+ufaigw-translate = { version = "3.1.0", path = "../translate" }
 async-stream.workspace = true
 bytes.workspace = true
 futures.workspace = true

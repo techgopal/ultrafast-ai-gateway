@@ -74,6 +74,14 @@ pub struct ModelView {
     /// What a million output tokens cost, in millionths of a dollar.
     #[schema(required)]
     pub output_price_micros: Option<i64>,
+    /// What a million tokens read from the provider's prompt cache cost, in
+    /// millionths of a dollar. `null`: the input price is used.
+    #[schema(required)]
+    pub cache_read_price_micros: Option<i64>,
+    /// What a million tokens written to the prompt cache cost, in millionths
+    /// of a dollar. `null`: the input price is used.
+    #[schema(required)]
+    pub cache_write_price_micros: Option<i64>,
 }
 
 impl ModelView {
@@ -88,6 +96,8 @@ impl ModelView {
             created_at: m.created_at,
             input_price_micros: m.input_price_micros,
             output_price_micros: m.output_price_micros,
+            cache_read_price_micros: m.cache_read_price_micros,
+            cache_write_price_micros: m.cache_write_price_micros,
         }
     }
 }
@@ -127,6 +137,15 @@ pub struct UpdateModelRequest {
     #[serde(default, deserialize_with = "present")]
     #[schema(value_type = Option<i64>, minimum = 0)]
     output_price_micros: Option<Option<i64>>,
+    /// Like `input_price_micros`, for tokens read from the prompt cache.
+    /// `null` prices them at the input price.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<i64>, minimum = 0)]
+    cache_read_price_micros: Option<Option<i64>>,
+    /// Like `cache_read_price_micros`, for tokens written to the prompt cache.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<i64>, minimum = 0)]
+    cache_write_price_micros: Option<Option<i64>>,
 }
 
 /// Reads a field that is there, so `null` differs from a missing field.
@@ -392,15 +411,19 @@ pub async fn update(
     if req.enabled.is_none()
         && req.input_price_micros.is_none()
         && req.output_price_micros.is_none()
+        && req.cache_read_price_micros.is_none()
+        && req.cache_write_price_micros.is_none()
     {
         return Err(ApiError::bad_request(
-            "Send at least one of enabled, input_price_micros and output_price_micros.",
+            "Send at least one of enabled, input_price_micros, output_price_micros, cache_read_price_micros and cache_write_price_micros.",
         ));
     }
     let mut fields = BTreeMap::new();
     for (name, price) in [
         ("input_price_micros", req.input_price_micros),
         ("output_price_micros", req.output_price_micros),
+        ("cache_read_price_micros", req.cache_read_price_micros),
+        ("cache_write_price_micros", req.cache_write_price_micros),
     ] {
         if price.flatten().is_some_and(|p| p < 0) {
             fields.insert(name.to_string(), "must be 0 or more".to_string());
@@ -436,6 +459,18 @@ pub async fn update(
             return Err(ApiError::not_found());
         }
         prices.push(format!("output {}", price_text(price)));
+    }
+    if let Some(price) = req.cache_read_price_micros {
+        if !tx.set_model_cache_read_price(id, price).await? {
+            return Err(ApiError::not_found());
+        }
+        prices.push(format!("cache read {}", price_text(price)));
+    }
+    if let Some(price) = req.cache_write_price_micros {
+        if !tx.set_model_cache_write_price(id, price).await? {
+            return Err(ApiError::not_found());
+        }
+        prices.push(format!("cache write {}", price_text(price)));
     }
     if !prices.is_empty() {
         did.push(format!(

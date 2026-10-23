@@ -11,7 +11,8 @@ use super::dialect::Dialected;
 use super::{flag, write_error, Store, Tx, DEFAULT_ORG};
 
 const MODEL_SELECT: &str = "SELECT m.id, m.provider_id, p.name AS provider_name, m.name,
-            m.enabled, m.created_at, m.input_price_micros, m.output_price_micros
+            m.enabled, m.created_at, m.input_price_micros, m.output_price_micros,
+            m.cache_read_price_micros, m.cache_write_price_micros
      FROM models m
      JOIN providers p ON p.id = m.provider_id AND p.org_id = m.org_id";
 
@@ -26,6 +27,9 @@ pub struct ModelRow {
     /// Per million tokens, in millionths of a dollar; `None` is unknown.
     pub input_price_micros: Option<i64>,
     pub output_price_micros: Option<i64>,
+    /// Prices of cache reads and writes; `None` is the input price.
+    pub cache_read_price_micros: Option<i64>,
+    pub cache_write_price_micros: Option<i64>,
 }
 
 fn model_from(r: &AnyRow) -> ModelRow {
@@ -38,6 +42,8 @@ fn model_from(r: &AnyRow) -> ModelRow {
         created_at: r.get("created_at"),
         input_price_micros: r.get("input_price_micros"),
         output_price_micros: r.get("output_price_micros"),
+        cache_read_price_micros: r.get("cache_read_price_micros"),
+        cache_write_price_micros: r.get("cache_write_price_micros"),
     }
 }
 
@@ -145,6 +151,38 @@ impl Tx<'_> {
     pub async fn set_model_output_price(&mut self, id: i64, price: Option<i64>) -> Result<bool> {
         let r = self
             .q("UPDATE models SET output_price_micros = ? WHERE id = ? AND org_id = ?")
+            .bind(price)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
+    /// Like `set_model_input_price`, for tokens read from the prompt cache.
+    pub async fn set_model_cache_read_price(
+        &mut self,
+        id: i64,
+        price: Option<i64>,
+    ) -> Result<bool> {
+        let r = self
+            .q("UPDATE models SET cache_read_price_micros = ? WHERE id = ? AND org_id = ?")
+            .bind(price)
+            .bind(id)
+            .bind(DEFAULT_ORG)
+            .execute(self.conn())
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
+    /// Like `set_model_input_price`, for tokens written to the prompt cache.
+    pub async fn set_model_cache_write_price(
+        &mut self,
+        id: i64,
+        price: Option<i64>,
+    ) -> Result<bool> {
+        let r = self
+            .q("UPDATE models SET cache_write_price_micros = ? WHERE id = ? AND org_id = ?")
             .bind(price)
             .bind(id)
             .bind(DEFAULT_ORG)

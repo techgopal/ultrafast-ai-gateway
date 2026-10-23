@@ -791,3 +791,9 @@ pub async fn harness_with_state(
     )
     .await
 }
+
+/// Like [`harness`], with calls in the provider's own API translated instead
+/// of forwarded: for the tests of the translators.
+pub async fn harness_translating(kind: &str) -> Harness {
+    harness_with_state(kind, |s| s.passthrough = false).await
+}

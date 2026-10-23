@@ -25,6 +25,7 @@ fn expected() -> Vec<StreamEvent> {
             usage: Some(Usage {
                 input_tokens: 3,
                 output_tokens: 2,
+                ..Default::default()
             }),
         },
     ]
@@ -97,7 +98,8 @@ async fn gemini_stream_gets_its_final_event_from_finish() {
             finish_reason: Some(FinishReason::Stop),
             usage: Some(Usage {
                 input_tokens: 7,
-                output_tokens: 1
+                output_tokens: 1,
+                ..Default::default()
             })
         })
     );

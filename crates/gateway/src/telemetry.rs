@@ -72,6 +72,9 @@ pub struct RequestRecord {
     /// answer ended is recorded as 499.
     pub status: u16,
     pub usage: Option<Usage>,
+    /// Calls of the provider's hosted tools (web searches) the answer
+    /// reports, which are priced apart from the tokens.
+    pub hosted_calls: u32,
     pub attempts: Vec<Attempt>,
     /// Answered from the response cache: the usage is that of the answer
     /// that was kept, and the call cost nothing.
@@ -98,6 +101,10 @@ pub struct RequestRecord {
     /// The prompt template the call used, as `name@version`: set once the
     /// template and its version were found.
     pub prompt: Option<String>,
+    /// What the calling agent said about itself (session, agent, client).
+    pub agent: crate::agents::AgentInfo,
+    /// Names of what translation left out of the request.
+    pub dropped: Vec<String>,
 }
 
 /// The longest `requested` a record keeps, in bytes. The name is whatever the
@@ -152,6 +159,8 @@ pub struct Scope {
     stream_input: Option<u64>,
     /// Characters of answer streamed to the caller so far.
     streamed_chars: u64,
+    /// The usage the provider had reported when the stream ended early.
+    partial_usage: Option<Usage>,
     /// Where a copy of the record goes to become a trace, when enabled.
     otel: Option<Exporter>,
     /// Counts the call toward error rates, when alert rules exist.
@@ -182,12 +191,14 @@ impl Scope {
             metrics: None,
             stream_input: None,
             streamed_chars: 0,
+            partial_usage: None,
             otel: None,
             alerts: None,
             resolved: false,
             resolved_route: None,
             cut_short: false,
             record: Some(RequestRecord {
+                hosted_calls: 0,
                 key_id,
                 user_id,
                 team_id,
@@ -207,6 +218,8 @@ impl Scope {
                 started_unix_ms: unix_ms_now(),
                 guardrails: None,
                 prompt: None,
+                agent: Default::default(),
+                dropped: Vec::new(),
             }),
         }
     }
@@ -254,6 +267,16 @@ impl Scope {
     /// The call used this version of a prompt template.
     pub fn prompt(&mut self, name: &str, version: i64) {
         self.record_mut().prompt = Some(format!("{name}@{version}"));
+    }
+
+    /// What the calling agent said about itself.
+    pub fn agent(&mut self, info: crate::agents::AgentInfo) {
+        self.record_mut().agent = info;
+    }
+
+    /// Names of what translation left out of the request.
+    pub fn dropped(&mut self, names: Vec<String>) {
+        self.record_mut().dropped = names;
     }
 
     /// What the guardrails found in the output of the call so far.
@@ -397,10 +420,24 @@ impl Scope {
         self.streamed_chars = self.streamed_chars.saturating_add(chars as u64);
     }
 
+    /// What the provider has reported of a stream so far. If the stream ends
+    /// early (a guardrail cut it, the caller left), this is what is recorded,
+    /// as read and not as an estimate.
+    pub fn partial_usage(&mut self, usage: Option<Usage>) {
+        if usage.is_some() {
+            self.partial_usage = usage;
+        }
+    }
+
+    /// The calls of hosted tools (web searches) the provider reports.
+    pub fn hosted_calls(&mut self, calls: u32) {
+        self.record_mut().hosted_calls = calls;
+    }
+
     pub fn usage(&mut self, usage: Option<Usage>) {
         // The tokens the call used replace the estimate it was charged.
         if let (Some(permit), Some(u)) = (self.permit.as_mut(), usage) {
-            permit.settle(u64::from(u.input_tokens) + u64::from(u.output_tokens));
+            permit.settle(u.total_volume());
         }
         self.record_mut().usage = usage;
     }
@@ -484,6 +521,31 @@ impl Scope {
             // A stream that ended without the provider's report, because the
             // caller left or an error came after content, was still paid for:
             // it is charged an estimate, marked as one.
+            if let (None, Some(partial)) = (record.usage, self.partial_usage) {
+                let ended_early = status == CALLER_GONE
+                    || self.cut_short
+                    || record
+                        .attempts
+                        .last()
+                        .is_some_and(|a| a.outcome != AttemptOutcome::Ok);
+                if ended_early {
+                    // The input side is what the provider reported. Its
+                    // running count of output is only the start (Anthropic
+                    // says 1 in message_start), so the output is the larger
+                    // of that and what was streamed, at four characters to a
+                    // token.
+                    let streamed =
+                        u32::try_from(self.streamed_chars.div_ceil(4)).unwrap_or(u32::MAX);
+                    let partial = Usage {
+                        output_tokens: partial.output_tokens.max(streamed),
+                        ..partial
+                    };
+                    record.usage = Some(partial);
+                    if let Some(permit) = self.permit.as_mut() {
+                        permit.settle(partial.total_volume());
+                    }
+                }
+            }
             if let (None, Some(input)) = (record.usage, self.stream_input) {
                 let ended_early = status == CALLER_GONE
                     || self.cut_short
@@ -498,12 +560,12 @@ impl Scope {
                     let usage = Usage {
                         input_tokens: to_u32(input),
                         output_tokens: to_u32(self.streamed_chars.div_ceil(4)),
+                        ..Default::default()
                     };
                     record.usage = Some(usage);
                     record.estimated = true;
                     if let Some(permit) = self.permit.as_mut() {
-                        permit
-                            .settle(u64::from(usage.input_tokens) + u64::from(usage.output_tokens));
+                        permit.settle(usage.total_volume());
                     }
                 }
             }

@@ -377,6 +377,7 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         projected_bytes: None,
     };
     let mut record = RequestRecord {
+        hosted_calls: 0,
         tags: Default::default(),
         key_id: Some(1),
         user_id: None,
@@ -402,6 +403,8 @@ async fn an_attempt_is_timed_by_its_outcome_even_at_zero_ms_without_a_status() {
         started_unix_ms: 0,
         guardrails: None,
         prompt: None,
+        agent: Default::default(),
+        dropped: Vec::new(),
     };
     record.attempts[1].status = Some(400);
     metrics.record(&record);
@@ -584,6 +587,7 @@ async fn a_budget_refusal_is_counted() {
         StatusCode::OK
     );
     let record = RequestRecord {
+        hosted_calls: 0,
         tags: Default::default(),
         key_id: Some(1),
         user_id: None,
@@ -603,6 +607,8 @@ async fn a_budget_refusal_is_counted() {
         started_unix_ms: 0,
         guardrails: None,
         prompt: None,
+        agent: Default::default(),
+        dropped: Vec::new(),
     };
     account(&h.state, &record, 500, OffsetDateTime::now_utc());
     assert_eq!(
@@ -700,6 +706,8 @@ async fn cost_and_log_counters_come_from_the_log_pipeline() {
         (p == "p" && m == "gpt-4o").then_some(Price {
             input_micros: Some(2_500_000),
             output_micros: Some(10_000_000),
+            cache_read_micros: None,
+            cache_write_micros: None,
         })
     });
     let (_stop, stopped) = watch::channel(false);

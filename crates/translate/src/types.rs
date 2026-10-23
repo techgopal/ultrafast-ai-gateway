@@ -44,6 +44,32 @@ pub struct Tool {
     /// ignore it.
     #[serde(default)]
     pub strict: Option<bool>,
+    /// A freeform (Codex `custom`) tool: its input is one text, not a JSON
+    /// object. Every provider is given it as a function with one string
+    /// parameter, `input`.
+    #[serde(default)]
+    pub freeform: bool,
+}
+
+impl Tool {
+    /// The parameter schema of a freeform tool.
+    pub fn freeform_parameters() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {"input": {"type": "string"}},
+            "required": ["input"],
+        })
+    }
+
+    /// The JSON Schema the provider is given: the tool's own, or the one
+    /// string parameter of a freeform tool.
+    pub fn wire_parameters(&self) -> std::borrow::Cow<'_, serde_json::Value> {
+        if self.freeform {
+            std::borrow::Cow::Owned(Self::freeform_parameters())
+        } else {
+            std::borrow::Cow::Borrowed(&self.parameters)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -155,7 +181,7 @@ pub fn image_source(url: &str) -> Result<ImageSource, TranslateError> {
     Err(bad("image url must be an http(s) URL or a base64 data URL"))
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -174,6 +200,12 @@ pub struct ChatRequest {
     /// can express it; the other providers refuse a call that sets it.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Names of what translation left out of the caller's request (fields,
+    /// tools, content blocks), for the call's log row. Empty for a request
+    /// that was taken whole. Forms: `context_management`, `cache_control`,
+    /// `tools[2]:web_search_20250305`, `messages[1].content[0]:thinking`.
+    #[serde(default)]
+    pub dropped: Vec<String>,
 }
 
 /// OpenAI's `response_format`.
@@ -192,10 +224,31 @@ pub enum ResponseFormat {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// `input_tokens` is the uncached input (Anthropic's meaning); tokens read
+/// from or written to a prompt cache are counted apart.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    #[serde(default)]
+    pub cache_read_input_tokens: u32,
+    #[serde(default)]
+    pub cache_write_input_tokens: u32,
+}
+
+impl Usage {
+    /// Every token the call sent in, cached or not: what limits, budgets
+    /// and counters see as input volume.
+    pub fn input_volume(&self) -> u64 {
+        u64::from(self.input_tokens)
+            + u64::from(self.cache_read_input_tokens)
+            + u64::from(self.cache_write_input_tokens)
+    }
+
+    /// Input volume plus output.
+    pub fn total_volume(&self) -> u64 {
+        self.input_volume() + u64::from(self.output_tokens)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

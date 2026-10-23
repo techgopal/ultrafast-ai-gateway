@@ -576,6 +576,7 @@ async fn a_call_refused_after_the_limit_gives_its_slot_back() {
 
 fn spent_record() -> RequestRecord {
     RequestRecord {
+        hosted_calls: 0,
         tags: Default::default(),
         key_id: None,
         user_id: None,
@@ -595,6 +596,8 @@ fn spent_record() -> RequestRecord {
         started_unix_ms: 0,
         guardrails: None,
         prompt: None,
+        agent: Default::default(),
+        dropped: Vec::new(),
     }
 }
 

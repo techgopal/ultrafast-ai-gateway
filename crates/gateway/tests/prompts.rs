@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use common::{
-    allow_model, call, error_code, org_tweaked, org_with_sink, post_to, seed_team, seed_user,
-    MemorySink, Org, Signed, ORG_PASSWORD,
+    allow_model, call, error_code, org_tweaked, post_to, seed_team, seed_user, MemorySink, Org,
+    Signed, ORG_PASSWORD,
 };
 use serde_json::{json, Value};
 use ufaigw_gateway::identity::{Role, TeamRole};
@@ -52,7 +52,7 @@ fn ok() -> ResponseTemplate {
 
 async fn world() -> World {
     let sink = Arc::new(MemorySink::default());
-    let org = org_with_sink(Some(sink.clone())).await;
+    let org = org_tweaked(Some(sink.clone()), |s| s.passthrough = false).await;
     world_of(org, sink).await
 }
 
@@ -1089,6 +1089,8 @@ fn log(prompt: Option<&str>) -> NewLog {
         model: Some("m".into()),
         input_tokens: Some(1),
         output_tokens: Some(1),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
         cost_micros: 0,
         priced: false,
         cached: false,
@@ -1098,6 +1100,12 @@ fn log(prompt: Option<&str>) -> NewLog {
         tags: None,
         guardrails: None,
         prompt: prompt.map(str::to_string),
+        agent_session: None,
+        agent_id: None,
+        agent_prompt: None,
+        agent_class: None,
+        agent_client: None,
+        dropped: None,
     }
 }
 
@@ -1894,4 +1902,47 @@ async fn templates_travel_in_the_configuration_file_with_all_their_versions() {
             .len(),
         1
     );
+}
+
+// ------------------------------------------------- pass-through (production)
+
+#[tokio::test]
+async fn on_the_production_harness_chat_renders_templates_and_responses_refuses_them() {
+    // An OpenAI provider passes /v1/responses through, which has no template
+    // to render; /v1/chat/completions is translated as ever.
+    let sink = Arc::new(MemorySink::default());
+    let w = world_of(org_tweaked(Some(sink.clone()), |_| {}).await, sink).await;
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "r", "object": "response", "status": "completed", "model": "m",
+            "output": [], "usage": { "input_tokens": 1, "output_tokens": 1 }
+        })))
+        .mount(&w.upstream)
+        .await;
+    let (_, _maya) = greet(&w).await;
+    let (status, v) = w
+        .chat(json!({
+            "prompt": { "id": "greet", "variables": { "tone": "calm", "name": "Ada" } },
+            "messages": [{ "role": "user", "content": "next" }],
+        }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        w.sent().await.last().unwrap()["messages"][1],
+        json!({ "role": "user", "content": "Hello Ada" })
+    );
+    let before = w.sent().await.len();
+    let (status, v) = w
+        .responses(json!({
+            "prompt": { "id": "greet", "variables": { "tone": "calm", "name": "Ada" } },
+            "input": "next",
+        }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(
+        v["error"]["message"],
+        "Prompt templates cannot be used with a pass-through call."
+    );
+    assert_eq!(w.sent().await.len(), before);
 }

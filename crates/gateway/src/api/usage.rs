@@ -12,7 +12,7 @@ use time::format_description::FormatItem;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime};
 
-use super::logs::store_scope;
+use super::logs::{agent_session_param, store_scope};
 use super::{require, ApiError, Authed};
 use crate::app::AppState;
 use crate::identity::policy::{list_scope, Action};
@@ -30,6 +30,7 @@ pub struct UsageQuery {
     from: Option<String>,
     to: Option<String>,
     group: Option<String>,
+    agent_session: Option<String>,
 }
 
 /// Sums over one group of calls.
@@ -49,10 +50,15 @@ pub struct UsageRow {
     /// Calls the caller abandoned before they were answered (status 499): not
     /// errors of the gateway or of a provider.
     pub cancelled: i64,
-    /// Includes the tokens of cached answers (`cached` rows of the logs),
-    /// which cost nothing.
+    /// Every token sent in, including those read from or written to the
+    /// providers' prompt caches, and the tokens of cached answers (`cached`
+    /// rows of the logs), which cost nothing.
     pub input_tokens: i64,
     pub output_tokens: i64,
+    /// Of `input_tokens`: those read from the providers' prompt caches.
+    pub cache_read_tokens: i64,
+    /// Of `input_tokens`: those written to the providers' prompt caches.
+    pub cache_write_tokens: i64,
     /// In millionths of a dollar.
     pub cost_micros: i64,
     /// Calls that reported token usage but could not be priced, so their
@@ -70,6 +76,8 @@ impl From<UsageSums> for UsageRow {
             cancelled: s.cancelled,
             input_tokens: s.input_tokens,
             output_tokens: s.output_tokens,
+            cache_read_tokens: s.cache_read_tokens,
+            cache_write_tokens: s.cache_write_tokens,
             cost_micros: s.cost_micros,
             unpriced_requests: s.unpriced_requests,
         }
@@ -111,6 +119,7 @@ fn day(raw: &str) -> Option<Date> {
         ("from" = Option<String>, Query, description = "First day, `YYYY-MM-DD` (UTC). 29 days before `to` when left out."),
         ("to" = Option<String>, Query, description = "Last day, `YYYY-MM-DD` (UTC), counted whole. Today when left out."),
         ("group" = Option<String>, Query, description = "`day` (the default), `model`, `key`, `user`, `team`, or `tag:<name>` to group by the value of that tag (calls without it are `(none)`)."),
+        ("agent_session" = Option<String>, Query, description = "Only calls of this agent session: the id a coding agent (Claude Code, Codex) sends with its requests, as `agent_session` shows it in the logs. Combines with the other parameters."),
     ),
     responses(
         (status = 200, description = "The sums, one row per group, and their total.", body = super::openapi::UsagePage),
@@ -162,6 +171,13 @@ pub async fn usage_view(
     };
     let from = date("from", &q.from);
     let to = date("to", &q.to);
+    let agent_session = match agent_session_param(q.agent_session.as_deref()) {
+        Ok(session) => session,
+        Err(message) => {
+            fields.insert("agent_session".to_string(), message.to_string());
+            None
+        }
+    };
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
     }
@@ -201,7 +217,13 @@ pub async fn usage_view(
 
     let sums = state
         .store
-        .usage(&store_scope(list_scope(me)), &from, &to, group)
+        .usage_in_session(
+            &store_scope(list_scope(me)),
+            &from,
+            &to,
+            group,
+            agent_session.as_deref(),
+        )
         .await?;
     let mut total = UsageRow {
         group: "total".into(),
@@ -211,6 +233,8 @@ pub async fn usage_view(
         cancelled: 0,
         input_tokens: 0,
         output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
         cost_micros: 0,
         unpriced_requests: 0,
     };
@@ -220,6 +244,8 @@ pub async fn usage_view(
         total.cancelled += s.cancelled;
         total.input_tokens += s.input_tokens;
         total.output_tokens += s.output_tokens;
+        total.cache_read_tokens += s.cache_read_tokens;
+        total.cache_write_tokens += s.cache_write_tokens;
         total.cost_micros += s.cost_micros;
         total.unpriced_requests += s.unpriced_requests;
     }

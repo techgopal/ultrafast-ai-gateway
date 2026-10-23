@@ -297,6 +297,7 @@ async fn collector_down_never_slows_calls() {
 
 fn record() -> RequestRecord {
     RequestRecord {
+        hosted_calls: 0,
         key_id: Some(1),
         user_id: None,
         team_id: None,
@@ -325,6 +326,8 @@ fn record() -> RequestRecord {
         started_unix_ms: 0,
         guardrails: None,
         prompt: None,
+        agent: Default::default(),
+        dropped: Vec::new(),
     }
 }
 
