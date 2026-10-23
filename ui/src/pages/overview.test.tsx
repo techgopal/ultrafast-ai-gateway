@@ -774,6 +774,36 @@ describe("usage on the overview", () => {
     expect(usageTile("Top models")).toHaveTextContent("No calls yet");
   });
 
+  test("an agent session narrows every usage request, and is never sent when empty", async () => {
+    const seen: URLSearchParams[] = [];
+    override("get", "/api/usage", ({ request }) => {
+      const query = new URL(request.url).searchParams;
+      seen.push(query);
+      return ok("get", "/api/usage", 200, fixtures.usageOf(query.get("group") ?? "day"));
+    });
+    await page();
+    await usageLoaded("Requests");
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen.every((query) => !query.has("agent_session"))).toBe(true);
+    seen.length = 0;
+    await userEvent.type(
+      within(usageSection()).getByRole("textbox", { name: "Agent session" }),
+      `${fixtures.agentSession}{Enter}`,
+    );
+    await waitFor(() => {
+      expect(
+        ["day", "model"].every((group) =>
+          seen.some(
+            (query) =>
+              query.get("group") === group && query.get("agent_session") === fixtures.agentSession,
+          ),
+        ),
+      ).toBe(true);
+    });
+    expectOneMain();
+    expectOneH1("Overview");
+  });
+
   test("top models: five, most requests first, with their spend", async () => {
     const asked = counted("get", "/api/usage", ({ request }) =>
       ok("get", "/api/usage", 200, fixtures.usageOf(new URL(request.url).searchParams.get("group") ?? "day")),

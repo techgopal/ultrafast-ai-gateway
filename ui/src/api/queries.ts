@@ -151,7 +151,7 @@ export const queryKeys = {
   oidc: () => ["settings", "oidc"] as const,
   usage: {
     all: () => ["usage"] as const,
-    sums: (group: UsageGroup) => ["usage", group] as const,
+    sums: (group: UsageGroup, agentSession: string) => ["usage", group, agentSession] as const,
   },
 };
 
@@ -652,11 +652,18 @@ export const useLog = (id: number) =>
     queryFn: ({ signal }) => api.get("/api/logs/{id}", { params: { id }, signal }),
   });
 
-/** Sums of the last 30 days (the API's default range), by day, model, key, user or team. */
-export const useUsage = (group: UsageGroup) =>
+/**
+ * Sums of the last 30 days (the API's default range), by day, model, key, user or team;
+ * of one coding-agent session when `agentSession` is not empty.
+ */
+export const useUsage = (group: UsageGroup, agentSession = "") =>
   useQuery({
-    queryKey: queryKeys.usage.sums(group),
-    queryFn: ({ signal }) => api.get("/api/usage", { query: { group }, signal }),
+    queryKey: queryKeys.usage.sums(group, agentSession),
+    queryFn: ({ signal }) =>
+      api.get("/api/usage", {
+        query: agentSession === "" ? { group } : { group, agent_session: agentSession },
+        signal,
+      }),
   });
 
 // -------------------------------------------------------------- mutations

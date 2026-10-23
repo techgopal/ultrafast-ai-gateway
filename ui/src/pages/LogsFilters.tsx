@@ -3,6 +3,7 @@ import { useId, useState } from "react";
 import { keysOptions, teamsOptions, usersOptions } from "@/api/queries";
 import { control } from "@/components/classes";
 import { FilterSelect, type Choice } from "@/components/FilterSelect";
+import { TextFilter } from "@/components/TextFilter";
 import { Input } from "@/components/ui/input";
 import { LOGGED_ACTIONS } from "@/lib/guardrails";
 import { parseTagFilter } from "@/lib/tags";
@@ -115,46 +116,6 @@ interface LogsFiltersProps {
   onChange: (patch: Partial<Filters>) => void;
 }
 
-/** A text applied when it is entered or left, not at every key. */
-function TextField({
-  value,
-  label,
-  placeholder,
-  onApply,
-}: {
-  value: string;
-  label: string;
-  placeholder: string;
-  onApply: (text: string) => void;
-}) {
-  const [draft, setDraft] = useState(value);
-  const apply = () => {
-    const text = draft.trim();
-    if (text !== value) onApply(text);
-  };
-  return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        apply();
-      }}
-    >
-      <Input
-        type="text"
-        aria-label={label}
-        placeholder={placeholder}
-        autoComplete="off"
-        className={`${control} w-full sm:w-48`}
-        value={draft}
-        onChange={(event) => {
-          setDraft(event.target.value);
-        }}
-        onBlur={apply}
-      />
-    </form>
-  );
-}
-
 /**
  * The tag is `name:value`, applied on Enter. A text that is not one is
  * refused here, and nothing is asked of the gateway for it.
@@ -265,7 +226,7 @@ export function LogsFilters({ filters, offered, others, onChange }: LogsFiltersP
           />
         </>
       ) : null}
-      <TextField
+      <TextFilter
         value={filters.model}
         label="Model"
         placeholder="Model name"
@@ -273,7 +234,7 @@ export function LogsFilters({ filters, offered, others, onChange }: LogsFiltersP
           onChange({ model });
         }}
       />
-      <TextField
+      <TextFilter
         value={filters.agentSession}
         label="Agent session"
         placeholder="Agent session"

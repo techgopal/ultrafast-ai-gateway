@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRightIcon } from "lucide-react";
-import { useId, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { useKeys, useProviders, useTeams, useUsage, useUsers } from "@/api/queries";
 import type { components } from "@/api/schema";
 import { can, isAdmin, type Me } from "@/auth/guards";
@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { QueryProblem } from "@/components/QueryProblem";
 import { Sparkline } from "@/components/Sparkline";
 import { StatusBadge } from "@/components/StatusBadge";
+import { TextFilter } from "@/components/TextFilter";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -231,16 +232,27 @@ function TopTable({
   );
 }
 
-function TopKeys() {
-  return <TopTable title="Top keys" to="/keys" read={useUsage("key")} column="Key" />;
+function TopKeys({ agentSession }: { agentSession: string }) {
+  return (
+    <TopTable title="Top keys" to="/keys" read={useUsage("key", agentSession)} column="Key" />
+  );
 }
 
 /** What went through the gateway in the last 30 days, as far as the viewer may see it. */
 function Usage({ me }: { me: Me }) {
-  const day = useUsage("day");
-  const models = useUsage("model");
+  const [agentSession, setAgentSession] = useState("");
+  const day = useUsage("day", agentSession);
+  const models = useUsage("model", agentSession);
   return (
     <section aria-label="Usage, last 30 days" className="flex flex-col gap-4">
+      <div>
+        <TextFilter
+          value={agentSession}
+          label="Agent session"
+          placeholder="Agent session"
+          onApply={setAgentSession}
+        />
+      </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <UsageTile title="Requests" read={day}>
           {(page) => (
@@ -305,7 +317,7 @@ function Usage({ me }: { me: Me }) {
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <TopTable title="Top models" to="/models" read={models} column="Model" />
-        {can(me, { type: "viewOthersUsage" }) ? <TopKeys /> : null}
+        {can(me, { type: "viewOthersUsage" }) ? <TopKeys agentSession={agentSession} /> : null}
       </div>
     </section>
   );
