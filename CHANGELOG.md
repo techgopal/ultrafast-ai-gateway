@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.1.0] - 2026-10-22
+## [3.1.0] - 2026-10-23
 
 Claude Code and Codex work through the gateway. One additive database
 migration (SQLite 0025, PostgreSQL 0011): older rows are unchanged.
@@ -41,6 +41,19 @@ migration (SQLite 0025, PostgreSQL 0011): older rows are unchanged.
 - A `/v1/messages` call to an Anthropic provider and a `/v1/responses` call to
   an OpenAI or Azure provider reach the provider as sent, so the response cache
   does not apply to them and a prompt template is refused on them (400).
+- A passed-through call that would use the provider account's stored state is
+  refused (400, naming the field): `store: true` (allowed on Azure without the
+  fields below), `previous_response_id`, `conversation`, `background`,
+  `item_reference`, file ids, hosted file search, code execution, computer use,
+  MCP and image tools, and Anthropic `container` and `mcp_servers`. Web search
+  stays allowed and costs $0.01 per completed search in spend and budgets.
+- `count_tokens` takes a request-rate permit and runs the input guardrails.
+- A provider's error on a passed-through call comes back with its own status
+  and body. A stream cut by a guardrail or left by its caller records the
+  usage read so far.
+- Azure Responses calls use `api_version` 2025-03-01-preview when the
+  provider's is older.
+- Console: the Overview usage filters by agent session (`GET /api/usage?agent_session=`).
 
 ## [3.0.0] - 2026-10-21
 
