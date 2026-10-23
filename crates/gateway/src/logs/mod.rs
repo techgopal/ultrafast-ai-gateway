@@ -103,6 +103,11 @@ pub fn snapshot_prices(state: Arc<AppState>) -> PriceLookup {
     })
 }
 
+/// What one call of a provider's hosted tool (a web search) is priced at, in
+/// millionths of a dollar: $10 per 1 000 searches, the list price of both
+/// Anthropic and OpenAI. One price for every model.
+pub const HOSTED_CALL_MICROS: i64 = 10_000;
+
 /// The cost of a call in millionths of a dollar, and whether it is known.
 ///
 /// Known (`priced`) means there is usage, the model has a price, and every
@@ -111,11 +116,6 @@ pub fn snapshot_prices(state: Arc<AppState>) -> PriceLookup {
 /// output, cache reads and cache writes; a cache side without a price of its
 /// own costs the input price. Otherwise the cost is 0 and `priced` is false.
 /// The sum is rounded half up, once.
-/// What one call of a provider's hosted tool (a web search) is priced at, in
-/// millionths of a dollar: $10 per 1 000 searches, the list price of both
-/// Anthropic and OpenAI. One price for every model.
-pub const HOSTED_CALL_MICROS: i64 = 10_000;
-
 pub fn cost(usage: Option<Usage>, price: Option<Price>) -> (i64, bool) {
     let (Some(usage), Some(price)) = (usage, price) else {
         return (0, false);

@@ -437,6 +437,16 @@ async fn i2_every_place_3_0_scanned_is_still_scanned_on_messages() {
             .await;
             block_mail_in(&h).await;
             let body = json!({"model":"p/m","max_tokens":5,"messages":messages});
+            if kind == "openai" && what.starts_with("a document") {
+                // Translation drops a document: its text is never sent.
+                let (s, b) = post(&h, "/v1/messages", &body).await;
+                assert_eq!(s, StatusCode::OK, "{b}");
+                let sent_body = h.upstream.received_requests().await.unwrap()[0]
+                    .body
+                    .clone();
+                assert!(!String::from_utf8(sent_body).unwrap().contains(MAIL));
+                continue;
+            }
             assert_blocked(&h, "/v1/messages", body, &format!("{what} ({kind})")).await;
         }
     }
@@ -658,6 +668,10 @@ async fn i4_responses_state_and_hosted_tools_are_refused() {
     ];
     for kind in ["openai", "azure"] {
         for (field, extra) in &cases {
+            // Azure takes store: true (see azure_takes_store_true...).
+            if kind == "azure" && *field == "store" {
+                continue;
+            }
             let h = harness(kind).await;
             mock_ok(&h, "/responses", RESPONSES_ANSWER, "application/json").await;
             let mut body = json!({"model":"p/m","input":"x"});
@@ -835,6 +849,12 @@ async fn m5_an_event_that_never_ends_is_not_held_without_limit() {
     // Nothing unscanned was let out; the caller is told.
     assert!(b.len() < 2 * 1024 * 1024, "{} bytes", b.len());
     assert!(b.contains("event: error\n"), "{}", &b[..b.len().min(300)]);
+    // Recorded as a cut, as a guardrail's is: not a failure of the target.
+    let records = h.sink.wait_for(1).await;
+    assert_eq!(
+        records[0].attempts.last().unwrap().outcome,
+        AttemptOutcome::Ok
+    );
 }
 
 // ------------------------------------------------------------------ M6
@@ -993,4 +1013,166 @@ async fn m9_hosted_searches_are_read_from_the_providers_usage() {
     )
     .await;
     assert_eq!(h.sink.wait_for(1).await[0].hosted_calls, 2);
+}
+
+// ------------------------------------------------------- the re-review round
+
+#[tokio::test]
+async fn n1_an_event_over_1_mib_without_a_guardrail_is_relayed_and_the_end_is_kept() {
+    let h = harness("anthropic").await;
+    let big = "a".repeat(1_300_000);
+    let stream = format!(
+        concat!(
+            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"m\",\"usage\":{{\"input_tokens\":7,\"output_tokens\":1}}}}}}\n\n",
+            "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n",
+            "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{}\"}}}}\n\n",
+            "event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":5}}}}\n\n",
+            "event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+        ),
+        big
+    );
+    mock_ok(&h, "/v1/messages", &stream, "text/event-stream").await;
+    let (s, b) = post(
+        &h,
+        "/v1/messages",
+        &json!({"model":"p/m","max_tokens":5,"stream":true,"messages":[user("x")]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(b == stream, "the stream is relayed as sent");
+    let records = h.sink.wait_for(1).await;
+    assert_eq!(
+        records[0].attempts.last().unwrap().outcome,
+        AttemptOutcome::Ok
+    );
+    let u = records[0].usage.unwrap();
+    assert_eq!((u.input_tokens, u.output_tokens), (7, 5));
+}
+
+#[tokio::test]
+async fn n2_a_file_id_in_a_tool_call_or_result_is_not_a_file_reference() {
+    let h = harness("anthropic").await;
+    mock_ok(&h, "/v1/messages", ANSWER, "application/json").await;
+    let body = json!({"model":"p/m","max_tokens":5,"messages":[
+        user("go"),
+        {"role":"assistant","content":[{"type":"tool_use","id":"t","name":"Drive","input":{"file_id":"abc"}}]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"t",
+            "content":[{"type":"text","text":"{\"file_id\":\"abc\"}"}]}]}]});
+    let (s, b) = post(&h, "/v1/messages", &body).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let h = harness("openai").await;
+    mock_ok(&h, "/responses", RESPONSES_ANSWER, "application/json").await;
+    let body = json!({"model":"p/m","store":false,"input":[
+        {"type":"function_call","call_id":"c","name":"drive","arguments":"{\"file_id\":\"abc\"}"},
+        {"type":"function_call_output","call_id":"c","output":"{\"file_id\":\"abc\"}"}]});
+    let (s, b) = post(&h, "/v1/responses", &body).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+}
+
+#[tokio::test]
+async fn n3_a_cut_stream_records_at_least_what_it_streamed() {
+    let h = harness("anthropic").await;
+    let long = "a".repeat(400);
+    let stream = format!(
+        concat!(
+            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"m\",\"usage\":{{\"input_tokens\":7,\"output_tokens\":1}}}}}}\n\n",
+            "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n",
+            "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{} \"}}}}\n\n",
+            "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"swordfish\"}}}}\n\n",
+            "event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+        ),
+        long
+    );
+    mock_ok(&h, "/v1/messages", &stream, "text/event-stream").await;
+    guardrail(&h, words_block_out()).await;
+    post(
+        &h,
+        "/v1/messages",
+        &json!({"model":"p/m","max_tokens":5,"stream":true,"messages":[user("x")]}),
+    )
+    .await;
+    let u = h.sink.wait_for(1).await[0].usage.unwrap();
+    assert_eq!(u.input_tokens, 7, "the input is as read");
+    assert!(u.output_tokens >= 90, "{}", u.output_tokens);
+}
+
+#[tokio::test]
+async fn n5_only_completed_searches_are_billed() {
+    let h = harness("openai").await;
+    let answer = r#"{"id":"r","object":"response","status":"completed","model":"m","output":[
+        {"type":"web_search_call","id":"1","status":"completed","action":{"type":"search","query":"q"}},
+        {"type":"web_search_call","id":"2","status":"completed","action":{"type":"open_page","url":"u"}},
+        {"type":"web_search_call","id":"3","status":"completed","action":{"type":"find","url":"u","pattern":"p"}},
+        {"type":"web_search_call","id":"4","status":"failed","action":{"type":"search","query":"q"}}],
+        "usage":{"input_tokens":1,"output_tokens":1}}"#;
+    mock_ok(&h, "/responses", answer, "application/json").await;
+    post(
+        &h,
+        "/v1/responses",
+        &json!({"model":"p/m","store":false,"input":"x"}),
+    )
+    .await;
+    assert_eq!(h.sink.wait_for(1).await[0].hosted_calls, 1);
+}
+
+#[tokio::test]
+async fn d_more_account_state_is_refused() {
+    let cases: Vec<(&str, Value)> = vec![
+        (
+            "item_reference",
+            json!({"input":[{"type":"item_reference","id":"msg_1"}]}),
+        ),
+        (
+            "container",
+            json!({"tools":[{"type":"shell","container":{"type":"auto"}}]}),
+        ),
+        (
+            "environment",
+            json!({"tools":[{"type":"shell","environment":{"type":"container_auto"}}]}),
+        ),
+        (
+            "code_execution",
+            json!({"tools":[{"type":"code_execution"}]}),
+        ),
+    ];
+    for (field, extra) in cases {
+        let h = harness("openai").await;
+        mock_ok(&h, "/responses", RESPONSES_ANSWER, "application/json").await;
+        let mut body = json!({"model":"p/m","store":false,"input":"x"});
+        for (k, v) in extra.as_object().unwrap() {
+            body[k] = v.clone();
+        }
+        refused(&h, "/v1/responses", body, field).await;
+    }
+    let h = harness("anthropic").await;
+    mock_ok(&h, "/v1/messages", ANSWER, "application/json").await;
+    let body = json!({"model":"p/m","max_tokens":5,"messages":[user("x")],
+        "tools":[{"type":"code_execution_20250522","name":"code_execution"}]});
+    refused(&h, "/v1/messages", body, "code_execution").await;
+}
+
+#[tokio::test]
+async fn azure_takes_store_true_but_not_the_fields_that_read_it_back() {
+    let h = harness("azure").await;
+    mock_ok(
+        &h,
+        "/openai/responses",
+        RESPONSES_ANSWER,
+        "application/json",
+    )
+    .await;
+    refused(
+        &h,
+        "/v1/responses",
+        json!({"model":"p/m","store":true,"previous_response_id":"r1","input":"x"}),
+        "previous_response_id",
+    )
+    .await;
+    let (s, b) = post(
+        &h,
+        "/v1/responses",
+        &json!({"model":"p/m","store":true,"input":"x"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
 }

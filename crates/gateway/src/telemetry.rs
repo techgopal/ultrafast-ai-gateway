@@ -529,6 +529,17 @@ impl Scope {
                         .last()
                         .is_some_and(|a| a.outcome != AttemptOutcome::Ok);
                 if ended_early {
+                    // The input side is what the provider reported. Its
+                    // running count of output is only the start (Anthropic
+                    // says 1 in message_start), so the output is the larger
+                    // of that and what was streamed, at four characters to a
+                    // token.
+                    let streamed =
+                        u32::try_from(self.streamed_chars.div_ceil(4)).unwrap_or(u32::MAX);
+                    let partial = Usage {
+                        output_tokens: partial.output_tokens.max(streamed),
+                        ..partial
+                    };
                     record.usage = Some(partial);
                     if let Some(permit) = self.permit.as_mut() {
                         permit.settle(partial.total_volume());

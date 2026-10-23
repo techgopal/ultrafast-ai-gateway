@@ -465,6 +465,17 @@ pub fn usage_of(api: NativeApi, body: &[u8]) -> Option<Usage> {
     }
 }
 
+/// Whether an output item of a Responses answer is a web search that was made
+/// and billed: a completed `web_search_call` of the search action (opening a
+/// page or finding in one is not a search, and a failed one is not billed).
+pub fn is_search_call(item: &Value) -> bool {
+    item["type"] == "web_search_call"
+        && item["status"].as_str().is_none_or(|s| s == "completed")
+        && item["action"]["type"]
+            .as_str()
+            .is_none_or(|a| a == "search")
+}
+
 /// The calls of hosted tools (web searches) a whole answer reports.
 pub fn hosted_calls_of(api: NativeApi, body: &[u8]) -> u32 {
     let Ok(v) = serde_json::from_slice::<Value>(body) else {
@@ -474,9 +485,9 @@ pub fn hosted_calls_of(api: NativeApi, body: &[u8]) -> u32 {
         NativeApi::Messages => v["usage"]["server_tool_use"]["web_search_requests"]
             .as_u64()
             .unwrap_or(0),
-        NativeApi::Responses => v["output"].as_array().map_or(0, |o| {
-            o.iter().filter(|i| i["type"] == "web_search_call").count() as u64
-        }),
+        NativeApi::Responses => v["output"]
+            .as_array()
+            .map_or(0, |o| o.iter().filter(|i| is_search_call(i)).count() as u64),
     };
     u32::try_from(n).unwrap_or(u32::MAX)
 }
@@ -702,7 +713,8 @@ pub struct StreamReader {
     stopped: bool,
     /// The provider's last event of the answer was seen.
     ended: bool,
-    overflowed: bool,
+    /// An event past the limit is being skipped, up to its end.
+    discarding: bool,
     hosted: u32,
 }
 
@@ -726,7 +738,7 @@ impl StreamReader {
             skipped: std::collections::HashSet::new(),
             stopped: false,
             ended: false,
-            overflowed: false,
+            discarding: false,
             hosted: 0,
         }
     }
@@ -747,24 +759,34 @@ impl StreamReader {
         self.decoder.usage_so_far()
     }
 
-    /// Whether an event grew past the limit: nothing more is read.
-    pub fn overflowed(&self) -> bool {
-        self.overflowed
-    }
-
+    /// Reads `chunk`. An event over [`MAX_EVENT_BYTES`] is not held: it is
+    /// skipped up to the delimiter that ends it, and the events after it are
+    /// read as ever, so the end of the answer and its usage are not lost.
     pub fn feed(&mut self, chunk: &[u8]) -> Read {
         let mut read = Read::default();
-        if self.overflowed {
-            return read;
-        }
-        let from = self.buf.len().saturating_sub(3);
+        let mut from = self.buf.len().saturating_sub(3);
         self.buf.extend_from_slice(chunk);
-        for event in split_events_from(&mut self.buf, from) {
+        let mut complete = Vec::new();
+        if self.discarding {
+            // The first complete event is the end of the skipped one.
+            let mut found = split_events_from(&mut self.buf, 0).into_iter();
+            if found.next().is_none() {
+                let keep = self.buf.len().saturating_sub(3);
+                self.buf.drain(..keep);
+                return read;
+            }
+            self.discarding = false;
+            complete.extend(found);
+            from = 0;
+        }
+        complete.extend(split_events_from(&mut self.buf, from));
+        for event in complete {
             self.event(&event, &mut read);
         }
         if self.buf.len() > MAX_EVENT_BYTES {
-            self.overflowed = true;
-            self.buf = Vec::new();
+            self.discarding = true;
+            let keep = self.buf.len() - 3;
+            self.buf.drain(..keep);
         }
         read
     }
@@ -776,6 +798,10 @@ impl StreamReader {
     }
 
     fn event(&mut self, event: &[u8], read: &mut Read) {
+        // Too large to be read (the decoder would stop on it): skipped.
+        if event.len() > MAX_EVENT_BYTES {
+            return;
+        }
         // What is not JSON is not an event of the answer.
         let Some(v) = data_of(event) else { return };
         let ty = v["type"].as_str().unwrap_or("");
@@ -787,7 +813,7 @@ impl StreamReader {
                 self.hosted_of(&v["usage"]);
             }
             (NativeApi::Responses, "response.output_item.done") => {
-                if v["item"]["type"] == "web_search_call" {
+                if is_search_call(&v["item"]) {
                     self.hosted += 1;
                 }
             }
@@ -847,21 +873,26 @@ impl StreamReader {
 const STATE_REFUSAL: &str =
     "is not supported through the gateway: it reads or writes state kept in the shared provider account.";
 
-/// Keys whose contents are the caller's own schemas, not the request's.
-const OPAQUE: &[&str] = &["parameters", "input_schema", "schema", "format"];
+/// Whether a content block or part names a stored file, where the API reads
+/// that: the `source` of an Anthropic block, an `input_file` or `input_image`
+/// of Responses. Nothing the model or a tool wrote (tool input, arguments,
+/// results) is looked into for it.
+fn names_file(block: &Value) -> bool {
+    let source = &block["source"];
+    source["file_id"].is_string()
+        || source["type"] == "file"
+        || (matches!(block["type"].as_str(), Some("input_file" | "input_image"))
+            && block["file_id"].is_string())
+}
 
-/// Looks for a `file_id` (a string) at any depth outside the schemas.
-fn has_file_id(v: &Value) -> bool {
-    match v {
-        Value::Object(map) => map.iter().any(|(k, x)| {
-            if OPAQUE.contains(&k.as_str()) {
-                return false;
-            }
-            (k == "file_id" && x.is_string()) || has_file_id(x)
-        }),
-        Value::Array(items) => items.iter().any(has_file_id),
-        _ => false,
-    }
+/// `names_file` for a block or part, and for the blocks of a tool result.
+fn reads_file(block: &Value) -> bool {
+    names_file(block)
+        || ["content", "output"].iter().any(|k| {
+            block[k]
+                .as_array()
+                .is_some_and(|parts| parts.iter().any(reads_file))
+        })
 }
 
 fn set(v: Option<&Value>) -> bool {
@@ -878,6 +909,7 @@ fn hosted_tool(ty: &str) -> bool {
         "computer",
         "mcp",
         "image_generation",
+        "code_execution",
     ]
     .iter()
     .any(|p| ty == *p || ty.starts_with(&format!("{p}_")))
@@ -888,17 +920,34 @@ fn hosted_tool(ty: &str) -> bool {
 /// the field, or `None` when there is nothing of the kind in it. What
 /// Claude Code and Codex send is not in it: Codex sends `store: false`, and
 /// the web search tools of both are the provider's own business.
-pub fn stored_state(native: &Native) -> Option<String> {
+pub fn stored_state(native: &Native, target: ProviderKind) -> Option<String> {
     let body = &native.body;
     let refuse = |field: &str| Some(format!("'{field}' {STATE_REFUSAL}"));
     match native.api {
         NativeApi::Responses => {
-            if body.get("store") == Some(&Value::Bool(true)) {
+            // Codex is built to send `store: true` when it is pointed at an
+            // Azure host (its binary carries the Azure host names), so an
+            // Azure target takes it: what it stores cannot be read back
+            // without the fields refused below.
+            if body.get("store") == Some(&Value::Bool(true)) && target != ProviderKind::Azure {
                 return refuse("store");
             }
             for field in ["previous_response_id", "conversation", "background"] {
                 if set(body.get(field)) {
                     return refuse(field);
+                }
+            }
+            for item in body
+                .get("input")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if item["type"] == "item_reference" {
+                    return refuse("item_reference");
+                }
+                if reads_file(item) {
+                    return refuse("file_id");
                 }
             }
             for tool in body
@@ -909,6 +958,11 @@ pub fn stored_state(native: &Native) -> Option<String> {
             {
                 if set(tool.get("vector_store_ids")) {
                     return refuse("vector_store_ids");
+                }
+                for field in ["container", "environment"] {
+                    if set(tool.get(field)) {
+                        return refuse(&format!("tools[].{field}"));
+                    }
                 }
                 if let Some(ty) = tool["type"].as_str().filter(|t| hosted_tool(t)) {
                     return refuse(&format!("tools[].type {ty}"));
@@ -925,12 +979,35 @@ pub fn stored_state(native: &Native) -> Option<String> {
                     return refuse(field);
                 }
             }
+            for tool in body
+                .get("tools")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(ty) = tool["type"]
+                    .as_str()
+                    .filter(|t| t.starts_with("code_execution"))
+                {
+                    return refuse(&format!("tools[].type {ty}"));
+                }
+            }
+            for message in body
+                .get("messages")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if message["content"]
+                    .as_array()
+                    .is_some_and(|blocks| blocks.iter().any(reads_file))
+                {
+                    return refuse("file_id");
+                }
+            }
         }
     }
-    body.iter()
-        .filter(|(k, _)| !OPAQUE.contains(&k.as_str()))
-        .any(|(_, v)| has_file_id(v))
-        .then(|| format!("'file_id' {STATE_REFUSAL}"))
+    None
 }
 
 #[cfg(test)]
@@ -1128,13 +1205,16 @@ mod tests {
     #[test]
     fn state_of_the_provider_account_is_found_and_the_agents_own_are_not() {
         let check = |api, body: Value| {
-            stored_state(&Native {
-                api,
-                body: body.as_object().unwrap().clone(),
-                headers: Vec::new(),
-                query: None,
-                parse_error: None,
-            })
+            stored_state(
+                &Native {
+                    api,
+                    body: body.as_object().unwrap().clone(),
+                    headers: Vec::new(),
+                    query: None,
+                    parse_error: None,
+                },
+                ProviderKind::OpenAi,
+            )
         };
         let r = NativeApi::Responses;
         assert!(check(r, serde_json::json!({"store": true})).is_some());

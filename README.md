@@ -670,7 +670,12 @@ field: on `/v1/responses` `store: true`, `previous_response_id`,
 source, `container` and `mcp_servers`. What Claude Code and Codex send is not
 affected (Codex sends `store: false`; the web search and web fetch tools are
 allowed). A Responses call that leaves `store` out is forwarded as it is, and
-OpenAI then keeps it, which is its default: have Codex send `store = false`.
+OpenAI keeps such a response by default unless the client sends `store: false`
+(Codex does). `store: true` is accepted for an Azure target only, and without
+the fields that read a stored response back. Also refused: `item_reference`
+input items, tools with a `container` or `environment`, and `code_execution`
+tools. A `file_id` is refused where the API reads it (a content block's
+`source`, `input_file`, `input_image`), not inside tool input or results.
 
 **Other family: translated.** Claude Code to an OpenAI, Azure or Gemini
 provider, and Codex to an Anthropic provider, are translated as every
@@ -1854,7 +1859,8 @@ with AdminClient("http://127.0.0.1:3000", os.environ["UF_ADMIN_TOKEN"]) as api:
   it ends.
 - Coding agents: a Claude Code to Gemini call that sets a reasoning effort is
   refused. A passed-through stream is read event by event only while an output
-  rule applies; one event over 1 MiB then ends the stream with an error.
+  rule applies; one event over 1 MiB then ends the stream with an error. Without
+  one, an event over 1 MiB is relayed but not read.
 - A stream whose caller left, or that failed midway, is charged an estimate
   (marked Estimated in the logs).
 - Creating or revoking a key, or changing teams, users, routes, providers,

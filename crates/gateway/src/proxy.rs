@@ -163,7 +163,7 @@ pub async fn count_tokens(State(state): State<Arc<AppState>>, request: Request) 
         query: parts.uri.query().map(str::to_string),
         parse_error: None,
     };
-    if let Some(message) = native::stored_state(&native) {
+    if let Some(message) = native::stored_state(&native, ProviderKind::Anthropic) {
         return shape.error(StatusCode::BAD_REQUEST, "invalid_request_error", &message);
     }
     let effective = snapshot.effective_guardrails(
@@ -1457,6 +1457,32 @@ async fn dispatch(
         Resolved::Route(route) => Some(route.name.as_str()),
         _ => None,
     });
+    // The agent's own body is only kept, scanned and rewritten when some target
+    // of the call could be passed it; otherwise the common request stands for
+    // it from here on. A body the translator refused is kept: its error is
+    // what a translated attempt answers with.
+    if let Call::Chat(_, native) = &mut call {
+        if native.as_ref().is_some_and(|n| n.parse_error.is_none())
+            && !native.as_ref().is_some_and(|n| {
+                let speaks = |t: &TargetRef| {
+                    snapshot
+                        .provider(&t.provider)
+                        .is_some_and(|p| native::matches(n.api, p.kind))
+                };
+                match &resolved {
+                    Resolved::Model(m) => snapshot
+                        .provider(&m.provider)
+                        .is_some_and(|p| native::matches(n.api, p.kind)),
+                    Resolved::Route(route) => {
+                        route.primaries.iter().any(|(t, _)| speaks(t))
+                            || route.fallbacks.iter().any(speaks)
+                    }
+                }
+            })
+        {
+            *native = None;
+        }
+    }
     // 3a. The rate limits of the key, its owner, their teams and the gateway.
     // First, so that the work of scanning a body is only done for a call the
     // limits let in. The permit goes with the scope, which a stream carries to
@@ -2523,7 +2549,7 @@ async fn try_target_once(
         if call.passes_to(provider.kind) {
             // What would read or write the state of the account the gateway
             // holds for everyone is refused before anything is sent.
-            if let Some(message) = native::stored_state(native) {
+            if let Some(message) = native::stored_state(native, provider.kind) {
                 return Err(Failure::Fatal {
                     error: CallError::Translate(TranslateError::InvalidRequest(message)),
                     status: None,
@@ -3907,7 +3933,10 @@ fn native_stream(committed: Committed, record: StreamRecord) -> Response {
                         yield Ok(Bytes::from(unit));
                     }
                     tracing::warn!(provider = %provider, "provider stream event is over the size limit");
-                    record.end(AttemptOutcome::Fatal, None);
+                    // Recorded as a cut, like a guardrail's: the caller's
+                    // answer was ended by the gateway, not by the target.
+                    record.cut_short();
+                    record.end(AttemptOutcome::Ok, None);
                     yield Ok(Bytes::from(native::error_event(
                         api,
                         "The provider stream sent an event over the size limit.",
